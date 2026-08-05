@@ -805,12 +805,17 @@ impl DebugAdapter {
                         }
 
                         if let Some(pending) = pending_logpoint.as_mut() {
-                            // Deliberately `sanitized_text`, not `analysis_text`:
-                            // `normalize_debugger_output_line` truncates the line to
-                            // whatever follows the *last* `DB<...>` token, so a value
-                            // whose own text contains `DB<4>` would lose its `DAPLPV:`
-                            // prefix and be mistaken for framing noise. The capture
-                            // only needs ANSI stripped; its own markers frame it.
+                            // Deliberately `capture_text`, not `analysis_text` and not
+                            // `sanitized_text`. `normalize_debugger_output_line`
+                            // truncates the line to whatever follows the *last*
+                            // `DB<...>` token, so a value whose own text contains
+                            // `DB<4>` would lose its `DAPLPV:` prefix and be mistaken
+                            // for framing noise. `sanitized_text` is built from the
+                            // `trim_end()`-ed line and would eat trailing spaces or
+                            // tabs that belong to the value itself — the regression
+                            // `test_logpoint_preserves_trailing_whitespace_in_values`
+                            // guards. The capture only needs ANSI stripped; its own
+                            // markers frame it.
                             let step = pending.observe_line(&capture_text);
                             if matches!(
                                 step,
