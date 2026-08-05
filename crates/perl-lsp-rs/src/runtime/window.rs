@@ -2,7 +2,9 @@
 //!
 //! Implements LSP window/* and telemetry/event methods for client interaction.
 
+#[cfg(test)]
 use super::*;
+use super::{GLOBAL_CANCELLATION_REGISTRY, LspServer, Value, io, json};
 
 /// Message type for window/showMessageRequest
 #[derive(Debug, Clone, Copy)]

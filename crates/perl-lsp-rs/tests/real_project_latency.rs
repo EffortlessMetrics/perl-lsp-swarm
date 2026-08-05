@@ -778,12 +778,11 @@ fn test_real_project_fixtures_exist() {
 
 /// Sanity check: each fixture entry file exists and contains valid Perl.
 #[test]
-fn test_real_project_entry_files_are_valid_perl() {
+fn test_real_project_entry_files_are_valid_perl() -> Result<(), Box<dyn std::error::Error>> {
     for fixture in &[&MOJOLICIOUS_FIXTURE, &DANCER2_FIXTURE, &CATALYST_FIXTURE] {
         let entry = entry_file_path(fixture);
         assert!(entry.exists(), "Entry file missing for fixture '{}': {entry:?}", fixture.name);
-        let content = fs::read_to_string(&entry)
-            .unwrap_or_else(|e| panic!("Cannot read entry file {entry:?}: {e}"));
+        let content = fs::read_to_string(&entry)?;
         assert!(
             !content.is_empty(),
             "Entry file is empty for fixture '{}': {entry:?}",
@@ -796,25 +795,24 @@ fn test_real_project_entry_files_are_valid_perl() {
             fixture.name
         );
     }
+    Ok(())
 }
 
 /// Sanity check: baseline JSON schema is valid once file exists.
 #[test]
-fn test_real_project_latency_baseline_schema() {
+fn test_real_project_latency_baseline_schema() -> Result<(), Box<dyn std::error::Error>> {
     let output_path = workspace_root().join(OUTPUT_PATH);
     if !output_path.exists() {
         // Baseline doesn't exist yet — expected before first nightly run.
         eprintln!(
             "Baseline not yet generated (expected before first nightly run): {output_path:?}"
         );
-        return;
+        return Ok(());
     }
 
-    let content = fs::read_to_string(&output_path)
-        .unwrap_or_else(|e| panic!("Cannot read baseline at {output_path:?}: {e}"));
+    let content = fs::read_to_string(&output_path)?;
 
-    let parsed: Value = serde_json::from_str(&content)
-        .unwrap_or_else(|e| panic!("Baseline JSON is malformed at {output_path:?}: {e}"));
+    let parsed: Value = serde_json::from_str(&content)?;
 
     assert_eq!(
         parsed.get("schema_version").and_then(Value::as_u64),
@@ -846,9 +844,9 @@ fn test_real_project_latency_baseline_schema() {
                 "Project '{name}' resource_profile missing rss_memory_state"
             );
         }
-        let metrics = proj
-            .get("metrics")
-            .unwrap_or_else(|| panic!("Project '{name}' missing 'metrics' in baseline"));
+        let metrics = proj.get("metrics").ok_or_else(|| {
+            std::io::Error::other(format!("Project '{name}' missing 'metrics' in baseline"))
+        })?;
 
         for metric in &[
             "cold_start_to_hover",
@@ -857,15 +855,18 @@ fn test_real_project_latency_baseline_schema() {
             "incremental_reparse",
             "workspace_symbol_query",
         ] {
-            let m = metrics.get(metric).unwrap_or_else(|| {
-                panic!("Project '{name}' missing metric '{metric}' in baseline")
-            });
+            let m = metrics.get(metric).ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "Project '{name}' missing metric '{metric}' in baseline"
+                ))
+            })?;
             assert!(m.get("p50_ms").is_some(), "'{name}.{metric}' missing p50_ms");
             assert!(m.get("p95_ms").is_some(), "'{name}.{metric}' missing p95_ms");
             assert!(m.get("p99_ms").is_some(), "'{name}.{metric}' missing p99_ms");
             assert!(m.get("samples").is_some(), "'{name}.{metric}' missing samples");
         }
     }
+    Ok(())
 }
 
 #[test]

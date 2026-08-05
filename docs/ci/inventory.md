@@ -46,7 +46,6 @@ is decided in PR 15+ once actuals confirm the overlap.
 | `workflow-trigger-lint.yml` | `workflow-trigger-lint` | `pull_request` | yes | `ubuntu-24.04` | Trigger policy lint (legacy) | 1 | _add in PR 11_ | `workflow:workflow-policy` | **decide PR 15** |
 | `droid-review.yml` | `droid` | `pull_request` (opened/ready/reopened) | no | `self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review` | External AI review | 4 | `droid_auto_review` | — | keep |
 | `agent-capability-gate.yml` | `route-agent-capability-gate` + execution jobs | `pull_request` (agent-policy paths), `merge_group`, `push` (main/master) | no | mixed (`workflow-nano` with `ubuntu-24.04` fallback) | M4b review/audit-agent read-only capability enforcement | 2 | `agent_capability_gate` | — | keep |
-| `pipeline-labels.yml` | `apply-pipeline-labels` | `pull_request`, `pull_request_target` | no | `ubuntu-24.04` | Apply pipeline state labels | 1 | _add in PR 11_ | — | keep |
 | `flake-detection.yml` | `flake-detect` | `pull_request`, `schedule` | no | `ubuntu-24.04` | Detect flaky tests | varies | _add in PR 11_ | — | keep |
 
 ### Nightly / scheduled workflows
@@ -67,7 +66,6 @@ is decided in PR 15+ once actuals confirm the overlap.
 | `post-merge-status.yml` | `push` (master) | no | `ubuntu-24.04` | Regenerate status docs | 3 | _add in PR 11_ | keep |
 | `post-publish-smoke.yml` | `release`, `workflow_dispatch` | no | mixed | Post-publish smoke | varies | _add in PR 11_ | keep |
 | `tokmd.yml` | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Token usage / metrics | varies | _add in PR 11_ | keep |
-| `merge-ready-reconciler.yml` | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Reconcile merge-ready labels | 1 | _add in PR 11_ | keep |
 | `triage-issues.yml` | `schedule`, `issues` | no | `ubuntu-24.04` | Issue triage automation | 1 | _add in PR 11_ | keep |
 | `ci-gate-self-tests.yml` | `pull_request` (gate paths), `workflow_dispatch` | no | `ubuntu-24.04` | Validate gate definitions | 3 | _add in PR 11_ | keep |
 

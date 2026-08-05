@@ -1918,6 +1918,27 @@ impl WorkspaceIndex {
             .is_some_and(|indexed_generation| indexed_generation < expected_generation)
     }
 
+    /// Reset the generation counters for `uri` so that a close/reopen cycle
+    /// does not leave a stale high-water mark that blocks the reopened file's
+    /// index task (#5438).
+    ///
+    /// When a document is closed, the on-disk file's index entry is retained
+    /// (the file is still part of the project). But the generation counter
+    /// from the previous session persists, and the reopened document starts
+    /// fresh at generation 0. The monotonic guard (`generation > 0 &&
+    /// high_water > generation`) then rejects the new index task because the
+    /// old high-water mark is higher. Resetting both `generation` and
+    /// `pending_generation` to 0 lets the reopened file index normally.
+    pub fn reset_generation_for_close(&self, uri: &str) {
+        let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
+        let mut files = self.files.write();
+        if let Some(file_index) = files.get_mut(&key) {
+            file_index.generation = 0;
+            file_index.pending_generation = 0;
+            self.bump_write_version();
+        }
+    }
+
     /// Normalize a URI to a consistent form using proper URI handling
     fn normalize_uri(uri: &str) -> String {
         perl_uri::normalize_uri(uri)
@@ -2088,18 +2109,25 @@ impl WorkspaceIndex {
                     });
                 }
             }
-
-            // Update document store -- still holding `files.write()`, so no
-            // other writer of this URI can observe a partial state between
-            // the generation check above and this write.
-            if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, 1, text.clone());
-            } else {
-                self.document_store.open(uri_str.clone(), 1, text.clone());
-            }
         }
 
-        // Parse the file
+        // Update document store AFTER releasing `files.write()` (#3722).
+        // The LineIndex::new(text) inside Document::new()/update() is O(text),
+        // so holding the global files lock during this call serialized all
+        // indexing. document_store has its own internal RwLock, and its
+        // version check handles concurrent writes independently.
+        {
+            // Use generation as the document version so the document_store's
+            // stale-write check becomes load-bearing. Ensure version >= 1 to
+            // avoid rejecting updates to batch-indexed files (which open with
+            // version 1) when generation is 0 (#3686).
+            let doc_version = (generation as i32).max(1);
+            if self.document_store.is_open(&uri_str) {
+                self.document_store.update(&uri_str, doc_version, text.clone());
+            } else {
+                self.document_store.open(uri_str.clone(), doc_version, text.clone());
+            }
+        }
         let mut parser = Parser::new(&text);
         let ast = match parser.parse() {
             Ok(ast) => ast,

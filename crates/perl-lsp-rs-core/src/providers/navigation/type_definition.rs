@@ -872,7 +872,7 @@ $obj->method();
         let mut documents = HashMap::new();
         documents.insert(
             "file:///binary.pl".to_string(),
-            "package Binary::Type;\0not perl text".to_string(),
+            "package Binary::Type;\0\0\0\0\0not perl text\0\0\0\0\0".to_string(),
         );
 
         let locations = provider.find_package_definition_in_docs(
@@ -929,7 +929,7 @@ $obj->method();
         let mut documents = HashMap::new();
         documents.insert(
             "file:///binary_custom.pl".to_string(),
-            "type BinaryCustom => ...\0not perl text".to_string(),
+            "type BinaryCustom => ...\0\0\0\0\0not perl text\0\0\0\0\0".to_string(),
         );
 
         let locations = provider.find_custom_type_definition_in_docs(

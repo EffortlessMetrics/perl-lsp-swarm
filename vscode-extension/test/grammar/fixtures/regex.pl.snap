@@ -68,24 +68,16 @@
 #  ^^ source.perl
 #    ^^^^^^ source.perl variable.other.scalar.perl
 #          ^ source.perl
-#           ^ source.perl keyword.operator.assignment.perl
-#            ^ source.perl keyword.operator.bitwise.perl
-#             ^ source.perl
-#              ^ source.perl keyword.operator.arithmetic.perl
-#               ^ source.perl keyword.operator.bitwise.perl
-#                ^^^ source.perl
-#                   ^ source.perl keyword.operator.arithmetic.perl
-#                    ^^ source.perl
-#                      ^ source.perl string.regexp.replace.perl keyword.other.perl
-#                       ^ source.perl string.regexp.replace.perl
-#                        ^ source.perl string.regexp.replace.perl
-#                         ^^ source.perl string.regexp.replace.perl constant.character.escape.perl
-#                           ^ source.perl string.regexp.replace.perl
-#                            ^ source.perl
-#                             ^ source.perl keyword.operator.string.perl
-#                              ^ source.perl keyword.operator.arithmetic.perl
-#                               ^^ source.perl
-#                                 ^ source.perl keyword.operator.arithmetic.perl
+#           ^^ source.perl string.regexp.perl keyword.operator.assignment.perl
+#             ^^ source.perl string.regexp.perl
+#               ^^ source.perl string.regexp.perl
+#                 ^^ source.perl string.regexp.perl constant.character.escape.perl
+#                   ^^ source.perl string.regexp.perl
+#                     ^^ source.perl string.regexp.perl constant.character.escape.perl
+#                       ^^ source.perl string.regexp.perl
+#                         ^^ source.perl string.regexp.perl constant.character.escape.perl
+#                           ^^^^^^ source.perl string.regexp.perl
+#                                 ^ source.perl string.regexp.perl
 #                                  ^^^^ source.perl
 >    my ($key, $value) = ($1, $2);
 #^^^^ source.perl

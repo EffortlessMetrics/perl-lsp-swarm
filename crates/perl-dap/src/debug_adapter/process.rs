@@ -1,6 +1,18 @@
 //! Process lifecycle management: initialize, launch, attach, disconnect, terminate, restart.
 
-use super::*;
+use super::{
+    Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
+    DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
+    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
+    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
+    ansi_escape_re, catalog_has_feature, context_re, dispatch_event, emit_event_safe, error_re,
+    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
+    thread, warning_re,
+};
+#[cfg(unix)]
+use nix::sys::signal::{self, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 // The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
@@ -9,6 +21,7 @@ use std::sync::mpsc::channel;
 mod perl_info;
 mod perl_spawn;
 
+use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
@@ -65,7 +78,11 @@ impl DebugAdapter {
             "supportsEvaluateForHovers": supports_core,
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
-            "supportsRestartFrame": true,
+            // restartFrame is advertised but the handler unconditionally returns
+            // success: false ("Perl does not support restarting execution from a
+            // specific stack frame"). Stop advertising it so the client UI does
+            // not offer an action that always fails (#5045).
+            "supportsRestartFrame": false,
             "supportsGotoTargetsRequest": supports_core,
             "supportsStepInTargetsRequest": true,
             "supportsCompletionsRequest": supports_completions,
@@ -78,7 +95,10 @@ impl DebugAdapter {
             "supportsDelayedStackTraceLoading": false,
             "supportsLoadedSourcesRequest": true,
             "supportsLogPoints": supports_log_points,
-            "supportsTerminateThreadsRequest": true,
+            // terminateThreads is advertised but the handler unconditionally
+            // returns success: false ("Perl threading model does not support
+            // targeted thread termination"). Stop advertising it (#5045).
+            "supportsTerminateThreadsRequest": false,
             "supportsSetExpression": supports_core,
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
@@ -369,6 +389,21 @@ impl DebugAdapter {
                  to the path of the script you want to debug."
                     .to_string(),
             );
+        }
+
+        // Detect shell-style quotes around the program path (#1985).
+        // Users sometimes write "program": "'path/to/script.pl'" or
+        // "\"path/to/script.pl\"" — the quotes become part of the path,
+        // causing a confusing file-not-found error.
+        let has_surrounding_quotes =
+            (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
+                || (program.starts_with('"') && program.ends_with('"') && program.len() > 1);
+        if has_surrounding_quotes && !Path::new(program).is_file() {
+            return Err(format!(
+                "The 'program' path '{program}' has surrounding quotes. \
+                 Remove the quotes in your launch.json — the path should be just \
+                 the script path, e.g. \"program\": \"script.pl\"."
+            ));
         }
 
         // Validate that the program is a regular file (not a directory, device, etc.)
@@ -1387,71 +1422,20 @@ impl DebugAdapter {
                 let stop_on_entry =
                     args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
 
-                // Validate arguments.
-                if normalized_host.is_empty() {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("Host cannot be empty".to_string()),
-                    };
-                }
-
-                if port == 0 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("Port must be in range 1-65535".to_string()),
-                    };
-                }
-
-                if let Some(t) = timeout {
-                    if t == 0 {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: Some(
-                                "Timeout must be greater than 0 milliseconds".to_string(),
-                            ),
-                        };
-                    }
-                    if t > 300_000 {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: Some(
-                                "Timeout cannot exceed 300000 milliseconds (5 minutes)".to_string(),
-                            ),
-                        };
-                    }
-                }
-
                 // TCP attachment mode (IMPLEMENTED)
                 let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
                 if let Some(t) = timeout {
                     config = config.with_timeout(t);
                 }
 
-                // Validate configuration
-                if let Err(e) = config.validate() {
+                if let Err(error) = config.validate_timeout_bounds() {
                     return DapMessage::Response {
                         seq,
                         request_seq,
                         success: false,
                         command: "attach".to_string(),
                         body: None,
-                        message: Some(format!("Invalid attach configuration: {}", e)),
+                        message: Some(error.to_string()),
                     };
                 }
 
@@ -1462,8 +1446,10 @@ impl DebugAdapter {
                 let (tx, rx) = channel::<DapEvent>();
                 session.set_event_sender(tx);
 
-                // Attempt to connect
-                match session.connect(&config) {
+                // Attempt to connect (validate is called inside connect,
+                // which also pins the resolved addresses for DNS-rebinding
+                // defense #5257)
+                match session.connect(&mut config) {
                     Ok(()) => {
                         if let Err(e) = session.start_reader() {
                             tracing::error!(error = %e, "Failed to start TCP reader");
@@ -1958,13 +1944,11 @@ impl DebugAdapter {
         }
     }
 
-    /// Send interrupt signal to process (cross-platform).
+    /// Send SIGINT to a Unix process, with a test-only fallback elsewhere.
     ///
-    /// On Unix, sends SIGINT. On Windows, writes the interrupt character to
-    /// debugger stdin for a launched session; PID-attached pause is unsupported.
-    /// On stdin-write failure, returns `false` without terminating the debuggee
-    /// (the session is left intact for the client to retry or disposition).
-    /// Returns `false` on unsupported platforms.
+    /// On failure, returns `false` without terminating the debuggee. The
+    /// session is left intact for the client to retry or disposition.
+    #[cfg(any(unix, test))]
     pub(super) fn send_interrupt_signal(&self, pid: u32) -> bool {
         if pid == 0 {
             tracing::warn!("send_interrupt_signal called with pid 0, ignoring");
@@ -1984,44 +1968,9 @@ impl DebugAdapter {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(all(test, not(unix)))]
         {
-            // Write the interrupt character to debugger stdin (session mode only).
-            // On stdin-write failure, return `false` — do NOT terminate the debuggee.
-            if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            {
-                if let Some(stdin) = session.process.stdin.as_mut() {
-                    match stdin.write_all(b"\x03\n") {
-                        Ok(()) => {
-                            let _ = stdin.flush();
-                            tracing::info!("Sent interrupt via stdin to process {}", pid);
-                            true
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to send interrupt to process {} via stdin: {}. \
-                                 Pause delivery failed — session left intact (not terminated).",
-                                pid,
-                                e
-                            );
-                            false
-                        }
-                    }
-                } else {
-                    tracing::warn!("No stdin handle for process {}", pid);
-                    false
-                }
-            } else {
-                tracing::warn!(
-                    pid,
-                    "PID-attached pause is unsupported on Windows; refusing to signal the target"
-                );
-                false
-            }
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            tracing::warn!("send_interrupt_signal: unsupported platform for pid {}", pid);
+            tracing::warn!("send_interrupt_signal is unavailable on this test platform");
             false
         }
     }
@@ -2433,6 +2382,51 @@ mod tests {
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
+    }
+
+    #[test]
+    fn launch_preserves_a_real_quote_delimited_filename() -> Result<(), String> {
+        use std::io::Write;
+
+        let mut script = tempfile::Builder::new()
+            .prefix("'perl-dap-quote-test-")
+            .suffix(".pl'")
+            .tempfile_in(".")
+            .map_err(|e| format!("could not create script: {e}"))?;
+        script
+            .as_file_mut()
+            .write_all(b"print 1;\n")
+            .map_err(|e| format!("could not write script: {e}"))?;
+        let script_path = script
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("script filename is not valid UTF-8")?;
+        let missing_perl = std::env::current_dir()
+            .map_err(|e| format!("could not get current directory: {e}"))?
+            .join("missing-perl");
+        let missing_perl = missing_perl.to_str().ok_or("interpreter path is not valid UTF-8")?;
+
+        let mut adapter = DebugAdapter::new();
+        let result = adapter.launch_debugger(
+            script_path,
+            missing_perl,
+            Vec::new(),
+            false,
+            std::collections::HashMap::new(),
+            None,
+            1,
+        );
+        let error = match result {
+            Ok(thread_id) => return Err(format!("unexpectedly launched thread {thread_id}")),
+            Err(error) => error,
+        };
+
+        assert!(
+            !error.contains("surrounding quotes"),
+            "a real quote-delimited filename must not be treated as shell quoting: {error}"
+        );
+        Ok(())
     }
 
     #[test]

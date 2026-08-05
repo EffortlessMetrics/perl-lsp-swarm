@@ -101,6 +101,49 @@ pub fn validate_endpoint_with_resolver(
     Ok(ApprovedDestination { scheme, host, port, resolved_ips })
 }
 
+/// Validate a raw `host:port` for a non-HTTP outbound connection (DAP attach).
+///
+/// Unlike [`validate_endpoint`], this does not enforce HTTPS because DAP
+/// attach is a plain TCP connection to a user-specified debugger endpoint.
+/// However, it applies the **same** SSRF protections: the host is resolved
+/// via DNS and every resolved IP is checked against [`is_disallowed_address`].
+/// This prevents a hostile `.vscode/launch.json` from opening a TCP connection
+/// to cloud metadata (`169.254.169.254`) or other private/link-local
+/// addresses (#5257).
+///
+/// Loopback addresses are allowed (the debugger typically runs locally).
+pub fn validate_tcp_attach_host(host: &str, port: u16) -> Result<Vec<IpAddr>, DestinationError> {
+    validate_tcp_attach_host_with_resolver(host, port, &default_resolver)
+}
+
+/// Like [`validate_tcp_attach_host`], but with an injectable DNS resolver
+/// (tests).
+pub fn validate_tcp_attach_host_with_resolver(
+    host: &str,
+    port: u16,
+    resolve: &ResolveFn,
+) -> Result<Vec<IpAddr>, DestinationError> {
+    let normalized = normalize_host(host);
+    if normalized.is_empty() {
+        return Err(DestinationError::MissingHost);
+    }
+    let resolved_ips: Vec<IpAddr> =
+        resolve(&normalized, port)?.into_iter().map(normalize_ip).collect();
+    if resolved_ips.is_empty() {
+        return Err(DestinationError::UnresolvedHost);
+    }
+    // localhost must resolve to loopback only (same contract as the AI path).
+    if normalized == "localhost" && !resolved_ips.iter().copied().all(|ip| ip.is_loopback()) {
+        return Err(DestinationError::LocalhostNotLoopback);
+    }
+    // Reject any resolved address in the private/link-local/metadata/CGNAT
+    // ranges, EXCEPT loopback (debugger may run locally).
+    if resolved_ips.iter().copied().any(is_disallowed_address) {
+        return Err(DestinationError::DisallowedAddress);
+    }
+    Ok(resolved_ips)
+}
+
 /// Returns `true` only when `request_url` matches the approved destination identity.
 pub fn credential_may_attach(approved: &ApprovedDestination, request_url: &str) -> bool {
     match parse_destination_identity(request_url) {
@@ -299,7 +342,7 @@ mod unit_tests {
     use super::{
         ApprovedDestination, DestinationError, credential_may_attach, default_resolver,
         embedded_ipv4_from_v6, is_disallowed_address, normalize_ip,
-        validate_endpoint_with_resolver,
+        validate_endpoint_with_resolver, validate_tcp_attach_host_with_resolver,
     };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -545,5 +588,70 @@ mod unit_tests {
         // Entire 2002::/16 is disallowed — transition tunneling is an SSRF bypass class.
         let sixto4 = IpAddr::V6(Ipv6Addr::new(0x2002, 0x5db8, 0xd822, 0, 0, 0, 0, 1));
         assert!(is_disallowed_address(sixto4));
+    }
+
+    // ── validate_tcp_attach_host (DAP SSRF defense, #5257) ──────────────────
+
+    #[test]
+    fn tcp_attach_accepts_loopback() {
+        let ips = validate_tcp_attach_host_with_resolver(
+            "127.0.0.1",
+            13603,
+            &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+        )
+        .expect("loopback must be allowed for DAP attach");
+        assert_eq!(ips, vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+    }
+
+    #[test]
+    fn tcp_attach_accepts_localhost_resolving_to_loopback() {
+        validate_tcp_attach_host_with_resolver(
+            "localhost",
+            13603,
+            &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+        )
+        .expect("localhost → loopback must be accepted");
+    }
+
+    #[test]
+    fn tcp_attach_rejects_cloud_metadata_ip() {
+        // 169.254.169.254 is the AWS/GCP/Azure cloud metadata endpoint — the
+        // canonical SSRF target. Must be rejected (#5257).
+        let err = validate_tcp_attach_host_with_resolver(
+            "169.254.169.254",
+            80,
+            &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))]),
+        )
+        .unwrap_err();
+        assert_eq!(err, DestinationError::DisallowedAddress);
+    }
+
+    #[test]
+    fn tcp_attach_rejects_private_ip() {
+        let err = validate_tcp_attach_host_with_resolver(
+            "10.0.0.1",
+            80,
+            &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]),
+        )
+        .unwrap_err();
+        assert_eq!(err, DestinationError::DisallowedAddress);
+    }
+
+    #[test]
+    fn tcp_attach_rejects_localhost_resolving_to_non_loopback() {
+        let err = validate_tcp_attach_host_with_resolver(
+            "localhost",
+            80,
+            &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]),
+        )
+        .unwrap_err();
+        assert_eq!(err, DestinationError::LocalhostNotLoopback);
+    }
+
+    #[test]
+    fn tcp_attach_rejects_empty_host() {
+        let err =
+            validate_tcp_attach_host_with_resolver("", 80, &resolver_with(vec![])).unwrap_err();
+        assert_eq!(err, DestinationError::MissingHost);
     }
 }

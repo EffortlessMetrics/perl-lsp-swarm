@@ -427,7 +427,7 @@ impl Node {
 
             NodeKind::Variable { sigil, name } => {
                 // Format expected by bless parsing tests: (variable $ name)
-                format!("(variable {} {})", sigil, name)
+                format!("(variable {} {})", sigil, sexp_escape(name))
             }
 
             NodeKind::VariableWithAttributes { variable, attributes } => {
@@ -779,7 +779,7 @@ impl Node {
                 format!("(named_parameter {})", variable.to_sexp())
             }
 
-            NodeKind::Method { name: _, name_span: _, signature, attributes, body } => {
+            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
                 let block_contents = match &body.kind {
                     NodeKind::Block { statements } => {
                         statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ")
@@ -787,7 +787,7 @@ impl Node {
                     _ => body.to_sexp(),
                 };
 
-                let mut parts = vec!["(bareword)".to_string()];
+                let mut parts = vec![format!("(method_name {name})")];
 
                 // Add signature if present
                 if let Some(sig) = signature {
@@ -1979,7 +1979,7 @@ pub enum NodeKind {
     /// precedence level. Semantically equivalent to `($a op1 $b) && ($b op2 $c)`
     /// with each intermediate operand evaluated only once.
     ///
-    /// A single comparison (`$x < 10`) always produces [`Binary`] instead.
+    /// A single comparison (`$x < 10`) always produces [`Binary`](Self::Binary) instead.
     ChainedComparison {
         /// The N+1 operands in declaration order, where N is the number of operators (N >= 2).
         operands: Vec<Node>,
@@ -3161,6 +3161,21 @@ fn format_binary_operator(op: &str) -> String {
 
         // Default case for unknown operators
         _ => format!("binary_{}", op.replace(' ', "_")),
+    }
+}
+
+/// Escape a string for safe embedding in an S-expression (#2130).
+///
+/// Wraps the string in double quotes and escapes special characters
+/// (parentheses, whitespace, double quotes, backslashes, and control
+/// characters) so that variable names or other identifiers containing these
+/// characters don't produce malformed S-expression output.
+fn sexp_escape(s: &str) -> String {
+    if s.chars().any(|c| c == '(' || c == ')' || c == '"' || c == '\\' || c.is_whitespace()) {
+        let escaped = s.chars().flat_map(char::escape_default).collect::<String>();
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
     }
 }
 

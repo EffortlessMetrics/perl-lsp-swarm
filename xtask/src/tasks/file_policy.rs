@@ -20,7 +20,7 @@
 //!
 //! Refs: #8174, #8566.
 
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -368,6 +368,30 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Check the committed Markdown inventory against a fresh tracked-file scan.
+///
+/// This mode is read-only: it does not rewrite the generated inventory or the
+/// target receipts. Use `cargo xtask non-rust inventory` to refresh them.
+pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
+    let records = build_inventory(root)?;
+    let expected = render_markdown(&records);
+    let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
+    let actual = fs::read_to_string(&docs_path)
+        .with_context(|| format!("reading committed inventory {}", docs_path.display()))?;
+    if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
+        bail!(
+            "non-Rust inventory is stale at {}; run `cargo xtask non-rust inventory` to regenerate it",
+            docs_path.display()
+        );
+    }
+    println!("Non-Rust inventory is current: {}", docs_path.display());
+    Ok(())
+}
+
+fn normalize_line_endings(value: &str) -> String {
+    value.replace("\r\n", "\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -2294,6 +2318,28 @@ mod tests {
         assert!(markdown.contains("# Non-Rust File Inventory"));
         assert!(json.contains("\"path\": \"README.md\""));
         assert_eq!(markdown, docs);
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_accepts_current_and_rejects_stale_docs() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+
+        non_rust_inventory(temp.path())?;
+        non_rust_inventory_check(temp.path())?;
+
+        let docs_path = temp.path().join("docs/policy/NON_RUST_INVENTORY.md");
+        let current = fs::read_to_string(&docs_path)?;
+        fs::write(&docs_path, current.replace('\n', "\r\n"))?;
+        non_rust_inventory_check(temp.path())?;
+
+        fs::write(&docs_path, "stale\n")?;
+        let error = non_rust_inventory_check(temp.path())
+            .err()
+            .ok_or_else(|| eyre!("expected stale inventory failure"))?;
+        assert!(error.to_string().contains("inventory is stale"));
         Ok(())
     }
 

@@ -66,7 +66,7 @@ select one distinct coherent claim
 → continue until the predicates pass or every remaining claim shares one real blocker
 ```
 
-A PR waiting on CI, review, or auto-merge is not a goal blocker. Unrelated movement on `main` does not require branch churn.
+A PR waiting on CI, review, or auto-merge is not a goal blocker. Unrelated movement on main does not require branch churn.
 
 Selecting a next claim is an internal continuation, not a completion result. Invoke `$deliver-pr` immediately. An `IN_FLIGHT` result from one claim returns to this loop so another distinct claim may advance.
 

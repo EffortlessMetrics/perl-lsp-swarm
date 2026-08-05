@@ -8,7 +8,7 @@ use super::types::ServerRequestId;
 use serde_json::json;
 
 #[cfg(feature = "workspace")]
-const WORKSPACE_INDEX_PROGRESS_TOKEN: &str = "workspace-index";
+pub(crate) const WORKSPACE_INDEX_PROGRESS_TOKEN: &str = "workspace-index";
 
 #[cfg(feature = "workspace")]
 pub(super) fn send_index_ready_notification(outbound: &OutboundSender, ready: bool) {
@@ -51,7 +51,7 @@ pub(super) fn send_progress_begin(outbound: &OutboundSender) {
             "value": {
                 "kind": "begin",
                 "title": "Indexing workspace",
-                "cancellable": false,
+                "cancellable": true,
                 "percentage": 0
             }
         }),

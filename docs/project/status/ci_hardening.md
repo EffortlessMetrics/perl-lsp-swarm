@@ -31,7 +31,7 @@ It separates what is already landed from what is partial/open so agents do not r
 
 2. **Expected-skip normalizer landed**
    - PR **#7558** `fix(queue-reconciler): normalize skipped and stale check states` merged 2026-04-30T09:14:00Z.
-   - Adds `NormalizedCheckStatus` and `normalize_check_status` in `xtask/src/tasks/queue_reconciler.rs`, giving canonical `SKIPPED` outcome normalization (`expected_skip` vs `unexpected_skip`) so receipts/labels can be trusted at scale.
+   - Current check normalization is consumed from live CI evidence; lifecycle labels are not an authority for queue or merge state.
 
 ## Partial items (landed core, follow-up still needed)
 

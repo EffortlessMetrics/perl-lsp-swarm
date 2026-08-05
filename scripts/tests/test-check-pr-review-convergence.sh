@@ -18,6 +18,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/../ci/check-pr-review-convergence"
+STATE_SCRIPT="$SCRIPT_DIR/../reviews/state"
 FIXTURES_ROOT="$SCRIPT_DIR/../ci/fixtures/convergence"
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -39,6 +40,8 @@ fi
 # Prints "<exit_code>\n<stdout>" via globals so callers can inspect both.
 RUN_EXIT=0
 RUN_STDOUT=""
+STATE_EXIT=0
+STATE_STDOUT=""
 run_case() {
     local case_name="$1"
     local fixture_dir="$FIXTURES_ROOT/$case_name"
@@ -67,6 +70,19 @@ run_case_enforce() {
 
     RUN_EXIT=0
     RUN_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" REVIEW_PROTOCOL_ENFORCE=1 bash "$SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || RUN_EXIT=$?
+}
+
+run_state_case() {
+    local case_name="$1"
+    local fixture_dir="$FIXTURES_ROOT/$case_name"
+
+    if [[ ! -d "$fixture_dir" ]]; then
+        echo "ERROR: fixture dir missing: $fixture_dir" >&2
+        exit 1
+    fi
+
+    STATE_EXIT=0
+    STATE_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$STATE_SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || STATE_EXIT=$?
 }
 
 json_field() {
@@ -179,14 +195,15 @@ test_outdated_case_emits_block_line() {
 # ── Test 6: missing fixture directory fails with usage/fetch error (exit 2) ─
 
 test_missing_fixture_dir_errors() {
-    local code
+    local code output classification
     code=0
-    CONVERGENCE_TEST_FIXTURE_DIR="$FIXTURES_ROOT/does-not-exist" bash "$SCRIPT" 9999 "test-owner/test-repo" >/dev/null 2>&1 || code=$?
+    output="$(CONVERGENCE_TEST_FIXTURE_DIR="$FIXTURES_ROOT/does-not-exist" bash "$SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || code=$?
+    classification="$(json_field "$output" '.formal_review.classification')"
 
-    if [[ "$code" -eq 2 ]]; then
-        pass "missing fixture file errors with exit 2 (usage/fetch error)"
+    if [[ "$code" -eq 2 && "$classification" == "NOT_PROVEN" ]]; then
+        pass "missing fixture file errors with exit 2 and structured NOT_PROVEN"
     else
-        fail "missing fixture file — expected exit 2, got $code"
+        fail "missing fixture file — expected exit 2/NOT_PROVEN, got exit=$code classification=$classification"
     fi
 }
 
@@ -227,22 +244,129 @@ test_resolved_with_disposition_does_not_block() {
     fi
 }
 
-# ── Test 9: 'needs-deep-review' label BLOCKS regardless of thread state ────
-# Makes an in-flight independent review mechanically visible — the #3647
-# hole was that the review existed only in an orchestrator's task list.
+# ── Test 9: native review request BLOCKS regardless of thread state ────────
+# A requested reviewer is the GitHub-native representation of review in flight.
 
 test_pending_independent_review_blocks() {
     run_case "pending-independent-review-blocks"
 
-    local converged independent_review_pending
+    local converged pending_reviewers
     converged="$(json_field "$RUN_STDOUT" '.converged')"
-    independent_review_pending="$(json_field "$RUN_STDOUT" '.independent_review_pending')"
+    pending_reviewers="$(json_field "$RUN_STDOUT" '.pending_reviewers | length')"
 
     if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
-          "$independent_review_pending" == "true" ]]; then
-        pass "'needs-deep-review' label blocks convergence (exit 1, converged:false, independent_review_pending:true)"
+          "$pending_reviewers" -gt 0 ]]; then
+        pass "native review request blocks convergence (exit 1, converged:false, pending_reviewers>0)"
     else
-        fail "needs-deep-review label should block — got exit=$RUN_EXIT converged=$converged independent_review_pending=$independent_review_pending"
+        fail "native review request should block — got exit=$RUN_EXIT converged=$converged pending_reviewers=$pending_reviewers"
+    fi
+}
+
+# ── Test 10: a current-head CHANGES_REQUESTED review blocks even after the
+# native request is fulfilled. This is distinct from pending review requests:
+# GitHub removes the request when the reviewer submits the change request.
+
+test_current_change_request_blocks() {
+    run_case "current-change-request-blocks"
+
+    local converged change_requests
+    converged="$(json_field "$RUN_STDOUT" '.converged')"
+    change_requests="$(json_field "$RUN_STDOUT" '.current_change_requests | length')"
+
+    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
+          "$change_requests" -eq 1 ]]; then
+        pass "current-head CHANGES_REQUESTED review blocks convergence (exit 1, current_change_requests=1)"
+    else
+        fail "current-head CHANGES_REQUESTED review should block — got exit=$RUN_EXIT converged=$converged current_change_requests=$change_requests"
+    fi
+}
+
+test_formal_review_classes() {
+    run_case "current-change-request-blocks"
+    local classification status reason
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    status="$(json_field "$RUN_STDOUT" '.formal_review.status')"
+    reason="$(json_field "$RUN_STDOUT" '.formal_review.reason')"
+    if [[ "$classification" == "FINDINGS_OPEN" && "$status" == "findings_open" && \
+          "$reason" == "current_changes_requested" ]]; then
+        pass "formal review reports current findings separately from overall convergence"
+    else
+        fail "formal review findings classification was not structured — got classification=$classification status=$status reason=$reason"
+    fi
+
+    run_case "pending-independent-review-blocks"
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    if [[ "$classification" == "PENDING" ]]; then
+        pass "formal review reports native pending review request"
+    else
+        fail "formal review pending classification expected PENDING — got $classification"
+    fi
+
+    run_case "all-resolved-converges"
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    if [[ "$classification" == "NOT_APPLICABLE" ]]; then
+        pass "formal review reports provider-native no-required-review as NOT_APPLICABLE"
+    else
+        fail "formal review lightweight classification expected NOT_APPLICABLE — got $classification"
+    fi
+
+    run_case "formal-review-current"
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    reason="$(json_field "$RUN_STDOUT" '.formal_review.reason')"
+    if [[ "$classification" == "CURRENT" && "$reason" == "submitted_human_review_and_current_material_claim_receipt" ]]; then
+        pass "formal review requires a current claim receipt alongside a submitted human review"
+    else
+        fail "formal review current classification expected CURRENT — got classification=$classification reason=$reason"
+    fi
+
+    run_case "valid-fixed-proof-verification-disposition-passes"
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    reason="$(json_field "$RUN_STDOUT" '.formal_review.reason')"
+    if [[ "$classification" == "CURRENT" && "$reason" == "current_material_claim_review_receipt" ]]; then
+        pass "formal review accepts a current claim-bound receipt when no submitted review node is available"
+    else
+        fail "formal review claim receipt expected CURRENT — got classification=$classification reason=$reason"
+    fi
+
+    run_case "formal-review-stale"
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    if [[ "$classification" == "STALE" ]]; then
+        pass "formal review distinguishes a review bound to an older candidate"
+    else
+        fail "formal review stale classification expected STALE — got $classification"
+    fi
+
+    run_case "formal-review-dismissed"
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    status="$(json_field "$RUN_STDOUT" '.formal_review.status')"
+    if [[ "$classification" == "STALE" && "$status" == "dismissed" ]]; then
+        pass "formal review preserves dismissed review evidence distinctly"
+    else
+        fail "formal review dismissed status expected STALE/dismissed — got classification=$classification status=$status"
+    fi
+
+    run_case "formal-review-not-proven"
+    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
+    status="$(json_field "$RUN_STDOUT" '.formal_review.status')"
+    if [[ "$classification" == "NOT_PROVEN" && "$status" == "unusable" ]]; then
+        pass "formal review preserves missing claim evidence as NOT_PROVEN"
+    else
+        fail "formal review missing claim evidence expected NOT_PROVEN/unusable — got classification=$classification status=$status"
+    fi
+}
+
+# Completed CHANGES_REQUESTED is a finding, not an in-flight review. The
+# canonical closeout still blocks convergence; the wrapper must project that
+# result to FINDINGS_CLASSIFIED rather than REVIEW_IN_FLIGHT.
+test_state_current_change_request_is_classified() {
+    run_state_case "current-change-request-blocks"
+
+    local state
+    state="$(json_field "$STATE_STDOUT" '.state')"
+    if [[ "$STATE_EXIT" -eq 0 && "$state" == "FINDINGS_CLASSIFIED" ]]; then
+        pass "state wrapper projects current-head CHANGES_REQUESTED to FINDINGS_CLASSIFIED"
+    else
+        fail "state wrapper should classify completed CHANGES_REQUESTED — got exit=$STATE_EXIT state=$state"
     fi
 }
 
@@ -465,6 +589,9 @@ test_missing_fixture_dir_errors
 test_resolved_without_disposition_blocks
 test_resolved_with_disposition_does_not_block
 test_pending_independent_review_blocks
+test_current_change_request_blocks
+test_formal_review_classes
+test_state_current_change_request_is_classified
 test_prose_reply_blocks_under_enforce
 test_prose_reply_advisory_by_default
 test_unreachable_fix_commit_blocks_under_enforce

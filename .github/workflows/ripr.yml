@@ -156,7 +156,7 @@ jobs:
           # a full ~20 min GH-hosted ripr re-run. Evidence: PR #3321 job 85060946907.
           # Route straight to CX53 (or GH-hosted when CX53 is busy) until ops restores
           # the CX43 image. Revert: restore the `elif ... emit cx43` branch (preserved
-          # below) once `docker image inspect em-ci-rust:1.95` passes on CX43.
+          # below) once the required Docker image is available on CX43.
           if [ "${idle_cx53:-0}" -gt 0 ]; then
             emit "cx53" "cx53_idle" "false"
           else

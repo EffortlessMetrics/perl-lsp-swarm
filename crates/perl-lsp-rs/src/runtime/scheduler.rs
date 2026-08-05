@@ -619,6 +619,11 @@ impl Scheduler {
         // Priority queue: highest-priority (lowest value) requests pop first.
         let mut pending: BinaryHeap<QueuedRead> = BinaryHeap::new();
         // Maps dedup key -> latest arrival_seq seen for that key.
+        // Capped to prevent unbounded growth over long sessions (#5032 item 1).
+        // When the cap is exceeded, the map is cleared — dedup is an optimization,
+        // not a correctness requirement, so clearing only causes a brief loss of
+        // coalescing for in-flight requests.
+        const DEDUP_MAP_CAP: usize = 4096;
         let mut latest_seq: HashMap<RequestDedupKey, u64> = HashMap::new();
 
         loop {
@@ -630,6 +635,11 @@ impl Scheduler {
                     Ok(queued) => {
                         // Track latest arrival_seq for dedup keys.
                         if let Some(ref key) = queued.dedup_key {
+                            // Evict the entire map when it exceeds the cap to
+                            // prevent unbounded growth (#5032 item 1).
+                            if latest_seq.len() >= DEDUP_MAP_CAP {
+                                latest_seq.clear();
+                            }
                             latest_seq
                                 .entry(key.clone())
                                 .and_modify(|seq| {
@@ -684,6 +694,9 @@ impl Scheduler {
                 match rx.recv().await {
                     Some(queued) => {
                         if let Some(ref key) = queued.dedup_key {
+                            if latest_seq.len() >= DEDUP_MAP_CAP {
+                                latest_seq.clear();
+                            }
                             latest_seq
                                 .entry(key.clone())
                                 .and_modify(|seq| {
@@ -913,9 +926,24 @@ impl Scheduler {
             let _permit = permit;
 
             // Wait for all mutations that were enqueued before this read.
+            // Use the standard Tokio Notify pattern: create the `notified()`
+            // future BEFORE re-checking the condition so a `notify_waiters()`
+            // that fires in the gap between the load and the park is not lost
+            // (#5041). The previous check-then-await loop could park
+            // indefinitely if the mutation completed between the `load` and
+            // the `notified().await`.
             let t_read_wait = std::time::Instant::now();
-            while seq_done.load(Ordering::SeqCst) < wait_for {
-                notify.notified().await;
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            loop {
+                if seq_done.load(Ordering::SeqCst) >= wait_for {
+                    break;
+                }
+                notified.as_mut().await;
+                // Re-arm for the next iteration — `notify_waiters()` only
+                // wakes permit-saved futures, so each iteration needs a fresh
+                // subscription.
+                notified.set(notify.notified());
             }
             // The read blocked here until the mutation barrier cleared — this is
             // the keystroke-to-completion wait a queued parse storm inflates.

@@ -120,6 +120,11 @@ pub(crate) fn implies_strict(module: &str, args: &[String]) -> bool {
         // nothing; neither counts as a flag.
         return args.iter().any(|a| !is_empty_qw_list(a) && !is_version_literal(a));
     }
+    // `use Module ()` — explicit empty import list suppresses import() call,
+    // so strict/warnings are NOT enabled (#3733).
+    if args.iter().any(|a| a.trim() == "()") {
+        return false;
+    }
     IMPLICIT_STRICT_MODULES.contains(&bare)
 }
 
@@ -199,11 +204,11 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             related_information: vec![
                 RelatedInformation {
                     location: (0, 0),
-                    message: "💡 Add 'use strict;' at the beginning of your script".to_string(),
+                    message: "Suggestion: Add 'use strict;' at the beginning of your script".to_string(),
                 },
                 RelatedInformation {
                     location: (0, 0),
-                    message: "ℹ️ The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references.".to_string(),
+                    message: "Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references.".to_string(),
                 }
             ],
             tags: Vec::new(),
@@ -220,11 +225,11 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             related_information: vec![
                 RelatedInformation {
                     location: (0, 0),
-                    message: "💡 Add 'use warnings;' at the beginning of your script".to_string(),
+                    message: "Suggestion: Add 'use warnings;' at the beginning of your script".to_string(),
                 },
                 RelatedInformation {
                     location: (0, 0),
-                    message: "ℹ️ The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features.".to_string(),
+                    message: "Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features.".to_string(),
                 }
             ],
             tags: Vec::new(),
@@ -431,6 +436,20 @@ mod tests {
             diags.iter().any(|d| d.code.as_deref() == Some("PL100")),
             "non-empty file without strict should still get missing-strict diagnostic"
         );
+    }
+
+    #[test]
+    fn missing_pragma_related_information_has_no_emoji() {
+        let diags = strict_warnings_diags("my $x = 1;\n");
+        for code in ["PL100", "PL101"] {
+            let diag = diags.iter().find(|d| d.code.as_deref() == Some(code));
+            assert!(
+                diag.is_some_and(|diag| diag.related_information.iter().all(|info| {
+                    !info.message.contains('💡') && !info.message.contains('ℹ')
+                })),
+                "{code} related information should not use emoji: {diag:?}"
+            );
+        }
     }
 
     #[test]

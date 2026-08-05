@@ -97,6 +97,10 @@ skip = [
     # wit-bindgen: 0.51 vs 0.57 split (WASI component model).
     # 0.51.0 — wasip3 (getrandom 0.4 tree) pins wit-bindgen 0.51. 0.57.1 — wasip2 (getrandom 0.3 tree) uses 0.57.
     { crate = "wit-bindgen@0.51.0", reason = "wasip3 (getrandom 0.4 tree) pins wit-bindgen 0.51; wasip2 uses 0.57" },
+
+    # syn: 2.x vs 3.x split (ecosystem transition).
+    # 2.0.117 — most crates use syn 2.x. 3.0.2 — clap_derive (via criterion) pulls syn 3.x.
+    { crate = "syn@2.0.117", reason = "most crates use syn 2.x; clap_derive (criterion) pulls 3.x" },
 ]
 
 # Windows platform crate duplicates: windows-sys 0.52 (ring 0.17 tree) pulls in

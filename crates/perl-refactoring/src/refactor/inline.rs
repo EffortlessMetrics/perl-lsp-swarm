@@ -492,8 +492,11 @@ fn count_return_statements(body: &str) -> usize {
         // Track string context — handle backslash escapes
         match b {
             b'\\' if in_single_quote || in_double_quote => {
-                // Skip escaped character
-                pos += 2;
+                // Skip escaped character (bounds-checked)
+                pos += 1;
+                if pos < bytes.len() {
+                    pos += 1;
+                }
                 continue;
             }
             b'\'' if !in_double_quote => {

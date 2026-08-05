@@ -680,6 +680,29 @@ compatibility reports can also classify this file against native rule coverage.
 Selects the critic engine independently of whether critic diagnostics are
 enabled.
 
+#### Critic setting precedence
+
+When the same setting is supplied through both critic namespaces, the current
+`perl.critic.*` block wins over the legacy `perl.perlcritic.*` block. This
+allows an existing legacy configuration to keep working while a project
+incrementally adopts the current native-critic settings:
+
+1. `perl.perlcritic.*` is read as the compatibility baseline.
+2. `perl.critic.*` is applied afterward and overrides shared values such as
+   `enabled` and `severity`.
+
+The VS Code extension follows the same boundary. Use `perl-lsp.critic.*` for
+current settings; `perl-lsp.perlcritic.*` is a deprecated compatibility alias,
+and the current namespace wins when both are explicitly configured. Defaults
+that have not been explicitly changed by the user are not sent as overrides.
+
+The LSP and VS Code settings channels can select native critic settings, but
+they cannot enable the external Perl::Critic-compatible engine. To use that
+engine, set `[critic] engine = "legacy"` (or another accepted external alias)
+in the trusted `.perl-lsp.toml` project configuration, then configure the
+compatible profile and enablement settings as needed. Native critic
+diagnostics remain the default and do not require a `perlcritic` executable.
+
 #### `perl.critic.engine`
 
 | Property | Value |
@@ -710,9 +733,13 @@ and a warning is logged.
 | Type | `string[]` |
 | Default | `[]` |
 
-Native critic rule IDs to include. When non-empty, only listed native rule IDs
-run inside the selected profile. Use native IDs such as
-`native.testing.require_use_strict`, not Perl::Critic policy names.
+Native critic rule IDs to include. When non-empty, exactly the listed rule IDs
+run. IDs are resolved against the full native rule catalog, not just the
+selected profile, so a strict-only rule such as
+`native.variables.unused_lexical` can be enabled without switching
+`perl.critic.profile` to `strict`. Use native IDs such as
+`native.testing.require_use_strict`, not Perl::Critic policy names; unknown IDs
+match nothing and are logged as a warning.
 
 #### `perl.critic.exclude`
 
@@ -957,6 +984,86 @@ Common filter tokens:
 
 When set, disables ANSI colour in log output. Follows the
 [no-color.org](https://no-color.org) convention.
+
+```bash
+NO_COLOR=1 perllsp --stdio
+```
+
+### `PERL_LSP_LOG_FILE`
+
+Also log to a daily-rotated file (max 5 files retained). The path is the
+file prefix; the actual filename includes a date suffix.
+
+```bash
+PERL_LSP_LOG_FILE=/tmp/perl-lsp.log perllsp --stdio
+```
+
+### `PERL_LSP_QUIET`
+
+Suppress the startup banner on stderr. Useful when piping stdout through a
+non-LSP consumer or embedding in a larger process.
+
+```bash
+PERL_LSP_QUIET=1 perllsp --stdio
+```
+
+### `PERL_LSP_DIAGNOSTIC_MODE`
+
+Set diagnostic scope tuning. Values: `normal` (full diagnostics), `syntax-only`
+(parse errors only, no semantic/perlcritic). Useful for very large files where
+semantic analysis is too slow.
+
+```bash
+PERL_LSP_DIAGNOSTIC_MODE=syntax-only perllsp --stdio
+```
+
+### `PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS`
+
+Override the diagnostic debounce window (milliseconds). Controls how long the
+server waits after an edit before recomputing diagnostics.
+
+```bash
+PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=500 perllsp --stdio
+```
+
+### `PERL_LSP_EAGER_WORKSPACE_INDEXING`
+
+Set to `true` to index the entire workspace on startup (default: lazy indexing
+on first access). Trades startup time for immediate cross-file features.
+
+```bash
+PERL_LSP_EAGER_WORKSPACE_INDEXING=true perllsp --stdio
+```
+
+### `PERL_LSP_FILE_WATCHERS`
+
+Set to `true` or `false` to enable/disable file-watcher-based reindexing.
+
+```bash
+PERL_LSP_FILE_WATCHERS=false perllsp --stdio
+```
+
+### `PERL_LSP_TIMING`
+
+Enable phase-1 latency instrumentation. Values: `off` (default), `spans`
+(human-readable timing spans), `json` (machine-readable JSON).
+
+```bash
+PERL_LSP_TIMING=spans perllsp --stdio
+```
+
+### `PERL_LSP_INCREMENTAL`
+
+Enable incremental reparsing (experimental). When set, the server reuses
+parsed subtrees across edits instead of reparsing from scratch.
+
+```bash
+PERL_LSP_INCREMENTAL=1 perllsp --stdio
+```
+
+### `NO_COLOR`
+
+Disable colored output in stderr logging.
 
 ```bash
 NO_COLOR=1 perllsp --stdio

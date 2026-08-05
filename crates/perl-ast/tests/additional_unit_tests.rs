@@ -624,6 +624,24 @@ fn count_nodes_subroutine_with_signature() {
 // ===========================================================================
 
 #[test]
+fn sexp_method_preserves_method_name() {
+    let node = Node::new(
+        NodeKind::Method {
+            name: "greet".to_string(),
+            name_span: None,
+            signature: None,
+            attributes: vec![],
+            body: Box::new(block_node(vec![])),
+        },
+        loc(0, 10),
+    );
+
+    let sexp = node.to_sexp();
+    assert!(sexp.contains("(method_name greet)"), "method name was lost: {sexp}");
+    assert!(!sexp.contains("(bareword)"), "method still uses the old placeholder: {sexp}");
+}
+
+#[test]
 fn sexp_binary_operators_comprehensive() {
     let ops_and_expected = [
         ("==", "binary_=="),
@@ -759,6 +777,26 @@ fn sexp_string_escapes_backslashes() {
     );
     let sexp = node.to_sexp();
     assert!(sexp.contains("\\\\"), "backslashes should be escaped, got: {sexp}");
+}
+
+#[test]
+fn sexp_variable_escapes_delimiters_quotes_and_backslashes() {
+    let cases = [
+        ("plain_name", "(variable $ plain_name)"),
+        ("name(with)", r#"(variable $ "name(with)")"#),
+        (r#"name"with\slash"#, r#"(variable $ "name\"with\\slash")"#),
+    ];
+
+    for (name, expected) in cases {
+        let sexp = var_node("$", name).to_sexp();
+        assert_eq!(sexp, expected, "variable name {name:?}");
+    }
+}
+
+#[test]
+fn sexp_variable_escapes_whitespace_as_a_quoted_string() {
+    let sexp = var_node("$", "name\twith space").to_sexp();
+    assert_eq!(sexp, r#"(variable $ "name\twith space")"#);
 }
 
 #[test]

@@ -1,0 +1,14 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: >-
+  Document the RIPR new-gap gate state where the seam count is positive but the
+  gap list is empty, covering both routes to it — review guidance that never
+  completed and guidance that completed and named nothing — with the JSON
+  fields that distinguish them, the re-run recipe, and the prohibition on
+  guessing at unnamed seams or clearing the gate with suppressions.
+time: 2026-08-01T20:55:00Z
+custom:
+  PR: "5523"
+  Slug: ripr-unnamed-gap-playbook
+  Breaking: "no"

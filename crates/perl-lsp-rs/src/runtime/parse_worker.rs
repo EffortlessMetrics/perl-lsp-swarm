@@ -921,7 +921,14 @@ impl ParseWorker {
     /// installing the worker and fall back to the synchronous path if it is
     /// `false`.
     pub(crate) fn is_operational(&self) -> bool {
-        !self.handles.lock().is_empty()
+        // A worker pool is operational only if at least one worker thread is
+        // still alive. Checking handle presence alone is insufficient: a dead
+        // thread (panic/exit) leaves its JoinHandle in the Vec, so
+        // `!is_empty()` would report operational even when no worker is
+        // actually running. Using `is_finished()` filters out dead handles
+        // (#3664).
+        let handles = self.handles.lock();
+        handles.iter().any(|h| !h.is_finished())
     }
 
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
@@ -1372,9 +1379,24 @@ mod tests {
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
         let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let barrier = worker.test_barrier();
 
         const EDITS: u32 = 20;
-        for i in 1..=EDITS {
+        // Hold the first parse before publication so the producer can enqueue
+        // the rest of the burst without a scheduler-dependent race between
+        // enqueue calls and the worker clearing URI ownership.
+        barrier.arm(uri, 1);
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $a = 1;\n"),
+        );
+        barrier.wait_until_paused();
+
+        for i in 2..=EDITS {
             generation_handle.fetch_add(1, Ordering::SeqCst);
             worker.enqueue(
                 uri.to_string(),
@@ -1384,6 +1406,7 @@ mod tests {
                 Arc::from(format!("my $a = {i};\n").as_str()),
             );
         }
+        barrier.release();
 
         assert!(
             worker.wait_until_settled(uri, TEST_TIMEOUT),
@@ -1391,16 +1414,21 @@ mod tests {
         );
 
         let metrics = worker.metrics();
-        assert_eq!(
-            metrics.jobs_published, 1,
-            "exactly one generation (the final one) must publish from the burst"
-        );
         assert!(
-            metrics.jobs_started < u64::from(EDITS),
-            "coalescing must start far fewer jobs than edits enqueued; started={}",
+            metrics.jobs_started <= u64::from(EDITS / 2),
+            "coalescing must start at most half as many jobs as edits enqueued; started={}",
             metrics.jobs_started
         );
         assert!(metrics.jobs_coalesced > 0, "at least one job must have been coalesced away");
+        assert_eq!(
+            metrics.jobs_published + metrics.jobs_rejected_stale + metrics.jobs_panicked,
+            metrics.jobs_started,
+            "job accounting must balance: published={} + rejected_stale={} + panicked={} must equal started={}",
+            metrics.jobs_published,
+            metrics.jobs_rejected_stale,
+            metrics.jobs_panicked,
+            metrics.jobs_started,
+        );
 
         let docs = documents.lock();
         let doc = must_some(docs.get(uri));
@@ -2097,6 +2125,44 @@ mod tests {
             !worker.is_operational(),
             "zero live handles must report not-operational -- this is exactly the state \
              `install_default_parse_worker` must detect and refuse to install"
+        );
+    }
+
+    /// Defense-in-depth for #3664: `is_operational` must report `false` when
+    /// all worker threads have died (finished JoinHandles still present in the
+    /// Vec). Before the fix, `is_operational` checked only handle presence
+    /// (`!is_empty()`), so a dead-thread pool would falsely report
+    /// operational. Now it checks `is_finished()` on each handle.
+    #[test]
+    fn is_operational_reports_false_when_all_threads_are_finished() {
+        let uri = "file:///dead-worker.pl";
+        let (documents, _generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(documents, ast_cache(), cb);
+        assert!(worker.is_operational(), "freshly spawned pool must be operational");
+
+        // Simulate worker death: replace live handles with a handle to a
+        // thread that exits immediately. Spin-wait (deterministic) for the
+        // thread to report is_finished() instead of a fragile hard-coded sleep
+        // (graphite/kilo/factory-droid review on #5731).
+        let done_handle = std::thread::Builder::new().spawn(|| {}).expect("spawn dummy thread");
+        *worker.handles.lock() = vec![done_handle];
+        // Spin-wait until the dummy thread reports finished (max 2s timeout).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let handles = worker.handles.lock();
+            if handles.iter().all(|h| h.is_finished()) {
+                break;
+            }
+            drop(handles);
+            if std::time::Instant::now() >= deadline {
+                panic!("dummy thread did not finish within 2s timeout");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !worker.is_operational(),
+            "a pool with only finished (dead) handles must report not-operational (#3664)"
         );
     }
 

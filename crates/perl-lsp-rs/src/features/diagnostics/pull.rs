@@ -598,7 +598,7 @@ impl PullDiagnosticsProvider {
         let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
         let profile = NativeCriticProfile::parse(&context.native_critic_profile)
             .unwrap_or(NativeCriticProfile::Strict);
-        let registry = NativeCriticRegistry::for_profile(profile);
+        let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
         for finding in registry.check(&critic_context) {
             diagnostics.push(self.native_finding_to_lsp_diagnostic(uri, content, finding));
@@ -651,7 +651,7 @@ impl PullDiagnosticsProvider {
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
-            let provider = DiagnosticsProvider::new(ast, doc_state.text.clone());
+            let provider = DiagnosticsProvider::new(ast, doc_state.text_arc.to_string());
             let source_path =
                 url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
             // Build the baseline include paths (configured + PERL5LIB, without lexical
@@ -659,7 +659,7 @@ impl PullDiagnosticsProvider {
             // offset so that `no lib` cancellations that precede each `use` statement
             // are respected.
             let base_include_paths = context.include_paths.clone();
-            let doc_text = doc_state.text.clone();
+            let doc_text = doc_state.text_arc.to_string();
 
             // Position-aware resolver: for each `use Module` statement, recompute the
             // effective include paths at that statement's byte offset so that `no lib`
@@ -2029,6 +2029,39 @@ mod tests {
                 )
             }),
             "native include should suppress non-included warning rule: {items:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_critic_include_enables_a_strict_only_rule_under_recommended()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `native.variables.unused_lexical` is strict-only. Naming it in
+        // `include` used to yield no diagnostics at all under the recommended
+        // profile, because the profile registry never carried the rule.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "recommended".to_string();
+        context.native_critic_include = vec!["native.variables.unused_lexical".to_string()];
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n",
+            None,
+            &context,
+            None,
+        ));
+
+        assert!(
+            items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                )
+            }),
+            "strict-only include should run under the recommended profile: {items:?}"
         );
 
         Ok(())
