@@ -2,7 +2,7 @@
 //!
 //! Each method checks the relevant client capability before sending.
 
-use super::*;
+use super::{LspServer, Ordering, ServerRequestId, Value, io, json};
 use crate::protocol::methods::WORKSPACE_APPLY_EDIT;
 
 #[allow(dead_code)]

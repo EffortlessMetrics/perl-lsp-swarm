@@ -270,3 +270,7 @@ test_corpus/workspaces/xlarge/bin/
 
 # Devplane-routed build output (not repo-local)
 /build/
+
+# Windows reserved device name — accidental redirect creates this file
+# on Windows; it cannot be opened or deleted normally (#5000).
+/nul

@@ -937,6 +937,18 @@ enum Commands {
         command: CommandEvidenceCommand,
     },
 
+    /// Construct one bounded synthetic integration proof from an existing
+    /// trigger packet and selected command evidence.
+    #[command(name = "integration-proof")]
+    IntegrationProof {
+        /// JSON input containing the #4588 trigger packet and selected proof commands.
+        #[arg(long)]
+        spec: PathBuf,
+        /// JSON receipt output path.
+        #[arg(long, default_value = "target/receipts/integration-proof.json")]
+        receipt: PathBuf,
+    },
+
     /// Run exact-head Taplo and typos checks for changed repository files.
     ///
     /// The command composes the shared change-set resolver and invokes both
@@ -1898,6 +1910,9 @@ enum Commands {
         /// Git SHA for receipt metadata
         #[arg(long)]
         sha: Option<String>,
+        /// File containing the exit status of the UX test command
+        #[arg(long)]
+        exit_status_file: Option<PathBuf>,
     },
 
     /// Validate memory profiling functionality
@@ -3547,13 +3562,19 @@ enum CiSubcommand {
     /// Degrades gracefully when no receipts exist — prints an inconclusive message
     /// and hints to run `cargo xtask gates` first.
     ///
-    /// Remote run artifact download (`--run-id`) is tracked in #2652.
-    /// Base-branch comparison (`--base`) is tracked in #2653.
+    /// Use `--run-id <id>` to download and explain a CI run's gate receipt (#2652).
+    /// Use `--base <path>` to compare against a base-branch receipt (#2653).
     #[command(name = "explain")]
     Explain {
         /// Receipt JSON path to parse (default: target/receipts/receipt.json).
         #[arg(long)]
         receipt: Option<PathBuf>,
+        /// Download and explain a CI run's gate receipt via `gh run download`.
+        #[arg(long, value_name = "RUN_ID")]
+        run_id: Option<String>,
+        /// Base-branch receipt JSON path for exists_on_base comparison.
+        #[arg(long, value_name = "BASE_RECEIPT")]
+        base: Option<PathBuf>,
     },
 }
 
@@ -3898,7 +3919,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                     changed_files: changed_file,
                 })
             }
-            Some(CiSubcommand::Explain { receipt }) => ci_explain::run(receipt),
+            Some(CiSubcommand::Explain { receipt, run_id, base }) => {
+                ci_explain::run(receipt, run_id, base)
+            }
         },
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckAgentContext => check_agent_context::run(),
@@ -4264,6 +4287,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                 command_evidence::run_proof_set(&spec, json)
             }
         },
+        Commands::IntegrationProof { spec, receipt } => {
+            integration_proof::run_from_file(&spec, &receipt)
+        }
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
@@ -4881,11 +4907,12 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
-        Commands::UxRegressionReceipt { input, receipt, sha } => {
+        Commands::UxRegressionReceipt { input, receipt, sha, exit_status_file } => {
             ux_regression_receipt::run(ux_regression_receipt::UxRegressionReceiptConfig {
                 input,
                 receipt,
                 sha,
+                exit_status_file,
             })
         }
         Commands::ValidateMemoryProfiler => compare::validate_memory_profiling(),

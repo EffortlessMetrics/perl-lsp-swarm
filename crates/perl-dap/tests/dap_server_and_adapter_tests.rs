@@ -6,7 +6,9 @@
 //! Perl debugger process.
 
 use perl_dap::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
-use perl_dap::{BridgeAdapter, DapConfig, DapMode, DapServer};
+use perl_dap::{BridgeAdapter, DapConfig, DapMode, DapServer, DapSocketBindError};
+use std::io;
+use std::net::TcpListener;
 use std::time::Duration;
 
 // ── DapMode ────────────────────────────────────────────────────────
@@ -70,6 +72,31 @@ fn dap_server_socket_rejects_bridge_mode() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+#[test]
+fn dap_server_socket_reports_occupied_native_port_before_accept()
+-> Result<(), Box<dyn std::error::Error>> {
+    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = occupied.local_addr()?.port();
+    let config =
+        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
+    let mut server = DapServer::new(config)?;
+
+    let error = match server.run_socket(port) {
+        Ok(()) => return Err(io::Error::other("occupied native port unexpectedly accepted").into()),
+        Err(error) => error,
+    };
+    let marker = error.downcast_ref::<DapSocketBindError>().ok_or_else(|| {
+        io::Error::other("native bind failure did not preserve the DAP bind marker")
+    })?;
+    assert_eq!(marker.port, port, "bind marker must preserve the occupied port");
+    let source = error
+        .downcast_ref::<io::Error>()
+        .ok_or_else(|| io::Error::other("native bind source must remain available"))?;
+    assert_eq!(source.kind(), io::ErrorKind::AddrInUse);
+    assert!(error.to_string().contains(&port.to_string()));
+    Ok(())
+}
+
 // ── TcpAttachConfig ────────────────────────────────────────────────
 
 #[test]
@@ -94,36 +121,36 @@ fn tcp_attach_config_custom_timeout_duration() {
 
 #[test]
 fn tcp_attach_config_validate_whitespace_host() {
-    let config = TcpAttachConfig::new("   ".to_string(), 13603);
+    let mut config = TcpAttachConfig::new("   ".to_string(), 13603);
     assert!(config.validate().is_err(), "Whitespace-only host should be rejected");
 }
 
 #[test]
 fn tcp_attach_config_validate_port_1_is_valid() {
-    let config = TcpAttachConfig::new("localhost".to_string(), 1);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 1);
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn tcp_attach_config_validate_max_port_is_valid() {
-    let config = TcpAttachConfig::new("localhost".to_string(), 65535);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 65535);
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn tcp_attach_config_validate_boundary_timeout() {
     // At 300_000 (5 min) should be valid
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
     assert!(config.validate().is_ok());
 
     // At 300_001 should fail
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_001);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_001);
     assert!(config.validate().is_err());
 }
 
 #[test]
 fn tcp_attach_config_validate_1ms_timeout() {
-    let config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(1);
+    let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(1);
     assert!(config.validate().is_ok());
 }
 
@@ -160,16 +187,16 @@ fn tcp_attach_session_start_reader_without_connection_fails() {
 fn tcp_attach_session_connect_to_invalid_host_fails() {
     let mut session = TcpAttachSession::new();
     // Use a very short timeout to fail fast
-    let config = TcpAttachConfig::new("192.0.2.1".to_string(), 59999).with_timeout(100);
-    let result = session.connect(&config);
+    let mut config = TcpAttachConfig::new("192.0.2.1".to_string(), 59999).with_timeout(100);
+    let result = session.connect(&mut config);
     assert!(result.is_err(), "Connecting to unreachable host should fail");
 }
 
 #[test]
 fn tcp_attach_session_connect_with_invalid_config_fails() {
     let mut session = TcpAttachSession::new();
-    let config = TcpAttachConfig::new("".to_string(), 0);
-    let result = session.connect(&config);
+    let mut config = TcpAttachConfig::new("".to_string(), 0);
+    let result = session.connect(&mut config);
     assert!(result.is_err(), "Should fail validation before attempting connection");
 }
 

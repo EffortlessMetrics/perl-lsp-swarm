@@ -39,7 +39,6 @@ anyhow.workspace = true
 
 # Regex for parsing debugger output
 regex.workspace = true
-once_cell.workspace = true
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }

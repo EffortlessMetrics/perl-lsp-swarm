@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10092 |
-| Rust-family files | 3091 |
-| Non-Rust files | 7001 |
-| Allowlisted | 4723 |
-| Unclassified | 2278 |
+| Total tracked files | 10106 |
+| Rust-family files | 3093 |
+| Non-Rust files | 7013 |
+| Allowlisted | 4730 |
+| Unclassified | 2283 |
 
 ## Non-Rust files by category
 
@@ -19,10 +19,10 @@
 | config | 236 |
 | documentation | 2251 |
 | generated | 1 |
-| production | 207 |
-| test | 1711 |
-| tooling | 317 |
-| unclassified | 2278 |
+| production | 211 |
+| test | 1712 |
+| tooling | 319 |
+| unclassified | 2283 |
 
 ## Unclassified files
 
@@ -127,6 +127,8 @@
 | `.changes/unreleased/product-5452-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5472-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5486-Fixed-000000.yaml` | `yaml` |
+| `.changes/unreleased/product-5523-Fixed-000000.yaml` | `yaml` |
+| `.changes/unreleased/product-5525-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/product-5529-Fixed-000000.yaml` | `yaml` |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | `yaml` |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | `yaml` |
@@ -142,6 +144,8 @@
 | `.changes/unreleased/vscode-5305-Fixed-213744.yaml` | `yaml` |
 | `.changie.yaml` | `yaml` |
 | `.codex/hooks.json` | `json` |
+| `.dockerignore` | `` |
+| `.editorconfig` | `` |
 | `.kiro/specs/parser-accuracy-observability/.config.kiro` | `kiro` |
 | `.kiro/specs/rc2-semantic-analysis/.config.kiro` | `kiro` |
 | `.kiro/specs/ux-readiness-system/.config.kiro` | `kiro` |
@@ -2073,6 +2077,7 @@
 | `tests/test_review_claim_currentness.py` | `py` |
 | `tests/test_review_claim_fail_closed.py` | `py` |
 | `tests/test_review_claim_hidden_comments.py` | `py` |
+| `tests/test_semantic_review_currentness.py` | `py` |
 | `tokmd.toml` | `toml` |
 | `tree-sitter-perl/.clang-format` | `` |
 | `tree-sitter-perl/.editorconfig` | `` |
@@ -2772,7 +2777,9 @@
 | `.spec/wave-f/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.tokeignore` | config | `non-rust-tokeignore` | developer-experience |
 | `.trivyignore` | config | `non-rust-trivyignore` | release/ci |
+| `.vscode/launch.json` | tooling | `non-rust-vscode-config` | developer-experience |
 | `.vscode/settings.json` | tooling | `non-rust-vscode-config` | developer-experience |
+| `.vscode/tasks.json` | tooling | `non-rust-vscode-config` | developer-experience |
 | `.zcode/plans/plan-sess_8094bd17-142f-4e1d-9a99-33e0cb1c8564.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `AGENTS.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `AIDER.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6844,6 +6851,7 @@
 | `vscode-extension/media/walkthrough/welcome.svg` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/package-lock.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/package.nls.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/rolldown.config.mjs` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/build-release-local.sh` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/bundle-lsp.js` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6860,6 +6868,7 @@
 | `vscode-extension/scripts/reporter.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-jest.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/run-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/run-workspace-capability-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/sample-local-vsix-smoke.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6870,6 +6879,7 @@
 | `vscode-extension/scripts/vsix-inventory-baseline.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/launch.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/perl.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/activeDocumentReadiness.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/criticCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/debugAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6910,6 +6920,7 @@
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/__mocks__/vscode.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationStartup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/activeDocumentReadiness.test.ts` | test | `non-rust-vscode-active-document-readiness-test` | editor/vscode |
 | `vscode-extension/src/test/arrowCompletion.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commandResults.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commands.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -6957,6 +6968,7 @@
 | `vscode-extension/src/test/published/harness/extension.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/managedBinaryPublishedSmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/packagedBundleJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/runPublishedSmoke.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/suite/index.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/readmeCommandCoverage.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |

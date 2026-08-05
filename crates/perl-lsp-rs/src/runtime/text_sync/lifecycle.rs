@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CodeFormatter, FormattingOptions, JsonRpcError, LspServer, Value, invalid_params, json,
+    source_path_from_uri,
+};
 
 impl LspServer {
     /// Handle didClose notification
@@ -103,108 +106,6 @@ impl LspServer {
                 }
             }
 
-            // Re-run diagnostics on save to catch any changes. Keep this
-            // snapshot lock scoped: the reconciliation below takes the same
-            // lock again after diagnostics have been published.
-            {
-                let documents = self.documents.lock();
-                if let Some(doc) = self.get_document(&documents, &normalized_uri) {
-                    let parsed = doc.current_parsed();
-                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                        // `parsed` is guaranteed `Some` here since `ast` was
-                        // derived from it.
-                        let empty_errors: Arc<[perl_parser::error::ParseError]> = Arc::from([]);
-                        let parse_errors = parsed
-                            .as_ref()
-                            .map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
-                        // Run diagnostics, threading workspace semantic queries when available.
-                        let provider = DiagnosticsProvider::new(ast, doc.text.clone());
-                        let source_path = source_path_from_uri(uri);
-
-                        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                        let diagnostics = {
-                            // Attempt semantic-aware path; fall back to legacy when URI not indexed.
-                            let semantic_diags =
-                                self.workspace_index().and_then(|workspace_index| {
-                                    workspace_index.with_semantic_queries_for_uri(
-                                        uri,
-                                        |file_id, queries| {
-                                            provider.get_diagnostics_with_path_and_semantics(
-                                                ast,
-                                                &parse_errors,
-                                                &doc.text,
-                                                None,
-                                                &[],
-                                                source_path.as_deref(),
-                                                file_id,
-                                                &queries,
-                                            )
-                                        },
-                                    )
-                                });
-                            semantic_diags.unwrap_or_else(|| {
-                                provider.get_diagnostics_with_path(
-                                    ast,
-                                    &parse_errors,
-                                    &doc.text,
-                                    None,
-                                    &[],
-                                    source_path.as_deref(),
-                                )
-                            })
-                        };
-                        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                        let diagnostics = provider.get_diagnostics_with_path(
-                            ast,
-                            &parse_errors,
-                            &doc.text,
-                            None,
-                            &[],
-                            source_path.as_deref(),
-                        );
-
-                        // Convert diagnostics
-                        let lsp_diagnostics: Vec<Value> = diagnostics
-                            .iter()
-                            .map(|diag| {
-                                let (start_line, start_char) =
-                                    self.offset_to_pos16(doc, diag.range.0);
-                                let (end_line, end_char) = self.offset_to_pos16(doc, diag.range.1);
-
-                                json!({
-                                    "range": {
-                                        "start": { "line": start_line, "character": start_char },
-                                        "end": { "line": end_line, "character": end_char }
-                                    },
-                                    "severity": match diag.severity {
-                                        InternalDiagnosticSeverity::Error => 1,
-                                        InternalDiagnosticSeverity::Warning => 2,
-                                        InternalDiagnosticSeverity::Information => 3,
-                                        InternalDiagnosticSeverity::Hint => 4,
-                                    },
-                                    "message": diag.message,
-                                    "source": "perl"
-                                })
-                            })
-                            .collect();
-
-                        // Send diagnostics notification
-                        if let Err(e) = self.notify(
-                            "textDocument/publishDiagnostics",
-                            json!({
-                                "uri": uri,
-                                "diagnostics": lsp_diagnostics
-                            }),
-                        ) {
-                            tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                        }
-                    }
-                }
-            }
-
-            // Optionally, trigger any post-save hooks here
-            // For example: format on save, run tests, etc.
-
             // Reconcile: if the saved document's index is stale (generation
             // lag from coalesced parse jobs), re-index it now from the
             // in-memory text. This prevents permanent index lag where no
@@ -233,6 +134,21 @@ impl LspServer {
                     }
                 }
             }
+
+            // Refresh through the generation-aware, canonical diagnostics path
+            // after the synchronous stale-index reconciliation above. This
+            // ordering matters when immediate diagnostics are enabled: semantic
+            // projections must observe the same current index generation as the
+            // saved document rather than publishing once from stale workspace
+            // state and waiting for a later edit/save to correct it.
+            //
+            // The publisher snapshots the document under a brief lock, computes
+            // off-lock, preserves push/pull policy, and rejects stale document
+            // generations.
+            self.publish_diagnostics_debounced(uri);
+
+            // Optionally, trigger any post-save hooks here
+            // For example: format on save, run tests, etc.
         }
 
         Ok(())
@@ -288,7 +204,7 @@ impl LspServer {
 
             // Phase 2: format off-lock using the user's actual perltidy config.
             let config = self.build_perltidy_config();
-            let tab_size = config.indent_columns.unwrap_or(4) as u32;
+            let tab_size = config.indent_columns.unwrap_or(4);
             let insert_spaces = !config.tabs.unwrap_or(false);
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
             let format_options = FormattingOptions {

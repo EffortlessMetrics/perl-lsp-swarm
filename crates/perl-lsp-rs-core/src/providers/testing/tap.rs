@@ -10,8 +10,8 @@
 //! nested-subtest indentation) and does not attempt to statically reconstruct
 //! anything the producer did not print.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// A TODO/SKIP directive attached to a test line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,32 +175,32 @@ pub fn focus_subtest(report: &TapReport, name: &str) -> Option<SubtestFocus> {
     })
 }
 
-static PLAN_RE: Lazy<Regex> = Lazy::new(|| {
+static PLAN_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^1\.\.(\d+)\s*(?:#\s*[Ss][Kk][Ii][Pp]\S*\s*(.*))?$")
         .unwrap_or_else(|_| unreachable!("static TAP plan pattern is valid"))
 });
 
-static TEST_RE: Lazy<Regex> = Lazy::new(|| {
+static TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(not )?ok\b[ \t]*(\d+)?[ \t]*(?:-[ \t]*)?(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP test pattern is valid"))
 });
 
-static DIRECTIVE_RE: Lazy<Regex> = Lazy::new(|| {
+static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)#\s*(todo|skip)\b\s*(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP directive pattern is valid"))
 });
 
-static AT_LINE_RE: Lazy<Regex> = Lazy::new(|| {
+static AT_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bat\s+(.+?)\s+line\s+(\d+)")
         .unwrap_or_else(|_| unreachable!("static TAP at-line pattern is valid"))
 });
 
-static GOT_RE: Lazy<Regex> = Lazy::new(|| {
+static GOT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:got|received):\s*(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP got pattern is valid"))
 });
 
-static EXPECTED_RE: Lazy<Regex> = Lazy::new(|| {
+static EXPECTED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:expected|wanted):\s*(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP expected pattern is valid"))
 });

@@ -1,6 +1,12 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { compareInventory, summarizeInventory } = require('./check-vsix-inventory');
+const {
+  baselineForPlatform,
+  compareInventory,
+  currentSourceBundleFile,
+  platformForPackagedFile,
+  summarizeInventory,
+} = require('./check-vsix-inventory');
 
 void test('summarizes packaged file sizes', () => {
   assert.deepEqual(
@@ -28,4 +34,201 @@ void test('rejects package growth and inventory drift', () => {
     'new packaged file: new.js',
     'baseline packaged file is missing: old.js',
   ]);
+});
+
+void test('uses only the current platform baseline entries', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 20,
+    files: {
+      'README.md': 2,
+      'bin/win32-x64/perllsp.exe': 10,
+      'bin/linux-x64/perllsp': 8,
+    },
+  };
+  const linuxBaseline = baselineForPlatform(baseline, 'linux', 'x64');
+
+  assert.deepEqual(linuxBaseline, {
+    schema_version: 1,
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/linux-x64/perllsp': 8 },
+  });
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/linux-x64/perllsp': 8,
+          'bin/win32-x64/perllsp.exe': 10,
+        },
+      },
+      baseline,
+      'linux',
+      { arch: 'x64' },
+    ),
+    [],
+  );
+});
+
+void test('still rejects growth for a platform-owned file', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 20,
+    files: {
+      'README.md': 2,
+      'bin/win32-x64/perllsp.exe': 10,
+      'bin/linux-x64/perllsp': 8,
+    },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 13,
+        files: {
+          'README.md': 2,
+          'bin/win32-x64/perllsp.exe': 11,
+        },
+      },
+      baseline,
+      'win32',
+      { arch: 'x64' },
+    ),
+    ['total bytes grew from 12 to 13', 'file bin/win32-x64/perllsp.exe grew from 10 to 11 bytes'],
+  );
+});
+
+void test('accepts a known foreign platform bundle without requiring it on this host', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 20,
+    files: {
+      'README.md': 2,
+      'bin/win32-x64/perllsp.exe': 10,
+      'bin/linux-x64/perllsp': 8,
+    },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/linux-x64/perllsp': 8,
+          'bin/win32-x64/perllsp.exe': 10,
+        },
+      },
+      baseline,
+      'linux',
+      { arch: 'x64' },
+    ),
+    [],
+  );
+});
+
+void test('rejects an unexpected foreign platform bundle', () => {
+  const baseline = {
+    total_files: 1,
+    total_bytes: 2,
+    files: { 'README.md': 2 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 12,
+        files: { 'README.md': 2, 'bin/darwin-arm64/perllsp': 10 },
+      },
+      baseline,
+      'linux',
+      { arch: 'x64' },
+    ),
+    ['unexpected foreign-platform packaged file: bin/darwin-arm64/perllsp'],
+  );
+});
+
+void test('allows the explicitly staged current-source target when no baseline exists', () => {
+  const baseline = {
+    total_files: 1,
+    total_bytes: 2,
+    files: { 'README.md': 2 },
+  };
+  const currentSourceFile = currentSourceBundleFile('darwin', 'arm64');
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 12,
+        files: { 'README.md': 2, [currentSourceFile]: 10 },
+      },
+      baseline,
+      'darwin',
+      { allowedFiles: [currentSourceFile], arch: 'arm64' },
+    ),
+    [],
+  );
+});
+
+void test('checks an explicitly staged current-source target already in the baseline', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 12,
+    files: { 'README.md': 2, 'bin/darwin-arm64/perllsp': 10 },
+  };
+  const currentSourceFile = currentSourceBundleFile('darwin', 'arm64');
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 13,
+        files: { 'README.md': 2, [currentSourceFile]: 11 },
+      },
+      baseline,
+      'darwin',
+      { allowedFiles: [currentSourceFile], arch: 'arm64' },
+    ),
+    ['total bytes grew from 12 to 13', 'file bin/darwin-arm64/perllsp grew from 10 to 11 bytes'],
+  );
+});
+
+void test('selects the exact platform and architecture baseline', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 30,
+    files: {
+      'README.md': 2,
+      'bin/linux-x64/perllsp': 10,
+      'bin/linux-arm64/perllsp': 18,
+    },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 12,
+        files: { 'README.md': 2, 'bin/linux-x64/perllsp': 10 },
+      },
+      baseline,
+      'linux',
+      { arch: 'x64' },
+    ),
+    [],
+  );
+});
+
+void test('does not classify ordinary files as platform-owned', () => {
+  assert.equal(platformForPackagedFile('assets/demo-project/main.pl'), null);
+  assert.equal(platformForPackagedFile('bin/win32-x64/perllsp.exe'), 'win32');
+  assert.equal(platformForPackagedFile('bin/linux-x64/perllsp'), 'linux');
+  assert.equal(platformForPackagedFile('bin/darwin-arm64/perllsp'), 'darwin');
 });

@@ -269,8 +269,8 @@ describe('formatStartupFailureDialog', () => {
   test('surfaces onboarding guidance verbatim when probe is Unknown and health message exists', () => {
     const probe = classifyStartupError('');
     const healthMsg =
-      'Perl interpreter not found. Install Perl 5.10+ and reload the window. ' +
-      'Alternatively, set the `perl-lsp.perl.path` setting to an existing Perl executable.';
+      'Perl interpreter not found on PATH. Install Perl 5.10+ and reload the window. ' +
+      'Configure include paths in `.perl-lsp.toml` when module resolution needs additional roots.';
 
     expect(formatStartupFailureDialog(probe, healthMsg)).toBe(healthMsg);
   });

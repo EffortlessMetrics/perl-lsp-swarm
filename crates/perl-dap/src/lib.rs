@@ -422,7 +422,7 @@ pub use configuration::{
     create_launch_json_snippet,
 };
 pub use debug_adapter::{DapMessage, DebugAdapter};
-pub use server::{DapConfig, DapMode, DapServer};
+pub use server::{DapConfig, DapMode, DapServer, DapSocketBindError};
 
 // Re-export Phase 2 public types
 pub use breakpoints::{BreakpointRecord, BreakpointStore, interpolate_logpoint_message};

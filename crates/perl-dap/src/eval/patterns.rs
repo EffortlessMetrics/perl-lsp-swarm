@@ -3,8 +3,8 @@
 //! This module defines the patterns used to detect dangerous Perl operations
 //! that should be blocked during safe expression evaluation.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// List of dangerous Perl operations that can mutate state, perform I/O, or execute code
 ///
@@ -129,7 +129,7 @@ pub const ASSIGNMENT_OPERATORS: &[&str] = &[
 /// Compiled regex for dangerous operations
 ///
 /// Pattern matches word boundaries around operation names.
-pub static DANGEROUS_OPS_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+pub static DANGEROUS_OPS_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     let pattern = format!(r"\b(?:{})\b", DANGEROUS_OPERATIONS.join("|"));
     Regex::new(&pattern)
 });
@@ -137,15 +137,15 @@ pub static DANGEROUS_OPS_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
 /// Compiled regex for regex mutation operators (s///, tr///, y///)
 ///
 /// Matches s, tr, y followed by a delimiter character (not alphanumeric/underscore/whitespace).
-pub static REGEX_MUTATION_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+pub static REGEX_MUTATION_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     // Match s, tr, y followed by a delimiter character (not alphanumeric/underscore/whitespace)
     Regex::new(r"\b(?:s|tr|y)[^\w\s]")
 });
 
 /// Compiled regex to tokenize operator runs so assignment operators can be
 /// identified without misclassifying comparisons (e.g. `==`, `!=`, `<=`, `>=`).
-pub static ASSIGNMENT_OP_TOKENS_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"([!~^&|+\-*/%=<>]+)"));
+pub static ASSIGNMENT_OP_TOKENS_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"([!~^&|+\-*/%=<>]+)"));
 
 #[cfg(test)]
 mod tests {

@@ -704,7 +704,9 @@ jobs:
         run: |
           mkdir -p target/receipts
           just ux-tests 2>&1 | tee target/receipts/ux-regression.log
-          exit ${PIPESTATUS[0]}
+          test_status=${PIPESTATUS[0]}
+          printf '%s\n' "$test_status" > target/receipts/ux-regression.exit
+          exit "$test_status"
 
       - name: Emit UX regression receipt
         if: always()
@@ -712,6 +714,7 @@ jobs:
           cargo xtask ux-regression-receipt \
             --input target/receipts/ux-regression.log \
             --receipt target/receipts/ux-regression.json \
+            --exit-status-file target/receipts/ux-regression.exit \
             --sha "${{ github.sha }}"
 
       - name: Upload UX regression artifacts
@@ -722,6 +725,8 @@ jobs:
           path: |
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
+            target/receipts/ux-regression.exit
+            target/receipts/editor-ux/golden-editor-workload-v3.json
           if-no-files-found: warn
           retention-days: 7
 

@@ -3,27 +3,42 @@
 //! `run_test` and `run_test_file` are used by the `perl/runTest` and
 //! `perl/runTestFile` custom LSP commands.
 
-use super::*;
+use super::{JsonRpcError, LspServer, TestRunner, Value, document_not_found_error, json};
 
 impl LspServer {
+    /// Run an operation with a cloned document snapshot.
+    ///
+    /// The documents map is locked only while cloning the text. Test
+    /// execution can spawn a subprocess, so keeping the map guard alive
+    /// across the operation would block unrelated LSP requests.
+    fn with_document_snapshot<T>(
+        &self,
+        uri: &str,
+        operation: impl FnOnce(String) -> T,
+    ) -> Option<T> {
+        let document_text = {
+            let documents = self.documents_guard();
+            documents.get(uri).map(|doc| doc.text.clone())
+        };
+        document_text.map(operation)
+    }
+
     /// Run a specific test
     pub(crate) fn run_test(&self, test_id: &str) -> Result<Option<Value>, JsonRpcError> {
         tracing::debug!(test_id, "Running test");
 
-        // Parse test ID to get URI and test name
-        let parts: Vec<&str> = test_id.split("::").collect();
-        if parts.len() < 2 {
+        // Parse test ID to get URI and test name. The legacy runner only
+        // supports file-level execution, so preserve the URI as its input;
+        // passing the bare test name would make it resolve a cwd-relative
+        // file unrelated to the requested document.
+        let Some((uri, _test_name)) = test_id.split_once("::") else {
             return Ok(Some(json!({"status": "error", "message": "Invalid test ID"})));
-        }
+        };
 
-        let uri = parts[0];
-        let test_name = parts[1..].join("::");
-
-        let documents = self.documents.lock();
-        if let Some(doc) = documents.get(uri) {
-            let runner = TestRunner::new(doc.text.clone(), uri.to_string());
-            let results = runner.run_test(&test_name);
-
+        if let Some(results) = self.with_document_snapshot(uri, |document_text| {
+            let runner = TestRunner::new(document_text, uri.to_string());
+            runner.run_test(uri)
+        }) {
             // Convert results to JSON
             let json_results: Vec<Value> = results
                 .into_iter()
@@ -72,11 +87,10 @@ impl LspServer {
     pub(crate) fn run_test_file(&self, uri: &str) -> Result<Option<Value>, JsonRpcError> {
         tracing::debug!(uri, "Running test file");
 
-        let documents = self.documents.lock();
-        if let Some(doc) = documents.get(uri) {
-            let runner = TestRunner::new(doc.text.clone(), uri.to_string());
-            let results = runner.run_test(uri);
-
+        if let Some(results) = self.with_document_snapshot(uri, |document_text| {
+            let runner = TestRunner::new(document_text, uri.to_string());
+            runner.run_test(uri)
+        }) {
             // Convert results to JSON
             let json_results: Vec<Value> = results
                 .into_iter()
@@ -97,5 +111,30 @@ impl LspServer {
         }
 
         Ok(Some(document_not_found_error()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LspServer;
+    use std::sync::Arc;
+
+    #[test]
+    fn document_snapshot_releases_lock_before_operation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = Arc::new(LspServer::new());
+        let uri = "file:///document-snapshot.pl";
+        server.test_apply_did_open(uri, "sub test { 1 }\n", 1)?;
+
+        let operation_server = Arc::clone(&server);
+        let observed = server
+            .with_document_snapshot(uri, move |text| {
+                assert_eq!(text, "sub test { 1 }\n");
+                operation_server.documents.try_lock().is_some()
+            })
+            .ok_or("expected an open document snapshot")?;
+
+        assert!(observed, "documents lock must be available to the execution operation");
+        Ok(())
     }
 }

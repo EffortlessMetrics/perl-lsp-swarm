@@ -5,7 +5,7 @@
 //! completion candidates via `$/progress` notifications. The final JSON-RPC
 //! response is `null` -- all data is delivered through progress tokens.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Value, json};
 use crate::protocol::{invalid_params, req_position, req_uri};
 use crate::runtime::stream_session::SessionKey;
 use perl_lsp_rs_core::providers::inline_completion::BackendError;
@@ -186,7 +186,7 @@ impl LspServer {
                         "sequence": seq,
                         "isFinal": is_final,
                         "items": safe_items.into_iter().map(|item| {
-                            let range = item.range.unwrap_or_else(|| lsp_types::Range {
+                            let range = item.range.unwrap_or(lsp_types::Range {
                                 start: lsp_types::Position {
                                     line,
                                     character,
@@ -249,7 +249,7 @@ impl LspServer {
                 json!(safe_items
                     .into_iter()
                     .map(|item| {
-                        let range = item.range.unwrap_or_else(|| lsp_types::Range {
+                        let range = item.range.unwrap_or(lsp_types::Range {
                             start: lsp_types::Position { line, character },
                             end: lsp_types::Position { line, character },
                         });

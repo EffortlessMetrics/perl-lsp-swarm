@@ -85,6 +85,7 @@ pub mod inject_sha_assets;
 pub mod inline_completion_quality;
 pub mod inline_completion_smoke;
 pub mod install_surface_check;
+pub mod integration_proof;
 pub mod integration_trigger;
 pub mod intent_diff_gate;
 pub mod issue_plan;

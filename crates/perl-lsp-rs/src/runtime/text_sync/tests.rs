@@ -1430,6 +1430,45 @@ fn test_did_save_publishes_diagnostics_with_original_uri() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// didSave must use the canonical diagnostics projection rather than the
+/// legacy save-only renderer, so code and source remain available to clients.
+#[test]
+fn test_did_save_uses_canonical_diagnostic_projection() -> Result<(), Box<dyn std::error::Error>> {
+    let (server, buf) = make_server_with_capture();
+    let uri = "file:///test_save_canonical_diagnostics.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "use strict;\n$x = 1;\n"
+        }
+    }))?;
+    buf.lock().clear();
+
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 1}
+    })))?;
+    drop(server);
+    std::thread::sleep(Duration::from_millis(50));
+
+    let text = String::from_utf8(buf.lock().clone()).unwrap_or_default();
+    assert!(
+        text.contains(r#""method":"textDocument/publishDiagnostics""#),
+        "didSave must publish diagnostics; got: {text:?}"
+    );
+    assert!(
+        text.contains(r#""code":"PL103""#),
+        "didSave must preserve the canonical diagnostic code; got: {text:?}"
+    );
+    assert!(
+        text.contains(r#""source":"perl-lsp""#),
+        "didSave must preserve the canonical diagnostic source; got: {text:?}"
+    );
+    Ok(())
+}
+
 /// didSave text reconciliation must preserve the client document version.
 #[test]
 fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::error::Error>> {
@@ -1594,10 +1633,12 @@ fn test_binary_file_guard_did_open_skips_parse() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// Binary content guard — a single null byte is sufficient to trigger the guard.
+/// Binary content guard — a single null byte must NOT trigger the guard
+/// under the ratio heuristic (the file is still parsed normally). This is the
+/// corrected contract from #5209: only NUL densities above 5% are binary.
 #[test]
-fn test_binary_file_guard_single_null_byte_triggers_guard() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_binary_file_guard_single_null_byte_does_not_trigger_guard()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     let uri = "file:///test_null.pl";
     let content_with_null = "#!/usr/bin/perl\nmy $x = 1;\x00\n";
@@ -1613,14 +1654,44 @@ fn test_binary_file_guard_single_null_byte_triggers_guard() -> Result<(), Box<dy
 
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after single-null didOpen")?;
+    // A single NUL byte is below the 5% ratio threshold, so the file must
+    // still be parsed normally (#5209).
+    assert_ne!(
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
+        DegradationTier::Minimal,
+        "a single null byte must NOT trigger the binary guard (ratio heuristic)"
+    );
+    Ok(())
+}
+
+/// Binary content guard — high-density NUL content must trigger the guard.
+#[test]
+fn test_binary_file_guard_dense_null_bytes_trigger_guard() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::new();
+    let uri = "file:///test_binary.pl";
+    // 20 NUL bytes in a 35-byte string (~57% density), well above the 5% threshold.
+    let binary_content = "#!/usr/bin/perl\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": binary_content
+        }
+    }))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("document not stored after binary didOpen")?;
     assert_eq!(
         doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
-        "a single null byte must trigger the binary guard"
+        "dense null bytes must trigger the binary guard"
     );
     assert!(
         doc.current_parsed().is_none_or(|p| p.ast().is_none()),
-        "parser must not be called when null byte is present"
+        "parser must not be called when binary content is detected"
     );
     Ok(())
 }

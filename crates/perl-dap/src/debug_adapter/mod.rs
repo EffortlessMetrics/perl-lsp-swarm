@@ -68,13 +68,17 @@ use std::time::{Duration, Instant};
 use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
 use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
 use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
-use crate::debug_adapter::variable_cache::{VariableCache, VariableCacheKind, slice_variables};
+#[cfg(any(test, feature = "test-helpers"))]
+use crate::debug_adapter::variable_cache::VariableCache;
+use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 use crate::security;
-#[cfg(unix)]
-use nix::sys::signal::{self, Signal};
-#[cfg(unix)]
-use nix::unistd::Pid;
-use patterns::*;
+use patterns::{
+    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
+    EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
+    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, error_re,
+    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
+    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+};
 use safe_eval::validate_safe_expression;
 use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
 
@@ -1395,7 +1399,7 @@ print "result: $final\n";
     fn test_attach_custom_port() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": "192.168.1.100",
+            "host": "127.0.0.1",
             "port": 9000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
@@ -1406,7 +1410,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("192.168.1.100:9000"));
+                assert!(msg.contains("127.0.0.1:9000"));
             }
             _ => return Err("Expected response".into()),
         }
@@ -1417,7 +1421,7 @@ print "result: $final\n";
     fn test_attach_trims_host_for_tcp_target() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": " 192.168.1.100 ",
+            "host": " 127.0.0.1 ",
             "port": 9000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
@@ -1428,7 +1432,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("192.168.1.100:9000"));
+                assert!(msg.contains("127.0.0.1:9000"));
             }
             _ => return Err("Expected response".into()),
         }
