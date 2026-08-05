@@ -791,9 +791,9 @@ mod tests {
 
     #[test]
     fn resolve_run_id_receipt_path_works_with_relative_dir() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = resolve_run_id_receipt_path(dir.path());
-        assert_eq!(path, dir.path().join("receipt.json"));
+        let dir = Path::new("target/ci-download");
+        let path = resolve_run_id_receipt_path(dir);
+        assert_eq!(path, dir.join("receipt.json"));
     }
 
     #[test]
