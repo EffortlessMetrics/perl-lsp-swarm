@@ -36,7 +36,6 @@
 //! ```
 
 #![warn(missing_docs)]
-#![warn(missing_docs)]
 
 mod kind;
 mod token;
