@@ -1420,6 +1420,15 @@ mod tests {
             metrics.jobs_started
         );
         assert!(metrics.jobs_coalesced > 0, "at least one job must have been coalesced away");
+        assert_eq!(
+            metrics.jobs_published + metrics.jobs_rejected_stale + metrics.jobs_panicked,
+            metrics.jobs_started,
+            "job accounting must balance: published={} + rejected_stale={} + panicked={} must equal started={}",
+            metrics.jobs_published,
+            metrics.jobs_rejected_stale,
+            metrics.jobs_panicked,
+            metrics.jobs_started,
+        );
 
         let docs = documents.lock();
         let doc = must_some(docs.get(uri));
