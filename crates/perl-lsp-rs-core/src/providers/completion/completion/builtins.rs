@@ -20,6 +20,7 @@ pub fn builtin_set() -> &'static HashSet<&'static str> {
 }
 
 /// Create the builtins HashSet (legacy API — prefer builtin_set() for hot paths).
+#[cfg(test)]
 pub fn create_builtins() -> HashSet<&'static str> {
     catalog::all_names().collect()
 }
