@@ -8,6 +8,7 @@
 ///
 /// Equivalent to `haystack.to_lowercase().contains(&needle.to_lowercase())`
 /// but avoids the per-call String allocations.
+#[cfg(not(feature = "workspace"))]
 fn ascii_contains_ci(haystack: &str, needle_lower: &str) -> bool {
     if needle_lower.is_empty() {
         return true;
