@@ -194,6 +194,24 @@ fn commit_chars_for_kind(kind: CompletionItemKind) -> Option<&'static [&'static 
     }
 }
 
+/// Deduplicate and rank the complete candidate set before applying the client
+/// result cap.
+///
+/// Provider completions are initially sorted, but request-level enrichment
+/// appends declared-dependency and workspace candidates afterward.  Capping
+/// that mixed list before sorting can hide a better late candidate and makes
+/// the visible result depend on provider order rather than completion rank.
+fn sort_and_cap_completions(
+    completions: Vec<crate::completion::CompletionItem>,
+    cap: usize,
+) -> (Vec<crate::completion::CompletionItem>, bool) {
+    let mut completions =
+        perl_lsp_rs_core::providers::completion_item::deduplicate_and_sort(completions);
+    let is_incomplete = completions.len() > cap;
+    completions.truncate(cap);
+    (completions, is_incomplete)
+}
+
 impl LspServer {
     fn completion_visibility_shadow_labels(
         completions: &[crate::completion::CompletionItem],
@@ -759,24 +777,16 @@ impl LspServer {
         doc_text: &str,
         doc_uri: &str,
         offset: usize,
-        cap: usize,
     ) {
         let Some(prefix) = Self::module_completion_prefix(doc_text, offset) else {
             return;
         };
-        if completions.len() >= cap {
-            return;
-        }
-
         let config =
             self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
         let mut seen: HashSet<String> =
             completions.iter().map(|completion| completion.label.clone()).collect();
 
         for dependency in config.declared_dependencies {
-            if completions.len() >= cap {
-                break;
-            }
             if !prefix.is_empty() && !dependency.module.starts_with(&prefix) {
                 continue;
             }
@@ -819,7 +829,6 @@ impl LspServer {
         completions: &mut Vec<crate::completion::CompletionItem>,
         inc_context: &RequestIncContext<'_>,
         workspace_mode: &IndexAccessMode,
-        cap: usize,
     ) {
         let doc_text = inc_context.doc_text();
         let doc_uri = inc_context.doc_uri();
@@ -889,11 +898,6 @@ impl LspServer {
                     completions.iter().map(|completion| completion.label.clone()).collect();
 
                 for symbol in workspace_symbols {
-                    if completions.len() >= cap {
-                        tracing::debug!(cap, "Completion: cap reached, stopping workspace scan");
-                        break;
-                    }
-
                     if seen.contains(&symbol.name) {
                         continue;
                     }
@@ -1375,13 +1379,7 @@ impl LspServer {
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
 
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    cap,
-                );
+                self.add_declared_dependency_completions(&mut completions, &doc.text, uri, offset);
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -1390,13 +1388,10 @@ impl LspServer {
                         &mut completions,
                         &inc_context,
                         &workspace_mode,
-                        cap,
                     );
                 }
 
-                // Apply cap before converting to JSON
-                let is_incomplete = completions.len() > cap;
-                completions.truncate(cap);
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
                 let (workspace_index_state, workspace_index_reason) =
                     Self::completion_workspace_index_state(&workspace_mode);
                 let completion_decision_context = CompletionDecisionContext {
@@ -1727,21 +1722,17 @@ impl LspServer {
                     });
                 }
 
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    completion_cap(),
-                );
+                self.add_declared_dependency_completions(&mut completions, &doc.text, uri, offset);
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
                     &mut completions,
                     &inc_context,
                     &workspace_mode,
-                    completion_cap(),
                 );
+
+                let (completions, is_incomplete) =
+                    sort_and_cap_completions(completions, completion_cap());
 
                 let (workspace_index_state, workspace_index_reason) =
                     Self::completion_workspace_index_state(&workspace_mode);
@@ -1752,7 +1743,7 @@ impl LspServer {
                     ast_available,
                     workspace_index_state,
                     workspace_index_reason,
-                    is_incomplete: false,
+                    is_incomplete,
                 };
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let semantic_shadow_receipt = self.completion_semantic_shadow_receipt(
@@ -2192,6 +2183,42 @@ mod tests {
             })))?
             .ok_or("missing explain-provider-decision response")?;
         Ok(response)
+    }
+
+    #[test]
+    fn completion_cap_applies_after_final_ranking() {
+        let item = |label: &str, sort_text: &str| crate::completion::CompletionItem {
+            label: label.to_string(),
+            kind: CompletionItemKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: Some(label.to_string()),
+            sort_text: Some(sort_text.to_string()),
+            filter_text: None,
+            additional_edits: Vec::new(),
+            text_edit_range: None,
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        };
+
+        // The late item represents a request-level enrichment candidate. It
+        // outranks both earlier provider candidates and must survive a cap of
+        // two after the complete set is ranked.
+        let (items, is_incomplete) = sort_and_cap_completions(
+            vec![
+                item("provider-first", "100"),
+                item("provider-second", "200"),
+                item("late", "050"),
+            ],
+            2,
+        );
+
+        assert!(is_incomplete);
+        assert_eq!(
+            items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            ["late", "provider-first"]
+        );
     }
 
     #[cfg(feature = "workspace")]
@@ -3401,7 +3428,6 @@ mod tests {
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
         );
 
         assert_eq!(
@@ -3469,7 +3495,6 @@ mod tests {
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
         );
 
         assert_eq!(
@@ -4562,7 +4587,6 @@ sub cross_folder_sub_b { 1 }
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
         );
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
@@ -4612,7 +4636,6 @@ sub single_root_sub { 1 }
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
         );
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
