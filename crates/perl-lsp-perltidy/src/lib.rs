@@ -134,6 +134,12 @@ impl PerlTidyConfig {
 
         if let Some(profile) = &self.profile {
             args.push(format!("--profile={profile}"));
+            if let Some(indent) = self.indent_columns {
+                args.push(format!("--indent-columns={indent}"));
+            }
+            if let Some(tabs) = self.tabs {
+                args.push(if tabs { "--tabs".to_string() } else { "--notabs".to_string() });
+            }
             args.extend(self.extra_args.clone());
             return args;
         }

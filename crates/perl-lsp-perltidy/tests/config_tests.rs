@@ -70,10 +70,13 @@ fn config_with_profile_ignores_other_settings_but_keeps_extra_args() {
     };
     let args = config.to_args();
 
-    // Only profile and explicit extra args should be present; other config suppressed
-    assert_eq!(args.len(), 2);
+    // The profile owns unspecified settings, while explicit indentation remains
+    // a workspace override and extra_args stays last as the escape hatch.
+    assert_eq!(args.len(), 4);
     assert!(args[0].starts_with("--profile="));
-    assert_eq!(args[1], "--check-syntax");
+    assert_eq!(args[1], "--indent-columns=8");
+    assert_eq!(args[2], "--tabs");
+    assert_eq!(args[3], "--check-syntax");
 }
 
 #[test]

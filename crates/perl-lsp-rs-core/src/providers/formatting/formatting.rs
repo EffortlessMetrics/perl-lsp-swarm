@@ -206,9 +206,7 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
         if let Some(ref config) = self.perltidy_config {
             // A profile owns everything the workspace did not configure, but it
             // must not silently discard indentation the workspace DID
-            // configure: `to_args` returns after emitting only `--profile` and
-            // `extra_args`. perltidy lets command-line flags override profile
-            // settings, so explicit indent/tabs are appended after the profile
+            // configure. `to_args` emits explicit indent/tabs after the profile
             // and before `extra_args`, which stays last as the escape hatch.
             //
             // The editor `tabSize` / `insertSpaces` fallback is deliberately
@@ -216,15 +214,8 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
             // profile's to decide, and injecting the editor's width would
             // override the profile's own indentation for workspaces that
             // configured nothing.
-            if let Some(profile) = config.profile.as_ref() {
-                args.push(format!("--profile={profile}"));
-                if let Some(indent) = config.indent_columns {
-                    args.push(format!("--indent-columns={indent}"));
-                }
-                if let Some(tabs) = config.tabs {
-                    args.push(if tabs { "--tabs".to_string() } else { "--notabs".to_string() });
-                }
-                args.extend(config.extra_args.clone());
+            if config.profile.is_some() {
+                args.append(&mut config.to_args());
             } else {
                 // Merge LSP options with config options.
                 //
