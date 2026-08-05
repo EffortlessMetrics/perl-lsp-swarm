@@ -537,6 +537,11 @@ impl<'a> Parser<'a> {
     /// nested blocks.
     fn finish_statement_terminator(&mut self, stmt: &Node) -> ParseResult<()> {
         if self.peek_kind() == Some(TokenKind::Semicolon) {
+            if self.pending_heredocs.is_empty() && !Self::contains_heredoc(stmt) {
+                if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+                    self.heredoc_recovery_tag = Some(tag);
+                }
+            }
             let semi_token = self.consume_token()?;
             // Track cursor after semicolon for heredoc content collection
             if self.pending_heredocs.is_empty() {
@@ -595,20 +600,28 @@ impl<'a> Parser<'a> {
         // left shift, so no `Heredoc` node exists even though the body lines are
         // still in the token stream. Scanning the statement's own source span
         // catches that case too.
-        if !self.pending_heredocs.is_empty()
-            || Self::contains_heredoc(stmt)
-            || self.statement_span_has_heredoc_introducer(stmt)
-        {
-            return Ok(());
+        if self.pending_heredocs.is_empty() && !Self::contains_heredoc(stmt) {
+            if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+                self.heredoc_recovery_tag = Some(tag);
+                return Ok(());
+            }
         }
 
-        // A statement that is nothing but a bare identifier is the signature of
-        // a heredoc terminator leaking into the token stream after an
-        // introducer the lexer did not recognise. Real programs essentially
-        // never contain a lone bareword statement, so declining to police this
-        // shape costs no coverage.
+        // An unrecognised heredoc may leak its body and terminator into the
+        // token stream. Exempt only the exact delimiter line, not every lone
+        // identifier: `foo` followed by `print` is a real missing terminator.
         if Self::is_bare_identifier_statement(stmt) {
-            return Ok(());
+            let matches_recovery_tag = self.heredoc_recovery_tag.as_deref().is_some_and(|tag| {
+                let start = stmt.location.start.min(self.src_bytes.len());
+                let end = stmt.location.end.min(self.src_bytes.len());
+                std::str::from_utf8(&self.src_bytes[start..end])
+                    .map(|text| text.trim() == tag)
+                    .unwrap_or(false)
+            });
+            if matches_recovery_tag {
+                self.heredoc_recovery_tag = None;
+                return Ok(());
+            }
         }
 
         // Only report when the leftover token begins a later line.
@@ -732,8 +745,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// Whether the statement is a single bare identifier — the signature of a
-    /// heredoc terminator that leaked into the token stream.
+    /// Whether the statement is a single bare identifier.
     fn is_bare_identifier_statement(node: &Node) -> bool {
         match &node.kind {
             NodeKind::Identifier { .. } => true,
@@ -757,12 +769,19 @@ impl<'a> Parser<'a> {
     /// guard to the unambiguous `qr` operator form used by the parser's regex
     /// syntax and by the false-negative regression below.
     fn starts_qr_slash_body(span: &[u8], index: usize) -> bool {
-        index >= 2
-            && span.get(index) == Some(&b'/')
-            && span.get(index - 2..index) == Some(&b"qr"[..])
+        if span.get(index) != Some(&b'/') {
+            return false;
+        }
+        let mut operator_end = index;
+        while operator_end > 0
+            && matches!(span[operator_end - 1], b' ' | b'\t' | b'\r' | b'\n')
+        {
+            operator_end -= 1;
+        }
+        operator_end >= 2 && span.get(operator_end - 2..operator_end) == Some(&b"qr"[..])
     }
 
-    /// Whether the source the statement spans contains a heredoc introducer
+    /// Find an unrecognised heredoc introducer in the source the statement spans
     /// (`<<"X"`, `<<'X'`, `<<X`, `<<~X`) **in code position**.
     ///
     /// Two things are deliberately not matched, because matching them would
@@ -775,12 +794,12 @@ impl<'a> Parser<'a> {
     ///   heredoc, and treating it as one made `--check` answer `ok` for the
     ///   statement after it (found in review, #5503).
     ///
-    /// The quote tracking is intentionally shallow: it follows `'`, `"`, `` ` ``
-    /// and `#`-to-end-of-line, which is what distinguishes a literal from code
-    /// for this purpose. It is a heuristic guarding a heuristic, and it errs
-    /// toward *reporting* — an unmatched quote resolves at end of span, so a
-    /// real introducer is never hidden behind one.
-    fn statement_span_has_heredoc_introducer(&mut self, stmt: &Node) -> bool {
+    /// The quote tracking is intentionally shallow: it follows ordinary
+    /// literals, comments, and Perl's quote-like operators. It is a heuristic
+    /// guarding a heuristic, and it errs toward *reporting* — an unmatched
+    /// quote resolves at end of span, so a real introducer is never hidden
+    /// behind one.
+    fn statement_span_heredoc_tag(&mut self, stmt: &Node) -> Option<String> {
         let end = self.current_position().min(self.src_bytes.len());
         let start = stmt.location.start.min(end);
         let span = &self.src_bytes[start..end];
@@ -810,11 +829,6 @@ impl<'a> Parser<'a> {
                     index += 1;
                     continue;
                 }
-                b'/' if Self::starts_qr_slash_body(span, index) => {
-                    quote = Some(byte);
-                    index += 1;
-                    continue;
-                }
                 b'<' if span.get(index + 1) == Some(&b'<') => {
                     let mut rest = span[index + 2..].iter();
                     let next = match rest.next() {
@@ -823,16 +837,147 @@ impl<'a> Parser<'a> {
                     };
                     if matches!(next, Some(b'"' | b'\'' | b'`' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
                     {
-                        return true;
+                        let mut tag = &span[index + 2..];
+                        if tag.first() == Some(&b'~') {
+                            tag = &tag[1..];
+                        }
+                        let tag = match tag.first() {
+                            Some(b'\'' | b'"' | b'`') => {
+                                let delimiter = tag[0];
+                                let end = tag[1..]
+                                    .iter()
+                                    .position(|&candidate| candidate == delimiter)?
+                                    + 1;
+                                &tag[1..end]
+                            }
+                            Some(b'A'..=b'Z' | b'a'..=b'z' | b'_') => {
+                                let end = tag
+                                    .iter()
+                                    .position(|candidate| {
+                                        !matches!(
+                                            candidate,
+                                            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'
+                                        )
+                                    })
+                                    .unwrap_or(tag.len());
+                                &tag[..end]
+                            }
+                            _ => {
+                                index += 2;
+                                continue;
+                            }
+                        };
+                        return std::str::from_utf8(tag).ok().map(str::to_owned);
                     }
                     index += 2;
                     continue;
                 }
-                _ => index += 1,
+                _ => {
+                    if let Some(end) = Self::quote_like_body_end(span, index) {
+                        index = end;
+                        continue;
+                    }
+                    index += 1;
+                }
             }
         }
 
-        false
+        None
+    }
+
+    /// Return the byte after a quote-like expression beginning at `index`.
+    ///
+    /// This is deliberately a source scanner rather than a parser-level
+    /// expression check: its only job is to keep `<<TAG` inside quote-like
+    /// bodies from being mistaken for a heredoc introducer. Paired delimiters
+    /// are balanced, escapes are skipped, and substitution-like operators
+    /// consume both bodies.
+    fn quote_like_body_end(span: &[u8], index: usize) -> Option<usize> {
+        const OPERATORS: &[&[u8]] = &[b"tr", b"qq", b"qx", b"qr", b"qw", b"m", b"s", b"y", b"q"];
+
+        if index > 0 && matches!(span[index - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$') {
+            return None;
+        }
+
+        let operator = OPERATORS.iter().find(|operator| {
+            span.get(index..index + operator.len()) == Some(**operator)
+        })?;
+        let mut delimiter_index = index + operator.len();
+        while matches!(span.get(delimiter_index), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            delimiter_index += 1;
+        }
+        let delimiter = *span.get(delimiter_index)?;
+        if delimiter.is_ascii_alphanumeric() || delimiter == b'_' || delimiter == b'$' {
+            return None;
+        }
+        if *operator == b"qr"
+            && delimiter == b'/'
+            && !Self::starts_qr_slash_body(span, delimiter_index)
+        {
+            return None;
+        }
+
+        let parts = if matches!(*operator, b"s" | b"tr" | b"y") { 2 } else { 1 };
+        let first_delimiter = span[delimiter_index];
+        let paired = matches!(first_delimiter, b'(' | b'[' | b'{' | b'<');
+        let mut cursor = delimiter_index;
+        for part in 0..parts {
+            cursor = if part == 0 || paired {
+                Self::quote_like_part_end(span, cursor)?
+            } else {
+                Self::quote_like_unpaired_end(span, cursor, first_delimiter)?
+            };
+            if part + 1 < parts {
+                while matches!(span.get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+                    cursor += 1;
+                }
+            }
+        }
+        Some(cursor)
+    }
+
+    fn quote_like_unpaired_end(span: &[u8], start: usize, delimiter: u8) -> Option<usize> {
+        let mut index = start;
+        while index < span.len() {
+            match span[index] {
+                b'\\' => index = index.saturating_add(2),
+                byte if byte == delimiter => return Some(index + 1),
+                _ => index += 1,
+            }
+        }
+        None
+    }
+
+    fn quote_like_part_end(span: &[u8], delimiter_index: usize) -> Option<usize> {
+        let opener = *span.get(delimiter_index)?;
+        let closer = match opener {
+            b'(' => b')',
+            b'[' => b']',
+            b'{' => b'}',
+            b'<' => b'>',
+            delimiter => delimiter,
+        };
+        let paired = opener != closer;
+        let mut depth = 0usize;
+        let mut index = delimiter_index + 1;
+        while index < span.len() {
+            match span[index] {
+                b'\\' => index = index.saturating_add(2),
+                byte if paired && byte == opener => {
+                    depth = depth.saturating_add(1);
+                    index += 1;
+                }
+                byte if byte == closer => {
+                    if depth == 0 {
+                        return Some(index + 1);
+                    }
+                    depth -= 1;
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        }
+        None
     }
 
     /// Mark that we're no longer at statement start (called after consuming statement head)
@@ -857,10 +1002,16 @@ impl<'a> Parser<'a> {
     /// Sharing one predicate left `package Foo` followed by another statement
     /// reported as `ok` while `perl -c` rejects it (found in review, #5503).
     fn is_brace_terminated_statement(node: &Node) -> bool {
-        if let NodeKind::Package { block, .. } = &node.kind {
-            return block.is_some();
+        match &node.kind {
+            NodeKind::Package { block, .. } => block.is_some(),
+            // Forward `sub foo;` declarations are represented with a synthetic
+            // zero-width empty block at the semicolon. A real `{}` body spans
+            // the braces even when it has no statements.
+            NodeKind::Subroutine { body, .. }
+            | NodeKind::Class { body, .. }
+            | NodeKind::Method { body, .. } => body.location.start != body.location.end,
+            _ => Self::is_compound_statement(node),
         }
-        Self::is_compound_statement(node)
     }
 
     /// Returns true if the node is a compound statement that cannot take a postfix modifier.
@@ -1729,37 +1880,12 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod statement_terminator_seam_tests {
     use super::Parser;
-    use crate::error::{ParseError, RecoveryKind, RecoverySite};
-
-    fn inferred_semicolons(source: &str) -> usize {
-        let mut parser = Parser::new(source);
-        let _ = parser.parse();
-        parser
-            .errors()
-            .iter()
-            .filter(|error| {
-                matches!(
-                    error,
-                    ParseError::Recovered {
-                        site: RecoverySite::Statement,
-                        kind: RecoveryKind::InferredSemicolon,
-                        ..
-                    }
-                )
-            })
-            .count()
-    }
 
     #[test]
     fn starts_qr_slash_body_boundary_discriminator() {
-        assert!(Parser::starts_qr_slash_body(b"qr/", 2));
-        assert!(!Parser::starts_qr_slash_body(b"/", 0));
-        assert!(!Parser::starts_qr_slash_body(b"ar/", 2));
-    }
-
-    #[test]
-    fn parse_statement_inner_call_presence_observer() {
-        assert_eq!(inferred_semicolons("my %h = (if => 1)\nprint \"after\";\n"), 1);
-        assert_eq!(inferred_semicolons("my $x = 1\nprint \"after\";\n"), 1);
+        assert!(Parser::starts_qr_slash_body(b"qr/", 2), "direct qr delimiter");
+        assert!(Parser::starts_qr_slash_body(b"qr /", 3), "spaced qr delimiter");
+        assert!(!Parser::starts_qr_slash_body(b"/", 0), "bare slash is division");
+        assert!(!Parser::starts_qr_slash_body(b"ar/", 2), "suffix ar is not qr");
     }
 }

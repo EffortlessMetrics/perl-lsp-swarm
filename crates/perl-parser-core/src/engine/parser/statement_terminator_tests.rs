@@ -18,7 +18,12 @@
 mod tests {
     use crate::error::{ParseError, RecoveryKind, RecoverySite};
     use crate::parser::Parser;
-    use perl_ast::ast::NodeKind;
+    use perl_ast::ast::{Node, NodeKind};
+
+    fn contains_string(node: &Node, value: &str) -> bool {
+        matches!(&node.kind, NodeKind::String { value: actual, .. } if actual == value)
+            || node.children().into_iter().any(|child| contains_string(child, value))
+    }
 
     /// Count of terminator diagnostics recorded while parsing `source`.
     fn inferred_semicolons(source: &str) -> usize {
@@ -103,7 +108,11 @@ mod tests {
             Ok(ast) => ast,
             Err(error) => unreachable!("hash-key source must parse: {error:?}"),
         };
-        assert!(matches!(ast.kind, NodeKind::Program { .. }));
+        assert!(
+            contains_string(&ast, "if"),
+            "autoquoted hash key should be represented as a String node: {}",
+            ast.to_sexp()
+        );
     }
 
     /// `drain_pending_heredocs_from` runs right after the terminator on the same

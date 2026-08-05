@@ -140,3 +140,34 @@ fn angle_brackets_inside_a_literal_are_not_a_heredoc_introducer() {
     // the `<<` to the scan.
     assert_blocking_diagnostic("my $s = \"a\\\"b <<EOF\"\nprint $s;\n");
 }
+
+/// Quote-like operators can contain `<<WORD` as ordinary payload. The source
+/// still needs a semicolon before the following statement, so the scanner must
+/// skip each quote body without using it to suppress the diagnostic.
+#[test]
+fn quote_like_bodies_do_not_hide_missing_terminators() {
+    for source in [
+        "my $re = qr /<<EOF/\nprint $re;\n",
+        "my $re = qr{<<EOF}\nprint $re;\n",
+        "my $re = m/<<EOF/\nprint $re;\n",
+        "my $s = s/<<EOF/<<DONE/\nprint $s;\n",
+        "my $s = q(<<EOF)\nprint $s;\n",
+        "my @words = qw(<<EOF item)\nprint @words;\n",
+    ] {
+        assert_blocking_diagnostic(source);
+    }
+}
+
+/// A real heredoc declaration requires its semicolon before the body. The
+/// pending-heredoc queue must not make a following statement look valid.
+#[test]
+fn heredoc_declaration_without_terminator_is_reported() {
+    assert_blocking_diagnostic("my $text = <<'EOT'\nline one\nEOT\nprint $text;\n");
+}
+
+/// The recovery exception for a leaked unknown-heredoc terminator must not
+/// silence an ordinary bareword call followed by a keyword statement.
+#[test]
+fn bareword_call_followed_by_keyword_is_reported() {
+    assert_blocking_diagnostic("foo\nprint \"after\";\n");
+}
