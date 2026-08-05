@@ -216,6 +216,49 @@ fn extract_significant_braces(line: &str) -> Vec<char> {
                 // Skip closing '}'.
                 i += 1;
             }
+            // Skip quote-like operators that use braces as delimiters (#5054 item 5):
+            // qr{...}, m{...}, and the first block of s{...}{...}.
+            'q' if i + 2 < len && chars[i + 1] == 'r' && chars[i + 2] == '{' => {
+                i += 3; // skip 'q', 'r', '{'
+                while i < len && chars[i] != '}' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    } // skip escaped char
+                    i += 1;
+                }
+                i += 1; // skip closing '}'
+            }
+            'm' if i + 1 < len && chars[i + 1] == '{' => {
+                i += 2; // skip 'm', '{'
+                while i < len && chars[i] != '}' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i += 1; // skip closing '}'
+            }
+            's' if i + 1 < len && chars[i + 1] == '{' => {
+                // s{...}{...} — skip both blocks.
+                i += 2; // skip 's', '{'
+                while i < len && chars[i] != '}' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i += 1; // skip first closing '}'
+                if i < len && chars[i] == '{' {
+                    i += 1; // skip second '{'
+                    while i < len && chars[i] != '}' {
+                        if chars[i] == '\\' {
+                            i += 1;
+                        }
+                        i += 1;
+                    }
+                    i += 1; // skip second closing '}'
+                }
+            }
             '{' => {
                 // Check if this is a regex quantifier {n}, {n,}, or {n,m}.
                 // Pattern: { digits [, [digits]] }

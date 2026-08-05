@@ -22,6 +22,14 @@ const SCAN_ROOTS: &[&str] = &[
     "docs",
     "vscode-extension",
     "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+    // The installer scripts are install surfaces themselves, not just things
+    // the docs describe: install.ps1 documents its own invocation, and
+    // scripts/install.sh tells MINGW/MSYS/CYGWIN users which Windows command
+    // to run. Both were outside the scan, so a command this validator forbids
+    // in the docs could still be handed to a user by the installers.
+    "install.ps1",
+    "install.sh",
+    "scripts",
 ];
 
 const FORBIDDEN_PATTERNS: &[(&str, &str)] = &[
@@ -33,6 +41,14 @@ const FORBIDDEN_PATTERNS: &[(&str, &str)] = &[
     ("perl-lsp --stdio", "retired binary command"),
     ("perl-lsp --version", "retired binary command"),
     ("perl-lsp --health", "retired binary command"),
+    // #5461: the install.ps1 published at perl-lsp/master still derives a
+    // `perl-lsp-<version>-...zip` asset name while releases ship
+    // `perllsp-<version>-...zip`, so piping it into `iex` 404s for every
+    // Windows user. Documenting the piped one-liner hands users a command that
+    // cannot work. Prose that *explains* the breakage is unaffected: only the
+    // executable piped form is forbidden. Remove this entry once #4348 has
+    // promoted the fixed script to the publication repo.
+    ("install.ps1 | iex", "install.ps1 published at perl-lsp/master 404s; see #5461/#4348"),
 ];
 
 const REQUIRED_PATTERNS: &[(&str, &str)] = &[
@@ -133,7 +149,7 @@ fn root_relative<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
 fn is_scan_candidate(path: &Path) -> bool {
     matches!(
         path.extension().and_then(OsStr::to_str),
-        Some("md" | "json" | "rs" | "sh" | "ts" | "js" | "yml" | "yaml" | "toml")
+        Some("md" | "json" | "rs" | "sh" | "ps1" | "ts" | "js" | "yml" | "yaml" | "toml")
     )
 }
 
@@ -308,6 +324,84 @@ mod tests {
         assert!(msg.contains("12 active files scanned"), "msg: {msg}");
         assert!(msg.contains("forbidden patterns"), "msg: {msg}");
         assert!(msg.contains("required patterns"), "msg: {msg}");
+    }
+
+    /// #5461: the piped PowerShell one-liner 404s for every Windows user, so it
+    /// must be caught wherever it is documented as a runnable command. The docs
+    /// that *explain* the breakage (INSTALLATION.md, README.md) legitimately
+    /// name `install.ps1` and must stay clean, or the guard would force the
+    /// honest explanation to be deleted along with the broken command.
+    #[test]
+    fn piped_install_ps1_is_forbidden_but_explanatory_prose_is_not() {
+        let file = SourceFile {
+            rel_path: PathBuf::from("docs/how-to/INSTALLATION.md"),
+            text: [
+                // Runnable, broken — must be caught.
+                "irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex",
+                // Prose and the -OutFile form that INSTALLATION.md documents as
+                // 404ing — must NOT be caught.
+                "The PowerShell installer script is **not usable yet**: `install.ps1` 404s.",
+                "irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1",
+                ".\\install.ps1 -Version 0.17.0 -InstallDir C:\\tools\\bin",
+                "(`Unblock-File .\\install.ps1`) or run it in a session that allows local scripts.",
+            ]
+            .join("\n"),
+        };
+
+        let mut violations = Vec::new();
+        check_forbidden_patterns(&[file], &mut violations);
+
+        let piped: Vec<_> =
+            violations.iter().filter(|v| v.message.contains("install.ps1 | iex")).collect();
+        assert_eq!(
+            piped.len(),
+            1,
+            "exactly the piped one-liner must be flagged, got: {violations:?}"
+        );
+        assert!(
+            piped[0].location.ends_with(":1"),
+            "the flagged line must be the piped command, got: {}",
+            piped[0].location
+        );
+    }
+
+    /// #5477 review finding: the guard reported the tree clean while
+    /// `install.ps1` and `scripts/install.sh` still handed users the forbidden
+    /// command, because neither was in `SCAN_ROOTS` and `.ps1` was not a scan
+    /// candidate. Pin both surfaces so a future scan-root edit cannot silently
+    /// drop the installers back out of coverage.
+    #[test]
+    fn installer_scripts_are_in_scan_scope() -> Result<()> {
+        let root = project_root()?;
+        let files = collect_source_files(&root)?;
+        let scanned: Vec<_> = files.iter().map(|f| f.rel_path.as_path()).collect();
+
+        for required in ["install.ps1", "install.sh", "scripts/install.sh"] {
+            assert!(
+                scanned.contains(&Path::new(required)),
+                "{required} must be scanned by the install-surface guard"
+            );
+        }
+        Ok(())
+    }
+
+    /// The guard is only worth having if the tree it guards is actually clean.
+    /// A forbidden pattern that already has live violations would fail the real
+    /// `cargo xtask install-surface-check` run, so pin the current tree here.
+    #[test]
+    fn live_install_surface_has_no_piped_install_ps1() -> Result<()> {
+        let root = project_root()?;
+        let files = collect_source_files(&root)?;
+        let mut violations = Vec::new();
+        check_forbidden_patterns(&files, &mut violations);
+
+        let piped: Vec<_> = violations
+            .iter()
+            .filter(|v| v.message.contains("install.ps1 | iex"))
+            .map(|v| v.location.clone())
+            .collect();
+        assert!(piped.is_empty(), "piped install.ps1 still documented at: {piped:?}");
+        Ok(())
     }
 
     #[test]

@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10106 |
-| Rust-family files | 3093 |
-| Non-Rust files | 7013 |
-| Allowlisted | 4730 |
-| Unclassified | 2283 |
+| Total tracked files | 10114 |
+| Rust-family files | 3098 |
+| Non-Rust files | 7016 |
+| Allowlisted | 4732 |
+| Unclassified | 2284 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 236 |
-| documentation | 2251 |
+| documentation | 2253 |
 | generated | 1 |
 | production | 211 |
 | test | 1712 |
 | tooling | 319 |
-| unclassified | 2283 |
+| unclassified | 2284 |
 
 ## Unclassified files
 
@@ -2191,6 +2191,7 @@
 | `xtask/tests/fixtures/aggregator/pass/advisory.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/lint.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/tests.json` | `json` |
+| `xtask/tests/fixtures/ci-explain-run/gate-receipts/receipt.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/ci-scope-change.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/docs-only-non-parser.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/lexer-token-change.json` | `json` |
@@ -3825,6 +3826,8 @@
 | `docs/ci/workflow-security-policy.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/workflow-trigger-policy.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/worktree-allocator.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/compiler/profiles/lsp_exactness_v1.yaml` | documentation | `non-rust-docs-tree` | docs |
+| `docs/compiler/profiles/selected_upstream_v1.yaml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/cache-aware-agent-lanes.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/doctrine-is-a-hypothesis.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/enforcement-over-doctrine.md` | documentation | `non-rust-docs-tree` | docs |
