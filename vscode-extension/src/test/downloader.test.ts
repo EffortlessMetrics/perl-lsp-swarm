@@ -217,12 +217,25 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.19045')).toBe(
       'windows-10-or-earlier',
     );
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.21999')).toBe(
+      'windows-10-or-earlier',
+    );
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.22000')).toBe('windows-11-or-newer');
+    expect(classifyWindowsArm64Support('win32', 'arm64', 'unknown')).toBe('unknown');
     expect(getUnsupportedWindowsArm64Message('win32', 'arm64', '10.0.19045')).toMatch(
       /Windows ARM64 x64 emulation requires Windows 11.*Windows 10 ARM64 cannot run/,
     );
     expect(() =>
       withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.19045')),
     ).toThrow(/Build from source/);
+    expect(() =>
+      withProcess('win32', 'arm64', () => getPlatformTarget(downloader, 'unknown')),
+    ).toThrow(/Build from source/);
+  });
+
+  test('future Windows version formats remain supported on ARM64', () => {
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.1.0')).toBe('windows-11-or-newer');
+    expect(classifyWindowsArm64Support('win32', 'arm64', '11.0.0')).toBe('windows-11-or-newer');
   });
 
   test('Windows on x64 is unaffected', () => {

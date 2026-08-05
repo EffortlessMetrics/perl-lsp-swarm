@@ -38,13 +38,26 @@ export type WindowsArm64Support =
   | 'unknown';
 
 export function parseWindowsBuildNumber(release: string): number | null {
-  const match = /(?:^|[^\d])10\.0\.(\d+)(?:$|[^\d])/.exec(release);
-  if (!match?.[1]) {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(release);
+  if (!match) {
     return null;
   }
 
-  const build = Number(match[1]);
-  return Number.isSafeInteger(build) ? build : null;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const build = Number(match[3]);
+  if (![major, minor, build].every(Number.isSafeInteger)) {
+    return null;
+  }
+
+  // Keep future Windows versions fail-open for ARM64 x64 emulation while
+  // preserving the Windows 10 build boundary. A newer major/minor version is
+  // represented as at least the Windows 11 minimum for classification.
+  if (major > 10 || (major === 10 && minor > 0)) {
+    return Math.max(build, WINDOWS_11_MIN_BUILD);
+  }
+
+  return build;
 }
 
 export function classifyWindowsArm64Support(

@@ -268,10 +268,18 @@ assert_windows_arm64_version_guard() {
         return
     fi
 
-    if ! grep -Fq '22000' "$file" || \
-        ! grep -Fq 'Windows 10 ARM64' "$file" || \
-        ! grep -Fq 'Get-WindowsBuildNumber' "$file"; then
-        fail "$label" "must classify the Windows 11 build boundary and reject Windows 10 ARM64"
+    local build_line guard_line error_line target_line download_line
+    build_line="$(grep -nF '$WindowsBuild = Get-WindowsBuildNumber' "$file" | head -n1 | cut -d: -f1)"
+    guard_line="$(grep -nF 'if ($WindowsBuild -lt 22000)' "$file" | head -n1 | cut -d: -f1)"
+    error_line="$(grep -nF 'Write-Error "Windows ARM64 x64 emulation requires' "$file" | head -n1 | cut -d: -f1)"
+    target_line="$(grep -nF '$Target =' "$file" | head -n1 | cut -d: -f1)"
+    download_line="$(grep -nF 'Invoke-WebRequest' "$file" | head -n1 | cut -d: -f1)"
+
+    if [[ -z "$build_line" || -z "$guard_line" || -z "$error_line" || \
+        -z "$target_line" || -z "$download_line" ]] || \
+        (( build_line >= guard_line || guard_line >= error_line || \
+            error_line >= target_line || target_line >= download_line )); then
+        fail "$label" "must prove the ordered ARM64 rejection guard before target selection and download"
         return
     fi
 
