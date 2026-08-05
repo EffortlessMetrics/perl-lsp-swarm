@@ -54,6 +54,24 @@ async function withTimeout<T>(
   }
 }
 
+async function waitForStartupMetrics(
+  getMetrics: () => ReceiptValue,
+  timeoutMs: number,
+): Promise<ReceiptValue> {
+  const deadline = Date.now() + timeoutMs;
+  let metrics = getMetrics();
+  while (
+    Date.now() < deadline &&
+    [metrics.binary_resolution_status, metrics.server_start_status, metrics.initialize_status].some(
+      (status) => status === 'running',
+    )
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    metrics = getMetrics();
+  }
+  return metrics;
+}
+
 function bundledBinaryPath(extensionPath: string): string {
   const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
   const names =
@@ -249,7 +267,9 @@ suite('Packaged VSIX bundled-server journey', function () {
       }
 
       const diagnostics = vscode.languages.getDiagnostics(document.uri);
-      const metrics = activation?.getLanguageClientStartupMetrics?.() ?? {};
+      const metrics = activation?.getLanguageClientStartupMetrics
+        ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
+        : {};
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
@@ -264,6 +284,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
           startup_source: metrics.binary_resolution_source ?? null,
         },
+        startup: metrics,
         vsix_identity: {
           extension_id: extension.id,
           version: extension.packageJSON?.version ?? null,
@@ -319,8 +340,28 @@ suite('Packaged VSIX bundled-server journey', function () {
         ([label, result]) =>
           result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
       );
-      receipt.outcome = providerFailures.length === 0 ? 'completed' : 'failed';
-      receipt.product_blockers = providerFailures.map(([label, result]) => ({ label, result }));
+      const lifecycleExpectations: Array<[string, string]> = [
+        ['binary_resolution_source', 'bundled'],
+        ['binary_resolution_status', 'ok'],
+        ['server_start_status', 'ok'],
+        ['initialize_status', 'ok'],
+      ];
+      const lifecycleFailures = lifecycleExpectations
+        .filter(([field, expected]) => metrics[field] !== expected)
+        .map(([field, expected]) => ({
+          label: `lifecycle.${field}`,
+          result: {
+            expected,
+            actual: metrics[field] ?? null,
+            metrics,
+          },
+        }));
+      const productBlockers = [
+        ...lifecycleFailures,
+        ...providerFailures.map(([label, result]) => ({ label, result })),
+      ];
+      receipt.outcome = productBlockers.length === 0 ? 'completed' : 'failed';
+      receipt.product_blockers = productBlockers;
 
       fs.writeFileSync(
         path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
