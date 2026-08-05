@@ -677,7 +677,10 @@ mod tests {
             native_format_config(&options_with_tab_size(4, true), Some(&config), false);
 
         assert_eq!(format_config.indent_width, 2);
-        assert!(!format_config.use_tabs);
+        assert!(
+            !format_config.use_tabs,
+            "editor insertSpaces=true must keep spaces when only indent_columns is configured"
+        );
     }
 
     #[test]
@@ -686,7 +689,10 @@ mod tests {
         let format_config =
             native_format_config(&options_with_tab_size(4, true), Some(&config), false);
 
-        assert!(format_config.use_tabs);
+        assert!(
+            format_config.use_tabs,
+            "configured perltidy tabs=true must override editor insertSpaces=true"
+        );
     }
 
     #[test]
@@ -698,7 +704,10 @@ mod tests {
             native_format_config(&options_with_tab_size(2, false), Some(&config), false);
 
         assert_eq!(format_config.indent_width, 2);
-        assert!(format_config.use_tabs);
+        assert!(
+            format_config.use_tabs,
+            "unconfigured perltidy must inherit editor insertSpaces=false as tabs"
+        );
     }
 
     #[test]
