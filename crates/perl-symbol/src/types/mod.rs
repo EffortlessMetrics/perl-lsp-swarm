@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Minimum query length (in `char`s of the lowercased query) that admits the
-/// loose match tiers — substring and subsequence — for symbol search. (#5335)
+/// loose match tiers (substring and subsequence) for symbol search. (#5335)
 ///
 /// A one-character query is too weak to justify loose matching: nearly every
 /// symbol in a workspace contains that character somewhere, producing an
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Length is measured on the *lowercased* query, because lowercasing can
 /// lengthen a one-character input: 'İ' (U+0130) lowercases to the two chars
-/// "i\u{307}", which then admits loose tiers. This is intentional — the
+/// "i\u{307}", which then admits loose tiers. This is intentional. The
 /// lowercased form is what the matchers actually compare against.
 ///
 /// Applied consistently to every symbol source that feeds a `workspace/symbol`
@@ -314,7 +314,8 @@ mod tests {
         // Variable types get richer distinctions
         assert_eq!(SymbolKind::Variable(VarKind::Scalar).to_lsp_kind_document_symbol(), 13); // Variable
         assert_eq!(SymbolKind::Variable(VarKind::Array).to_lsp_kind_document_symbol(), 18); // Array
-        assert_eq!(SymbolKind::Variable(VarKind::Hash).to_lsp_kind_document_symbol(), 19); // Object
+        assert_eq!(SymbolKind::Variable(VarKind::Hash).to_lsp_kind_document_symbol(), 19);
+        // Object
     }
 
     #[test]

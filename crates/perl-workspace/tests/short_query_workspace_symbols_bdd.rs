@@ -5,9 +5,9 @@
 //! `MIN_LOOSE_MATCH_QUERY_CHARS` chars (after lowercasing) restrict results to
 //! exact and prefix matches, skipping substring and subsequence tiers.
 //!
-//! Tests operate at the handler level — against the full result set produced by
+//! Tests operate against the full result sets produced by
 //! `WorkspaceIndex::search_symbols` and
-//! `WorkspaceIndex::search_generated_workspace_symbols` — so a new symbol
+//! `WorkspaceIndex::search_generated_workspace_symbols`, so a new symbol
 //! source that omits the guard will fail here without any per-matcher
 //! visibility required. (#5335, #5407)
 
@@ -52,7 +52,7 @@ sub get_all_items { 3 }
 
 /// The threshold itself must come from the canonical single definition in
 /// `perl_symbol`. If either consumer redefined it locally with a different
-/// value, this assertion would fail — surfacing the split-brain immediately.
+/// value, this assertion would fail, surfacing the split-brain immediately.
 #[test]
 fn min_loose_match_query_chars_is_two() {
     assert_eq!(MIN_LOOSE_MATCH_QUERY_CHARS, 2);
@@ -77,12 +77,12 @@ fn given_one_char_query_when_searching_workspace_symbols_then_only_exact_and_pre
 
     let results = index.search_symbols(query);
 
-    // Every returned symbol must be exact or prefix — no substring/subsequence.
+    // Every returned symbol must be exact or prefix. No substring/subsequence.
     for sym in &results {
         assert!(
             is_exact_or_prefix(&sym.name, query),
             "symbol '{}' is a substring/subsequence match for one-char query '{}' \
-             — the short-query guard is missing or broken",
+             . The short-query guard is missing or broken",
             sym.name,
             query,
         );
@@ -128,7 +128,7 @@ fn given_two_char_query_when_searching_workspace_symbols_then_loose_matches_retu
 
     let results = index.search_symbols(query);
 
-    // At least one loose match (substring) must appear — "main_alpha_fn"
+    // At least one loose match (substring) must appear. "main_alpha_fn"
     // contains "al" but does not start with "al", so it proves the loose tier
     // is open for this query length.
     assert!(
@@ -138,7 +138,7 @@ fn given_two_char_query_when_searching_workspace_symbols_then_loose_matches_retu
         results.iter().map(|s| &s.name).collect::<Vec<_>>()
     );
 
-    // "get_all_items" also contains "al" — a second loose match.
+    // "get_all_items" also contains "al", a second loose match.
     assert!(
         results.iter().any(|s| s.name == "get_all_items"),
         "expected substring match 'get_all_items' for two-char query '{}', got: {:?}",
@@ -183,13 +183,13 @@ has callback_ref => (is => 'ro');
 
     // Every returned generated symbol must be exact or prefix.
     for sym in &results {
-        // Generated symbols use names like "attr_value [generated/framework]" —
-        // strip the label suffix before the exact/prefix check.
+        // Generated symbols use names like "attr_value [generated/framework]".
+        // Strip the label suffix before the exact/prefix check.
         let bare = sym.name.split_once(' ').map_or(sym.name.as_str(), |(b, _)| b);
         assert!(
             is_exact_or_prefix(bare, query),
             "generated symbol '{}' (bare: '{}') is a non-prefix match for \
-             one-char query '{}' — the generated-member guard is missing or broken",
+             one-char query '{}'. The generated-member guard is missing or broken",
             sym.name,
             bare,
             query,
@@ -208,11 +208,11 @@ has callback_ref => (is => 'ro');
         results.iter().map(|s| &s.name).collect::<Vec<_>>()
     );
 
-    // "callback_ref" contains 'a' but does not start with 'a' — must be absent.
+    // "callback_ref" contains 'a' but does not start with 'a'. It must be absent.
     assert!(
         !results.iter().any(|s| s.name.starts_with("callback_ref")),
         "unexpected substring match 'callback_ref' for one-char query '{}' \
-         in generated symbols — the guard is missing",
+         in generated symbols. The guard is missing",
         query,
     );
 
@@ -250,18 +250,24 @@ has callback_ref => (is => 'ro');
         !results.is_empty(),
         "fixture must synthesize generated members before the loose tier is tested"
     );
-    // "callback_ref" contains "ll" (cal-l-back-ref -> positions 3-4), so
-    // at least one result must exercise the loose tier.
-    let has_loose_match = results.iter().any(|s| {
-        let bare = s.name.split_once(' ').map_or(s.name.as_str(), |(b, _)| b);
-        !is_exact_or_prefix(bare, query)
-    });
+    // "callback_ref" contains "ll" (call-back-ref -> positions 3-4), so
+    // it must exercise the loose tier.
+    let callback_ref = results
+        .iter()
+        .find(|s| s.name.split_once(' ').map_or(s.name.as_str(), |(b, _)| b) == "callback_ref");
     assert!(
-        has_loose_match,
-        "expected at least one loose (substring/fuzzy) match for two-char query '{}', \
-         got only exact/prefix results: {:?}",
+        callback_ref.is_some(),
+        "expected loose match 'callback_ref' for two-char query '{}', got: {:?}",
         query,
         results.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    let callback_ref = callback_ref.ok_or("callback_ref disappeared after assertion")?;
+    let bare = callback_ref.name.split_once(' ').map_or(callback_ref.name.as_str(), |(b, _)| b);
+    assert!(
+        !is_exact_or_prefix(bare, query),
+        "expected 'callback_ref' to exercise loose matching for query '{}', got: {}",
+        query,
+        callback_ref.name
     );
 
     Ok(())

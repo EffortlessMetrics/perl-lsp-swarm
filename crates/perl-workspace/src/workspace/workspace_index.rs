@@ -93,7 +93,7 @@ pub use crate::workspace::monitoring::{
     IndexMetrics, IndexPerformanceCaps, IndexPhase, IndexPhaseTransition, IndexResourceLimits,
     IndexStateKind, IndexStateTransition, ResourceKind,
 };
-use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
+pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 use perl_symbol::surface::decl::extract_symbol_decls;
 use perl_symbol::surface::facts::{symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts};
 // Only used by `build_canonical_fact_shard_for_ast`, which is now
