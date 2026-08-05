@@ -642,7 +642,11 @@ pub struct ParseOutput {
 pub enum RecoverySalvageClass {
     /// No diagnostics and no `ERROR` AST nodes.
     Clean,
-    /// Only structured recovery diagnostics were emitted; no `ERROR` nodes.
+    /// No `ERROR` nodes were produced, but blocking diagnostics were emitted.
+    ///
+    /// This includes both structured recovery diagnostics and blocking
+    /// diagnostics that did not materialize an `ERROR` node. Callers that
+    /// need the structured-recovery subset should use `recovered_count`.
     StructuredRecoveryOnly,
     /// Parse produced one or more `ERROR` AST nodes.
     ErrorNodesPresent,
