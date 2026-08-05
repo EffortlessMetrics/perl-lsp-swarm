@@ -139,9 +139,13 @@ The extension automatically downloads the correct `perllsp` binary for your plat
 
 | Platform    | Architectures                      |
 | ----------- | ---------------------------------- |
-| **Windows** | x64, ARM64                         |
+| **Windows** | x64                                |
 | **macOS**   | Intel (x64), Apple Silicon (ARM64) |
 | **Linux**   | x64, ARM64 (glibc and musl)        |
+
+There is no native ARM64 Windows build. On ARM64 the extension installs the x64
+binary, which runs under the x64 emulation in Windows 11 on ARM. Windows 10 on
+ARM emulates x86 but not x64, so build from source there.
 
 On Linux, `auto` selects the GNU/glibc archive for mainstream distributions and
 the musl archive for Alpine Linux or musl-based containers. Set
