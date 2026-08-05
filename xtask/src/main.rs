@@ -1851,6 +1851,13 @@ enum Commands {
         command: MetricsCommand,
     },
 
+    /// Validate and identify versioned compiler capability profiles.
+    #[command(name = "compiler-profile")]
+    CompilerProfile {
+        #[command(subcommand)]
+        command: CompilerProfileCommand,
+    },
+
     /// Publish structured editor UX scorecard artifact/status from harness fixtures.
     UxScorecard {
         /// Output format for stdout.
@@ -3323,6 +3330,14 @@ enum MetricsCommand {
         #[arg(long)]
         input: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum CompilerProfileCommand {
+    /// Validate the committed selected-upstream and LSP exactness profiles.
+    List,
+    /// Validate one profile document and print its stable identity.
+    Check { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -4832,6 +4847,17 @@ fn run_cli(cli: Cli) -> Result<()> {
             check: args.check,
         }),
         Commands::CheckTestWiring => check_test_wiring::run(),
+        Commands::CompilerProfile { command } => {
+            let root = utils::project_root()?;
+            match command {
+                CompilerProfileCommand::List => {
+                    tasks::compiler_profile::list(&root).map_err(|error| eyre!(error.to_string()))
+                }
+                CompilerProfileCommand::Check { path } => {
+                    tasks::compiler_profile::check(&path).map_err(|error| eyre!(error.to_string()))
+                }
+            }
+        }
         Commands::Metrics { command } => match command {
             MetricsCommand::ParserStats { input, json } => metrics::parser_stats::run(input, json),
             MetricsCommand::ParserAccuracy {
