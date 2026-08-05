@@ -218,6 +218,45 @@ fn test_logpoint_value_containing_a_prompt_token_survives() -> TestResult {
     Ok(())
 }
 
+/// A value's own trailing whitespace must reach the client.
+///
+/// End-to-end on purpose: the loss happened in the reader's `trim_end()` on the whole
+/// line, upstream of the capture, so a unit test on `observe_line` cannot see it.
+#[test]
+fn test_logpoint_preserves_trailing_whitespace_in_values() -> TestResult {
+    if !perl_available() {
+        eprintln!("Skipping test_logpoint_preserves_trailing_whitespace_in_values - perl missing");
+        return Ok(());
+    }
+
+    let workspace = tempdir()?;
+    let script = workspace.path().join("logpoint_trailing_ws_e2e.pl");
+    write(
+        &script,
+        "use strict;\nuse warnings;\n\nmy $w = \"abc  \";\nmy $n = 1;\nmy $z = $n;\nprint \"$z\\n\";\n",
+    )?;
+    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
+
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    session.launch(&script_str)?;
+    set_logpoint(&mut session, &script_str, LOGPOINT_LINE, "w=[{$w}]")?;
+    session.configuration_done()?;
+
+    let console = collect_console_output(&session);
+    let joined = console.join("");
+
+    assert!(
+        joined.contains("w=[abc  ]"),
+        "trailing spaces belong to the value and must survive; console was {console:?}"
+    );
+    assert!(
+        !joined.contains("w=[abc]"),
+        "the value must not be silently trimmed; console was {console:?}"
+    );
+
+    Ok(())
+}
+
 /// A logpoint with nothing to interpolate must still be emitted.
 ///
 /// Wiring interpolation in must not cost the plain case: the templates are handed

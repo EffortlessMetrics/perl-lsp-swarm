@@ -303,7 +303,10 @@ impl PendingLogpoint {
         if let Some(idx) = line.find(VALUE_PREFIX) {
             let payload = &line[idx + VALUE_PREFIX.len()..];
             if let Some((name, value)) = payload.split_once('\t') {
-                self.values.insert(name.to_string(), unescape_value(value.trim_end()));
+                // Only transport delimiters, never payload: a value ending in
+                // spaces or tabs must survive intact.
+                let value = value.trim_end_matches(['\r', '\n']);
+                self.values.insert(name.to_string(), unescape_value(value));
                 return LogpointStep::Consumed;
             }
         }
@@ -417,6 +420,40 @@ mod tests {
             }
         }
         assert!(closed, "the total ceiling must bound a debuggee that never stops replying");
+    }
+
+    /// A scalar's own trailing whitespace is payload, not framing. The query escapes
+    /// CR and LF but not spaces or tabs, so trimming the value silently rewrote it.
+    #[test]
+    fn trailing_whitespace_in_a_value_survives() -> Result<(), String> {
+        let mut pending = PendingLogpoint::new(21, vec!["v=[{$x}]".to_string()])
+            .map_err(|_| "template references $x, so a capture is expected")?;
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_BEGIN_21"), LogpointStep::Consumed);
+        assert_eq!(pending.observe_line("DAPLPV:x\tabc  "), LogpointStep::Consumed);
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_END_21"), LogpointStep::Finished);
+
+        assert_eq!(
+            pending.into_messages(),
+            vec!["v=[abc  ]".to_string()],
+            "the two trailing spaces belong to the value"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn transport_delimiters_are_still_stripped_from_a_value() -> Result<(), String> {
+        let mut pending = PendingLogpoint::new(22, vec!["v=[{$x}]".to_string()])
+            .map_err(|_| "template references $x, so a capture is expected")?;
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_BEGIN_22"), LogpointStep::Consumed);
+        assert_eq!(pending.observe_line("DAPLPV:x\tabc\r"), LogpointStep::Consumed);
+        assert_eq!(pending.observe_line("DAP_LOGPOINT_END_22"), LogpointStep::Finished);
+
+        assert_eq!(
+            pending.into_messages(),
+            vec!["v=[abc]".to_string()],
+            "a stray CR is transport framing, not payload"
+        );
+        Ok(())
     }
 
     #[test]

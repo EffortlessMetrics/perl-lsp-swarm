@@ -759,11 +759,23 @@ impl DebugAdapter {
                         break;
                     }
                     Ok(_) => {
-                        let text = line.trim_end().to_string();
+                        // Strip only the transport delimiters here. A logpoint value
+                        // may legitimately end in spaces or tabs, and `trim_end()`
+                        // below would eat them before the capture ever sees the line.
+                        let framed_text = line.trim_end_matches(['\r', '\n']);
+                        let text = framed_text.trim_end().to_string();
                         let sanitized_text = if let Some(re) = ansi_escape_re() {
                             re.replace_all(&text, "").into_owned()
                         } else {
                             text.clone()
+                        };
+                        // The logpoint protocol carries payload bytes, so it reads the
+                        // delimiter-stripped line rather than the whitespace-trimmed
+                        // one every other consumer below uses.
+                        let capture_text = if let Some(re) = ansi_escape_re() {
+                            re.replace_all(framed_text, "").into_owned()
+                        } else {
+                            framed_text.to_string()
                         };
                         let normalized_text = DebugAdapter::normalize_debugger_output_line(&text);
                         let analysis_text = if normalized_text.is_empty() {
@@ -786,7 +798,7 @@ impl DebugAdapter {
                             // Every line reaching an open drain is swallowed — the
                             // closing line is the end marker itself, which is adapter
                             // framing and must not reach the client either.
-                            if drain.observe_line(&sanitized_text) == DrainStep::Done {
+                            if drain.observe_line(&capture_text) == DrainStep::Done {
                                 logpoint_drain = None;
                             }
                             continue;
@@ -799,7 +811,7 @@ impl DebugAdapter {
                             // whose own text contains `DB<4>` would lose its `DAPLPV:`
                             // prefix and be mistaken for framing noise. The capture
                             // only needs ANSI stripped; its own markers frame it.
-                            let step = pending.observe_line(&sanitized_text);
+                            let step = pending.observe_line(&capture_text);
                             if matches!(
                                 step,
                                 LogpointStep::Finished
