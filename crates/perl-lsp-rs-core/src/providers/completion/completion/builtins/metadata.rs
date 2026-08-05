@@ -504,7 +504,7 @@ fn misc_info(name: &'static str) -> Option<BuiltinInfo> {
             Some("⚠ Deprecated: No-op since Perl 5.16. Previously optimized regex matching; now has no effect."),
         ),
         "dbmopen" => (
-            "dbmopen(, , )",
+            "dbmopen ",
             "dbmopen HASH, DBNAME, MASK",
             Some("⚠ Deprecated: Use tied hashes with DB_File or MLDBM instead."),
         ),
