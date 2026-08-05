@@ -7,9 +7,14 @@ comparison_series:
   - comp
   - run
 required_ast_kinds:
-  - declarations
-  - expressions
-  - statements
+  - Program
+  - ExpressionStatement
+  - VariableDeclaration
+  - Variable
+  - Assignment
+  - FunctionCall
+  - MethodCall
+  - Block
 required_hir_nodes:
   - body
   - expression

@@ -4,8 +4,12 @@ profile_version: v1
 purpose: Compiler fact authority required by the first exactness-bound editor provider vertical.
 comparison_series: []
 required_ast_kinds:
-  - declarations
-  - variable_references
+  - VariableDeclaration
+  - Variable
+  - Assignment
+  - FunctionCall
+  - MethodCall
+  - Subroutine
 required_hir_nodes:
   - binding
   - place
