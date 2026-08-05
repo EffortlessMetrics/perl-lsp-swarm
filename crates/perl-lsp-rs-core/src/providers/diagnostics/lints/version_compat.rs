@@ -414,16 +414,38 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::Unary { op, .. }
                 if op == "->@*" || op == "->%*" || op == "->$*" || op == "->@[" || op == "->@{" =>
             {
-                if !pragma_state.has_feature("postfix_deref") {
+                // Two distinct features, and only one governs this construct:
+                //
+                //   postderef     the `$r->@*` syntax itself, outside strings —
+                //                 what this arm matches (a `Unary` op node);
+                //   postderef_qq  extends it to double-quotish interpolation.
+                //
+                // Verified on perl v5.38.2:
+                //
+                //   no feature 'postderef_qq'; print "$r->@*"  -> ARRAY(0x..)->@*
+                //   no feature 'postderef';    my @a = $r->@*  -> still works
+                //
+                // so `postderef_qq` is the *interpolation* switch and naming it
+                // here would be advice about a different feature. It is also not
+                // supported on the versions this arm fires for: perl's own
+                // bundles gain `postderef_qq` only at `:5.24`, and neither
+                // bundle ever lists `postderef` (it became unconditional in
+                // v5.24). An author targeting v5.20–v5.23 needs `postderef`.
+                //
+                // `has_feature("postfix_deref")` canonicalizes to `postderef_qq`
+                // in `perl-pragma`, which is what makes v5.24+ correctly quiet
+                // via the bundle. But it also means an explicit
+                // `use feature 'postderef';` would not be seen, so following the
+                // remediation would leave the warning up. Querying both keeps
+                // the advice actionable without touching the bundle model.
+                let enabled = pragma_state.has_feature("postfix_deref")
+                    || pragma_state.has_feature("postderef");
+                if !enabled {
                     let min = feature_min_version("postfix_deref");
-                    // `postderef_qq` is the pragma perl accepts *and* the name
-                    // `has_feature("postfix_deref")` canonicalizes to, so the
-                    // advice both compiles and silences this lint.
-                    // `use feature "postfix_deref";` is rejected by perl.
                     diagnostics.push(make_diagnostic(
                         n,
                         "postfix deref",
-                        Some("postderef_qq"),
+                        Some("postderef"),
                         declared_version,
                         min,
                     ));
@@ -1600,6 +1622,11 @@ mod tests {
         "use v5.36;\nno feature 'state';\nstate $x = 1;\n",
         "use v5.36;\nno feature 'isa';\nmy $o = bless {}, 'X';\nmy $b = $o isa 'X';\n",
         "use v5.36;\nno feature 'postderef_qq';\nmy $r = [];\nmy @a = $r->@*;\n",
+        // smartmatch's own downgrade path: below v5.38 with `switch` off, the
+        // arm routes through `make_smartmatch_feature_diagnostic`. Without this
+        // row only its below-minimum path was covered, so the
+        // `Update 'use v5.36' to 'use v5.10'` downgrade went unpinned.
+        "use v5.36;\nno feature 'switch';\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
         // `builtin`: no `use feature` pragma enables these at all.
         "use v5.36;\nmy $x = builtin::inf();\n",
         "use v5.36;\nuse builtin;\n",
@@ -1678,6 +1705,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn postfix_deref_remediation_names_postderef_and_actually_silences_the_lint() {
+        // Review finding (codex P2 on #5559). `postderef` governs the `$r->@*`
+        // syntax this arm matches; `postderef_qq` only extends it to
+        // double-quotish interpolation. Verified on perl v5.38.2:
+        //
+        //   no feature 'postderef_qq'; print "$r->@*"  -> ARRAY(0x..)->@*
+        //   no feature 'postderef';    my @a = $r->@*  -> still works
+        //
+        // and perl's own bundles gain `postderef_qq` only at `:5.24`, so naming
+        // it to an author targeting v5.20 is advice about the wrong feature on a
+        // version that does not have it.
+        let source = "use v5.20;\nmy $r = [];\nmy @a = $r->@*;\n";
+        let suggestion = pl900_suggestion(source, "postfix deref");
+        assert!(!suggestion.is_empty(), "v5.20 postfix deref should emit PL900");
+        assert!(
+            suggestion.contains("use feature \"postderef\""),
+            "remediation must name the feature that governs the operator: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains("postderef_qq"),
+            "postderef_qq is the interpolation switch, not this construct: {suggestion}"
+        );
+
+        // Advice that is correct but leaves the warning up is still a defect:
+        // the author follows it and nothing changes. Guards the `has_feature`
+        // query, which canonicalizes `postfix_deref` to `postderef_qq` and so
+        // would not otherwise see an explicit `use feature 'postderef';`.
+        assert!(
+            !pl900_emitted(
+                "use v5.20;\nuse feature 'postderef';\nmy $r = [];\nmy @a = $r->@*;\n",
+                "postfix deref"
+            ),
+            "following the remediation must silence the diagnostic"
+        );
+
+        // The bundle path must keep working: perl's `:5.24`+ bundles carry
+        // `postderef_qq`, and the operator is unconditional from v5.24.
+        assert!(
+            !pl900_emitted("use v5.24;\nmy $r = [];\nmy @a = $r->@*;\n", "postfix deref"),
+            "the v5.24 bundle enables postfix deref, so v5.24 alone must be silent"
+        );
     }
 
     #[test]
