@@ -121,6 +121,9 @@ impl CompilerProfile {
                 bail!("compiler profile field {name} must not be empty");
             }
         }
+        if self.predecessor_profile.as_deref().is_some_and(|value| value.trim().is_empty()) {
+            bail!("compiler profile field predecessor_profile must not be empty when present");
+        }
         if !self.profile_id.ends_with("_v1") {
             bail!("profile_id must be versioned with the _v1 suffix");
         }
@@ -195,7 +198,7 @@ impl CompilerProfile {
     }
 }
 
-const PROFILE_PATHS: &[&str] = &[
+const PROFILE_PATHS: [&str; 2] = [
     "docs/compiler/profiles/selected_upstream_v1.yaml",
     "docs/compiler/profiles/lsp_exactness_v1.yaml",
 ];
@@ -313,44 +316,63 @@ mod tests {
     const LSP: &str = include_str!("../../../docs/compiler/profiles/lsp_exactness_v1.yaml");
 
     #[test]
-    fn committed_profiles_load_and_have_stable_identity() {
-        for source in [SELECTED, LSP] {
-            let profile = CompilerProfile::from_str(source).expect("fixture profile is valid");
+    fn committed_profiles_load_and_have_stable_identity() -> Result<()> {
+        for (source, expected_identity) in [
+            (SELECTED, "57970e560564a1ded1a1a244a0bba877a248e97a06fd686bced3e9cc456f2e22"),
+            (LSP, "1e1aae7db3c2d6f001819d6e9d6093496b050fd796177311cf2478e7d9e033f6"),
+        ] {
+            let profile = CompilerProfile::from_str(source)?;
             assert_eq!(profile.schema_version, SCHEMA_VERSION);
             assert_eq!(profile.owner_issue, "#5215");
-            assert_eq!(profile.canonical_json().unwrap().contains("\\\\"), false);
-            assert_eq!(profile.identity_sha256().unwrap().len(), 64);
+            assert!(!profile.canonical_json()?.contains("\\\\"));
+            assert_eq!(profile.identity_sha256()?, expected_identity);
         }
+        Ok(())
     }
 
     #[test]
-    fn canonical_identity_ignores_order_but_not_membership() {
+    fn canonical_identity_ignores_order_but_not_membership() -> Result<()> {
         let first =
-            CompilerProfile::from_str(&SELECTED.replace("  - comp\n  - run", "  - run\n  - comp"))
-                .expect("reordered profile is valid");
-        let second = CompilerProfile::from_str(SELECTED).expect("fixture profile is valid");
-        assert_eq!(first.identity_sha256().unwrap(), second.identity_sha256().unwrap());
+            CompilerProfile::from_str(&SELECTED.replace("  - comp\n  - run", "  - run\n  - comp"))?;
+        let second = CompilerProfile::from_str(SELECTED)?;
+        assert_eq!(first.identity_sha256()?, second.identity_sha256()?);
 
         let changed = SELECTED.replace("- comp", "- compare");
-        let changed = CompilerProfile::from_str(&changed).expect("changed membership is shaped");
-        assert_ne!(changed.identity_sha256().unwrap(), second.identity_sha256().unwrap());
+        let changed = CompilerProfile::from_str(&changed)?;
+        assert_ne!(changed.identity_sha256()?, second.identity_sha256()?);
+        Ok(())
     }
 
     #[test]
-    fn malformed_schema_and_unowned_boundary_fail_closed() {
+    fn malformed_schema_and_unowned_boundary_fail_closed() -> Result<()> {
         let bad_schema = SELECTED.replace(SCHEMA_VERSION, "compiler_profile.v2");
-        assert!(CompilerProfile::from_str(&bad_schema).is_err());
+        assert!(
+            CompilerProfile::from_str(&bad_schema).is_err(),
+            "a profile with an unsupported schema must fail closed"
+        );
 
         let bad_boundary = LSP.replace("owner_issue: \"#5215\"", "owner_issue: \"\"");
-        assert!(CompilerProfile::from_str(&bad_boundary).is_err());
+        assert!(
+            CompilerProfile::from_str(&bad_boundary).is_err(),
+            "an unowned boundary must fail closed"
+        );
+
+        let empty_predecessor =
+            LSP.replace("predecessor_profile: null", "predecessor_profile: \"   \"");
+        assert!(
+            CompilerProfile::from_str(&empty_predecessor).is_err(),
+            "a present but empty predecessor profile must fail closed"
+        );
+        Ok(())
     }
 
     #[test]
-    fn exclusion_boundary_and_bridge_are_distinct_typed_states() {
-        let profile = CompilerProfile::from_str(LSP).expect("fixture profile is valid");
+    fn exclusion_boundary_and_bridge_are_distinct_typed_states() -> Result<()> {
+        let profile = CompilerProfile::from_str(LSP)?;
         assert_eq!(profile.allowed_dynamic_boundaries.len(), 1);
         assert_eq!(profile.explicit_exclusions.len(), 1);
         assert_eq!(profile.unsupported_bridges.len(), 1);
         assert_ne!(profile.allowed_dynamic_boundaries[0].id, profile.unsupported_bridges[0].id);
+        Ok(())
     }
 }
