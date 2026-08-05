@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! Context-aware Perl lexer with mode-based tokenization
 //!
 //! This crate provides a high-performance lexer for Perl that handles the inherently
