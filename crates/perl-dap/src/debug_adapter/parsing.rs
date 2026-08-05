@@ -83,9 +83,12 @@ impl DebugAdapter {
     }
 
     /// Convert parsed stack frames from `perl-dap-stack` into local DAP response frames.
-    pub(super) fn parse_stack_frames_from_text(output: &str) -> Vec<StackFrame> {
+    pub(super) fn parse_stack_frames_from_text(
+        output: &str,
+    ) -> (Vec<StackFrame>, HashMap<i32, Vec<String>>) {
         let mut parser = PerlStackParser::new();
-        parser
+        let mut arguments = HashMap::new();
+        let frames = parser
             .parse_stack_trace(output)
             .into_iter()
             .map(|frame| {
@@ -97,8 +100,12 @@ impl DebugAdapter {
                         .and_then(|n| n.to_str())
                         .map(ToString::to_string)
                 });
+                let id = Self::i64_to_i32_saturating(frame.id);
+                if !frame.arguments.is_empty() {
+                    arguments.insert(id, frame.arguments);
+                }
                 StackFrame {
-                    id: Self::i64_to_i32_saturating(frame.id),
+                    id,
                     name: frame.name,
                     source: Source { name, path, source_reference: None },
                     line: Self::i64_to_i32_saturating(frame.line),
@@ -107,7 +114,8 @@ impl DebugAdapter {
                     end_column: frame.end_column.map(Self::i64_to_i32_saturating),
                 }
             })
-            .collect()
+            .collect();
+        (frames, arguments)
     }
 
     /// Filter out internal debugger and shim frames from user-visible stack traces.
@@ -136,6 +144,7 @@ impl DebugAdapter {
                 ScopeKind::Locals => 1_i32,
                 ScopeKind::Package => 2_i32,
                 ScopeKind::Globals => 3_i32,
+                ScopeKind::Arguments => return (Vec::new(), HashMap::new()),
             },
             _ => return (Vec::new(), HashMap::new()),
         };
@@ -270,6 +279,7 @@ impl DebugAdapter {
                     named_variables: None,
                     indexed_variables: None,
                 }],
+                ScopeKind::Arguments => vec![],
             },
             _ => Vec::new(), // Invalid or non-Scope varref → honest empty fallback
         };
@@ -781,6 +791,20 @@ mod tests {
         assert_eq!(frames[2].name, "main::start");
         assert_eq!(frames[2].source.path, "/app/script.pl");
         assert_eq!(frames[2].line, 5);
+    }
+
+    #[test]
+    pub(super) fn test_parse_verbose_stack_frame_returns_argument_map() {
+        let output = "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7";
+        let (frames, arguments) = DebugAdapter::parse_stack_frames_from_text(output);
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].id, 1);
+        assert_eq!(frames[0].name, "main::run");
+        assert_eq!(
+            arguments.get(&1),
+            Some(&vec!["$value".to_string(), "[1, 2]".to_string(), "\"a,b\"".to_string()])
+        );
     }
 
     // AC8.2.4: Stack trace parsing for multi-file call stacks across packages

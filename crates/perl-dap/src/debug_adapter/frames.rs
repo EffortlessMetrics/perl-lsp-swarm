@@ -45,8 +45,8 @@ impl DebugAdapter {
 
         let parsed_frames = if let Some(lines) = framed_output_lines.as_ref() {
             let output = lines.join("\n");
-            let framed_frames =
-                Self::filter_user_visible_frames(Self::parse_stack_frames_from_text(&output));
+            let (parsed_frames, frame_arguments) = Self::parse_stack_frames_from_text(&output);
+            let framed_frames = Self::filter_user_visible_frames(parsed_frames);
             if framed_frames.is_empty() {
                 // The framed T output contained only internal debugger frames (e.g.
                 // `@ = DB::DB called from file '...' line N` at top-level stops) or
@@ -64,6 +64,11 @@ impl DebugAdapter {
                 // causes the caller to fall through to that authoritative source.
                 Vec::new()
             } else {
+                if let Some(ref mut session) =
+                    *lock_or_recover(&self.session, "debug_adapter.session")
+                {
+                    session.stack_frame_arguments = frame_arguments;
+                }
                 framed_frames
             }
         } else {
@@ -155,35 +160,53 @@ impl DebugAdapter {
             VariableReference::Scope { frame_id, kind: ScopeKind::Package }.encode().unwrap_or(0);
         let globals_ref =
             VariableReference::Scope { frame_id, kind: ScopeKind::Globals }.encode().unwrap_or(0);
+        let arguments = lock_or_recover(&self.session, "debug_adapter.session")
+            .as_ref()
+            .and_then(|session| session.stack_frame_arguments.get(&frame_id))
+            .cloned()
+            .unwrap_or_default();
 
-        let scopes_body = ScopesResponseBody {
-            scopes: vec![
-                Scope {
-                    name: "Locals".to_string(),
-                    presentation_hint: Some("locals".to_string()),
-                    variables_reference: i64::from(locals_ref),
-                    expensive: false,
-                    named_variables: None,
-                    indexed_variables: None,
-                },
-                Scope {
-                    name: "Package".to_string(),
-                    presentation_hint: None,
-                    variables_reference: i64::from(package_ref),
-                    expensive: true,
-                    named_variables: None,
-                    indexed_variables: None,
-                },
-                Scope {
-                    name: "Globals".to_string(),
-                    presentation_hint: None,
-                    variables_reference: i64::from(globals_ref),
-                    expensive: true,
-                    named_variables: None,
-                    indexed_variables: None,
-                },
-            ],
-        };
+        let mut scopes = vec![
+            Scope {
+                name: "Locals".to_string(),
+                presentation_hint: Some("locals".to_string()),
+                variables_reference: i64::from(locals_ref),
+                expensive: false,
+                named_variables: None,
+                indexed_variables: None,
+            },
+            Scope {
+                name: "Package".to_string(),
+                presentation_hint: None,
+                variables_reference: i64::from(package_ref),
+                expensive: true,
+                named_variables: None,
+                indexed_variables: None,
+            },
+            Scope {
+                name: "Globals".to_string(),
+                presentation_hint: None,
+                variables_reference: i64::from(globals_ref),
+                expensive: true,
+                named_variables: None,
+                indexed_variables: None,
+            },
+        ];
+        if !arguments.is_empty() {
+            let arguments_ref = VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }
+                .encode()
+                .unwrap_or(0);
+            scopes.push(Scope {
+                name: "Arguments".to_string(),
+                presentation_hint: Some("arguments".to_string()),
+                variables_reference: i64::from(arguments_ref),
+                expensive: false,
+                named_variables: Some(arguments.len() as i64),
+                indexed_variables: None,
+            });
+        }
+
+        let scopes_body = ScopesResponseBody { scopes };
 
         DapMessage::Response {
             seq,
@@ -275,6 +298,48 @@ mod pagination_tests {
         let paginated = DebugAdapter::paginate_stack_frames(all_frames, 0, None);
 
         assert_eq!(paginated.len(), total_before, "no pagination: total == paginated");
+        Ok(())
+    }
+
+    #[test]
+    fn arguments_scope_is_advertised_and_paginates_captured_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(7, "main::run")]);
+        adapter.seed_stack_frame_arguments_for_test(
+            7,
+            vec!["$first".to_string(), "[1, 2]".to_string(), "\"a,b\"".to_string()],
+        );
+
+        let scopes = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 7 })));
+        let DapMessage::Response { body: Some(body), .. } = scopes else {
+            return Err("scopes response did not contain a body".into());
+        };
+        let scope_values =
+            body.get("scopes").and_then(Value::as_array).ok_or("scopes body was not an array")?;
+        assert_eq!(scope_values.len(), 4);
+        let arguments_scope = scope_values
+            .iter()
+            .find(|scope| scope.get("name") == Some(&json!("Arguments")))
+            .ok_or("Arguments scope was not advertised")?;
+        assert_eq!(arguments_scope.get("variablesReference"), Some(&json!(74)));
+
+        let variables = adapter.handle_variables(
+            2,
+            2,
+            Some(json!({ "variablesReference": 74, "start": 1, "count": 1 })),
+        );
+        let DapMessage::Response { body: Some(body), .. } = variables else {
+            return Err("variables response did not contain a body".into());
+        };
+        assert_eq!(body.get("totalVariables"), Some(&json!(3)));
+        let values = body
+            .get("variables")
+            .and_then(Value::as_array)
+            .ok_or("variables body was not an array")?;
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].get("name"), Some(&json!("arg1")));
+        assert_eq!(values[0].get("value"), Some(&json!("[1, 2]")));
         Ok(())
     }
 }
