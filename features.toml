@@ -786,21 +786,21 @@ description = "Jump execution to a target location (goto request)"
 id = "dap.restart_frame"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
-advertised = true
+maturity = "planned"
+advertised = false
 counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_step_through_tests.rs", "crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
-description = "Restart execution from the beginning of a stack frame (restartFrame)"
+description = "Restart execution from the beginning of a stack frame (restartFrame); not implemented for Perl — perl5db has no frame-restart primitive, so the capability is not advertised"
 
 [[feature]]
 id = "dap.terminate_threads"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
-advertised = true
+maturity = "planned"
+advertised = false
 counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_step_through_tests.rs", "crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
-description = "Terminate one or more threads (terminateThreads)"
+description = "Terminate one or more threads (terminateThreads); not implemented for Perl — perl5db cannot target individual threads, so the capability is not advertised"
 
 # Protocol / Lifecycle Features
 
