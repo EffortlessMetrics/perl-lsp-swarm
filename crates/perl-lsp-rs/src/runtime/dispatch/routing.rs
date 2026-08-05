@@ -374,6 +374,10 @@ mod tests {
     fn cancelled_marker_cap_evicts_stale_entries() {
         let server = LspServer::new();
         let oldest = JsonRpcId::Integer(0);
+        let live_pending = JsonRpcId::Integer(10_000);
+
+        server.mark_request_pending(&live_pending);
+        server.cancel_mark(&live_pending);
 
         for id in 0..256 {
             server.cancel_mark(&JsonRpcId::Integer(id));
@@ -385,6 +389,13 @@ mod tests {
 
         assert!(!server.is_cancelled(&oldest));
         assert!(server.is_cancelled(&newest));
+        assert!(
+            server.is_cancelled(&live_pending),
+            "trimming stale markers must preserve a queued request cancellation"
+        );
+
+        server.clear_request_pending(&live_pending);
+        server.cancel_clear(&live_pending);
     }
 
     #[test]
