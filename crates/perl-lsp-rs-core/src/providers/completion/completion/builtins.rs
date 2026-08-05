@@ -19,11 +19,6 @@ pub fn builtin_set() -> &'static HashSet<&'static str> {
     &BUILTIN_SET
 }
 
-/// Create the builtins HashSet (legacy API — prefer builtin_set() for hot paths).
-pub fn create_builtins() -> HashSet<&'static str> {
-    catalog::all_names().collect()
-}
-
 /// Add built-in function completions
 pub fn add_builtin_completions(
     completions: &mut Vec<CompletionItem>,
@@ -75,9 +70,9 @@ mod tests {
 
     #[test]
     fn builtin_completion_uses_cataloged_metadata() -> TestResult {
-        let builtins = create_builtins();
+        let builtins = builtin_set();
         let mut completions = Vec::new();
-        add_builtin_completions(&mut completions, &context_for("op"), &builtins);
+        add_builtin_completions(&mut completions, &context_for("op"), builtins);
 
         let open = completions
             .iter()
@@ -109,9 +104,9 @@ mod tests {
     /// unknown snippet variable.
     #[test]
     fn builtin_with_a_literal_perl_variable_stays_plaintext() -> TestResult {
-        let builtins = create_builtins();
+        let builtins = builtin_set();
         let mut completions = Vec::new();
-        add_builtin_completions(&mut completions, &context_for("opendir"), &builtins);
+        add_builtin_completions(&mut completions, &context_for("opendir"), builtins);
 
         let opendir = completions
             .iter()
@@ -127,9 +122,9 @@ mod tests {
     /// Ordinary builtins are unaffected — no snippet framing added.
     #[test]
     fn ordinary_builtin_is_plaintext() -> TestResult {
-        let builtins = create_builtins();
+        let builtins = builtin_set();
         let mut completions = Vec::new();
-        add_builtin_completions(&mut completions, &context_for("print"), &builtins);
+        add_builtin_completions(&mut completions, &context_for("print"), builtins);
 
         let print = completions
             .iter()
@@ -144,9 +139,9 @@ mod tests {
 
     #[test]
     fn builtin_completion_keeps_fallback_for_catalog_entries_without_metadata() -> TestResult {
-        let builtins = create_builtins();
+        let builtins = builtin_set();
         let mut completions = Vec::new();
-        add_builtin_completions(&mut completions, &context_for("-r"), &builtins);
+        add_builtin_completions(&mut completions, &context_for("-r"), builtins);
 
         let file_test =
             completions.iter().find(|item| item.label == "-r").ok_or("-r completion missing")?;
