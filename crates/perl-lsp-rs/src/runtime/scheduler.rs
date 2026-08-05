@@ -573,6 +573,21 @@ impl Scheduler {
         }
     }
 
+    /// Release bookkeeping for mutations abandoned after the outbound channel
+    /// closes, including the sequence barrier needed by queued reads.
+    fn settle_abandoned_mutation(
+        queued: QueuedMutation,
+        server: &Arc<LspServer>,
+        mutation_seq_done: &Arc<AtomicU64>,
+        mutation_notify: &Arc<Notify>,
+    ) {
+        if let Some(id) = queued.request.id.as_ref() {
+            server.clear_request_pending(id);
+        }
+        mutation_seq_done.store(queued.seq, Ordering::SeqCst);
+        mutation_notify.notify_waiters();
+    }
+
     /// Single exclusive mutation worker.
     ///
     /// Drains the mutation channel sequentially, running each handler on the
@@ -633,6 +648,20 @@ impl Scheduler {
             if let Some(response) = to_send {
                 log_response(&response);
                 if server.outbound.send_response(response).is_err() {
+                    // The outbound channel is gone, so the worker cannot
+                    // deliver responses for requests still buffered in the
+                    // mutation queue. Settle their scheduler ownership before
+                    // dropping the receiver; otherwise their cancellation
+                    // markers stay pinned and reads waiting on their sequence
+                    // numbers can remain blocked forever.
+                    while let Ok(abandoned) = rx.try_recv() {
+                        Self::settle_abandoned_mutation(
+                            abandoned,
+                            &server,
+                            &mutation_seq_done,
+                            &mutation_notify,
+                        );
+                    }
                     break;
                 }
             }
@@ -1394,6 +1423,31 @@ mod tests {
             dedup_key: None,
             freshness: None,
         }
+    }
+
+    #[test]
+    fn abandoned_mutation_settlement_releases_pending_marker_and_barrier() {
+        let server = Arc::new(crate::LspServer::new());
+        let id = JsonRpcId::Integer(901);
+        server.mark_request_pending(&id);
+
+        let queued = QueuedMutation {
+            request: JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(id.clone()),
+                method: "textDocument/didChange".to_string(),
+                params: None,
+            },
+            seq: 7,
+            enqueued: std::time::Instant::now(),
+        };
+        let mutation_seq_done = Arc::new(AtomicU64::new(0));
+        let mutation_notify = Arc::new(Notify::new());
+
+        Scheduler::settle_abandoned_mutation(queued, &server, &mutation_seq_done, &mutation_notify);
+
+        assert!(!server.pending_request_ids.lock().contains(&id));
+        assert_eq!(mutation_seq_done.load(Ordering::SeqCst), 7);
     }
 
     // =====================================================================
