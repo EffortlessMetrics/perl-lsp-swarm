@@ -333,6 +333,15 @@ impl Scope {
                         if name.starts_with('_') {
                             continue;
                         }
+                        // Auto-suppress unused $self in plain subs — it's the
+                        // dominant Moose/Moo invocant idiom and flagging it is
+                        // more noisy than useful (#5060 item 3).
+                        if name == "self" && idx == 0 {
+                            // idx 0 = scalar sigil. Only skip if this scope's
+                            // parent is a subroutine scope (not Method, which
+                            // already pre-marks $self as used).
+                            continue;
+                        }
                         let full_name = format!("{}{}", index_to_sigil(idx), name);
                         f(full_name, var.declaration_offset);
                     }
