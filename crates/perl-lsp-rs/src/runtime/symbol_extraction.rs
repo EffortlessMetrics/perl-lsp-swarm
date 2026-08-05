@@ -4,6 +4,30 @@
 //! references to a given symbol. They are used by code-lens resolve,
 //! workspace/symbol, and related features.
 
+/// Case-insensitive ASCII substring check without allocating (#5053 item 5).
+///
+/// Equivalent to `haystack.to_lowercase().contains(&needle.to_lowercase())`
+/// but avoids the per-call String allocations.
+fn ascii_contains_ci(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if needle_lower.len() > haystack.len() {
+        return false;
+    }
+    // Use a char-level scan to find the first matching position
+    let needle_bytes = needle_lower.as_bytes();
+    let h_len = haystack.len();
+    let n_len = needle_lower.len();
+    for i in 0..=(h_len - n_len) {
+        let window = &haystack.as_bytes()[i..i + n_len];
+        if window.iter().zip(needle_bytes).all(|(h, n)| h.to_ascii_lowercase() == *n) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(not(feature = "workspace"))]
 use super::json;
 use super::{
@@ -328,7 +352,7 @@ impl LspServer {
         match &node.kind {
             NodeKind::Subroutine { name, body, .. } => {
                 if let Some(sub_name) = name {
-                    if sub_name.to_lowercase().contains(&query_lower) {
+                    if ascii_contains_ci(sub_name, &query_lower) {
                         let (start_line, start_char) =
                             byte_to_line_col(source, node.location.start);
                         let (end_line, end_char) = byte_to_line_col(source, node.location.end);
@@ -351,7 +375,7 @@ impl LspServer {
             }
 
             NodeKind::Package { name, block, .. } => {
-                if name.to_lowercase().contains(&query_lower) {
+                if ascii_contains_ci(name, &query_lower) {
                     let (start_line, start_char) = byte_to_line_col(source, node.location.start);
                     let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
@@ -375,7 +399,7 @@ impl LspServer {
 
             // Perl 5.38+ native class declaration
             NodeKind::Class { name, body, .. } => {
-                if name.to_lowercase().contains(&query_lower) {
+                if ascii_contains_ci(name, &query_lower) {
                     let (start_line, start_char) = byte_to_line_col(source, node.location.start);
                     let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
@@ -397,7 +421,7 @@ impl LspServer {
 
             // Perl 5.38+ native method declaration
             NodeKind::Method { name, body, .. } => {
-                if name.to_lowercase().contains(&query_lower) {
+                if ascii_contains_ci(name, &query_lower) {
                     let (start_line, start_char) = byte_to_line_col(source, node.location.start);
                     let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
