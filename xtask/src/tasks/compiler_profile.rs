@@ -131,15 +131,18 @@ impl CompilerProfile {
             bail!("profile_version must start with 'v'");
         }
         validate_unique_strings("comparison_series", &self.comparison_series)?;
-        validate_unique_strings("required_ast_kinds", &self.required_ast_kinds)?;
-        validate_unique_strings("required_hir_nodes", &self.required_hir_nodes)?;
-        validate_unique_strings("required_pir_operations", &self.required_pir_operations)?;
-        validate_unique_strings("required_place_kinds", &self.required_place_kinds)?;
-        validate_unique_strings("required_context_dimensions", &self.required_context_dimensions)?;
-        validate_unique_strings("required_cfg_edges", &self.required_cfg_edges)?;
-        validate_unique_strings("required_fact_classes", &self.required_fact_classes)?;
-        validate_unique_strings("consumers", &self.consumers)?;
-        validate_unique_strings(
+        validate_required_strings("required_ast_kinds", &self.required_ast_kinds)?;
+        validate_required_strings("required_hir_nodes", &self.required_hir_nodes)?;
+        validate_required_strings("required_pir_operations", &self.required_pir_operations)?;
+        validate_required_strings("required_place_kinds", &self.required_place_kinds)?;
+        validate_required_strings(
+            "required_context_dimensions",
+            &self.required_context_dimensions,
+        )?;
+        validate_required_strings("required_cfg_edges", &self.required_cfg_edges)?;
+        validate_required_strings("required_fact_classes", &self.required_fact_classes)?;
+        validate_required_strings("consumers", &self.consumers)?;
+        validate_required_strings(
             "gold_oracle_eir_requirements",
             &self.gold_oracle_eir_requirements,
         )?;
@@ -224,6 +227,7 @@ impl DynamicBoundary {
             "dynamic boundary",
             &self.id,
             &self.construct,
+            "reason",
             &self.reason,
             &self.owner_issue,
             Some(&self.stop_condition),
@@ -237,6 +241,7 @@ impl ProfileExclusion {
             "profile exclusion",
             &self.id,
             &self.construct,
+            "reason",
             &self.reason,
             &self.owner_issue,
             None,
@@ -254,6 +259,7 @@ impl UnsupportedBridge {
             "unsupported bridge",
             &self.id,
             &self.construct,
+            "representation",
             &self.representation,
             &self.owner_issue,
             Some(&self.stop_condition),
@@ -265,12 +271,13 @@ fn validate_owned_entry(
     kind: &str,
     id: &str,
     construct: &str,
-    reason: &str,
+    detail_name: &str,
+    detail: &str,
     owner_issue: &str,
     stop_condition: Option<&String>,
 ) -> Result<()> {
     for (field, value) in
-        [("id", id), ("construct", construct), ("reason", reason), ("owner_issue", owner_issue)]
+        [("id", id), ("construct", construct), (detail_name, detail), ("owner_issue", owner_issue)]
     {
         if value.trim().is_empty() {
             bail!("{kind} {id:?} has empty {field}");
@@ -291,6 +298,14 @@ fn validate_unique_strings(name: &str, values: &[String]) -> Result<()> {
     let unique = values.iter().collect::<BTreeSet<_>>();
     if unique.len() != values.len() {
         bail!("{name} must not contain duplicate entries");
+    }
+    Ok(())
+}
+
+fn validate_required_strings(name: &str, values: &[String]) -> Result<()> {
+    validate_unique_strings(name, values)?;
+    if values.is_empty() {
+        bail!("{name} must contain at least one entry");
     }
     Ok(())
 }
@@ -362,6 +377,36 @@ mod tests {
         assert!(
             CompilerProfile::from_str(&empty_predecessor).is_err(),
             "a present but empty predecessor profile must fail closed"
+        );
+
+        let empty_required = LSP.replace(
+            "required_hir_nodes:\n  - binding\n  - place\n  - source_anchor",
+            "required_hir_nodes: []",
+        );
+        let empty_required_error = CompilerProfile::from_str(&empty_required)
+            .expect_err("an empty required obligation must fail closed")
+            .to_string();
+        assert!(
+            empty_required_error.contains("required_hir_nodes"),
+            "empty required obligation error should name the field: {empty_required_error}"
+        );
+
+        let missing_required =
+            LSP.replace("required_hir_nodes:\n  - binding\n  - place\n  - source_anchor\n", "");
+        assert!(
+            CompilerProfile::from_str(&missing_required).is_err(),
+            "an omitted required obligation must fail closed"
+        );
+
+        let empty_representation =
+            LSP.replace("representation: legacy text scan", "representation: \"\"");
+        let representation_error = CompilerProfile::from_str(&empty_representation)
+            .expect_err("an unsupported bridge without representation must fail closed")
+            .to_string();
+        assert!(
+            representation_error.contains("representation")
+                && !representation_error.contains("empty reason"),
+            "unsupported bridge error should identify representation: {representation_error}"
         );
         Ok(())
     }
