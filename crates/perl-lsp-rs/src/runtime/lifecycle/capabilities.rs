@@ -2,7 +2,7 @@
 //!
 //! Handles client capability parsing and server capabilities construction.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Ordering};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 

@@ -3,7 +3,12 @@
 //! This module owns the method-to-handler table. Preflight checks and response
 //! rendering live in sibling modules so routing remains focused on dispatch.
 
+#[cfg(test)]
 use super::super::*;
+use super::super::{
+    JsonRpcError, JsonRpcId, JsonRpcRequest, LspServer, METHOD_NOT_FOUND, Ordering, Value,
+    cancelled_response_with_method, enhanced_error,
+};
 use super::response::RoutedResponse;
 
 impl LspServer {

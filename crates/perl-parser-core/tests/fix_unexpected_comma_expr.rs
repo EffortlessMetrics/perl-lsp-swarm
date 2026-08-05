@@ -240,6 +240,37 @@ fn test_grep_expr_with_trailing_comma() {
 }
 
 #[test]
+fn test_core_prefix_preserved_in_function_call_name() {
+    // Verify that the CORE:: qualifier is preserved in the FunctionCall node
+    // name, not silently dropped (#2024). Downstream semantic analysis (hover,
+    // goto-definition, override detection) needs to distinguish CORE::open from
+    // a plain open() call.
+    use cpan_test_helpers::parse;
+    use perl_parser_core::{Node, NodeKind};
+    let ast = parse("CORE::open(my $fh, '<', '/dev/null');");
+
+    fn find_function_call_name(node: &Node) -> Option<String> {
+        match &node.kind {
+            NodeKind::FunctionCall { name, .. } => Some(name.clone()),
+            _ => {
+                for child in node.children() {
+                    if let Some(n) = find_function_call_name(child) {
+                        return Some(n);
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    let name = find_function_call_name(&ast).expect("should find a FunctionCall node in the AST");
+    assert_eq!(
+        name, "CORE::open",
+        "FunctionCall name should preserve the CORE:: prefix, got: '{name}'"
+    );
+}
+
+#[test]
 fn test_grep_trailing_comma_in_parens() {
     // Trailing comma before ')' — is_at_statement_end() covers RightParen.
     let source = r#"foo(grep defined, @list,);"#;

@@ -31,8 +31,9 @@ COPY .cargo/ ./.cargo/
 COPY crates/ ./crates/
 COPY xtask/ ./xtask/
 
-# Build the public perllsp binary in release mode.
-RUN cargo build -p perllsp --release --bin perllsp
+# Build the public perllsp and perl-dap binaries in release mode.
+RUN cargo build -p perllsp --release --bin perllsp \
+    && cargo build -p perl-dap --release --bin perl-dap
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2: runtime
@@ -54,10 +55,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && cpanm --no-wget Moose \
     && rm -rf /root/.cpanm
 
-# Copy the compiled LSP server binary.
+# Copy the compiled LSP server and DAP adapter binaries.
 COPY --from=builder /build/target/release/perllsp /usr/local/bin/perllsp
+COPY --from=builder /build/target/release/perl-dap /usr/local/bin/perl-dap
 
-RUN chmod +x /usr/local/bin/perllsp
+RUN chmod +x /usr/local/bin/perllsp /usr/local/bin/perl-dap
 
 # Non-root user for safety.
 RUN useradd --create-home --uid 10001 --shell /bin/bash appuser

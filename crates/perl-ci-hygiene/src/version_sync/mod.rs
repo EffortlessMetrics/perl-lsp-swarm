@@ -441,7 +441,26 @@ fn find_topmost_ledger_version(content: &str) -> Option<String> {
 /// can backfill the actual publish date if needed.
 fn today_iso_date() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    iso_date_from_system_time(SystemTime::now().duration_since(UNIX_EPOCH))
+}
+
+fn iso_date_from_system_time(
+    result: Result<std::time::Duration, std::time::SystemTimeError>,
+) -> String {
+    // On a clock-skew (pre-epoch system time), log a warning instead of
+    // silently falling back to 1970-01-01 via unwrap_or_default() (#2136).
+    let now = match result {
+        Ok(d) => d.as_secs() as i64,
+        Err(e) => {
+            eprintln!(
+                "warning: system clock is before UNIX epoch ({}s); \
+                 version-sync date check may produce incorrect results",
+                e.duration().as_secs()
+            );
+            // Best effort: use the absolute duration to compute a plausible date.
+            -(e.duration().as_secs() as i64)
+        }
+    };
     iso_date_from_unix_days(now.div_euclid(86_400))
 }
 
@@ -910,7 +929,7 @@ mod tests {
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn unique_temp_repo_dir(label: &str) -> Result<PathBuf> {
         let nanos = SystemTime::now()
@@ -1339,6 +1358,13 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         assert!((2025..=2100).contains(&year), "year {year} out of expected range");
         assert!((1..=12).contains(&month), "month {month} invalid");
         assert!((1..=31).contains(&day), "day {day} invalid");
+    }
+
+    #[test]
+    fn pre_epoch_clock_is_converted_instead_of_defaulting_to_epoch() {
+        let before_epoch = UNIX_EPOCH.duration_since(UNIX_EPOCH + Duration::from_secs(1));
+
+        assert_eq!(iso_date_from_system_time(before_epoch), "1969-12-31");
     }
 
     #[test]
