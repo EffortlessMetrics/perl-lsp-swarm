@@ -80,7 +80,9 @@ table**.
 
 These are non-mandatory and evaluated only under the `nightly` profile. Each
 reads a JSON receipt another xtask task produces; an unhealthy result is a
-`warn` (never a mandatory `fail`), a missing receipt is `unverified`:
+`warn` (never a mandatory `fail`), a missing receipt is `unverified`. As with
+all receipt-backed indicators, a receipt whose embedded `commit` differs from
+HEAD downgrades a `pass` to `warn` (stale evidence is not trusted).
 
 - `formatter.corpus_idempotent` ← `native-format-corpus.json` (`passed == true`)
 - `critic.no_false_positives` ← `native-critic-false-positive.json`
@@ -157,9 +159,11 @@ one of three ways:
     `target/receipts/native-tooling/readiness.json`
     (`cargo xtask native-tooling readiness`);
   - `quality.no_new_severe_gaps` ← `target/receipts/quality/quality-gate.json`
-    (`cargo xtask quality-gate`).
+    (`cargo xtask quality-gate`);
+  - the four nightly advisory receipts (see §[Nightly advisory indicators]).
   A receipt whose embedded commit differs from HEAD downgrades a `pass` to
-  `warn` (stale evidence is not trusted).
+  `warn` (stale evidence is not trusted). This rule applies to **all**
+  receipt-backed indicators including the nightly ones.
 - **external** — the xtask wrapper runs the heavier gate and feeds the result
   in:
   - `release.*` ← `cargo xtask release artifact-check --dist <dir>` (one run,
