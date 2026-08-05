@@ -144,6 +144,8 @@ calculate(1, 2);
                 .and_then(|position| position.get("character"))
                 .and_then(|character| character.as_u64())
                 == Some(4)
+            && end.and_then(|position| position.get("line")).and_then(|line| line.as_u64())
+                == Some(1)
             && end
                 .and_then(|position| position.get("character"))
                 .and_then(|character| character.as_u64())
