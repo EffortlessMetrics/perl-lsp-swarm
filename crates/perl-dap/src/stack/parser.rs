@@ -49,7 +49,7 @@ static STACK_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| 
 /// - `$ = My::Module::method(arg1, arg2) called from file `/path/file.pm' line 123`
 static VERBOSE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
-        r"^\s*[\$\@\.]\s*=\s*(?P<func>[A-Za-z_][\w:]*+?)\((?P<args>.*?)\)\s+called\s+from\s+file\s+[`'](?P<file>[^'`]+)[`']\s+line\s+(?P<line>\d+)",
+        r"^\s*[\$\@\.]\s*=\s*(?P<func>[A-Za-z_][\w:]*+?)\((?P<args>.*)\)\s+called\s+from\s+file\s+[`'](?P<file>[^'`]+)[`']\s+line\s+(?P<line>\d+)",
     )
 });
 
@@ -472,9 +472,10 @@ mod tests {
     fn test_parse_verbose_frame_preserves_nested_and_quoted_arguments() {
         use perl_tdd_support::must_some;
         let mut parser = PerlStackParser::new();
-        let line = "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7";
+        let line =
+            "$ = main::run(foo($value, {x => [1, 2]}), \")\") called from file `script.pl' line 7";
         let frame = must_some(parser.parse_frame(line, 0));
-        assert_eq!(frame.arguments, vec!["$value", "[1, 2]", "\"a,b\""]);
+        assert_eq!(frame.arguments, vec!["foo($value, {x => [1, 2]})", "\")\""]);
     }
 
     #[test]
