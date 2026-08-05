@@ -167,8 +167,12 @@ suite('Packaged VSIX bundled-server journey', function () {
     const criticSettingRegistered = registeredConfigurationKeys.has('perl-lsp.critic.enabled');
 
     try {
-      await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
-      await config.update('serverPath', '', vscode.ConfigurationTarget.Global);
+      if (registeredConfigurationKeys.has('perl-lsp.autoDownload')) {
+        await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
+      }
+      if (registeredConfigurationKeys.has('perl-lsp.serverPath')) {
+        await config.update('serverPath', '', vscode.ConfigurationTarget.Global);
+      }
       if (criticSettingRegistered) {
         await config.update('critic.enabled', false, vscode.ConfigurationTarget.Global);
       }
