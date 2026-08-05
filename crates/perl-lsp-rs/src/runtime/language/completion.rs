@@ -2265,6 +2265,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancellable_completion_reports_incomplete_after_cap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut source = String::new();
+        for index in 0..150 {
+            source.push_str(&format!("sub completion_{index} {{ 1 }}\n"));
+        }
+        source.push_str("completion_");
+
+        let server = LspServer::default();
+        let uri = "file:///workspace/cancellable_completion_cap.pl";
+        server.test_apply_did_open(uri, &source, 1)?;
+        let line = source.lines().count() as u32 - 1;
+        let character = source.lines().next_back().map(str::len).unwrap_or(0) as u32;
+        let request_id = json!(7_654_321_i64);
+
+        let response = server
+            .handle_completion_cancellable(
+                Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                })),
+                Some(&request_id),
+            )?
+            .ok_or("cancellable completion returned no response")?;
+
+        assert_eq!(
+            response.get("isIncomplete"),
+            Some(&json!(true)),
+            "a capped cancellable response must advertise that more items exist: {response}"
+        );
+        Ok(())
+    }
+
     #[cfg(feature = "workspace")]
     fn make_document_index_stale(
         server: &LspServer,
