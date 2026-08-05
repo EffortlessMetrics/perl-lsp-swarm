@@ -247,14 +247,12 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
         },
         "perltidy_indent_columns": {
           "type": "integer",
-          "description": "Indent width in spaces",
-          "minimum": 1,
-          "default": 4
+          "description": "Indent width in spaces. Unset by default: formatting then uses the editor-supplied tabSize. When set, the configured width wins over tabSize.",
+          "minimum": 1
         },
         "perltidy_tabs": {
           "type": "boolean",
-          "description": "Use tabs for indentation where supported",
-          "default": false
+          "description": "Use tabs for indentation where supported. Unset by default: formatting then uses the editor-supplied insertSpaces. When set, the configured value wins."
         },
         "perltidy_opening_brace_on_new_line": {
           "type": "boolean",
