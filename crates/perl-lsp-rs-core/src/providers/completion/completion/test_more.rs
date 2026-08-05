@@ -167,21 +167,21 @@ pub const TEST_MORE_FUNCTIONS: &[TestMoreFunction] = &[
     },
     TestMoreFunction {
         name: "eq_array",
-        snippet: "eq_array(${1:\\\\@got}, ${2:\\\\@expected})",
+        snippet: "eq_array(${1:\\\\@got}, ${2:\\\\@expected});",
         signature: "eq_array(\\@got, \\@expected)",
         description: "Deep array equivalence, returning a boolean rather than \
                       running a test. Discouraged: prefer is_deeply",
     },
     TestMoreFunction {
         name: "eq_hash",
-        snippet: "eq_hash(${1:\\\\%got}, ${2:\\\\%expected})",
+        snippet: "eq_hash(${1:\\\\%got}, ${2:\\\\%expected});",
         signature: "eq_hash(\\%got, \\%expected)",
         description: "Deep hash equivalence, returning a boolean rather than \
                       running a test. Discouraged: prefer is_deeply",
     },
     TestMoreFunction {
         name: "eq_set",
-        snippet: "eq_set(${1:\\\\@got}, ${2:\\\\@expected})",
+        snippet: "eq_set(${1:\\\\@got}, ${2:\\\\@expected});",
         signature: "eq_set(\\@got, \\@expected)",
         description: "Order-insensitive top-level array equivalence, returning a \
                       boolean. Discouraged: duplicates still matter, and \
@@ -269,6 +269,18 @@ mod tests {
                 fallback.starts_with(function.name),
                 "`{}` fallback does not call the function it completes: {fallback:?}",
                 function.name
+            );
+        }
+    }
+
+    #[test]
+    fn completion_bodies_are_statement_complete() {
+        for function in TEST_MORE_FUNCTIONS {
+            assert!(
+                function.snippet.ends_with(';'),
+                "`{}` completion body must be a complete Perl statement: {:?}",
+                function.name,
+                function.snippet
             );
         }
     }
