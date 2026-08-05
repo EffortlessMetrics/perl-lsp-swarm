@@ -7,7 +7,7 @@ exercised separately.
 ## When You Need This Guide
 
 - You are optimizing workspace indexing performance
-- You changed `WorkspaceIndex`, `DocumentStore`, or `ProductionIndexCoordinator`
+- You changed `WorkspaceIndex`, `DocumentStore`, or `IndexCoordinator`
 - A performance issue was reported against a workspace with 5k-10k+ Perl files
 - You want to establish a baseline before and after a change
 

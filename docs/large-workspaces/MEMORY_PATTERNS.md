@@ -76,10 +76,9 @@ uses an LRU eviction policy:
 
 ### When ASTs Are Cached
 
-An AST is cached when `index_file` is called and the result is retained
-by the `ProductionIndexCoordinator`. The cache is queried first; if the
-file's content has not changed (same text hash), the existing AST is
-returned without re-parsing.
+An AST is cached when `index_file` is called on `WorkspaceIndex`. The
+cache is queried first; if the file's content has not changed (same text
+hash), the existing AST is returned without re-parsing.
 
 ### When ASTs Are Evicted
 
@@ -142,7 +141,7 @@ inside `WorkspaceIndex`.
 
 **Consequence**: Neither side is ever dropped; both leak indefinitely.
 
-**Fix**: Use `Weak<T>` for back-references. The `ProductionIndexCoordinator`
+**Fix**: Use `Weak<T>` for back-references. The `IndexCoordinator`
 owns both; individual components should not own each other.
 
 ### 4. Retaining Stale File Content
@@ -199,7 +198,7 @@ or `lasso` reduces per-symbol memory further.
 use std::sync::{Arc, Weak};
 
 struct WorkspaceIndex {
-    coordinator: Weak<ProductionIndexCoordinator>, // not Arc
+    coordinator: Weak<IndexCoordinator>, // not Arc
     ...
 }
 ```
