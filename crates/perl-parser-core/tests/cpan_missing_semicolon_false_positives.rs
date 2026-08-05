@@ -12,17 +12,11 @@
 //! represented or worded. What matters is whether `--check` fails, not what it
 //! is called internally.
 
+mod cpan_test_helpers;
+
+use cpan_test_helpers::assert_no_blocking_diagnostics;
 use perl_parser_core::Parser;
 use perl_parser_core::error::ParseError;
-
-#[track_caller]
-fn assert_no_blocking_diagnostics(source: &str) {
-    let mut parser = Parser::new(source);
-    let _ = parser.parse();
-    let blocking: Vec<_> =
-        parser.errors().iter().filter(|error| error.blocks_clean_parse()).collect();
-    assert!(blocking.is_empty(), "expected no blocking diagnostics, got: {blocking:#?}\n{source}");
-}
 
 #[track_caller]
 fn assert_blocking_diagnostic(source: &str) {
@@ -176,4 +170,6 @@ fn bareword_call_followed_by_keyword_is_reported() {
 fn quoted_shift_operand_is_not_a_heredoc_recovery_boundary() {
     assert_blocking_diagnostic("my $n = 1 << 'TAG'\nTAG\nprint \"after\";\n");
     assert_blocking_diagnostic("my $n = 1 <<'TAG'\nTAG\nprint \"after\";\n");
+    assert_blocking_diagnostic("my $n = $value << 'TAG'\nTAG\nprint \"after\";\n");
+    assert_blocking_diagnostic("my $n = foo << 'TAG'\nTAG\nprint \"after\";\n");
 }
