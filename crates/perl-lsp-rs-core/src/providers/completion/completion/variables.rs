@@ -204,7 +204,9 @@ pub fn add_all_variables(
                         documentation: symbol.documentation.clone(),
                         insert_text: Some(format!("{}{}", sigil, name)),
                         sort_text: Some(format!("5{scope_sort_key}_{name}")),
-                        filter_text: Some(name.clone()),
+                        // Include the sigil in filter_text so strict-filtering
+                        // clients can match the typed prefix ($c → $count) (#5050 item 4).
+                        filter_text: Some(format!("{sigil}{name}")),
                         additional_edits: vec![],
                         text_edit_range: Some((context.prefix_start, context.position)),
                         commit_characters: None,
