@@ -142,7 +142,22 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
                 Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
             }
             FormatterMode::ExternalLegacy => {
-                self.format_range_with_perltidy(content, options, &lines, start_line, end_line)
+                let whole_document = FormatRange::whole_document(content);
+                let is_whole_document = range.start.line == whole_document.start.line
+                    && range.start.character == whole_document.start.character
+                    && (range.end.line > whole_document.end.line
+                        || (range.end.line == whole_document.end.line
+                            && range.end.character >= whole_document.end.character));
+                if is_whole_document {
+                    // Perltidy is safe for a whole-document replacement. For a
+                    // partial range, formatting an isolated fragment can change
+                    // statement structure, line count, or trailing newlines;
+                    // use the native range-aware path instead of risking a
+                    // corrupt splice into the document.
+                    self.format_document_with_perltidy(content, options)
+                } else {
+                    Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
+                }
             }
             FormatterMode::Off => {
                 Ok(FormattedDocument { text: content.to_string(), edits: vec![] })
@@ -166,35 +181,6 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
             text: formatted.clone(),
             edits: vec![FormatTextEdit {
                 range: FormatRange::whole_document(content),
-                new_text: formatted,
-            }],
-        })
-    }
-
-    fn format_range_with_perltidy(
-        &self,
-        content: &str,
-        options: &FormattingOptions,
-        lines: &[&str],
-        start_line: usize,
-        end_line: usize,
-    ) -> Result<FormattedDocument, FormattingError> {
-        // Detect line ending to preserve CRLF (#5075)
-        let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
-        let text_to_format = lines[start_line..=end_line].join(line_ending);
-        let formatted = self.run_perltidy(&text_to_format, options)?;
-
-        if formatted == text_to_format {
-            return Ok(FormattedDocument { text: content.to_string(), edits: vec![] });
-        }
-
-        Ok(FormattedDocument {
-            text: content.to_string(),
-            edits: vec![FormatTextEdit {
-                range: FormatRange::new(
-                    FormatPosition::new(start_line as u32, 0),
-                    FormatPosition::new(end_line as u32, utf16_len(lines[end_line]) as u32),
-                ),
                 new_text: formatted,
             }],
         })
@@ -915,6 +901,62 @@ mod tests {
         let formatted = provider.format_document("my$x=1;\n", &options)?;
         assert_eq!(formatted.edits.len(), 1);
         assert_eq!(formatted.edits[0].new_text, "my $external = 1;\n");
+        Ok(())
+    }
+
+    #[test]
+    fn external_extended_document_range_uses_perltidy_adapter() -> Result<()> {
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let provider =
+            FormattingProvider::new(RecordingPerltidyRuntime { invoked: invoked.clone() })
+                .with_formatter_mode(FormatterMode::ExternalLegacy);
+        let options = FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            trim_trailing_whitespace: None,
+            insert_final_newline: None,
+            trim_final_newlines: None,
+        };
+        let source = "my$x=1;\n";
+        let range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(99, 0));
+
+        let formatted = provider.format_range(source, &range, &options)?;
+
+        assert!(invoked.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(formatted.edits.len(), 1);
+        assert_eq!(formatted.edits[0].new_text, "my $external = 1;\n");
+        Ok(())
+    }
+
+    #[test]
+    fn external_partial_range_uses_native_safe_path() -> Result<()> {
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let provider =
+            FormattingProvider::new(RecordingPerltidyRuntime { invoked: invoked.clone() })
+                .with_formatter_mode(FormatterMode::ExternalLegacy);
+        let options = FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            trim_trailing_whitespace: None,
+            insert_final_newline: None,
+            trim_final_newlines: None,
+        };
+        let source = "my $prefix = 1;\nif($ok){return 1;}else{return 0;}\nmy $suffix = 1;\n";
+        let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 34));
+
+        let formatted = provider.format_range(source, &range, &options)?;
+
+        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(formatted.edits.len(), 1);
+        assert!(
+            formatted.edits[0].new_text.contains("if ($ok)"),
+            "partial external ranges must use the native range-safe formatter: {:?}",
+            formatted.edits[0].new_text
+        );
+        assert!(
+            !formatted.edits[0].new_text.contains("$external"),
+            "partial external ranges must not splice isolated perltidy output"
+        );
         Ok(())
     }
 
