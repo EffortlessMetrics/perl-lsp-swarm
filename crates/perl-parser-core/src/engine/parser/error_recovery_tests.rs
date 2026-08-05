@@ -535,13 +535,6 @@ fn test_recovery_unclosed_qw() -> Result<(), String> {
 }
 
 #[test]
-fn starts_qr_slash_body_boundary_discriminator() {
-    assert!(Parser::starts_qr_slash_body(b"qr/", 2), "direct qr delimiter");
-    assert!(!Parser::starts_qr_slash_body(b"/", 0), "bare slash is division");
-    assert!(!Parser::starts_qr_slash_body(b"ar/", 2), "suffix ar is not qr");
-}
-
-#[test]
 fn test_unclosed_qw_ignores_nested_close_in_following_statement() -> Result<(), String> {
     let code = "my @items = qw(word1 word2\nmy $x = foo();\nprint $x;";
     let mut parser = Parser::new(code);

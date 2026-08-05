@@ -353,7 +353,6 @@ fn check_nonexistent_file() {
         .stderr(predicates::str::contains("does not exist"));
 }
 
-#[cfg(unix)]
 #[test]
 fn check_path_with_file_parent_reports_missing_path() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
