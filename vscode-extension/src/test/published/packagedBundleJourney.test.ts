@@ -54,6 +54,24 @@ async function withTimeout<T>(
   }
 }
 
+async function waitForStartupMetrics(
+  getMetrics: () => ReceiptValue,
+  timeoutMs: number,
+): Promise<ReceiptValue> {
+  const deadline = Date.now() + timeoutMs;
+  let metrics = getMetrics();
+  while (
+    Date.now() < deadline &&
+    [metrics.binary_resolution_status, metrics.server_start_status, metrics.initialize_status].some(
+      (status) => status === 'running',
+    )
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    metrics = getMetrics();
+  }
+  return metrics;
+}
+
 function bundledBinaryPath(extensionPath: string): string {
   const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
   const names =
@@ -129,15 +147,35 @@ suite('Packaged VSIX bundled-server journey', function () {
     );
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
-    const originalGlobalSettings = ['autoDownload', 'serverPath', 'critic.enabled'].map((key) => ({
-      key,
-      value: config.inspect<unknown>(key)?.globalValue,
-    }));
+    const configurationContributions = extension.packageJSON?.contributes?.configuration;
+    const registeredConfigurationKeys = new Set(
+      (Array.isArray(configurationContributions)
+        ? configurationContributions
+        : configurationContributions
+          ? [configurationContributions]
+          : []
+      ).flatMap((section: { properties?: Record<string, unknown> }) =>
+        Object.keys(section.properties ?? {}),
+      ),
+    );
+    const inspectedSettings = ['autoDownload', 'serverPath', 'critic.enabled']
+      .filter((key) => registeredConfigurationKeys.has(`perl-lsp.${key}`))
+      .map((key) => ({
+        key,
+        value: config.inspect<unknown>(key)?.globalValue,
+      }));
+    const criticSettingRegistered = registeredConfigurationKeys.has('perl-lsp.critic.enabled');
 
     try {
-      await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
-      await config.update('serverPath', '', vscode.ConfigurationTarget.Global);
-      await config.update('critic.enabled', false, vscode.ConfigurationTarget.Global);
+      if (registeredConfigurationKeys.has('perl-lsp.autoDownload')) {
+        await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
+      }
+      if (registeredConfigurationKeys.has('perl-lsp.serverPath')) {
+        await config.update('serverPath', '', vscode.ConfigurationTarget.Global);
+      }
+      if (criticSettingRegistered) {
+        await config.update('critic.enabled', false, vscode.ConfigurationTarget.Global);
+      }
 
       const activationStarted = performance.now();
       const activation = (await withTimeout(
@@ -249,7 +287,9 @@ suite('Packaged VSIX bundled-server journey', function () {
       }
 
       const diagnostics = vscode.languages.getDiagnostics(document.uri);
-      const metrics = activation?.getLanguageClientStartupMetrics?.() ?? {};
+      const metrics = activation?.getLanguageClientStartupMetrics
+        ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
+        : {};
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
@@ -264,6 +304,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
           startup_source: metrics.binary_resolution_source ?? null,
         },
+        startup: metrics,
         vsix_identity: {
           extension_id: extension.id,
           version: extension.packageJSON?.version ?? null,
@@ -287,6 +328,11 @@ suite('Packaged VSIX bundled-server journey', function () {
           'DAP preview is not exercised by this slice.',
           'The public VS Code API does not expose index generation or semantic exactness.',
           'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
+          ...(criticSettingRegistered
+            ? []
+            : [
+                'The published artifact does not register perl-lsp.critic.enabled; the journey leaves its published default unchanged.',
+              ]),
         ],
         product_blockers: [],
         diagnostics: { count: diagnostics.length },
@@ -319,8 +365,28 @@ suite('Packaged VSIX bundled-server journey', function () {
         ([label, result]) =>
           result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
       );
-      receipt.outcome = providerFailures.length === 0 ? 'completed' : 'failed';
-      receipt.product_blockers = providerFailures.map(([label, result]) => ({ label, result }));
+      const lifecycleExpectations: Array<[string, string]> = [
+        ['binary_resolution_source', 'bundled'],
+        ['binary_resolution_status', 'ok'],
+        ['server_start_status', 'ok'],
+        ['initialize_status', 'ok'],
+      ];
+      const lifecycleFailures = lifecycleExpectations
+        .filter(([field, expected]) => metrics[field] !== expected)
+        .map(([field, expected]) => ({
+          label: `lifecycle.${field}`,
+          result: {
+            expected,
+            actual: metrics[field] ?? null,
+            metrics,
+          },
+        }));
+      const productBlockers = [
+        ...lifecycleFailures,
+        ...providerFailures.map(([label, result]) => ({ label, result })),
+      ];
+      receipt.outcome = productBlockers.length === 0 ? 'completed' : 'failed';
+      receipt.product_blockers = productBlockers;
 
       fs.writeFileSync(
         path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
@@ -338,7 +404,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
     } finally {
       await Promise.all(
-        originalGlobalSettings.map(({ key, value }) =>
+        inspectedSettings.map(({ key, value }) =>
           config.update(key, value, vscode.ConfigurationTarget.Global),
         ),
       );
