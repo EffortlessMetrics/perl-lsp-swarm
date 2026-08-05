@@ -9630,7 +9630,6 @@ helper_one();
     }
 
     #[test]
-    #[ignore = "qw delimiter with leading space not yet parsed; tracking #10013"]
     fn test_index_use_constant_qw_with_space_before_delimiter() {
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///workspace/lib/My/Config.pm"));
