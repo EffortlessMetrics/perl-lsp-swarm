@@ -7,8 +7,19 @@ mod metadata;
 
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
-/// Create the builtins HashSet
+/// Static builtins HashSet — avoids rebuilding ~200 entries on every completion
+/// request (#5053 item 2).
+static BUILTIN_SET: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| catalog::all_names().collect());
+
+/// Get a reference to the static builtins HashSet.
+pub fn builtin_set() -> &'static HashSet<&'static str> {
+    &BUILTIN_SET
+}
+
+/// Create the builtins HashSet (legacy API — prefer builtin_set() for hot paths).
 pub fn create_builtins() -> HashSet<&'static str> {
     catalog::all_names().collect()
 }
