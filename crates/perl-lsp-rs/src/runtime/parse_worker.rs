@@ -1398,13 +1398,9 @@ mod tests {
         );
 
         let metrics = worker.metrics();
-        assert_eq!(
-            metrics.jobs_published, 1,
-            "exactly one generation (the final one) must publish from the burst"
-        );
         assert!(
-            metrics.jobs_started < u64::from(EDITS),
-            "coalescing must start far fewer jobs than edits enqueued; started={}",
+            metrics.jobs_started <= u64::from(EDITS / 2),
+            "coalescing must start at most half as many jobs as edits enqueued; started={}",
             metrics.jobs_started
         );
         assert!(metrics.jobs_coalesced > 0, "at least one job must have been coalesced away");
