@@ -106,6 +106,19 @@ impl DocumentHighlightProvider {
             if offset < node.location.start || offset > node.location.end {
                 return None;
             }
+            // A cursor on a declaration name is a file-scope symbol lookup,
+            // not a lookup inside the declaration body. This lets definition
+            // highlights include call sites outside the subroutine.
+            let on_declaration_name = match &node.kind {
+                NodeKind::Subroutine { name_span: Some(span), .. }
+                | NodeKind::Method { name_span: Some(span), .. } => {
+                    offset >= span.start && offset <= span.end
+                }
+                _ => false,
+            };
+            if on_declaration_name {
+                return None;
+            }
             // Check if this node is a Subroutine
             if matches!(node.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
                 return Some((node.location.start, node.location.end));
@@ -168,7 +181,7 @@ impl DocumentHighlightProvider {
         }
 
         // Check if this node is a relevant symbol
-        if self.is_symbol_node(node) {
+        if self.is_symbol_node(node) && self.is_symbol_name_at_offset(node, offset) {
             return Some(node.clone());
         }
 
@@ -410,8 +423,20 @@ impl DocumentHighlightProvider {
             NodeKind::Variable { .. }
                 | NodeKind::FunctionCall { .. }
                 | NodeKind::MethodCall { .. }
+                | NodeKind::Subroutine { .. }
+                | NodeKind::Method { .. }
                 | NodeKind::Identifier { .. }
         )
+    }
+
+    /// Check whether a symbol-bearing node's declaration name contains the cursor.
+    fn is_symbol_name_at_offset(&self, node: &Node, offset: usize) -> bool {
+        match &node.kind {
+            NodeKind::Subroutine { name_span, .. } | NodeKind::Method { name_span, .. } => {
+                name_span.is_some_and(|span| offset >= span.start && offset <= span.end)
+            }
+            _ => true,
+        }
     }
 
     /// Extract symbol information from a node
@@ -435,11 +460,24 @@ impl DocumentHighlightProvider {
                 is_method: false,
                 is_function: true,
             }),
+            NodeKind::Method { name, .. } => Some(SymbolInfo {
+                name: name.clone(),
+                sigil: None,
+                is_method: true,
+                is_function: false,
+            }),
             NodeKind::MethodCall { method, .. } => Some(SymbolInfo {
                 name: method.clone(),
                 sigil: None,
                 is_method: true,
                 is_function: false,
+            }),
+            // Cursor on a sub definition — extract the sub name (#5864).
+            NodeKind::Subroutine { name: Some(name), .. } => Some(SymbolInfo {
+                name: name.clone(),
+                sigil: None,
+                is_method: false,
+                is_function: true,
             }),
             _ => {
                 // Try to extract from source text
@@ -669,15 +707,25 @@ impl DocumentHighlightProvider {
             }
         }
 
-        // Emit highlight for subroutine definition name_span
-        if let NodeKind::Subroutine { name: Some(sub_name), name_span: Some(span), .. } = &node.kind
-        {
-            if target.is_function && sub_name == &target.name {
+        // Emit highlights for subroutine and method definition name spans.
+        match &node.kind {
+            NodeKind::Subroutine { name: Some(name), name_span: Some(span), .. }
+                if target.is_function && name == &target.name =>
+            {
                 highlights.push(DocumentHighlight {
                     location: *span,
                     kind: DocumentHighlightKind::Write,
                 });
             }
+            NodeKind::Method { name, name_span: Some(span), .. }
+                if target.is_method && name == &target.name =>
+            {
+                highlights.push(DocumentHighlight {
+                    location: *span,
+                    kind: DocumentHighlightKind::Write,
+                });
+            }
+            _ => {}
         }
 
         // Recursively check children with this node as parent
@@ -882,6 +930,7 @@ impl DocumentHighlightProvider {
                 !target.is_method && target.sigil.is_none() && name == &target.name
             }
             NodeKind::FunctionCall { name, .. } => target.is_function && name == &target.name,
+            NodeKind::Method { name, .. } => target.is_method && name == &target.name,
             NodeKind::MethodCall { method, .. } => target.is_method && method == &target.name,
             _ => {
                 // Check source text as fallback
