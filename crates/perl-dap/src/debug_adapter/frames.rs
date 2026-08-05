@@ -201,8 +201,8 @@ impl DebugAdapter {
                 presentation_hint: Some("arguments".to_string()),
                 variables_reference: i64::from(arguments_ref),
                 expensive: false,
-                named_variables: Some(arguments.len() as i64),
-                indexed_variables: None,
+                named_variables: None,
+                indexed_variables: Some(arguments.len() as i64),
             });
         }
 
@@ -323,6 +323,8 @@ mod pagination_tests {
             .find(|scope| scope.get("name") == Some(&json!("Arguments")))
             .ok_or("Arguments scope was not advertised")?;
         assert_eq!(arguments_scope.get("variablesReference"), Some(&json!(74)));
+        assert_eq!(arguments_scope.get("indexedVariables"), Some(&json!(3)));
+        assert_eq!(arguments_scope.get("namedVariables"), None);
 
         let variables = adapter.handle_variables(
             2,
