@@ -555,6 +555,7 @@ impl DebugAdapter {
                     process: child,
                     state: DebugState::Running,
                     stack_frames: vec![],
+                    stack_frame_arguments: HashMap::new(),
                     variable_cache: VariableCache::default(),
                     thread_id: 1,
                     last_resume_mode: ResumeMode::Continue,
@@ -585,6 +586,7 @@ impl DebugAdapter {
             process: child,
             state: DebugState::Stopped,
             stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
@@ -681,10 +683,20 @@ impl DebugAdapter {
             process: child,
             state: DebugState::Stopped,
             stack_frames: frames,
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
         });
+    }
+
+    /// Seed captured stack-frame arguments for scope/variables protocol tests.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_stack_frame_arguments_for_test(&self, frame_id: i32, arguments: Vec<String>) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_frame_arguments");
+        if let Some(ref mut sess) = *session {
+            sess.stack_frame_arguments.insert(frame_id, arguments);
+        }
     }
 }
 #[cfg(test)]

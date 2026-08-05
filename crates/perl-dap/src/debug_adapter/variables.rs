@@ -99,6 +99,48 @@ impl DebugAdapter {
             }
         }
 
+        // Arguments are captured from the verbose stack trace, not queried from the
+        // debugger.  Keep this path before the generic scope routing so a client cannot
+        // accidentally turn an Arguments reference into a package/global query.
+        {
+            use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+            if let Some(VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }) =
+                VariableReference::decode(variables_ref)
+            {
+                let arguments = lock_or_recover(&self.session, "debug_adapter.session")
+                    .as_ref()
+                    .and_then(|session| session.stack_frame_arguments.get(&frame_id))
+                    .cloned()
+                    .unwrap_or_default();
+                let total = arguments.len();
+                let variables = arguments
+                    .into_iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(count)
+                    .map(|(index, value)| crate::types::Variable {
+                        name: format!("arg{index}"),
+                        value,
+                        type_: None,
+                        variables_reference: 0,
+                        named_variables: None,
+                        indexed_variables: None,
+                    })
+                    .collect::<Vec<_>>();
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "variables".to_string(),
+                    body: Some(json!({
+                        "variables": variables,
+                        "totalVariables": total as i64,
+                    })),
+                    message: None,
+                };
+            }
+        }
+
         // AC8.4: Render scalars/arrays/hashes with lazy child expansion.
         let parsed_from_output;
         let mut parsed_child_cache = HashMap::new();
@@ -265,6 +307,11 @@ impl DebugAdapter {
                                 }
                             }
                         }
+                    }
+                    Some(ScopeKind::Arguments) => {
+                        // Handled by the early return above. Keep this arm explicit so
+                        // adding a scope kind cannot silently route arguments to the
+                        // debugger fallback path.
                     }
                     None => {
                         // Non-Scope variablesReference — no framed output to fetch.

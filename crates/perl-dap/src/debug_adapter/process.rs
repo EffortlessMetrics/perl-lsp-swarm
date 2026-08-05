@@ -517,6 +517,7 @@ impl DebugAdapter {
                     process: child,
                     state: DebugState::Running,
                     stack_frames: Vec::new(),
+                    stack_frame_arguments: HashMap::new(),
                     variable_cache: VariableCache::default(),
                     thread_id,
                     last_resume_mode: ResumeMode::Unknown,
@@ -1003,6 +1004,7 @@ impl DebugAdapter {
                                             end_line: None,
                                             end_column: None,
                                         }];
+                                        s.stack_frame_arguments.clear();
                                     }
 
                                     if matches!(s.state, DebugState::Running) {
@@ -1214,6 +1216,7 @@ impl DebugAdapter {
                                             end_column: None,
                                         };
                                         s.stack_frames = vec![frame];
+                                        s.stack_frame_arguments.clear();
                                     } else {
                                         // Provide a fallback frame for when we don't have perfect context
                                         let frame = StackFrame {
@@ -1230,6 +1233,7 @@ impl DebugAdapter {
                                             end_column: None,
                                         };
                                         s.stack_frames = vec![frame];
+                                        s.stack_frame_arguments.clear();
                                     }
                                     s.state = DebugState::Stopped;
                                     s.thread_id
@@ -2249,6 +2253,7 @@ mod tests {
         DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
         is_valid_perl_interpreter,
     };
+    use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
 
@@ -2853,6 +2858,7 @@ mod tests {
             process: child,
             state: DebugState::Running,
             stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
@@ -2956,6 +2962,7 @@ mod tests {
             process: child,
             state: DebugState::Running,
             stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,

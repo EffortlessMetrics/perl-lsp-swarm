@@ -49,7 +49,7 @@ static STACK_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| 
 /// - `$ = My::Module::method(arg1, arg2) called from file `/path/file.pm' line 123`
 static VERBOSE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
-        r"^\s*[\$\@\.]\s*=\s*(?P<func>[A-Za-z_][\w:]*+?)\((?P<args>.*?)\)\s+called\s+from\s+file\s+[`'](?P<file>[^'`]+)[`']\s+line\s+(?P<line>\d+)",
+        r"^\s*[\$\@\.]\s*=\s*(?P<func>[A-Za-z_][\w:]*+?)\((?P<args>.*)\)\s+called\s+from\s+file\s+[`'](?P<file>[^'`]+)[`']\s+line\s+(?P<line>\d+)",
     )
 });
 
@@ -93,6 +93,67 @@ fn eval_context_re() -> Option<&'static Regex> {
 }
 fn unknown_frame_name_re() -> Option<&'static Regex> {
     UNKNOWN_FRAME_NAME_RE.as_ref().ok()
+}
+
+/// Split a verbose debugger argument list without breaking nested expressions or quotes.
+fn parse_frame_arguments(raw: &str) -> Vec<String> {
+    let mut arguments = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut nesting = 0_u32;
+
+    for character in raw.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+
+        if quote.is_some() && character == '\\' {
+            current.push(character);
+            escaped = true;
+            continue;
+        }
+
+        if let Some(active_quote) = quote {
+            current.push(character);
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '\'' | '"' => {
+                quote = Some(character);
+                current.push(character);
+            }
+            '(' | '[' | '{' => {
+                nesting = nesting.saturating_add(1);
+                current.push(character);
+            }
+            ')' | ']' | '}' => {
+                nesting = nesting.saturating_sub(1);
+                current.push(character);
+            }
+            ',' if nesting == 0 => {
+                let argument = current.trim();
+                if !argument.is_empty() {
+                    arguments.push(argument.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+
+    let argument = current.trim();
+    if !argument.is_empty() {
+        arguments.push(argument.to_string());
+    }
+
+    arguments
 }
 
 /// Parser for Perl debugger stack trace output.
@@ -200,7 +261,7 @@ impl PerlStackParser {
         &mut self,
         caps: &regex::Captures<'_>,
         provided_id: i64,
-        _has_args: bool,
+        has_args: bool,
     ) -> Option<StackFrame> {
         let func = caps.name("func")?.as_str();
         let file = caps.name("file")?.as_str();
@@ -217,7 +278,12 @@ impl PerlStackParser {
         };
 
         let source = Source::new(file);
-        let frame = StackFrame::new(id, func, Some(source), line);
+        let arguments = if has_args {
+            caps.name("args").map_or_else(Vec::new, |value| parse_frame_arguments(value.as_str()))
+        } else {
+            Vec::new()
+        };
+        let frame = StackFrame::new(id, func, Some(source), line).with_arguments(arguments);
 
         Some(frame)
     }
@@ -399,6 +465,17 @@ mod tests {
         assert_eq!(frame.name, "My::Module::method");
         assert_eq!(frame.line, 42);
         assert_eq!(frame.file_path(), Some("/lib/My/Module.pm"));
+        assert_eq!(frame.arguments, vec!["'arg1'", "'arg2'"]);
+    }
+
+    #[test]
+    fn test_parse_verbose_frame_preserves_nested_and_quoted_arguments() {
+        use perl_tdd_support::must_some;
+        let mut parser = PerlStackParser::new();
+        let line =
+            "$ = main::run(foo($value, {x => [1, 2]}), \")\") called from file `script.pl' line 7";
+        let frame = must_some(parser.parse_frame(line, 0));
+        assert_eq!(frame.arguments, vec!["foo($value, {x => [1, 2]})", "\")\""]);
     }
 
     #[test]
