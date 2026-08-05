@@ -1,0 +1,65 @@
+schema_version: compiler_profile.v1
+profile_id: lsp_exactness_v1
+profile_version: v1
+purpose: Compiler fact authority required by the first exactness-bound editor provider vertical.
+comparison_series: []
+required_ast_kinds:
+  - VariableDeclaration
+  - Variable
+  - Assignment
+  - FunctionCall
+  - MethodCall
+  - Subroutine
+required_hir_nodes:
+  - binding
+  - place
+  - source_anchor
+required_pir_operations:
+  - read
+  - write
+  - modify
+required_place_kinds:
+  - scalar
+  - array_element
+  - hash_element
+required_context_dimensions:
+  - evaluation_order
+  - access_mode
+required_cfg_edges:
+  - declaration_to_reference
+required_fact_classes:
+  - binding_identity
+  - declaration_role
+  - read_role
+  - write_role
+  - modify_role
+  - generation_provenance
+allowed_dynamic_boundaries:
+  - id: lsp-ambiguous-binding
+    construct: dynamically resolved binding
+    reason: The provider must expose ambiguity rather than inventing an exact binding.
+    owner_issue: "#5215"
+    stop_condition: Add stable binding identity and independent wrong-implementation proof.
+explicit_exclusions:
+  - id: lsp-excluded-runtime-eval
+    construct: runtime eval binding
+    reason: Runtime-generated bindings are outside the first exactness vertical.
+    reviewed_by: "#5215"
+    owner_issue: "#5215"
+unsupported_bridges:
+  - id: lsp-text-scan-bridge
+    construct: source-text binding fallback
+    representation: legacy text scan
+    owner_issue: "#5215"
+    stop_condition: Remove the fallback after semantic facts provide the same class with zero false-exact results.
+consumers:
+  - references
+  - rename
+  - document-symbols
+gold_oracle_eir_requirements:
+  - curated binding gold
+  - exact-empty versus no-facts distinction
+owner_issue: "#5215"
+predecessor_profile: null
+change_reason: Define the first provider-facing semantic fact boundary independently of global HIR coverage.
+claim_boundary: Exactness applies only to declared binding and access facts; unsupported or dynamic cases must be typed.
