@@ -54,6 +54,24 @@ async function withTimeout<T>(
   }
 }
 
+async function waitForStartupMetrics(
+  getMetrics: () => ReceiptValue,
+  timeoutMs: number,
+): Promise<ReceiptValue> {
+  const deadline = Date.now() + timeoutMs;
+  let metrics = getMetrics();
+  while (
+    Date.now() < deadline &&
+    [metrics.binary_resolution_status, metrics.server_start_status, metrics.initialize_status].some(
+      (status) => status === 'running',
+    )
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    metrics = getMetrics();
+  }
+  return metrics;
+}
+
 function bundledBinaryPath(extensionPath: string): string {
   const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
   const names =
@@ -249,7 +267,9 @@ suite('Packaged VSIX bundled-server journey', function () {
       }
 
       const diagnostics = vscode.languages.getDiagnostics(document.uri);
-      const metrics = activation?.getLanguageClientStartupMetrics?.() ?? {};
+      const metrics = activation?.getLanguageClientStartupMetrics
+        ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
+        : {};
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
