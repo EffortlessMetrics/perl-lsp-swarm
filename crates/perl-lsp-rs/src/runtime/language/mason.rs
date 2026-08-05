@@ -8,7 +8,7 @@
 //! It does not attempt full Mason parsing, highlighting, args semantics,
 //! or embedded Perl diagnostics.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, byte_to_line_col};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

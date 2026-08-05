@@ -21,21 +21,33 @@ Receipt JSON uses `.ci/receipts/schemas/merge-readiness.schema.json` and include
 
 ## Required checks source
 
-This repository uses rulesets. Conventional required checks are read from `.ci/policies/required-checks.toml` first.
+This repository's `main` branch is gated by **two separate GitHub mechanisms**,
+and a merge is blocked by the union of both. Conventional required checks are
+read from `.ci/policies/required-checks.toml` first.
 
 Only entries explicitly marked `required = true` are treated as required. The
-current proof-floor branch-protection contexts are:
+current proof-floor contexts, by source mechanism, are:
+
+Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`):
 
 - `Perl LSP Rust Small Result`
 - `ripr+ New Gap Gate`
-- `Compile All Targets (bit-rot guard)`
 
-This list must match the live ruleset exactly. It is not self-verifying: nothing
-compares it against GitHub, so a context added to branch protection without a
-corresponding `required = true` entry here silently understates the gate set in
-every emitted receipt's `required_checks` inventory and in `gate_graph_version`,
-which is hashed over this file. When a required context is added or removed in
-the ruleset, update this file in the same change.
+Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
+
+- `Compile All Targets (bit-rot guard)`
+- `Conflict marker check`
+- `validate-title`
+
+This list must match the live branch protection and ruleset state exactly. It
+is not self-verifying: nothing compares it against GitHub, so a context added
+to either surface without a corresponding `required = true` entry here
+silently understates the gate set in every emitted receipt's `required_checks`
+inventory and in `gate_graph_version`, which is hashed over this file. When a
+required context is added or removed on either surface, update this file in
+the same change. See issue #5418 for this gap's discovery. Reading the live
+surfaces instead of trusting this checked-in list remains unbuilt, and is the
+recurrence risk this leaves open.
 
 `Codecov / Patch 95` is the repo-owned advisory coverage job. `codecov/patch`
 is the external Codecov status context posted after Codecov processes an
@@ -59,9 +71,10 @@ Inputs are normalized for line endings and sorted to exclude nondeterministic or
 cargo xtask merge-ready emit --pr <N> --receipt target/receipts/merge-readiness.json
 cargo xtask merge-ready verify --pr <N>
 cargo xtask merge-ready verify --fixture xtask/tests/fixtures/merge-ready/valid.json
-cargo xtask merge-ready reconcile --dry-run
-cargo xtask merge-ready reconcile --apply
 ```
+
+There is no `merge-ready reconcile` command. Readiness is a receipt and live
+GitHub fact, not a lifecycle-label projection.
 
 Verification statuses:
 
@@ -71,9 +84,14 @@ Verification statuses:
 - `stale_gate_graph`
 - `blocked`
 - `missing`
+- `not_proven` (the receipt itself records an instrument-incomplete verdict;
+  this is non-ready, not an unknown success)
 
-## Rollout mode
+## Current operation
 
-Reconciliation defaults to advisory dry-run. Apply mode can be enabled explicitly.
+Use `merge-ready emit`/`verify` for receipt validation and the protected
+GitHub preflight for the live candidate, review, required-check, and
+mergeability snapshot. There is no apply-mode reconciler: operators do not
+repair readiness through lifecycle labels.
 
 See also: [Merge-train protocol](./merge-train-protocol.md).

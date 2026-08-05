@@ -1063,6 +1063,21 @@ gates:
       - docs
       - build
 
+  - name: non_rust_inventory_check
+    tier: merge_gate
+    description: "Verify the tracked non-Rust inventory document matches the current tree"
+    required: true
+    command: cargo xtask non-rust inventory --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - docs
+      - generated
+
   - name: v2_parity
     tier: merge_gate
     description: "Verify in-crate v2 and perl-parser-pest v2 produce identical corpus output"
@@ -1619,6 +1634,7 @@ workflow_integration:
         - common_corpus_clean
         - lsp_smoke
         - docs_build
+        - non_rust_inventory_check
         - v2_bundle_sync
         - nested_lock_check
         - published_crate_count

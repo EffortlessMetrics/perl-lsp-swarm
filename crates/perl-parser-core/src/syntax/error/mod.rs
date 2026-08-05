@@ -642,7 +642,11 @@ pub struct ParseOutput {
 pub enum RecoverySalvageClass {
     /// No diagnostics and no `ERROR` AST nodes.
     Clean,
-    /// Only structured recovery diagnostics were emitted; no `ERROR` nodes.
+    /// No `ERROR` nodes were produced, but blocking diagnostics were emitted.
+    ///
+    /// This includes both structured recovery diagnostics and blocking
+    /// diagnostics that did not materialize an `ERROR` node. Callers that
+    /// need the structured-recovery subset should use `recovered_count`.
     StructuredRecoveryOnly,
     /// Parse produced one or more `ERROR` AST nodes.
     ErrorNodesPresent,
@@ -694,11 +698,17 @@ impl RecoverySalvageProfile {
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
 
+        // Count diagnostics that block a clean parse but do not produce an AST
+        // Error node and are not the structured-recovery variant. This catches
+        // SyntaxError, UnexpectedToken, UnexpectedEof, etc. which were
+        // previously invisible to the gate (they fell through to `Clean`).
+        let blocking_non_recovered_count = count_blocking_non_recovered(diagnostics);
+
         let class = if catastrophic {
             RecoverySalvageClass::CatastrophicFailure
         } else if error_node_count > 0 {
             RecoverySalvageClass::ErrorNodesPresent
-        } else if recovered_count > 0 {
+        } else if recovered_count > 0 || blocking_non_recovered_count > 0 {
             RecoverySalvageClass::StructuredRecoveryOnly
         } else {
             RecoverySalvageClass::Clean
@@ -712,6 +722,19 @@ impl RecoverySalvageProfile {
             class,
         }
     }
+}
+
+/// Count blocking diagnostics that are not structured recovery diagnostics.
+///
+/// This remains a standalone helper so adding the corpus-gate signal does not
+/// change the public field layout of [`RecoverySalvageProfile`].
+pub(crate) fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|error| {
+            error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. })
+        })
+        .count()
 }
 
 impl ParseOutput {
@@ -1238,6 +1261,28 @@ mod tests {
 
         assert_eq!(output.recovered_count, 1);
         assert!(!output.terminated_early);
+    }
+
+    #[test]
+    fn blocking_non_recovered_counter_covers_blocking_families_only() {
+        let diagnostics = [
+            ParseError::syntax("syntax", 0),
+            ParseError::UnexpectedEof,
+            ParseError::UnexpectedToken {
+                expected: "identifier".to_string(),
+                found: "}".to_string(),
+                location: 3,
+            },
+            ParseError::LexerError { message: "invalid byte".to_string() },
+            ParseError::Advisory { message: "style".to_string(), location: 0 },
+            ParseError::Recovered {
+                site: RecoverySite::ArgList,
+                kind: RecoveryKind::InsertedCloser,
+                location: 0,
+            },
+        ];
+
+        assert_eq!(count_blocking_non_recovered(&diagnostics), 4);
     }
 
     #[test]

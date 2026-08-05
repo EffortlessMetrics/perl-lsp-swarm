@@ -942,6 +942,7 @@ mod tests {
         callable_name_from_owner_id, normalize_fact_classes, ripr_packet_fingerprint, run_cli,
         run_ripr_facts, validate_ripr_facts_path, write_packet,
     };
+    use perl_tdd_support::{must, must_some};
 
     /// A valid request against the crate root (`"."`, no `t/` dir → unavailable).
     fn valid_request<'a>(fact_classes: &'a str) -> RiprFactsRequest<'a> {
@@ -1074,7 +1075,7 @@ mod tests {
         let f = files.iter().find(|f| f["path"] == "lib/Widget.pm").expect(".pm file fact");
         assert_eq!(f["role"], serde_json::json!(["source"]));
         assert_eq!(f["file_id"], "file:lib/Widget.pm");
-        assert!(f["digest"].as_str().unwrap().starts_with("sha256:"), "sha256 digest");
+        assert!(must_some(f["digest"].as_str()).starts_with("sha256:"), "sha256 digest");
     }
 
     #[test]
@@ -1129,7 +1130,7 @@ mod tests {
         let owners = owners(&packet);
         let m = owners.iter().find(|o| o["kind"] == "method" && o["name"] == "describe");
         assert!(m.is_some(), "method `describe` must be an owner; owners: {owners:?}");
-        assert_eq!(m.unwrap()["range"]["start_line"], 3, "method is on line 3 (0-based)");
+        assert_eq!(must_some(m)["range"]["start_line"], 3, "method is on line 3 (0-based)");
     }
 
     #[test]
@@ -1156,9 +1157,7 @@ mod tests {
         let a = packet_for_fixture("order-a", fixture);
         let b = packet_for_fixture("order-b", fixture);
         let paths = |p: &serde_json::Value| -> Vec<String> {
-            p["files"]
-                .as_array()
-                .unwrap()
+            must_some(p["files"].as_array())
                 .iter()
                 .filter_map(|f| f["path"].as_str().map(String::from))
                 .collect()
@@ -1173,7 +1172,7 @@ mod tests {
         let packet =
             packet_for_fixture("rel-paths", &[("lib/Deep/Mod.pm", "package Deep::Mod;\n1;\n")]);
         for f in packet["files"].as_array().expect("files[]") {
-            let path = f["path"].as_str().unwrap();
+            let path = must_some(f["path"].as_str());
             assert!(!path.starts_with('/'), "no absolute path: {path}");
             assert!(!path.contains(':'), "no drive/host prefix: {path}");
             assert!(
@@ -1192,12 +1191,13 @@ mod tests {
         assert_eq!(p["file_id"], "file:lib/App.pm");
         assert_eq!(p["confidence"], "high");
         // The file fact references its provenance entry by id.
-        let f =
-            packet["files"].as_array().unwrap().iter().find(|f| f["path"] == "lib/App.pm").unwrap();
+        let f = must_some(
+            must_some(packet["files"].as_array()).iter().find(|f| f["path"] == "lib/App.pm"),
+        );
         let refs: Vec<&str> =
-            f["provenance_refs"].as_array().unwrap().iter().filter_map(|r| r.as_str()).collect();
+            must_some(f["provenance_refs"].as_array()).iter().filter_map(|r| r.as_str()).collect();
         assert!(
-            refs.contains(&p["provenance_id"].as_str().unwrap()),
+            refs.contains(&must_some(p["provenance_id"].as_str())),
             "file references its provenance"
         );
     }
@@ -1251,7 +1251,7 @@ mod tests {
         })
         .expect("valid request");
         // Sanity: the fixture actually yields owners, so parity covers PR-3 facts.
-        assert!(!built["owners"].as_array().unwrap().is_empty(), "fixture must yield owners");
+        assert!(!must_some(built["owners"].as_array()).is_empty(), "fixture must yield owners");
         assert_eq!(built, written, "wrapper output must equal the batch packet with parser facts");
 
         let _ = std::fs::remove_dir_all(root);
@@ -1278,8 +1278,8 @@ mod tests {
         .expect("valid request");
         let _ = std::fs::remove_dir_all(root);
 
-        assert!(packet["files"].as_array().unwrap().is_empty(), "files not requested → empty");
-        assert!(packet["owners"].as_array().unwrap().is_empty(), "owners not requested → empty");
+        assert!(must_some(packet["files"].as_array()).is_empty(), "files not requested → empty");
+        assert!(must_some(packet["owners"].as_array()).is_empty(), "owners not requested → empty");
     }
 
     // ── PR 4 parser-backed tests/oracles tests (#3293) ──
@@ -2129,7 +2129,7 @@ mod tests {
             "dynamic_boundaries",
             "verify_commands",
         ] {
-            assert!(packet[key].as_array().unwrap().is_empty(), "array {key} should be empty");
+            assert!(must_some(packet[key].as_array()).is_empty(), "array {key} should be empty");
         }
     }
 

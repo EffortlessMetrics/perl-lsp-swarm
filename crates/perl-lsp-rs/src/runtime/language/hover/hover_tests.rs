@@ -1055,3 +1055,45 @@ fn extract_arrow_receiver_cursor_at_start_of_method() {
 fn extract_arrow_receiver_empty_text_returns_none() {
     assert!(LspServer::extract_arrow_receiver("", 0).is_none(), "empty text must return None");
 }
+
+/// The hover source-region trace slot must be request-scoped (#5003 review).
+///
+/// The read dispatcher runs up to `scheduler::READ_WORKERS` handlers at once
+/// against the one shared `LspServer`. With the previous shared
+/// `Arc<Mutex<Option<String>>>` slot, a concurrent hover could overwrite or
+/// clear another hover's value between the write in `handle_hover_core` and the
+/// read-back in `record_live_provider_decision_trace`. Each worker must observe
+/// only the value its own request recorded.
+#[test]
+fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
+    use super::{set_hover_trace_source_region_kind, take_hover_trace_source_region_kind};
+    use std::sync::{Arc, Barrier};
+
+    const WORKERS: usize = 8;
+    let barrier = Arc::new(Barrier::new(WORKERS));
+    let handles: Vec<_> = (0..WORKERS)
+        .map(|worker| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let expected = format!("kind_{worker}");
+                set_hover_trace_source_region_kind(Some(expected.clone()));
+                // Every worker has now written; a shared slot would hold one
+                // arbitrary winner by the time any of them reads back.
+                barrier.wait();
+                let observed = take_hover_trace_source_region_kind();
+                assert_eq!(
+                    observed.as_deref(),
+                    Some(expected.as_str()),
+                    "worker {worker} must observe its own trace value"
+                );
+                // The slot is cleared on read, so it cannot leak into a later
+                // request scheduled onto the same worker thread.
+                assert_eq!(take_hover_trace_source_region_kind(), None);
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        assert!(handle.join().is_ok(), "hover trace worker panicked");
+    }
+}

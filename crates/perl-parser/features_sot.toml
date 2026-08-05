@@ -3,7 +3,7 @@
 # Used to generate capabilities, documentation, and compliance reports
 
 [meta]
-version = "0.12.3"
+version = "0.17.0"
 lsp_version = "3.18"
 compliance_percent = 100  # 119 total features (88 LSP + 24 DAP + 7 perl-lsp extensions), 53/53 advertised
 
@@ -680,21 +680,21 @@ description = "Jump execution to a target location (goto request)"
 id = "dap.restart_frame"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
-advertised = true
+maturity = "planned"
+advertised = false
 counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
-description = "Restart execution from the beginning of a stack frame (restartFrame)"
+description = "Restart execution from the beginning of a stack frame (restartFrame); not implemented for Perl — perl5db has no frame-restart primitive, so the capability is not advertised"
 
 [[feature]]
 id = "dap.terminate_threads"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
-advertised = true
+maturity = "planned"
+advertised = false
 counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
-description = "Terminate one or more threads (terminateThreads)"
+description = "Terminate one or more threads (terminateThreads); not implemented for Perl — perl5db cannot target individual threads, so the capability is not advertised"
 
 # Protocol / Lifecycle Features
 

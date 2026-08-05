@@ -45,17 +45,33 @@ fn main() {
 
     if path.is_file() {
         let (has_error, duration) = process_file(path);
-        println!("status=success error={} duration_us={}", has_error, duration);
+        println!(
+            "status={} error={} duration_us={}",
+            if has_error { "error" } else { "success" },
+            has_error,
+            duration
+        );
     } else if path.is_dir() {
         let mut total_files = 0;
         let mut error_files = 0;
         let mut total_duration = 0;
+        let mut walk_errors = 0;
 
-        for entry in WalkDir::new(path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-        {
+        for entry in WalkDir::new(path).into_iter() {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    // Log walk errors (permission denied, I/O errors) instead
+                    // of silently dropping them via filter_map(|e| e.ok()).
+                    // This makes skipped files visible and debuggable (#3916).
+                    walk_errors += 1;
+                    eprintln!("warn: walk error: {e}");
+                    continue;
+                }
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
             let (has_error, duration) = process_file(entry.path());
             total_files += 1;
             if has_error {
@@ -71,8 +87,8 @@ fn main() {
         };
 
         println!(
-            "total_files={} error_files={} success_rate={:.1} total_duration_us={}",
-            total_files, error_files, success_rate, total_duration
+            "total_files={} error_files={} success_rate={:.1} total_duration_us={} walk_errors={}",
+            total_files, error_files, success_rate, total_duration, walk_errors
         );
     } else {
         eprintln!("Path does not exist: {}", path.display());

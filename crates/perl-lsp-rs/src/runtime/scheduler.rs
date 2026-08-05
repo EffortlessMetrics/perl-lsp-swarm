@@ -424,6 +424,20 @@ enum HandlerOutcome {
     Empty,
 }
 
+/// Releases a scheduler-owned request ID even when the handler panics.
+struct PendingRequestGuard {
+    server: Arc<LspServer>,
+    id: Option<JsonRpcId>,
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.as_ref() {
+            self.server.clear_request_pending(id);
+        }
+    }
+}
+
 impl Scheduler {
     /// Create a new scheduler and spawn worker tasks.
     ///
@@ -496,9 +510,19 @@ impl Scheduler {
     ///
     /// Returns `Err(())` if the mutation worker has exited (channel closed).
     pub async fn send_mutation(&self, request: JsonRpcRequest) -> Result<(), ()> {
+        let pending_id = request.id.clone();
+        if let Some(id) = pending_id.as_ref() {
+            self.server.mark_request_pending(id);
+        }
         let seq = self.mutation_seq_next.fetch_add(1, Ordering::SeqCst) + 1;
         let enqueued = std::time::Instant::now();
-        self.mutation_tx.send(QueuedMutation { request, seq, enqueued }).await.map_err(|_| {
+        let result = self.mutation_tx.send(QueuedMutation { request, seq, enqueued }).await;
+        if result.is_err()
+            && let Some(id) = pending_id.as_ref()
+        {
+            self.server.clear_request_pending(id);
+        }
+        result.map_err(|_| {
             self.mutation_seq_done.store(seq, Ordering::SeqCst);
             self.mutation_notify.notify_waiters();
         })
@@ -511,16 +535,26 @@ impl Scheduler {
     ///
     /// Returns `Err(())` if all read workers have exited (channel closed).
     pub async fn send_read(&self, request: JsonRpcRequest) -> Result<(), ()> {
+        let pending_id = request.id.clone();
+        if let Some(id) = pending_id.as_ref() {
+            self.server.mark_request_pending(id);
+        }
         let wait_for_seq = self.mutation_seq_next.load(Ordering::SeqCst);
         let priority = request_priority(&request.method);
         let dedup_key = extract_dedup_key(&request.method, request.params.as_ref(), priority);
         let freshness =
             extract_freshness(&self.server, &request.method, request.params.as_ref(), priority);
         let arrival_seq = READ_ARRIVAL_SEQ.fetch_add(1, Ordering::Relaxed);
-        self.read_tx
+        let result = self
+            .read_tx
             .send(QueuedRead { request, wait_for_seq, priority, arrival_seq, dedup_key, freshness })
-            .await
-            .map_err(|_| ())
+            .await;
+        if result.is_err()
+            && let Some(id) = pending_id.as_ref()
+        {
+            self.server.clear_request_pending(id);
+        }
+        result.map_err(|_| ())
     }
 
     /// Shut down all workers by dropping senders and awaiting completion.
@@ -537,6 +571,21 @@ impl Scheduler {
         for handle in self.workers {
             let _ = handle.await;
         }
+    }
+
+    /// Release bookkeeping for mutations abandoned after the outbound channel
+    /// closes, including the sequence barrier needed by queued reads.
+    fn settle_abandoned_mutation(
+        queued: QueuedMutation,
+        server: &Arc<LspServer>,
+        mutation_seq_done: &Arc<AtomicU64>,
+        mutation_notify: &Arc<Notify>,
+    ) {
+        if let Some(id) = queued.request.id.as_ref() {
+            server.clear_request_pending(id);
+        }
+        mutation_seq_done.store(queued.seq, Ordering::SeqCst);
+        mutation_notify.notify_waiters();
     }
 
     /// Single exclusive mutation worker.
@@ -568,8 +617,16 @@ impl Scheduler {
             let id = queued.request.id.clone();
             let method = queued.request.method.clone();
             let seq = queued.seq;
-            let outcome =
-                Self::run_handler(move || srv.handle_request(queued.request), id, &method).await;
+            let pending_guard = PendingRequestGuard { server: Arc::clone(&srv), id: id.clone() };
+            let outcome = Self::run_handler(
+                move || {
+                    let _pending_guard = pending_guard;
+                    srv.handle_request(queued.request)
+                },
+                id,
+                &method,
+            )
+            .await;
 
             // Reads that were enqueued after this mutation can proceed once state is updated.
             // This must happen even when the handler panicked, or every read
@@ -591,6 +648,20 @@ impl Scheduler {
             if let Some(response) = to_send {
                 log_response(&response);
                 if server.outbound.send_response(response).is_err() {
+                    // The outbound channel is gone, so the worker cannot
+                    // deliver responses for requests still buffered in the
+                    // mutation queue. Settle their scheduler ownership before
+                    // dropping the receiver; otherwise their cancellation
+                    // markers stay pinned and reads waiting on their sequence
+                    // numbers can remain blocked forever.
+                    while let Ok(abandoned) = rx.try_recv() {
+                        Self::settle_abandoned_mutation(
+                            abandoned,
+                            &server,
+                            &mutation_seq_done,
+                            &mutation_notify,
+                        );
+                    }
                     break;
                 }
             }
@@ -619,6 +690,11 @@ impl Scheduler {
         // Priority queue: highest-priority (lowest value) requests pop first.
         let mut pending: BinaryHeap<QueuedRead> = BinaryHeap::new();
         // Maps dedup key -> latest arrival_seq seen for that key.
+        // Capped to prevent unbounded growth over long sessions (#5032 item 1).
+        // When the cap is exceeded, the map is cleared — dedup is an optimization,
+        // not a correctness requirement, so clearing only causes a brief loss of
+        // coalescing for in-flight requests.
+        const DEDUP_MAP_CAP: usize = 4096;
         let mut latest_seq: HashMap<RequestDedupKey, u64> = HashMap::new();
 
         loop {
@@ -630,6 +706,11 @@ impl Scheduler {
                     Ok(queued) => {
                         // Track latest arrival_seq for dedup keys.
                         if let Some(ref key) = queued.dedup_key {
+                            // Evict the entire map when it exceeds the cap to
+                            // prevent unbounded growth (#5032 item 1).
+                            if latest_seq.len() >= DEDUP_MAP_CAP {
+                                latest_seq.clear();
+                            }
                             latest_seq
                                 .entry(key.clone())
                                 .and_modify(|seq| {
@@ -684,6 +765,9 @@ impl Scheduler {
                 match rx.recv().await {
                     Some(queued) => {
                         if let Some(ref key) = queued.dedup_key {
+                            if latest_seq.len() >= DEDUP_MAP_CAP {
+                                latest_seq.clear();
+                            }
                             latest_seq
                                 .entry(key.clone())
                                 .and_modify(|seq| {
@@ -872,6 +956,9 @@ impl Scheduler {
         if let Some(ref key) = queued.dedup_key {
             if let Some(&latest) = latest_seq.get(key) {
                 if queued.arrival_seq < latest {
+                    if let Some(id) = queued.request.id.as_ref() {
+                        server.clear_request_pending(id);
+                    }
                     Self::send_cancellation(
                         server,
                         queued.request.id,
@@ -887,13 +974,21 @@ impl Scheduler {
         // ingress and dispatch. This catches the typing-storm case where
         // every keystroke produces a unique position dedup key.
         if let Some(reason) = Self::stale_read_reason(server, queued.freshness.as_ref()) {
+            if let Some(id) = queued.request.id.as_ref() {
+                server.clear_request_pending(id);
+            }
             Self::send_cancellation(server, queued.request.id, &queued.request.method, reason);
             return;
         }
 
         let permit = match Arc::clone(permits).acquire_owned().await {
             Ok(permit) => permit,
-            Err(_) => return,
+            Err(_) => {
+                if let Some(id) = queued.request.id.as_ref() {
+                    server.clear_request_pending(id);
+                }
+                return;
+            }
         };
 
         let srv = Arc::clone(server);
@@ -913,9 +1008,24 @@ impl Scheduler {
             let _permit = permit;
 
             // Wait for all mutations that were enqueued before this read.
+            // Use the standard Tokio Notify pattern: create the `notified()`
+            // future BEFORE re-checking the condition so a `notify_waiters()`
+            // that fires in the gap between the load and the park is not lost
+            // (#5041). The previous check-then-await loop could park
+            // indefinitely if the mutation completed between the `load` and
+            // the `notified().await`.
             let t_read_wait = std::time::Instant::now();
-            while seq_done.load(Ordering::SeqCst) < wait_for {
-                notify.notified().await;
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            loop {
+                if seq_done.load(Ordering::SeqCst) >= wait_for {
+                    break;
+                }
+                notified.as_mut().await;
+                // Re-arm for the next iteration — `notify_waiters()` only
+                // wakes permit-saved futures, so each iteration needs a fresh
+                // subscription.
+                notified.set(notify.notified());
             }
             // The read blocked here until the mutation barrier cleared — this is
             // the keystroke-to-completion wait a queued parse storm inflates.
@@ -928,14 +1038,21 @@ impl Scheduler {
             }
 
             if let Some(reason) = Self::stale_read_reason(&srv, freshness.as_ref()) {
+                if let Some(id) = id.as_ref() {
+                    srv.clear_request_pending(id);
+                }
                 Self::send_cancellation(&srv, id, &method, reason);
                 return;
             }
 
+            let pending_guard = PendingRequestGuard { server: Arc::clone(&srv), id: id.clone() };
             let outcome = Self::run_handler(
                 {
                     let handler_server = Arc::clone(&srv);
-                    move || handler_server.handle_request(queued.request)
+                    move || {
+                        let _pending_guard = pending_guard;
+                        handler_server.handle_request(queued.request)
+                    }
                 },
                 id.clone(),
                 &method,
@@ -1306,6 +1423,31 @@ mod tests {
             dedup_key: None,
             freshness: None,
         }
+    }
+
+    #[test]
+    fn abandoned_mutation_settlement_releases_pending_marker_and_barrier() {
+        let server = Arc::new(crate::LspServer::new());
+        let id = JsonRpcId::Integer(901);
+        server.mark_request_pending(&id);
+
+        let queued = QueuedMutation {
+            request: JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(id.clone()),
+                method: "textDocument/didChange".to_string(),
+                params: None,
+            },
+            seq: 7,
+            enqueued: std::time::Instant::now(),
+        };
+        let mutation_seq_done = Arc::new(AtomicU64::new(0));
+        let mutation_notify = Arc::new(Notify::new());
+
+        Scheduler::settle_abandoned_mutation(queued, &server, &mutation_seq_done, &mutation_notify);
+
+        assert!(!server.pending_request_ids.lock().contains(&id));
+        assert_eq!(mutation_seq_done.load(Ordering::SeqCst), 7);
     }
 
     // =====================================================================

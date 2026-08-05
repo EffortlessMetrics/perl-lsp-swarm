@@ -137,8 +137,14 @@ fn scan_crate(crate_dir: &Path, workspace_root: &Path, crate_name: &str) -> Resu
             continue;
         }
 
-        let rel =
-            canonical.strip_prefix(workspace_root).unwrap_or(&canonical).display().to_string();
+        let ws_canonical =
+            fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let rel = canonical
+            .strip_prefix(&ws_canonical)
+            .unwrap_or(&canonical)
+            .display()
+            .to_string()
+            .replace('\\', "/");
         offenders.push(Offender {
             crate_name: crate_name.to_string(),
             path: rel,

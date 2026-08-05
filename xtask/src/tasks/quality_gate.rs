@@ -1633,7 +1633,7 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
 
     let mut markdown = String::new();
     markdown.push_str("# Quality Gate\n\n");
-    markdown.push_str("## Quality Gates\n\n");
+    markdown.push_str("## Quality-gate effect\n\n");
     markdown.push_str(&format!("- decision: `{decision}`\n"));
     markdown.push_str(&format!("- mode: `{}`\n", args.mode.as_str()));
     if let Some(coverage) = receipt.get("coverage") {

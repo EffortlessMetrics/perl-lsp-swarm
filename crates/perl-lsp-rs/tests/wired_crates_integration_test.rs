@@ -346,9 +346,12 @@ fn test_wired_perltidy_config_accessible() {
     use perl_lsp_perltidy::PerlTidyConfig;
     let config = PerlTidyConfig::default();
     // Verify load-bearing defaults that downstream callers depend on.
-    assert_eq!(config.indent_columns, Some(4), "default indent_columns must be 4");
     assert_eq!(config.maximum_line_length, Some(80), "default maximum_line_length must be 80");
-    assert_eq!(config.tabs, Some(false), "default tabs must be false (spaces)");
+    // Indentation ships unset so an unconfigured workspace keeps deferring to
+    // the editor's tabSize / insertSpaces, and an explicitly configured value
+    // is distinguishable from the built-in default (#5054).
+    assert_eq!(config.indent_columns, None, "default indent_columns must be unset");
+    assert_eq!(config.tabs, None, "default tabs must be unset");
 }
 
 // ---------------------------------------------------------------------------

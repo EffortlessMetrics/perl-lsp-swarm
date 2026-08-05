@@ -1,6 +1,12 @@
 //! Execution control: continue, next, step in, step out, pause, goto, cancel.
 
-use super::*;
+use super::{
+    AstBreakpointValidator, BreakpointValidator, ContinueArguments, ContinueResponseBody,
+    DapMessage, DebugAdapter, DebugState, GotoArguments, GotoTarget, GotoTargetsArguments,
+    GotoTargetsResponseBody, NextArguments, Ordering, PauseArguments, ResumeMode, StepInArguments,
+    StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, StepOutArguments, Value,
+    Write, json, lock_or_recover,
+};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -320,7 +326,7 @@ impl DebugAdapter {
                         let _ = pid;
                         (false, "Pause is unsupported for PID-attached sessions on Windows")
                     }
-                    #[cfg(not(windows))]
+                    #[cfg(unix)]
                     {
                         (self.send_interrupt_signal(pid), "Failed to pause debugger")
                     }

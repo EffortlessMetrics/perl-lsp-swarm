@@ -1,6 +1,31 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+/// A single parse error or advisory rendered with line/column context.
+///
+/// `message` is the `ParseError` Display string; `context` is the human-readable
+/// `--> line N, column M` + source-line + caret rendering produced by
+/// `format_parse_error_context` (#5519). Read errors (no `ParseError`) have an
+/// empty context.
+struct RenderedError {
+    message: String,
+    context: Vec<String>,
+}
+
+impl RenderedError {
+    /// Build from a `ParseError`, rendering line/column context from `source`.
+    fn from_parse(source: &str, err: &perl_parser::ParseError) -> Self {
+        let message = format!("{err}");
+        let context = super::format_parse_error_context(source, err);
+        Self { message, context }
+    }
+
+    /// Build from a plain message (e.g. a read error) with no context.
+    fn plain(message: String) -> Self {
+        Self { message, context: Vec::new() }
+    }
+}
+
 /// Blocking parse errors and advisory diagnostics recorded for one scanned file.
 ///
 /// The two lists are kept apart because only `blocking` decides whether the file
@@ -9,8 +34,8 @@ use std::path::Path;
 /// draws the same line in `cli.rs::run_check`.
 struct FileFindings {
     path: String,
-    blocking: Vec<String>,
-    advisory: Vec<String>,
+    blocking: Vec<RenderedError>,
+    advisory: Vec<RenderedError>,
 }
 
 /// A path the directory walk could not read.
@@ -38,7 +63,14 @@ pub(super) fn run_check_project(dir: &str) -> i32 {
     }
 
     let mut results = ProjectCheckResults::default();
-    let walker = walkdir::WalkDir::new(root).follow_links(true).into_iter();
+    // Skip vendored / build directories so the parsability verdict is driven by
+    // the user's own code, not third-party deps. Symlink loops are still
+    // detected and reported by `walkdir`'s built-in visited-inode guard.
+    // (#5519 Slice B)
+    let walker = walkdir::WalkDir::new(root)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|entry| !is_vendored_dir(entry));
 
     for entry in walker {
         let entry = match entry {
@@ -101,6 +133,42 @@ fn is_supported_perl_file(path: &Path) -> bool {
             .unwrap_or(false)
 }
 
+/// Directory names that hold vendored or generated code rather than the user's
+/// own project source. Skipping them prevents a parsability verdict from being
+/// driven by third-party code the user did not write and cannot fix (#5519
+/// Slice B). The explicitly-requested root directory (depth 0) is never
+/// skipped, even if its name matches a vendored pattern (e.g. `--check-project
+/// vendor`).
+fn is_vendored_dir(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+    // The root entry (depth 0) is the directory the user explicitly asked to
+    // scan. Never skip it even if its basename matches a vendored name.
+    if entry.depth() == 0 {
+        return false;
+    }
+    let Some(name) = entry.file_name().to_str() else {
+        return false;
+    };
+    is_vendored_dir_name(name)
+}
+
+/// Pure name check extracted from [`is_vendored_dir`] for unit testing.
+fn is_vendored_dir_name(name: &str) -> bool {
+    const VENDORED_DIRS: &[&str] = &[
+        "local",        // Carton / `cpanm -l`
+        "blib",         // `make test` build output
+        "vendor",       // vendored deps
+        "node_modules", // JS ecosystem
+        ".git",         // VCS metadata
+        "target",       // Rust build output (e.g. this project's own target/)
+        ".build",       // Module::Build output
+        "auto",         // XS build artifacts under lib/
+    ];
+    VENDORED_DIRS.contains(&name)
+}
+
 fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults) {
     let source = match crate::util::read_text_file_with_encoding(path) {
         Ok(s) => s,
@@ -119,19 +187,20 @@ fn process_file(path: &Path, path_str: String, results: &mut ProjectCheckResults
     let (blocking_errors, advisory_errors): (Vec<_>, Vec<_>) =
         parser.errors().iter().partition(|err| err.blocks_clean_parse());
 
-    let mut blocking: Vec<String> = Vec::new();
-    let advisory: Vec<String> = advisory_errors.iter().map(|err| format!("{err}")).collect();
+    let mut blocking: Vec<RenderedError> = Vec::new();
+    let advisory: Vec<RenderedError> =
+        advisory_errors.iter().map(|err| RenderedError::from_parse(&source, err)).collect();
 
     if let Err(ref e) = parse_result {
-        let message = format!("{e}");
-        record_category(&message, results);
-        blocking.push(message);
+        let rendered = RenderedError::from_parse(&source, e);
+        record_category(&rendered.message, results);
+        blocking.push(rendered);
     }
 
     for err in &blocking_errors {
-        let message = format!("{err}");
-        record_category(&message, results);
-        blocking.push(message);
+        let rendered = RenderedError::from_parse(&source, err);
+        record_category(&rendered.message, results);
+        blocking.push(rendered);
     }
 
     if blocking.is_empty() {
@@ -147,7 +216,7 @@ fn record_file_error(path: String, message: String, results: &mut ProjectCheckRe
     record_category(&message, results);
     results.file_findings.push(FileFindings {
         path,
-        blocking: vec![message],
+        blocking: vec![RenderedError::plain(message)],
         advisory: Vec::new(),
     });
 }
@@ -155,6 +224,18 @@ fn record_file_error(path: String, message: String, results: &mut ProjectCheckRe
 fn record_category(message: &str, results: &mut ProjectCheckResults) {
     let category = categorize_error(message);
     results.category_counts.entry(category).and_modify(|c| *c += 1).or_insert(1);
+}
+
+/// Print one error under its file path, followed by the line/column context
+/// rendering when available (#5519). Previously this printed a bare byte offset
+/// (`at position 4821`) that the user could not act on; `--check` already solved
+/// this with `format_parse_error_context`, and `--check-project` now shares that
+/// rendering.
+fn emit_rendered_error(path: &str, err: &RenderedError) {
+    println!("  {path}: {}", err.message);
+    for line in &err.context {
+        println!("{line}");
+    }
 }
 
 fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
@@ -181,7 +262,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!("Parse errors:");
         for file in blocking_files {
             for err in &file.blocking {
-                println!("  {}: {err}", file.path);
+                emit_rendered_error(file.path.as_str(), err);
             }
         }
         println!();
@@ -193,7 +274,7 @@ fn emit_report(dir: &str, results: &ProjectCheckResults) -> i32 {
         println!("Advisories (do not affect the parsability verdict):");
         for file in advisory_files {
             for err in &file.advisory {
-                println!("  {}: {err}", file.path);
+                emit_rendered_error(file.path.as_str(), err);
             }
         }
         println!();
@@ -256,7 +337,18 @@ fn emit_category_section(category_counts: &HashMap<String, usize>) {
 }
 
 fn categorize_error(msg: &str) -> String {
-    if msg.contains("Unexpected end of input") {
+    // The parser emits several surface strings for end-of-input failures:
+    //   "Unexpected end of input", "Unclosed block: expected '}' but reached
+    //   end of input", "expected ';' but found end of input",
+    //   "Unexpected end of file", "... found EOF".  Group them all so users
+    //   receive the unclosed-block remediation hint instead of "Other".
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("end of input")
+        || lower.contains("end of file")
+        || lower.contains("reached end")
+        || lower.contains("found eof")
+        || lower.contains("unexpected eof")
+    {
         "Unexpected EOF".to_string()
     } else if msg.contains("expected") && msg.contains("found") {
         "Unexpected token".to_string()
@@ -299,7 +391,44 @@ fn remediation_hint_for_category(category: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{categorize_error, remediation_hint_for_category};
+    use super::{
+        RenderedError, categorize_error, is_vendored_dir_name, remediation_hint_for_category,
+    };
+
+    #[test]
+    fn rendered_error_from_parse_produces_line_column_not_byte_offset() {
+        // #5519: --check-project previously printed a bare byte offset
+        // (`at position N`) that the user could not act on. The fix reuses
+        // `format_parse_error_context` so each error renders `--> line N,
+        // column M` plus the source line and caret — matching `--check`.
+        //
+        // The unclosed brace on line 2 must produce a context pointing at line 2.
+        let source = "my $x = 1;\nif ($x) {\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let result = parser.parse();
+        // An unclosed block yields a blocking error (either as the returned
+        // Err or in the recovered diagnostics).
+        let err: perl_parser::ParseError = result
+            .err()
+            .or_else(|| parser.errors().iter().next().cloned())
+            .expect("source with an unclosed block must produce a parse error");
+
+        let rendered = RenderedError::from_parse(source, &err);
+
+        // The message still contains the parser's text (which may mention a
+        // byte position internally), but the *context* lines must render a
+        // human-readable `--> line N, column M`.
+        let context_joined = rendered.context.join("\n");
+        assert!(
+            context_joined.contains("--> line"),
+            "context must contain a line annotation, got: {context_joined:?}"
+        );
+        // The context must NOT be empty — every ParseError yields a context.
+        assert!(
+            !rendered.context.is_empty(),
+            "from_parse must produce non-empty context for a parse error"
+        );
+    }
 
     #[test]
     fn categorize_error_maps_known_cases() {
@@ -310,6 +439,26 @@ mod tests {
         assert_eq!(categorize_error("Recursion depth exceeded"), "Recursion limit");
         assert_eq!(categorize_error("read error: permission denied"), "IO error");
         assert_eq!(categorize_error("something new"), "Other");
+    }
+
+    #[test]
+    fn categorize_error_groups_end_of_input_variants() {
+        // #1991: parser emits several end-of-input surface strings that
+        // previously fell through to "Other", suppressing the unclosed-block
+        // remediation hint.
+        assert_eq!(
+            categorize_error("Unclosed block: expected '}' but reached end of input"),
+            "Unexpected EOF"
+        );
+        assert_eq!(categorize_error("expected ';' but found end of input"), "Unexpected EOF");
+        assert_eq!(categorize_error("Unexpected end of file"), "Unexpected EOF");
+        assert_eq!(categorize_error("expected name but found EOF"), "Unexpected EOF");
+        // Case-insensitivity: a stray lowercase "eof" substring must not
+        // capture unrelated words (e.g. "does"), but genuine EOF messages of
+        // any case must match.
+        assert_eq!(categorize_error("parser reached end of input prematurely"), "Unexpected EOF");
+        // Non-EOF "found" message stays in the token category.
+        assert_eq!(categorize_error("expected ';' but found '}'"), "Unexpected token");
     }
 
     #[test]
@@ -325,5 +474,23 @@ mod tests {
     #[test]
     fn remediation_hints_skip_unknown_categories() {
         assert!(remediation_hint_for_category("Other").is_none());
+    }
+
+    #[test]
+    fn vendored_dir_names_are_recognized() {
+        // #5519 Slice B: the project checker must skip vendored / build
+        // directories so a FAIL verdict is not driven by third-party code.
+        for &name in
+            &["local", "blib", "vendor", "node_modules", ".git", "target", ".build", "auto"]
+        {
+            assert!(is_vendored_dir_name(name), "`{name}` should be recognized as a vendored dir");
+        }
+        // User project directories must NOT be skipped.
+        for &name in &["lib", "bin", "t", "script", "src", "app"] {
+            assert!(
+                !is_vendored_dir_name(name),
+                "`{name}` should NOT be treated as a vendored dir"
+            );
+        }
     }
 }

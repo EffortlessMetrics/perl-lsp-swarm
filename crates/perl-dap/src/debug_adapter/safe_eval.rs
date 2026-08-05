@@ -4,7 +4,9 @@
 //! contain dangerous operations when safe evaluation mode is active.
 //! This is admission control, not a sandboxed interpreter boundary.
 
-use super::*;
+use super::{
+    assignment_ops_re, dangerous_ops_re, deref_re, glob_re, is_escape_sequence, regex_mutation_re,
+};
 
 /// Check if a position in a string is inside single quotes
 /// (conservative: only tracks single-quoted string literals)

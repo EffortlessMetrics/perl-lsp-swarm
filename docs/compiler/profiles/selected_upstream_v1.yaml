@@ -1,0 +1,65 @@
+schema_version: compiler_profile.v1
+profile_id: selected_upstream_v1
+profile_version: v1
+purpose: Typed compiler substrate required by the selected base, comp, and run comparison series.
+comparison_series:
+  - base
+  - comp
+  - run
+required_ast_kinds:
+  - Program
+  - ExpressionStatement
+  - VariableDeclaration
+  - Variable
+  - Assignment
+  - FunctionCall
+  - MethodCall
+  - Block
+required_hir_nodes:
+  - body
+  - expression
+  - statement
+  - control_flow
+required_pir_operations:
+  - evaluate
+  - assign
+  - call
+required_place_kinds:
+  - scalar
+  - array
+  - hash
+required_context_dimensions:
+  - scalar
+  - list
+  - void
+required_cfg_edges:
+  - sequential
+  - branch
+  - loop
+required_fact_classes:
+  - declaration
+  - lexical_scope
+  - compile_time_effect
+allowed_dynamic_boundaries:
+  - id: selected-dynamic-boundary
+    construct: dynamically resolved Perl construct
+    reason: Runtime-dependent semantics are represented as a typed boundary until governed support lands.
+    owner_issue: "#5215"
+    stop_condition: Replace this boundary with a typed implementation and independent oracle proof.
+explicit_exclusions: []
+unsupported_bridges:
+  - id: selected-traversal-bridge
+    construct: unsupported construct outside the selected comparison series
+    representation: reviewed traversal-only bridge
+    owner_issue: "#5215"
+    stop_condition: Admit the construct through a versioned profile transition after semantic proof.
+consumers:
+  - compiler-oracle
+  - comparison-harness
+gold_oracle_eir_requirements:
+  - selected comparison manifests and hashes
+  - accepted boundary registry
+owner_issue: "#5215"
+predecessor_profile: null
+change_reason: Establish the first versioned selected-series authority without claiming whole-language support.
+claim_boundary: Complete only for the declared selected comparison series and listed typed obligations.

@@ -499,10 +499,10 @@ fn complete_general_context(
         }
     }
 
-    let builtin_set = builtins::create_builtins();
+    let builtin_set = builtins::builtin_set();
     xs_api::add_xs_api_completions(completions, context, source, filepath);
-    if context.prefix.is_empty() || provider.could_be_function(&context.prefix, &builtin_set) {
-        builtins::add_builtin_completions(completions, context, &builtin_set);
+    if context.prefix.is_empty() || provider.could_be_function(&context.prefix, builtin_set) {
+        builtins::add_builtin_completions(completions, context, builtin_set);
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }

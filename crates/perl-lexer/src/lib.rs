@@ -405,8 +405,12 @@ impl<'a> PerlLexer<'a> {
                 return Some(token);
             }
 
-            if let Some(token) = self.try_vstring() {
-                return Some(token);
+            // Only try v-string when NOT immediately after `sub` keyword —
+            // `sub v5 { }` should parse `v5` as an identifier, not a v-string (#2189)
+            if !self.after_sub {
+                if let Some(token) = self.try_vstring() {
+                    return Some(token);
+                }
             }
 
             if let Some(token) = self.try_identifier_or_keyword() {
@@ -2694,6 +2698,18 @@ impl<'a> PerlLexer<'a> {
                                             )));
                                         }
                                         Some(ch) if is_perl_identifier_start(ch) => {
+                                            // Perl does NOT interpolate a bare
+                                            // method call inside a double-quoted
+                                            // string: `"$foo->bar"` interpolates
+                                            // `$foo` then prints a literal
+                                            // `->bar`. Only arrow *subscripts*
+                                            // (`->[]`, `->{}`, `->()`) genuinely
+                                            // interpolate and are handled by the
+                                            // arms above (#5428). Leave the arrow
+                                            // and method name in the literal
+                                            // bucket so downstream consumers do
+                                            // not treat a never-performed call as
+                                            // a real interpolation.
                                             while self.position < self.input_bytes.len() {
                                                 let byte = self.input_bytes[self.position];
                                                 if byte.is_ascii_alphanumeric() || byte == b'_' {
@@ -2712,19 +2728,20 @@ impl<'a> PerlLexer<'a> {
                                                     break;
                                                 }
                                             }
-                                            if self.current_char() == Some('(') {
-                                                let _ = self.consume_balanced_segment_in_string(
-                                                    '(', ')', '"',
-                                                );
+                                            let tail_text = &self.input[tail_start..self.position];
+                                            if !tail_text.is_empty() {
+                                                current_literal.reserve(tail_text.len());
+                                                current_literal.push_str(tail_text);
                                             }
-                                            parts.push(StringPart::MethodCall(Arc::from(
-                                                &self.input[tail_start..self.position],
-                                            )));
                                         }
                                         _ => {
-                                            parts.push(StringPart::MethodCall(Arc::from(
-                                                &self.input[tail_start..self.position],
-                                            )));
+                                            // `->` not followed by a subscript or
+                                            // identifier — also literal (#5428).
+                                            let tail_text = &self.input[tail_start..self.position];
+                                            if !tail_text.is_empty() {
+                                                current_literal.reserve(tail_text.len());
+                                                current_literal.push_str(tail_text);
+                                            }
                                         }
                                     }
                                 } else if self.current_char() == Some('[') {
@@ -3678,6 +3695,17 @@ impl<'a> PerlLexer<'a> {
                     TokenType::Operator(operator) if operator.as_ref() == "::" => {
                         expect_name_segment = true;
                         continue;
+                    }
+                    // `after_sub` deliberately lexes `v1.2` as `Identifier("v1")`,
+                    // `.` and `Number("2")` so that the valid single-component
+                    // `sub v5 { ... }` form remains a name.  A dotted v-string is
+                    // not a valid named-sub declaration, however; reject the dot
+                    // instead of allowing a later `{` to create a false recovery
+                    // boundary for an unclosed `qw`.
+                    TokenType::Operator(operator)
+                        if keyword == "sub" && operator.as_ref() == "." =>
+                    {
+                        return false;
                     }
                     TokenType::Operator(operator) if operator.as_ref() == ":" => {
                         expect_attribute_name = true;

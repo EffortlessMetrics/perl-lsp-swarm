@@ -506,6 +506,72 @@ sub greet { return "hello"; }
     Ok(())
 }
 
+/// Verify short-query filtering at the public workspace/symbol handler.
+///
+/// The handler combines source-backed and generated members. This test keeps
+/// both sources in one response so a new source that skips the short-query
+/// guard cannot hide behind source-local tests.
+#[test]
+fn test_workspace_symbol_short_query_filters_all_sources() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///short_query_handler.pl";
+    harness.open(
+        doc_uri,
+        r#"package ShortQuery::Handler;
+use Moo;
+
+has attr_value   => (is => 'ro');
+has callback_ref => (is => 'ro');
+
+sub alpha_sub     { 1 }
+sub main_alpha_fn { 2 }
+sub get_all_items { 3 }
+
+1;
+"#,
+    )?;
+
+    let short_response = harness
+        .request("workspace/symbol", json!({ "query": "a" }))
+        .map_err(|e| format!("short workspace/symbol request failed: {e}"))?;
+    let short_symbols =
+        short_response.as_array().ok_or("short workspace/symbol response was not an array")?;
+    let short_names: Vec<&str> =
+        short_symbols.iter().filter_map(|symbol| symbol["name"].as_str()).collect();
+
+    assert!(
+        short_names.iter().any(|name| *name == "alpha_sub"),
+        "short query should retain source prefix match: {short_names:?}"
+    );
+    assert!(
+        short_names.iter().any(|name| name.starts_with("attr_value")),
+        "short query should retain generated prefix match: {short_names:?}"
+    );
+    for excluded in ["main_alpha_fn", "get_all_items", "callback_ref"] {
+        assert!(
+            !short_names.iter().any(|name| name.starts_with(excluded)),
+            "short query unexpectedly returned substring-only match {excluded:?}: {short_names:?}"
+        );
+    }
+
+    let loose_response = harness
+        .request("workspace/symbol", json!({ "query": "ll" }))
+        .map_err(|e| format!("loose workspace/symbol request failed: {e}"))?;
+    let loose_symbols =
+        loose_response.as_array().ok_or("loose workspace/symbol response was not an array")?;
+    let callback_ref = loose_symbols.iter().find(|symbol| {
+        symbol["name"].as_str().is_some_and(|name| name.starts_with("callback_ref"))
+    });
+    assert!(
+        callback_ref.is_some(),
+        "two-character query should return generated loose match callback_ref: {loose_symbols:?}"
+    );
+
+    Ok(())
+}
+
 /// Test that workspace/symbol uses perl-lsp-workspace-symbols provider.
 ///
 /// Verifies that a method declared inside a named package receives a

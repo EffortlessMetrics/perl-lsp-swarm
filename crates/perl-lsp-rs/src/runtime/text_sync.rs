@@ -8,7 +8,13 @@
 //! reparsed — incremental *parsing* is future work.  The sync kind is about
 //! how document text is transferred, not the parsing strategy.
 
+#[cfg(test)]
 use super::*;
+use super::{
+    Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,
+    JsonRpcError, LspServer, Mutex, Node, Ordering, Parser, Value, json, parse_worker,
+    source_path_from_uri, workspace_progress,
+};
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, ParsedSnapshot};
 #[cfg(feature = "workspace")]
@@ -416,6 +422,37 @@ impl LspServer {
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
+        self.handle_did_change_with_version_policy(params, cancellation_token, false)
+    }
+
+    /// Reconcile `didSave.text` through the normal full-document lifecycle.
+    ///
+    /// A save carries no new document version authority. The lifecycle still
+    /// needs to advance the internal generation and enqueue a parse, but must
+    /// preserve the latest client version already known for the buffer. The
+    /// equal-version policy is therefore private to this save path.
+    pub(crate) fn handle_did_save_text_replacement(
+        &self,
+        uri: &str,
+        text: &str,
+        version: i32,
+    ) -> Result<(), JsonRpcError> {
+        self.handle_did_change_with_version_policy(
+            Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{"text": text}],
+            })),
+            None,
+            true,
+        )
+    }
+
+    fn handle_did_change_with_version_policy(
+        &self,
+        params: Option<Value>,
+        cancellation_token: Option<Arc<AtomicBool>>,
+        allow_same_version: bool,
+    ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
             let uri = params
                 .pointer("/textDocument/uri")
@@ -425,11 +462,17 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
-            // Cancel any active streaming inline completion sessions for this URI
-            // that are older than the new document version.
+            // A save replacement can preserve the client's document version while
+            // still replacing the buffer. In that case every stream for the URI
+            // captured stale text, including same-version sessions, and must be
+            // cancelled. Ordinary versioned changes retain the older-only policy.
             for key in self.uri_key_variants(uri) {
                 if let Some(version) = incoming_version_i64 {
-                    self.stream_sessions().cancel_for_uri_version(&key, version);
+                    if allow_same_version {
+                        self.stream_sessions().cancel_for_uri(&key);
+                    } else {
+                        self.stream_sessions().cancel_for_uri_version(&key, version);
+                    }
                 } else {
                     self.stream_sessions().cancel_for_uri(&key);
                 }
@@ -479,7 +522,9 @@ impl LspServer {
                 // We only gate on explicit client-provided versions; if a client omits
                 // the version field we preserve legacy behavior and treat the change as new.
                 if let Some(version) = incoming_version {
-                    if version <= doc_state.version {
+                    if version < doc_state.version
+                        || (!allow_same_version && version == doc_state.version)
+                    {
                         tracing::debug!(
                             "Ignoring stale didChange for {} (incoming version {} <= current {})",
                             uri,

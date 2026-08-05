@@ -13,7 +13,7 @@ use perl_lsp_ux_tests::{
     open_all_fixture_files, run_ux_scenario,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Deserializer, Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -56,6 +56,30 @@ fn waiver_expiry_rejects_malformed_and_expired_dates() -> Result<()> {
     ensure!(validate_waiver_expiry("9999-12-31").is_ok());
     ensure!(validate_waiver_expiry("2026-02-30").is_err());
     ensure!(validate_waiver_expiry("2020-01-01").is_err());
+    Ok(())
+}
+
+#[test]
+fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
+    let error = validate_error_waiver(&ErrorWaiver {
+        project: "mojolicious".to_owned(),
+        journey: "edit_burst_completion".to_owned(),
+        expected_error_class: "request_superseded".to_owned(),
+        issue: 5779,
+        expires_after: "2020-01-01".to_owned(),
+    })
+    .expect_err("expired waiver must remain a validation error");
+    let message = format!("{error:#}");
+    ensure!(message.contains("project=mojolicious"), "missing project identity: {message}");
+    ensure!(
+        message.contains("journey=edit_burst_completion"),
+        "missing journey identity: {message}"
+    );
+    ensure!(
+        message.contains("expected_error_class=request_superseded"),
+        "missing error-class identity: {message}"
+    );
+    ensure!(message.contains("tracking_issue=#5779"), "missing issue identity: {message}");
     Ok(())
 }
 
@@ -196,6 +220,18 @@ struct ProjectReceipt {
     file_count: usize,
     active_file: String,
     active_document_ready: bool,
+    runtime: RuntimeReceipt,
+}
+
+/// Runtime observations emitted by the server while this project was loaded.
+///
+/// These are deliberately raw structured receipts rather than promoted UX
+/// claims. The readiness receipt may not contain first-correct-answer entries
+/// until the provider observation seam is connected for the E2E runner.
+#[derive(Debug, Default, Serialize)]
+struct RuntimeReceipt {
+    indexing: Vec<Value>,
+    readiness: Vec<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -296,6 +332,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                         + usize::from(project.fixture == "inline_plain_modern_oo"),
                     active_file: project.active_file.clone(),
                     active_document_ready,
+                    runtime: RuntimeReceipt::default(),
                 });
 
                 run_project_workload(
@@ -307,13 +344,19 @@ fn scenario_67_golden_editor_workload_receipt() {
                     active_document_ready,
                     &mut rows,
                 )?;
+                let runtime = wait_for_runtime_receipt(&harness, Duration::from_secs(10))
+                    .with_context(|| format!("collecting runtime receipt for {}", project.name))?;
+                let project_receipt = project_receipts
+                    .last_mut()
+                    .context("project receipt missing after workload execution")?;
+                project_receipt.runtime = runtime;
                 protocol_crash_count += count_protocol_crash_events(&harness);
             }
 
             let rollup = build_rollup(&rows, &manifest.error_waivers, protocol_crash_count)?;
             let receipt = WorkloadReceipt {
                 kind: "golden_editor_workload",
-                schema_version: 2,
+                schema_version: 3,
                 measured_at_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
                 manifest_version: manifest.manifest_version,
                 claim_boundary: manifest.claim_boundary,
@@ -406,9 +449,19 @@ fn validate_manifest(manifest: &WorkloadManifest) -> Result<()> {
         );
     }
     for waiver in &manifest.error_waivers {
-        ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
-        validate_waiver_expiry(&waiver.expires_after)?;
+        validate_error_waiver(waiver)?;
     }
+    Ok(())
+}
+
+fn validate_error_waiver(waiver: &ErrorWaiver) -> Result<()> {
+    ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
+    validate_waiver_expiry(&waiver.expires_after).with_context(|| {
+        format!(
+            "Scenario 67 waiver identity: project={} journey={} expected_error_class={} tracking_issue=#{}",
+            waiver.project, waiver.journey, waiver.expected_error_class, waiver.issue
+        )
+    })?;
     Ok(())
 }
 
@@ -469,10 +522,71 @@ fn create_harness(project: &ProjectSpec, files: &[ProjectFixtureFile]) -> Result
             ScenarioConfig { timeout: Duration::from_secs(30), ..Default::default() }
                 .env("PERL_LSP_WORKSPACE", "1")
                 .env("PERL_LSP_E2E", "1")
+                .env("PERL_LSP_EAGER_WORKSPACE_INDEXING", "true")
+                .env("PERL_LSP_LOG", receipt_log_filter())
                 .with_file(PLAIN_ACTIVE_FILE, PLAIN_SOURCE),
         );
     }
-    UxHarness::new(fixture_scenario_config(files).env("PERL_LSP_E2E", "1"))
+    UxHarness::new(
+        fixture_scenario_config(files)
+            .env("PERL_LSP_E2E", "1")
+            .env("PERL_LSP_EAGER_WORKSPACE_INDEXING", "true")
+            .env("PERL_LSP_LOG", receipt_log_filter()),
+    )
+}
+
+fn receipt_log_filter() -> &'static str {
+    "perl_lsp::workspace_readiness=info,perl_lsp::workspace_indexing=info"
+}
+
+fn collect_runtime_receipt(harness: &UxHarness) -> RuntimeReceipt {
+    let mut receipt = RuntimeReceipt::default();
+    for line in harness.client.peek_stderr_lines() {
+        let target = if line.contains("perl_lsp::workspace_indexing") {
+            Some(&mut receipt.indexing)
+        } else if line.contains("perl_lsp::workspace_readiness") {
+            Some(&mut receipt.readiness)
+        } else {
+            None
+        };
+        let Some(target) = target else {
+            continue;
+        };
+        if let Some(value) = parse_receipt_line(&line) {
+            target.push(value);
+        }
+    }
+    receipt
+}
+
+fn wait_for_runtime_receipt(harness: &UxHarness, timeout: Duration) -> Result<RuntimeReceipt> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let receipt = collect_runtime_receipt(harness);
+        if !receipt.indexing.is_empty() && !receipt.readiness.is_empty() {
+            return Ok(receipt);
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "runtime receipt barrier timed out; stderr={:?}",
+                harness.client.peek_stderr_lines()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn parse_receipt_line(line: &str) -> Option<Value> {
+    let receipt_text = line.split_once("receipt=")?.1;
+    Deserializer::from_str(receipt_text).into_iter::<Value>().next()?.ok()
+}
+
+#[test]
+fn receipt_log_parser_accepts_trailing_tracing_fields() -> Result<()> {
+    let line = "2026-08-03T00:00:00Z INFO perl_lsp::workspace_readiness: Workspace readiness receipt receipt={\"workspace_start_us\":1} span=server";
+    let receipt = parse_receipt_line(line).context("receipt should parse")?;
+    ensure!(receipt["workspace_start_us"] == 1);
+    Ok(())
 }
 
 fn run_project_workload(
@@ -952,7 +1066,7 @@ fn write_workload_receipt(receipt: &WorkloadReceipt) -> Result<PathBuf> {
         .unwrap_or_else(|| PathBuf::from("target/receipts/editor-ux"));
     fs::create_dir_all(&directory)
         .with_context(|| format!("creating receipt directory {}", directory.display()))?;
-    let path = directory.join("golden-editor-workload-v1.json");
+    let path = directory.join("golden-editor-workload-v3.json");
     let content = serde_json::to_string_pretty(receipt).context("serializing workload receipt")?;
     fs::write(&path, format!("{content}\n"))
         .with_context(|| format!("writing workload receipt {}", path.display()))?;

@@ -43,7 +43,7 @@ Every label in the repo, classified by whether live ground truth exists for it:
 | `builder-ready` | No | — | Navigation: spec finalized, build pipeline may start |
 | `in-build` | No | — | Navigation: builder actively working |
 | `in-review` | No | — | Navigation: PR in review process |
-| `merge-ready` | No | — | Navigation: composite signoff signal; the reconciler strips it when live CI is red or a non-CI `needs-*` label is present — never a merge check itself |
+| `merge-ready` | No | — | Historical navigation label; current PR, review, thread, check, and branch-rule state is the merge authority |
 | `already-fixed` | No | — | Navigation: close without build |
 | `structural-blocker` | No | — | Navigation: blocks parallel work |
 | `follow-up-recommended` | No | — | Navigation: needs follow-up issue |
@@ -54,17 +54,17 @@ Every label in the repo, classified by whether live ground truth exists for it:
 
 ## Implications for Tooling
 
-### Reconciler grounds CI-pair decisions in live state
+### Live state grounds merge decisions
 
-For labels with live ground truth (`ci-green`, `needs-ci-fix`), the reconciler does not use timeline-based "later applied wins" logic. It queries live CI:
+For labels with live ground truth (`ci-green`, `needs-ci-fix`), query current CI rather than label history:
 
-- Live CI green and `needs-ci-fix` exists: flag is stale — strip `needs-ci-fix`
-- Live CI red: leave `needs-ci-fix`; `ci-green` is stale but harmless — the live red blocks merge
-- Live CI green and neither label exists: PR may still be mergeable; absence of `ci-green` means "green-ci hasn't formally signed off" — not that CI is red
+- Live CI green and `needs-ci-fix` exists: treat the label as stale during ordinary issue/PR cleanup
+- Live CI red: the live result blocks merge; do not infer current truth from `needs-ci-fix`
+- Live CI green and neither label exists: the PR may still be mergeable; absence of `ci-green` is not a red result
 
-For no-live-signal labels, the reconciler no longer arbitrates by GitHub timeline ("later-applied label wins") — click-order was retired as an authority source (#4005 D5). Two review-label pairs are instead resolved against a SHA-bound review receipt (`ReviewReceipt` / `contradictions_from_current_review_receipt`), with an asymmetric per-verdict mapping: a current-head *independent* `Approved` receipt (one where `fix_forward_applied` is `false`) strips both routing labels if present (`needs-builder-fix` and `needs-diff-fix`); a `NeedsBuilder` verdict strips both sign-off labels if present (`review-reviewed` and `diff-audited`); a `NeedsDiff` verdict strips only `diff-audited` — it does **not** strip `review-reviewed`. The `deep-reviewed`/`needs-deep-review` pair has no receipt-verdict mapping — with timestamp arbitration gone, that pair is simply left un-arbitrated: both labels can coexist until an agent or operator resolves it directly.
-
-The reconciler implementation: `xtask/src/tasks/queue_reconciler.rs`
+For no-live-signal labels, do not use label order as authority. Review receipts,
+current threads, and the current PR head provide the evidence; an operator or
+orchestrator resolves any remaining navigation residue directly.
 
 ### Anti-patterns
 
@@ -137,7 +137,7 @@ Live state still wins. Labels cannot override a real CI failure. The correct pat
 
 **What's true:** Live CI is green. `needs-ci-fix` is stale — it recorded a problem that has since been resolved.
 
-**Reconciler action:** Query live CI → green. Strip `needs-ci-fix`. The `ci-green` label stands. `merge-ready` can stand if other gates are complete.
+**Operator action:** Query live CI → green. Treat `needs-ci-fix` as stale navigation residue. The current PR state decides merge eligibility.
 
 **Do not:** Strip `merge-ready` because `needs-ci-fix` exists. That would block a valid merge on stale label state.
 
@@ -149,7 +149,7 @@ Live state still wins. Labels cannot override a real CI failure. The correct pat
 
 **What's true:** Live CI is red. `ci-green` is stale — it recorded a green state that no longer applies to the current HEAD SHA.
 
-**Reconciler action:** Query live CI → red. Leave `needs-ci-fix`. Do not strip it (the problem is real). `ci-green` is stale but stripping it is not urgent — the live red blocks merge regardless.
+**Operator action:** Query live CI → red. Record or route the concrete failure. The live red blocks merge regardless of label state.
 
 **Operator action:** Dispatch green-ci agent to address the failure. Do not merge.
 
@@ -161,7 +161,7 @@ Live state still wins. Labels cannot override a real CI failure. The correct pat
 
 **What's true:** Live CI is green. `merge-ready` is present. No signoff label from green-ci.
 
-**Reconciler/operator action:** Live CI is green. The absence of `ci-green` means "green-ci agent hasn't formally signed off." For the merge gate, live CI is what actually gates the merge. If ops policy requires a formal green-ci pass, dispatch green-ci to do a quick confirmation. If the PR is docs-only and the gate was intentionally skipped, the live green is sufficient.
+**Operator action:** Live CI is green. The absence of `ci-green` is an activity fact, not a merge verdict. If policy requires a formal pass, record it; otherwise the live state and branch rules govern.
 
 **Do not:** Block the merge solely because `ci-green` is absent when live CI is green. The label is informational; the live signal is authoritative.
 
@@ -170,4 +170,4 @@ Live state still wins. Labels cannot override a real CI failure. The correct pat
 ## See Also
 
 - [ORCHESTRATION_DOCTRINE.md](ORCHESTRATION_DOCTRINE.md) — the broader design philosophy behind why live signals take priority over labels
-- Reconciler implementation: `xtask/src/tasks/queue_reconciler.rs` — where this principle is encoded as automated logic
+- Merge authority: current GitHub PR, review, thread, check, and branch-rule state

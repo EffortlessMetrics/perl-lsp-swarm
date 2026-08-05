@@ -5,6 +5,7 @@
 //!
 //! Produces a JSON report suitable for baseline comparison and regression gating.
 
+use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 #[cfg(test)]
@@ -952,7 +953,7 @@ pub fn compare_reports(current: &SweepReport, baseline: &SweepReport) -> Vec<Rat
 
 /// Persist a sweep receipt in the canonical profile-scoped location.
 pub fn write_sweep_receipt(report: &SweepReport) -> Result<PathBuf> {
-    let receipt_path = receipt_path_for_profile(&report.corpus_profile);
+    let receipt_path = project_root()?.join(receipt_path_for_profile(&report.corpus_profile));
     if let Some(parent) = receipt_path.parent() {
         fs::create_dir_all(parent).context("Failed to create receipt directory")?;
     }
@@ -1065,6 +1066,9 @@ fn measure_files(
             line_count,
             error_node_count: salvage.error_node_count,
         });
+        // Keep the established metric semantic: this field counts only
+        // structured `Recovered` diagnostics. Blocking non-recovered
+        // diagnostics make the file non-Clean, but are not recovered nodes.
         recovered_node_count = recovered_node_count.saturating_add(salvage.recovered_count);
         match salvage.class {
             RecoverySalvageClass::Clean => {
@@ -1084,11 +1088,18 @@ fn measure_files(
             RecoverySalvageClass::StructuredRecoveryOnly => {
                 files_with_errors += 1;
                 total_dirty_files += 1;
-                files_with_structured_recovery_only += 1;
+                let has_structured_recovery = salvage.recovered_count > 0;
+                if has_structured_recovery {
+                    files_with_structured_recovery_only += 1;
+                }
                 if options.verbose {
                     file_results.push(FileResult {
                         path: portable_path.clone(),
-                        status: "recovered".to_string(),
+                        status: if has_structured_recovery {
+                            "recovered".to_string()
+                        } else {
+                            "blocking".to_string()
+                        },
                         error_node_count: 0,
                         first_error: None,
                         recovered_count: Some(salvage.recovered_count),
@@ -2364,11 +2375,17 @@ mod tests {
 
     #[test]
     fn test_write_sweep_receipt_succeeds_for_dirty_manifest_report() -> Result<()> {
-        let report = test_report(0, 1, 3, 0, BTreeMap::new());
+        let mut report = test_report(0, 1, 3, 0, BTreeMap::new());
+        report.corpus_profile = "test-sweep-receipt".to_string();
         let receipt_path = write_sweep_receipt(&report)?;
+        assert_eq!(
+            receipt_path,
+            project_root()?.join("target/receipts/test-sweep-receipt-corpus-sweep.json")
+        );
         assert!(receipt_path.exists());
-        let contents = fs::read_to_string(receipt_path)?;
+        let contents = fs::read_to_string(&receipt_path)?;
         assert!(contents.contains("\"files_with_errors\": 1"));
+        fs::remove_file(receipt_path)?;
         Ok(())
     }
 

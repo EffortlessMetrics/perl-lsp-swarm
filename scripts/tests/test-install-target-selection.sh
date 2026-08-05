@@ -84,6 +84,67 @@ assert_bad_override_fails() {
     pass "bad PERL_LSP_LINUX_LIBC override fails clearly"
 }
 
+# Windows target contract (#5007).
+#
+# The release matrix is the only authority for which target triples exist as
+# published assets. An install surface naming a Windows target outside it
+# builds a download URL that always 404s — which is exactly how ARM64 Windows
+# users were routed to an asset that is never produced, and told only "Failed
+# to download". PowerShell cannot be executed on the Linux CI host, so this
+# asserts the contract statically against the release matrix rather than
+# hardcoding the expected triple, which would go stale the day ARM64 ships.
+#
+# Comment lines are stripped so the surfaces can still name the unbuilt target
+# when explaining why they do not request it.
+strip_comments() {
+    sed -E 's://.*$::; s:^[[:space:]]*\*.*$::; s:^[[:space:]]*#.*$::' "$1"
+}
+
+built_windows_targets() {
+    grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' \
+        "$ROOT/.github/workflows/release.yml" | sort -u
+}
+
+assert_only_built_windows_targets() {
+    local label="$1" file="$2"
+
+    if [[ ! -f "$file" ]]; then
+        fail "$label" "missing $file"
+        return
+    fi
+
+    local built referenced offenders
+    built="$(built_windows_targets)"
+
+    if [[ -z "$built" ]]; then
+        fail "$label" "release.yml names no Windows target; cannot derive the contract"
+        return
+    fi
+
+    referenced="$(strip_comments "$file" \
+        | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' | sort -u || true)"
+
+    # An empty result must fail, not pass. The original defect assigned only the
+    # arch ($Arch = "aarch64") and appended the suffix separately, so no whole
+    # triple appeared in the source and a membership-only check saw nothing to
+    # object to — it would have certified the very bug it exists to catch. Each
+    # surface must name at least one target literally so there is something to
+    # check.
+    if [[ -z "$referenced" ]]; then
+        fail "$label" "names no Windows target literally; the contract cannot be checked (assemble no triple from a variable)"
+        return
+    fi
+
+    offenders="$(comm -23 <(printf '%s\n' "$referenced") <(printf '%s\n' "$built"))"
+
+    if [[ -n "$offenders" ]]; then
+        fail "$label" "requests Windows target(s) the release matrix never builds: $(printf '%s' "$offenders" | tr '\n' ' ')"
+        return
+    fi
+
+    pass "$label"
+}
+
 host_arch() {
     case "$(uname -m)" in
         x86_64|amd64|x64) printf '%s\n' "x86_64" ;;
@@ -192,6 +253,68 @@ fi
 if [[ ! -f "$CANONICAL_INSTALLER" ]]; then
     fail "canonical installer exists" "missing $CANONICAL_INSTALLER"
 fi
+
+assert_only_built_windows_targets \
+    "install.ps1 requests only built Windows targets" "$ROOT/install.ps1"
+assert_only_built_windows_targets \
+    "extension downloader requests only built Windows targets" \
+    "$ROOT/vscode-extension/src/downloader.ts"
+
+assert_windows_arm64_version_guard() {
+    local label="$1" file="$2"
+
+    if [[ ! -f "$file" ]]; then
+        fail "$label" "missing $file"
+        return
+    fi
+
+    local guard_line guard_end guard_block build_line threshold_line error_line stop_line
+    local target_line download_line
+    guard_line="$(grep -nE '^[[:space:]]*if \(\$IsArm64Host\) \{[[:space:]]*$' "$file" | head -n1 | cut -d: -f1)"
+    stop_line="$(grep -nE '^[[:space:]]*\$ErrorActionPreference[[:space:]]*=[[:space:]]*"Stop"[[:space:]]*$' "$file" | head -n1 | cut -d: -f1)"
+
+    if [[ -z "$guard_line" || -z "$stop_line" ]] || (( stop_line >= guard_line )); then
+        fail "$label" "must prove an executable ARM64 guard with terminating error behavior"
+        return
+    fi
+
+    guard_end="$(awk -v start="$guard_line" '
+        NR < start { next }
+        {
+            opens = gsub(/\{/, "{")
+            closes = gsub(/\}/, "}")
+            depth += opens - closes
+            if (NR > start && depth == 0) {
+                print NR
+                exit
+            }
+        }
+    ' "$file")"
+    if [[ -z "$guard_end" ]]; then
+        fail "$label" "must prove the ARM64 guard has a complete executable block"
+        return
+    fi
+
+    guard_block="$(sed -n "${guard_line},${guard_end}p" "$file")"
+    build_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*\$WindowsBuild[[:space:]]*=[[:space:]]*Get-WindowsBuildNumber[[:space:]]*$' | head -n1 | cut -d: -f1)"
+    threshold_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*if \(\$WindowsBuild -lt 22000\) \{[[:space:]]*$' | head -n1 | cut -d: -f1)"
+    error_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*Write-Error[[:space:]]+"Windows ARM64 x64 emulation requires' | head -n1 | cut -d: -f1)"
+    target_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=' "$file" | head -n1 | cut -d: -f1)"
+    download_line="$(grep -nE '^[[:space:]]*Invoke-WebRequest[[:space:]]' "$file" | head -n1 | cut -d: -f1)"
+
+    if [[ -z "$build_line" || -z "$threshold_line" || -z "$error_line" || -z "$target_line" || \
+        -z "$download_line" ]] || \
+        (( build_line >= threshold_line || threshold_line >= error_line || \
+            target_line <= guard_end || guard_end >= download_line )); then
+        fail "$label" "must prove the executable ARM64 rejection guard before target selection and download"
+        return
+    fi
+
+    pass "$label"
+}
+
+assert_windows_arm64_version_guard \
+    "PowerShell installer rejects unsupported Windows 10 ARM64 fallback" "$ROOT/install.ps1"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     skip "Linux target-selection checks (host is $(uname -s))"

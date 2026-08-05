@@ -1,36 +1,35 @@
 ---
 name: verify-live-ci
-description: Explicit atomic skill for evaluating one current PR candidate's live required checks, review/thread convergence, material-claim currentness, draft state, mergeability, and policy without branch-freshness churn or sibling-lane surveillance.
+description: Evaluate one pull request's live required checks, review threads, draft state, mergeability, and policy without exact-head review receipts, branch churn, or sibling-lane surveillance.
 ---
 
 # Verify live CI
 
-Resolve the exact current PR head and base. Reject `INTEGRATION_READY` while the PR remains draft.
+Read one current GitHub snapshot for the selected PR:
 
-## Canonical review and claim convergence
+- draft/ready state;
+- required checks discovered from live policy;
+- unresolved review threads;
+- current `CHANGES_REQUESTED` reviews;
+- deliberately requested reviewers still pending;
+- mergeability, conflict state, queue/ruleset status, and applicable changelog or support disposition.
 
-Run the repository-owned composite checker in enforced protocol mode rather than reconstructing review state or invoking its internal claim checker independently:
+Use repository helpers where they report these native facts truthfully. Do not require `review-run` comments, a material-claim digest, a human review submitted on the latest commit, or `REVIEW_PROTOCOL_ENFORCE=1` review-receipt convergence.
 
-```text
-REVIEW_PROTOCOL_ENFORCE=1 scripts/ci/check-pr-review-convergence <pr-number> [owner/repo]
-```
+## Review currentness
 
-The public checker owns complete review/thread/receipt/disposition convergence and proves that the completed formal-review receipt matches both the same current candidate head and the current visible normalized material PR claim/review index. Enforced mode makes running-review receipts, stale receipt heads, missing disposition markers, and required independent verification real blockers rather than advisory metadata.
+A review is not stale merely because the PR head changed. Evaluate later commits semantically:
 
-A checker, API, pagination, digest, candidate-snapshot, or instrument failure is `NOT_PROVEN`, never an empty green result.
+- finding repair → check the affected finding, proof, and seam;
+- material claim, production route, authority, risk, rollback, or proof change → review the affected dimensions;
+- formatting, editorial cleanup, generated receipt refresh, or stronger tests → no automatic full-review restart;
+- conflict or integration repair → focused review of the repaired seam.
 
-## Live machine and merge evidence
+Stale bot or human review timestamps may be reported as context. They do not block by themselves.
 
-Read current GitHub state for this selected PR:
+## Live evidence states
 
-- required checks discovered from live repository policy;
-- each applicable check's conclusion and evaluated candidate;
-- draft/ready state and the draft's named purpose/completion condition;
-- mergeability, ruleset, queue, and changelog/support state where applicable.
-
-Do not inspect sibling PR implementations, touched-file overlap, or neighbouring worktrees. An interaction exists only when Git reports a conflict, an explicit prerequisite changed, or actual merge-group/synthetic integration proof failed.
-
-Distinguish:
+Preserve:
 
 ```text
 success
@@ -38,31 +37,29 @@ failure
 pending
 not_applicable
 cancelled
-stale
+stale_check_result
 missing
 instrument_failure
 not_proven
 ```
 
-A successful older-candidate result is stale, not green. Missing or partial API data that can change the conclusion is `NOT_PROVEN`.
+A successful check on an older candidate is stale check evidence, not green for the current candidate. Missing or partial API data that can change the conclusion is `NOT_PROVEN`.
 
 ## Squash-merge currentness
 
-Do not update, rebase, merge `main`, rerun formal review, or replay all checks merely because a conflict-free branch is behind.
+Do not update, rebase, merge `main`, or replay all proof merely because a conflict-free branch is behind.
 
-- candidate or material claim change → rerun affected supporting evidence, final challenge, and fresh formal review;
-- actual merge conflict → this lane resolves it, then reruns affected evidence/review;
-- explicit stack or failed integration proof → targeted repair in the affected lane;
+- actual conflict → resolve in this lane and rerun affected proof/review;
+- explicit stack or failed combined-tree proof → targeted repair;
 - unrelated `main` movement → no action.
 
 ## Routes
 
 - `INTEGRATION_READY` → `$merge-reconcile`
-- `DRAFT` → `$publish-pr` to evaluate the named draft purpose and perform the explicit ready transition when complete
-- `PENDING` → record the exact pending transition once and return `PR_IN_FLIGHT` to the invoking flow
-- `PRODUCT_OR_TEST_FAILURE` → repair through `$build-candidate`
+- `DRAFT` → `$publish-pr`
+- `PENDING` → record the exact pending transition once and return `PR_IN_FLIGHT`
+- `PRODUCT_OR_TEST_FAILURE` → `$build-candidate`
 - `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
-- `CLAIM_REVIEW_STALE` → `$final-challenge`, then `$review-pr`
-- `CONFLICT` → resolve this lane's conflict and rerun affected proof/review
-- `INTEGRATION_INTERACTION` → repair the smallest affected candidate and rerun affected proof/review
+- `REVIEW_SCOPE_CHANGED` → review the affected dimensions
+- `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam and rerun affected proof/review
 - `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name the missing reliable evidence

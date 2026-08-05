@@ -3,7 +3,12 @@
 //! This module owns the method-to-handler table. Preflight checks and response
 //! rendering live in sibling modules so routing remains focused on dispatch.
 
+#[cfg(test)]
 use super::super::*;
+use super::super::{
+    JsonRpcError, JsonRpcId, JsonRpcRequest, LspServer, METHOD_NOT_FOUND, Ordering, Value,
+    cancelled_response_with_method, enhanced_error,
+};
 use super::response::RoutedResponse;
 
 impl LspServer {
@@ -363,6 +368,41 @@ mod tests {
         };
         assert_eq!(response.error.map(|error| error.code), Some(REQUEST_CANCELLED));
         Ok(())
+    }
+
+    #[test]
+    fn cancelled_marker_cap_evicts_stale_entries() {
+        let server = LspServer::new();
+        let oldest = JsonRpcId::Integer(0);
+        let live_pending = JsonRpcId::Integer(10_000);
+
+        server.mark_request_pending(&live_pending);
+        server.cancel_mark(&live_pending);
+
+        for id in 0..255 {
+            server.cancel_mark(&JsonRpcId::Integer(id));
+        }
+        assert!(
+            server.is_cancelled(&oldest),
+            "the cap must not trim before the marker set reaches its bound"
+        );
+
+        let newest = JsonRpcId::Integer(256);
+        server.cancel_mark(&JsonRpcId::Integer(255));
+        server.cancel_mark(&newest);
+
+        assert!(!server.is_cancelled(&oldest), "reaching the cap must evict stale markers");
+        assert!(
+            server.is_cancelled(&newest),
+            "the marker that triggered trimming must be retained"
+        );
+        assert!(
+            server.is_cancelled(&live_pending),
+            "trimming stale markers must preserve a queued request cancellation"
+        );
+
+        server.clear_request_pending(&live_pending);
+        server.cancel_clear(&live_pending);
     }
 
     #[test]

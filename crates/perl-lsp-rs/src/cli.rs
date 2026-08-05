@@ -13,16 +13,17 @@
 
 use crate::LspServer;
 use perl_lsp_rs_core::runtime::launcher::{
-    LaunchAction, LaunchConfig, StartupTimer, TransportMode, format_health_output,
-    format_info_output, format_startup_banner, help_text, init_logging, log_server_startup,
-    logging_filter, parse_args, port_in_use_message, shell_completion, should_enable_logging,
-    should_use_ansi_stdout,
+    LaunchAction, LaunchConfig, LaunchParseError, StartupTimer, TransportMode,
+    format_health_output, format_info_output, format_startup_banner, help_text, init_logging,
+    log_server_startup, logging_filter, parse_args, port_in_use_message, shell_completion,
+    should_enable_logging, should_use_ansi_stdout,
 };
 use perl_lsp_rs_core::tooling::native_compat::{
     classify_perlcritic_profile, classify_perltidy_profile, render_perlcritic_compat_markdown,
     render_perltidy_compat_markdown,
 };
 use std::env;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process;
 use std::sync::Arc;
@@ -46,7 +47,11 @@ where
         Ok(plan) => plan,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("{}", render_help_text(&command_name));
+            // A parser diagnostic already carries its own usage line and
+            // `--help` pointer; adding ours would repeat it.
+            if !matches!(error, LaunchParseError::ParserDiagnostic { .. }) {
+                eprintln!("Run '{command_name} --help' for available options.");
+            }
             return 1;
         }
     };
@@ -223,6 +228,23 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{path}: error reading file: {e}");
+                // Add concise recovery guidance for common read failures (#1989).
+                let path_obj = std::path::Path::new(path);
+                if path_obj.is_dir() {
+                    eprintln!(
+                        "  hint: '{path}' is a directory. Use --check-project <dir> to check all files in a directory."
+                    );
+                } else if e.kind() == std::io::ErrorKind::NotFound {
+                    eprintln!("  hint: '{path}' does not exist. Check the path for typos.");
+                } else if e.kind() == std::io::ErrorKind::NotADirectory {
+                    eprintln!(
+                        "  hint: an intermediate component of '{path}' is a regular file, not a directory. Check the path for typos."
+                    );
+                } else {
+                    eprintln!(
+                        "  hint: check file permissions or encoding. The file may be binary or use an unsupported encoding."
+                    );
+                }
                 errors += 1;
                 continue;
             }
@@ -286,7 +308,10 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
     if errors > 0 { 1 } else { 0 }
 }
 
-fn format_parse_error_context(source: &str, error: &perl_parser::ParseError) -> Vec<String> {
+pub(crate) fn format_parse_error_context(
+    source: &str,
+    error: &perl_parser::ParseError,
+) -> Vec<String> {
     let contexts = perl_parser::error::get_error_contexts(std::slice::from_ref(error), source);
     let Some(context) = contexts.first() else {
         return Vec::new();
@@ -340,7 +365,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!(
-                        "Perl Language Server failed to start: could not initialize the async \
+                        "Perl LSP: failed to start: could not initialize the async \
                          runtime ({e}). This is usually caused by system resource limits. \
                          Try restarting VS Code or increasing your OS thread limits."
                     );
@@ -357,6 +382,20 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 startup_timer.checkpoint("server_construction");
 
                 let (tx, rx) = tokio::sync::mpsc::channel(64);
+
+                // If stdin is a TTY, the user launched the server directly in a
+                // terminal instead of through an editor. The server will block
+                // reading LSP messages from stdin with no prompt — which reads
+                // as a hang to anyone unfamiliar with language servers. Print a
+                // hint so they know what is happening and how to exit. (#5518)
+                if std::io::stdin().is_terminal() {
+                    eprintln!(
+                        "{command_name} is running in stdio mode and waiting for LSP messages on \
+                         stdin. This is normal when launched by an editor; if you launched it \
+                         manually, press Ctrl-C to exit. Use '{command_name} --help' for options."
+                    );
+                }
+
                 spawn_reader_thread(std::io::stdin(), tx);
 
                 if logging_enabled {
@@ -381,7 +420,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!(
-                        "Perl Language Server failed to start: could not initialize the async \
+                        "Perl LSP: failed to start: could not initialize the async \
                          runtime ({e}). This is usually caused by system resource limits. \
                          Try restarting VS Code or increasing your OS thread limits."
                     );
@@ -400,7 +439,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                             );
                         } else {
                             eprintln!(
-                                "Perl Language Server could not listen on {addr}: {e}. \
+                                "Perl LSP: could not listen on {addr}: {e}. \
                                  Try a different port with --port or check firewall settings."
                             );
                         }
@@ -411,7 +450,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                     Ok(a) => a,
                     Err(e) => {
                         eprintln!(
-                            "Perl Language Server started but could not determine its \
+                            "Perl LSP: started but could not determine its \
                              listening address: {e}."
                         );
                         process::exit(1);
@@ -521,7 +560,7 @@ fn print_version(command_name: &str) {
     let (label, revision) = build_revision();
     println!("{command_name} {}", env!("CARGO_PKG_VERSION"));
     println!("{label} {revision}");
-    println!("Perl Language Server using perl-parser v3");
+    println!("Perl LSP using perl-parser v3");
 }
 
 #[cfg(test)]

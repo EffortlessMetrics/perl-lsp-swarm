@@ -177,30 +177,34 @@ fn test_ci_scope_diff_class_is_valid_value() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// G. Invalid base ref falls back and reports resolved base in output
+// G. Invalid explicit base fails closed instead of silently narrowing scope
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_ci_scope_invalid_base_reports_resolved_fallback() -> Result<()> {
+fn test_ci_scope_invalid_explicit_base_fails_closed() -> Result<()> {
     let output = Command::cargo_bin("xtask")?
         .args(["ci-scope", "--base", "this-ref-should-not-exist", "--format", "json"])
         .output()?;
 
     assert!(
-        output.status.success(),
-        "ci-scope should resolve a fallback base; stderr: {}",
+        !output.status.success(),
+        "ci-scope must reject an invalid explicit base instead of silently narrowing scope; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stdout = String::from_utf8(output.stdout)?;
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)?;
-    let base = parsed["base"].as_str().unwrap_or_default();
-
-    assert_ne!(
-        base, "this-ref-should-not-exist",
-        "Output base should report the resolved fallback ref, not the invalid user input"
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("Explicit base ref 'this-ref-should-not-exist' does not exist"),
+        "failure should identify the invalid explicit base; stderr: {stderr}"
     );
-    assert!(!base.is_empty(), "Output base should not be empty when fallback succeeds");
+    assert!(
+        stderr.contains("Refusing to silently fall back"),
+        "failure should explain the fail-closed contract; stderr: {stderr}"
+    );
+    assert!(
+        String::from_utf8(output.stdout)?.trim().is_empty(),
+        "failed scope resolution must not emit a misleading JSON scope"
+    );
 
     Ok(())
 }

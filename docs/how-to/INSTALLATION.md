@@ -27,12 +27,13 @@ Use one of the public install paths that matches how you work:
 Do not install the unrelated crates.io package named `perl-lsp`. That package
 name is owned by another project, so the supported Cargo package is `perllsp`.
 
-Verify the install before wiring it into an editor:
+Inspect the install before wiring it into an editor. `--doctor` reports the
+local Perl and workspace setup; it is a diagnostic report, not a CI gate.
+`--health` is only a liveness probe that confirms the binary can execute:
 
 ```bash
 perllsp --version
-perllsp --health
-perllsp --info
+perllsp --doctor
 ```
 
 ## Installer Script (macOS and Linux)
@@ -115,11 +116,12 @@ Two further limits apply to the script even after that sync:
   debug adapter, unlike the POSIX installer. Take `perl-dap.exe` from the
   release zip if you need the debugger
   ([#5036](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5036)).
-- Only `x86_64-pc-windows-msvc` is built by the release workflow. The script
-  detects ARM64 and will construct a download URL for it, but that asset does
-  not exist and the download fails
+- Only `x86_64-pc-windows-msvc` is built by the release workflow, so there is
+  no native ARM64 Windows binary. The script installs the x64 build on ARM64,
+  which runs under the x64 emulation in Windows 11 on ARM. Windows 10 on ARM
+  emulates x86 but not x64, so the extension and PowerShell installer reject
+  the fallback before downloading and you must build from source there
   ([#5007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5007)).
-  ARM64 Windows users should build from source.
 
 Once the sync lands and the script works, pinning a version or changing the
 install directory means downloading it and passing parameters rather than
@@ -241,11 +243,16 @@ Once `perllsp` is installed, add it to your editor with the command:
 perllsp --stdio
 ```
 
-Then confirm the install from a shell before debugging editor integration:
+Then inspect the install from a shell before debugging editor integration:
 
 ```bash
-perllsp --health
+perllsp --doctor
 ```
+
+`perllsp --health` is also available as a liveness probe. It prints `ok <version>`
+but does not inspect Perl, workspace, or module-lookup
+configuration. For CI, use explicit checks for the environment paths your job
+requires rather than treating the doctor report or its exit status as a gate.
 
 ## Release Maintainers
 

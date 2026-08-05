@@ -2,7 +2,7 @@
 //!
 //! Provides enhanced cancellation responses and early cancellation checking macros.
 
-use super::super::*;
+use super::super::{JsonRpcError, JsonRpcResponse, REQUEST_CANCELLED};
 use crate::cancellation::{PerlLspCancellationToken, ProviderCleanupContext};
 use serde_json::json;
 

@@ -61,13 +61,13 @@ pub fn line_references_qualified_call(line: &str, module_name: &str) -> bool {
             let after = abs + needle_len;
 
             let before_ok = abs == 0 || {
-                let ch = line_bytes[abs - 1] as char;
-                !ch.is_alphanumeric() && ch != '_' && ch != ':'
+                let b = line_bytes[abs - 1];
+                !b.is_ascii_alphanumeric() && b != b'_' && b != b':'
             };
 
             let after_ok = after < line_bytes.len() && {
-                let ch = line_bytes[after] as char;
-                ch.is_alphabetic() || ch == '_'
+                let b = line_bytes[after];
+                b.is_ascii_alphabetic() || b == b'_'
             };
 
             if before_ok && after_ok && !index_is_in_quote_or_comment(line, abs) {

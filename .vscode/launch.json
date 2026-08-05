@@ -1,0 +1,55 @@
+{
+  // VS Code launch configurations for perl-lsp development.
+  // Provides debug configs for the LSP server, DAP adapter, and xtask.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug perllsp (stdio)",
+      "cargo": {
+        "args": ["build", "--bin", "perllsp", "--package", "perllsp"],
+        "filter": { "name": "perllsp", "kind": "bin" }
+      },
+      "stdio": null,
+      "env": {
+        "RUST_LOG": "perl_lsp=debug"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug perl-dap (stdio)",
+      "cargo": {
+        "args": ["build", "--bin", "perl-dap", "--package", "perl-dap"],
+        "filter": { "name": "perl-dap", "kind": "bin" }
+      },
+      "stdio": null
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug xtask (gates)",
+      "cargo": {
+        "args": ["build", "--bin", "xtask", "--package", "xtask"],
+        "filter": { "name": "xtask", "kind": "bin" }
+      },
+      "args": ["gates"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Extension (Jest)",
+      "program": "${workspaceFolder}/vscode-extension/node_modules/jest/bin/jest.js",
+      "args": [
+        "--runInBand",
+        "--config",
+        "${workspaceFolder}/vscode-extension/jest.config.js"
+      ],
+      "preLaunchTask": "vscode-extension: compile:test",
+      "cwd": "${workspaceFolder}/vscode-extension",
+      "console": "integratedTerminal"
+    }
+  ]
+}

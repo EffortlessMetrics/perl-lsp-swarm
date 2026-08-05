@@ -3,8 +3,14 @@
 //! All `LspServer::new*` and `LspServer::with_*` constructors live here
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
-use super::*;
+use super::{
+    Arc, AstCache, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap,
+    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    WorkspaceConfig, Write, io, notebook, outbound, refresh,
+};
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+use std::sync::atomic::AtomicU64;
 
 impl LspServer {
     /// Create a new LSP server
@@ -59,6 +65,7 @@ impl LspServer {
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
+            pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
@@ -118,9 +125,11 @@ impl LspServer {
             force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
+            client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }
@@ -236,6 +245,7 @@ impl LspServer {
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
+            pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
@@ -295,9 +305,11 @@ impl LspServer {
             force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
+            client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }
@@ -354,6 +366,7 @@ impl LspServer {
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
+            pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
@@ -413,9 +426,11 @@ impl LspServer {
             force_perlcritic_command_unavailable: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
+            client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
+            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }

@@ -247,8 +247,10 @@ impl TokenCache {
 
         for segment in &mut self.segments {
             if segment.start >= edit_start {
-                segment.start = (segment.start as isize + delta) as usize;
-                segment.end = (segment.end as isize + delta) as usize;
+                // Use saturating arithmetic to prevent underflow when delta
+                // is negative and larger than the segment offset (#2457).
+                segment.start = (segment.start as isize + delta).max(0) as usize;
+                segment.end = (segment.end as isize + delta).max(0) as usize;
             }
         }
     }
@@ -727,11 +729,12 @@ impl CheckpointedIncrementalParser {
                 self.stats.cache_hits += 1;
                 for token in cached {
                     // Adjust byte positions to account for the inserted/removed bytes.
+                    // Use max(0) to prevent underflow on negative shifts (#2457).
                     let adjusted = Token {
                         kind: token.kind,
                         text: token.text.clone(),
-                        start: (token.start as isize + byte_shift) as usize,
-                        end: (token.end as isize + byte_shift) as usize,
+                        start: (token.start as isize + byte_shift).max(0) as usize,
+                        end: (token.end as isize + byte_shift).max(0) as usize,
                     };
                     parser_tokens.push(adjusted);
                     self.stats.tokens_reused += 1;

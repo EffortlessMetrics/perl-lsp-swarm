@@ -1,4 +1,5 @@
-use crate::*;
+use crate::checkpoint::Checkpointable;
+use crate::{LexerCheckpoint, LexerMode, PerlLexer, checkpoint};
 
 impl Checkpointable for PerlLexer<'_> {
     fn checkpoint(&self) -> LexerCheckpoint {

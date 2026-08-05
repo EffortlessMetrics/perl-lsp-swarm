@@ -14,9 +14,11 @@ Choose one distinct coherent acceptance-and-rollback claim that is still require
 
 Each lane owns its own issue, branch/worktree, PR, proof, review repair, and merge conflicts. Let it focus on the claim. Use a direct issue or PR comment only when another lane genuinely needs a fact: a prerequisite changed, a governing ruling changed, a claim was superseded, or Git/integration proof exposed a real interaction.
 
+## Routes
+
 ```text
 select one distinct claim
-→ deliver-pr
+→ `deliver-pr`
 → reconcile after merge or deliberate closure
 → re-evaluate the original goal's acceptance predicates
 → while a PR waits on CI/review/auto-merge, advance another distinct claim

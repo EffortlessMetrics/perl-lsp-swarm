@@ -2,7 +2,7 @@
 //!
 //! Handles client capability parsing and server capabilities construction.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Ordering};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
@@ -187,7 +187,7 @@ impl LspServer {
                         .and_then(|name| name.as_str())
                         .unwrap_or("JetBrains");
                     *self.pending_startup_log.lock() = Some(format!(
-                        "perl-lsp: Dynamic file-watcher registration has been disabled for \
+                        "Perl LSP: Dynamic file-watcher registration has been disabled for \
                          JetBrains-family client \"{client_name}\" because its registration \
                          flow is unreliable. Workspace/didChangeWatchedFiles dynamic \
                          registration requests from this client will be ignored."

@@ -2,7 +2,13 @@
 
 mod scope_variables;
 
-use super::*;
+#[cfg(test)]
+use super::stack_frame_re;
+use super::{
+    DebugAdapter, HashMap, PerlStackParser, PerlVariableRenderer, RenderedVariable, Source,
+    StackFrame, Variable, VariableParser, VariableRenderer, ansi_escape_re,
+    is_internal_frame_name_and_path, prompt_re,
+};
 
 impl DebugAdapter {
     /// Normalize debugger output lines for deterministic parsing by:
@@ -974,7 +980,7 @@ DB<1>"#;
         // to session.stack_frames (populated by output reader).
 
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
 
         // Inject stale frames (simulating a previous stop's state)
         let stale_frame =

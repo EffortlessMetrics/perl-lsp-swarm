@@ -150,6 +150,7 @@ interface PackageManifest {
 }
 
 type SnippetCatalog = Record<string, Snippet>;
+type LocalizationCatalog = Record<string, string>;
 
 function readJson<T>(relativePath: string): T {
   const fullPath = path.join(EXT_ROOT, relativePath);
@@ -438,6 +439,23 @@ describe('package.json contributes', () => {
       for (const cmd of pkg.contributes.commands) {
         expect(cmd.title).toBeTruthy();
       }
+    });
+
+    test('all command title localization references have an exact catalog entry', () => {
+      const catalog = readJson<LocalizationCatalog>('package.nls.json');
+      const referencedKeys = pkg.contributes.commands.map((command) => {
+        const match = /^%([^%]+)%$/.exec(command.title);
+        expect(match).not.toBeNull();
+        return required(match?.[1], `localization key for ${command.command}`);
+      });
+
+      expect(new Set(referencedKeys).size).toBe(referencedKeys.length);
+      for (const key of referencedKeys) {
+        const value = required(catalog[key], `catalog entry for ${key}`);
+        expect(typeof value).toBe('string');
+        expect(value.length).toBeGreaterThan(0);
+      }
+      expect(Object.keys(catalog).sort()).toEqual([...referencedKeys].sort());
     });
   });
 
@@ -836,6 +854,12 @@ describe('package.json contributes', () => {
         readRepoText('docs/how-to/PERFORMANCE_TUNING.md'),
         readRepoText('book/src/getting-started/configuration.md'),
         readRepoText('docs/reference/CONFIGURATION_SCHEMA.md'),
+        readRepoText('docs/EDITORS/CURSOR_SETUP.md'),
+        readRepoText('docs/EDITORS/TRAE_SETUP.md'),
+        readRepoText('docs/EDITORS/KIRO_SETUP.md'),
+        readRepoText('docs/specs/PACKAGING_INSTALL_SPEC.md'),
+        readRepoText('vscode-extension/INTERNAL_DEPLOYMENT.md'),
+        readRepoText('docs/issues/DEVELOPER_FRICTION.md'),
       ];
       const minimumVersion = pkg.engines.vscode.match(/(\d+\.\d+)/)?.[1];
 
@@ -844,6 +868,7 @@ describe('package.json contributes', () => {
 
       for (const document of [setupGuide, configReference, ...canonicalReferences]) {
         expect(document).not.toContain('perl-lsp.enableDiagnostics');
+        expect(document).not.toMatch(/(?:^|[^.\w])enableDiagnostics(?:$|[^\w])/);
         expect(document).not.toContain('perl-lsp.enableRefactoring');
       }
     });
@@ -956,13 +981,15 @@ describe('package.json contributes', () => {
       expect(cmd.category).toBe('Perl');
     });
 
-    test('reportIssue has the title "Report Issue"', () => {
+    test('reportIssue has a localized title with an English default', () => {
       const cmd = required(
         pkg.contributes.commands.find((command) => command.command === 'perl-lsp.reportIssue'),
         'reportIssue command',
       );
+      const catalog = readJson<LocalizationCatalog>('package.nls.json');
       expect(cmd).toBeDefined();
-      expect(cmd.title).toBe('Report Issue');
+      expect(cmd.title).toBe('%command.reportIssue.title%');
+      expect(catalog['command.reportIssue.title']).toBe('Report Issue');
     });
 
     test('reportIssue is listed in commandPalette unconditionally (no when clause)', () => {

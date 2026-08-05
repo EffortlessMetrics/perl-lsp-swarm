@@ -1,17 +1,11 @@
 ---
 name: final-challenge
-description: Explicit mutable review skill for challenging the repaired cumulative candidate immediately before formal review, with emphasis on repair-introduced defects, stale proof, claim drift, production reachability, and unnecessary residue.
+description: Mutably challenge the cumulative candidate before merge or after repair, focusing on realistic falsifiers, stale proof, claim drift, reachability, and residue without creating review-stage receipts.
 ---
 
 # Final challenge
 
-Review the cumulative repaired candidate while fixes are still expected.
-
-Resolve the exact current head and normalized material claim/review-index digest before judgment:
-
-```text
-scripts/reviews/claim-digest --pr <n> [--repo owner/repo]
-```
+Challenge the current cumulative candidate while repairs remain allowed.
 
 Check:
 
@@ -20,22 +14,20 @@ Check:
 - silent claim expansion or narrowing;
 - duplicate compatibility or workaround residue;
 - changed semantic owner, consumer, or production route;
-- unresolved security, external-truth, packaging, or migration risk;
-- opportunities for final simplification.
+- unresolved security, external-truth, packaging, migration, or support risk;
+- opportunities for simplification.
 
-A clean challenge is valid.
+A clean challenge is valid. Do not manufacture a finding or edit.
 
-## Runtime-local pass
+This is a runtime-local attention shift, not a durable lifecycle stage. Do not compute a claim digest, post a `final-challenge` marker, or create a review receipt. The durable record is the useful GitHub review, findings, dispositions, and proof.
 
-This is the final mutable attention shift before fixed-candidate formal review. Do not create a `final-challenge` receipt, stage marker, schema, or second durable currentness authority.
-
-The durable judgment is the submitted formal review and its exact candidate-and-claim-bound `review-run` receipt. If a later session resumes before a current formal review exists, rerun this bounded challenge and continue directly into `review-pr`. Repetition here is cheaper and safer than maintaining another stage-state protocol.
+After a later repair, revisit the affected finding, proof, and semantic seam. Do not restart the entire challenge merely because the commit SHA changed. Broaden only when the repair materially changes the claim, production path, authority, risk, rollback, or proof.
 
 ## Routes
 
-- `CANDIDATE_FIXED_FOR_FORMAL_REVIEW` → pass the exact head and claim digest to `$review-pr`
+- `CANDIDATE_READY_FOR_REVIEW` → `$review-pr`
 - `MUTABLE_FINDINGS_OPEN` → repair through `$build-candidate`, then repeat affected proof and this challenge
 - `PROOF_REVISE` → `$prepare-proof`, then repeat affected candidate passes
-- `SPLIT_CLAIM` → `$prepare-issue` to narrow the current claim and preserve the independent residual claim
+- `SPLIT_CLAIM` → `$prepare-issue` to narrow the claim and preserve the residual
 - `MATERIAL_PREMISE_CHANGED` → `$prepare-issue`
-- `NOT_PROVEN` → preserve the exact missing subject identity, evidence, or instrument failure
+- `NOT_PROVEN` → preserve the missing evidence, authority, or instrument failure

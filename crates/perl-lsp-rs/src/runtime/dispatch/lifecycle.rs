@@ -2,7 +2,7 @@
 //!
 //! Wraps LSP lifecycle requests (initialize, shutdown, exit).
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Ordering, Value, json};
 
 const TRACE_LEVEL_OFF: &str = "off";
 const TRACE_LEVEL_MESSAGES: &str = "messages";

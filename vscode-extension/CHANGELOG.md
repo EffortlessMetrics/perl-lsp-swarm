@@ -61,6 +61,89 @@ All notable changes to the Perl Language Server extension will be documented in 
   granted. This prevents untrusted workspace content from triggering binary
   downloads or spawning server processes. (#4631)
 
+## [0.17.0] - 2026-06-28
+
+### Added
+
+- **DAP debug sessions use the same Perl interpreter as LSP analysis.** When a
+  `launch.json` configuration omits an explicit `perl`, the debugger now
+  resolves it from the same discovery path as the language server.
+- **`perl.runScript` command** for running the current script via the LSP
+  binary's execute-command provider.
+- **`__CLASS__` token support** (Perl 5.40) in lexer, parser, and version
+  compatibility lint.
+
+### Changed
+
+- **Native critic engine** is the default, replacing the external `perlcritic`
+  binary for diagnostics. The legacy engine is still available via
+  `[critic].engine = "legacy"` in `.perl-lsp.toml`.
+- **Folding ranges** computed off-lock to reduce editor blocking.
+
+### Fixed
+
+- Document highlight now covers occurrences in comments, POD, and
+  non-interpolated strings.
+- Unclosed-block diagnostics anchor at the opening brace, not end-of-input.
+- POD command parsing no longer misidentifies `=cutlery` or `=headache`.
+
+Full release notes: [v0.17.0](docs/releases/v0.17.0.md)
+
+## [0.16.0] - 2026-06-06
+
+### Changed
+
+- **Workspace indexing** rewritten with generation-guarded freshness.
+- **JSON-RPC type safety** hardening across the dispatch layer.
+
+Full release notes: [v0.16.0](docs/releases/v0.16.0.md)
+
+## [0.15.2] - 2026-05-26
+
+### Fixed
+
+- Crates.io packaging hotfix for the `cargo install` path.
+
+## [0.15.1] - 2026-05-26
+
+### Fixed
+
+- LSP4IJ inline completion and lean editor-mode hardening.
+- Neovim interactive-latency improvements (generation-aware stale-read guard).
+
+## [0.15.0] - 2026-05-22
+
+### Changed
+
+- **JSON-RPC type safety** — breaking change in the public protocol module
+  (raw `Value` params replaced with typed structs).
+- Fixed the LSP4IJ file-watcher registration crash.
+
+## [0.14.0] - 2026-05-12
+
+### Added
+
+- **`perl.featureProfile` setting** (`auto`, `ga-lock`, `prod`, `all`) for
+  gating experimental features by stability tier.
+
+### Fixed
+
+- `=over/=item` blocks before the first `=head` are no longer silently dropped.
+
+## [0.13.0–0.13.4] - 2026-04-30 to 2026-05-07
+
+### Added
+
+- **Inline completion** (AI-powered, gated behind `ai-provider` feature).
+- **`perl.debugTests` and `perl.debugTestFile`** commands for DAP test
+  debugging.
+- **Neovim** interactive-latency improvements.
+
+### Fixed
+
+- VS Code managed binary install reliability.
+- `$foo->bar` in interpolated strings no longer classified as MethodCall.
+
 ## [0.12.4] - 2026-04-12
 
 ### Added
