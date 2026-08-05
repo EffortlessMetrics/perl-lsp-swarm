@@ -101,6 +101,7 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
         options: &FormattingOptions,
     ) -> Result<FormattedDocument, FormattingError> {
         match self.mode {
+            // Compat mode is currently a no-op alias for Native (#5054 item 6).
             FormatterMode::Native | FormatterMode::Compat => {
                 Ok(native_format_document(content, options, self.perltidy_config.as_ref()))
             }
@@ -131,6 +132,7 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
         }
 
         match self.mode {
+            // Compat mode is currently a no-op alias for Native (#5054 item 6).
             FormatterMode::Native | FormatterMode::Compat => {
                 Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
             }
