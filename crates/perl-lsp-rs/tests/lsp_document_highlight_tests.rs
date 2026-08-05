@@ -136,6 +136,24 @@ calculate(1, 2);
         highlights.len()
     );
 
+    let has_definition_highlight = highlights.iter().any(|highlight| {
+        let start = highlight.get("range").and_then(|range| range.get("start"));
+        let end = highlight.get("range").and_then(|range| range.get("end"));
+        start.and_then(|position| position.get("line")).and_then(|line| line.as_u64()) == Some(1)
+            && start
+                .and_then(|position| position.get("character"))
+                .and_then(|character| character.as_u64())
+                == Some(4)
+            && end
+                .and_then(|position| position.get("character"))
+                .and_then(|character| character.as_u64())
+                == Some(13)
+    });
+    assert!(
+        has_definition_highlight,
+        "Expected a definition highlight for `calculate` at line 1, character 4"
+    );
+
     // Verify all highlights have valid ranges
     for highlight in highlights {
         let range = highlight.get("range").ok_or("Expected range in highlight")?;

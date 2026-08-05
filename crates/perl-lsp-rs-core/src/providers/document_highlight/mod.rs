@@ -106,6 +106,19 @@ impl DocumentHighlightProvider {
             if offset < node.location.start || offset > node.location.end {
                 return None;
             }
+            // A cursor on a declaration name is a file-scope symbol lookup,
+            // not a lookup inside the declaration body. This lets definition
+            // highlights include call sites outside the subroutine.
+            let on_declaration_name = match &node.kind {
+                NodeKind::Subroutine { name_span: Some(span), .. }
+                | NodeKind::Method { name_span: Some(span), .. } => {
+                    offset >= span.start && offset <= span.end
+                }
+                _ => false,
+            };
+            if on_declaration_name {
+                return None;
+            }
             // Check if this node is a Subroutine
             if matches!(node.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
                 return Some((node.location.start, node.location.end));
@@ -410,6 +423,7 @@ impl DocumentHighlightProvider {
             NodeKind::Variable { .. }
                 | NodeKind::FunctionCall { .. }
                 | NodeKind::MethodCall { .. }
+                | NodeKind::Subroutine { .. }
                 | NodeKind::Identifier { .. }
         )
     }
