@@ -371,6 +371,23 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_marker_cap_evicts_stale_entries() {
+        let server = LspServer::new();
+        let oldest = JsonRpcId::Integer(0);
+
+        for id in 0..256 {
+            server.cancel_mark(&JsonRpcId::Integer(id));
+        }
+        assert!(server.is_cancelled(&oldest));
+
+        let newest = JsonRpcId::Integer(256);
+        server.cancel_mark(&newest);
+
+        assert!(!server.is_cancelled(&oldest));
+        assert!(server.is_cancelled(&newest));
+    }
+
+    #[test]
     fn cancelled_type_hierarchy_routes_return_immediate_responses()
     -> Result<(), Box<dyn std::error::Error>> {
         for (offset, method) in [
