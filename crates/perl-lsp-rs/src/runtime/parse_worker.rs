@@ -1379,9 +1379,24 @@ mod tests {
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
         let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let barrier = worker.test_barrier();
 
         const EDITS: u32 = 20;
-        for i in 1..=EDITS {
+        // Hold the first parse before publication so the producer can enqueue
+        // the rest of the burst without a scheduler-dependent race between
+        // enqueue calls and the worker clearing URI ownership.
+        barrier.arm(uri, 1);
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $a = 1;\n"),
+        );
+        barrier.wait_until_paused();
+
+        for i in 2..=EDITS {
             generation_handle.fetch_add(1, Ordering::SeqCst);
             worker.enqueue(
                 uri.to_string(),
@@ -1391,6 +1406,7 @@ mod tests {
                 Arc::from(format!("my $a = {i};\n").as_str()),
             );
         }
+        barrier.release();
 
         assert!(
             worker.wait_until_settled(uri, TEST_TIMEOUT),
