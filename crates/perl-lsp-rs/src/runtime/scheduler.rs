@@ -619,6 +619,11 @@ impl Scheduler {
         // Priority queue: highest-priority (lowest value) requests pop first.
         let mut pending: BinaryHeap<QueuedRead> = BinaryHeap::new();
         // Maps dedup key -> latest arrival_seq seen for that key.
+        // Capped to prevent unbounded growth over long sessions (#5032 item 1).
+        // When the cap is exceeded, the map is cleared — dedup is an optimization,
+        // not a correctness requirement, so clearing only causes a brief loss of
+        // coalescing for in-flight requests.
+        const DEDUP_MAP_CAP: usize = 4096;
         let mut latest_seq: HashMap<RequestDedupKey, u64> = HashMap::new();
 
         loop {
@@ -630,6 +635,11 @@ impl Scheduler {
                     Ok(queued) => {
                         // Track latest arrival_seq for dedup keys.
                         if let Some(ref key) = queued.dedup_key {
+                            // Evict the entire map when it exceeds the cap to
+                            // prevent unbounded growth (#5032 item 1).
+                            if latest_seq.len() >= DEDUP_MAP_CAP {
+                                latest_seq.clear();
+                            }
                             latest_seq
                                 .entry(key.clone())
                                 .and_modify(|seq| {
@@ -684,6 +694,9 @@ impl Scheduler {
                 match rx.recv().await {
                     Some(queued) => {
                         if let Some(ref key) = queued.dedup_key {
+                            if latest_seq.len() >= DEDUP_MAP_CAP {
+                                latest_seq.clear();
+                            }
                             latest_seq
                                 .entry(key.clone())
                                 .and_modify(|seq| {
