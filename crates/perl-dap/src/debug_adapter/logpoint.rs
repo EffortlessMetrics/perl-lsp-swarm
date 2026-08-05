@@ -48,12 +48,72 @@ const VALUE_QUERY: &str = concat!(
 /// debuggee from suppressing logpoint output forever.
 const MAX_CAPTURE_LINES: usize = 200;
 
-/// Upper bound on residual frame lines the reader filters after a capture is
-/// abandoned mid-frame, while it waits for the end marker.
+/// Upper bound on *unrecognised* lines the drain tolerates before giving up.
 ///
-/// Bounded so an end marker that never arrives cannot suppress real debuggee output
-/// indefinitely — the reader would rather leak one stray framing line than go deaf.
-pub(super) const MAX_DRAIN_LINES: usize = 64;
+/// Value replies do not count against this: they are the frame content the drain
+/// exists to swallow, so counting them would let a long frame close the drain early
+/// and leak its own tail to the client.
+pub(super) const MAX_DRAIN_NOISE_LINES: usize = 64;
+
+/// Hard ceiling on *all* lines a drain may consume, value replies included.
+///
+/// Without it, a debuggee emitting endless `DAPLPV:`-looking output would hold the
+/// drain open forever and the reader would go deaf to real debuggee output. Both
+/// budgets are needed: one bounds waiting, the other bounds the frame itself.
+pub(super) const MAX_DRAIN_TOTAL_LINES: usize = 512;
+
+/// What the reader should do with a line handed to an open drain.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum DrainStep {
+    /// Line is adapter framing; swallow it and keep draining.
+    Swallow,
+    /// Frame is closed (end marker seen, or a budget ran out); swallow this line and
+    /// drop the drain.
+    Done,
+}
+
+/// The residual-frame filter that runs after a capture is abandoned mid-frame.
+///
+/// Extracted from the reader loop so its precedence and budget rules are directly
+/// testable — every defect found in this logic so far has been in a rule that could
+/// not be exercised where it lived.
+#[derive(Debug)]
+pub(super) struct LogpointDrain {
+    end_marker: String,
+    noise_remaining: usize,
+    total_remaining: usize,
+}
+
+impl LogpointDrain {
+    pub(super) fn new(end_marker: String) -> Self {
+        Self {
+            end_marker,
+            noise_remaining: MAX_DRAIN_NOISE_LINES,
+            total_remaining: MAX_DRAIN_TOTAL_LINES,
+        }
+    }
+
+    /// Feed one line to the drain.
+    pub(super) fn observe_line(&mut self, line: &str) -> DrainStep {
+        self.total_remaining = self.total_remaining.saturating_sub(1);
+        if self.total_remaining == 0 {
+            return DrainStep::Done;
+        }
+
+        // A value reply is frame content, not noise: it must neither close the drain
+        // (even when its text contains the end marker) nor spend the waiting budget.
+        if is_value_reply(line) {
+            return DrainStep::Swallow;
+        }
+
+        if line.contains(&self.end_marker) {
+            return DrainStep::Done;
+        }
+
+        self.noise_remaining = self.noise_remaining.saturating_sub(1);
+        if self.noise_remaining == 0 { DrainStep::Done } else { DrainStep::Swallow }
+    }
+}
 
 /// Whether a debugger line is one of this protocol's value replies.
 ///
@@ -295,6 +355,68 @@ mod tests {
         );
         assert!(!is_value_reply("DAP_LOGPOINT_END_3"), "the end marker is not a value line");
         assert!(!is_value_reply("ordinary debuggee output"), "debuggee output is not a value line");
+    }
+
+    /// Value replies are frame content, not waiting. Counting them against the
+    /// give-up budget let a frame with many scalars close its own drain early and
+    /// leak the tail — later replies and the end marker — to the client.
+    #[test]
+    fn value_replies_do_not_spend_the_drain_waiting_budget() {
+        let mut drain = LogpointDrain::new("DAP_LOGPOINT_END_9".to_string());
+        for _ in 0..(MAX_DRAIN_NOISE_LINES * 2) {
+            assert_eq!(
+                drain.observe_line("DAPLPV:x\t42"),
+                DrainStep::Swallow,
+                "a value reply must never close the drain"
+            );
+        }
+        assert_eq!(
+            drain.observe_line("DAP_LOGPOINT_END_9"),
+            DrainStep::Done,
+            "the real end marker still closes the drain after many value replies"
+        );
+    }
+
+    #[test]
+    fn a_value_containing_the_end_marker_does_not_close_the_drain() {
+        let mut drain = LogpointDrain::new("DAP_LOGPOINT_END_9".to_string());
+        assert_eq!(
+            drain.observe_line("DAPLPV:x\tsaw DAP_LOGPOINT_END_9 in the log"),
+            DrainStep::Swallow,
+            "a value is a value regardless of the text it carries"
+        );
+    }
+
+    #[test]
+    fn unrecognised_noise_still_bounds_the_drain() {
+        let mut drain = LogpointDrain::new("DAP_LOGPOINT_END_9".to_string());
+        let mut closed_after = None;
+        for i in 1..=(MAX_DRAIN_NOISE_LINES + 5) {
+            if drain.observe_line("ordinary debuggee output") == DrainStep::Done {
+                closed_after = Some(i);
+                break;
+            }
+        }
+        assert_eq!(
+            closed_after,
+            Some(MAX_DRAIN_NOISE_LINES),
+            "an end marker that never arrives must not suppress real output forever"
+        );
+    }
+
+    /// The total ceiling is what stops endless value-looking output from wedging the
+    /// reader once value replies no longer spend the waiting budget.
+    #[test]
+    fn endless_value_replies_cannot_wedge_the_drain() {
+        let mut drain = LogpointDrain::new("DAP_LOGPOINT_END_9".to_string());
+        let mut closed = false;
+        for _ in 0..(MAX_DRAIN_TOTAL_LINES + 10) {
+            if drain.observe_line("DAPLPV:x\t42") == DrainStep::Done {
+                closed = true;
+                break;
+            }
+        }
+        assert!(closed, "the total ceiling must bound a debuggee that never stops replying");
     }
 
     #[test]

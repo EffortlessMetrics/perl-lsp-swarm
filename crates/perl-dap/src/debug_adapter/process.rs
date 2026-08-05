@@ -1,6 +1,6 @@
 //! Process lifecycle management: initialize, launch, attach, disconnect, terminate, restart.
 
-use super::logpoint::{self, LogpointStep, MAX_DRAIN_LINES, PendingLogpoint};
+use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
@@ -728,7 +728,7 @@ impl DebugAdapter {
             let mut logpoint_marker_id: u64 = 0;
             // Residual frame lines to filter after a capture is abandoned mid-frame:
             // (end marker, remaining budget).
-            let mut logpoint_drain: Option<(String, usize)> = None;
+            let mut logpoint_drain: Option<LogpointDrain> = None;
 
             loop {
                 line.clear();
@@ -782,16 +782,11 @@ impl DebugAdapter {
                         // them instead of forwarding protocol noise to the client.
                         // Bounded so a marker that never arrives cannot swallow real
                         // debuggee output indefinitely.
-                        if let Some((marker, remaining)) = logpoint_drain.as_mut() {
-                            // Same precedence as `PendingLogpoint::observe_line`: a
-                            // value line is a value even when its own text contains
-                            // the end marker. Closing on it would end the drain early
-                            // and leak the rest of the frame — later replies and the
-                            // real marker — to the client as debuggee output.
-                            let closed = !logpoint::is_value_reply(&sanitized_text)
-                                && sanitized_text.contains(marker.as_str());
-                            *remaining = remaining.saturating_sub(1);
-                            if closed || *remaining == 0 {
+                        if let Some(drain) = logpoint_drain.as_mut() {
+                            // Every line reaching an open drain is swallowed — the
+                            // closing line is the end marker itself, which is adapter
+                            // framing and must not reach the client either.
+                            if drain.observe_line(&sanitized_text) == DrainStep::Done {
                                 logpoint_drain = None;
                             }
                             continue;
@@ -814,7 +809,7 @@ impl DebugAdapter {
                             {
                                 if matches!(step, LogpointStep::AbandonedInFrame) {
                                     logpoint_drain =
-                                        Some((pending.end_marker().to_string(), MAX_DRAIN_LINES));
+                                        Some(LogpointDrain::new(pending.end_marker().to_string()));
                                 }
                                 emit_logpoint_messages(
                                     sender.as_ref(),
