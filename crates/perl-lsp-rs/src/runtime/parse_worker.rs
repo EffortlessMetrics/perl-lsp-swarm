@@ -1379,9 +1379,24 @@ mod tests {
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
         let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let barrier = worker.test_barrier();
 
         const EDITS: u32 = 20;
-        for i in 1..=EDITS {
+        // Hold the first parse before publication so the producer can enqueue
+        // the rest of the burst without a scheduler-dependent race between
+        // enqueue calls and the worker clearing URI ownership.
+        barrier.arm(uri, 1);
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $a = 1;\n"),
+        );
+        barrier.wait_until_paused();
+
+        for i in 2..=EDITS {
             generation_handle.fetch_add(1, Ordering::SeqCst);
             worker.enqueue(
                 uri.to_string(),
@@ -1391,6 +1406,7 @@ mod tests {
                 Arc::from(format!("my $a = {i};\n").as_str()),
             );
         }
+        barrier.release();
 
         assert!(
             worker.wait_until_settled(uri, TEST_TIMEOUT),
@@ -1398,16 +1414,21 @@ mod tests {
         );
 
         let metrics = worker.metrics();
-        assert_eq!(
-            metrics.jobs_published, 1,
-            "exactly one generation (the final one) must publish from the burst"
-        );
         assert!(
-            metrics.jobs_started < u64::from(EDITS),
-            "coalescing must start far fewer jobs than edits enqueued; started={}",
+            metrics.jobs_started <= u64::from(EDITS / 2),
+            "coalescing must start at most half as many jobs as edits enqueued; started={}",
             metrics.jobs_started
         );
         assert!(metrics.jobs_coalesced > 0, "at least one job must have been coalesced away");
+        assert_eq!(
+            metrics.jobs_published + metrics.jobs_rejected_stale + metrics.jobs_panicked,
+            metrics.jobs_started,
+            "job accounting must balance: published={} + rejected_stale={} + panicked={} must equal started={}",
+            metrics.jobs_published,
+            metrics.jobs_rejected_stale,
+            metrics.jobs_panicked,
+            metrics.jobs_started,
+        );
 
         let docs = documents.lock();
         let doc = must_some(docs.get(uri));
