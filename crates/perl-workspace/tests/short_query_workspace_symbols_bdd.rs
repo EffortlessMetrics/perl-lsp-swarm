@@ -220,8 +220,8 @@ has callback_ref => (is => 'ro');
 }
 
 /// A two-character query against generated members admits loose matches.
-/// "cb" is a subsequence of "callback_ref" (c-b appear in order) so it should
-/// appear when loose matching is active, confirming the generated path does not
+/// "ll" occurs inside "callback_ref" (call-back-ref), so it should appear
+/// when loose matching is active, confirming the generated path does not
 /// over-narrow. (#5407)
 #[test]
 fn given_two_char_query_when_searching_generated_workspace_symbols_then_loose_matches_allowed()
