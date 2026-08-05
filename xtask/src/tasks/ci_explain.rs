@@ -16,8 +16,7 @@
 //! inconclusive: no receipts; run `cargo xtask gates`
 //! ```
 //!
-//! **Out of scope in this version**: `--run-id` (GH artifact download, tracked in #2652)
-//! and `--base` (base-branch comparison, tracked in #2653).
+//! Base-branch comparison (`--base`) remains tracked in #2653.
 
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -122,10 +121,15 @@ pub fn run(
     run_id: Option<String>,
     base_receipt_path: Option<PathBuf>,
 ) -> color_eyre::eyre::Result<()> {
-    let path = if let Some(id) = &run_id {
-        // Download the receipt from a CI run via `gh run download`.
-        let download_dir = download_run_receipt(id)?;
-        resolve_run_id_receipt_path(&download_dir, id)
+    if receipt_path.is_some() && run_id.is_some() {
+        color_eyre::eyre::bail!("choose either `--receipt` or `--run-id`, not both");
+    }
+
+    // Keep the temporary directory alive until the receipt has been read, then
+    // let TempDir remove it even when explanation formatting fails.
+    let downloaded_dir = run_id.as_deref().map(download_run_receipt).transpose()?;
+    let path = if let Some(download_dir) = downloaded_dir.as_ref() {
+        resolve_run_id_receipt_path(download_dir.path())
     } else {
         resolve_receipt_path(receipt_path.as_deref())
     };
@@ -154,25 +158,27 @@ fn resolve_receipt_path(explicit: Option<&Path>) -> PathBuf {
 
 /// Compute the path to the gate receipt JSON downloaded from a CI run (pure — no I/O).
 ///
-/// `gh run download` places artifacts under `<download_dir>/<artifact_name>/`.
-/// The gate receipt artifact is named `gate-receipts` and contains `receipt.json`.
+/// When a single artifact is selected with `gh run download --pattern`, GitHub
+/// extracts its files directly under the requested output directory. The
+/// PR-fast workflow emits exactly one receipt at the artifact root.
 ///
 /// # Arguments
 /// * `download_dir` - The directory passed to `gh run download --dir`
-/// * `_run_id` - The CI run ID (unused in path resolution, but kept for logging)
-fn resolve_run_id_receipt_path(download_dir: &Path, _run_id: &str) -> PathBuf {
-    download_dir.join("gate-receipts").join("receipt.json")
+fn resolve_run_id_receipt_path(download_dir: &Path) -> PathBuf {
+    download_dir.join("receipt.json")
 }
 
 /// Download a CI run's gate receipt artifact via `gh run download`.
 ///
-/// Creates a temporary directory, downloads the `gate-receipts` artifact
-/// from the specified run, and returns the download directory path.
-fn download_run_receipt(run_id: &str) -> color_eyre::eyre::Result<PathBuf> {
-    let download_dir = std::env::temp_dir().join(format!("perl-lsp-ci-{run_id}"));
-    // Clean up any stale download from a previous invocation.
-    let _ = fs::remove_dir_all(&download_dir);
-    fs::create_dir_all(&download_dir)?;
+/// Creates a unique temporary directory, downloads the `pr-fast-receipt-*`
+/// artifact from the specified run, and returns its owner. The owner must stay
+/// alive until the caller has loaded the downloaded receipt.
+fn download_run_receipt(run_id: &str) -> color_eyre::eyre::Result<tempfile::TempDir> {
+    let download_dir = tempfile::tempdir()?;
+    let download_path = download_dir
+        .path()
+        .to_str()
+        .ok_or_else(|| color_eyre::eyre::eyre!("temporary download path is not valid UTF-8"))?;
 
     let status = std::process::Command::new("gh")
         .args([
@@ -182,9 +188,9 @@ fn download_run_receipt(run_id: &str) -> color_eyre::eyre::Result<PathBuf> {
             "--repo",
             "EffortlessMetrics/perl-lsp-swarm",
             "--dir",
-            download_dir.to_str().unwrap_or("."),
-            "-n",
-            "gate-receipts",
+            download_path,
+            "-p",
+            "pr-fast-receipt-*",
         ])
         .status()
         .map_err(|e| color_eyre::eyre::eyre!("failed to run `gh run download`: {e}"))?;
@@ -777,17 +783,31 @@ mod tests {
     // ── resolve_run_id_receipt_path (#2652) ────────────────────────────────────
 
     #[test]
-    fn resolve_run_id_receipt_path_points_to_gate_receipts_dir() {
-        let dir = Path::new("/tmp/perl-lsp-ci-12345");
-        let path = resolve_run_id_receipt_path(dir, "12345");
-        assert_eq!(path, Path::new("/tmp/perl-lsp-ci-12345/gate-receipts/receipt.json"));
+    fn resolve_run_id_receipt_path_points_to_artifact_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = resolve_run_id_receipt_path(dir.path());
+        assert_eq!(path, dir.path().join("receipt.json"));
     }
 
     #[test]
     fn resolve_run_id_receipt_path_works_with_relative_dir() {
         let dir = Path::new("target/ci-download");
-        let path = resolve_run_id_receipt_path(dir, "99999");
-        assert_eq!(path, Path::new("target/ci-download/gate-receipts/receipt.json"));
+        let path = resolve_run_id_receipt_path(dir);
+        assert_eq!(path, dir.join("receipt.json"));
+    }
+
+    #[test]
+    fn downloaded_artifact_layout_loads_real_gate_receipt_fixture() {
+        let download_dir = tempfile::tempdir().expect("tempdir");
+        let artifact_path = download_dir.path().join("receipt.json");
+        let fixture =
+            include_str!("../../tests/fixtures/ci-explain-run/gate-receipts/receipt.json");
+        fs::write(&artifact_path, fixture).expect("write fixture");
+
+        let receipt_path = resolve_run_id_receipt_path(download_dir.path());
+        let receipt = load_receipt(&receipt_path).expect("load downloaded artifact layout");
+        assert_eq!(receipt.gates.len(), 1);
+        assert_eq!(receipt.gates[0].gate_name, "fmt");
     }
 
     // ── exists_on_base (#2653) ─────────────────────────────────────────────────
