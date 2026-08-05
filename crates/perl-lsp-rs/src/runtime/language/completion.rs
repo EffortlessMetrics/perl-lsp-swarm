@@ -194,6 +194,24 @@ fn commit_chars_for_kind(kind: CompletionItemKind) -> Option<&'static [&'static 
     }
 }
 
+/// Deduplicate and rank the complete candidate set before applying the client
+/// result cap.
+///
+/// Provider completions are initially sorted, but request-level enrichment
+/// appends declared-dependency and workspace candidates afterward.  Capping
+/// that mixed list before sorting can hide a better late candidate and makes
+/// the visible result depend on provider order rather than completion rank.
+fn sort_and_cap_completions(
+    completions: Vec<crate::completion::CompletionItem>,
+    cap: usize,
+) -> (Vec<crate::completion::CompletionItem>, bool) {
+    let mut completions =
+        perl_lsp_rs_core::providers::completion_item::deduplicate_and_sort(completions);
+    let is_incomplete = completions.len() > cap;
+    completions.truncate(cap);
+    (completions, is_incomplete)
+}
+
 impl LspServer {
     fn completion_visibility_shadow_labels(
         completions: &[crate::completion::CompletionItem],
@@ -759,23 +777,19 @@ impl LspServer {
         doc_text: &str,
         doc_uri: &str,
         offset: usize,
-        cap: usize,
+        should_continue: Option<&dyn Fn() -> bool>,
     ) {
         let Some(prefix) = Self::module_completion_prefix(doc_text, offset) else {
             return;
         };
-        if completions.len() >= cap {
-            return;
-        }
-
         let config =
             self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
         let mut seen: HashSet<String> =
             completions.iter().map(|completion| completion.label.clone()).collect();
 
         for dependency in config.declared_dependencies {
-            if completions.len() >= cap {
-                break;
+            if should_continue.is_some_and(|check| !check()) {
+                return;
             }
             if !prefix.is_empty() && !dependency.module.starts_with(&prefix) {
                 continue;
@@ -819,7 +833,7 @@ impl LspServer {
         completions: &mut Vec<crate::completion::CompletionItem>,
         inc_context: &RequestIncContext<'_>,
         workspace_mode: &IndexAccessMode,
-        cap: usize,
+        should_continue: Option<&dyn Fn() -> bool>,
     ) {
         let doc_text = inc_context.doc_text();
         let doc_uri = inc_context.doc_uri();
@@ -889,11 +903,9 @@ impl LspServer {
                     completions.iter().map(|completion| completion.label.clone()).collect();
 
                 for symbol in workspace_symbols {
-                    if completions.len() >= cap {
-                        tracing::debug!(cap, "Completion: cap reached, stopping workspace scan");
-                        break;
+                    if should_continue.is_some_and(|check| !check()) {
+                        return;
                     }
-
                     if seen.contains(&symbol.name) {
                         continue;
                     }
@@ -953,13 +965,18 @@ impl LspServer {
                         (Some(label.clone()), None)
                     };
                     seen.insert(label.clone());
+                    let sort_text = format!("9_workspace_{label}");
 
                     completions.push(crate::completion::CompletionItem {
                         label,
                         kind: Self::workspace_symbol_kind(&symbol),
                         detail,
                         insert_text,
-                        sort_text: None,
+                        // Workspace enrichment is a fallback tier. Give it an
+                        // explicit low-priority rank so unranked labels (for
+                        // example `$...` variables) cannot displace ranked
+                        // in-file methods when the final response is capped.
+                        sort_text: Some(sort_text),
                         filter_text: None,
                         documentation: Self::workspace_symbol_documentation(&symbol),
                         additional_edits: Vec::new(),
@@ -1380,7 +1397,7 @@ impl LspServer {
                     &doc.text,
                     uri,
                     offset,
-                    cap,
+                    None,
                 );
 
                 // Add workspace-wide completions using routing policy
@@ -1390,13 +1407,11 @@ impl LspServer {
                         &mut completions,
                         &inc_context,
                         &workspace_mode,
-                        cap,
+                        None,
                     );
                 }
 
-                // Apply cap before converting to JSON
-                let is_incomplete = completions.len() > cap;
-                completions.truncate(cap);
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
                 let (workspace_index_state, workspace_index_reason) =
                     Self::completion_workspace_index_state(&workspace_mode);
                 let completion_decision_context = CompletionDecisionContext {
@@ -1727,12 +1742,13 @@ impl LspServer {
                     });
                 }
 
+                let should_continue = || !token.is_cancelled_relaxed();
                 self.add_declared_dependency_completions(
                     &mut completions,
                     &doc.text,
                     uri,
                     offset,
-                    completion_cap(),
+                    Some(&should_continue),
                 );
 
                 #[cfg(feature = "workspace")]
@@ -1740,8 +1756,27 @@ impl LspServer {
                     &mut completions,
                     &inc_context,
                     &workspace_mode,
-                    completion_cap(),
+                    Some(&should_continue),
                 );
+
+                if token.is_cancelled_relaxed() {
+                    return Err(JsonRpcError {
+                        code: REQUEST_CANCELLED,
+                        message: "Request cancelled during completion enrichment".to_string(),
+                        data: None,
+                    });
+                }
+
+                let (completions, is_incomplete) =
+                    sort_and_cap_completions(completions, completion_cap());
+
+                if token.is_cancelled_relaxed() {
+                    return Err(JsonRpcError {
+                        code: REQUEST_CANCELLED,
+                        message: "Request cancelled during completion ranking".to_string(),
+                        data: None,
+                    });
+                }
 
                 let (workspace_index_state, workspace_index_reason) =
                     Self::completion_workspace_index_state(&workspace_mode);
@@ -1752,7 +1787,7 @@ impl LspServer {
                     ast_available,
                     workspace_index_state,
                     workspace_index_reason,
-                    is_incomplete: false,
+                    is_incomplete,
                 };
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let semantic_shadow_receipt = self.completion_semantic_shadow_receipt(
@@ -1817,7 +1852,7 @@ impl LspServer {
                     .collect();
 
                 Some(Self::completion_list_response(
-                    false,
+                    is_incomplete,
                     items,
                     item_defaults_data_support,
                     apply_kind_support,
@@ -2192,6 +2227,76 @@ mod tests {
             })))?
             .ok_or("missing explain-provider-decision response")?;
         Ok(response)
+    }
+
+    #[test]
+    fn completion_cap_applies_after_final_ranking() {
+        let item = |label: &str, sort_text: &str| crate::completion::CompletionItem {
+            label: label.to_string(),
+            kind: CompletionItemKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: Some(label.to_string()),
+            sort_text: Some(sort_text.to_string()),
+            filter_text: None,
+            additional_edits: Vec::new(),
+            text_edit_range: None,
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        };
+
+        // The late item represents a request-level enrichment candidate. It
+        // outranks both earlier provider candidates and must survive a cap of
+        // two after the complete set is ranked.
+        let (items, is_incomplete) = sort_and_cap_completions(
+            vec![
+                item("provider-first", "100"),
+                item("provider-second", "200"),
+                item("late", "050"),
+            ],
+            2,
+        );
+
+        assert!(is_incomplete, "cap should mark the response incomplete");
+        assert_eq!(
+            items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            ["late", "provider-first"]
+        );
+    }
+
+    #[test]
+    fn cancellable_completion_reports_incomplete_after_cap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut source = String::new();
+        for index in 0..150 {
+            source.push_str(&format!("sub completion_{index} {{ 1 }}\n"));
+        }
+        source.push_str("completion_");
+
+        let server = LspServer::default();
+        let uri = "file:///workspace/cancellable_completion_cap.pl";
+        server.test_apply_did_open(uri, &source, 1)?;
+        let line = source.lines().count() as u32 - 1;
+        let character = source.lines().next_back().map(str::len).unwrap_or(0) as u32;
+        let request_id = json!(7_654_321_i64);
+
+        let response = server
+            .handle_completion_cancellable(
+                Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                })),
+                Some(&request_id),
+            )?
+            .ok_or("cancellable completion returned no response")?;
+
+        assert_eq!(
+            response.get("isIncomplete"),
+            Some(&json!(true)),
+            "a capped cancellable response must advertise that more items exist: {response}"
+        );
+        Ok(())
     }
 
     #[cfg(feature = "workspace")]
@@ -3401,7 +3506,7 @@ mod tests {
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
+            None,
         );
 
         assert_eq!(
@@ -3469,7 +3574,7 @@ mod tests {
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
+            None,
         );
 
         assert_eq!(
@@ -4562,7 +4667,7 @@ sub cross_folder_sub_b { 1 }
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
+            None,
         );
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
@@ -4612,7 +4717,7 @@ sub single_root_sub { 1 }
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
-            500,
+            None,
         );
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
