@@ -138,11 +138,12 @@ impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
             }
             FormatterMode::ExternalLegacy => {
                 let whole_document = FormatRange::whole_document(content);
-                if range.start.line == whole_document.start.line
+                let is_whole_document = range.start.line == whole_document.start.line
                     && range.start.character == whole_document.start.character
-                    && range.end.line == whole_document.end.line
-                    && range.end.character == whole_document.end.character
-                {
+                    && (range.end.line > whole_document.end.line
+                        || (range.end.line == whole_document.end.line
+                            && range.end.character >= whole_document.end.character));
+                if is_whole_document {
                     // Perltidy is safe for a whole-document replacement. For a
                     // partial range, formatting an isolated fragment can change
                     // statement structure, line count, or trailing newlines;
@@ -876,6 +877,30 @@ mod tests {
         };
 
         let formatted = provider.format_document("my$x=1;\n", &options)?;
+        assert_eq!(formatted.edits.len(), 1);
+        assert_eq!(formatted.edits[0].new_text, "my $external = 1;\n");
+        Ok(())
+    }
+
+    #[test]
+    fn external_extended_document_range_uses_perltidy_adapter() -> Result<()> {
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let provider =
+            FormattingProvider::new(RecordingPerltidyRuntime { invoked: invoked.clone() })
+                .with_formatter_mode(FormatterMode::ExternalLegacy);
+        let options = FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            trim_trailing_whitespace: None,
+            insert_final_newline: None,
+            trim_final_newlines: None,
+        };
+        let source = "my$x=1;\n";
+        let range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(99, 0));
+
+        let formatted = provider.format_range(source, &range, &options)?;
+
+        assert!(invoked.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(formatted.edits.len(), 1);
         assert_eq!(formatted.edits[0].new_text, "my $external = 1;\n");
         Ok(())
