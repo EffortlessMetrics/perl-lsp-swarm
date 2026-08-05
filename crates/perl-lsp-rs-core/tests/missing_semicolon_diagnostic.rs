@@ -60,10 +60,10 @@ fn missing_statement_semicolon_reaches_the_editor_as_an_error() {
 #[test]
 fn permitted_terminator_omissions_produce_no_diagnostic() {
     for source in ["my $a = 1;\nmy $b = 2\n", "sub f {\n    my $y = 2\n}\n1;\n"] {
-        let noisy: Vec<_> = diagnostics(source)
-            .into_iter()
-            .filter(|diagnostic| diagnostic.message.contains("Missing `;`"))
-            .collect();
-        assert!(noisy.is_empty(), "valid Perl flagged in:\n{source}\ngot: {noisy:?}");
+        let diagnostics = diagnostics(source);
+        assert!(
+            diagnostics.is_empty(),
+            "valid Perl produced diagnostics:\n{source}\ngot: {diagnostics:?}"
+        );
     }
 }
