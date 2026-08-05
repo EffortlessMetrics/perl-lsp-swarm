@@ -777,6 +777,7 @@ impl LspServer {
         doc_text: &str,
         doc_uri: &str,
         offset: usize,
+        should_continue: Option<&dyn Fn() -> bool>,
     ) {
         let Some(prefix) = Self::module_completion_prefix(doc_text, offset) else {
             return;
@@ -787,6 +788,9 @@ impl LspServer {
             completions.iter().map(|completion| completion.label.clone()).collect();
 
         for dependency in config.declared_dependencies {
+            if should_continue.is_some_and(|check| !check()) {
+                return;
+            }
             if !prefix.is_empty() && !dependency.module.starts_with(&prefix) {
                 continue;
             }
@@ -829,6 +833,7 @@ impl LspServer {
         completions: &mut Vec<crate::completion::CompletionItem>,
         inc_context: &RequestIncContext<'_>,
         workspace_mode: &IndexAccessMode,
+        should_continue: Option<&dyn Fn() -> bool>,
     ) {
         let doc_text = inc_context.doc_text();
         let doc_uri = inc_context.doc_uri();
@@ -898,6 +903,9 @@ impl LspServer {
                     completions.iter().map(|completion| completion.label.clone()).collect();
 
                 for symbol in workspace_symbols {
+                    if should_continue.is_some_and(|check| !check()) {
+                        return;
+                    }
                     if seen.contains(&symbol.name) {
                         continue;
                     }
@@ -1384,7 +1392,13 @@ impl LspServer {
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
 
-                self.add_declared_dependency_completions(&mut completions, &doc.text, uri, offset);
+                self.add_declared_dependency_completions(
+                    &mut completions,
+                    &doc.text,
+                    uri,
+                    offset,
+                    None,
+                );
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -1393,6 +1407,7 @@ impl LspServer {
                         &mut completions,
                         &inc_context,
                         &workspace_mode,
+                        None,
                     );
                 }
 
@@ -1727,17 +1742,41 @@ impl LspServer {
                     });
                 }
 
-                self.add_declared_dependency_completions(&mut completions, &doc.text, uri, offset);
+                let should_continue = || !token.is_cancelled_relaxed();
+                self.add_declared_dependency_completions(
+                    &mut completions,
+                    &doc.text,
+                    uri,
+                    offset,
+                    Some(&should_continue),
+                );
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
                     &mut completions,
                     &inc_context,
                     &workspace_mode,
+                    Some(&should_continue),
                 );
+
+                if token.is_cancelled_relaxed() {
+                    return Err(JsonRpcError {
+                        code: REQUEST_CANCELLED,
+                        message: "Request cancelled during completion enrichment".to_string(),
+                        data: None,
+                    });
+                }
 
                 let (completions, is_incomplete) =
                     sort_and_cap_completions(completions, completion_cap());
+
+                if token.is_cancelled_relaxed() {
+                    return Err(JsonRpcError {
+                        code: REQUEST_CANCELLED,
+                        message: "Request cancelled during completion ranking".to_string(),
+                        data: None,
+                    });
+                }
 
                 let (workspace_index_state, workspace_index_reason) =
                     Self::completion_workspace_index_state(&workspace_mode);
@@ -1813,7 +1852,7 @@ impl LspServer {
                     .collect();
 
                 Some(Self::completion_list_response(
-                    false,
+                    is_incomplete,
                     items,
                     item_defaults_data_support,
                     apply_kind_support,
@@ -2219,7 +2258,7 @@ mod tests {
             2,
         );
 
-        assert!(is_incomplete);
+        assert!(is_incomplete, "cap should mark the response incomplete");
         assert_eq!(
             items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
             ["late", "provider-first"]
@@ -3433,6 +3472,7 @@ mod tests {
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
+            None,
         );
 
         assert_eq!(
@@ -3500,6 +3540,7 @@ mod tests {
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
+            None,
         );
 
         assert_eq!(
@@ -4592,6 +4633,7 @@ sub cross_folder_sub_b { 1 }
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
+            None,
         );
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
@@ -4641,6 +4683,7 @@ sub single_root_sub { 1 }
             &mut completions,
             &inc_context,
             &IndexAccessMode::Full(&coordinator),
+            None,
         );
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
