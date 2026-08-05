@@ -536,9 +536,9 @@ fn test_recovery_unclosed_qw() -> Result<(), String> {
 
 #[test]
 fn starts_qr_slash_body_boundary_discriminator() {
-    assert!(Parser::starts_qr_slash_body(b"qr/", 2));
-    assert!(!Parser::starts_qr_slash_body(b"/", 0));
-    assert!(!Parser::starts_qr_slash_body(b"ar/", 2));
+    assert!(Parser::starts_qr_slash_body(b"qr/", 2), "direct qr delimiter");
+    assert!(!Parser::starts_qr_slash_body(b"/", 0), "bare slash is division");
+    assert!(!Parser::starts_qr_slash_body(b"ar/", 2), "suffix ar is not qr");
 }
 
 #[test]

@@ -537,7 +537,10 @@ impl<'a> Parser<'a> {
     /// nested blocks.
     fn finish_statement_terminator(&mut self, stmt: &Node) -> ParseResult<()> {
         if self.peek_kind() == Some(TokenKind::Semicolon) {
-            if self.pending_heredocs.is_empty() && !Self::contains_heredoc(stmt) {
+            if self.pending_heredocs.is_empty()
+                && !Self::contains_heredoc(stmt)
+                && Self::can_arm_heredoc_recovery(stmt)
+            {
                 if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
                     self.heredoc_recovery_tag = Some(tag);
                 }
@@ -600,7 +603,10 @@ impl<'a> Parser<'a> {
         // left shift, so no `Heredoc` node exists even though the body lines are
         // still in the token stream. Scanning the statement's own source span
         // catches that case too.
-        if self.pending_heredocs.is_empty() && !Self::contains_heredoc(stmt) {
+        if self.pending_heredocs.is_empty()
+            && !Self::contains_heredoc(stmt)
+            && Self::can_arm_heredoc_recovery(stmt)
+        {
             if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
                 self.heredoc_recovery_tag = Some(tag);
                 return Ok(());
@@ -760,6 +766,26 @@ impl<'a> Parser<'a> {
     fn contains_heredoc(node: &Node) -> bool {
         matches!(node.kind, NodeKind::Heredoc { .. })
             || node.children().into_iter().any(Self::contains_heredoc)
+    }
+
+    /// Ordinary shift expressions can contain a quoted word immediately after
+    /// `<<`, but that word is not a heredoc delimiter. Keep them out of the
+    /// narrow leaked-heredoc recovery path.
+    fn contains_left_shift(node: &Node) -> bool {
+        matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=")
+            || node.children().into_iter().any(Self::contains_left_shift)
+    }
+
+    fn contains_identifier_left_shift(node: &Node) -> bool {
+        matches!(
+            &node.kind,
+            NodeKind::Binary { op, left, .. }
+                if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
+        ) || node.children().into_iter().any(Self::contains_identifier_left_shift)
+    }
+
+    fn can_arm_heredoc_recovery(node: &Node) -> bool {
+        !Self::contains_left_shift(node) || Self::contains_identifier_left_shift(node)
     }
 
     /// Whether the slash at `index` starts a `qr//` quote-like body.
@@ -1888,4 +1914,5 @@ mod statement_terminator_seam_tests {
         assert!(!Parser::starts_qr_slash_body(b"/", 0), "bare slash is division");
         assert!(!Parser::starts_qr_slash_body(b"ar/", 2), "suffix ar is not qr");
     }
+
 }

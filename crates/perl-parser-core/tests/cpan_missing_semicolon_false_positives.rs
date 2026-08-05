@@ -171,3 +171,9 @@ fn heredoc_declaration_without_terminator_is_reported() {
 fn bareword_call_followed_by_keyword_is_reported() {
     assert_blocking_diagnostic("foo\nprint \"after\";\n");
 }
+
+#[test]
+fn quoted_shift_operand_is_not_a_heredoc_recovery_boundary() {
+    assert_blocking_diagnostic("my $n = 1 << 'TAG'\nTAG\nprint \"after\";\n");
+    assert_blocking_diagnostic("my $n = 1 <<'TAG'\nTAG\nprint \"after\";\n");
+}
