@@ -70,6 +70,11 @@ pub(super) enum DrainStep {
     /// Frame is closed (end marker seen, or a budget ran out); swallow this line and
     /// drop the drain.
     Done,
+    /// The *next* capture's frame has started: this line is that capture's begin
+    /// marker, not residue. Drop the drain and hand this same line to the new
+    /// capture. Without this the drain — whose value-reply test is capture-agnostic —
+    /// would swallow the new capture's whole frame and leave it resolving nothing.
+    Superseded,
 }
 
 /// The residual-frame filter that runs after a capture is abandoned mid-frame.
@@ -80,6 +85,11 @@ pub(super) enum DrainStep {
 #[derive(Debug)]
 pub(super) struct LogpointDrain {
     end_marker: String,
+    /// Begin marker of the capture that superseded this drain's frame, once one
+    /// exists. The debugger answers commands in write order, so this marker cannot
+    /// appear until the old frame's residue has gone by — seeing it proves the drain
+    /// is done, whether or not the old end marker ever arrived.
+    cancel_marker: Option<String>,
     noise_remaining: usize,
     total_remaining: usize,
 }
@@ -88,9 +98,18 @@ impl LogpointDrain {
     pub(super) fn new(end_marker: String) -> Self {
         Self {
             end_marker,
+            cancel_marker: None,
             noise_remaining: MAX_DRAIN_NOISE_LINES,
             total_remaining: MAX_DRAIN_TOTAL_LINES,
         }
+    }
+
+    /// Tell the drain which capture superseded it.
+    ///
+    /// Called when a new capture is queued while this drain is still open. The drain
+    /// yields to that capture's frame instead of swallowing it.
+    pub(super) fn supersede_with(&mut self, begin_marker: &str) {
+        self.cancel_marker = Some(begin_marker.to_string());
     }
 
     /// Feed one line to the drain.
@@ -101,9 +120,22 @@ impl LogpointDrain {
         }
 
         // A value reply is frame content, not noise: it must neither close the drain
-        // (even when its text contains the end marker) nor spend the waiting budget.
+        // (even when its text contains a marker) nor spend the waiting budget. This
+        // precedence covers the supersession marker for the same reason it covers the
+        // end marker — a value is a value regardless of the text it carries.
         if is_value_reply(line) {
             return DrainStep::Swallow;
+        }
+
+        // The next capture's frame is not this drain's residue. A drain that swallowed
+        // it would leave that capture with an empty value map and ship the user the
+        // raw `{$x}` template. Ordered before the end marker because the debugger
+        // answers in write order: if the new frame has opened, the old one is over
+        // whether or not its end marker ever arrived.
+        if let Some(cancel) = self.cancel_marker.as_deref()
+            && line.contains(cancel)
+        {
+            return DrainStep::Superseded;
         }
 
         if line.contains(&self.end_marker) {
@@ -267,6 +299,14 @@ impl PendingLogpoint {
         &self.end_marker
     }
 
+    /// Marker that opens this capture's frame.
+    ///
+    /// The reader hands it to an open drain so the drain yields to this capture
+    /// rather than swallowing its frame as residue of the previous one.
+    pub(super) fn begin_marker(&self) -> &str {
+        &self.begin_marker
+    }
+
     /// Debugger commands that frame and answer this capture, in write order.
     pub(super) fn query_commands(&self) -> Vec<String> {
         let mut commands = Vec::with_capacity(self.names.len() + 2);
@@ -387,6 +427,68 @@ mod tests {
             drain.observe_line("DAPLPV:x\tsaw DAP_LOGPOINT_END_9 in the log"),
             DrainStep::Swallow,
             "a value is a value regardless of the text it carries"
+        );
+    }
+
+    /// A second breakpoint hit while a drain is still open must reach its own
+    /// capture. The drain's value test is capture-agnostic (`contains("DAPLPV:")`),
+    /// so before the drain learned to yield it swallowed the *new* frame entirely —
+    /// the new capture resolved nothing and the user saw the raw `{$x}` template.
+    #[test]
+    fn a_superseding_capture_reclaims_its_own_frame_from_the_drain() {
+        let mut drain = LogpointDrain::new("DAP_LOGPOINT_END_9".to_string());
+        assert_eq!(
+            drain.observe_line("DAPLPV:x\told"),
+            DrainStep::Swallow,
+            "residue of the abandoned frame is still the drain's to swallow"
+        );
+
+        drain.supersede_with("DAP_LOGPOINT_BEGIN_10");
+        assert_eq!(
+            drain.observe_line("DAP_LOGPOINT_BEGIN_10"),
+            DrainStep::Superseded,
+            "the new capture's begin marker retires the drain instead of being eaten"
+        );
+    }
+
+    /// The old frame's residue arrives before the new frame opens (the debugger
+    /// answers in write order), so superseding must not blind the drain to it.
+    #[test]
+    fn superseding_still_filters_the_old_frames_residue_first() {
+        let mut drain = LogpointDrain::new("DAP_LOGPOINT_END_9".to_string());
+        drain.supersede_with("DAP_LOGPOINT_BEGIN_10");
+
+        for line in ["DAPLPV:x\tlate", "DAPLPV:y\talso late"] {
+            assert_eq!(
+                drain.observe_line(line),
+                DrainStep::Swallow,
+                "late replies from the superseded frame are still adapter framing"
+            );
+        }
+        assert_eq!(
+            drain.observe_line("DAP_LOGPOINT_END_9"),
+            DrainStep::Done,
+            "the superseded frame's own end marker still closes the drain normally"
+        );
+    }
+
+    /// A value whose text happens to contain the new begin marker must not retire the
+    /// drain early — the same value-before-marker precedence the end marker gets.
+    /// Otherwise a debuggee that prints the marker text hands its own frame's tail to
+    /// the client.
+    #[test]
+    fn a_value_containing_the_begin_marker_does_not_supersede_the_drain() {
+        let mut drain = LogpointDrain::new("DAP_LOGPOINT_END_9".to_string());
+        drain.supersede_with("DAP_LOGPOINT_BEGIN_10");
+        assert_eq!(
+            drain.observe_line("DAPLPV:x\tsaw DAP_LOGPOINT_BEGIN_10 in the log"),
+            DrainStep::Swallow,
+            "a value is a value regardless of the marker text it carries"
+        );
+        assert_eq!(
+            drain.observe_line("DAP_LOGPOINT_BEGIN_10"),
+            DrainStep::Superseded,
+            "the bare marker still retires the drain"
         );
     }
 

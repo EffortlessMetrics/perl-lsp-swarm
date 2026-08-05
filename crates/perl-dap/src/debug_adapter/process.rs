@@ -797,11 +797,20 @@ impl DebugAdapter {
                         if let Some(drain) = logpoint_drain.as_mut() {
                             // Every line reaching an open drain is swallowed — the
                             // closing line is the end marker itself, which is adapter
-                            // framing and must not reach the client either.
-                            if drain.observe_line(&capture_text) == DrainStep::Done {
-                                logpoint_drain = None;
+                            // framing and must not reach the client either. The one
+                            // exception is `Superseded`: that line opens the *next*
+                            // capture's frame, so the drain retires and the line falls
+                            // through to that capture below instead of being eaten.
+                            match drain.observe_line(&capture_text) {
+                                DrainStep::Swallow => continue,
+                                DrainStep::Done => {
+                                    logpoint_drain = None;
+                                    continue;
+                                }
+                                DrainStep::Superseded => {
+                                    logpoint_drain = None;
+                                }
                             }
-                            continue;
                         }
 
                         if let Some(pending) = pending_logpoint.as_mut() {
@@ -1049,16 +1058,46 @@ impl DebugAdapter {
                                                                     .write_all(command.as_bytes());
                                                             }
                                                             let _ = stdin.flush();
+                                                            let new_begin =
+                                                                pending.begin_marker().to_string();
+                                                            // A drain already open is
+                                                            // filtering an even earlier
+                                                            // capture's residue. Tell it
+                                                            // where this frame starts so it
+                                                            // retires instead of eating it.
+                                                            if let Some(drain) =
+                                                                logpoint_drain.as_mut()
+                                                            {
+                                                                drain.supersede_with(&new_begin);
+                                                            }
                                                             // A hit seen while an earlier
                                                             // capture is still open would
                                                             // otherwise drop that capture's
                                                             // messages on the floor. Emit
                                                             // what it resolved so far
-                                                            // instead of losing it.
-                                                            pending_logpoint
-                                                                .replace(pending)
-                                                                .map(PendingLogpoint::into_messages)
-                                                                .unwrap_or_default()
+                                                            // instead of losing it, and keep
+                                                            // filtering its residual frame:
+                                                            // its late `DAPLPV:` replies and
+                                                            // its end marker are still in
+                                                            // flight and would otherwise
+                                                            // reach the client as debuggee
+                                                            // stdout.
+                                                            match pending_logpoint.replace(pending)
+                                                            {
+                                                                Some(previous) => {
+                                                                    let mut drain =
+                                                                        LogpointDrain::new(
+                                                                            previous
+                                                                                .end_marker()
+                                                                                .to_string(),
+                                                                        );
+                                                                    drain
+                                                                        .supersede_with(&new_begin);
+                                                                    logpoint_drain = Some(drain);
+                                                                    previous.into_messages()
+                                                                }
+                                                                None => Vec::new(),
+                                                            }
                                                         }
                                                         // No stdin to ask on: emit the raw
                                                         // templates rather than nothing.
