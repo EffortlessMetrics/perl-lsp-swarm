@@ -268,18 +268,45 @@ assert_windows_arm64_version_guard() {
         return
     fi
 
-    local build_line guard_line error_line target_line download_line
-    build_line="$(grep -nF '$WindowsBuild = Get-WindowsBuildNumber' "$file" | head -n1 | cut -d: -f1)"
-    guard_line="$(grep -nF 'if ($WindowsBuild -lt 22000)' "$file" | head -n1 | cut -d: -f1)"
-    error_line="$(grep -nF 'Write-Error "Windows ARM64 x64 emulation requires' "$file" | head -n1 | cut -d: -f1)"
-    target_line="$(grep -nF '$Target =' "$file" | head -n1 | cut -d: -f1)"
-    download_line="$(grep -nF 'Invoke-WebRequest' "$file" | head -n1 | cut -d: -f1)"
+    local guard_line guard_end guard_block build_line threshold_line error_line stop_line
+    local target_line download_line
+    guard_line="$(grep -nE '^[[:space:]]*if \(\$IsArm64Host\) \{[[:space:]]*$' "$file" | head -n1 | cut -d: -f1)"
+    stop_line="$(grep -nE '^[[:space:]]*\$ErrorActionPreference[[:space:]]*=[[:space:]]*"Stop"[[:space:]]*$' "$file" | head -n1 | cut -d: -f1)"
 
-    if [[ -z "$build_line" || -z "$guard_line" || -z "$error_line" || \
-        -z "$target_line" || -z "$download_line" ]] || \
-        (( build_line >= guard_line || guard_line >= error_line || \
-            error_line >= target_line || target_line >= download_line )); then
-        fail "$label" "must prove the ordered ARM64 rejection guard before target selection and download"
+    if [[ -z "$guard_line" || -z "$stop_line" ]] || (( stop_line >= guard_line )); then
+        fail "$label" "must prove an executable ARM64 guard with terminating error behavior"
+        return
+    fi
+
+    guard_end="$(awk -v start="$guard_line" '
+        NR < start { next }
+        {
+            opens = gsub(/\{/, "{")
+            closes = gsub(/\}/, "}")
+            depth += opens - closes
+            if (NR > start && depth == 0) {
+                print NR
+                exit
+            }
+        }
+    ' "$file")"
+    if [[ -z "$guard_end" ]]; then
+        fail "$label" "must prove the ARM64 guard has a complete executable block"
+        return
+    fi
+
+    guard_block="$(sed -n "${guard_line},${guard_end}p" "$file")"
+    build_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*\$WindowsBuild[[:space:]]*=[[:space:]]*Get-WindowsBuildNumber[[:space:]]*$' | head -n1 | cut -d: -f1)"
+    threshold_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*if \(\$WindowsBuild -lt 22000\) \{[[:space:]]*$' | head -n1 | cut -d: -f1)"
+    error_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*Write-Error[[:space:]]+"Windows ARM64 x64 emulation requires' | head -n1 | cut -d: -f1)"
+    target_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=' "$file" | head -n1 | cut -d: -f1)"
+    download_line="$(grep -nE '^[[:space:]]*Invoke-WebRequest[[:space:]]' "$file" | head -n1 | cut -d: -f1)"
+
+    if [[ -z "$build_line" || -z "$threshold_line" || -z "$error_line" || -z "$target_line" || \
+        -z "$download_line" ]] || \
+        (( build_line >= threshold_line || threshold_line >= error_line || \
+            target_line <= guard_end || guard_end >= download_line )); then
+        fail "$label" "must prove the executable ARM64 rejection guard before target selection and download"
         return
     fi
 
