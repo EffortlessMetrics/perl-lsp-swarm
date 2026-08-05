@@ -59,7 +59,10 @@ fn missing_statement_semicolon_reaches_the_editor_as_an_error() {
 /// editor would light up every file that omits the final `;`.
 #[test]
 fn permitted_terminator_omissions_produce_no_diagnostic() {
-    for source in ["my $a = 1;\nmy $b = 2\n", "sub f {\n    my $y = 2\n}\n1;\n"] {
+    for source in [
+        "use strict;\nuse warnings;\npackage Foo;\nmy $a = 1;\nmy $b = 2;\nprint $a, $b\n",
+        "use strict;\nuse warnings;\npackage Foo;\nsub f {\n    my $y = 2;\n    return $y\n}\n1;\n",
+    ] {
         let diagnostics = diagnostics(source);
         assert!(
             diagnostics.is_empty(),
