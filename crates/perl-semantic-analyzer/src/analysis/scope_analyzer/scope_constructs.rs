@@ -116,6 +116,7 @@ pub(super) fn handle_foreach<'a>(
             variable.location.start,
             false,
             true,
+            false, // no explicit initializer
             context,
         );
     } else {
@@ -208,6 +209,7 @@ fn process_callable_scope<'a>(
                 param.location.start,
                 false,
                 true,
+                false, // no explicit initializer (parameters are initialized by caller)
                 context,
             ); // Parameters are initialized
             // Don't mark parameters as automatically used yet - track their actual usage
@@ -307,6 +309,7 @@ pub(super) fn handle_method<'a>(
         node.location.start,
         false,
         true,
+        false, // no explicit initializer
         context,
     );
     // Mark as used immediately — the invocant is always "consumed" by the runtime,
@@ -343,9 +346,14 @@ pub(super) fn handle_try<'a>(
             let catch_var_range = (var_loc.start, var_loc.end);
             let (sigil, name) = split_variable_name(full_name);
             if !sigil.is_empty() && !name.is_empty() && !name.contains("::") {
-                if let Some(issue_kind) =
-                    catch_scope.declare_variable_parts(sigil, name, catch_var_range.0, false, true)
-                {
+                if let Some(issue_kind) = catch_scope.declare_variable_parts(
+                    sigil,
+                    name,
+                    catch_var_range.0,
+                    false,
+                    true,
+                    false,
+                ) {
                     let description = match issue_kind {
                         IssueKind::VariableShadowing => {
                             format!("Variable '{}' shadows a variable in outer scope", full_name)

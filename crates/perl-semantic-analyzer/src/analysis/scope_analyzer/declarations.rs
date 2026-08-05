@@ -77,6 +77,7 @@ pub(super) fn handle_variable_declaration<'a>(
         variable.location.start,
         is_our,
         is_initialized,
+        initializer.is_some(),
         context,
     );
 
@@ -201,6 +202,7 @@ pub(super) fn handle_variable_list_declaration<'a>(
             variable.location.start,
             is_our,
             is_initialized,
+            initializer.is_some(),
             context,
         );
 
@@ -304,8 +306,9 @@ pub(super) fn handle_use(
                                 node.location.start,
                                 true,
                                 true,
+                                false,
                                 context,
-                            ); // true = is_our (global), true = initialized (assumed)
+                            ); // true = is_our (global), true = initialized (assumed), false = no initializer
                         }
                     }
                 }
@@ -322,6 +325,7 @@ pub(super) fn handle_use(
                             node.location.start,
                             true,
                             true,
+                            false,
                             context,
                         );
                     }

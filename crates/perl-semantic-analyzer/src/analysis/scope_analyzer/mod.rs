@@ -189,6 +189,7 @@ impl Scope {
         offset: usize,
         is_our: bool,
         is_initialized: bool,
+        has_initializer: bool,
     ) -> Option<IssueKind> {
         let idx = sigil_to_index(sigil);
 
@@ -217,7 +218,7 @@ impl Scope {
             name.to_string(),
             Rc::new(Variable {
                 declaration_offset: offset,
-                is_used: RefCell::new(is_our), // 'our' variables are considered used
+                is_used: RefCell::new(is_our || has_initializer),
                 is_our,
                 is_initialized: RefCell::new(is_initialized),
             }),
@@ -540,6 +541,7 @@ impl ScopeAnalyzer {
         offset: usize,
         is_our: bool,
         is_initialized: bool,
+        has_initializer: bool,
         context: &AnalysisContext<'_>,
     ) -> Option<IssueKind> {
         if is_our && let Some(qualified_name) = self.package_variable_name(name, context) {
@@ -549,10 +551,11 @@ impl ScopeAnalyzer {
                 offset,
                 is_our,
                 is_initialized,
+                has_initializer,
             );
         }
 
-        scope.declare_variable_parts(sigil, name, offset, is_our, is_initialized)
+        scope.declare_variable_parts(sigil, name, offset, is_our, is_initialized, has_initializer)
     }
 
     pub(super) fn has_variable_parts_in_context(
