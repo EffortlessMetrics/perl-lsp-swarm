@@ -11,6 +11,8 @@ use super::{
 };
 use crate::protocol::JsonRpcId;
 
+const CANCELLED_SET_CAP: usize = 256;
+
 #[allow(dead_code)]
 impl LspServer {
     /// Run the LSP server using stdio
@@ -124,13 +126,14 @@ impl LspServer {
     /// and removed by [`cancel_clear`] when the routing path processes them.
     /// However, cancels for already-completed or never-dispatched requests
     /// insert entries that are never removed. To prevent unbounded growth,
-    /// the set is cleared when it exceeds a cap (#5032 item 2).
+    /// the set is cleared when it reaches [`CANCELLED_SET_CAP`] (#5032 item
+    /// 2).
     pub(crate) fn cancel_mark(&self, id: &JsonRpcId) {
         let mut c = self.cancelled.lock();
         // Clear stale entries when the set grows too large. Cancels are
         // advisory — clearing only means some in-flight requests won't see
         // the cancel signal, which is a minor latency tradeoff.
-        if c.len() >= 256 {
+        if c.len() >= CANCELLED_SET_CAP {
             c.clear();
         }
         c.insert(id.clone());
