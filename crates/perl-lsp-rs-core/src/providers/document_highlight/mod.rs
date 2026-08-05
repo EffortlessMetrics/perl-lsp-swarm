@@ -441,6 +441,13 @@ impl DocumentHighlightProvider {
                 is_method: true,
                 is_function: false,
             }),
+            // Cursor on a sub definition — extract the sub name (#5864).
+            NodeKind::Subroutine { name: Some(name), .. } => Some(SymbolInfo {
+                name: name.clone(),
+                sigil: None,
+                is_method: false,
+                is_function: true,
+            }),
             _ => {
                 // Try to extract from source text
                 let text = source.get(node.location.start..node.location.end)?;
