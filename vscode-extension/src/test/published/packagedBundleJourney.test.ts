@@ -54,6 +54,24 @@ async function withTimeout<T>(
   }
 }
 
+async function waitForStartupMetrics(
+  getMetrics: () => ReceiptValue,
+  timeoutMs: number,
+): Promise<ReceiptValue> {
+  const deadline = Date.now() + timeoutMs;
+  let metrics = getMetrics();
+  while (
+    Date.now() < deadline &&
+    [metrics.binary_resolution_status, metrics.server_start_status, metrics.initialize_status].some(
+      (status) => status === 'running',
+    )
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    metrics = getMetrics();
+  }
+  return metrics;
+}
+
 function bundledBinaryPath(extensionPath: string): string {
   const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
   const names =
@@ -265,7 +283,9 @@ suite('Packaged VSIX bundled-server journey', function () {
       }
 
       const diagnostics = vscode.languages.getDiagnostics(document.uri);
-      const metrics = activation?.getLanguageClientStartupMetrics?.() ?? null;
+      const metrics = activation?.getLanguageClientStartupMetrics
+        ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
+        : {};
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
@@ -278,8 +298,9 @@ suite('Packaged VSIX bundled-server journey', function () {
           path: bundledServerPath,
           source: 'packaged_vsix_bundle',
           version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
-          startup_source: metrics?.binary_resolution_source ?? null,
+          startup_source: metrics.binary_resolution_source ?? null,
         },
+        startup: metrics,
         vsix_identity: {
           extension_id: extension.id,
           version: extension.packageJSON?.version ?? null,
@@ -292,7 +313,6 @@ suite('Packaged VSIX bundled-server journey', function () {
         requests: { immediate, after_edit: afterEdit, formatting, rename },
         index_generation: 'not_observable_from_public_extension_api',
         answering_tier: 'bundled_server_provider',
-        startup_observability: metrics ? 'reported' : 'not_exposed_by_published_extension',
         fallback_or_refusal_reason:
           rename.status === 'safe_refusal' ? 'rename provider returned no edit' : null,
         latency: { activation_ms: Math.round(activationCompleted - activationStarted) },
@@ -304,11 +324,6 @@ suite('Packaged VSIX bundled-server journey', function () {
           'DAP preview is not exercised by this slice.',
           'The public VS Code API does not expose index generation or semantic exactness.',
           'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
-          ...(metrics
-            ? []
-            : [
-                'The installed published extension does not expose startup metrics; provider results and the managed-binary receipt remain the observable startup evidence.',
-              ]),
           ...(criticSettingRegistered
             ? []
             : [
@@ -346,20 +361,38 @@ suite('Packaged VSIX bundled-server journey', function () {
         ([label, result]) =>
           result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
       );
-      receipt.outcome = providerFailures.length === 0 ? 'completed' : 'failed';
-      receipt.product_blockers = providerFailures.map(([label, result]) => ({ label, result }));
+      const lifecycleExpectations: Array<[string, string]> = [
+        ['binary_resolution_source', 'bundled'],
+        ['binary_resolution_status', 'ok'],
+        ['server_start_status', 'ok'],
+        ['initialize_status', 'ok'],
+      ];
+      const lifecycleFailures = lifecycleExpectations
+        .filter(([field, expected]) => metrics[field] !== expected)
+        .map(([field, expected]) => ({
+          label: `lifecycle.${field}`,
+          result: {
+            expected,
+            actual: metrics[field] ?? null,
+            metrics,
+          },
+        }));
+      const productBlockers = [
+        ...lifecycleFailures,
+        ...providerFailures.map(([label, result]) => ({ label, result })),
+      ];
+      receipt.outcome = productBlockers.length === 0 ? 'completed' : 'failed';
+      receipt.product_blockers = productBlockers;
 
       fs.writeFileSync(
         path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
         JSON.stringify(receipt, null, 2),
       );
 
-      if (metrics) {
-        assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
-        assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
-        assert.equal(metrics.server_start_status, 'ok', JSON.stringify(metrics));
-        assert.equal(metrics.initialize_status, 'ok', JSON.stringify(metrics));
-      }
+      assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
+      assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
+      assert.equal(metrics.server_start_status, 'ok', JSON.stringify(metrics));
+      assert.equal(metrics.initialize_status, 'ok', JSON.stringify(metrics));
       assert.equal(afterEdit.status, 'ok', JSON.stringify(afterEdit));
       for (const [label, result] of providerResults) {
         assertProviderSucceeded(label, result);
