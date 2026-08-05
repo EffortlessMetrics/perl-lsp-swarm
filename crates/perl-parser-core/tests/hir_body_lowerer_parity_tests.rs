@@ -52,14 +52,18 @@
 //! | `while ($x) { … }`       | `Opaque { "While" }`  | `HirExpr::Loop`      |
 //! | `return $x`               | `Opaque { "Return" }` | `HirExpr::Return`    |
 //!
-//! **§ D — Parity zone**
+//! **§ D — Shared expression shapes and semantic divergence**
 //!
 //! Within a `my $x = EXPR;` initializer (no `ExpressionStatement` wrapper), both
-//! lowerers agree for the three NodeKinds that `lower_body`'s `lower_expr` handles:
+//! lowerers agree on the expression shapes that `lower_body`'s `lower_expr` handles.
+//! The unbound `$a` specimen deliberately records a semantic divergence too:
+//! `lower_body` defaults it to `Lexical`, while `lower_ast` resolves it as an
+//! unbound `Package` variable. The test must assert that distinction rather than
+//! hiding it behind a name-only shape check.
 //!
 //! | Perl initializer | Both produce               |
 //! |------------------|----------------------------|
-//! | `$a`             | `HirExpr::Variable`        |
+//! | `$a`             | `HirExpr::Variable(Lexical)` / `HirExpr::Variable(Package)` |
 //! | `$a + $b`        | `HirExpr::Binary { Add }`  |
 //! | `my $x = $y`     | `HirStmt::Let` + `HirExpr::Assign { Simple }` |
 
@@ -67,7 +71,10 @@ use std::error::Error;
 
 use perl_parser_core::{
     Parser,
-    hir::{AssignMode, BinaryOp, HirBody, HirExpr, HirFile, HirStmt, lower_ast, lower_body},
+    hir::{
+        AssignMode, BinaryOp, HirBody, HirExpr, HirFile, HirStmt, VariableKind, lower_ast,
+        lower_body,
+    },
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -381,18 +388,18 @@ fn gap_return_at_stmt_level_is_opaque_in_lower_body_but_structured_in_bb2()
 // synthesized by both lowerers for the declared place.
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// `my $x = $a;` — both lowerers produce `HirExpr::Variable` for the `$a`
-/// initializer RHS (the declared-place Assign is synthesized by both builders,
-/// not present in the AST).
+/// `my $x = $a;` — both lowerers produce a variable-shaped initializer RHS, but
+/// they disagree on the semantic kind of the unbound `$a`: `lower_body`
+/// defaults to `Lexical`, while `BodyBuilder2` resolves it as `Package`.
 #[test]
-fn parity_variable_in_let_initializer_both_produce_variable_node() -> Result<(), Box<dyn Error>> {
+fn variable_kind_divergence_in_let_initializer_is_explicit() -> Result<(), Box<dyn Error>> {
     let source = "my $x = $a;";
 
     let body = via_lower_body(source);
     let lb_rhs = let_init_rhs(&body)?;
     assert!(
-        matches!(lb_rhs, HirExpr::Variable(v) if v.name == "a"),
-        "lower_body must produce HirExpr::Variable('a') as Let init RHS, got {lb_rhs:?}"
+        matches!(lb_rhs, HirExpr::Variable(v) if v.name == "a" && v.kind == VariableKind::Lexical),
+        "lower_body must record unbound `$a` as Lexical in this legacy path, got {lb_rhs:?}"
     );
 
     let file = via_lower_ast(source);
@@ -400,8 +407,8 @@ fn parity_variable_in_let_initializer_both_produce_variable_node() -> Result<(),
         file.root_body().ok_or_else(|| "lower_ast must produce a root body".to_string())?;
     let bb2_rhs = let_init_rhs(bb2_body)?;
     assert!(
-        matches!(bb2_rhs, HirExpr::Variable(v) if v.name == "a"),
-        "BodyBuilder2 must produce HirExpr::Variable('a') as Let init RHS, got {bb2_rhs:?}"
+        matches!(bb2_rhs, HirExpr::Variable(v) if v.name == "a" && v.kind == VariableKind::Package),
+        "BodyBuilder2 must resolve unbound `$a` as Package, got {bb2_rhs:?}"
     );
     Ok(())
 }
