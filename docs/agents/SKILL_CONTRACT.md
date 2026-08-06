@@ -4,6 +4,23 @@ Skills are small, self-navigating artifact transformations. They make the next u
 judgment clear without turning the repository into a runtime workflow engine or
 cross-lane coordinator.
 
+## Provider-native operational authority
+
+Shared docs define method and structural expectations. They are not substitutes for
+the instructions a running provider consumes.
+
+```text
+Claude Code operational skills
+→ .claude/skills/*
+
+Codex operational skills
+→ .agents/skills/*
+```
+
+A substantive skill must be operationally complete in both provider implementations.
+It may link shared context, but it cannot require the agent to reconstruct its actual
+procedure from one provider-neutral authority document.
+
 ## Required shape
 
 Every public flow and substantive atomic skill should state:
@@ -81,7 +98,7 @@ team topology.
 
 ## Local route grammar
 
-Use direct callable skill names from the canonical vocabulary in route sections.
+Use direct callable provider-local skill names in route sections.
 
 ```text
 PLAN_READY
@@ -103,7 +120,7 @@ REVIEW_FINDINGS_OPEN
   → address-review-comments
 
 REVIEW_REQUIRED
-  → final-challenge, then review-pr
+  → final-challenge, orchestrate-work, then review-pr
 
 REVIEW_CURRENT
   → verify-live-ci
@@ -157,11 +174,12 @@ A skill may contain a concise within-claim execution note when it materially
 clarifies:
 
 - which questions are read-only and independently answerable;
+- which provider-native skill a child should consume;
 - which candidate branch/worktree receives mutations;
 - which evidence or decision must be joined before continuing.
 
-That note must not require a provider, model, agent count, team topology, workflow
-engine, or cross-lane surveillance.
+That note must not require a model, agent count, team topology, workflow engine, or
+cross-lane surveillance.
 
 ## GitHub interaction section
 
@@ -175,25 +193,39 @@ succeeded.
 When another lane needs a material fact, a direct issue or PR comment is sufficient.
 Do not create another coordination database.
 
-## Review-bearing skill contract
+## Review-bearing provider contract
 
-Substantive PR convergence follows
-[`PR_REVIEW_STANDARD.md`](PR_REVIEW_STANDARD.md) and
-[`REVIEW_CURRENTNESS.md`](REVIEW_CURRENTNESS.md).
+Both providers must implement the full review flow directly:
 
-- `review-pr` reconstructs the candidate/evidence map, performs directed falsifying
-  judgment, publishes useful findings or a useful clean conclusion, and returns an
-  explicit substantive review result;
-- `finish-pr` routes a substantive candidate without useful current review through
-  `final-challenge` and `review-pr` before live integration;
-- `verify-live-ci` reads integration facts only after substantive review is
-  `REVIEW_CURRENT`; green checks, mergeability, zero threads, or bot approval cannot
-  create that result;
+```text
+root router
+→ provider-native orchestrate-work
+→ provider-native finish-pr
+→ provider-native review-pr
+→ provider-native verify-live-ci
+```
+
+The provider-local skills must establish all of the following without relying on a
+shared review-procedure document:
+
+- `orchestrate-work` contains the PR review subgraph, bounded read-only briefs,
+  one-writer boundary, evidence joining, and the rule that subagent verdicts do not
+  authorize merge;
+- `finish-pr` routes substantive candidates without useful current review through
+  `final-challenge`, `orchestrate-work`, and `review-pr` before live integration;
+- `review-pr` reconstructs the candidate/evidence map, traces production reachability,
+  challenges proof discrimination and evidence integrity, verifies external and
+  semantic truth, checks authority/complexity/risk/rollback, publishes findings or a
+  useful clean conclusion, and returns an explicit substantive result;
+- `verify-live-ci` reads integration facts only after `REVIEW_CURRENT`; green checks,
+  mergeability, zero threads, bot output, and author self-certification cannot create
+  that result;
 - after accepted repair, affected proof and review dimensions are refreshed without
-  restarting an unrelated full review merely because the SHA changed;
+  restarting unrelated review merely because the SHA changed;
 - `deliver-goal` may synthesize a bounded related PR set only after each candidate has
-  its own review, and only to resolve dependency, contract, limitation propagation,
-  and repair/merge order.
+  its own provider-native review, and only to resolve dependency, contract, limitation
+  propagation, and repair/merge order;
+- `deliver-pr` routes every existing or publication-ready PR through `finish-pr`.
 
 Review-bearing skills use a substantive result vocabulary:
 
@@ -226,12 +258,16 @@ Maintenance-time validation may check:
 - provider semantic coverage;
 - no-proof, midstream, in-flight, repair, and backward routes;
 - candidate-local writer wording where a skill mutates artifacts;
-- review-bearing routes do not bypass `review-pr` for substantive candidates;
-- `verify-live-ci` cannot promote missing review into integration readiness;
+- provider roots directly name their operational review flow;
+- `orchestrate-work` contains the provider-local PR review subgraph;
+- `finish-pr` cannot bypass `orchestrate-work` and `review-pr` for substantive
+  candidates;
+- `review-pr` routes `REVIEW_CURRENT` to `verify-live-ci`;
+- `verify-live-ci` routes missing review back to `review-pr` and cannot promote it;
 - substantive review and integration posture remain distinct;
 - root skill-discovery budget;
 - absence of retired active references and orchestration metadata.
 
-It must not inspect live issue or PR stage, judge review sufficiency from phrases,
-infer neighbouring-lane overlap, require a named agent, authorize mutation, or run
-between ordinary skill transitions.
+It must not inspect live issue or PR stage, judge actual review sufficiency from a
+phrase gate, infer neighbouring-lane overlap, require a named agent, authorize
+mutation, or run between ordinary skill transitions.
