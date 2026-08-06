@@ -11,7 +11,7 @@ and require a useful current substantive review before integration can become re
 Read one current GitHub snapshot for the selected PR:
 
 - draft/ready state;
-- cumulative substantive review conclusion and merge posture;
+- cumulative substantive review result;
 - required checks discovered from live policy;
 - unresolved review threads;
 - current `CHANGES_REQUESTED` reviews;
@@ -41,15 +41,27 @@ NOT_PROVEN
 BLOCKED_BY_PREREQUISITE
   → preserve the exact prerequisite
 
-IN_FLIGHT
-  → preserve the named pending review transition
+SUPERSEDED_OR_CLOSE
+  → preserve the durable closeout disposition
 
-READY_FOR_INTEGRATION
+REVIEW_CURRENT
   → continue evaluating live integration facts
 ```
 
 Green checks, textual mergeability, zero open threads, bot approval, or author
-self-certification cannot promote a candidate to `READY_FOR_INTEGRATION`.
+self-certification cannot promote a candidate to `REVIEW_CURRENT`.
+
+The integration result is separate:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
+
+Pending checks therefore produce `PR_IN_FLIGHT` while the substantive review remains
+current.
 
 ## Review currentness
 
@@ -111,7 +123,7 @@ branch is behind.
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions
 - `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and return to the
   invoking flow
-- `IN_FLIGHT` → return `PR_IN_FLIGHT` with the named GitHub-owned transition
+- `SUPERSEDED_OR_CLOSE` → preserve the closeout disposition through the invoking flow
 - `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam and rerun affected
   proof/review
 - `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name the missing reliable evidence
