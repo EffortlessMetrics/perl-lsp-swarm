@@ -136,21 +136,36 @@ test/oracle defect, instrument failure, environment/capacity, pending, or
 `NOT_PROVEN`. Do not widen the PR merely to absorb unrelated failures, and do not
 ignore a broader current-source failure that directly contradicts the claim.
 
-### 7. Record a merge posture
+These are current integration facts. They inform the review and later merge decision,
+but they do not become the substantive review result.
 
-Use one current substantive conclusion:
+### 7. Record a substantive review result
 
-| Posture | Meaning |
+Use one cumulative candidate judgment:
+
+| Result | Meaning |
 | --- | --- |
-| `READY_FOR_INTEGRATION` | The reviewed claim is supported; no substantive finding remains; live integration facts may now decide merge eligibility. |
+| `REVIEW_CURRENT` | The reviewed claim is supported and no substantive finding remains; live integration facts may now decide whether and when it can merge. |
 | `CHANGES_REQUIRED` | A candidate-owned correctness, reachability, proof, authority, claim, complexity, risk, or rollback defect must be repaired. |
 | `NOT_PROVEN` | Missing, partial, contradictory, stale, or instrument-failed evidence prevents a reliable conclusion. |
-| `IN_FLIGHT` | The substantive review is sufficient for now, but a named GitHub-owned transition such as current checks or requested review is pending. |
 | `BLOCKED_BY_PREREQUISITE` | A specific external claim or contract must become trustworthy or land before this candidate can be accepted. |
 | `SUPERSEDED_OR_CLOSE` | The claim is already satisfied, duplicated, invalidated, or deliberately abandoned; preserve the durable disposition. |
 
 `mergeable: true`, green required checks, zero open threads, or a clean bot review do
-not independently imply `READY_FOR_INTEGRATION`.
+not independently imply `REVIEW_CURRENT`.
+
+After `REVIEW_CURRENT`, `verify-live-ci` separately records the current integration
+posture:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
+
+A pending check therefore leaves substantive review current while integration is
+`PR_IN_FLIGHT`; it does not downgrade or circularly block the review result.
 
 ## Useful GitHub review record
 
@@ -179,12 +194,15 @@ as a submitted review or useful top-level review conclusion.
 ## Residual risk / not proved
 - Local uncertainty, excluded surfaces, and instrument limitations
 
-## Merge posture
-- READY_FOR_INTEGRATION | CHANGES_REQUIRED | NOT_PROVEN | IN_FLIGHT |
-  BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
+## Current GitHub facts
+- Checks, threads, draft/ready state, mergeability, and prerequisites as a snapshot
+
+## Substantive review result
+- REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN | BLOCKED_BY_PREREQUISITE |
+  SUPERSEDED_OR_CLOSE
 
 ## Next action
-- Repair, focused re-review, current integration proof, merge path, or named follow-up
+- Repair, focused re-review, live integration evaluation, merge path, or named follow-up
 ```
 
 Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a claim
@@ -199,7 +217,7 @@ contracts feeding one parent.
 
 Review each PR individually first. The synthesis then records, for the bounded set:
 
-| PR | Candidate identity | Hosted/current proof | Substantive result | Merge posture | Explicit prerequisite |
+| PR | Candidate identity | Hosted/current checks | Substantive review result | Integration posture | Explicit prerequisite |
 | --- | --- | --- | --- | --- | --- |
 
 Also verify:
@@ -230,7 +248,7 @@ identify changed semantic subjects
 → rerun affected proof
 → verify addressed findings
 → review newly changed claim/risk dimensions
-→ update the cumulative posture
+→ update the substantive review result
 ```
 
 Do not restart a full review because the SHA changed. Broaden only when the repair
