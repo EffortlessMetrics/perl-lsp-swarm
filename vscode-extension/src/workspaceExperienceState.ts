@@ -30,10 +30,10 @@ export type ProviderOutcome =
 /** One current presentation snapshot. Machine decisions remain in their source receipts. */
 export interface WorkspaceExperienceSnapshot {
   readonly lifecycle: WorkspaceLifecycleState;
-  readonly providerOutcome?: ProviderOutcome;
-  readonly detail?: string;
-  readonly action?: string;
-  readonly reasonCode?: string;
+  readonly providerOutcome?: ProviderOutcome | undefined;
+  readonly detail?: string | undefined;
+  readonly action?: string | undefined;
+  readonly reasonCode?: string | undefined;
 }
 
 /** Optional status-bar telemetry that is additive to the semantic state. */
