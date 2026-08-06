@@ -283,7 +283,7 @@ fn push_member(
         id: anchor_id,
         file_id,
         span_start_byte: source_name.span_start as u32,
-        span_end_byte: source_name.span_end as u32,
+        span_end_byte: source_name.span_end.min(u32::MAX as usize) as u32,
         scope_id: None,
         provenance: Provenance::FrameworkSynthesis,
         confidence: Confidence::Medium,
