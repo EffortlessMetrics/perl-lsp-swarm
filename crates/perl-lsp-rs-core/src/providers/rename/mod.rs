@@ -196,7 +196,16 @@ impl RenameProvider {
             edits.extend(additional_edits);
         }
 
-        edits.sort_by_key(|edit| edit.location.start);
+        // Sort by full range (start, end) so duplicates from both the symbol
+        // and reference tables become adjacent, then dedup by full equality.
+        // Vec::dedup() only removes consecutive duplicates (#1863).
+        edits.sort_by(|a, b| {
+            a.location
+                .start
+                .cmp(&b.location.start)
+                .then_with(|| a.location.end.cmp(&b.location.end))
+                .then_with(|| a.new_text.cmp(&b.new_text))
+        });
         edits.dedup();
 
         RenameResult { edits, is_valid: true, error: None }
@@ -304,7 +313,16 @@ impl RenameProvider {
             }
         }
 
-        edits.sort_by_key(|edit| edit.location.start);
+        // Sort by full range (start, end) so duplicates from both the symbol
+        // and reference tables become adjacent, then dedup by full equality.
+        // Vec::dedup() only removes consecutive duplicates (#1863).
+        edits.sort_by(|a, b| {
+            a.location
+                .start
+                .cmp(&b.location.start)
+                .then_with(|| a.location.end.cmp(&b.location.end))
+                .then_with(|| a.new_text.cmp(&b.new_text))
+        });
         edits.dedup();
 
         RenameResult { edits, is_valid: true, error: None }
