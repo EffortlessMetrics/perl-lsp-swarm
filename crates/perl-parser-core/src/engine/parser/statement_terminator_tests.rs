@@ -145,4 +145,122 @@ mod tests {
         assert_eq!(inferred_semicolons("sub f {\n    my $y = 2\n}\n1;\n"), 0);
         assert_eq!(inferred_semicolons("my $x = 1\n__END__\ndocs\n"), 0);
     }
+
+    /// RIPR seam: the `inferred_semicolons` filter must discriminate on
+    /// `site`, `kind`, and `location`. The helper's `..` wildcard leaves the
+    /// `location` field unobserved; this test makes it observable so a value
+    /// mutation on any match-arm field is caught rather than passing silently.
+    ///
+    /// `"my $x = 1\n"` is 10 bytes (m=0 y=1 space=2 $=3 x=4 space=5 ==6
+    /// space=7 1=8 \n=9), so `print` starts at byte 10.
+    /// `finish_statement_terminator` records `current_position()` — the byte
+    /// offset of the first token of the *next* statement — so the error must
+    /// anchor at exactly 10.
+    #[test]
+    fn inferred_semicolon_location_is_observed() {
+        let source = "my $x = 1\nprint \"hi\";\n";
+        let mut parser = Parser::new(source);
+        let _ = parser.parse();
+        let locations: Vec<usize> = parser
+            .errors()
+            .iter()
+            .filter_map(|error| {
+                if let ParseError::Recovered {
+                    site: RecoverySite::Statement,
+                    kind: RecoveryKind::InferredSemicolon,
+                    location,
+                } = error
+                {
+                    Some(*location)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            locations,
+            vec![10],
+            "InferredSemicolon must be recorded at the byte offset of `print` (byte 10)"
+        );
+    }
+
+    /// RIPR seam: `quote_like_body_end` must return `None` when the bytes at
+    /// `index` do not start with any recognized quote-like operator. The `?`
+    /// after `OPERATORS.iter().find()` (statements.rs line ~930) is the exact
+    /// exit point; this test makes the `None` branch observable so a value
+    /// mutation on the `?` is caught.
+    ///
+    /// The discriminating input for the `?`-removal mutation is a span that
+    /// starts with a non-operator, NON-ALPHANUMERIC character such as `/`.
+    /// Alphanumeric inputs (e.g. `x`) would still return `None` after the
+    /// mutation due to the `is_ascii_alphanumeric()` guard — so they cannot
+    /// discriminate the `?` specifically. A bare `/` bypasses that guard
+    /// and would return `Some(wrong)` under the mutation.
+    #[test]
+    fn quote_like_body_end_returns_none_for_non_operator_prefix() {
+        // 'x', 'z', 'h' are not recognized operator prefixes; function must
+        // return None rather than treating them as operators.
+        assert_eq!(
+            Parser::quote_like_body_end(b"x/foo/", 0),
+            None,
+            "'x' is not a recognized quote-like operator"
+        );
+        assert_eq!(
+            Parser::quote_like_body_end(b"(z/foo/)", 1),
+            None,
+            "'z' after '(' is not a recognized quote-like operator"
+        );
+        assert_eq!(
+            Parser::quote_like_body_end(b" h(foo)", 1),
+            None,
+            "'h' after space is not a recognized quote-like operator"
+        );
+        // Discriminates the `?` early-return specifically: a bare `/` is not a
+        // recognised operator and is also not alphanumeric, so the
+        // `is_ascii_alphanumeric()` guard after the operator lookup would NOT
+        // trigger. Under a mutation that replaces `?` with an empty-operator
+        // fallback, `quote_like_body_end(b"/foo/", 0)` would continue and
+        // return `Some(_)`; the original must return `None`.
+        assert_eq!(
+            Parser::quote_like_body_end(b"/foo/", 0),
+            None,
+            "bare '/' is not a quote-like operator"
+        );
+        assert_eq!(
+            Parser::quote_like_body_end(b"+ 1", 0),
+            None,
+            "bare '+' is not a quote-like operator"
+        );
+        // Sanity: a valid operator must be recognized so the test proves the
+        // None branch, not just a broken function.
+        assert!(
+            Parser::quote_like_body_end(b"q(foo)", 0).is_some(),
+            "'q' is a recognized operator and must return Some"
+        );
+    }
+
+    /// RIPR seam: the `inferred_semicolons` filter matches on BOTH
+    /// `site: RecoverySite::Statement` AND `kind: RecoveryKind::InferredSemicolon`.
+    /// If the filter is mutated to count ALL errors (not just InferredSemicolon
+    /// at Statement), a source with a different recovery error must expose that.
+    ///
+    /// `my $x =;` — missing RHS after `=` — emits
+    /// `Recovered { site: InfixRhs, kind: MissingOperand }`.
+    /// That is NOT an InferredSemicolon at Statement, so `inferred_semicolons`
+    /// must return 0 while the mutated "count all" version returns 1.
+    #[test]
+    fn inferred_semicolons_filter_does_not_count_other_recovery_sites() {
+        // Emits InfixRhs/MissingOperand, NOT Statement/InferredSemicolon.
+        assert_eq!(
+            inferred_semicolons("my $x =;"),
+            0,
+            "InfixRhs error must not be counted as an InferredSemicolon"
+        );
+        // Control: a genuine missing semicolon must still count as 1.
+        assert_eq!(
+            inferred_semicolons("my $x = 1\nprint \"hi\";\n"),
+            1,
+            "a genuine missing-semicolon must still be counted"
+        );
+    }
 }
