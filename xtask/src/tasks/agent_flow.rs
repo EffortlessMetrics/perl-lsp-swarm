@@ -29,13 +29,7 @@ const REVIEW_SKILL_MARKERS: &[(&str, &[&str])] = &[
     ),
     (
         "finish-pr",
-        &[
-            "orchestrate-work",
-            "final-challenge",
-            "review-pr",
-            "verify-live-ci",
-            "REVIEW_REQUIRED",
-        ],
+        &["orchestrate-work", "final-challenge", "review-pr", "verify-live-ci", "REVIEW_REQUIRED"],
     ),
     (
         "review-pr",
@@ -49,13 +43,7 @@ const REVIEW_SKILL_MARKERS: &[(&str, &[&str])] = &[
     ),
     (
         "verify-live-ci",
-        &[
-            "REVIEW_REQUIRED",
-            "REVIEW_CURRENT",
-            "INTEGRATION_READY",
-            "PR_IN_FLIGHT",
-            "review-pr",
-        ],
+        &["REVIEW_REQUIRED", "REVIEW_CURRENT", "INTEGRATION_READY", "PR_IN_FLIGHT", "review-pr"],
     ),
     (
         "deliver-goal",
@@ -235,12 +223,7 @@ const SCENARIO_FIXTURES: &[ScenarioFixture] = &[
     },
     ScenarioFixture {
         name: "repair_changes_head",
-        required_skills: &[
-            "finish-pr",
-            "address-review-comments",
-            "final-challenge",
-            "review-pr",
-        ],
+        required_skills: &["finish-pr", "address-review-comments", "final-challenge", "review-pr"],
         required_edges: &[
             ("finish-pr", "address-review-comments"),
             ("finish-pr", "final-challenge"),
@@ -329,11 +312,7 @@ pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
 
 fn scenario_output(report: CheckReport) -> ScenarioOutput {
     let scenarios = report.scenarios;
-    let result = if scenarios.errors.is_empty() {
-        "PASS"
-    } else {
-        "FAIL"
-    };
+    let result = if scenarios.errors.is_empty() { "PASS" } else { "FAIL" };
     ScenarioOutput {
         schema: "agent-flow-scenarios.v1",
         result,
@@ -355,17 +334,11 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         let skills = collect_skills(&skill_root, &mut errors)?;
         check_provider_operational_contract(root, provider, &skills, &mut errors)?;
 
-        let known_names = skills
-            .iter()
-            .map(|skill| skill.name.clone())
-            .collect::<BTreeSet<_>>();
+        let known_names = skills.iter().map(|skill| skill.name.clone()).collect::<BTreeSet<_>>();
         let route_map = skills
             .iter()
             .map(|skill| {
-                (
-                    skill.name.clone(),
-                    skill.route_targets.iter().cloned().collect::<BTreeSet<_>>(),
-                )
+                (skill.name.clone(), skill.route_targets.iter().cloned().collect::<BTreeSet<_>>())
             })
             .collect::<BTreeMap<_, _>>();
         provider_skills.insert((*provider).to_string(), (known_names.clone(), route_map));
@@ -498,11 +471,7 @@ fn check_provider_operational_contract(
 }
 
 fn missing_markers<'a>(text: &str, markers: &'a [&'a str]) -> Vec<&'a str> {
-    markers
-        .iter()
-        .copied()
-        .filter(|marker| !text.contains(marker))
-        .collect()
+    markers.iter().copied().filter(|marker| !text.contains(marker)).collect()
 }
 
 fn check_scenarios(
@@ -520,10 +489,7 @@ fn check_scenarios(
                 }
             }
             for (source, target) in fixture.required_edges {
-                if !route_map
-                    .get(*source)
-                    .is_some_and(|routes| routes.contains(*target))
-                {
+                if !route_map.get(*source).is_some_and(|routes| routes.contains(*target)) {
                     errors.push(format!(
                         "{provider}: scenario '{}' has no route from '{}' to '{}'",
                         fixture.name, source, target
@@ -559,10 +525,7 @@ fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Ski
                 name,
                 directory_name
             )),
-            None => errors.push(format!(
-                "{}: missing frontmatter name",
-                skill_path.display()
-            )),
+            None => errors.push(format!("{}: missing frontmatter name", skill_path.display())),
         }
         let route_targets = route_targets(&text);
         skills.push(Skill {
@@ -629,10 +592,7 @@ fn route_targets(text: &str) -> Vec<String> {
 }
 
 fn is_route_heading(heading: &str) -> bool {
-    let normalized = heading
-        .trim_start_matches('#')
-        .trim()
-        .to_ascii_lowercase();
+    let normalized = heading.trim_start_matches('#').trim().to_ascii_lowercase();
     normalized.contains("route")
         || normalized.contains("routing")
         || normalized.contains("valid exit")
@@ -664,17 +624,13 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
             index = end;
         } else if in_route_section && chars[index] == '`' {
             let start = index + 1;
-            if let Some(relative_end) = chars[start..]
-                .iter()
-                .position(|character| *character == '`')
+            if let Some(relative_end) =
+                chars[start..].iter().position(|character| *character == '`')
             {
                 let end = start + relative_end;
                 let token = chars[start..end].iter().collect::<String>();
                 let token = token.strip_prefix('$').unwrap_or(&token);
-                if token
-                    .chars()
-                    .next()
-                    .is_some_and(|character| character.is_ascii_lowercase())
+                if token.chars().next().is_some_and(|character| character.is_ascii_lowercase())
                     && token.chars().all(|character| {
                         character.is_ascii_lowercase()
                             || character.is_ascii_digit()
@@ -729,19 +685,13 @@ mod tests {
     #[test]
     fn parses_frontmatter_name() {
         let text = "---\nname: prepare-issue\ndescription: test\n---\n";
-        assert_eq!(
-            frontmatter_value(text, "name").as_deref(),
-            Some("prepare-issue")
-        );
+        assert_eq!(frontmatter_value(text, "name").as_deref(), Some("prepare-issue"));
     }
 
     #[test]
     fn extracts_provider_route_targets_from_route_bearing_sections() {
         let text = "# Skill\n\n`not-a-route`\n\n## Procedure\n- `PLAN_READY` -> `$prepare-proof`\n- clean -> `deliver-pr`\n\n## Notes\n- `not-a-route`\n";
-        assert_eq!(
-            route_targets(text),
-            vec!["deliver-pr", "prepare-proof"]
-        );
+        assert_eq!(route_targets(text), vec!["deliver-pr", "prepare-proof"]);
     }
 
     #[test]
@@ -797,10 +747,7 @@ mod tests {
 
     #[test]
     fn scenario_fixture_names_are_unique_and_cover_required_review_routes() {
-        let names = SCENARIO_FIXTURES
-            .iter()
-            .map(|fixture| fixture.name)
-            .collect::<BTreeSet<_>>();
+        let names = SCENARIO_FIXTURES.iter().map(|fixture| fixture.name).collect::<BTreeSet<_>>();
         assert_eq!(names.len(), SCENARIO_FIXTURES.len());
         assert!(names.contains("fresh_issue"));
         assert!(names.contains("same_candidate_writer_collision"));
@@ -825,10 +772,7 @@ mod tests {
                 .into_iter()
                 .collect(),
                 [
-                    (
-                        "deliver-pr".to_string(),
-                        ["prepare-issue".to_string()].into_iter().collect(),
-                    ),
+                    ("deliver-pr".to_string(), ["prepare-issue".to_string()].into_iter().collect()),
                     (
                         "prepare-proof".to_string(),
                         ["prepare-issue".to_string()].into_iter().collect(),
