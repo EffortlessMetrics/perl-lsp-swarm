@@ -134,7 +134,7 @@ fn test_file_completion_uses_completion_item_types() -> Result<(), Box<dyn std::
     // For now, verify both types are independently accessible.
     let _opts = FileCompletionOptions::default();
     let _item = CompletionItem {
-        label: "test".to_string(),
+        label: "test".into(),
         kind: perl_lsp_rs_core::providers::completion_item::CompletionItemKind::Function,
         detail: None,
         documentation: None,
@@ -192,7 +192,7 @@ fn test_completion_item_dedup_single() -> Result<(), Box<dyn std::error::Error>>
     };
 
     let item = CompletionItem {
-        label: "single".to_string(),
+        label: "single".into(),
         kind: CompletionItemKind::Function,
         detail: None,
         documentation: None,
@@ -219,7 +219,7 @@ fn test_completion_item_dedup_removes_duplicates() -> Result<(), Box<dyn std::er
     };
 
     let make = |label: &str| CompletionItem {
-        label: label.to_string(),
+        label: label.to_string().into(),
         kind: CompletionItemKind::Function,
         detail: None,
         documentation: None,
@@ -247,7 +247,7 @@ fn test_completion_item_dedup_sorts_alphabetically() -> Result<(), Box<dyn std::
     };
 
     let make = |label: &str| CompletionItem {
-        label: label.to_string(),
+        label: label.to_string().into(),
         kind: CompletionItemKind::Function,
         detail: None,
         documentation: None,

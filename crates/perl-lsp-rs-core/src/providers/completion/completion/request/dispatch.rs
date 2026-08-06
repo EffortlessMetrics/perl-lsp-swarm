@@ -343,7 +343,7 @@ fn complete_indirect_method_context(
         &provider.symbol_table,
         &provider.used_modules,
     );
-    if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_str())) {
+    if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_ref())) {
         return false;
     }
 

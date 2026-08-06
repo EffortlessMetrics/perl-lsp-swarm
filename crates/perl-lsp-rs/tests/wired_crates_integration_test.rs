@@ -115,7 +115,7 @@ fn test_wired_completion_item_dedup() {
         CompletionItem, CompletionItemKind, InsertTextFormat, deduplicate_and_sort,
     };
     let make = |label: &str| CompletionItem {
-        label: label.to_string(),
+        label: label.to_string().into(),
         kind: CompletionItemKind::Function,
         detail: None,
         documentation: None,
