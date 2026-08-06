@@ -128,8 +128,8 @@ not make a still-current substantive review stale.
 
 ### Substantive review
 
-- `CANDIDATE_READY_FOR_REVIEW` / `REVIEW_REQUIRED` → `$final-challenge`,
-  `$orchestrate-work`, then `$review-pr`
+- `CANDIDATE_READY_FOR_REVIEW` → `$final-challenge`, `$orchestrate-work`, then
+  `$review-pr`
 - `REVIEW_CURRENT` → `$verify-live-ci`
 - `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions; use `$prepare-issue` only
