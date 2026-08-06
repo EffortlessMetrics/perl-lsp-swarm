@@ -366,7 +366,7 @@ impl PullDiagnosticsOrchestrator {
     fn emit_warning(&self, server: &LspServer, key: String, message: &str) {
         let mut sent = self.warnings_sent.lock();
         if sent.insert(key) {
-            let _ = server.show_message(super::window::MessageType::Warning, message);
+            server.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 
@@ -2128,7 +2128,7 @@ impl LspServer {
     fn emit_perlcritic_workspace_warning(&self, key: String, message: &str) {
         let mut sent = self.critic_workspace_warnings_sent.lock();
         if sent.insert(key) {
-            let _ = self.show_message(super::window::MessageType::Warning, message);
+            self.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 }

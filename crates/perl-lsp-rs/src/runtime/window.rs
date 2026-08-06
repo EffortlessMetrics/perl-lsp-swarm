@@ -47,6 +47,34 @@ impl LspServer {
         self.notify("window/showMessage", params)
     }
 
+    /// Send a user-facing notification, falling back to `tracing` when the
+    /// client channel is broken.
+    ///
+    /// Use this instead of `let _ = self.show_message(...)` at every call site
+    /// that would otherwise silently discard the notification. If the client
+    /// channel is broken (e.g. the transport is closed), the warning the user
+    /// was supposed to see is emitted to the server log instead of being
+    /// dropped on the floor (#5013 item 5).
+    pub fn show_message_or_log(&self, typ: MessageType, message: &str) {
+        if let Err(e) = self.show_message(typ, message) {
+            // tracing requires a static level; branch to the correct macro.
+            match typ {
+                MessageType::Error => {
+                    tracing::error!("showMessage failed ({e}); message was: {message}")
+                }
+                MessageType::Warning => {
+                    tracing::warn!("showMessage failed ({e}); message was: {message}")
+                }
+                MessageType::Info => {
+                    tracing::info!("showMessage failed ({e}); message was: {message}")
+                }
+                MessageType::Log | MessageType::Debug => {
+                    tracing::debug!("showMessage failed ({e}); message was: {message}")
+                }
+            }
+        }
+    }
+
     /// Send a window/logMessage notification
     ///
     /// # Arguments
