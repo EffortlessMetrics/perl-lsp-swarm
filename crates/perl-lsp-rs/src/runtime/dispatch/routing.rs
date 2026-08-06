@@ -273,6 +273,8 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            perl_lsp_rs_core::runtime::cancellation::GLOBAL_CANCELLATION_REGISTRY
+                .remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
@@ -312,6 +314,8 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            perl_lsp_rs_core::runtime::cancellation::GLOBAL_CANCELLATION_REGISTRY
+                .remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
@@ -627,6 +631,33 @@ mod tests {
             "{method} returned names {names:?}, expected {expected:?}"
         ))
         .into())
+    }
+
+    #[test]
+    fn route_cancellable_immediate_cleans_up_global_registry_token()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::runtime::cancellation::{
+            GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken,
+        };
+        let server = LspServer::new();
+        let request_id = JsonRpcId::Integer(99001);
+        let token = PerlLspCancellationToken::new(request_id.clone(), "textDocument/hover".into());
+        GLOBAL_CANCELLATION_REGISTRY.register_token(token)?;
+        let count_before = GLOBAL_CANCELLATION_REGISTRY.active_count();
+        server.cancel_mark(&request_id);
+        let routed = server.route_cancellable(
+            Some(request_id.to_value()),
+            "textDocument/hover".to_string(),
+            true,
+            |_| Ok(None),
+        );
+        assert!(matches!(routed, RoutedResponse::Immediate(_)));
+        assert_eq!(
+            GLOBAL_CANCELLATION_REGISTRY.active_count(),
+            count_before - 1,
+            "route_cancellable Immediate path must remove token from global registry"
+        );
+        Ok(())
     }
 
     /// Verify that the providers newly gated by `route_cancellable` (#4644)
