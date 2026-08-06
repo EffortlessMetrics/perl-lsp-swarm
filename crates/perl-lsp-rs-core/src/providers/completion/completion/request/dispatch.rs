@@ -4,6 +4,7 @@ use super::super::{
     workspace, xs_api,
 };
 use super::CompletionFlow;
+use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::symbol::SymbolKind;
 
 pub(super) fn complete_dispatch(
@@ -500,9 +501,12 @@ fn complete_general_context(
     }
 
     let builtin_set = builtins::builtin_set();
+    let pragma_state = PragmaTracker::state_for_offset(&provider.pragma_map, context.position);
+    let mut filtered_builtins = builtin_set.clone();
+    builtins::filter_pragma_gated(&mut filtered_builtins, &pragma_state);
     xs_api::add_xs_api_completions(completions, context, source, filepath);
     if context.prefix.is_empty() || provider.could_be_function(&context.prefix, builtin_set) {
-        builtins::add_builtin_completions(completions, context, builtin_set);
+        builtins::add_builtin_completions(completions, context, &filtered_builtins);
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }

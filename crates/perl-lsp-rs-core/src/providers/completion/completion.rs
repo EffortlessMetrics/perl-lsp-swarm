@@ -190,6 +190,10 @@ pub struct CompletionProvider {
     /// by `LspServer` and survives across requests; this field holds a cheap
     /// `Arc` clone valid for the lifetime of this provider instance.
     scan_cache: Option<Arc<ModuleCompletionScanCache>>,
+    /// Range-indexed pragma map built from the AST at provider construction
+    /// time. Used by `filter_pragma_gated` in `complete_general_context` to
+    /// gate `say` and `use builtin` completions on active pragma state.
+    pub(super) pragma_map: Vec<(std::ops::Range<usize>, perl_pragma::PragmaState)>,
 }
 
 fn method_receiver_start(source: &str, arrow_start: usize) -> usize {
@@ -375,6 +379,7 @@ impl CompletionProvider {
         let type_engine = Self::build_type_engine(ast, workspace_index.is_some());
         let import_map = import_map::extract_import_map(ast);
         let used_modules = import_map::collect_used_module_names(ast);
+        let pragma_map = perl_pragma::PragmaTracker::build(ast);
 
         CompletionProvider {
             symbol_table,
@@ -387,6 +392,7 @@ impl CompletionProvider {
             system_inc_paths,
             include_system_inc,
             scan_cache: None,
+            pragma_map,
         }
     }
 
