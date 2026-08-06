@@ -27,6 +27,25 @@ When an earlier pass was missed, perform the cheapest version that can still imp
 the current artifact and continue. Do not discard coherent work or replay history
 merely to manufacture process evidence.
 
+## Operational authority
+
+This document describes the shared method. It is not the runtime router or the
+operational authority for either provider.
+
+```text
+Claude Code operation
+→ CLAUDE.md
+→ .claude/skills/*
+
+Codex operation
+→ AGENTS.md
+→ .agents/skills/*
+```
+
+Provider-native roots and skills must contain the instructions needed to execute their
+flows. A shared-document pointer cannot substitute for `orchestrate-work`,
+`finish-pr`, `review-pr`, or `verify-live-ci` in the running provider.
+
 ## Shift-left versus handcuffs
 
 Shift-left places challenge immediately before the decision it can improve:
@@ -64,8 +83,8 @@ and repository artifacts, repair what still matters, and proceed.
 | `finish-pr` | Publish or resume, repair feedback, substantively review, merge, and reconcile |
 
 A fresh or resumed session starts with the narrowest applicable public flow. Once
-inside the loop, each skill names its normal successor and material backward routes.
-Do not run a lifecycle locator between skills.
+inside the loop, each provider-native skill names its normal successor and material
+backward routes. Do not run a lifecycle locator between skills.
 
 ## Runtime orchestration
 
@@ -190,10 +209,10 @@ status.
 
 ## Review
 
-Review follows
-[`PR_REVIEW_STANDARD.md`](PR_REVIEW_STANDARD.md). It is directed, falsifying, and
-verified. Reading a diff, relaying green CI, posting a head/claim hash, or repeating a
-subagent verdict is not review.
+Review is directed, falsifying, and verified. Reading a diff, relaying green CI,
+posting a head/claim hash, or repeating a subagent verdict is not review. Claude Code
+executes review through `CLAUDE.md` and `.claude/skills/`; Codex executes it through
+`AGENTS.md` and `.agents/skills/`.
 
 Where applicable, establish:
 
@@ -210,13 +229,14 @@ Where applicable, establish:
 A clean review is valid. Do not manufacture a finding, edit, second identity, or
 receipt to make review visible.
 
-For a substantive pull request, the normal convergence is:
+For a substantive pull request, the provider-native convergence is:
 
 ```text
 publish or resume the cumulative candidate
 → verify and repair existing findings
 → run a final mutable challenge while repairs remain allowed
-→ submit cumulative substantive review
+→ orchestrate applicable adversarial lenses
+→ root joins evidence and submits cumulative substantive review
 → record one substantive review result
 → evaluate live checks, threads, rulesets, mergeability, and prerequisites
 → record the current integration posture
@@ -247,14 +267,15 @@ MERGE_BLOCKED
 NOT_PROVEN
 ```
 
-A pending check can therefore leave review current while integration is in flight.
+A pending check can leave review current while integration is in flight.
 
 ### Related PRs
 
 A bounded related PR set may need a goal-level synthesis after each candidate has its
-own review. Compare candidate identity, hosted/current checks, substantive review
-result, integration posture, explicit prerequisites, schema/identity/authority
-contracts, limitation propagation, fan-in behavior, and correct repair/merge order.
+own provider-native review. Compare candidate identity, hosted/current checks,
+substantive review result, integration posture, explicit prerequisites,
+schema/identity/authority contracts, limitation propagation, fan-in behavior, and
+correct repair/merge order.
 
 That synthesis is not batch approval, a portfolio queue, sibling-lane surveillance, or
 a substitute for per-PR review.
@@ -288,7 +309,7 @@ Examples:
   migration, support, or rollback change → review the affected dimensions;
 - conflict/integration repair → review the repaired interaction.
 
-Do not restart a full `deep` review after every push. Do not post
+Do not restart a full deep review after every push. Do not post
 `Review pass (...) at head ... and claim ...` comments.
 
 The current head SHA is still useful to identify current code and required check
