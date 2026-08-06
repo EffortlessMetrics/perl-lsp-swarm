@@ -14,6 +14,79 @@ use crate::utils::project_root;
 const PROVIDER_SKILL_ROOTS: &[(&str, &str)] =
     &[("codex", ".agents/skills"), ("claude", ".claude/skills")];
 
+const FORBIDDEN_SHARED_REVIEW_AUTHORITY: &str = "PR_REVIEW_STANDARD.md";
+
+const REVIEW_SKILL_MARKERS: &[(&str, &[&str])] = &[
+    (
+        "orchestrate-work",
+        &[
+            "## PR review orchestration",
+            "review-tests",
+            "review-candidate",
+            "join evidence",
+            "review-pr",
+        ],
+    ),
+    (
+        "finish-pr",
+        &[
+            "orchestrate-work",
+            "final-challenge",
+            "review-pr",
+            "verify-live-ci",
+            "REVIEW_REQUIRED",
+        ],
+    ),
+    (
+        "review-pr",
+        &[
+            "## Required review procedure",
+            "production reachability",
+            "proof discrimination",
+            "REVIEW_CURRENT",
+            "CHANGES_REQUIRED",
+        ],
+    ),
+    (
+        "verify-live-ci",
+        &[
+            "REVIEW_REQUIRED",
+            "REVIEW_CURRENT",
+            "INTEGRATION_READY",
+            "PR_IN_FLIGHT",
+            "review-pr",
+        ],
+    ),
+    (
+        "deliver-goal",
+        &[
+            "## Bounded related-PR review orchestration",
+            "Substantive review result",
+            "Integration posture",
+            "review-pr",
+        ],
+    ),
+    ("deliver-pr", &["finish-pr", "substantive review"]),
+];
+
+const CLAUDE_ROOT_MARKERS: &[&str] = &[
+    ".claude/skills/",
+    "## Claude-native PR review",
+    "orchestrate-work",
+    "review-pr",
+    "REVIEW_CURRENT",
+    "INTEGRATION_READY",
+];
+
+const CODEX_ROOT_MARKERS: &[&str] = &[
+    ".agents/skills/",
+    "## Codex-native PR review",
+    "$orchestrate-work",
+    "$review-pr",
+    "REVIEW_CURRENT",
+    "INTEGRATION_READY",
+];
+
 #[derive(Debug, Clone)]
 pub struct CheckConfig {
     pub skill: Option<String>,
@@ -64,6 +137,7 @@ struct ScenarioOutput {
 struct Skill {
     name: String,
     path: PathBuf,
+    text: String,
     route_targets: Vec<String>,
     metadata_chars: usize,
 }
@@ -117,8 +191,56 @@ const SCENARIO_FIXTURES: &[ScenarioFixture] = &[
         required_edges: &[("finish-pr", "review-pr")],
     },
     ScenarioFixture {
+        name: "substantive_review_orchestration",
+        required_skills: &[
+            "finish-pr",
+            "orchestrate-work",
+            "review-pr",
+            "review-tests",
+            "review-candidate",
+        ],
+        required_edges: &[
+            ("finish-pr", "orchestrate-work"),
+            ("finish-pr", "review-pr"),
+            ("orchestrate-work", "review-tests"),
+            ("orchestrate-work", "review-candidate"),
+            ("orchestrate-work", "review-pr"),
+        ],
+    },
+    ScenarioFixture {
+        name: "review_enters_live_integration",
+        required_skills: &["review-pr", "verify-live-ci"],
+        required_edges: &[("review-pr", "verify-live-ci")],
+    },
+    ScenarioFixture {
+        name: "live_ci_requires_review",
+        required_skills: &["verify-live-ci", "review-pr"],
+        required_edges: &[("verify-live-ci", "review-pr")],
+    },
+    ScenarioFixture {
+        name: "related_pr_native_review",
+        required_skills: &[
+            "deliver-goal",
+            "deliver-pr",
+            "orchestrate-work",
+            "review-pr",
+            "verify-live-ci",
+        ],
+        required_edges: &[
+            ("deliver-goal", "deliver-pr"),
+            ("deliver-goal", "orchestrate-work"),
+            ("deliver-goal", "review-pr"),
+            ("deliver-goal", "verify-live-ci"),
+        ],
+    },
+    ScenarioFixture {
         name: "repair_changes_head",
-        required_skills: &["finish-pr", "address-review-comments", "final-challenge", "review-pr"],
+        required_skills: &[
+            "finish-pr",
+            "address-review-comments",
+            "final-challenge",
+            "review-pr",
+        ],
         required_edges: &[
             ("finish-pr", "address-review-comments"),
             ("finish-pr", "final-challenge"),
@@ -207,7 +329,11 @@ pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
 
 fn scenario_output(report: CheckReport) -> ScenarioOutput {
     let scenarios = report.scenarios;
-    let result = if scenarios.errors.is_empty() { "PASS" } else { "FAIL" };
+    let result = if scenarios.errors.is_empty() {
+        "PASS"
+    } else {
+        "FAIL"
+    };
     ScenarioOutput {
         schema: "agent-flow-scenarios.v1",
         result,
@@ -227,11 +353,19 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
     for (provider, relative_root) in PROVIDER_SKILL_ROOTS {
         let skill_root = root.join(relative_root);
         let skills = collect_skills(&skill_root, &mut errors)?;
-        let known_names = skills.iter().map(|skill| skill.name.clone()).collect::<BTreeSet<_>>();
+        check_provider_operational_contract(root, provider, &skills, &mut errors)?;
+
+        let known_names = skills
+            .iter()
+            .map(|skill| skill.name.clone())
+            .collect::<BTreeSet<_>>();
         let route_map = skills
             .iter()
             .map(|skill| {
-                (skill.name.clone(), skill.route_targets.iter().cloned().collect::<BTreeSet<_>>())
+                (
+                    skill.name.clone(),
+                    skill.route_targets.iter().cloned().collect::<BTreeSet<_>>(),
+                )
             })
             .collect::<BTreeMap<_, _>>();
         provider_skills.insert((*provider).to_string(), (known_names.clone(), route_map));
@@ -304,6 +438,73 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
     })
 }
 
+fn check_provider_operational_contract(
+    root: &Path,
+    provider: &str,
+    skills: &[Skill],
+    errors: &mut Vec<String>,
+) -> Result<()> {
+    let (root_path, root_markers) = match provider {
+        "claude" => ("CLAUDE.md", CLAUDE_ROOT_MARKERS),
+        "codex" => ("AGENTS.md", CODEX_ROOT_MARKERS),
+        other => {
+            errors.push(format!("unknown provider '{other}' in provider skill roots"));
+            return Ok(());
+        }
+    };
+
+    let provider_root = root.join(root_path);
+    let root_text = fs::read_to_string(&provider_root)?;
+    for marker in missing_markers(&root_text, root_markers) {
+        errors.push(format!(
+            "{}: provider-native review contract is missing marker '{}'",
+            provider_root.display(),
+            marker
+        ));
+    }
+    if root_text.contains(FORBIDDEN_SHARED_REVIEW_AUTHORITY) {
+        errors.push(format!(
+            "{}: provider root still delegates review authority to '{}'",
+            provider_root.display(),
+            FORBIDDEN_SHARED_REVIEW_AUTHORITY
+        ));
+    }
+
+    for (skill_name, markers) in REVIEW_SKILL_MARKERS {
+        let Some(skill) = skills.iter().find(|skill| skill.name == *skill_name) else {
+            errors.push(format!(
+                "{provider}: provider-native review contract requires missing skill '{skill_name}'"
+            ));
+            continue;
+        };
+
+        for marker in missing_markers(&skill.text, markers) {
+            errors.push(format!(
+                "{}: provider-native review contract is missing marker '{}'",
+                skill.path.display(),
+                marker
+            ));
+        }
+        if skill.text.contains(FORBIDDEN_SHARED_REVIEW_AUTHORITY) {
+            errors.push(format!(
+                "{}: skill still delegates review authority to '{}'",
+                skill.path.display(),
+                FORBIDDEN_SHARED_REVIEW_AUTHORITY
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn missing_markers<'a>(text: &str, markers: &'a [&'a str]) -> Vec<&'a str> {
+    markers
+        .iter()
+        .copied()
+        .filter(|marker| !text.contains(marker))
+        .collect()
+}
+
 fn check_scenarios(
     provider_skills: &BTreeMap<String, (BTreeSet<String>, BTreeMap<String, BTreeSet<String>>)>,
 ) -> Vec<String> {
@@ -319,7 +520,10 @@ fn check_scenarios(
                 }
             }
             for (source, target) in fixture.required_edges {
-                if !route_map.get(*source).is_some_and(|routes| routes.contains(*target)) {
+                if !route_map
+                    .get(*source)
+                    .is_some_and(|routes| routes.contains(*target))
+                {
                     errors.push(format!(
                         "{provider}: scenario '{}' has no route from '{}' to '{}'",
                         fixture.name, source, target
@@ -355,12 +559,16 @@ fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Ski
                 name,
                 directory_name
             )),
-            None => errors.push(format!("{}: missing frontmatter name", skill_path.display())),
+            None => errors.push(format!(
+                "{}: missing frontmatter name",
+                skill_path.display()
+            )),
         }
         let route_targets = route_targets(&text);
         skills.push(Skill {
             name: directory_name,
             path: skill_path,
+            text,
             route_targets,
             metadata_chars,
         });
@@ -421,7 +629,10 @@ fn route_targets(text: &str) -> Vec<String> {
 }
 
 fn is_route_heading(heading: &str) -> bool {
-    let normalized = heading.trim_start_matches('#').trim().to_ascii_lowercase();
+    let normalized = heading
+        .trim_start_matches('#')
+        .trim()
+        .to_ascii_lowercase();
     normalized.contains("route")
         || normalized.contains("routing")
         || normalized.contains("valid exit")
@@ -453,13 +664,17 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
             index = end;
         } else if in_route_section && chars[index] == '`' {
             let start = index + 1;
-            if let Some(relative_end) =
-                chars[start..].iter().position(|character| *character == '`')
+            if let Some(relative_end) = chars[start..]
+                .iter()
+                .position(|character| *character == '`')
             {
                 let end = start + relative_end;
                 let token = chars[start..end].iter().collect::<String>();
                 let token = token.strip_prefix('$').unwrap_or(&token);
-                if token.chars().next().is_some_and(|character| character.is_ascii_lowercase())
+                if token
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_lowercase())
                     && token.chars().all(|character| {
                         character.is_ascii_lowercase()
                             || character.is_ascii_digit()
@@ -508,19 +723,25 @@ mod tests {
 
     use super::{
         SCENARIO_FIXTURES, check_scenarios, frontmatter_metadata_chars, frontmatter_value,
-        route_targets, route_tokens,
+        missing_markers, route_targets, route_tokens,
     };
 
     #[test]
     fn parses_frontmatter_name() {
         let text = "---\nname: prepare-issue\ndescription: test\n---\n";
-        assert_eq!(frontmatter_value(text, "name").as_deref(), Some("prepare-issue"));
+        assert_eq!(
+            frontmatter_value(text, "name").as_deref(),
+            Some("prepare-issue")
+        );
     }
 
     #[test]
     fn extracts_provider_route_targets_from_route_bearing_sections() {
         let text = "# Skill\n\n`not-a-route`\n\n## Procedure\n- `PLAN_READY` -> `$prepare-proof`\n- clean -> `deliver-pr`\n\n## Notes\n- `not-a-route`\n";
-        assert_eq!(route_targets(text), vec!["deliver-pr", "prepare-proof"]);
+        assert_eq!(
+            route_targets(text),
+            vec!["deliver-pr", "prepare-proof"]
+        );
     }
 
     #[test]
@@ -530,9 +751,9 @@ mod tests {
     }
 
     #[test]
-    fn treats_flow_loop_headings_as_route_bearing_sections() {
-        let text = "## Loop\n- `$deliver-pr`\n";
-        assert_eq!(route_targets(text), vec!["deliver-pr"]);
+    fn treats_flow_loop_and_orchestration_headings_as_route_bearing_sections() {
+        let text = "## Loop\n- `$deliver-pr`\n\n## PR review orchestration\n- `review-pr`\n";
+        assert_eq!(route_targets(text), vec!["deliver-pr", "review-pr"]);
     }
 
     #[test]
@@ -540,6 +761,18 @@ mod tests {
         assert_eq!(
             route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`", true),
             vec!["verify-live-ci"]
+        );
+    }
+
+    #[test]
+    fn reports_missing_operational_markers() {
+        assert_eq!(
+            missing_markers("review-pr REVIEW_CURRENT", &["review-pr", "REVIEW_CURRENT"]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            missing_markers("review-pr", &["review-pr", "REVIEW_CURRENT"]),
+            vec!["REVIEW_CURRENT"]
         );
     }
 
@@ -557,12 +790,19 @@ mod tests {
     }
 
     #[test]
-    fn scenario_fixture_names_are_unique_and_cover_the_required_route_cases() {
-        let names = SCENARIO_FIXTURES.iter().map(|fixture| fixture.name).collect::<BTreeSet<_>>();
+    fn scenario_fixture_names_are_unique_and_cover_required_review_routes() {
+        let names = SCENARIO_FIXTURES
+            .iter()
+            .map(|fixture| fixture.name)
+            .collect::<BTreeSet<_>>();
         assert_eq!(names.len(), SCENARIO_FIXTURES.len());
         assert!(names.contains("fresh_issue"));
         assert!(names.contains("same_candidate_writer_collision"));
         assert!(names.contains("unchanged_main_movement"));
+        assert!(names.contains("substantive_review_orchestration"));
+        assert!(names.contains("review_enters_live_integration"));
+        assert!(names.contains("live_ci_requires_review"));
+        assert!(names.contains("related_pr_native_review"));
     }
 
     #[test]
@@ -579,7 +819,10 @@ mod tests {
                 .into_iter()
                 .collect(),
                 [
-                    ("deliver-pr".to_string(), ["prepare-issue".to_string()].into_iter().collect()),
+                    (
+                        "deliver-pr".to_string(),
+                        ["prepare-issue".to_string()].into_iter().collect(),
+                    ),
                     (
                         "prepare-proof".to_string(),
                         ["prepare-issue".to_string()].into_iter().collect(),
