@@ -110,7 +110,7 @@ pub struct JsonRpcRequest {
 #[derive(Debug, Serialize)]
 pub struct JsonRpcResponse {
     /// JSON-RPC version (always "2.0")
-    pub jsonrpc: String,
+    pub jsonrpc: &'static str,
 
     /// Request identifier (matches the request's id)
     pub id: Option<JsonRpcId>,
@@ -127,17 +127,17 @@ pub struct JsonRpcResponse {
 impl JsonRpcResponse {
     /// Create a success response
     pub fn success(id: Option<JsonRpcId>, result: Value) -> Self {
-        Self { jsonrpc: "2.0".to_string(), id, result: Some(result), error: None }
+        Self { jsonrpc: "2.0", id, result: Some(result), error: None }
     }
 
     /// Create an error response
     pub fn error(id: Option<JsonRpcId>, error: JsonRpcError) -> Self {
-        Self { jsonrpc: "2.0".to_string(), id, result: None, error: Some(error) }
+        Self { jsonrpc: "2.0", id, result: None, error: Some(error) }
     }
 
     /// Create a null result response (for methods that return nothing)
     pub fn null(id: Option<JsonRpcId>) -> Self {
-        Self { jsonrpc: "2.0".to_string(), id, result: Some(Value::Null), error: None }
+        Self { jsonrpc: "2.0", id, result: Some(Value::Null), error: None }
     }
 }
 

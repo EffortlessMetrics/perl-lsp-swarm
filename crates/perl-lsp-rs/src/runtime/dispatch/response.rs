@@ -43,7 +43,7 @@ fn build_response(
         Ok(Some(result)) if should_respond => {
             tracing::trace!(method = %method, "Sending successful response");
             Some(JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: "2.0",
                 id: id.clone(),
                 result: Some(result),
                 error: None,
@@ -59,12 +59,7 @@ fn build_response(
         }
         Err(error) if should_respond => {
             tracing::debug!(method = %method, error = ?error, "Sending error response");
-            Some(JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                id,
-                result: None,
-                error: Some(error),
-            })
+            Some(JsonRpcResponse { jsonrpc: "2.0", id, result: None, error: Some(error) })
         }
         Err(error) => {
             tracing::debug!(method = %method, error = ?error, "Suppressed error response for notification request");
