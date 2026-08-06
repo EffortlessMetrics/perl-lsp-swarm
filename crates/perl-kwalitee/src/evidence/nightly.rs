@@ -74,14 +74,9 @@ where
         ));
     }
 
-    let downgraded = stale && ok;
-    if downgraded {
-        Outcome::warn(evidence, fix.to_string())
-    } else if ok {
-        Outcome::pass(evidence)
-    } else {
-        Outcome::warn(evidence, fix.to_string())
-    }
+    // A healthy receipt from a different commit is not trustworthy as a pass,
+    // so downgrade to warn. An unhealthy receipt is warn regardless of freshness.
+    if ok && !stale { Outcome::pass(evidence) } else { Outcome::warn(evidence, fix.to_string()) }
 }
 
 /// Projection of the `commit` field stamped by every nightly receipt generator.
