@@ -648,7 +648,7 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
     let chars = line.chars().collect::<Vec<_>>();
     let mut index = 0;
     while index < chars.len() {
-        if chars[index] == '$' {
+        if in_route_section && chars[index] == '$' {
             let start = index + 1;
             let mut end = start;
             while end < chars.len()
@@ -742,6 +742,12 @@ mod tests {
             route_targets(text),
             vec!["deliver-pr", "prepare-proof"]
         );
+    }
+
+    #[test]
+    fn ignores_provider_skill_mentions_outside_route_sections() {
+        let text = "# Skill\n\nUse `$prepare-proof` for context.\n";
+        assert!(route_targets(text).is_empty());
     }
 
     #[test]
