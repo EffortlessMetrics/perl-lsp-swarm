@@ -91,7 +91,7 @@ struct CandidateIdentity {
     release_repo_sha: String,
     release_topology_sha256: String,
     candidate_id: String,
-    previous_version: String,
+    previous_version: Option<String>,
     candidate_version: String,
     extension_version: String,
     server_version: String,
@@ -163,7 +163,6 @@ fn validate_candidate(candidate: &CandidateIdentity) -> Result<()> {
 
     for (field, value) in [
         ("candidate.candidate_id", candidate.candidate_id.as_str()),
-        ("candidate.previous_version", candidate.previous_version.as_str()),
         ("candidate.candidate_version", candidate.candidate_version.as_str()),
         ("candidate.extension_version", candidate.extension_version.as_str()),
         ("candidate.server_version", candidate.server_version.as_str()),
@@ -173,15 +172,18 @@ fn validate_candidate(candidate: &CandidateIdentity) -> Result<()> {
     ] {
         non_empty(value, field)?;
     }
+    if let Some(previous_version) = &candidate.previous_version {
+        non_empty(previous_version, "candidate.previous_version")?;
+        if previous_version == &candidate.candidate_version {
+            bail!("candidate.previous_version must differ from candidate.candidate_version");
+        }
+    }
 
     if candidate.extension_version != candidate.candidate_version
         || candidate.server_version != candidate.candidate_version
         || candidate.dap_version != candidate.candidate_version
     {
         bail!("candidate extension, server, and DAP versions must agree");
-    }
-    if candidate.previous_version == candidate.candidate_version {
-        bail!("candidate.previous_version must differ from candidate.candidate_version");
     }
     Ok(())
 }
@@ -199,6 +201,26 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
     }
     for limitation in transition.limitations.iter().chain(receipt.limitations.iter()) {
         non_empty(limitation, "limitations[]")?;
+    }
+
+    match transition.class {
+        TransitionClass::CleanInstall if receipt.candidate.previous_version.is_some() => {
+            bail!("clean_install must not invent a previous version");
+        }
+        TransitionClass::NormalUpgrade
+        | TransitionClass::CachedOldBinary
+        | TransitionClass::Rollback
+            if receipt.candidate.previous_version.is_none() =>
+        {
+            bail!("upgrade, cached-binary, and rollback transitions require a previous version");
+        }
+        TransitionClass::CleanInstall
+        | TransitionClass::VersionOrTargetMismatch
+        | TransitionClass::InterruptedInstall
+        | TransitionClass::ChannelIdentity
+        | TransitionClass::NormalUpgrade
+        | TransitionClass::CachedOldBinary
+        | TransitionClass::Rollback => {}
     }
     Ok(())
 }
@@ -224,9 +246,14 @@ fn applied_is_valid(receipt: &Receipt) -> bool {
 
 fn rejected_is_valid(receipt: &Receipt) -> bool {
     let transition = &receipt.transition;
-    let observed_identity_is_safe = transition.observed_release_identity.is_none()
-        || transition.observed_release_identity.as_deref()
-            == Some(receipt.candidate.previous_version.as_str());
+    let observed_identity_is_safe = match &receipt.candidate.previous_version {
+        Some(previous_version) => {
+            transition.observed_release_identity.is_none()
+                || transition.observed_release_identity.as_deref()
+                    == Some(previous_version.as_str())
+        }
+        None => transition.observed_release_identity.is_none(),
+    };
     let mismatch_contract_holds = transition.class != TransitionClass::VersionOrTargetMismatch
         || transition.compatibility_mismatch_detected;
 
@@ -244,10 +271,12 @@ fn rejected_is_valid(receipt: &Receipt) -> bool {
 
 fn rollback_is_valid(receipt: &Receipt) -> bool {
     let transition = &receipt.transition;
+    let Some(previous_version) = &receipt.candidate.previous_version else {
+        return false;
+    };
     transition.observed_disposition == Disposition::RolledBack
         && transition.outcome == TransitionOutcome::Completed
-        && transition.observed_release_identity.as_deref()
-            == Some(receipt.candidate.previous_version.as_str())
+        && transition.observed_release_identity.as_deref() == Some(previous_version.as_str())
         && transition.known_good_preserved
         && transition.rollback_completed
         && !transition.partial_artifact_promoted
@@ -351,6 +380,15 @@ mod tests {
     }
 
     #[test]
+    fn clean_install_fixture_passes() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
+        Ok(())
+    }
+
+    #[test]
     fn normal_upgrade_fixture_passes() -> Result<()> {
         let receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/normal_upgrade.json"
@@ -383,6 +421,19 @@ mod tests {
             "../../fixtures/experience/install_transition/normal_upgrade.json"
         ))?;
         receipt.transition.mixed_version_reported_ready = true;
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn rollback_requires_a_named_previous_pair() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        receipt.transition.class = super::TransitionClass::Rollback;
+        receipt.transition.intended_disposition = super::Disposition::RolledBack;
+        receipt.transition.observed_disposition = super::Disposition::RolledBack;
+        receipt.transition.rollback_completed = true;
         assert!(validate(&receipt).is_err());
         Ok(())
     }
