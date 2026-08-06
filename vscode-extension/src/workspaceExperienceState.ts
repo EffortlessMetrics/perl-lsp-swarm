@@ -38,11 +38,11 @@ export interface WorkspaceExperienceSnapshot {
 
 /** Optional status-bar telemetry that is additive to the semantic state. */
 export interface WorkspaceExperienceTelemetry {
-  readonly version?: string;
-  readonly fileCount?: number;
-  readonly errorCount?: number;
-  readonly indexingMessage?: string;
-  readonly indexingPercentage?: number;
+  readonly version?: string | undefined;
+  readonly fileCount?: number | undefined;
+  readonly errorCount?: number | undefined;
+  readonly indexingMessage?: string | undefined;
+  readonly indexingPercentage?: number | undefined;
 }
 
 /** Compatibility mode consumed by the existing HealthWidget API and tests. */
