@@ -105,7 +105,7 @@ REVIEW_FINDINGS_OPEN
 REVIEW_REQUIRED
   → final-challenge, then review-pr
 
-READY_FOR_INTEGRATION
+REVIEW_CURRENT
   → verify-live-ci
 
 PR_IN_FLIGHT
@@ -183,32 +183,40 @@ Substantive PR convergence follows
 
 - `review-pr` reconstructs the candidate/evidence map, performs directed falsifying
   judgment, publishes useful findings or a useful clean conclusion, and returns an
-  explicit merge posture;
+  explicit substantive review result;
 - `finish-pr` routes a substantive candidate without useful current review through
   `final-challenge` and `review-pr` before live integration;
 - `verify-live-ci` reads integration facts only after substantive review is
-  `READY_FOR_INTEGRATION`; green checks, mergeability, zero threads, or bot approval
-  cannot create that posture;
+  `REVIEW_CURRENT`; green checks, mergeability, zero threads, or bot approval cannot
+  create that result;
 - after accepted repair, affected proof and review dimensions are refreshed without
   restarting an unrelated full review merely because the SHA changed;
 - `deliver-goal` may synthesize a bounded related PR set only after each candidate has
   its own review, and only to resolve dependency, contract, limitation propagation,
   and repair/merge order.
 
-Review-bearing skills use the shared posture vocabulary proportionately:
+Review-bearing skills use a substantive result vocabulary:
 
 ```text
-READY_FOR_INTEGRATION
+REVIEW_CURRENT
 CHANGES_REQUIRED
 NOT_PROVEN
-IN_FLIGHT
 BLOCKED_BY_PREREQUISITE
 SUPERSEDED_OR_CLOSE
 ```
 
-The posture is a useful cumulative judgment, not a lifecycle label, claim digest,
-exact-head receipt, automatic approval, or merge authorization independent of live
-GitHub policy.
+Live integration uses a separate posture vocabulary:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
+
+These are useful cumulative judgments and native flow results, not lifecycle labels,
+claim digests, exact-head receipts, automatic approvals, or merge authorization
+independent of live GitHub policy.
 
 ## Structural validation
 
@@ -220,6 +228,7 @@ Maintenance-time validation may check:
 - candidate-local writer wording where a skill mutates artifacts;
 - review-bearing routes do not bypass `review-pr` for substantive candidates;
 - `verify-live-ci` cannot promote missing review into integration readiness;
+- substantive review and integration posture remain distinct;
 - root skill-discovery budget;
 - absence of retired active references and orchestration metadata.
 
