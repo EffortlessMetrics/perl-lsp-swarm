@@ -2,8 +2,8 @@
 
 Use this document with
 [`PR_REVIEW_STANDARD.md`](PR_REVIEW_STANDARD.md). The review standard defines the
-substantive acceptance judgment and merge posture; this document defines when later
-changes can alter that judgment.
+substantive acceptance judgment; this document defines when later changes can alter
+that judgment. Live integration posture remains a separate GitHub fact.
 
 ## Three evidence subjects
 
@@ -19,7 +19,7 @@ Movement in one does not automatically invalidate the others.
 ## Review is semantic, not exact-head
 
 A review is a judgment about a claim, implementation, proof, production path, risk,
-and current substantive merge posture. The PR head SHA identifies the code currently
+and current substantive review result. The PR head SHA identifies the code currently
 visible on GitHub, but it is not a review-validity token.
 
 Do not require:
@@ -31,7 +31,7 @@ Do not require:
 
 The durable review record is the useful GitHub review itself:
 
-- submitted review conclusions and merge posture;
+- submitted review conclusions and substantive result;
 - inline findings;
 - replies and evidence-backed dispositions;
 - follow-up review of the seams changed by later repairs.
@@ -70,20 +70,20 @@ identify changed semantic subjects
 → rerun affected proof
 → verify addressed findings
 → review newly changed risk/claim dimensions
-→ update the substantive merge posture
+→ update the substantive review result
 → continue
 ```
 
 Do not restart the entire review sequence merely to manufacture a new current-head
-receipt. A posture may remain `READY_FOR_INTEGRATION` after a non-semantic edit, become
+receipt. A result may remain `REVIEW_CURRENT` after a non-semantic edit, become
 `CHANGES_REQUIRED` after a substantive regression, or become `NOT_PROVEN` when the
 repair invalidates evidence and reliable replacement proof is missing.
 
 ## GitHub-native merge blockers
 
 Substantive review and live integration remain separate. A useful current review must
-reach `READY_FOR_INTEGRATION` before checks and mergeability can establish final
-integration readiness.
+reach `REVIEW_CURRENT` before checks and mergeability can establish
+`INTEGRATION_READY`.
 
 The live merge decision then remains governed by current GitHub facts:
 
@@ -96,9 +96,12 @@ The live merge decision then remains governed by current GitHub facts:
 - actual conflicts and mergeability;
 - rulesets, merge queue, and applicable release/changelog policy.
 
-Green checks or textual mergeability cannot create a substantive review posture.
-Stale bot or human review timestamps may be reported as context. They do not block by
-themselves.
+Pending GitHub-owned transitions yield `PR_IN_FLIGHT`; concrete integration blockers
+yield `MERGE_BLOCKED`; missing reliable integration data yields `NOT_PROVEN`. None of
+those states automatically changes a still-current substantive review.
+
+Green checks or textual mergeability cannot create `REVIEW_CURRENT`. Stale bot or
+human review timestamps may be reported as context. They do not block by themselves.
 
 ## Squash-merge currentness
 
