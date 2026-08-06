@@ -1,57 +1,56 @@
 ---
 name: verify-live-ci
-description: Evaluate one substantively reviewed pull request's live required checks, review threads, draft state, mergeability, and policy without treating CI as review or creating exact-head review churn.
+description: Evaluate one substantively reviewed PR's live checks, threads, draft state, mergeability, and policy without treating CI as review or creating exact-head churn.
 ---
 
 # Verify live CI
 
-Apply [`docs/agents/PR_REVIEW_STANDARD.md`](../../../docs/agents/PR_REVIEW_STANDARD.md)
-and require a useful current substantive review before integration can become ready.
+This is Codex's live-integration fact skill. It does not perform, infer, or replace the
+substantive review owned by `$review-pr`.
 
 Read one current GitHub snapshot for the selected PR:
 
-- draft/ready state;
 - cumulative substantive review result;
-- required checks discovered from live policy;
-- unresolved review threads;
-- current `CHANGES_REQUESTED` reviews;
+- draft/ready state and any still-valid draft purpose;
+- required checks discovered from live policy and relevant advisory checks;
+- unresolved review threads and current `CHANGES_REQUESTED` reviews;
 - deliberately requested reviewers still pending;
-- mergeability, conflict state, queue/ruleset status, explicit prerequisites, and
-  applicable changelog or support disposition.
+- mergeability, conflicts, queue/ruleset state, and explicit prerequisites;
+- applicable changelog, support, release, or publication disposition.
 
-Use repository helpers where they report these native facts truthfully. Do not require
-`review-run` comments, a material-claim digest, a human review submitted on the latest
-commit, or `REVIEW_PROTOCOL_ENFORCE=1` review-receipt convergence.
+Use repository helpers where they report these facts truthfully. Do not require a
+review-run comment, claim digest, review submitted on the latest SHA solely because the
+SHA changed, or review-receipt convergence.
 
 ## Review sufficiency boundary
 
-`$verify-live-ci` is an integration-fact skill. It does not perform or infer
-substantive review.
-
 ```text
-no useful current review for a substantive candidate
-  → REVIEW_REQUIRED
+no useful current substantive review
+→ REVIEW_REQUIRED
+→ `$review-pr`
 
 CHANGES_REQUIRED
-  → REVIEW_FINDINGS_OPEN
+→ `$address-review-comments`
 
 NOT_PROVEN
-  → preserve missing review evidence or authority
+→ preserve missing review evidence or authority
 
 BLOCKED_BY_PREREQUISITE
-  → preserve the exact prerequisite
+→ preserve the exact prerequisite
 
 SUPERSEDED_OR_CLOSE
-  → preserve the durable closeout disposition
+→ preserve durable closeout
 
 REVIEW_CURRENT
-  → continue evaluating live integration facts
+→ evaluate live integration facts
 ```
 
 Green checks, textual mergeability, zero open threads, bot approval, or author
 self-certification cannot promote a candidate to `REVIEW_CURRENT`.
 
-The integration result is separate:
+## Integration postures
+
+Use one separate integration result:
 
 ```text
 INTEGRATION_READY
@@ -60,70 +59,55 @@ MERGE_BLOCKED
 NOT_PROVEN
 ```
 
-Pending checks therefore produce `PR_IN_FLIGHT` while the substantive review remains
-current.
+- `INTEGRATION_READY` means current GitHub protection and integration facts permit the
+  irreversible transition.
+- `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
+  requested review, queue state, or armed auto-merge.
+- `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
+  substantive thread/change request, ruleset failure, or explicit prerequisite blocks
+  merge.
+- `NOT_PROVEN` means API data, check identity, required-policy discovery, or another
+  integration instrument is missing or unreliable.
 
-## Review currentness
+A pending check therefore leaves the substantive review current while integration is
+`PR_IN_FLIGHT`.
 
-A review is not stale merely because the PR head changed. Evaluate later commits
-semantically:
+## Live evidence classification
 
-- finding repair → check the affected finding, proof, and seam;
-- material claim, production route, authority, risk, rollback, or proof change →
-  review the affected dimensions;
-- formatting, editorial cleanup, generated receipt refresh, or stronger tests → no
-  automatic full-review restart;
-- conflict or integration repair → focused review of the repaired seam.
+Preserve success, failure, pending, not-applicable, cancelled, stale-check-result,
+missing, instrument-failure, and not-proven states distinctly. A successful check on
+an older candidate is stale evidence, not current green.
 
-Stale bot or human review timestamps may be reported as context. They do not block by
-themselves.
-
-## Live evidence states
-
-Preserve:
-
-```text
-success
-failure
-pending
-not_applicable
-cancelled
-stale_check_result
-missing
-instrument_failure
-not_proven
-```
-
-A successful check on an older candidate is stale check evidence, not green for the
-current candidate. Missing or partial API data that can change the conclusion is
-`NOT_PROVEN`.
-
-Classify a failure as candidate-owned, base-owned, integration interaction,
+Classify failures as candidate-owned, base-owned, integration interaction,
 test/oracle defect, instrument failure, environment/capacity, pending, or
 `NOT_PROVEN`. Do not widen the PR to absorb unrelated baseline failures, and do not
 ignore current-source evidence that directly contradicts the reviewed claim.
 
-## Squash-merge currentness
+## Semantic currentness
+
+A review is not stale merely because the PR head changed:
+
+- finding repair → check the affected finding, proof, and seam;
+- material claim, production route, authority, proof, compatibility, risk, or rollback
+  change → return to `$review-pr` for affected dimensions;
+- formatting, editorial cleanup, generated receipt refresh, or stronger tests → no
+  automatic full-review restart;
+- conflict or combined-tree repair → focused proof and review of the affected seam.
 
 Do not update, rebase, merge `main`, or replay all proof merely because a conflict-free
 branch is behind.
 
-- actual conflict → resolve in this lane and rerun affected proof/review;
-- explicit stack or failed combined-tree proof → targeted repair;
-- unrelated `main` movement → no action.
-
 ## Routes
 
-- `INTEGRATION_READY` → `$merge-reconcile`
-- `REVIEW_REQUIRED` → `$final-challenge`, then `$review-pr`
-- `DRAFT` → `$publish-pr`
-- `PENDING` → record the exact pending transition once and return `PR_IN_FLIGHT`
-- `PRODUCT_OR_TEST_FAILURE` → `$build-candidate`
+- `REVIEW_REQUIRED` → `$review-pr`
 - `REVIEW_FINDINGS_OPEN` / `CHANGES_REQUIRED` → `$address-review-comments`
-- `REVIEW_SCOPE_CHANGED` → review the affected dimensions
-- `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and return to the
-  invoking flow
-- `SUPERSEDED_OR_CLOSE` → preserve the closeout disposition through the invoking flow
-- `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam and rerun affected
-  proof/review
+- `REVIEW_SCOPE_CHANGED` → `$review-pr` for affected dimensions
+- `DRAFT` → `$publish-pr`
+- `PENDING` / `PR_IN_FLIGHT` → return the exact pending transition to `$finish-pr` or
+  `$deliver-goal`
+- `PRODUCT_OR_TEST_FAILURE` → `$build-candidate`, then affected proof and review
+- `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam, then affected
+  proof and `$review-pr`
+- `BLOCKED_BY_PREREQUISITE` / `MERGE_BLOCKED` → preserve the exact blocker
 - `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name the missing reliable evidence
+- `INTEGRATION_READY` → `$merge-reconcile`
