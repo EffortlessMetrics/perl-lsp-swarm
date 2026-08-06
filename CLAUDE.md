@@ -18,9 +18,15 @@ Use the highest applicable current authority:
    actual repository behavior;
 2. accepted specifications, ADRs, policies, generated contracts, and independent
    proof;
-3. this file and the nearest package-local `CLAUDE.md` or `AGENTS.md` guidance;
-4. Claude plans, task lists, subagents, Teams state, worktrees, memory, and
+3. this file, `.claude/skills/`, and the nearest package-local `CLAUDE.md` or
+   `AGENTS.md` guidance;
+4. shared method/reference docs under `docs/agents/`;
+5. Claude plans, task lists, subagents, Teams state, worktrees, memory, and
    conversation.
+
+For Claude Code, this file and `.claude/skills/` are the operational flow authority.
+Shared documents explain cross-provider principles and currentness; they do not
+replace a provider-native skill or make a review happen merely by being linked.
 
 GitHub owns live transaction state. The repository owns durable product,
 architecture, method, and proof contracts. Claude runtime topology, task state,
@@ -38,8 +44,8 @@ Use the narrowest applicable skill under `.claude/skills/`:
 - `prepare-issue` — settle the problem, owner, scope, proof seam, or plan;
 - `prepare-proof` — turn settled intent into discriminating proof;
 - `build-candidate` — implement, harden tests, simplify, or challenge a candidate;
-- `finish-pr` — publish or resume, repair feedback, review, integrate, merge, and
-  reconcile.
+- `finish-pr` — publish or resume, repair feedback, substantively review, integrate,
+  merge, and reconcile.
 
 Enter at the earliest absent or stale useful judgment. Existing coherent work enters
 midstream. Do not replay completed stages merely to manufacture process evidence, and
@@ -86,24 +92,24 @@ campaign work
 ```
 
 Delegation is worth its cost when it preserves root context, changes the source,
-oracle, tool, environment, or review method, compresses high-output evidence, or
-reduces elapsed time. The brief is the control: bound the target, authority,
-mutation boundary, sufficient result, falsifiers, stop conditions, and non-goals.
-An unknown conclusion may be explored when the search boundary is bounded. Agent
-Teams are useful only when genuine communication changes the result; they are not
-the default lifecycle.
+oracle, tool, environment, threat model, or review method, compresses high-output
+evidence, or reduces elapsed time. The brief is the control: bound the target,
+authority, mutation boundary, sufficient result, falsifiers, stop conditions, and
+non-goals. An unknown conclusion may be explored when the search boundary is bounded.
+Agent Teams are useful only when genuine communication changes the result; they are
+not the default lifecycle.
 
 Delegate when the evidence-to-answer compression ratio is high: CI or log triage,
 corpus or repository-wide searches, dependency/API audits, external-source collection,
 failure bisection, broad inventories, or an independently useful proof adversary. The
 child returns bounded evidence and references; the warm root keeps decisions,
-contradictions, and integration. This is an evidence-cost trigger, not a required relay.
+contradictions, and integration.
 
 One coherent claim normally has one current candidate, and one writer mutates that
 candidate at a time. Before creating another candidate, check only for an equivalent
-current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
-or required integration evidence later presents a real conflict, the affected lane
-repairs it and refreshes only the affected proof and review.
+current PR and explicit prerequisites. If Git or required integration evidence later
+presents a real conflict, the affected lane repairs it and refreshes only affected
+proof and review.
 
 A compact whole-flow assignment is enough when repository skills carry the method:
 
@@ -113,18 +119,17 @@ Use GitHub as durable state. Follow each skill's normal and material backward ro
 until the claim is reconciled or a real blocker remains.
 ```
 
-For focused delegation, name the skill, target, authoritative inputs, read/write
-boundary, and expected result. Do not create another identity merely because
-attention moved from research to proof or proof to implementation.
+For focused delegation, name the skill, target, authoritative inputs, established
+facts, read/write boundary, realistic falsifiers, expected evidence, and non-goals.
+Do not create another identity merely because attention moved between lifecycle
+passes.
 
-Use a direct issue or PR comment when another lane genuinely needs a material fact:
-a prerequisite changed, a governing ruling changed, one claim superseded another, or
-an actual integration interaction was found. No additional coordination state is
-needed.
+Use a direct issue or PR comment when another lane genuinely needs a material fact: a
+prerequisite changed, a governing ruling changed, one claim superseded another, or an
+actual integration interaction was found. No additional coordination state is needed.
 
-Detailed method and contracts:
+Detailed cross-provider method and contracts:
 [`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md),
-[`docs/agents/PR_REVIEW_STANDARD.md`](docs/agents/PR_REVIEW_STANDARD.md),
 [`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md),
 [`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
 [`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md). The operator
@@ -136,8 +141,8 @@ recovery and handoff sequence is in
 - issues hold research, corrections, current synthesis, plans, dependencies, and next
   coherent actions;
 - pull requests hold one acceptance-and-rollback candidate;
-- submitted reviews and inline threads hold findings and evidence-backed
-  dispositions;
+- submitted reviews and inline threads hold findings, cumulative judgment, and
+  evidence-backed dispositions;
 - checks and rulesets hold current machine and integration evidence;
 - merge closeout records what landed, what remains, and what becomes actionable next.
 
@@ -150,28 +155,59 @@ integration experiment.
 
 A clean review is valid. Never manufacture a finding or edit to prove review effort.
 
-## Review
+## Claude-native PR review
 
-Review follows
-[`docs/agents/PR_REVIEW_STANDARD.md`](docs/agents/PR_REVIEW_STANDARD.md). It is not
-reading a diff, relaying CI green, posting a head/claim hash, or repeating a subagent
-verdict. For substantive work it is a directed, falsifying, and verified judgment:
+Review is an operational flow in `.claude/skills/`, not a shared-document pointer. For
+a substantive PR, the normal path is:
+
+```text
+`finish-pr`
+→ repair existing findings through `address-review-comments`
+→ `final-challenge` while mutation remains allowed
+→ `orchestrate-work` to select applicable adversarial lenses
+→ main thread joins evidence and performs cumulative `review-pr`
+→ REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN |
+  BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
+→ only REVIEW_CURRENT enters `verify-live-ci`
+→ INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | NOT_PROVEN
+→ `merge-reconcile`
+```
+
+The main thread normally considers, where applicable:
+
+- `review-tests` for discrimination, historical-defect controls, negative/stale
+  directions, schema/validator agreement, and evidence integrity;
+- `review-candidate` for implementation correctness, semantic authority, production
+  reachability, complexity, compatibility, risk, and rollback;
+- a bounded production-path trace from a real caller or consumer;
+- a competent external oracle for language, protocol, platform, dependency, or
+  release truth;
+- focused security, packaging, migration, persistence, or support review.
+
+Focused Claude subagents return evidence, contradictions, falsifiers, uncertainty,
+and recommended findings. They do not approve the PR. The main thread joins evidence
+rather than votes, inspects load-bearing seams, publishes one useful GitHub review,
+and judges whether the challenge was real or performative. One integrating writer
+repairs accepted findings.
+
+Review is not reading a diff, relaying CI green, posting a head/claim hash, or repeating
+a subagent verdict. For substantive work it is directed, falsifying, and verified:
 
 - **discrimination** — what realistic wrong implementation does the proof reject?
-- **production reachability** — what live request, consumer, or protocol path reaches
-  the change?
-- **external truth** — what competent authority establishes user-visible or protocol
-  semantics?
+- **production reachability** — what live request, consumer, installer, workflow, or
+  runtime path reaches the change?
+- **external truth** — what competent authority establishes user-visible, language,
+  protocol, platform, dependency, or release semantics?
 - **claim honesty** — what does the evidence establish, and what remains unproved?
 - **authority and complexity** — is this the semantic owner, and is the result free of
   duplicate authority, residue, or unnecessary API?
-- **risk and rollback** — what compatibility, security, packaging, migration, or
-  support boundary moved?
+- **risk and rollback** — what compatibility, security, persistence, packaging,
+  migration, support, or release boundary moved?
 
-The construction context must not be the only detection surface supporting merge.
-Fresh context is useful when it brings a different source, oracle, threat model,
-method, or attention surface; identity separation by itself is neither necessary nor
-sufficient.
+The construction context must not be the only detection surface supporting a
+substantive merge. Fresh context is useful when it brings a different source, oracle,
+threat model, method, environment, or attention surface; identity separation by
+itself is neither necessary nor sufficient.
 
 Every substantive PR records one cumulative substantive review result before live
 integration:
@@ -198,22 +234,23 @@ NOT_PROVEN
 
 A pending check leaves the substantive review current while integration is in flight.
 
-Review is cumulative and semantic. A submitted review, inline finding, reply, and
-evidence-backed disposition are the durable record. Do not post `Review pass (...) at
-head ... and claim ...` receipt comments. A later commit does not invalidate review
-merely because the SHA changed.
+Review is cumulative and semantic. Submitted reviews, inline findings, replies, and
+evidence-backed dispositions are the durable record. Do not post `Review pass (...) at
+head ... and claim ...` comments. A later commit does not invalidate review merely
+because the SHA changed.
 
 After repair:
 
-- verify the affected finding, proof, and changed seam;
-- revisit claim, authority, reachability, risk, rollback, or compatibility only when
-  the repair materially changes them;
-- do not restart a full `deep` review for formatting, editorial cleanup, generated
-  receipt refresh, or stronger tests unless they change a substantive conclusion;
-- review actual conflict or integration repairs at the affected seam.
+- rerun affected proof;
+- verify the affected finding and changed seam;
+- revisit claim, authority, reachability, proof, risk, rollback, compatibility, or
+  integration only when the repair materially changes that dimension;
+- do not restart a full deep review for formatting, editorial cleanup, generated
+  receipt refresh, or stronger tests unless meaning changed;
+- review actual conflict or combined-tree repairs at the affected seam.
 
-A clean review is valid and should leave a concise conclusion that helps the next
-session understand what was checked and what remains unproved.
+A clean review should state what was checked, which realistic wrong behavior was
+challenged, what the evidence establishes, and what remains unproved.
 
 ## Proof and currentness
 
