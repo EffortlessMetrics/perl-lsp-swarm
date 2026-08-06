@@ -640,10 +640,16 @@ mod tests {
             GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken,
         };
         let server = LspServer::new();
+        // Unique id avoids colliding with other parallel registry tests.
         let request_id = JsonRpcId::Integer(99001);
         let token = PerlLspCancellationToken::new(request_id.clone(), "textDocument/hover".into());
         GLOBAL_CANCELLATION_REGISTRY.register_token(token)?;
-        let count_before = GLOBAL_CANCELLATION_REGISTRY.active_count();
+        if GLOBAL_CANCELLATION_REGISTRY.get_token(&request_id).is_none() {
+            return Err(std::io::Error::other(
+                "precondition: token must be registered before Immediate cancel path",
+            )
+            .into());
+        }
         server.cancel_mark(&request_id);
         let routed = server.route_cancellable(
             Some(request_id.to_value()),
@@ -651,12 +657,100 @@ mod tests {
             true,
             |_| Ok(None),
         );
-        assert!(matches!(routed, RoutedResponse::Immediate(_)));
-        assert_eq!(
-            GLOBAL_CANCELLATION_REGISTRY.active_count(),
-            count_before - 1,
-            "route_cancellable Immediate path must remove token from global registry"
+        let RoutedResponse::Immediate(_) = routed else {
+            return Err(std::io::Error::other(
+                "pre-cancelled request must return Immediate",
+            )
+            .into());
+        };
+        // Prefer id-specific oracle over active_count(): the registry is process-global
+        // and parallel tests can change the aggregate length between measurements.
+        if GLOBAL_CANCELLATION_REGISTRY.get_token(&request_id).is_some() {
+            return Err(std::io::Error::other(
+                "route_cancellable Immediate path must remove token from global registry",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn route_type_hierarchy_immediate_cleans_up_global_registry_token()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::runtime::cancellation::{
+            GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken,
+        };
+        let server = LspServer::new();
+        server.initialize_requested.store(true, Ordering::Release);
+        let request_id = JsonRpcId::Integer(99002);
+        let method = "textDocument/prepareTypeHierarchy";
+        let token = PerlLspCancellationToken::new(request_id.clone(), method.into());
+        GLOBAL_CANCELLATION_REGISTRY.register_token(token)?;
+        if GLOBAL_CANCELLATION_REGISTRY.get_token(&request_id).is_none() {
+            return Err(std::io::Error::other(
+                "precondition: type-hierarchy token must be registered before Immediate cancel path",
+            )
+            .into());
+        }
+        server.cancel_mark(&request_id);
+        // Exercise the production route_request → route_type_hierarchy_request Immediate seam.
+        let routed = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(request_id.clone()),
+                method: method.to_string(),
+                params: None,
+            },
+            Some(request_id.to_value()),
+            true,
         );
+        let RoutedResponse::Immediate(_) = routed else {
+            return Err(std::io::Error::other(
+                "pre-cancelled type-hierarchy request must return Immediate",
+            )
+            .into());
+        };
+        if GLOBAL_CANCELLATION_REGISTRY.get_token(&request_id).is_some() {
+            return Err(std::io::Error::other(
+                "route_type_hierarchy_request Immediate path must remove token from global registry",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn route_cancellable_immediate_is_idempotent_without_registered_token()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::runtime::cancellation::GLOBAL_CANCELLATION_REGISTRY;
+        let server = LspServer::new();
+        let request_id = JsonRpcId::Integer(99003);
+        // Cancellation arrived before preflight registration — no token to remove.
+        if GLOBAL_CANCELLATION_REGISTRY.get_token(&request_id).is_some() {
+            return Err(std::io::Error::other(
+                "precondition: request id must not already own a registry token",
+            )
+            .into());
+        }
+        server.cancel_mark(&request_id);
+        let routed = server.route_cancellable(
+            Some(request_id.to_value()),
+            "textDocument/hover".to_string(),
+            true,
+            |_| Ok(None),
+        );
+        let RoutedResponse::Immediate(_) = routed else {
+            return Err(std::io::Error::other(
+                "pre-cancelled request with no token must still return Immediate",
+            )
+            .into());
+        };
+        if GLOBAL_CANCELLATION_REGISTRY.get_token(&request_id).is_some() {
+            return Err(std::io::Error::other(
+                "idempotent remove_request must not invent a registry token",
+            )
+            .into());
+        }
         Ok(())
     }
 
