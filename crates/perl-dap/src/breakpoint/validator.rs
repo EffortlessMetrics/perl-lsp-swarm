@@ -770,4 +770,46 @@ mod tests {
         assert_eq!(regions[0].start, 6, "POD starts at '=pod'");
         assert_eq!(regions[0].end, source.len(), "unclosed POD extends to EOF");
     }
+
+    #[test]
+    fn test_find_pod_regions_exact_byte_offsets_with_trailing_newline() {
+        // Verify exact byte offsets when file ends with newline.
+        // This directly exercises the offset accumulation at the changed lines.
+        let source = "line1;\n=pod\nDocs\n=cut\nline5;\n";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 1);
+        // =pod starts at byte 7 (after "line1;\n")
+        assert_eq!(regions[0].start, 7);
+        // =cut ends at byte 7+4+1+4+1+4 = 21 (after "=cut")
+        assert_eq!(regions[0].end, 21);
+        // Verify the text at those offsets
+        assert_eq!(&source[regions[0].start..regions[0].end], "=pod\nDocs\n=cut");
+    }
+
+    #[test]
+    fn test_find_pod_regions_multiple_sections_no_trailing_newline() {
+        // Multiple POD sections, file without trailing newline.
+        // Exercises the for-loop and offset calculation for each line.
+        let source = "=pod\nA\n=cut\ncode;\n=head1 B\nMore\n=cut";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 2, "expected two POD regions, got: {regions:?}");
+        // First region: "=pod\nA\n=cut"
+        assert_eq!(&source[regions[0].start..regions[0].end], "=pod\nA\n=cut");
+        // Second region: "=head1 B\nMore\n=cut"
+        assert_eq!(&source[regions[1].start..regions[1].end], "=head1 B\nMore\n=cut");
+    }
+
+    #[test]
+    fn test_find_pod_regions_empty_source_no_newline() {
+        // Empty source string (no trailing newline, no content).
+        let regions = AstBreakpointValidator::find_pod_regions("");
+        assert!(regions.is_empty());
+    }
+
+    #[test]
+    fn test_find_pod_regions_single_char_no_newline() {
+        // Single character, no newline — exercises the last-segment path.
+        let regions = AstBreakpointValidator::find_pod_regions("x");
+        assert!(regions.is_empty());
+    }
 }
