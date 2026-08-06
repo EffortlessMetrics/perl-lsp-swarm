@@ -9,7 +9,7 @@
     "release_repo_sha": "2222222222222222222222222222222222222222",
     "release_topology_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
     "candidate_id": "v0.18.0-rc1",
-    "previous_version": "0.17.0",
+    "previous_version": null,
     "candidate_version": "0.18.0",
     "extension_version": "0.18.0",
     "server_version": "0.18.0",
