@@ -108,6 +108,9 @@ impl CriticFinding {
     }
 }
 
+/// Type alias for the pre-computed pragma-map entries shared across rules.
+pub(crate) type PragmaEntries = [(std::ops::Range<usize>, perl_pragma::PragmaState)];
+
 /// Native critic rule context.
 pub struct CriticContext<'a> {
     /// Source text being analyzed.
@@ -116,12 +119,30 @@ pub struct CriticContext<'a> {
     pub ast: &'a Node,
     /// Critic configuration.
     pub config: &'a CriticConfig,
+    /// Pre-computed scope analysis issues, shared across all scope-based rules.
+    /// Built once by [`NativeCriticRegistry::check`] so rules don't each
+    /// re-walk the AST. `None` when no scope-based rule is enabled or the
+    /// analysis hasn't been run yet (#4999 item 3).
+    pub scope_issues: Option<&'a [perl_semantic_analyzer::scope_analyzer::ScopeIssue]>,
+    /// Pre-computed pragma map entries, shared across all scope-based rules.
+    pub pragma_map: Option<&'a PragmaEntries>,
 }
 
 impl<'a> CriticContext<'a> {
-    /// Build a native critic context.
+    /// Build a native critic context with pre-computed scope analysis.
     pub fn new(source: &'a str, ast: &'a Node, config: &'a CriticConfig) -> Self {
-        Self { source, ast, config }
+        Self { source, ast, config, scope_issues: None, pragma_map: None }
+    }
+
+    /// Build a native critic context with pre-computed scope analysis results.
+    pub fn with_scope(
+        source: &'a str,
+        ast: &'a Node,
+        config: &'a CriticConfig,
+        scope_issues: &'a [perl_semantic_analyzer::scope_analyzer::ScopeIssue],
+        pragma_map: &'a PragmaEntries,
+    ) -> Self {
+        Self { source, ast, config, scope_issues: Some(scope_issues), pragma_map: Some(pragma_map) }
     }
 }
 
