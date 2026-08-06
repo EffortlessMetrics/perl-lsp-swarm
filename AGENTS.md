@@ -156,19 +156,30 @@ Fresh context is useful when it brings a different source, oracle, threat model,
 method, or attention surface; identity separation by itself is neither necessary nor
 sufficient.
 
-Every substantive PR records one cumulative merge posture before live integration:
+Every substantive PR records one cumulative substantive review result before live
+integration:
 
 ```text
-READY_FOR_INTEGRATION
+REVIEW_CURRENT
 CHANGES_REQUIRED
 NOT_PROVEN
-IN_FLIGHT
 BLOCKED_BY_PREREQUISITE
 SUPERSEDED_OR_CLOSE
 ```
 
 Green checks, `mergeable: true`, zero open threads, bot approval, or author
-self-certification cannot independently create `READY_FOR_INTEGRATION`.
+self-certification cannot independently create `REVIEW_CURRENT`.
+
+Once review is current, live GitHub facts separately produce:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
+
+A pending check leaves the substantive review current while integration is in flight.
 
 Review is cumulative and semantic. A submitted review, inline finding, reply, and
 evidence-backed disposition are the durable record. Do not post `Review pass (...) at
