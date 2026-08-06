@@ -8,6 +8,12 @@
 //! on Linux CI runners, which would otherwise give zero coverage of the
 //! quoting logic (#5012).
 
+// On non-Windows targets these functions are only reached from tests (the
+// production caller in `invocation.rs` is `#[cfg(windows)]`). Suppress the
+// dead-code lint rather than gating compilation, so the test module can
+// exercise the injection defenses on every platform.
+#![cfg_attr(not(any(windows, test)), allow(dead_code))]
+
 use std::path::Path;
 
 /// Quote a single argument for use inside a `cmd.exe /V:OFF /S /C "..."` command line.
