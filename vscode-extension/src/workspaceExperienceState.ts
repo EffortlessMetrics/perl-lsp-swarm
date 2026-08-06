@@ -135,7 +135,10 @@ export function presentWorkspaceExperience(
       return {
         mode: 'starting',
         text: '$(sync~spin) perl-lsp: resolving environment',
-        tooltip: detailTooltip(snapshot, 'Perl Language Server is resolving workspace configuration'),
+        tooltip: detailTooltip(
+          snapshot,
+          'Perl Language Server is resolving workspace configuration',
+        ),
         background: undefined,
       };
     case 'indexing_active_context':
@@ -178,7 +181,10 @@ export function presentWorkspaceExperience(
       return {
         mode: 'stopped',
         text: '$(warning) perl-lsp: action required',
-        tooltip: detailTooltip(snapshot, 'Perl Language Server needs configuration or trust action'),
+        tooltip: detailTooltip(
+          snapshot,
+          'Perl Language Server needs configuration or trust action',
+        ),
         background: 'warning',
       };
     case 'failed':
