@@ -12,7 +12,7 @@ use color_eyre::eyre::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const CHECK: &str = "first-ten-minutes";
 const SCHEMA_VERSION: &str = "first_ten_minutes.v1";
@@ -205,6 +205,16 @@ fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
     Ok(())
 }
 
+fn issue_identity(value: &str, field: &str) -> Result<()> {
+    if !value.starts_with('#')
+        || value.len() < 2
+        || !value[1..].bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("{field} must use #<number> identity");
+    }
+    Ok(())
+}
+
 fn validate_identity(receipt: &Receipt) -> Result<()> {
     exact_hex(&receipt.candidate.repository_sha, 20, "candidate.repository_sha")?;
     exact_hex(&receipt.candidate.vsix_sha256, 32, "candidate.vsix_sha256")?;
@@ -264,9 +274,7 @@ fn validate_findings(receipt: &Receipt) -> Result<()> {
         non_empty(&finding.summary, "findings[].summary")?;
         non_empty(&finding.evidence_ref, "findings[].evidence_ref")?;
         if let Some(issue) = &finding.linked_issue {
-            if !issue.starts_with('#') || issue.len() < 2 {
-                bail!("findings[].linked_issue must use #<number> identity");
-            }
+            issue_identity(issue, "findings[].linked_issue")?;
         }
     }
     Ok(())
@@ -318,13 +326,14 @@ fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
         bail!("first_correct_ms cannot precede first_useful_ms");
     }
 
-    for value in receipt
-        .expected_beta_boundaries
-        .iter()
-        .chain(receipt.linked_issues.iter())
-        .chain(receipt.limitations.iter())
-    {
-        non_empty(value, "receipt list value")?;
+    for value in &receipt.expected_beta_boundaries {
+        non_empty(value, "expected_beta_boundaries[]")?;
+    }
+    for issue in &receipt.linked_issues {
+        issue_identity(issue, "linked_issues[]")?;
+    }
+    for limitation in &receipt.limitations {
+        non_empty(limitation, "limitations[]")?;
     }
 
     let computed = computed_status(receipt);
@@ -352,7 +361,7 @@ fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
     Ok(computed)
 }
 
-fn load(path: &PathBuf) -> Result<Receipt> {
+fn load(path: &Path) -> Result<Receipt> {
     let content = fs::read_to_string(path)?;
     Ok(serde_json::from_str(&content)?)
 }
@@ -381,8 +390,8 @@ mod tests {
     use super::{Receipt, ReceiptStatus, validate};
     use color_eyre::eyre::Result;
 
-    fn fixture(path: &str) -> Result<Receipt> {
-        Ok(serde_json::from_str(path)?)
+    fn fixture(content: &str) -> Result<Receipt> {
+        Ok(serde_json::from_str(content)?)
     }
 
     #[test]
@@ -408,7 +417,8 @@ mod tests {
         let mut receipt = fixture(include_str!(
             "../../fixtures/experience/first_ten_minutes/valid.json"
         ))?;
-        receipt.steps.pop();
+        let removed = receipt.steps.pop();
+        assert!(removed.is_some());
         assert!(validate(&receipt).is_err());
         Ok(())
     }
@@ -419,6 +429,16 @@ mod tests {
             "../../fixtures/experience/first_ten_minutes/valid.json"
         ))?;
         receipt.counts.stale_exact = 1;
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_issue_identity_is_rejected() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/first_ten_minutes/valid.json"
+        ))?;
+        receipt.linked_issues[0] = "#not-a-number".to_string();
         assert!(validate(&receipt).is_err());
         Ok(())
     }
