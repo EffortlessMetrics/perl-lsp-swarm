@@ -161,6 +161,15 @@ impl<'a> Parser<'a> {
                             ParseError::syntax("Empty identifier token", token.start)
                         })?;
                     if ch.is_ascii_alphabetic() {
+                        // Validate against the full set of Perl regex modifiers
+                        // (#1727): previously accepted ANY alphabetic char.
+                        if !matches!(
+                            ch,
+                            'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'c' | 'g' | 'o' | 'a' | 'd' | 'l'
+                                | 'u'
+                        ) {
+                            break;
+                        }
                         modifiers.push(ch);
                         self.tokens.next()?;
                     } else {
@@ -337,10 +346,11 @@ impl<'a> Parser<'a> {
             if !ch.is_ascii_alphabetic() {
                 break;
             }
-            if !matches!(ch, 'g' | 'i' | 'm' | 's' | 'x' | 'o' | 'e' | 'r') {
+            if !matches!(ch, 'g' | 'i' | 'm' | 's' | 'x' | 'o' | 'e' | 'r' | 'p' | 'n' | 'a' | 'd' | 'l' | 'u' | 'c') {
                 return Err(ParseError::syntax(
                     format!(
-                        "Invalid substitution modifier '{}'. Valid modifiers are: g, i, m, s, x, o, e, r",
+                        "Invalid substitution modifier '{}'. Valid modifiers are: \
+                         g, i, m, s, x, o, e, r, p, n, a, d, l, u, c",
                         ch
                     ),
                     token.start,
