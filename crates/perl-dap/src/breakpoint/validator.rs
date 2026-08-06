@@ -146,7 +146,13 @@ impl AstBreakpointValidator {
         let mut pod_start: Option<usize> = None;
         let mut offset = 0;
 
-        for line in source.split('\n') {
+        // Track whether each segment is followed by a newline. split('\n')
+        // drops the delimiter, so the last segment of a file that doesn't end
+        // with a newline has no trailing '\n' to account for (#2394).
+        let lines: Vec<&str> = source.split('\n').collect();
+        let last_idx = lines.len().saturating_sub(1);
+
+        for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_end_matches('\r');
             if pod_start.is_some() {
                 // We are inside a POD section -- look for =cut
@@ -159,7 +165,12 @@ impl AstBreakpointValidator {
             } else if Self::is_pod_directive(trimmed) {
                 pod_start = Some(offset);
             }
-            offset += line.len() + 1; // +1 for the '\n' delimiter
+            // +1 for the '\n' delimiter, except the last segment when the
+            // source does not end with '\n'.
+            offset += line.len();
+            if i < last_idx || source.ends_with('\n') {
+                offset += 1;
+            }
         }
 
         // If POD was never closed, extend to EOF
@@ -728,5 +739,35 @@ mod tests {
         let regions = AstBreakpointValidator::find_pod_regions(source);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].end, source.len());
+    }
+
+    #[test]
+    fn test_find_pod_regions_no_trailing_newline() {
+        // Regression test for #2394: files that don't end with a newline
+        // must not have the last POD region's offset inflated by 1.
+        let source = "my $x = 1;\n=pod\nDocs\n=cut\nmy $y = 2;";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 1, "expected one POD region");
+        let text = &source[regions[0].start..regions[0].end];
+        assert!(text.starts_with("=pod"), "region start: {text:?}");
+        assert!(text.ends_with("=cut"), "region end: {text:?}");
+        // The byte range must not extend past the =cut line
+        assert!(
+            regions[0].end <= source.len(),
+            "region end {} should not exceed source len {}",
+            regions[0].end,
+            source.len()
+        );
+    }
+
+    #[test]
+    fn test_find_pod_regions_pod_at_eof_no_newline() {
+        // POD section is the last thing in the file with no trailing newline.
+        // The unclosed-POD path should extend to source.len() exactly.
+        let source = "code;\n=pod\nDocs without trailing newline";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].start, 6, "POD starts at '=pod'");
+        assert_eq!(regions[0].end, source.len(), "unclosed POD extends to EOF");
     }
 }
