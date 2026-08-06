@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::evidence::Outcome;
+use crate::evidence::{Outcome, is_stale};
 use crate::indicator::{EvidenceRef, IndicatorStatus};
 
 /// Minimal projection of the quality-gate receipt.
@@ -56,10 +56,7 @@ pub(crate) fn no_new_severe_gaps(path: Option<&Path>, expected_commit: &str) -> 
 
     let mut evidence = vec![receipt_ev, EvidenceRef::new("decision", decision)];
 
-    let stale = !expected_commit.is_empty()
-        && expected_commit != "unknown"
-        && !receipt.head.is_empty()
-        && receipt.head != expected_commit;
+    let stale = is_stale(&receipt.head, expected_commit);
     if stale {
         evidence.push(EvidenceRef::new(
             "note",
