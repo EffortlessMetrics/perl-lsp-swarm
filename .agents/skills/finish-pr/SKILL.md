@@ -21,7 +21,7 @@ for later repairs.
 ## State inspection
 
 Read the live PR, controlling issue, cumulative diff, submitted reviews, inline
-threads, current substantive merge posture, required checks, draft state,
+threads, current substantive review result, required checks, draft state,
 mergeability, and explicit prerequisites.
 
 Enter at the earliest useful point:
@@ -40,7 +40,7 @@ no useful current substantive review
   → final-challenge
   → review-pr
 
-current READY_FOR_INTEGRATION review with no open substantive findings
+current REVIEW_CURRENT result with no open substantive findings
   → verify-live-ci
 
 merged or deliberately closed but unreconciled
@@ -75,8 +75,8 @@ After accepted repair:
 rerun affected proof
 → final-challenge on changed semantic subjects
 → review-pr on affected findings/dimensions
-→ update the cumulative merge posture
-→ verify-live-ci only when posture is READY_FOR_INTEGRATION
+→ update the cumulative substantive review result
+→ verify-live-ci only when the result is REVIEW_CURRENT
 ```
 
 A later SHA is new code evidence, not automatic proof that every prior judgment is
@@ -97,7 +97,8 @@ classification, and specialist evidence may assist.
 
 When GitHub owns the next transition—pending checks, requested review, merge queue, or
 armed auto-merge—record the exact pending fact once and return `PR_IN_FLIGHT`. Do not
-poll unchanged state or call the wider goal blocked.
+poll unchanged state or call the wider goal blocked. This integration wait does not
+make a still-current substantive review stale.
 
 ## Child outcome routing
 
@@ -126,11 +127,10 @@ poll unchanged state or call the wider goal blocked.
 ### Review
 
 - `CANDIDATE_READY_FOR_REVIEW` / `REVIEW_REQUIRED` → `$review-pr`
-- `READY_FOR_INTEGRATION` / `REVIEW_CURRENT` → `$verify-live-ci`
+- `REVIEW_CURRENT` → `$verify-live-ci`
 - `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions; route backward only if
   the claim or owner changed
-- `IN_FLIGHT` → return `PR_IN_FLIGHT` with the named GitHub-owned transition
 - `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and return to the
   invoking flow
 - `SUPERSEDED_OR_CLOSE` → `$merge-reconcile` for durable closeout
