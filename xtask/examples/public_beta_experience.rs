@@ -1,0 +1,492 @@
+//! Validate one candidate-bound public-beta experience fan-in receipt.
+//!
+//! The fan-in joins independent child receipts and journey-cell dispositions.
+//! It computes a conjunctive ready/blocked/not-proven result: a strong result in
+//! one rail cannot compensate for a trust-breaking count, failed journey cell,
+//! blocked child receipt, stale candidate identity, or missing proof.
+
+#![allow(clippy::print_stdout)]
+
+use clap::Parser;
+use color_eyre::eyre::{Result, bail};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const CHECK: &str = "public-beta-experience";
+const SCHEMA_VERSION: &str = "public_beta_experience.v1";
+const REQUIRED_CELLS: [JourneyCellId; 11] = [
+    JourneyCellId::InstallUpgrade,
+    JourneyCellId::Startup,
+    JourneyCellId::Workspace,
+    JourneyCellId::CompletionHoverNavigation,
+    JourneyCellId::Diagnostics,
+    JourneyCellId::EmptyResults,
+    JourneyCellId::RenameDelete,
+    JourneyCellId::Formatting,
+    JourneyCellId::DoctorTrust,
+    JourneyCellId::DapPreview,
+    JourneyCellId::Shutdown,
+];
+const REQUIRED_CORE_LOOP: [&str; 9] = [
+    "diagnostics",
+    "completion",
+    "hover",
+    "definition",
+    "references",
+    "symbols",
+    "edit_requery",
+    "formatting",
+    "safe_rename_or_refusal",
+];
+
+#[derive(Debug, Parser)]
+#[command(name = "public-beta-experience")]
+#[command(about = "Validate one candidate-bound public-beta experience fan-in")]
+struct Args {
+    /// Fan-in receipt JSON to validate.
+    #[arg(long)]
+    receipt: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum OverallStatus {
+    Ready,
+    Blocked,
+    NotProven,
+}
+
+impl OverallStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Blocked => "blocked",
+            Self::NotProven => "not_proven",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ReleaseTrack {
+    PublicBeta,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DapPosture {
+    Preview,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum JourneyCellId {
+    InstallUpgrade,
+    Startup,
+    Workspace,
+    CompletionHoverNavigation,
+    Diagnostics,
+    EmptyResults,
+    RenameDelete,
+    Formatting,
+    DoctorTrust,
+    DapPreview,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CellDisposition {
+    Pass,
+    Limited,
+    Failed,
+    NotProven,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum InputStatus {
+    Pass,
+    Limited,
+    Blocked,
+    NotProven,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CandidateIdentity {
+    release: String,
+    track: ReleaseTrack,
+    frozen_product_sha: String,
+    candidate_id: String,
+    artifact_set_id: String,
+    release_topology_sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SupportedEnvelope {
+    editor: String,
+    other_editors: String,
+    project_families: Vec<String>,
+    core_loop: Vec<String>,
+    dynamic_perl: String,
+    dap_posture: DapPosture,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct JourneyCell {
+    id: JourneyCellId,
+    owner_issue: String,
+    disposition: CellDisposition,
+    evidence_refs: Vec<String>,
+    limitation: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ZeroBudgetCounts {
+    false_exact: u64,
+    stale_exact: u64,
+    unsafe_edit: u64,
+    unexplained_success_empty: u64,
+    silent_startup_failure: u64,
+    broken_documented_install: u64,
+    wrong_binary_or_version: u64,
+    orphaned_server_or_debuggee: u64,
+}
+
+impl ZeroBudgetCounts {
+    fn total(&self) -> u64 {
+        self.false_exact
+            + self.stale_exact
+            + self.unsafe_edit
+            + self.unexplained_success_empty
+            + self.silent_startup_failure
+            + self.broken_documented_install
+            + self.wrong_binary_or_version
+            + self.orphaned_server_or_debuggee
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiptRef {
+    schema_version: String,
+    sha256: String,
+    candidate_id: String,
+    status: InputStatus,
+    claim_boundary: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ChildReceipts {
+    user_state_presentation: ReceiptRef,
+    first_ten_minutes: ReceiptRef,
+    install_transition: ReceiptRef,
+    installed_acceptance: ReceiptRef,
+    first_useful_answer: ReceiptRef,
+    representative_workload: ReceiptRef,
+    release_topology: ReceiptRef,
+    release_integrity: ReceiptRef,
+}
+
+impl ChildReceipts {
+    fn iter(&self) -> [(&'static str, &ReceiptRef); 8] {
+        [
+            ("user_state_presentation", &self.user_state_presentation),
+            ("first_ten_minutes", &self.first_ten_minutes),
+            ("install_transition", &self.install_transition),
+            ("installed_acceptance", &self.installed_acceptance),
+            ("first_useful_answer", &self.first_useful_answer),
+            ("representative_workload", &self.representative_workload),
+            ("release_topology", &self.release_topology),
+            ("release_integrity", &self.release_integrity),
+        ]
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Receipt {
+    check: String,
+    schema_version: String,
+    status: OverallStatus,
+    claim_boundary: String,
+    candidate: CandidateIdentity,
+    supported_envelope: SupportedEnvelope,
+    journey_cells: Vec<JourneyCell>,
+    zero_budget: ZeroBudgetCounts,
+    child_receipts: ChildReceipts,
+    limitations: Vec<String>,
+}
+
+fn non_empty(value: &str, field: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("{field} must not be empty");
+    }
+    Ok(())
+}
+
+fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
+    if value.len() != bytes * 2 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("{field} must be exactly {} hexadecimal characters", bytes * 2);
+    }
+    Ok(())
+}
+
+fn issue_identity(value: &str, field: &str) -> Result<()> {
+    if !value.starts_with('#')
+        || value.len() < 2
+        || !value[1..].bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("{field} must use #<number> identity");
+    }
+    Ok(())
+}
+
+fn validate_candidate(receipt: &Receipt) -> Result<()> {
+    exact_hex(
+        &receipt.candidate.frozen_product_sha,
+        20,
+        "candidate.frozen_product_sha",
+    )?;
+    exact_hex(
+        &receipt.candidate.release_topology_sha256,
+        32,
+        "candidate.release_topology_sha256",
+    )?;
+    for (field, value) in [
+        ("candidate.release", receipt.candidate.release.as_str()),
+        ("candidate.candidate_id", receipt.candidate.candidate_id.as_str()),
+        ("candidate.artifact_set_id", receipt.candidate.artifact_set_id.as_str()),
+    ] {
+        non_empty(value, field)?;
+    }
+    Ok(())
+}
+
+fn validate_envelope(envelope: &SupportedEnvelope) -> Result<()> {
+    non_empty(&envelope.editor, "supported_envelope.editor")?;
+    non_empty(&envelope.other_editors, "supported_envelope.other_editors")?;
+    non_empty(&envelope.dynamic_perl, "supported_envelope.dynamic_perl")?;
+    if envelope.project_families.is_empty() {
+        bail!("supported_envelope.project_families must not be empty");
+    }
+    for family in &envelope.project_families {
+        non_empty(family, "supported_envelope.project_families[]")?;
+    }
+
+    let observed: BTreeSet<&str> = envelope.core_loop.iter().map(String::as_str).collect();
+    let required = BTreeSet::from(REQUIRED_CORE_LOOP);
+    if observed != required {
+        bail!("supported_envelope.core_loop must match the accepted v0.18 core loop");
+    }
+    Ok(())
+}
+
+fn validate_journey_cells(receipt: &Receipt) -> Result<()> {
+    let mut observed = BTreeSet::new();
+    for cell in &receipt.journey_cells {
+        if !observed.insert(cell.id) {
+            bail!("duplicate journey cell: {:?}", cell.id);
+        }
+        issue_identity(&cell.owner_issue, "journey_cells[].owner_issue")?;
+        if cell.evidence_refs.is_empty() {
+            bail!("journey_cells[].evidence_refs must not be empty");
+        }
+        for evidence in &cell.evidence_refs {
+            non_empty(evidence, "journey_cells[].evidence_refs[]")?;
+        }
+        match cell.disposition {
+            CellDisposition::Limited | CellDisposition::NotProven => {
+                let limitation = cell.limitation.as_deref().unwrap_or_default();
+                non_empty(limitation, "limited/not-proven journey cell limitation")?;
+            }
+            CellDisposition::Pass | CellDisposition::Failed => {}
+        }
+    }
+
+    let required = BTreeSet::from(REQUIRED_CELLS);
+    if observed != required {
+        bail!("journey_cells must contain each accepted experience cell exactly once");
+    }
+    Ok(())
+}
+
+fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
+    for (name, child) in receipt.child_receipts.iter() {
+        non_empty(&child.schema_version, &format!("child_receipts.{name}.schema_version"))?;
+        exact_hex(&child.sha256, 32, &format!("child_receipts.{name}.sha256"))?;
+        non_empty(
+            &child.claim_boundary,
+            &format!("child_receipts.{name}.claim_boundary"),
+        )?;
+        if child.candidate_id != receipt.candidate.candidate_id {
+            bail!("child_receipts.{name} belongs to a different candidate");
+        }
+    }
+    Ok(())
+}
+
+fn computed_status(receipt: &Receipt) -> OverallStatus {
+    let blocked_cell = receipt
+        .journey_cells
+        .iter()
+        .any(|cell| cell.disposition == CellDisposition::Failed);
+    let blocked_child = receipt
+        .child_receipts
+        .iter()
+        .into_iter()
+        .any(|(_, child)| child.status == InputStatus::Blocked);
+    if receipt.zero_budget.total() > 0 || blocked_cell || blocked_child {
+        return OverallStatus::Blocked;
+    }
+
+    let unproven_cell = receipt
+        .journey_cells
+        .iter()
+        .any(|cell| cell.disposition == CellDisposition::NotProven);
+    let unproven_child = receipt
+        .child_receipts
+        .iter()
+        .into_iter()
+        .any(|(_, child)| child.status == InputStatus::NotProven);
+    if unproven_cell || unproven_child {
+        return OverallStatus::NotProven;
+    }
+
+    OverallStatus::Ready
+}
+
+fn validate(receipt: &Receipt) -> Result<OverallStatus> {
+    if receipt.check != CHECK {
+        bail!("check must be {CHECK}");
+    }
+    if receipt.schema_version != SCHEMA_VERSION {
+        bail!("schema_version must be {SCHEMA_VERSION}");
+    }
+    non_empty(&receipt.claim_boundary, "claim_boundary")?;
+    validate_candidate(receipt)?;
+    validate_envelope(&receipt.supported_envelope)?;
+    validate_journey_cells(receipt)?;
+    validate_child_receipts(receipt)?;
+    for limitation in &receipt.limitations {
+        non_empty(limitation, "limitations[]")?;
+    }
+
+    let computed = computed_status(receipt);
+    if receipt.status != computed {
+        bail!(
+            "declared status {} disagrees with computed status {}",
+            receipt.status.as_str(),
+            computed.as_str()
+        );
+    }
+    Ok(computed)
+}
+
+fn load(path: &Path) -> Result<Receipt> {
+    let content = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    let args = Args::parse();
+    let receipt = load(&args.receipt)?;
+    let status = validate(&receipt)?;
+    println!(
+        "public-beta-experience: release={} candidate={} status={} zero_budget={} cells={} inputs={}",
+        receipt.candidate.release,
+        receipt.candidate.candidate_id,
+        status.as_str(),
+        receipt.zero_budget.total(),
+        receipt.journey_cells.len(),
+        receipt.child_receipts.iter().len()
+    );
+    if status != OverallStatus::Ready {
+        bail!("public-beta experience is {}", status.as_str());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CellDisposition, OverallStatus, Receipt, validate};
+    use color_eyre::eyre::Result;
+
+    fn fixture(content: &str) -> Result<Receipt> {
+        Ok(serde_json::from_str(content)?)
+    }
+
+    #[test]
+    fn ready_fixture_passes() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/public_beta/ready.json"
+        ))?;
+        assert_eq!(validate(&receipt)?, OverallStatus::Ready);
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_fixture_is_blocked() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/public_beta/blocked.json"
+        ))?;
+        assert_eq!(validate(&receipt)?, OverallStatus::Blocked);
+        Ok(())
+    }
+
+    #[test]
+    fn a_nonzero_zero_budget_count_cannot_claim_ready() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/public_beta/ready.json"
+        ))?;
+        receipt.zero_budget.wrong_binary_or_version = 1;
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn cross_candidate_child_evidence_fails_closed() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/public_beta/ready.json"
+        ))?;
+        receipt.child_receipts.install_transition.candidate_id = "another-candidate".to_string();
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn limited_cell_requires_an_explicit_limitation() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/public_beta/ready.json"
+        ))?;
+        if let Some(cell) = receipt
+            .journey_cells
+            .iter_mut()
+            .find(|cell| cell.disposition == CellDisposition::Limited)
+        {
+            cell.limitation = None;
+        }
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_journey_cell_fails_closed() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/public_beta/ready.json"
+        ))?;
+        receipt
+            .journey_cells
+            .retain(|cell| cell.id != super::JourneyCellId::Shutdown);
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+}
