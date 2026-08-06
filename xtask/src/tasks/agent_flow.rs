@@ -604,6 +604,10 @@ fn is_route_heading(heading: &str) -> bool {
 }
 
 fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
+    // Metasyntactic `$placeholders` that appear in prose inside route/orchestration
+    // sections but are NOT actual skill route targets (#5930).
+    const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
+
     let mut tokens = Vec::new();
     let chars = line.chars().collect::<Vec<_>>();
     let mut index = 0;
@@ -619,7 +623,11 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
                 end += 1;
             }
             if end > start {
-                tokens.push(chars[start..end].iter().collect());
+                let token: String = chars[start..end].iter().collect();
+                // Skip metasyntactic placeholders that are prose, not route targets.
+                if !METASYNTACTIC_PLACEHOLDERS.contains(&token.as_str()) {
+                    tokens.push(token);
+                }
             }
             index = end;
         } else if in_route_section && chars[index] == '`' {
