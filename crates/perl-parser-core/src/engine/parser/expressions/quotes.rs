@@ -528,3 +528,78 @@ impl<'a> Parser<'a> {
     }
 
 }
+
+#[cfg(test)]
+mod modifier_tests {
+    use crate::Parser;
+
+    /// Parse a Perl expression and return the parse output (#1727).
+    fn parse(source: &str) -> crate::error::ParseOutput {
+        let mut parser = Parser::new(source);
+        parser.parse_with_recovery()
+    }
+
+    #[test]
+    fn m_with_valid_modifier_i() {
+        // /i is a standard modifier — should parse cleanly.
+        let result = parse("m/pattern/i");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_with_charset_modifier_u() {
+        // /u is a valid charset modifier (5.14+).
+        let result = parse("m/pattern/u");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_with_preserve_modifier_p() {
+        // /p is a valid modifier (5.10+).
+        let result = parse("m/pattern/p");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn qr_with_global_modifier_g() {
+        // /g should be accepted for qr// (and m//).
+        let result = parse("qr/pattern/g");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_preserve_and_global() {
+        // /gp is valid for s///.
+        let result = parse("s/pattern/replacement/gp");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_charset_modifier_a() {
+        // /a is a valid charset modifier for s///.
+        let result = parse("s/pattern/replacement/a");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_continue_modifier_c() {
+        // /c is valid for s/// (was previously rejected).
+        let result = parse("s/pattern/replacement/c");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_does_not_crash_on_unknown_modifier_z() {
+        // /z is NOT a valid regex modifier. The parser should handle it
+        // gracefully without crashing — either by consuming it as a modifier
+        // (the lexer pre-tokenizes m//z as a single token) or by breaking
+        // out of the modifier scan. Either way, no panic.
+        let result = parse("m/pattern/z");
+        // The regex was parsed into some node.
+        assert!(
+            result.ast.to_sexp().contains("/pattern/"),
+            "expected pattern in AST, got: {}",
+            result.ast.to_sexp()
+        );
+    }
+}
