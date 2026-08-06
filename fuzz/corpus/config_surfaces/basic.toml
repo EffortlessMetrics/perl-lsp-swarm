@@ -1,0 +1,11 @@
+[perl]
+interpreter = "perl"
+perltidy = "perltidy"
+perlcritic = "perlcritic"
+
+[critic]
+engine = "native"
+profile = ".perlcriticrc"
+
+[formatting]
+engine = "native"
