@@ -10,10 +10,10 @@ Apply [`docs/agents/PR_REVIEW_STANDARD.md`](../../../docs/agents/PR_REVIEW_STAND
 and require a useful current substantive review before integration can become ready.
 
 Read one current GitHub snapshot for the selected PR: draft/ready state, cumulative
-review conclusion and merge posture, required checks from live policy, unresolved
-review threads, current `CHANGES_REQUESTED` reviews, deliberately requested reviewers
-still pending, mergeability, conflicts, queue/ruleset state, explicit prerequisites,
-and applicable changelog/support disposition.
+substantive review result, required checks from live policy, unresolved review
+threads, current `CHANGES_REQUESTED` reviews, deliberately requested reviewers still
+pending, mergeability, conflicts, queue/ruleset state, explicit prerequisites, and
+applicable changelog/support disposition.
 
 Use repository helpers where they report these native facts truthfully. Do not require
 `review-run` comments, a material-claim digest, a human review submitted on the latest
@@ -28,11 +28,23 @@ review.
 - `CHANGES_REQUIRED` → `REVIEW_FINDINGS_OPEN`;
 - `NOT_PROVEN` → preserve the missing review evidence or authority;
 - `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite;
-- `IN_FLIGHT` → preserve the named pending review transition;
-- `READY_FOR_INTEGRATION` → continue evaluating live integration facts.
+- `SUPERSEDED_OR_CLOSE` → preserve the durable closeout disposition;
+- `REVIEW_CURRENT` → continue evaluating live integration facts.
 
 Green checks, textual mergeability, zero open threads, bot approval, or author
-self-certification cannot promote a candidate to `READY_FOR_INTEGRATION`.
+self-certification cannot promote a candidate to `REVIEW_CURRENT`.
+
+The integration result is separate:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
+
+Pending checks therefore produce `PR_IN_FLIGHT` while the substantive review remains
+current.
 
 ## Review currentness
 
@@ -76,7 +88,7 @@ rerun only affected proof and review.
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions
 - `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and return to the
   invoking flow
-- `IN_FLIGHT` → return `PR_IN_FLIGHT` with the named GitHub-owned transition
+- `SUPERSEDED_OR_CLOSE` → preserve the closeout disposition through the invoking flow
 - `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam and rerun affected
   proof/review
 - `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name the missing reliable evidence
