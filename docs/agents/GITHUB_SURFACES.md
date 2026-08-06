@@ -3,6 +3,27 @@
 GitHub is the native interaction and asynchronous handoff layer for the development
 loop.
 
+## Operational boundary
+
+This document defines what GitHub surfaces own. It does not tell a running provider
+how to execute review.
+
+```text
+Claude Code review operation
+→ CLAUDE.md
+→ .claude/skills/orchestrate-work
+→ .claude/skills/finish-pr
+→ .claude/skills/review-pr
+→ .claude/skills/verify-live-ci
+
+Codex review operation
+→ AGENTS.md
+→ .agents/skills/orchestrate-work
+→ .agents/skills/finish-pr
+→ .agents/skills/review-pr
+→ .agents/skills/verify-live-ci
+```
+
 ## Surface ownership
 
 | Surface | Owns |
@@ -114,12 +135,11 @@ Publish ready by default. Draft is an explicit exception for remote-only proof, 
 collaboration on the same candidate branch, or a protected integration experiment
 that requires remote evidence before broad review is useful.
 
-## Review
+## Review record
 
-Review follows
-[`PR_REVIEW_STANDARD.md`](PR_REVIEW_STANDARD.md) and uses GitHub's submitted review
-interface, inline threads, replies, and useful cumulative conclusions. It is directed,
-falsifying, verified, cumulative, and semantic—not an exact-head receipt protocol.
+Provider-native review uses GitHub's submitted-review interface, inline threads,
+replies, and useful cumulative conclusions. It is directed, falsifying, verified,
+cumulative, and semantic—not an exact-head receipt protocol.
 
 A helpful review record contains:
 
@@ -165,8 +185,8 @@ not require a new full review merely because another commit was pushed.
 A later change receives additional review only where it can change the conclusion:
 
 - verify repaired findings and affected proof;
-- review material claim, production-route, authority, risk, rollback, or
-  compatibility changes;
+- review material claim, production-route, authority, risk, rollback, or compatibility
+  changes;
 - review actual conflict or integration repairs;
 - do not restart broad review for formatting, editorial cleanup, generated receipt
   refresh, or stronger tests unless they change a substantive conclusion.
@@ -176,7 +196,7 @@ A clean review is valid.
 ## Related pull request synthesis
 
 When an umbrella or release goal directly links a bounded related PR set, each PR
-keeps its own submitted review. A goal-level synthesis may summarize:
+keeps its own provider-native submitted review. A goal-level synthesis may summarize:
 
 ```text
 PR
