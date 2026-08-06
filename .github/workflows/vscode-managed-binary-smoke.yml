@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Perl
-        uses: shogo82148/actions-setup-perl@0f12f8929f8062f1f7795f8a89e9f2f88c5f6ce2  # v1.34.0
+        uses: shogo82148/actions-setup-perl@22423f01bde48fb88785c007e3166fbbbd8e892a  # v1.34.0
         with:
           perl-version: '5.40'
 
