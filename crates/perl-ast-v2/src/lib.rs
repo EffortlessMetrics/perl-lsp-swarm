@@ -146,8 +146,11 @@ pub enum NodeKind {
     /// let output = parser.parse_with_recovery();
     /// for node in output.ast.walk() {
     ///     if let NodeKind::ErrorRef { diag_id } = &node.kind {
-    ///         let diagnostic = &output.diagnostics[*diag_id as usize];
-    ///         println!("Error at {:?}: {}", node.range, diagnostic);
+    ///         // Use safe indexing — diag_id is a u32 that should always be
+    ///         // a valid index, but verify defensively (#2135).
+    ///         if let Some(diagnostic) = output.diagnostics.get(*diag_id as usize) {
+    ///             println!("Error at {:?}: {}", node.range, diagnostic);
+    ///         }
     ///     }
     /// }
     /// ```
