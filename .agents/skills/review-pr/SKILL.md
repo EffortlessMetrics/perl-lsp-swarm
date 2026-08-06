@@ -27,8 +27,15 @@ receipt machinery, or post a status-only exact-head comment.
 
 ## Review orchestration
 
-For a substantive candidate, invoke `$orchestrate-work` and select only the lenses
-that can change the conclusion. Normal focused assignments include:
+First determine whether `$finish-pr` or an earlier invocation has already produced
+current joined adversarial evidence for this cumulative candidate. Reuse that evidence
+when its claim, production path, authority, proof, compatibility, risk, and rollback
+subjects remain current. Do not dispatch duplicate review passes merely because this
+skill was entered separately.
+
+When an applicable lens is absent, stale, contradictory, or materially changed,
+invoke `$orchestrate-work` for only the missing dimensions. Normal focused assignments
+include:
 
 - `$review-tests` for proof discrimination, historical-defect controls,
   schema/validator agreement, and false-green tests;
