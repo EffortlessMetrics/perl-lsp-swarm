@@ -320,7 +320,10 @@ fn validate_journey_cells(receipt: &Receipt) -> Result<()> {
 
 fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
     for (name, child) in receipt.child_receipts.iter() {
-        non_empty(&child.schema_version, &format!("child_receipts.{name}.schema_version"))?;
+        non_empty(
+            &child.schema_version,
+            &format!("child_receipts.{name}.schema_version"),
+        )?;
         exact_hex(&child.sha256, 32, &format!("child_receipts.{name}.sha256"))?;
         non_empty(
             &child.claim_boundary,
@@ -329,6 +332,12 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
         if child.candidate_id != receipt.candidate.candidate_id {
             bail!("child_receipts.{name} belongs to a different candidate");
         }
+    }
+
+    if receipt.child_receipts.release_topology.sha256
+        != receipt.candidate.release_topology_sha256
+    {
+        bail!("release_topology child digest differs from candidate topology digest");
     }
     Ok(())
 }
@@ -457,7 +466,18 @@ mod tests {
         let mut receipt = fixture(include_str!(
             "../../fixtures/experience/public_beta/ready.json"
         ))?;
-        receipt.child_receipts.install_transition.candidate_id = "another-candidate".to_string();
+        receipt.child_receipts.install_transition.candidate_id =
+            "another-candidate".to_string();
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn release_topology_digest_must_match_candidate() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/public_beta/ready.json"
+        ))?;
+        receipt.child_receipts.release_topology.sha256 = "9".repeat(64);
         assert!(validate(&receipt).is_err());
         Ok(())
     }
