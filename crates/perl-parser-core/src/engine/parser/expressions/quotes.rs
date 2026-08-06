@@ -149,27 +149,18 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Parse modifiers for regex operators
+        // Parse modifiers for qr// only. The m// arm below does its own scan
+        // because m// accepts g and c which qr// does not (#1727).
         let mut modifiers = String::new();
-        if matches!(op, "m" | "qr") {
-            // Check for modifiers (letters after closing delimiter)
+        if op == "qr" {
             while let Ok(token) = self.tokens.peek() {
                 if token.kind == TokenKind::Identifier && token.text.len() == 1 {
-                    // Single letter identifier could be a modifier
-                    let ch =
-                        token.text.chars().next().ok_or_else(|| {
-                            ParseError::syntax("Empty identifier token", token.start)
-                        })?;
-                    if ch.is_ascii_alphabetic() {
-                        // Validate against the full set of Perl regex modifiers
-                        // (#1727): previously accepted ANY alphabetic char.
-                        if !matches!(
-                            ch,
-                            'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'c' | 'g' | 'o' | 'a' | 'd' | 'l'
-                                | 'u'
-                        ) {
-                            break;
-                        }
+                    let ch = token.text.chars().next().ok_or_else(|| {
+                        ParseError::syntax("Empty identifier token", token.start)
+                    })?;
+                    if ch.is_ascii_alphabetic()
+                        && matches!(ch, 'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'o' | 'a' | 'd' | 'l' | 'u')
+                    {
                         modifiers.push(ch);
                         self.tokens.next()?;
                     } else {
@@ -247,7 +238,13 @@ impl<'a> Parser<'a> {
                         let ch = token.text.chars().next().ok_or_else(|| {
                             ParseError::syntax("Empty identifier token", token.start)
                         })?;
-                        if ch.is_ascii_alphabetic() {
+                        if ch.is_ascii_alphabetic()
+                            && matches!(
+                                ch,
+                                'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'c' | 'g' | 'o' | 'a' | 'd'
+                                    | 'l' | 'u'
+                            )
+                        {
                             modifiers.push(ch);
                             self.tokens.next()?;
                         } else {
