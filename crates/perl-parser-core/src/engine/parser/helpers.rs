@@ -1327,10 +1327,10 @@ impl<'a> Parser<'a> {
                     // Plain uppercase identifier (e.g. constant) — not an argument.
                     // Exception: if followed by `=>`, the fat-comma auto-quotes it,
                     // so it IS a valid bare-call argument (e.g. `foo B => 'test'`).
-                    if let Ok(third) = self.tokens.peek_second() {
-                        return third.kind == TokenKind::FatArrow;
-                    }
-                    return false;
+                    return self
+                        .tokens
+                        .peek_second()
+                        .is_ok_and(|third| third.kind == TokenKind::FatArrow);
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
                 if Self::is_block_list_func(&next_text) {
