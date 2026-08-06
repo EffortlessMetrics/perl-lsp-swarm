@@ -3119,8 +3119,17 @@ fn starts_scalar_name(ch: &char) -> bool {
 /// Whether `ch` can begin the name of an interpolated array (`@name`, `@{...}`,
 /// `@::x`, and the match-offset arrays `@-` and `@+`). Digits are excluded:
 /// `@1` is not a variable.
+///
+/// Uses [`char::is_alphabetic`] rather than its ASCII-only counterpart because
+/// `use utf8;` admits Unicode identifiers: `@épattern` and `@π` are ordinary
+/// arrays and interpolate. Treating them as name-less would classify a dynamic
+/// pattern as static, which is the unsound direction.
+///
+/// This deliberately stays narrower than [`starts_scalar_name`]'s
+/// `!is_whitespace()`: that predicate would admit `@1`, and the digit exclusion
+/// above is load-bearing.
 fn starts_array_name(ch: &char) -> bool {
-    ch.is_ascii_alphabetic() || matches!(ch, '_' | '{' | ':' | '-' | '+')
+    ch.is_alphabetic() || matches!(ch, '_' | '{' | ':' | '-' | '+')
 }
 
 /// Regex literal shell payload (`/pattern/modifiers` or `qr/pattern/modifiers`).

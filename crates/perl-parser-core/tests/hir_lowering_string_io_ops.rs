@@ -190,6 +190,68 @@ fn glob_sigil_not_starting_a_variable_stays_static() -> TestResult {
 }
 
 #[test]
+fn double_diamond_lowers_to_the_same_argv_source_as_single_diamond() -> TestResult {
+    // `<<>>` (Perl 5.22+) is the "safer" diamond: it reads @ARGV but refuses
+    // magic/pipe filenames. `tests/double_diamond.rs` pins that it parses as
+    // `NodeKind::Diamond`; this pins what the lowerers then do with it, on both
+    // paths. Without it, a future change giving `<<>>` its own `ReadlineSource`
+    // variant would alter the classification with no test noticing.
+    let file = lower_source("my @lines = <<>>;\n");
+    let readline = must_some(readlines(&file).first().copied());
+    assert_eq!(
+        readline.source,
+        ReadlineSource::ArgvDiamond,
+        "`<<>>` reads @ARGV, so it classifies as the diamond source"
+    );
+
+    let body = lower_body_source("my @lines = <<>>;\n");
+    let exprs = body_exprs(&body);
+    assert!(
+        exprs.iter().any(|expr| matches!(
+            expr,
+            HirExpr::Readline { source: ReadlineSource::ArgvDiamond, .. }
+        )),
+        "body HIR must classify `<<>>` as the @ARGV diamond too, got {exprs:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn glob_unicode_array_patterns_are_recognized_as_interpolating() -> TestResult {
+    // `use utf8;` admits Unicode identifiers, and perl 5.38.2 confirms `@é` is
+    // an ordinary array that interpolates:
+    //
+    //     $ perl -e 'use utf8; my @é = ("VAL"); print "<@é>"'   # => <VAL>
+    //
+    // An ASCII-only name-start test reported these as statically knowable, which
+    // is the unsound direction: a consumer would resolve a match set that is
+    // actually a runtime property.
+    for source in ["use utf8;\nmy @files = <@épattern>;\n", "use utf8;\nmy @files = <@π>;\n"] {
+        let file = lower_source(source);
+        let glob = must_some(globs(&file).first().copied());
+
+        assert!(
+            glob.interpolated,
+            "a Unicode array name is still a variable, so {:?} is dynamic",
+            glob.pattern
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn glob_digit_after_sigil_stays_static() -> TestResult {
+    // The companion to the case above: widening the name-start test must not
+    // widen it to digits. `@1` is not a variable, so this pattern's match set
+    // really is statically known and must not be reported as interpolating.
+    let file = lower_source("my @files = <*.txt@1>;\n");
+    let glob = must_some(globs(&file).first().copied());
+
+    assert!(!glob.interpolated, "`@1` is not a variable, so {:?} is static", glob.pattern);
+    Ok(())
+}
+
+#[test]
 fn glob_special_variable_patterns_are_recognized_as_interpolating() -> TestResult {
     // Perl's punctuation variables are variables. The parser routes these to
     // `NodeKind::Glob` rather than `Readline` (the pattern is not a bare
