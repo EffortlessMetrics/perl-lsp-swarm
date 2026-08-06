@@ -14,11 +14,11 @@ loop.
 | Pull request | one coherent acceptance-and-rollback candidate |
 | Draft or ready state | whether broad review is useful now |
 | Review request | visible pending judgment where deliberately requested |
-| Submitted review | useful cumulative review conclusion, findings, and substantive merge posture |
+| Submitted review | useful cumulative review conclusion, findings, and substantive review result |
 | Inline review thread | one localized finding and its evidence/discussion |
 | Review reply and resolution | supported finding disposition |
 | Checks and artifacts | candidate-bound machine evidence and instrument state |
-| Ruleset, queue, mergeability | whether irreversible integration is currently allowed |
+| Ruleset, queue, mergeability | current integration posture and whether irreversible integration is allowed |
 | Merge and closeout | what landed, what remains, and the next coherent claim |
 
 ## Issue shape
@@ -130,24 +130,34 @@ Material findings and evidence, or a useful clean conclusion
 Prior finding dispositions
 What the review establishes
 What remains unproved
-Current substantive merge posture
+Current GitHub facts as a separate snapshot
+Substantive review result
 Next action
 ```
 
-Use one substantive posture:
+Use one substantive review result:
 
 ```text
-READY_FOR_INTEGRATION
+REVIEW_CURRENT
 CHANGES_REQUIRED
 NOT_PROVEN
-IN_FLIGHT
 BLOCKED_BY_PREREQUISITE
 SUPERSEDED_OR_CLOSE
 ```
 
 Green checks, `mergeable: true`, zero open threads, bot approval, or author
-self-certification do not independently imply `READY_FOR_INTEGRATION`. Checks and
+self-certification do not independently imply `REVIEW_CURRENT`. Checks and
 mergeability are integration facts; they are not review substitutes.
+
+After review is `REVIEW_CURRENT`, live GitHub facts produce a separate integration
+posture:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
 
 Do not post comments that merely say a review ran at a head SHA and claim digest. Do
 not require a new full review merely because another commit was pushed.
@@ -171,9 +181,9 @@ keeps its own submitted review. A goal-level synthesis may summarize:
 ```text
 PR
 candidate identity
-hosted/current proof
-substantive result
-merge posture
+hosted/current checks
+substantive review result
+integration posture
 explicit prerequisite
 correct repair and merge order
 ```
@@ -197,7 +207,7 @@ Thread resolution is not itself evidence.
 
 Use live required checks, unresolved threads, current change requests, draft state,
 mergeability, rulesets, and queue state as integration authority after substantive
-review is ready.
+review is `REVIEW_CURRENT`.
 
 The current PR head SHA may be used as compare-and-swap protection at merge time. That
 prevents racing a moving branch; it does not make review currentness depend on the
