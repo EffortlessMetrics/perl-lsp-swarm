@@ -126,8 +126,8 @@ Repository and GitHub artifacts hold durable truth:
   obligations;
 - branches and worktrees hold one candidate's mutation;
 - pull requests hold one coherent acceptance-and-rollback candidate;
-- submitted reviews, threads, checks, rulesets, and mergeability hold current review
-  and integration evidence;
+- submitted reviews and threads hold substantive candidate judgment;
+- checks, rulesets, queue state, and mergeability hold current integration evidence;
 - merge closeout records what landed and what remains.
 
 Runtime topology, task lists, liveness, retries, raw logs, and provisional reasoning
@@ -217,33 +217,44 @@ publish or resume the cumulative candidate
 → verify and repair existing findings
 → run a final mutable challenge while repairs remain allowed
 → submit cumulative substantive review
-→ record one merge posture
+→ record one substantive review result
 → evaluate live checks, threads, rulesets, mergeability, and prerequisites
+→ record the current integration posture
 → merge with expected-head protection
 → reconcile the landed result
 ```
 
-Use one substantive posture:
+Use one substantive review result:
 
 ```text
-READY_FOR_INTEGRATION
+REVIEW_CURRENT
 CHANGES_REQUIRED
 NOT_PROVEN
-IN_FLIGHT
 BLOCKED_BY_PREREQUISITE
 SUPERSEDED_OR_CLOSE
 ```
 
 Green CI, `mergeable: true`, zero open threads, bot approval, or author
-self-certification cannot create `READY_FOR_INTEGRATION`. They are useful facts only
+self-certification cannot create `REVIEW_CURRENT`. They are integration facts only
 after the candidate has been substantively reviewed.
+
+Live integration then uses:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
+
+A pending check can therefore leave review current while integration is in flight.
 
 ### Related PRs
 
 A bounded related PR set may need a goal-level synthesis after each candidate has its
-own review. Compare candidate identity, current proof, substantive result, merge
-posture, explicit prerequisites, schema/identity/authority contracts, limitation
-propagation, fan-in behavior, and correct repair/merge order.
+own review. Compare candidate identity, hosted/current checks, substantive review
+result, integration posture, explicit prerequisites, schema/identity/authority
+contracts, limitation propagation, fan-in behavior, and correct repair/merge order.
 
 That synthesis is not batch approval, a portfolio queue, sibling-lane surveillance, or
 a substitute for per-PR review.
@@ -263,7 +274,7 @@ identify changed semantic subjects
 → rerun affected proof
 → verify addressed findings
 → review newly changed claim/risk dimensions
-→ update the cumulative merge posture
+→ update the cumulative substantive review result
 → continue
 ```
 
@@ -286,10 +297,10 @@ safety, not review currentness.
 
 ## Merge boundary
 
-Merge eligibility is determined by a substantively reviewed
-`READY_FOR_INTEGRATION` candidate plus current GitHub branch protection, rulesets,
-required checks, unresolved substantive threads, current change requests, actual
-mergeability, and any required combined-tree proof.
+Merge eligibility requires a substantively `REVIEW_CURRENT` candidate plus current
+`INTEGRATION_READY` evidence from GitHub branch protection, rulesets, required checks,
+unresolved substantive threads, current change requests, actual mergeability, and any
+required combined-tree proof.
 
 Behind-only movement does not require a rebase or review replay. If the head moves
 immediately before merge, re-read live state and refresh only evidence/review affected
