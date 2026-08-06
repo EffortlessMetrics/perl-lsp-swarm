@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Review one pull request cumulatively through GitHub, publishing useful findings or a useful clean conclusion and explicit merge posture without exact-head or claim-hash receipt ceremony.
+description: Review one pull request cumulatively through GitHub, publishing useful findings or a useful clean conclusion and explicit substantive result without exact-head or claim-hash receipt ceremony.
 ---
 
 # Review PR
@@ -44,22 +44,22 @@ review-validity token. Do not compute a material-claim digest, post `review-star
 5. Challenge claim honesty, complexity, risk, and rollback. Keep conclusions inside
    the evidence boundary and prevent rejection, fallback, limitation, or partial
    implementation from hiding a condition the contract says must block.
-6. Classify live checks, threads, draft state, mergeability, and prerequisites without
-   treating any of them as substantive review.
+6. Classify live checks, threads, draft state, mergeability, and prerequisites as a
+   separate snapshot rather than treating them as substantive review.
 7. Publish material findings through GitHub reviews and inline threads, or publish a
-   useful clean conclusion. Record one merge posture:
+   useful clean conclusion. Record one substantive result:
 
 ```text
-READY_FOR_INTEGRATION
+REVIEW_CURRENT
 CHANGES_REQUIRED
 NOT_PROVEN
-IN_FLIGHT
 BLOCKED_BY_PREREQUISITE
 SUPERSEDED_OR_CLOSE
 ```
 
 Green CI, `mergeable: true`, zero open threads, or a clean bot review do not
-independently imply `READY_FOR_INTEGRATION`.
+independently imply `REVIEW_CURRENT`. Once review is current, `$verify-live-ci`
+separately classifies integration as ready, in flight, blocked, or not proved.
 
 Use native Codex review, a read-only reviewer, an external oracle, or direct inspection
 when that changes the evidence surface. Identity separation alone is neither required
@@ -91,12 +91,15 @@ Submit a review that helps a fresh agent continue:
 ## Residual risk / not proved
 - Local uncertainty, excluded surfaces, and instrument limitations
 
-## Merge posture
-- READY_FOR_INTEGRATION | CHANGES_REQUIRED | NOT_PROVEN | IN_FLIGHT |
-  BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
+## Current GitHub facts
+- Checks, threads, draft/ready state, mergeability, and prerequisites as a snapshot
+
+## Substantive review result
+- REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN | BLOCKED_BY_PREREQUISITE |
+  SUPERSEDED_OR_CLOSE
 
 ## Next action
-- Repair, focused re-review, current integration proof, merge path, or named follow-up
+- Repair, focused re-review, live integration evaluation, merge path, or named follow-up
 ```
 
 Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a claim
@@ -106,9 +109,9 @@ merely to make activity visible.
 ## Related PR synthesis
 
 When this PR belongs to a bounded related set, review it individually first. The goal
-root may then summarize each PR's candidate identity, hosted/current proof,
-substantive result, merge posture, explicit prerequisite, and correct repair/merge
-order.
+root may then summarize each PR's candidate identity, hosted/current checks,
+substantive review result, integration posture, explicit prerequisite, and correct
+repair/merge order.
 
 Check parent/child schema, identity, authority, status, limitation propagation, and
 artifact-set contracts. A fan-in must load and validate child evidence; it cannot
@@ -132,11 +135,10 @@ Do not restart a full `deep` review after every push.
 
 ## Routes
 
-- `READY_FOR_INTEGRATION` / `REVIEW_CURRENT` → `$verify-live-ci`
+- `REVIEW_CURRENT` → `$verify-live-ci`
 - `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions; route to `$prepare-issue`
   only when the claim or owner must change
-- `IN_FLIGHT` → return the named GitHub-owned transition to the invoking flow
 - `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and return to the
   invoking flow
 - `SUPERSEDED_OR_CLOSE` → preserve the durable disposition through the invoking flow
