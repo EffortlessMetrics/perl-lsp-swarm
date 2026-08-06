@@ -642,4 +642,35 @@ proptest! {
         prop_assert_eq!(&back.label, &label);
         prop_assert_eq!(back.default, default);
     }
+
+    #[test]
+    fn prop_protocol_variable_evaluate_name_roundtrip(
+        evaluate_name in proptest::option::of("[a-zA-Z_][a-zA-Z0-9_]{0,32}"),
+    ) {
+        let var = ProtocolVariable {
+            name: "x".to_string(),
+            value: "42".to_string(),
+            type_: Some("integer".to_string()),
+            variables_reference: 0,
+            named_variables: None,
+            indexed_variables: None,
+            evaluate_name: evaluate_name.clone(),
+        };
+
+        let json_str = serde_json::to_string(&var)
+            .map_err(|e| TestCaseError::fail(format!("serialize failed: {e}")))?;
+        let back: ProtocolVariable = serde_json::from_str(&json_str)
+            .map_err(|e| TestCaseError::fail(format!("deserialize failed: {e}")))?;
+
+        prop_assert_eq!(&back.evaluate_name, &evaluate_name);
+
+        // When evaluate_name is None, the field must be absent from JSON
+        // (skip_serializing_if).
+        if evaluate_name.is_none() {
+            prop_assert!(
+                !json_str.contains("evaluateName"),
+                "evaluateName should be absent when None, got: {json_str}"
+            );
+        }
+    }
 }
