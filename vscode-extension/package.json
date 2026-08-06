@@ -1198,7 +1198,7 @@
       "problem/context": [
         {
           "command": "perl-lsp.explainDiagnostic",
-          "when": "editorLangId == perl",
+          "when": "resourceLangId == perl",
           "group": "navigation"
         }
       ]
