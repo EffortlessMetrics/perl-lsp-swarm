@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10188 |
-| Rust-family files | 3099 |
-| Non-Rust files | 7089 |
-| Allowlisted | 4779 |
-| Unclassified | 2310 |
+| Total tracked files | 10191 |
+| Rust-family files | 3101 |
+| Non-Rust files | 7090 |
+| Allowlisted | 4773 |
+| Unclassified | 2317 |
 
 ## Non-Rust files by category
 
@@ -20,9 +20,9 @@
 | documentation | 2253 |
 | generated | 1 |
 | production | 211 |
-| test | 1759 |
+| test | 1753 |
 | tooling | 319 |
-| unclassified | 2310 |
+| unclassified | 2317 |
 
 ## Unclassified files
 
@@ -328,6 +328,13 @@
 | `fuzz/corpus/declaration_parsing/var_list.txt` | `txt` |
 | `fuzz/corpus/declaration_parsing/var_name.txt` | `txt` |
 | `fuzz/corpus/declaration_parsing/var_x.txt` | `txt` |
+| `fuzz/corpus/heredoc_parsing/end.txt` | `txt` |
+| `fuzz/corpus/heredoc_parsing/eof.txt` | `txt` |
+| `fuzz/corpus/heredoc_parsing/eot.txt` | `txt` |
+| `fuzz/corpus/heredoc_parsing/html.txt` | `txt` |
+| `fuzz/corpus/heredoc_parsing/myfunc.txt` | `txt` |
+| `fuzz/corpus/heredoc_parsing/sql.txt` | `txt` |
+| `fuzz/corpus/heredoc_parsing/token.txt` | `txt` |
 | `fuzz/corpus/quote_operators/caseless.txt` | `txt` |
 | `fuzz/corpus/quote_operators/digits.txt` | `txt` |
 | `fuzz/corpus/quote_operators/hello.txt` | `txt` |
@@ -5161,12 +5168,6 @@
 | `flake.lock` | config | `non-rust-flake-lock` | release/ci |
 | `flake.nix` | tooling | `non-rust-flake-nix` | release/ci |
 | `fuzz/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
-| `fuzz/corpus/heredoc_parsing/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/heredoc_parsing/format_decl.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/heredoc_parsing/heredoc_basic.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/heredoc_parsing/heredoc_utf8_delimiter.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/heredoc_parsing/malformed_heredoc_recovery.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/heredoc_parsing/unterminated_heredoc.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fuzz/corpus/lexer_tokenization/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fuzz/corpus/lexer_tokenization/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fuzz/corpus/lexer_tokenization/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |

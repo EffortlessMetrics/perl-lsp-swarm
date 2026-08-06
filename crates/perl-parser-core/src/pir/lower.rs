@@ -803,12 +803,16 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::MatchExpr(_) => "MatchExpr",
         HirKind::SubstitutionExpr(_) => "SubstitutionExpr",
         HirKind::TransliterationExpr(_) => "TransliterationExpr",
-        // Try/Class/Defer shells are not yet lowered by PIR v0; they fall
-        // through to the `other =>` unsupported-count fallback in
-        // `lower_item`, keyed by these names.
+        // Try/Class/Defer and the Wave 4 string/IO shells (Heredoc/Readline/
+        // Glob) are not yet lowered by PIR v0; they fall through to the
+        // `other =>` unsupported-count fallback in `lower_item`, keyed by these
+        // names, so they stay visible in the receipt instead of disappearing.
         HirKind::TryExpr(_) => "TryExpr",
         HirKind::ClassDecl(_) => "ClassDecl",
         HirKind::DeferExpr(_) => "DeferExpr",
+        HirKind::HeredocMigrationAdapter(_) => "HeredocMigrationAdapter",
+        HirKind::ReadlineMigrationAdapter(_) => "ReadlineMigrationAdapter",
+        HirKind::GlobMigrationAdapter(_) => "GlobMigrationAdapter",
     }
 }
 
@@ -1425,6 +1429,24 @@ impl BodyLowerer {
                 *self.unsupported.entry("Subscript").or_insert(0) += 1;
                 self.lower_expr(body, subscript.container, file);
                 self.lower_expr(body, subscript.subscript, file);
+            }
+
+            HirExpr::Heredoc { .. } => {
+                // The body-HIR shell records source-backed value facts. PIR-A
+                // does not yet model heredoc evaluation, so remain fail-closed.
+                *self.unsupported.entry("Heredoc").or_insert(0) += 1;
+            }
+
+            HirExpr::Readline { .. } => {
+                // Filehandle and diamond reads are runtime IO, not static PIR-A
+                // facts. Preserve the typed body node while refusing exactness.
+                *self.unsupported.entry("Readline").or_insert(0) += 1;
+            }
+
+            HirExpr::Glob { .. } => {
+                // Glob expansion is runtime filesystem behavior; the typed body
+                // shell must not be mistaken for a known match set.
+                *self.unsupported.entry("Glob").or_insert(0) += 1;
             }
         }
     }

@@ -9,6 +9,7 @@ use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
     HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
+    diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -17,16 +18,18 @@ use super::model::{
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
     CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
     DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
-    HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
-    IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
-    LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
-    ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
-    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
-    RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
+    ExportDeclarationKind, GlobMigrationAdapter, GlobSlot, GlobSlotKind, GlobSlotSource,
+    HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId, HirItem,
+    HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
+    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
+    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl,
+    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
+    PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence,
+    RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
     StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
     StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
     TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    glob_pattern_interpolates,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -507,6 +510,66 @@ impl Lowerer {
                         interpolated: Some(*interpolated),
                         element_count: None,
                         pair_count: None,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => {
+                // The body text stays in the source buffer; `body_range` is the
+                // handle to it. A command heredoc (`<<`CMD``) runs the shell at
+                // runtime, so `command` marks it as a non-literal value.
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::HeredocMigrationAdapter(HeredocMigrationAdapter {
+                        delimiter: delimiter.clone(),
+                        interpolated: *interpolated,
+                        indented: *indented,
+                        command: *command,
+                        body_range: *body_span,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Readline { filehandle } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::ReadlineMigrationAdapter(ReadlineMigrationAdapter {
+                        source: ReadlineSource::from_filehandle(filehandle.as_deref()),
+                        filehandle: filehandle.clone(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Diamond => {
+                // `<>` and `<<>>` both read the files named in `@ARGV`, falling
+                // back to STDIN. The parser keeps no filehandle for either form.
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::ReadlineMigrationAdapter(ReadlineMigrationAdapter {
+                        source: ReadlineSource::ArgvDiamond,
+                        filehandle: None,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Glob { pattern } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::GlobMigrationAdapter(GlobMigrationAdapter {
+                        pattern: pattern.clone(),
+                        interpolated: glob_pattern_interpolates(pattern),
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
@@ -3409,6 +3472,24 @@ impl<'a> BodyBuilder2<'a> {
                     range,
                 )
             }
+
+            // String/IO value shells. The payloads are built by the shared
+            // constructors in `hir::body` so this lowerer and
+            // `hir::body::lower_expr` cannot drift apart — they already did once,
+            // when only one of the two gained these arms.
+            NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => self
+                .alloc_expr(
+                    heredoc_expr(delimiter, *interpolated, *indented, *command, *body_span),
+                    range,
+                ),
+
+            NodeKind::Readline { filehandle } => {
+                self.alloc_expr(readline_expr(filehandle.as_deref()), range)
+            }
+
+            NodeKind::Diamond => self.alloc_expr(diamond_expr(), range),
+
+            NodeKind::Glob { pattern } => self.alloc_expr(glob_expr(pattern), range),
 
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
