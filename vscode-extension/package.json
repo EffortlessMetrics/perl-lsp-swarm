@@ -1194,6 +1194,13 @@
           "when": "editorLangId == perl",
           "group": "navigation"
         }
+      ],
+      "problem/context": [
+        {
+          "command": "perl-lsp.explainDiagnostic",
+          "when": "editorLangId == perl",
+          "group": "navigation"
+        }
       ]
     },
     "keybindings": [
