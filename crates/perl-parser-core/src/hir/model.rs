@@ -650,7 +650,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
         .into_iter()
         .enumerate()
         .map(|(ordinal, mut entry)| {
-            entry.effect.ordinal = ordinal as u32;
+            entry.effect.ordinal = ordinal.min(u32::MAX as usize) as u32;
             entry.effect
         })
         .collect()
@@ -2487,7 +2487,7 @@ fn import_spec(
         file_id: Some(file_id),
         anchor_id: Some(AnchorId(directive.range.start as u64)),
         scope_id: directive.scope_id.map(|id| ScopeId(id.index() as u64)),
-        span_start_byte: Some(directive.range.start as u32),
+        span_start_byte: Some(directive.range.start.min(u32::MAX as usize) as u32),
     }
 }
 

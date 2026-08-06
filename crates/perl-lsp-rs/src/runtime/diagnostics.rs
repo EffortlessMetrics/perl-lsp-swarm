@@ -366,7 +366,7 @@ impl PullDiagnosticsOrchestrator {
     fn emit_warning(&self, server: &LspServer, key: String, message: &str) {
         let mut sent = self.warnings_sent.lock();
         if sent.insert(key) {
-            let _ = server.show_message(super::window::MessageType::Warning, message);
+            server.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 
@@ -1271,6 +1271,11 @@ impl LspServer {
     }
 
     /// Convert LSP diagnostic to JSON value.
+    ///
+    /// Uses `serde_json::to_value` for the standard fields (aligning push and
+    /// pull on the same wire shape — the pull path already uses
+    /// `lsp_types::Diagnostic` directly), then overrides `message` with the
+    /// markup-aware version when the client supports markdown messages (#5017).
     fn lsp_diagnostic_to_json(
         &self,
         d: &lsp_types::Diagnostic,
@@ -1278,64 +1283,26 @@ impl LspServer {
         _uri: &str,
         markup_message_support: bool,
     ) -> Value {
-        let start_line = d.range.start.line;
-        let start_char = d.range.start.character;
-        let end_line = d.range.end.line;
-        let end_char = d.range.end.character;
+        // `to_value` is infallible for `Diagnostic` (every field is serializable),
+        // but fall back to the hand-built shape if a future field breaks
+        // serialization rather than dropping the diagnostic entirely.
+        let Ok(mut diag) = serde_json::to_value(d) else {
+            return json!({
+                "range": d.range,
+                "severity": d.severity,
+                "source": d.source,
+                "message": d.message,
+            });
+        };
 
-        let mut diag = json!({
-            "range": {
-                "start": { "line": start_line, "character": start_char },
-                "end": { "line": end_line, "character": end_char },
-            },
-            "severity": d.severity.map(|s| match s {
-                lsp_types::DiagnosticSeverity::ERROR => 1,
-                lsp_types::DiagnosticSeverity::WARNING => 2,
-                lsp_types::DiagnosticSeverity::INFORMATION => 3,
-                lsp_types::DiagnosticSeverity::HINT => 4,
-                _ => 2,
-            }),
-            "code": d.code.as_ref().map(|c| match c {
-                lsp_types::NumberOrString::String(s) => json!(s),
-                lsp_types::NumberOrString::Number(n) => json!(n),
-            }),
-            "source": d.source,
-            "message": Self::diagnostic_message_value(
-                &d.message,
-                d.data.as_ref(),
-                markup_message_support,
-            ),
-        });
-
-        if let Some(ref tags) = d.tags {
-            diag["tags"] = json!(
-                tags.iter()
-                    .map(|t| match *t {
-                        lsp_types::DiagnosticTag::UNNECESSARY => 1,
-                        lsp_types::DiagnosticTag::DEPRECATED => 2,
-                        _ => 0,
-                    })
-                    .collect::<Vec<_>>()
-            );
-        }
-
-        if let Some(ref data) = d.data {
-            diag["data"] = data.clone();
-        }
-
-        if let Some(ref related) = d.related_information {
-            diag["relatedInformation"] = json!(related.iter().map(|ri| {
-                json!({
-                    "location": {
-                        "uri": ri.location.uri.to_string(),
-                        "range": {
-                            "start": { "line": ri.location.range.start.line, "character": ri.location.range.start.character },
-                            "end": { "line": ri.location.range.end.line, "character": ri.location.range.end.character },
-                        }
-                    },
-                    "message": ri.message
-                })
-            }).collect::<Vec<_>>());
+        // Override the message field with the markup-aware version. When the
+        // client supports markdown, render structured markup from `data`; when
+        // it does not, the plain string is correct (and `to_value` already
+        // produced it, so this is a no-op in the common case).
+        let message_value =
+            Self::diagnostic_message_value(&d.message, d.data.as_ref(), markup_message_support);
+        if diag.get("message") != Some(&message_value) {
+            diag["message"] = message_value;
         }
 
         diag
@@ -2128,7 +2095,7 @@ impl LspServer {
     fn emit_perlcritic_workspace_warning(&self, key: String, message: &str) {
         let mut sent = self.critic_workspace_warnings_sent.lock();
         if sent.insert(key) {
-            let _ = self.show_message(super::window::MessageType::Warning, message);
+            self.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 }

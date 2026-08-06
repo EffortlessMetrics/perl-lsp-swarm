@@ -1430,6 +1430,45 @@ fn test_did_save_publishes_diagnostics_with_original_uri() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// didSave must use the canonical diagnostics projection rather than the
+/// legacy save-only renderer, so code and source remain available to clients.
+#[test]
+fn test_did_save_uses_canonical_diagnostic_projection() -> Result<(), Box<dyn std::error::Error>> {
+    let (server, buf) = make_server_with_capture();
+    let uri = "file:///test_save_canonical_diagnostics.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "use strict;\n$x = 1;\n"
+        }
+    }))?;
+    buf.lock().clear();
+
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 1}
+    })))?;
+    drop(server);
+    std::thread::sleep(Duration::from_millis(50));
+
+    let text = String::from_utf8(buf.lock().clone()).unwrap_or_default();
+    assert!(
+        text.contains(r#""method":"textDocument/publishDiagnostics""#),
+        "didSave must publish diagnostics; got: {text:?}"
+    );
+    assert!(
+        text.contains(r#""code":"PL103""#),
+        "didSave must preserve the canonical diagnostic code; got: {text:?}"
+    );
+    assert!(
+        text.contains(r#""source":"perl-lsp""#),
+        "didSave must preserve the canonical diagnostic source; got: {text:?}"
+    );
+    Ok(())
+}
+
 /// didSave text reconciliation must preserve the client document version.
 #[test]
 fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::error::Error>> {

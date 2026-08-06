@@ -387,6 +387,19 @@ impl<'a> DeclarationProvider<'a> {
             // Handle string literals that are method names inside modifier calls:
             // `before 'save' => sub { }` — cursor on 'save' navigates to sub save { }
             NodeKind::String { value, .. } => self.find_modifier_target_declaration(node, value),
+            // Cursor on a `sub foo { }` name at its declaration site — self-location.
+            // Without this arm, goto-definition on the sub name returns null (#5052 item 3).
+            NodeKind::Subroutine { name: Some(name), .. } => {
+                let mut declarations = Vec::new();
+                self.collect_subroutine_declarations(&self.ast, name, &mut declarations);
+                declarations.first().map(|decl| {
+                    vec![self.create_location_link(
+                        node,
+                        decl,
+                        self.get_subroutine_name_range(decl),
+                    )]
+                })
+            }
             _ => None,
         }
     }

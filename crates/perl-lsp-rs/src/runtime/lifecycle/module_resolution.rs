@@ -452,7 +452,7 @@ impl LspServer {
             Some(r) => r,
             None => {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
-                    let _ = self.show_message(
+                    self.show_message_or_log(
                         MessageType::Warning,
                         "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
@@ -491,7 +491,7 @@ impl LspServer {
             Some(r) => r,
             None => {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
-                    let _ = self.show_message(
+                    self.show_message_or_log(
                         MessageType::Warning,
                         "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \
@@ -624,7 +624,7 @@ impl LspServer {
             Some(context) => context,
             None => {
                 if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
-                    let _ = self.show_message(
+                    self.show_message_or_log(
                         MessageType::Warning,
                         "Perl LSP: workspace root not detected — module resolution disabled. \
                          To enable: open the project folder in your editor (File > Open Folder) \

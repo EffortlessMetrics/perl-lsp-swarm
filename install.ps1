@@ -1,5 +1,14 @@
 # Perl LSP installer for Windows
-# Usage: irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
+#
+# The piped one-liner is not usable yet. The copy published at
+# perl-lsp/master still derives a `perl-lsp-<version>-...zip` asset name while
+# releases ship `perllsp-<version>-...zip`, so piping that URL into iex 404s
+# (#5461). This file already carries the fix; promoting it to the publication
+# repo is #4348.
+#
+# Until that lands, run it from a clone or a downloaded copy:
+#   .\install.ps1                                    # latest, default dir
+#   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 
 param(
     [string]$Version = "latest",
@@ -54,8 +63,9 @@ function Write-Success {
 # for one built a URL that always 404s, and the failure surfaced as a bare
 # "Failed to download" with nothing actionable in it (#5007).
 #
-# ARM64 Windows runs x64 binaries under emulation, so the x64 asset is the
-# working answer rather than merely a clearer error.
+# ARM64 Windows runs x64 binaries under emulation on Windows 11 (build 22000
+# or newer), so the x64 asset is the working answer there. Windows 10 ARM64
+# cannot run the published x64 asset and must fail before downloading it.
 #
 # A 32-bit PowerShell host on 64-bit Windows reports "x86" in
 # PROCESSOR_ARCHITECTURE and the real architecture in PROCESSOR_ARCHITEW6432,
@@ -67,6 +77,31 @@ $HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
 }
 
 $IsArm64Host = $HostArch -eq "ARM64"
+
+function Get-WindowsBuildNumber {
+    try {
+        $build = [int](Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "CurrentBuildNumber")
+        if ($build -ge 0) {
+            return $build
+        }
+    } catch {
+        # Fall back for restricted registry access or older PowerShell hosts.
+    }
+
+    try {
+        return [int][System.Environment]::OSVersion.Version.Build
+    } catch {
+        return -1
+    }
+}
+
+if ($IsArm64Host) {
+    $WindowsBuild = Get-WindowsBuildNumber
+    if ($WindowsBuild -lt 22000) {
+        $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
+        Write-Error "Windows ARM64 x64 emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Windows 10 ARM64 cannot run the published x86_64 binary. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
+    }
+}
 
 # Name the target as a whole literal rather than assembling it from an arch
 # variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
@@ -83,7 +118,7 @@ $Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
 
 if ($IsArm64Host) {
     Write-Info "Detected system: Windows (ARM64) - installing $Target"
-    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM. On Windows 10 on ARM, which has no x64 emulation, build from source instead."
+    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM."
 } else {
     Write-Info "Detected system: Windows ($HostArch) - $Target"
 }

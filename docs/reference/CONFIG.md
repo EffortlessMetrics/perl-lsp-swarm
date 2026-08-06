@@ -594,9 +594,11 @@ Maximum line length for formatting compatibility options.
 | Property | Value |
 |---|---|
 | Type | `number` |
-| Default | `4` |
+| Default | (unset) |
 
-Indent width in spaces.
+Indent width in spaces. When unset, formatting uses the editor-supplied
+`tabSize` from the `textDocument/formatting` request. When set, the configured
+width wins over `tabSize` on both the native and external perltidy paths.
 
 #### Additional formatting compatibility options
 

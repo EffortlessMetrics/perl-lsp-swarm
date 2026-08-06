@@ -2274,7 +2274,7 @@ mod tests {
         let result = token_literal_preserve_region_overlapping(source, line1_start, line1_end);
         // Either Some("format body") (if lexer changes) or None (current behaviour).
         // We assert the currently-observed value; update if lexer changes.
-        assert!(result.is_none() || result == Some("format body"), "unexpected result: {result:?}",);
+        assert!(result.is_none() || result == Some("format body"), "unexpected result: {result:?}");
 
         Ok(())
     }

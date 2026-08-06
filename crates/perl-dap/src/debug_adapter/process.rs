@@ -1,5 +1,6 @@
 //! Process lifecycle management: initialize, launch, attach, disconnect, terminate, restart.
 
+use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
@@ -47,6 +48,16 @@ impl DebugAdapter {
         let supports_watchpoints = catalog_has_feature("dap.watchpoints");
         let supports_warn = catalog_has_feature("dap.exceptions.warn");
         let supports_any_exception = supports_exceptions || supports_warn;
+        // Capabilities whose handlers exist but are only honest when the catalog
+        // advertises them.  `restartFrame` and `terminateThreads` have no perl5db
+        // primitive, so their catalog entries are `planned`/unadvertised and these
+        // flags resolve to `false` rather than promising a request that always fails
+        // (#5045).
+        let supports_restart_frame = catalog_has_feature("dap.restart_frame");
+        let supports_terminate_threads = catalog_has_feature("dap.terminate_threads");
+        let supports_step_in_targets = catalog_has_feature("dap.step_in_targets");
+        let supports_restart = catalog_has_feature("dap.restart");
+        let supports_loaded_sources = catalog_has_feature("dap.loaded_sources");
 
         let mut filters = Vec::new();
         if supports_exceptions {
@@ -78,27 +89,20 @@ impl DebugAdapter {
             "supportsEvaluateForHovers": supports_core,
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
-            // restartFrame is advertised but the handler unconditionally returns
-            // success: false ("Perl does not support restarting execution from a
-            // specific stack frame"). Stop advertising it so the client UI does
-            // not offer an action that always fails (#5045).
-            "supportsRestartFrame": false,
+            "supportsRestartFrame": supports_restart_frame,
             "supportsGotoTargetsRequest": supports_core,
-            "supportsStepInTargetsRequest": true,
+            "supportsStepInTargetsRequest": supports_step_in_targets,
             "supportsCompletionsRequest": supports_completions,
             "supportsModulesRequest": supports_modules,
-            "supportsRestartRequest": true,
+            "supportsRestartRequest": supports_restart,
             "supportsExceptionOptions": supports_any_exception,
             "supportsValueFormattingOptions": supports_core,
             "supportsExceptionInfoRequest": supports_any_exception,
             "supportTerminateDebuggee": supports_core,
             "supportsDelayedStackTraceLoading": false,
-            "supportsLoadedSourcesRequest": true,
+            "supportsLoadedSourcesRequest": supports_loaded_sources,
             "supportsLogPoints": supports_log_points,
-            // terminateThreads is advertised but the handler unconditionally
-            // returns success: false ("Perl threading model does not support
-            // targeted thread termination"). Stop advertising it (#5045).
-            "supportsTerminateThreadsRequest": false,
+            "supportsTerminateThreadsRequest": supports_terminate_threads,
             "supportsSetExpression": supports_core,
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
@@ -513,6 +517,7 @@ impl DebugAdapter {
                     process: child,
                     state: DebugState::Running,
                     stack_frames: Vec::new(),
+                    stack_frame_arguments: HashMap::new(),
                     variable_cache: VariableCache::default(),
                     thread_id,
                     last_resume_mode: ResumeMode::Unknown,
@@ -717,12 +722,25 @@ impl DebugAdapter {
             let mut current_func = String::new();
             let mut current_line = 0;
             let mut _debugger_ready = false;
+            // In-flight logpoint value query, if any. A logpoint hit queues a framed
+            // `p` query for the scalars its template mentions; the replies stream back
+            // through this same loop and are folded into the message here (#5045).
+            let mut pending_logpoint: Option<PendingLogpoint> = None;
+            let mut logpoint_marker_id: u64 = 0;
+            // Residual frame lines to filter after a capture is abandoned mid-frame:
+            // (end marker, remaining budget).
+            let mut logpoint_drain: Option<LogpointDrain> = None;
 
             loop {
                 line.clear();
                 match reader.read_line(&mut line) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
+                        // The debuggee exited mid-query: emit the logpoint with
+                        // whatever values arrived rather than dropping it.
+                        if let Some(pending) = pending_logpoint.take() {
+                            emit_logpoint_messages(sender.as_ref(), &seq, pending.into_messages());
+                        }
                         if let Some(ref sender) = sender {
                             emit_terminated_event(
                                 sender,
@@ -742,11 +760,23 @@ impl DebugAdapter {
                         break;
                     }
                     Ok(_) => {
-                        let text = line.trim_end().to_string();
+                        // Strip only the transport delimiters here. A logpoint value
+                        // may legitimately end in spaces or tabs, and `trim_end()`
+                        // below would eat them before the capture ever sees the line.
+                        let framed_text = line.trim_end_matches(['\r', '\n']);
+                        let text = framed_text.trim_end().to_string();
                         let sanitized_text = if let Some(re) = ansi_escape_re() {
                             re.replace_all(&text, "").into_owned()
                         } else {
                             text.clone()
+                        };
+                        // The logpoint protocol carries payload bytes, so it reads the
+                        // delimiter-stripped line rather than the whitespace-trimmed
+                        // one every other consumer below uses.
+                        let capture_text = if let Some(re) = ansi_escape_re() {
+                            re.replace_all(framed_text, "").into_owned()
+                        } else {
+                            framed_text.to_string()
                         };
                         let normalized_text = DebugAdapter::normalize_debugger_output_line(&text);
                         let analysis_text = if normalized_text.is_empty() {
@@ -755,6 +785,75 @@ impl DebugAdapter {
                             normalized_text
                         };
                         tracing::trace!(output = %text, "Debugger output");
+
+                        // Fold logpoint value replies before the line reaches the
+                        // client or the recent-output buffer: those lines are adapter
+                        // framing, not debuggee output.
+                        // A capture abandoned mid-frame leaves the rest of its frame
+                        // still coming. Those lines are adapter framing — late
+                        // `DAPLPV:` replies and the end marker — so keep filtering
+                        // them instead of forwarding protocol noise to the client.
+                        // Bounded so a marker that never arrives cannot swallow real
+                        // debuggee output indefinitely.
+                        if let Some(drain) = logpoint_drain.as_mut() {
+                            // Every line reaching an open drain is swallowed — the
+                            // closing line is the end marker itself, which is adapter
+                            // framing and must not reach the client either. The one
+                            // exception is `Superseded`: that line opens the *next*
+                            // capture's frame, so the drain retires and the line falls
+                            // through to that capture below instead of being eaten.
+                            match drain.observe_line(&capture_text) {
+                                DrainStep::Swallow => continue,
+                                DrainStep::Done => {
+                                    logpoint_drain = None;
+                                    continue;
+                                }
+                                DrainStep::Superseded => {
+                                    logpoint_drain = None;
+                                }
+                            }
+                        }
+
+                        if let Some(pending) = pending_logpoint.as_mut() {
+                            // Deliberately `capture_text`, not `analysis_text` and not
+                            // `sanitized_text`. `normalize_debugger_output_line`
+                            // truncates the line to whatever follows the *last*
+                            // `DB<...>` token, so a value whose own text contains
+                            // `DB<4>` would lose its `DAPLPV:` prefix and be mistaken
+                            // for framing noise. `sanitized_text` is built from the
+                            // `trim_end()`-ed line and would eat trailing spaces or
+                            // tabs that belong to the value itself — the regression
+                            // `test_logpoint_preserves_trailing_whitespace_in_values`
+                            // guards. The capture only needs ANSI stripped; its own
+                            // markers frame it.
+                            let step = pending.observe_line(&capture_text);
+                            if matches!(
+                                step,
+                                LogpointStep::Finished
+                                    | LogpointStep::Abandoned
+                                    | LogpointStep::AbandonedInFrame
+                            ) && let Some(pending) = pending_logpoint.take()
+                            {
+                                if matches!(step, LogpointStep::AbandonedInFrame) {
+                                    logpoint_drain =
+                                        Some(LogpointDrain::new(pending.end_marker().to_string()));
+                                }
+                                emit_logpoint_messages(
+                                    sender.as_ref(),
+                                    &seq,
+                                    pending.into_messages(),
+                                );
+                            }
+                            if matches!(
+                                step,
+                                LogpointStep::Consumed
+                                    | LogpointStep::Finished
+                                    | LogpointStep::AbandonedInFrame
+                            ) {
+                                continue;
+                            }
+                        }
+
                         {
                             let mut output = lock_or_recover(
                                 &recent_output,
@@ -905,6 +1004,7 @@ impl DebugAdapter {
                                             end_line: None,
                                             end_column: None,
                                         }];
+                                        s.stack_frame_arguments.clear();
                                     }
 
                                     if matches!(s.state, DebugState::Running) {
@@ -930,6 +1030,84 @@ impl DebugAdapter {
                                             s.state = DebugState::Stopped;
                                         } else if breakpoint_outcome.matched {
                                             logpoint_messages = breakpoint_outcome.log_messages;
+
+                                            // The debugger is at a prompt right now, so
+                                            // this is the one moment the referenced
+                                            // scalars can be read. Queue the framed
+                                            // query ahead of any resume command; the
+                                            // replies are folded in at the top of this
+                                            // loop and the message is emitted then
+                                            // instead of below (#5045).
+                                            // Every branch below either hands the messages
+                                            // back to `logpoint_messages` for immediate
+                                            // emission or moves them into the capture that
+                                            // will emit them; none may drop them.
+                                            logpoint_messages = match PendingLogpoint::new(
+                                                logpoint_marker_id,
+                                                std::mem::take(&mut logpoint_messages),
+                                            ) {
+                                                // Nothing to resolve: the templates are
+                                                // already their own final text.
+                                                Err(templates) => templates,
+                                                Ok(pending) => {
+                                                    logpoint_marker_id =
+                                                        logpoint_marker_id.saturating_add(1);
+                                                    match s.process.stdin.as_mut() {
+                                                        Some(stdin) => {
+                                                            for command in pending.query_commands()
+                                                            {
+                                                                let _ = stdin
+                                                                    .write_all(command.as_bytes());
+                                                            }
+                                                            let _ = stdin.flush();
+                                                            let new_begin =
+                                                                pending.begin_marker().to_string();
+                                                            // A drain already open is
+                                                            // filtering an even earlier
+                                                            // capture's residue. Tell it
+                                                            // where this frame starts so it
+                                                            // retires instead of eating it.
+                                                            if let Some(drain) =
+                                                                logpoint_drain.as_mut()
+                                                            {
+                                                                drain.supersede_with(&new_begin);
+                                                            }
+                                                            // A hit seen while an earlier
+                                                            // capture is still open would
+                                                            // otherwise drop that capture's
+                                                            // messages on the floor. Emit
+                                                            // what it resolved so far
+                                                            // instead of losing it, and keep
+                                                            // filtering its residual frame:
+                                                            // its late `DAPLPV:` replies and
+                                                            // its end marker are still in
+                                                            // flight and would otherwise
+                                                            // reach the client as debuggee
+                                                            // stdout.
+                                                            match pending_logpoint.replace(pending)
+                                                            {
+                                                                Some(previous) => {
+                                                                    let mut drain =
+                                                                        LogpointDrain::new(
+                                                                            previous
+                                                                                .end_marker()
+                                                                                .to_string(),
+                                                                        );
+                                                                    drain
+                                                                        .supersede_with(&new_begin);
+                                                                    logpoint_drain = Some(drain);
+                                                                    previous.into_messages()
+                                                                }
+                                                                None => Vec::new(),
+                                                            }
+                                                        }
+                                                        // No stdin to ask on: emit the raw
+                                                        // templates rather than nothing.
+                                                        None => pending.into_messages(),
+                                                    }
+                                                }
+                                            };
+
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
                                                 s.state = DebugState::Stopped;
@@ -972,19 +1150,9 @@ impl DebugAdapter {
                                 }
                             };
 
-                            if let Some(ref sender) = sender {
-                                for message in logpoint_messages {
-                                    emit_event_safe(
-                                        sender,
-                                        &seq,
-                                        "output",
-                                        Some(json!({
-                                            "category": "console",
-                                            "output": format!("{message}\n")
-                                        })),
-                                    );
-                                }
-                            }
+                            // Empty when a value query was queued instead: those messages
+                            // are emitted once the framed replies arrive.
+                            emit_logpoint_messages(sender.as_ref(), &seq, logpoint_messages);
 
                             if should_auto_continue {
                                 continue;
@@ -1048,6 +1216,7 @@ impl DebugAdapter {
                                             end_column: None,
                                         };
                                         s.stack_frames = vec![frame];
+                                        s.stack_frame_arguments.clear();
                                     } else {
                                         // Provide a fallback frame for when we don't have perfect context
                                         let frame = StackFrame {
@@ -1064,6 +1233,7 @@ impl DebugAdapter {
                                             end_column: None,
                                         };
                                         s.stack_frames = vec![frame];
+                                        s.stack_frame_arguments.clear();
                                     }
                                     s.state = DebugState::Stopped;
                                     s.thread_id
@@ -1094,6 +1264,12 @@ impl DebugAdapter {
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Error reading from debugger");
+                        // Same contract as the EOF arm above: a read failure during a
+                        // framed value query must still surface the logpoint with
+                        // whatever values arrived, not swallow it.
+                        if let Some(pending) = pending_logpoint.take() {
+                            emit_logpoint_messages(sender.as_ref(), &seq, pending.into_messages());
+                        }
                         // Send termination event before exiting
                         if let Some(ref sender) = sender {
                             emit_terminated_event(
@@ -2036,6 +2212,28 @@ fn reserve_terminated_event(
     true
 }
 
+/// Emit interpolated logpoint text on the debug console.
+fn emit_logpoint_messages(
+    sender: Option<&SyncSender<DapMessage>>,
+    seq: &Mutex<i64>,
+    messages: Vec<String>,
+) {
+    let Some(sender) = sender else {
+        return;
+    };
+    for message in messages {
+        emit_event_safe(
+            sender,
+            seq,
+            "output",
+            Some(json!({
+                "category": "console",
+                "output": format!("{message}\n")
+            })),
+        );
+    }
+}
+
 fn emit_terminated_event(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
@@ -2055,6 +2253,7 @@ mod tests {
         DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
         is_valid_perl_interpreter,
     };
+    use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
 
@@ -2659,6 +2858,7 @@ mod tests {
             process: child,
             state: DebugState::Running,
             stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
@@ -2762,6 +2962,7 @@ mod tests {
             process: child,
             state: DebugState::Running,
             stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,

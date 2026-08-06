@@ -923,13 +923,10 @@ memory_usage = { warning = 1.25, critical = 1.5 }
 
 ### Related Documentation
 
-- [STABILITY.md](reference/STABILITY.md) - API stability guarantees
-- [STABILITY.md](reference/STABILITY.md) - API stability and versioning policy
+- [STABILITY.md](reference/STABILITY.md) - API stability guarantees and versioning policy
 - [RELEASE_PROCESS.md](RELEASE_PROCESS.md) - Release process documentation
 - [PERFORMANCE_SLO.md](reference/PERFORMANCE_SLO.md) - Performance service level objectives
-- [SECURITY_QUICK_REFERENCE.md](SECURITY_QUICK_REFERENCE.md) - Security scanning reference
 - [DEPENDENCY_MANAGEMENT.md](how-to/DEPENDENCY_MANAGEMENT.md) - Dependency management guide
-- [ISSUE_MANAGEMENT.md](ISSUE_MANAGEMENT.md) - Issue management guide
 
 ### Maintenance Commands Reference
 

@@ -8,6 +8,7 @@ mod data_breakpoints;
 mod evaluation;
 mod execution;
 mod frames;
+mod logpoint;
 mod output;
 mod patterns;
 mod process;
@@ -554,6 +555,7 @@ impl DebugAdapter {
                     process: child,
                     state: DebugState::Running,
                     stack_frames: vec![],
+                    stack_frame_arguments: HashMap::new(),
                     variable_cache: VariableCache::default(),
                     thread_id: 1,
                     last_resume_mode: ResumeMode::Continue,
@@ -584,6 +586,7 @@ impl DebugAdapter {
             process: child,
             state: DebugState::Stopped,
             stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
@@ -680,10 +683,20 @@ impl DebugAdapter {
             process: child,
             state: DebugState::Stopped,
             stack_frames: frames,
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
         });
+    }
+
+    /// Seed captured stack-frame arguments for scope/variables protocol tests.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_stack_frame_arguments_for_test(&self, frame_id: i32, arguments: Vec<String>) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_frame_arguments");
+        if let Some(ref mut sess) = *session {
+            sess.stack_frame_arguments.insert(frame_id, arguments);
+        }
     }
 }
 #[cfg(test)]
@@ -869,7 +882,7 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_initialize_capabilities_follow_feature_catalog()
+    fn test_initialize_capabilities_mirror_feature_catalog()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let init = adapter.handle_request(1, "initialize", None);
@@ -933,6 +946,11 @@ print "result: $final\n";
             (
                 "supportsStepInTargetsRequest",
                 crate::feature_catalog::has_feature("dap.step_in_targets"),
+            ),
+            ("supportsRestartRequest", crate::feature_catalog::has_feature("dap.restart")),
+            (
+                "supportsLoadedSourcesRequest",
+                crate::feature_catalog::has_feature("dap.loaded_sources"),
             ),
         ];
 

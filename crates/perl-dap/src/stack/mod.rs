@@ -80,6 +80,10 @@ pub struct StackFrame {
     /// Module information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_id: Option<String>,
+
+    /// Best-effort arguments captured from verbose Perl debugger output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<String>,
 }
 
 impl StackFrame {
@@ -97,6 +101,7 @@ impl StackFrame {
             can_restart: None,
             presentation_hint: None,
             module_id: None,
+            arguments: Vec::new(),
         }
     }
 
@@ -138,6 +143,13 @@ impl StackFrame {
     #[must_use]
     pub fn with_module(mut self, module_id: impl Into<String>) -> Self {
         self.module_id = Some(module_id.into());
+        self
+    }
+
+    /// Sets the best-effort arguments captured for this frame.
+    #[must_use]
+    pub fn with_arguments(mut self, arguments: Vec<String>) -> Self {
+        self.arguments = arguments;
         self
     }
 

@@ -35,6 +35,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Install Perl
+        uses: shogo82148/actions-setup-perl@05e67354f08b143fe5bd8495e9b80657a3086754  # v1.43.0
+        with:
+          perl-version: '5.40'
+
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
 

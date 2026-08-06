@@ -32,8 +32,18 @@ pub struct PerlTidyConfig {
     /// Maximum line length.
     pub maximum_line_length: Option<u32>,
     /// Indent size (spaces).
+    ///
+    /// `None` means "not configured": the caller decides the indent width.
+    /// The LSP formatting path falls back to the editor's `tabSize`, and
+    /// [`PerlTidyConfig::to_args`] emits no `--indent-columns`, leaving
+    /// `perltidy`'s own default in force.
     pub indent_columns: Option<u32>,
     /// Use tabs instead of spaces.
+    ///
+    /// `None` means "not configured", with the same fallback rules as
+    /// [`PerlTidyConfig::indent_columns`]: the LSP formatting path falls back
+    /// to the editor's `insertSpaces`, and [`PerlTidyConfig::to_args`] emits
+    /// neither `--tabs` nor `--notabs`.
     pub tabs: Option<bool>,
     /// Opening brace on same line.
     pub opening_brace_on_new_line: Option<bool>,
@@ -59,8 +69,12 @@ impl Default for PerlTidyConfig {
     fn default() -> Self {
         Self {
             maximum_line_length: Some(80),
-            indent_columns: Some(4),
-            tabs: Some(false),
+            // Indentation is deliberately unset by default so that an
+            // unconfigured project keeps deferring to the editor's `tabSize` /
+            // `insertSpaces`, while an explicitly configured value wins. The
+            // presets below opt in explicitly.
+            indent_columns: None,
+            tabs: None,
             opening_brace_on_new_line: Some(false),
             cuddled_else: Some(true),
             space_after_keyword: Some(true),
@@ -120,6 +134,12 @@ impl PerlTidyConfig {
 
         if let Some(profile) = &self.profile {
             args.push(format!("--profile={profile}"));
+            if let Some(indent) = self.indent_columns {
+                args.push(format!("--indent-columns={indent}"));
+            }
+            if let Some(tabs) = self.tabs {
+                args.push(if tabs { "--tabs".to_string() } else { "--notabs".to_string() });
+            }
             args.extend(self.extra_args.clone());
             return args;
         }

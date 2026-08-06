@@ -212,6 +212,19 @@ fn process_callable_scope<'a>(
             ); // Parameters are initialized
             // Don't mark parameters as automatically used yet - track their actual usage
         }
+
+        // Analyze default-value expressions for optional/named parameters (#5060 item 1).
+        // The parameter is already declared in sub_scope, so any variable used in the
+        // default that isn't the parameter itself will be checked against the scope chain.
+        match &param.kind {
+            NodeKind::OptionalParameter { default_value, .. } => {
+                analyzer.analyze_node(default_value, sub_scope, ancestors, issues, context);
+            }
+            NodeKind::NamedParameter { default_value: Some(default), .. } => {
+                analyzer.analyze_node(default, sub_scope, ancestors, issues, context);
+            }
+            _ => {}
+        }
     }
 
     ancestors.push(node);

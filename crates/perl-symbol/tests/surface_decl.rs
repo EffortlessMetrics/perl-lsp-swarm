@@ -253,6 +253,31 @@ fn test_use_constant_qw_style_deduplicates_names() {
 }
 
 #[test]
+fn test_use_constant_qw_bracket_with_space_extracts_names() {
+    // use constant qw [FOO BAR];  — space between `qw` and `[` is valid Perl.
+    // The parser normalises the token to "qw(FOO BAR)" before storing it in
+    // args; this test ensures extract_symbol_decls handles the raw spaced form
+    // too, so that any future parser that stores the original token text still
+    // produces correct results at the symbol level.
+    for raw_arg in ["qw(FOO BAR)", "qw [FOO BAR]", "qw{FOO BAR}", "qw<FOO BAR>"] {
+        let use_node = Node::new(
+            NodeKind::Use {
+                module: "constant".to_string(),
+                args: vec![raw_arg.to_string()],
+                has_filter_risk: false,
+            },
+            loc(0, 26),
+        );
+        let program = Node::new(NodeKind::Program { statements: vec![use_node] }, loc(0, 26));
+        let decls = extract_symbol_decls(&program, None);
+        assert_eq!(decls.len(), 2, "expected 2 constant decls for arg {raw_arg:?}");
+        assert_eq!(decls[0].kind, SymbolKind::Constant);
+        assert_eq!(decls[0].name, "FOO", "first name wrong for arg {raw_arg:?}");
+        assert_eq!(decls[1].name, "BAR", "second name wrong for arg {raw_arg:?}");
+    }
+}
+
+#[test]
 fn test_const_fast_my_scalar_produces_constant_decl() {
     let use_node = Node::new(
         NodeKind::Use { module: "Const::Fast".to_string(), args: vec![], has_filter_risk: false },
