@@ -118,9 +118,10 @@ test the PR claim against its rollback boundary. Return only evidence-backed fin
 or a clean conclusion with residual risk. Do not edit or authorize merge.
 ```
 
-The root joins these returns with direct inspection of the cumulative PR and publishes
-one useful GitHub review. If findings require mutation, hand them to one writer; after
-repair, rerun affected proof and only the review dimensions changed by the repair.
+The root must join evidence from these returns with direct inspection of the cumulative
+PR and publish one useful GitHub review. If findings require mutation, hand them to one
+writer; after repair, rerun affected proof and only the review dimensions changed by
+the repair.
 
 ## Recommended procedure
 
