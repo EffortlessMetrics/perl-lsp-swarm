@@ -1,9 +1,10 @@
 /**
  * HealthWidget — status bar item that reflects LSP health.
  *
- * The widget consumes the existing language-client lifecycle, progress,
- * workspace telemetry, and provider-result owners. It presents those facts
- * through the small user-facing vocabulary defined in workspaceExperienceState.
+ * The widget consumes the existing language-client lifecycle and progress
+ * owners, and can present canonical provider outcomes supplied by their owner.
+ * It projects those facts through the small user-facing vocabulary defined in
+ * workspaceExperienceState.
  *
  * Callers own the StatusBarItem lifecycle; this class merely reads and mutates
  * its text / tooltip / backgroundColor properties.
@@ -138,17 +139,16 @@ export class HealthWidget {
   /**
    * Present one canonical lifecycle state without making the widget its owner.
    *
-   * Provider outcomes are preserved across ordinary ready/indexing transitions
-   * and cleared when a new startup begins or the server fails.
+   * A lifecycle transition clears the prior operation-scoped provider outcome,
+   * preventing an old fallback, refusal, or failure from surviving restart or
+   * a later readiness generation.
    */
   setWorkspaceLifecycleState(
     lifecycle: WorkspaceLifecycleState,
     update: WorkspaceExperienceUpdate = {},
   ): void {
-    const preserveProviderOutcome = lifecycle !== 'starting' && lifecycle !== 'failed';
     this._experience = {
       lifecycle,
-      providerOutcome: preserveProviderOutcome ? this._experience.providerOutcome : undefined,
       detail: update.detail,
       action: update.action,
       reasonCode: update.reasonCode,
