@@ -79,7 +79,7 @@ Do not scan unrelated open PRs or create a portfolio queue.
 Each PR must first receive its own substantive `$review-pr` conclusion. The goal root
 may then synthesize:
 
-| PR | Candidate identity | Hosted/current proof | Substantive result | Merge posture | Explicit prerequisite |
+| PR | Candidate identity | Hosted/current checks | Substantive review result | Integration posture | Explicit prerequisite |
 | --- | --- | --- | --- | --- | --- |
 
 Verify schema, identity, authority, status, limitation propagation, artifact-set, and
@@ -100,8 +100,8 @@ select one distinct coherent claim
 → re-evaluate the original goal's acceptance predicates
 → if GitHub owns the next transition, leave that PR in flight
 → select another distinct required claim when useful
-→ when related PR contracts interact, synthesize their current review postures and
-  dependency order without replacing individual reviews
+→ when related PR contracts interact, synthesize each substantive review result,
+  current integration posture, and dependency order without replacing individual reviews
 → continue until the predicates pass or every remaining claim shares one real blocker
 ```
 
@@ -127,8 +127,8 @@ outcome was deliberately narrowed or superseded. Preserve failed, limited, and
 
 Bounded advancement of one selected durable outcome through distinct coherent claims,
 with the goal source, current interpretation, acceptance state, merged results,
-in-flight work, related-PR contract/merge-order synthesis where applicable, and every
-residual required claim stated when the loop terminates.
+in-flight work, related-PR review/integration/dependency synthesis where applicable,
+and every residual required claim stated when the loop terminates.
 
 ## What this does not establish
 
