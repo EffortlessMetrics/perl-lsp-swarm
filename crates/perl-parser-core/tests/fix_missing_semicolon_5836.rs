@@ -13,6 +13,7 @@
 
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
+use perl_parser_core::Parser;
 
 // --- Quote-like operators: one-part delimiters ---
 
@@ -539,7 +540,7 @@ my $y = 1;"#;
     let mut parser = Parser::new(source);
     let _ast = parser.parse();
     // Should have an inferred semicolon error, not crash
-    assert!(!parser.errors.is_empty());
+    assert!(!parser.get_errors().is_empty());
 }
 
 #[test]
