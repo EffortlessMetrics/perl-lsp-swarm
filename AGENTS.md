@@ -109,6 +109,7 @@ needed.
 
 Detailed method and contracts:
 [`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md),
+[`docs/agents/PR_REVIEW_STANDARD.md`](docs/agents/PR_REVIEW_STANDARD.md),
 [`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md),
 [`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
 [`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
@@ -134,21 +135,40 @@ A clean review is valid. Never manufacture a finding or edit to prove review eff
 
 ## Review
 
-Review is not reading a diff, relaying CI green, posting a head/claim hash, or repeating
-a subagent verdict. For substantive work it is a directed, falsifying, and verified
-judgment:
+Review follows
+[`docs/agents/PR_REVIEW_STANDARD.md`](docs/agents/PR_REVIEW_STANDARD.md). It is not
+reading a diff, relaying CI green, posting a head/claim hash, or repeating a subagent
+verdict. For substantive work it is a directed, falsifying, and verified judgment:
 
 - **discrimination** — what realistic wrong implementation does the proof reject?
-- **production reachability** — what live request, consumer, or protocol path reaches the change?
-- **external truth** — what competent authority establishes user-visible or protocol semantics?
+- **production reachability** — what live request, consumer, or protocol path reaches
+  the change?
+- **external truth** — what competent authority establishes user-visible or protocol
+  semantics?
 - **claim honesty** — what does the evidence establish, and what remains unproved?
-- **authority and complexity** — is this the semantic owner, and is the result free of duplicate authority, residue, or unnecessary API?
-- **risk and rollback** — what compatibility, security, packaging, migration, or support boundary moved?
+- **authority and complexity** — is this the semantic owner, and is the result free of
+  duplicate authority, residue, or unnecessary API?
+- **risk and rollback** — what compatibility, security, packaging, migration, or
+  support boundary moved?
 
 The construction context must not be the only detection surface supporting merge.
 Fresh context is useful when it brings a different source, oracle, threat model,
-method, or attention surface; identity separation by itself is neither necessary
-nor sufficient.
+method, or attention surface; identity separation by itself is neither necessary nor
+sufficient.
+
+Every substantive PR records one cumulative merge posture before live integration:
+
+```text
+READY_FOR_INTEGRATION
+CHANGES_REQUIRED
+NOT_PROVEN
+IN_FLIGHT
+BLOCKED_BY_PREREQUISITE
+SUPERSEDED_OR_CLOSE
+```
+
+Green checks, `mergeable: true`, zero open threads, bot approval, or author
+self-certification cannot independently create `READY_FOR_INTEGRATION`.
 
 Review is cumulative and semantic. A submitted review, inline finding, reply, and
 evidence-backed disposition are the durable record. Do not post `Review pass (...) at
@@ -201,6 +221,7 @@ Stop only for concrete preventable hazards:
 - a secret or unsafe release would be published;
 - a durable contract is structurally invalid;
 - substantive review findings remain unresolved;
+- substantive review is missing or `NOT_PROVEN` for a candidate that would merge;
 - current GitHub branch protection, rulesets, merge queue, or required checks block
   merge.
 
