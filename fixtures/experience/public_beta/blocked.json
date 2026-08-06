@@ -1,0 +1,210 @@
+{
+  "check": "public-beta-experience",
+  "schema_version": "public_beta_experience.v1",
+  "status": "blocked",
+  "claim_boundary": "Negative control proving a wrong managed binary and failed install transition block the complete public-beta experience.",
+  "candidate": {
+    "release": "0.18.0",
+    "track": "public_beta",
+    "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
+    "candidate_id": "v0.18.0-rc1",
+    "artifact_set_id": "v0.18.0-rc1-primary",
+    "release_topology_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "supported_envelope": {
+    "editor": "VS Code is the first-class installed experience.",
+    "other_editors": "Standard LSP compatibility only; no equivalent UI-polish claim.",
+    "project_families": [
+      "conventional_modules",
+      "test_heavy",
+      "framework_shaped",
+      "environment_sensitive",
+      "dynamic_boundary_control"
+    ],
+    "core_loop": [
+      "diagnostics",
+      "completion",
+      "hover",
+      "definition",
+      "references",
+      "symbols",
+      "edit_requery",
+      "formatting",
+      "safe_rename_or_refusal"
+    ],
+    "dynamic_perl": "Bounded fallback, degraded answer, or refusal with an intelligible reason; never manufactured certainty.",
+    "dap_posture": "preview"
+  },
+  "journey_cells": [
+    {
+      "id": "install_upgrade",
+      "owner_issue": "#5903",
+      "disposition": "failed",
+      "evidence_refs": [
+        "receipt://install-transition/wrong-binary"
+      ],
+      "limitation": "The extension selected a prior server binary while reporting the candidate ready."
+    },
+    {
+      "id": "startup",
+      "owner_issue": "#5901",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://workspace-state/startup"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "workspace",
+      "owner_issue": "#4048",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://readiness/v0.18.0-rc1"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "completion_hover_navigation",
+      "owner_issue": "#4050",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://scenario67/providers"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "diagnostics",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/diagnostics"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "empty_results",
+      "owner_issue": "#3099",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://provider-readiness/empty-results"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "rename_delete",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/safe-edits"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "formatting",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/formatting"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "doctor_trust",
+      "owner_issue": "#5901",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://workspace-trust/v0.18.0-rc1"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "dap_preview",
+      "owner_issue": "#4346",
+      "disposition": "limited",
+      "evidence_refs": [
+        "receipt://installed-acceptance/dap-preview"
+      ],
+      "limitation": "DAP is a bounded preview smoke, not a reliability or parity claim."
+    },
+    {
+      "id": "shutdown",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/shutdown"
+      ],
+      "limitation": null
+    }
+  ],
+  "zero_budget": {
+    "false_exact": 0,
+    "stale_exact": 0,
+    "unsafe_edit": 0,
+    "unexplained_success_empty": 0,
+    "silent_startup_failure": 0,
+    "broken_documented_install": 0,
+    "wrong_binary_or_version": 1,
+    "orphaned_server_or_debuggee": 0
+  },
+  "child_receipts": {
+    "user_state_presentation": {
+      "schema_version": "workspace_experience.v1",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Installed VS Code state presentation."
+    },
+    "first_ten_minutes": {
+      "schema_version": "first_ten_minutes.v1",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Finite representative first-use observation."
+    },
+    "install_transition": {
+      "schema_version": "install_transition.v1",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "blocked",
+      "claim_boundary": "Topology-bound primary install transition failed identity proof."
+    },
+    "installed_acceptance": {
+      "schema_version": "installed_acceptance.v1",
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Exact packaged VSIX and binary journey."
+    },
+    "first_useful_answer": {
+      "schema_version": "first_useful_answer.v1",
+      "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "First useful and correct provider answers."
+    },
+    "representative_workload": {
+      "schema_version": "scenario67.v1",
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Finite representative Perl project workload."
+    },
+    "release_topology": {
+      "schema_version": "release_topology.v1",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Publishable crates, targets, archives, installers, and channels."
+    },
+    "release_integrity": {
+      "schema_version": "release_integrity.v1",
+      "sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Candidate archives, checksums, SBOM, and attestation subject set."
+    }
+  },
+  "limitations": [
+    "The candidate cannot freeze or publish while wrong_binary_or_version is non-zero."
+  ]
+}
