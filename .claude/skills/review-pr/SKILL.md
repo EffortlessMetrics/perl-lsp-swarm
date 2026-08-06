@@ -1,46 +1,92 @@
 ---
 name: review-pr
-description: Review one pull request cumulatively through GitHub, publishing useful findings or a useful clean conclusion and explicit substantive result without exact-head or claim-hash receipt ceremony.
+description: Run Claude Code's cumulative substantive pull-request review, orchestrating useful adversarial lenses and publishing one evidence-backed judgment before live integration.
 user-invocable: false
 ---
 
 # Review PR
 
-Apply [`docs/agents/PR_REVIEW_STANDARD.md`](../../../docs/agents/PR_REVIEW_STANDARD.md)
-to the selected pull request.
+Run the substantive review in Claude Code. This skill is the operational review
+procedure; do not defer the work to a shared method document, a bot summary, green CI,
+or the fact that the main thread read the diff.
 
-Review the current cumulative PR against its controlling issue, accepted claim,
-governing authority, changed production or operational path, proof, prior findings,
-and applicable compatibility, security, persistence, packaging, migration, support,
-release, and rollback boundaries.
+The main Claude thread owns the cumulative judgment and GitHub review. Focused Claude
+subagents may gather evidence or challenge one dimension, but they do not authorize
+merge and their verdicts are not votes.
 
-The PR head identifies the code currently visible on GitHub. It is not a
-review-validity token. Do not compute a material-claim digest, call
-`scripts/reviews/run review-start|review-done`, or post comments that merely repeat a
-head SHA and claim hash.
+## Authoritative inputs
+
+Read the selected PR, controlling issue and current synthesis, accepted claim and
+non-goals, governing specification/ADR/policy or competent external authority,
+cumulative diff, live production or operational consumers, focused proof and known
+limitations, submitted reviews and inline threads, and current GitHub integration
+facts.
+
+Use the PR head to identify the candidate currently visible on GitHub. It is not a
+review-validity token. Do not compute a claim digest, run review-start/review-done
+receipt machinery, or post a status-only exact-head comment.
+
+## Review orchestration
+
+For a substantive candidate, invoke `orchestrate-work` and select only the lenses that
+can change the conclusion. Normal focused assignments include:
+
+- `review-tests` for proof discrimination, historical-defect controls, schema/validator
+  agreement, and false-green tests;
+- `review-candidate` for cumulative implementation correctness, semantic ownership,
+  production reachability, complexity, compatibility, risk, and rollback;
+- a bounded read-only production-path trace from the real request, command, installer,
+  workflow, or runtime consumer to the changed seam;
+- a bounded external-truth pass against perldoc, protocol/platform documentation, a
+  dependency API, release topology, or another competent authority;
+- a focused security, persistence, packaging, migration, or support pass when the
+  claim touches that boundary.
+
+A useful Claude subagent brief names the exact PR/candidate, controlling claim,
+established facts, authoritative files or sources, one read-only question, realistic
+falsifiers, required evidence, uncertainty to preserve, and non-goals. Tell the child
+which skill to consume. Do not ask several vague agents to repeat the same review.
+
+The construction context must not be the only detection surface supporting a
+substantive merge. Independence comes from a different source, oracle, threat model,
+method, environment, or attention surface—not merely a different agent name.
+
+Join evidence rather than counting answers. Resolve contradictions against source and
+proof, reject unsupported confidence, and inspect the load-bearing seams yourself
+before publishing the cumulative judgment. One integrating writer repairs accepted
+findings through `address-review-comments`; read-only reviewers do not mutate the
+candidate.
 
 ## Required review procedure
 
-1. Reconstruct the candidate and evidence map: claim/non-goals, authority, cumulative
-   changed seams, live callers/consumers, proof/limitations, prior finding
-   dispositions, and current GitHub facts.
-2. Trace production reachability. A compiled component, setter, adapter, or fixture
-   is not system proof unless the real request, packaging, installer, release, or
-   runtime path consumes it.
-3. Falsify proof and evidence integrity. Check realistic wrong implementations,
-   negative/stale/failure controls, schema-validator agreement, derived rather than
-   self-attested evidence, authoritative artifact identity, and whether hosted proof
-   actually exercised the claimed path.
-4. Verify external and semantic truth and the correct repository owner. Reject
-   duplicate authority, private competing schemas, unreachable scaffold, and
-   compatibility residue without a bounded purpose.
-5. Challenge claim honesty, complexity, risk, and rollback. Keep conclusions inside
-   the evidence boundary and prevent safe rejection, fallback, limitation, or
-   partial implementation from hiding a condition the contract says must block.
-6. Classify live checks, threads, draft state, mergeability, and prerequisites as a
-   separate snapshot rather than treating them as substantive review.
-7. Publish material findings through GitHub reviews and inline threads, or publish a
-   useful clean conclusion. Record one substantive result:
+1. **Reconstruct the candidate and evidence map.** Establish the claim and non-goals,
+   controlling authority, cumulative changed seams, live callers and consumers, proof
+   and limitations, prior findings and dispositions, and current GitHub facts.
+2. **Trace production reachability.** Show how a real request or operation reaches the
+   changed behavior. A compiled component, public setter, adapter, or fixture is not
+   system proof unless the live route consumes it.
+3. **Challenge proof discrimination and evidence integrity.** Identify realistic wrong
+   implementations the proof rejects. Check negative, stale, failure, recovery,
+   refusal, and opposite-direction controls; independent oracles; schema/validator
+   agreement; loaded or recomputed identities and hashes; generated-source binding;
+   and whether hosted proof actually exercised the claimed path.
+4. **Challenge external and semantic truth.** Verify user-visible, language, protocol,
+   platform, dependency, and release claims against competent authority. Confirm the
+   candidate extends the correct semantic owner rather than creating a second parser,
+   readiness model, schema, or compatibility authority.
+5. **Challenge claim honesty, complexity, risk, and rollback.** Keep the title, body,
+   code, tests, docs, and generated evidence inside one acceptance-and-rollback claim.
+   Do not let an intended rejection, fallback, limitation, safe refusal, or partial
+   implementation conceal the exact condition the contract says must block.
+6. **Classify GitHub facts separately.** Record checks, threads, draft state,
+   mergeability, rulesets, queue state, and prerequisites as a snapshot. They inform
+   integration but do not create a substantive review result.
+7. **Publish the review.** Put file-specific material findings in inline threads and
+   publish one cumulative review or useful clean conclusion.
+
+## Substantive review results
+
+Use one result:
 
 ```text
 REVIEW_CURRENT
@@ -50,17 +96,24 @@ BLOCKED_BY_PREREQUISITE
 SUPERSEDED_OR_CLOSE
 ```
 
-Green CI, `mergeable: true`, zero open threads, or a clean bot review do not
-independently imply `REVIEW_CURRENT`. Once review is current, `verify-live-ci`
-separately classifies integration as ready, in flight, blocked, or not proved.
+- `REVIEW_CURRENT` means the reviewed claim is supported and no substantive finding
+  remains. It may now enter `verify-live-ci`.
+- `CHANGES_REQUIRED` means a candidate-owned correctness, reachability, proof,
+  authority, complexity, risk, or rollback defect must be repaired.
+- `NOT_PROVEN` preserves missing, contradictory, stale, partial, or instrument-failed
+  evidence.
+- `BLOCKED_BY_PREREQUISITE` names the exact external claim or contract that must become
+  trustworthy first.
+- `SUPERSEDED_OR_CLOSE` preserves the durable reason the claim should not proceed.
 
-## Useful review record
+Green checks, `mergeable: true`, zero open threads, bot approval, or author
+self-certification cannot independently create `REVIEW_CURRENT`.
 
-Submit a review that helps a fresh agent continue:
+## Useful GitHub review record
 
 ```markdown
 ## Review scope
-- Claim, changed seams, live consumers, prior findings, and applicable risk reviewed
+- Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
 
 ## Evidence and falsifiers
 - Commands, tests, fixtures, sources, or authorities used
@@ -88,47 +141,38 @@ Submit a review that helps a fresh agent continue:
   SUPERSEDED_OR_CLOSE
 
 ## Next action
-- Repair, focused re-review, live integration evaluation, merge path, or named follow-up
+- Repair, focused re-review, live integration evaluation, closeout, or named follow-up
 ```
 
-Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a claim
-digest, a check summary, or a status line. A clean review is valid.
-
-## Related PR synthesis
-
-When the selected claim belongs to a bounded related PR set, review this PR
-individually first. The goal root may then summarize each PR's candidate identity,
-hosted/current checks, substantive review result, integration posture, explicit
-prerequisite, and correct repair/merge order.
-
-Check parent/child schema, identity, authority, status, limitation propagation, and
-artifact-set contracts. A fan-in must load and validate child evidence; it cannot
-become ready from copied summaries while child contracts remain unproved. The
-synthesis is not batch approval and does not replace each PR's submitted review.
+Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a check
+summary, or a status line. A clean review is valid when it records what was examined,
+what realistic wrong behavior was challenged, and what remains unproved.
 
 ## Semantic currentness
 
 Review is cumulative and semantic:
 
 - a later commit does not invalidate review merely because the SHA changed;
-- a finding repair requires checking the affected finding, proof, and changed seam;
-- a material change to claim, production route, authority, risk, rollback, or proof
-  requires review of the affected dimensions;
-- formatting, editorial cleanup, generated receipt refresh, or test strengthening
-  does not trigger a full review unless it changes a substantive conclusion;
-- conflict or integration repair receives focused review of the repaired seam.
+- a finding repair requires checking that finding, its proof, and the changed seam;
+- a material change to claim, production route, authority, proof, compatibility, risk,
+  or rollback requires review of the affected dimensions;
+- formatting, editorial cleanup, generated receipt refresh, and stronger tests do not
+  trigger a full review unless they change a substantive conclusion;
+- conflict or combined-tree repair receives focused review of the affected interaction.
 
-Do not restart a full `deep` review after every push. Do not duplicate a still-current
-review merely to make activity visible.
+Do not restart a full deep review or duplicate a still-current review merely to show
+activity.
 
 ## Routes
 
 - `REVIEW_CURRENT` → `verify-live-ci`
 - `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `address-review-comments`
-- `REVIEW_SCOPE_CHANGED` → review the affected dimensions; route to `prepare-issue`
-  only when the claim or owner must change
-- `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and return to the
-  invoking flow
+- weak or non-discriminating proof → `review-tests` or `prepare-proof`
+- candidate correctness, reachability, ownership, complexity, or rollback uncertainty
+  → `review-candidate` through `orchestrate-work`
+- `REVIEW_SCOPE_CHANGED` → review the affected dimensions; use `prepare-issue` only
+  when the claim or owner changed
+- `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite in the invoking flow
 - `SUPERSEDED_OR_CLOSE` → preserve the durable disposition through the invoking flow
-- `NOT_PROVEN` / `REVIEW_NOT_PROVEN` → resolve missing evidence, authority, or review
-  instrumentation
+- `NOT_PROVEN` / `REVIEW_NOT_PROVEN` → resolve the missing evidence, authority, or
+  review instrument
