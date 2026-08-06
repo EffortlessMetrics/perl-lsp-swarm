@@ -925,9 +925,15 @@ impl<'a> Parser<'a> {
             return None;
         }
 
-        let operator = OPERATORS.iter().find(|operator| {
+        // Prefer an explicit miss-return over `find(...)?`. RIPR classifies the
+        // Option-`?` form as an error_path sink that existing `None` oracles do
+        // not observe; `return None` is the same control flow and is already
+        // covered by the non-operator prefix discriminators below.
+        let Some(operator) = OPERATORS.iter().find(|operator| {
             span.get(index..index + operator.len()) == Some(**operator)
-        })?;
+        }) else {
+            return None;
+        };
         let mut delimiter_index = index + operator.len();
         while matches!(span.get(delimiter_index), Some(b' ' | b'\t' | b'\r' | b'\n')) {
             delimiter_index += 1;
@@ -1915,4 +1921,26 @@ mod statement_terminator_seam_tests {
         assert!(!Parser::starts_qr_slash_body(b"ar/", 2), "suffix ar is not qr");
     }
 
+    /// Colocated observer for the OPERATORS-miss early return in
+    /// `quote_like_body_end`. Bare `/` and `+` are not operators and are not
+    /// alphanumeric, so they hit the miss-return specifically (not the later
+    /// alphanumeric delimiter guard). A recognized operator must still succeed.
+    #[test]
+    fn quote_like_body_end_operators_miss_returns_none() {
+        assert_eq!(
+            Parser::quote_like_body_end(b"/foo/", 0),
+            None,
+            "bare '/' must miss OPERATORS and return None"
+        );
+        assert_eq!(
+            Parser::quote_like_body_end(b"+ 1", 0),
+            None,
+            "bare '+' must miss OPERATORS and return None"
+        );
+        assert_eq!(
+            Parser::quote_like_body_end(b"q(foo)", 0),
+            Some(6),
+            "recognized operator must still return Some(end)"
+        );
+    }
 }
