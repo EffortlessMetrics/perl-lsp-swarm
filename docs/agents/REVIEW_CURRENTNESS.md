@@ -1,9 +1,20 @@
 # Review and proof currentness
 
-Use this document with
-[`PR_REVIEW_STANDARD.md`](PR_REVIEW_STANDARD.md). The review standard defines the
-substantive acceptance judgment; this document defines when later changes can alter
-that judgment. Live integration posture remains a separate GitHub fact.
+This document defines when later changes can alter an existing review judgment. It is
+not the operational review procedure.
+
+```text
+Claude Code review operation
+→ CLAUDE.md and .claude/skills/*
+
+Codex review operation
+→ AGENTS.md and .agents/skills/*
+
+shared currentness semantics
+→ this document
+```
+
+Live integration posture remains a separate GitHub fact.
 
 ## Three evidence subjects
 
@@ -27,7 +38,7 @@ Do not require:
 - a review submitted on the latest commit solely because the SHA changed;
 - a material-claim digest;
 - `review-start` / `review-done` receipt comments;
-- a full `deep` review after every repair push.
+- a full deep review after every repair push.
 
 The durable review record is the useful GitHub review itself:
 
@@ -69,7 +80,7 @@ After a repair:
 identify changed semantic subjects
 → rerun affected proof
 → verify addressed findings
-→ review newly changed risk/claim dimensions
+→ review newly changed risk/claim dimensions through the provider-native flow
 → update the substantive review result
 → continue
 ```
