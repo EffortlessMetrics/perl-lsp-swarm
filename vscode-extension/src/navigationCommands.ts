@@ -123,6 +123,16 @@ export async function showStatusMenuCommand(): Promise<void> {
     },
     { label: 'Information', kind: vscode.QuickPickItemKind.Separator },
     {
+      label: '$(pulse) Show Workspace Status',
+      detail: 'Explain workspace, environment, index, and trust state',
+      command: 'perl-lsp.showWorkspaceTrustReport',
+    },
+    {
+      label: '$(question) Explain Provider Result',
+      detail: 'Explain an exact answer, fallback, empty result, or refusal',
+      command: 'perl-lsp.explainProviderDecision',
+    },
+    {
       label: '$(output) Show Output',
       detail: 'Open the extension output channel',
       command: 'perl-lsp.showOutput',
