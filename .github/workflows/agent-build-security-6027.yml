@@ -19,22 +19,47 @@ jobs:
           ref: agent/security-ux-gate-6027
           fetch-depth: 0
           persist-credentials: false
+
       - name: Apply authority split
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
+
           path = Path('.github/workflows/ux-regression-gate.yml')
           text = path.read_text(encoding='utf-8')
-          text = text.replace('permissions:\n  contents: read\n  pull-requests: write\n  statuses: write\n', 'permissions:\n  contents: read\n')
-          text = text.replace('env:\n  CARGO_TERM_COLOR: always\n  RUST_BACKTRACE: 1\n', "env:\n  CARGO_TERM_COLOR: always\n  RUST_BACKTRACE: 1\n  TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}\n")
-          text = text.replace('actions/checkout@v7', 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7')
-          text = text.replace('actions/upload-artifact@v7', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1')
+          text = text.replace(
+              'permissions:\n  contents: read\n  pull-requests: write\n  statuses: write\n',
+              'permissions:\n  contents: read\n',
+          )
+          text = text.replace(
+              'env:\n  CARGO_TERM_COLOR: always\n  RUST_BACKTRACE: 1\n',
+              "env:\n  CARGO_TERM_COLOR: always\n  RUST_BACKTRACE: 1\n  TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}\n",
+          )
+          text = text.replace(
+              'actions/checkout@v7',
+              'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+          )
+          text = text.replace(
+              'actions/upload-artifact@v7',
+              'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
+          )
           text = re.sub(r'\n\s+token: \$\{\{ secrets\.GITHUB_TOKEN \}\}', '', text)
-          text = text.replace("          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}\n", "          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}\n          persist-credentials: false\n")
+          checkout_ref = "          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}\n"
+          text = text.replace(
+              checkout_ref,
+              checkout_ref + '          persist-credentials: false\n',
+          )
           text = text.replace('--sha "${{ github.sha }}"', '--sha "$TESTED_SHA"')
-          text = text.replace('ux-regression-gate-receipt-${{ github.sha }}', 'ux-regression-gate-receipt-${{ env.TESTED_SHA }}')
-          pattern = re.compile(r'\n      - name: Upload UX regression gate test results to Codecov\n.*?(?=\n      - name: Parse and summarize UX test results)', re.S)
+          text = text.replace(
+              'ux-regression-gate-receipt-${{ github.sha }}',
+              'ux-regression-gate-receipt-${{ env.TESTED_SHA }}',
+          )
+
+          codecov = re.compile(
+              r'\n      - name: Upload UX regression gate test results to Codecov\n.*?(?=\n      - name: Parse and summarize UX test results)',
+              re.S,
+          )
           replacement = '''
       - name: Upload UX regression gate test results to Codecov
         if: always() && steps.harness_check.outputs.harness_available == 'true'
@@ -44,17 +69,31 @@ jobs:
           files: target/test-results/ux-regression-gate-junit.xml
           fail_ci_if_error: false
 '''
-          text, count = pattern.subn(replacement.rstrip(), text)
+          text, count = codecov.subn(replacement.rstrip(), text)
           if count != 1:
               raise SystemExit(f'Codecov step count: {count}')
-          text, count = re.subn(r'\n      - name: Set commit status\n.*?(?=\n      - name: Fail UX regression gate on test failures)', '', text, flags=re.S)
+
+          text, count = re.subn(
+              r'\n      - name: Set commit status\n.*?(?=\n      - name: Fail UX regression gate on test failures)',
+              '',
+              text,
+              flags=re.S,
+          )
           if count != 1:
-              raise SystemExit(f'UX writer count: {count}')
-          text, count = re.subn(r'\n      - name: Report extension Jest result \(ci/extension-jest\)\n.*\Z', '\n', text, flags=re.S)
+              raise SystemExit(f'UX status writer count: {count}')
+
+          text, count = re.subn(
+              r'\n      - name: Report extension Jest result \(ci/extension-jest\)\n.*\Z',
+              '\n',
+              text,
+              flags=re.S,
+          )
           if count != 1:
-              raise SystemExit(f'extension writer count: {count}')
+              raise SystemExit(f'extension status writer count: {count}')
+
           path.write_text(text, encoding='utf-8')
           PY
+
           file=.github/workflows/ux-regression-gate.yml
           ! grep -Eq '(pull-requests|statuses): write' "$file"
           ! grep -q 'actions/github-script' "$file"
@@ -66,38 +105,45 @@ jobs:
           grep -q -- '--sha "$TESTED_SHA"' "$file"
           test "$(grep -c 'persist-credentials: false' "$file")" -ge 2
           git diff --check
-      - name: Create unreferenced verified commit
+
+      - name: Create immutable product blob
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COMMIT_MESSAGE: 'security(ci): isolate UX gate execution authority (#6027)'
         run: |
-          rm .github/workflows/agent-build-security-6027.yml .agent-trigger-6027
           python3 - <<'PY'
-          import json, os, subprocess, urllib.request
+          import base64
+          import json
+          import os
+          import urllib.request
           from pathlib import Path
-          repo = os.environ['GITHUB_REPOSITORY']; token = os.environ['GITHUB_TOKEN']
-          parent = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
-          api = f'https://api.github.com/repos/{repo}'
-          headers = {'Authorization': f'Bearer {token}', 'Accept':'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28'}
-          def call(method,url,payload=None):
-              req=urllib.request.Request(url,data=None if payload is None else json.dumps(payload).encode(),method=method,headers=headers)
-              with urllib.request.urlopen(req) as response: return json.load(response)
-          base_tree=call('GET',f'{api}/git/commits/{parent}')['tree']['sha']
-          content=Path('.github/workflows/ux-regression-gate.yml').read_text(encoding='utf-8')
-          blob=call('POST',f'{api}/git/blobs',{'content':content,'encoding':'utf-8'})['sha']
-          entries=[{'path':'.github/workflows/ux-regression-gate.yml','mode':'100644','type':'blob','sha':blob}]
-          for relative in ('.github/workflows/agent-build-security-6027.yml','.agent-trigger-6027'):
-              entries.append({'path':relative,'mode':'100644','type':'blob','sha':None})
-          tree=call('POST',f'{api}/git/trees',{'base_tree':base_tree,'tree':entries})['sha']
-          commit=call('POST',f'{api}/git/commits',{'message':os.environ['COMMIT_MESSAGE'],'tree':tree,'parents':[parent]})['sha']
-          Path('target/security-6027-commit.txt').parent.mkdir(parents=True,exist_ok=True)
-          Path('target/security-6027-commit.txt').write_text(commit+'\n',encoding='utf-8')
-          print(commit)
+
+          relative = '.github/workflows/ux-regression-gate.yml'
+          payload = {
+              'content': base64.b64encode(Path(relative).read_bytes()).decode('ascii'),
+              'encoding': 'base64',
+          }
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/git/blobs",
+              data=json.dumps(payload).encode('utf-8'),
+              method='POST',
+              headers={
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              sha = json.load(response)['sha']
+          output = Path('target/security-6027-blobs.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps({'paths': {relative: sha}}, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(output.read_text(encoding='utf-8'))
           PY
-      - name: Upload verified commit identity
+
+      - name: Upload verified blob receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: security-6027-commit-${{ github.run_id }}
-          path: target/security-6027-commit.txt
+          name: security-6027-blobs-${{ github.run_id }}
+          path: target/security-6027-blobs.json
           if-no-files-found: error
           retention-days: 3
