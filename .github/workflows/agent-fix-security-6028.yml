@@ -61,8 +61,8 @@ jobs:
               repaired.append(line)
               index += 1
 
-          if count != 6:
-              raise SystemExit(f'expected 6 malformed checkout blocks, repaired {count}')
+          if count != 4:
+              raise SystemExit(f'expected 4 malformed checkout blocks, repaired {count}')
 
           path.write_text('\n'.join(repaired) + '\n', encoding='utf-8')
           PY
