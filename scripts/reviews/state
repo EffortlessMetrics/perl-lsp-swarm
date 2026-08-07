@@ -21,10 +21,11 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found on PATH" >&2; exit 
 
 CLOSE_EXIT=0
 CLOSE_OUT="$(bash "$CLOSEOUT" "$@" 2>/dev/null)" || CLOSE_EXIT=$?
-if [[ "$CLOSE_EXIT" -eq 2 ]]; then
-    jq -n --arg pr "$PR" '{
+if [[ "$CLOSE_EXIT" -ge 2 ]]; then
+    jq -n --arg pr "$PR" --argjson childExit "$CLOSE_EXIT" '{
       pr: ($pr | tonumber? // $pr),
       state: "NOT_PROVEN",
+      child_exit: $childExit,
       review_currentness: "semantic_changed_seam",
       exact_head_review_required: false
     }'
@@ -34,6 +35,13 @@ fi
 JSON="$(printf '%s' "$CLOSE_OUT" | sed -n '/^{/,$p')"
 if [[ -z "$JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$JSON"; then
     echo "ERROR: closeout produced no usable JSON for PR #$PR" >&2
+    jq -n --arg pr "$PR" '{
+      pr: ($pr | tonumber? // $pr),
+      state: "NOT_PROVEN",
+      reason: "invalid_closeout_output",
+      review_currentness: "semantic_changed_seam",
+      exact_head_review_required: false
+    }'
     exit 2
 fi
 
