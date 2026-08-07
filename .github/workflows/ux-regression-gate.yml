@@ -29,12 +29,11 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  statuses: write
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   ux-regression-gate:
@@ -47,10 +46,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -135,13 +134,13 @@ jobs:
             --input target/receipts/ux-regression.log \
             --receipt target/receipts/ux-regression.json \
             --exit-status-file target/receipts/ux-regression.exit \
-            --sha "${{ github.sha }}"
+            --sha "$TESTED_SHA"
 
       - name: Upload UX regression artifacts
         if: always() && steps.harness_check.outputs.harness_available == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ux-regression-gate-receipt-${{ github.sha }}
+          name: ux-regression-gate-receipt-${{ env.TESTED_SHA }}
           path: |
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
@@ -159,15 +158,12 @@ jobs:
             --suite-name ux-regression-gate
 
       - name: Upload UX regression gate test results to Codecov
-        if: always() && steps.harness_check.outputs.harness_available == 'true' && env.CODECOV_TOKEN != ''
+        if: always() && steps.harness_check.outputs.harness_available == 'true'
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/ux-regression-gate-junit.xml
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
+          fail_ci_if_error: false
       - name: Parse and summarize UX test results
         if: always() && steps.harness_check.outputs.harness_available == 'true'
         run: |
@@ -216,271 +212,4 @@ jobs:
                       current_category = cat
                       break
               # Detect exact cargo test result lines
-              if re.search(r'^\s*test\s+\S+\s+\.\.\.\s+ok\s*$', line):
-                  pass_count += 1
-                  categories[current_category].append(("PASS", line.strip()))
-              elif re.search(r'^\s*test\s+\S+\s+\.\.\.\s+FAILED\s*$', line):
-                  fail_count += 1
-                  categories[current_category].append(("FAIL", line.strip()))
-                  failed_scenarios.append(line.strip())
-              elif re.search(r'^\s*test\s+\S+\s+\.\.\.\s+ignored\s*$', line):
-                  skip_count += 1
-
-          total = pass_count + fail_count + skip_count
-          covered_categories = sum(1 for cat, items in categories.items() if items and cat != "uncategorized")
-
-          summary_lines = [
-              "## UX Regression Gate Results",
-              "",
-              f"| Metric | Count |",
-              f"| --- | --- |",
-              f"| Scenarios run | {total} |",
-              f"| Passed | {pass_count} |",
-              f"| Failed | {fail_count} |",
-              f"| Skipped | {skip_count} |",
-              f"| UX categories covered | {covered_categories} / {len(categories) - 1} |",
-              "",
-          ]
-
-          if fail_count > 0:
-              summary_lines += [
-                  "### Failed Scenarios",
-                  "",
-                  "The following UX scenarios regressed on this PR:",
-                  "",
-              ]
-              for scenario in failed_scenarios:
-                  summary_lines.append(f"- `{scenario}`")
-              summary_lines += [
-                  "",
-                  "**To reproduce locally:**",
-                  "```bash",
-                  "just ux-tests",
-                  "```",
-                  "",
-                  "See [UX_TESTING.md](docs/reference/UX_TESTING.md) for guidance on fixing failures.",
-              ]
-              if receipt:
-                  # Use `or` instead of dict.get() default for nullable JSON fields:
-                  # serde serializes Option::None as JSON null, which json.loads()
-                  # returns as Python None — dict.get(key, default) only falls back
-                  # on KeyError (missing key), not on null values.
-                  summary_lines += [
-                      "",
-                      "### Structured Failure Receipt",
-                      "",
-                      f"- Receipt path: `{receipt_path}` (uploaded with the UX test results artifact)",
-                      f"- Failure class: `{receipt.get('failure_class') or 'unknown'}`",
-                      f"- First failing test: `{receipt.get('first_failing_test') or 'unknown'}`",
-                      f"- Panic location: `{receipt.get('panic_location') or 'n/a'}`",
-                      f"- Repro command: `{receipt.get('canonical_repro') or receipt.get('friendly_repro') or 'just ux-tests'}`",
-                      f"- Route: `{receipt.get('route') or 'triage'}`",
-                  ]
-          else:
-              summary_lines.append("All UX scenarios passed.")
-
-          summary_lines += [
-              "",
-              "### Coverage by Category",
-              "",
-              "| Category | Scenarios |",
-              "| --- | --- |",
-          ]
-          for cat, items in categories.items():
-              if cat == "uncategorized":
-                  continue
-              count = len(items)
-              summary_lines.append(f"| {cat} | {count} |")
-
-          summary_lines += [
-              "",
-              f"**Coverage metric**: {total} scenarios cover {covered_categories} categories of UX.",
-          ]
-
-          pathlib.Path(summary_path).write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
-
-          # Also print to stdout for CI logs
-          print(f"\nUX Coverage: {total} scenarios across {covered_categories} categories")
-          for cat, items in categories.items():
-              if items:
-                  print(f"  {cat}: {len(items)} scenario(s)")
-          PY
-
-      - name: Job summary — harness not yet available
-        if: steps.harness_check.outputs.harness_available == 'false'
-        run: |
-          python3 - <<'PY'
-          import os, pathlib
-
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          if not summary_path:
-              raise SystemExit(0)
-
-          lines = [
-              "## UX Regression Gate",
-              "",
-              "> **SKIPPED** — UX test harness not yet scaffolded.",
-              "",
-              "The `crates/perl-lsp-ux-tests/` crate and `just ux-tests` recipe have not yet",
-              "landed. This gate will become active automatically once they are merged.",
-              "",
-              "**This PR cannot be verified for UX regressions until the harness lands.**",
-              "",
-              "Expected coverage when active:",
-              "",
-              "| Category | Purpose |",
-              "| --- | --- |",
-              "| startup | LSP server starts cleanly |",
-              "| first-open | First file open produces diagnostics |",
-              "| missing-dep | Graceful degradation without perltidy/perlcritic |",
-              "| bad-config | Clear error on malformed config |",
-              "| protocol-handling | LSP/DAP protocol correctness |",
-              "| error-messages | User-visible error quality |",
-              "",
-              "See [UX_TESTING.md](docs/reference/UX_TESTING.md) for details.",
-          ]
-
-          pathlib.Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
-
-      - name: Set commit status
-        if: always()
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const harnessAvailable = '${{ steps.harness_check.outputs.harness_available }}' === 'true';
-            const uxTestsOutcome = '${{ steps.ux_tests.outcome }}';
-
-            let state, description;
-
-            if (!harnessAvailable) {
-              // Harness not yet scaffolded — report as pending/neutral, not failure
-              state = 'success';
-              description = 'UX harness not yet scaffolded — gate inactive (skipped)';
-            } else if (uxTestsOutcome === 'success') {
-              state = 'success';
-              description = 'All UX regression scenarios passed';
-            } else if (uxTestsOutcome === 'failure') {
-              state = 'failure';
-              description = 'UX regression detected — run "just ux-tests" locally to reproduce';
-            } else {
-              state = 'failure';
-              description = 'UX regression gate did not complete';
-            }
-
-            console.log(`Setting commit status: ${state} — ${description}`);
-
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: context.sha,
-              state,
-              context: 'ci/ux-regression-gate',
-              description,
-              target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-            });
-
-      - name: Fail UX regression gate on test failures
-        if: steps.harness_check.outputs.harness_available == 'true' && steps.ux_tests.outcome == 'failure'
-        run: exit 1
-
-  # ---------------------------------------------------------------------------
-  # Extension Jest gate
-  #
-  # The Rust UX harness above does NOT exercise the VS Code extension's own
-  # TypeScript test suite. Before this job existed, a `vscode-extension/**`
-  # change could merge with its Jest suite never running in PR CI — which is
-  # exactly how the activation-events regression (#860) reached master while
-  # the guard test sat green-because-never-run. This job closes that hole:
-  # lint -> typecheck -> jest, on every PR that touches extension paths.
-  #
-  # This is a BLOCKING gate: lint, typecheck, and jest must pass. The suite was
-  # de-flaked (network transport stubbed in tests) and confirmed deterministically
-  # green before enforcement was enabled (#932).
-  # ---------------------------------------------------------------------------
-  extension-jest:
-    name: Extension Jest
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
-
-      - name: Setup VS Code toolchain
-        uses: ./.github/actions/setup-vscode-toolchain
-
-      # `npm run lint` runs scripts/lint-canary.js first (blocking): it proves
-      # type-aware `typescript/no-floating-promises` genuinely executed
-      # against a committed fixture pair before the real lint runs. Because
-      # Oxlint's type-aware backend (oxlint-tsgolint) is alpha, a green lint
-      # check alone is not proof the engine ran — the canary makes that
-      # observable and blocking. See vscode-extension/scripts/lint-canary.js.
-      - name: Lint (oxlint --type-aware, with type-aware canary)
-        working-directory: vscode-extension
-        run: npm run lint
-
-      # Oxfmt (PREP-3, #3662) is the sole formatter for vscode-extension/** —
-      # no Prettier. fmt:check fails the build on any unformatted file so
-      # drift can't land; `npm run fmt` applies fixes locally.
-      - name: Format check (oxfmt)
-        working-directory: vscode-extension
-        run: npm run fmt:check
-
-      # TypeScript 7 is the sole type-check authority — Rolldown (the build
-      # step below) does not type-check, it only bundles already-valid TS.
-      # Run all five authority tsconfigs so a diagnostic in scripts/** or
-      # the published-smoke suite fails on PR rather than first surfacing
-      # during a publish (#5528).
-      - name: Typecheck all configs (tsc --noEmit, TS7)
-        working-directory: vscode-extension
-        run: npm run typecheck:all
-
-      # Rolldown (#3662, final step of the TS7 migration train) replaces TS
-      # emission as the production artifact builder: src/extension.ts ->
-      # the single out/extension.js CJS bundle. Built here (not just left to
-      # the jest suite's own beforeAll fallback) so a Rolldown-specific
-      # build failure surfaces as its own clearly-named, non-required-check
-      # CI step rather than being buried inside a jest failure.
-      - name: Build (rolldown)
-        working-directory: vscode-extension
-        run: npm run compile
-
-      - name: Unit tests (jest --ci)
-        id: jest
-        working-directory: vscode-extension
-        run: npm run test:ci
-
-      - name: Grammar snapshot tests (visual regression)
-        id: grammar
-        working-directory: vscode-extension
-        run: npm run test:grammar
-
-      - name: Report extension Jest result (ci/extension-jest)
-        if: always()
-        uses: actions/github-script@v9
-        with:
-          script: |
-            // Blocking gate: the commit status reflects the real jest + grammar outcome.
-            const jest = '${{ steps.jest.outcome }}';
-            const grammar = '${{ steps.grammar.outcome }}';
-            const state = (jest === 'success' && grammar === 'success') ? 'success' : 'failure';
-            let description;
-            if (state === 'success') {
-              description = 'extension lint + typecheck + jest + grammar snapshots all green';
-            } else if (jest !== 'success') {
-              description = 'extension jest failed — run: cd vscode-extension && npm run test:ci';
-            } else {
-              description = 'grammar snapshot regression — run: cd vscode-extension && npm run test:grammar';
-            }
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: context.sha,
-              state,
-              context: 'ci/extension-jest',
-              description,
-              target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-            });
+              if re.search(r'^\s*test\s+\S+s\+\.\.\.\s+
