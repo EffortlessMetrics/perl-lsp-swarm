@@ -135,6 +135,15 @@ def test_active_convergence_does_not_require_claim_or_head_receipts() -> None:
     assert "resolved_without_disposition" in text
 
 
+def test_convergence_sanitizes_numeric_collector_facts() -> None:
+    text = (ROOT / "scripts/ci/check-pr-review-convergence").read_text(
+        encoding="utf-8"
+    )
+    assert '[[ "$value" =~ ^[0-9]+$ ]]' in text
+    assert 'not_proven "invalid_numeric_review_fact"' in text
+    assert "USABLE_HUMAN_REVIEW_COUNT=$(" in text
+
+
 def test_state_projection_has_no_exact_head_lifecycle() -> None:
     text = (ROOT / "scripts/reviews/state").read_text(encoding="utf-8")
     assert "FIXED_HEAD" not in text
@@ -143,3 +152,11 @@ def test_state_projection_has_no_exact_head_lifecycle() -> None:
     assert "REVIEW_PROTOCOL_ENFORCE" not in text
     assert 'review_currentness: "semantic_changed_seam"' in text
     assert "exact_head_review_required: false" in text
+
+
+def test_state_projection_turns_every_abnormal_child_exit_into_not_proven() -> None:
+    text = (ROOT / "scripts/reviews/state").read_text(encoding="utf-8")
+    assert '[[ "$CLOSE_EXIT" -ge 2 ]]' in text
+    assert 'state: "NOT_PROVEN"' in text
+    assert 'reason: "invalid_closeout_output"' in text
+    assert "child_exit" in text
