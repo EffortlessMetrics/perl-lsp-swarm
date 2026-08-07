@@ -78,6 +78,7 @@ runs:
         RECEIPT_PATH: ${{ inputs.receipt-path }}
       run: |
         python3 - <<'PY'
+        import html
         import json
         import os
         from pathlib import Path
@@ -85,7 +86,13 @@ runs:
         receipt_path_raw = os.environ["RECEIPT_PATH"]
         receipt_path = Path(receipt_path_raw)
         summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-        display_path = receipt_path_raw.replace("`", "\\`").replace("\r", " ").replace("\n", " ")
+
+        def summary_text(value: object) -> str:
+            sanitized = str(value).replace("\r", " ").replace("\n", " ")
+            return html.escape(sanitized, quote=True).replace("|", "&#124;")
+
+        def summary_code(value: object) -> str:
+            return f"<code>{summary_text(value)}</code>"
 
         if not summary_path:
             raise SystemExit(0)
@@ -93,23 +100,25 @@ runs:
         lines = ["### Gate Receipt", ""]
 
         if not receipt_path.is_file():
-            lines.append(f"> Receipt not found at `{display_path}`")
+            lines.append(f"> Receipt not found at {summary_code(receipt_path_raw)}")
             Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
             raise SystemExit(0)
 
         try:
             data = json.loads(receipt_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as error:
-            lines.append(f"> Failed to read receipt: {error}")
+            lines.append(f"> Failed to read receipt: {summary_code(error)}")
             Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
             raise SystemExit(0)
 
         # Header info
-        lines.append(f"**Generated**: {data.get('generated_at', 'unknown')}")
-        lines.append(f"**Commit**: `{data.get('commit', 'unknown')[:12]}`")
+        lines.append(f"**Generated**: {summary_text(data.get('generated_at', 'unknown'))}")
+        commit = str(data.get("commit", "unknown"))[:12]
+        lines.append(f"**Commit**: {summary_code(commit)}")
 
         # Overall status
-        gates = data.get("gates", [])
+        raw_gates = data.get("gates", [])
+        gates = [gate for gate in raw_gates if isinstance(gate, dict)] if isinstance(raw_gates, list) else []
         passed = sum(1 for gate in gates if gate.get("status") == "passed")
         failed = sum(1 for gate in gates if gate.get("status") == "failed")
         total = len(gates)
@@ -126,23 +135,24 @@ runs:
         lines.append("|------|--------|------|----------|")
 
         for gate in gates:
-            name = gate.get("name", "unknown")
+            name = summary_text(gate.get("name", "unknown"))
             status = gate.get("status", "unknown")
-            exit_code = gate.get("exit_code", "?")
-            duration = gate.get("duration_seconds", "?")
+            exit_code = summary_text(gate.get("exit_code", "?"))
+            duration = summary_text(gate.get("duration_seconds", "?"))
 
             if status == "passed":
                 status_text = "passed"
             elif status == "failed":
                 status_text = "**FAILED**"
             else:
-                status_text = status
+                status_text = summary_text(status)
 
             lines.append(f"| {name} | {status_text} | {exit_code} | {duration}s |")
 
         if "total_duration_seconds" in data:
+            total_duration = summary_text(data["total_duration_seconds"])
             lines.append("")
-            lines.append(f"**Total duration**: {data['total_duration_seconds']}s")
+            lines.append(f"**Total duration**: {total_duration}s")
 
         Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         PY
