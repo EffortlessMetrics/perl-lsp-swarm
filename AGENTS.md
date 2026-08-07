@@ -147,7 +147,7 @@ declaration with parent goal, claim, entry flow, current named transition, reaso
 durable subject, and wake event. Update it only when the material route changes. It is
 a resumability aid, not lifecycle authority.
 
-## Review and integration
+## Codex-native PR review
 
 For substantive PRs the native route is:
 
