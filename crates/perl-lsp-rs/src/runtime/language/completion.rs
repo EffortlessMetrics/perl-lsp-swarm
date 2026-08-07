@@ -4374,7 +4374,7 @@ mod tests {
         let labels: Vec<String> = provider
             .get_completions_with_path(source, source.len(), None)
             .into_iter()
-            .map(|item| item.label)
+            .map(|item| item.label.into_owned())
             .collect();
 
         assert!(
