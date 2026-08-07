@@ -47,11 +47,14 @@ export function fetchBoundedJson<T>(options: BoundedJsonRequestOptions): Promise
     let request: http.ClientRequest | undefined;
     let response: http.IncomingMessage | undefined;
     let cancellation: DisposableLike | undefined;
+    let timeoutId: NodeJS.Timeout | undefined;
     let settled = false;
 
     const cleanup = (): void => {
       cancellation?.dispose();
-      request?.setTimeout(0);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     };
 
     const succeed = (value: T): void => {
@@ -72,20 +75,24 @@ export function fetchBoundedJson<T>(options: BoundedJsonRequestOptions): Promise
       reject(error);
     };
 
+    const abort = (error: Error): void => {
+      response?.destroy(error);
+      request?.destroy(error);
+      fail(error);
+    };
+
     try {
       request = requestFactory((incoming) => {
         response = incoming;
         const statusCode = incoming.statusCode ?? 0;
         if (statusCode < 200 || statusCode >= 300) {
-          incoming.resume();
-          fail(new Error(`${operationName} failed: HTTP ${statusCode}`));
+          abort(new Error(`${operationName} failed: HTTP ${statusCode}`));
           return;
         }
 
         const declaredLength = Number(incoming.headers['content-length']);
         if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-          incoming.resume();
-          fail(
+          abort(
             new Error(
               `${operationName} exceeded ${maxBytes} bytes (declared ${declaredLength})`,
             ),
@@ -103,10 +110,7 @@ export function fetchBoundedJson<T>(options: BoundedJsonRequestOptions): Promise
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           receivedBytes += buffer.length;
           if (receivedBytes > maxBytes) {
-            const error = new Error(`${operationName} exceeded ${maxBytes} bytes`);
-            incoming.destroy(error);
-            request?.destroy(error);
-            fail(error);
+            abort(new Error(`${operationName} exceeded ${maxBytes} bytes`));
             return;
           }
           chunks.push(buffer);
@@ -135,21 +139,17 @@ export function fetchBoundedJson<T>(options: BoundedJsonRequestOptions): Promise
         });
       });
 
-      request.setTimeout(timeoutMs, () => {
-        const error = new Error(`${operationName} timeout after ${timeoutMs / 1000} seconds`);
-        response?.destroy(error);
-        request?.destroy(error);
-        fail(error);
-      });
+      timeoutId = setTimeout(() => {
+        abort(new Error(`${operationName} timeout after ${timeoutMs / 1000} seconds`));
+      }, timeoutMs);
+      timeoutId.unref();
+
       request.once('error', (error) => {
         fail(error);
       });
 
       cancellation = cancellationToken?.onCancellationRequested(() => {
-        const error = new Error(`${operationName} cancelled`);
-        response?.destroy(error);
-        request?.destroy(error);
-        fail(error);
+        abort(new Error(`${operationName} cancelled`));
       });
     } catch (error) {
       fail(error instanceof Error ? error : new Error(String(error)));
