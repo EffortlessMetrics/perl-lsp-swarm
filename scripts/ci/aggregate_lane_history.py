@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -56,7 +57,7 @@ def static_floors(lanes_toml: Path) -> dict[str, float]:
 
     try:
         doc = tomllib.loads(lanes_toml.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
+    except (OSError, ValueError) as error:
         raise ValueError(f"could not read lane policy {lanes_toml}: {error}") from error
 
     lanes = doc.get("lane")
@@ -83,15 +84,29 @@ def find_trusted_marker(path: Path, actuals_dir: Path) -> Path | None:
     """Find the nearest run-level marker without escaping actuals_dir."""
     root = actuals_dir.resolve()
     current = path.parent.resolve()
+    if current != root and root not in current.parents:
+        return None
+
     while True:
         marker = current / TRUSTED_MARKER
         if marker.is_file():
             return marker
         if current == root:
             return None
-        if root not in current.parents:
-            return None
         current = current.parent
+
+
+def parse_trusted_timestamp(value: Any) -> float | None:
+    """Parse one timezone-aware RFC 3339 timestamp from trusted run metadata."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
 
 
 def validate_trusted_marker(
@@ -99,35 +114,39 @@ def validate_trusted_marker(
     *,
     repository: str,
     default_branch: str,
-) -> tuple[bool, str, int | None]:
+) -> tuple[bool, str, int | None, float | None]:
     """Validate run provenance recorded by the trusted workflow shell."""
     try:
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False, "invalid_marker", None
+    except (OSError, ValueError):
+        return False, "invalid_marker", None, None
     if not isinstance(marker, dict):
-        return False, "invalid_marker", None
+        return False, "invalid_marker", None, None
 
     run_id = marker.get("run_id")
     if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
-        return False, "invalid_marker", None
+        return False, "invalid_marker", None, None
     if marker.get("repository") != repository:
-        return False, "foreign_repository", run_id
+        return False, "foreign_repository", run_id, None
     if marker.get("conclusion") != "success":
-        return False, "unsuccessful_run", run_id
+        return False, "unsuccessful_run", run_id, None
 
     event = marker.get("event")
     branch = marker.get("head_branch")
     if event == "push":
         if branch != default_branch:
-            return False, "untrusted_branch", run_id
+            return False, "untrusted_branch", run_id, None
     elif event != "merge_group":
-        return False, "untrusted_event", run_id
+        return False, "untrusted_event", run_id, None
 
     head_sha = marker.get("head_sha")
     if not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
-        return False, "invalid_marker", run_id
-    return True, "accepted", run_id
+        return False, "invalid_marker", run_id, None
+
+    created_at = parse_trusted_timestamp(marker.get("created_at"))
+    if created_at is None:
+        return False, "invalid_marker", run_id, None
+    return True, "accepted", run_id, created_at
 
 
 def collect_actuals(
@@ -157,21 +176,13 @@ def collect_actuals(
     cutoff = time.time() - window_days * 86400
     for path in sorted(actuals_dir.rglob("ci-actuals*.json")):
         stats["files_seen"] += 1
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            rejected["unreadable_file"] += 1
-            continue
-        if mtime < cutoff:
-            rejected["outside_window"] += 1
-            continue
 
         if require_trusted_markers:
             marker_path = find_trusted_marker(path, actuals_dir)
             if marker_path is None:
                 rejected["missing_marker"] += 1
                 continue
-            trusted, reason, run_id = validate_trusted_marker(
+            trusted, reason, run_id, created_at = validate_trusted_marker(
                 marker_path,
                 repository=repository,
                 default_branch=default_branch,
@@ -179,12 +190,24 @@ def collect_actuals(
             if not trusted:
                 rejected[reason] += 1
                 continue
+            if created_at is None or created_at < cutoff:
+                rejected["outside_window"] += 1
+                continue
             if run_id is not None:
                 source_runs.add(run_id)
+        else:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                rejected["unreadable_file"] += 1
+                continue
+            if mtime < cutoff:
+                rejected["outside_window"] += 1
+                continue
 
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (OSError, ValueError):
             rejected["invalid_receipt"] += 1
             continue
         if not isinstance(doc, dict):
@@ -303,6 +326,7 @@ def self_test_write_run(
     branch: str = "main",
     repository: str = "EffortlessMetrics/perl-lsp-swarm",
     conclusion: str = "success",
+    created_at: str | None = None,
     jobs: list[object] | None = None,
     write_marker: bool = True,
 ) -> None:
@@ -311,6 +335,9 @@ def self_test_write_run(
     artifact_dir = run_dir / "ci-actuals-meta"
     artifact_dir.mkdir(parents=True)
     if write_marker:
+        marker_created_at = created_at or datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         (run_dir / TRUSTED_MARKER).write_text(
             json.dumps(
                 {
@@ -320,6 +347,7 @@ def self_test_write_run(
                     "head_branch": branch,
                     "head_sha": "a" * 40,
                     "conclusion": conclusion,
+                    "created_at": marker_created_at,
                 }
             )
             + "\n",
@@ -377,6 +405,33 @@ def run_self_tests() -> None:
         root = Path(tmp)
         self_test_write_run(
             root,
+            run_id=3,
+            repository="attacker/fork",
+            jobs=[{"lane_id": "meta", "actual_lem": 3}],
+        )
+        self_test_write_run(
+            root,
+            run_id=4,
+            conclusion="failure",
+            jobs=[{"lane_id": "meta", "actual_lem": 4}],
+        )
+        self_test_write_run(
+            root,
+            run_id=5,
+            branch="feature",
+            jobs=[{"lane_id": "meta", "actual_lem": 5}],
+        )
+        samples, raw_stats = collect(root)
+        rejected = serializable_stats(raw_stats)["rejected"]
+        check(samples == {}, "untrusted provenance supplied a sample")
+        check(rejected.get("foreign_repository") == 1, "foreign repo not rejected")
+        check(rejected.get("unsuccessful_run") == 1, "failed run not rejected")
+        check(rejected.get("untrusted_branch") == 1, "non-default branch not rejected")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        self_test_write_run(
+            root,
             run_id=1,
             event="pull_request",
             branch="feature",
@@ -393,6 +448,19 @@ def run_self_tests() -> None:
         check(samples == {}, "untrusted run supplied a sample")
         check(rejected.get("untrusted_event") == 1, "PR source was not rejected")
         check(rejected.get("missing_marker") == 1, "missing marker was not rejected")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        self_test_write_run(
+            root,
+            run_id=6,
+            created_at="2000-01-01T00:00:00Z",
+            jobs=[{"lane_id": "meta", "actual_lem": 6}],
+        )
+        samples, raw_stats = collect(root)
+        rejected = serializable_stats(raw_stats)["rejected"]
+        check(samples == {}, "out-of-window trusted run supplied a sample")
+        check(rejected.get("outside_window") == 1, "marker timestamp was not enforced")
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
