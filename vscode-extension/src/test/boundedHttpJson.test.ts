@@ -124,6 +124,22 @@ describe('fetchBoundedJson', () => {
     ).rejects.toThrow('timeout after 0.025 seconds');
   });
 
+  test('enforces the wall-clock deadline while bytes keep arriving', async () => {
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.write('{"value":"');
+          const interval = setInterval(() => {
+            response.write('x');
+          }, 5);
+          response.once('close', () => clearInterval(interval));
+        },
+        (url) => fetchFrom(url, { timeoutMs: 30 }),
+      ),
+    ).rejects.toThrow('timeout after 0.03 seconds');
+  });
+
   test('destroys the request when cancellation is signalled', async () => {
     const token = new TestCancellationToken();
     await expect(
