@@ -87,11 +87,17 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
+        CLIPPY_ARGS: ${{ inputs.clippy-args }}
       run: |
         echo "::group::Clippy Lint"
-        cargo clippy ${{ inputs.clippy-args }}
-        echo "status=$?" >> $GITHUB_OUTPUT
+        # Read CLIPPY_ARGS from the environment and split into an argv array
+        # using shell-safe word-splitting. This prevents interpreter injection
+        # via action inputs containing shell separators (#5969).
+        read -r -a clippy_argv <<< "$CLIPPY_ARGS"
+        cargo clippy "${clippy_argv[@]}" || clippy_exit=$?
+        echo "status=${clippy_exit:-0}" >> $GITHUB_OUTPUT
         echo "::endgroup::"
+        exit "${clippy_exit:-0}"
 
     - name: Run production clippy (no unwrap/expect)
       id: clippy-prod
@@ -100,10 +106,14 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
+        CLIPPY_PROD_ARGS: ${{ inputs.clippy-prod-args }}
       run: |
         echo "::group::Production Clippy (no unwrap/expect)"
-        cargo clippy ${{ inputs.clippy-prod-args }}
+        read -r -a clippy_prod_argv <<< "$CLIPPY_PROD_ARGS"
+        cargo clippy "${clippy_prod_argv[@]}" || clippy_prod_exit=$?
+        echo "status=${clippy_prod_exit:-0}" >> $GITHUB_OUTPUT
         echo "::endgroup::"
+        exit "${clippy_prod_exit:-0}"
 
     - name: Run tests
       id: test
@@ -114,8 +124,11 @@ runs:
         RUST_TEST_THREADS: ${{ inputs.test-threads }}
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
         RUST_BACKTRACE: '1'
+        TEST_ARGS: ${{ inputs.test-args }}
       run: |
         echo "::group::Tests"
-        cargo test ${{ inputs.test-args }}
-        echo "status=$?" >> $GITHUB_OUTPUT
+        read -r -a test_argv <<< "$TEST_ARGS"
+        cargo test "${test_argv[@]}" || test_exit=$?
+        echo "status=${test_exit:-0}" >> $GITHUB_OUTPUT
         echo "::endgroup::"
+        exit "${test_exit:-0}"
