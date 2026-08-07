@@ -86,7 +86,9 @@ runs:
 
     - name: Install nextest
       if: inputs.install-nextest == 'true'
-      uses: taiki-e/install-action@a8a2a6550241efe7b0655894cae976aa07ddb0e6 # nextest
+      uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2
+      with:
+        tool: nextest
 
     - name: Show toolchain info
       shell: bash
