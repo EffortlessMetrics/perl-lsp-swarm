@@ -48,7 +48,7 @@ jobs:
       - name: Create unreferenced verified commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COMMIT_MESSAGE: security(ci): pin Codecov and validate ripr refs (#6026)
+          COMMIT_MESSAGE: 'security(ci): pin Codecov and validate ripr refs (#6026)'
         run: |
           rm .github/workflows/agent-build-security-6026.yml .agent-trigger-6026
           python3 - <<'PY'
