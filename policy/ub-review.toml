@@ -3,20 +3,17 @@
 # This file configures the ub-review evidence packet for this repo.
 # It is passed to the action via `config: policy/ub-review.toml`.
 #
-# Status: advisory — see docs/ci/review-gates.md.
-#
-# PR 1 (this file): minimal advisory scaffold.
-# PR 2: add runner-size profiles and tune sensor weights for Rust LSP code.
-# PR 3: add unsafe-review sensor policy and per-tool thresholds.
-#
-# See https://github.com/EffortlessMetrics/ub-review for full config reference.
+# Status: advisory — see docs/ci/review-gates.md and #3653.
+# The action may produce findings or NOT_PROVEN evidence, but it is not a
+# merge-required authority.
 
-# Use the bun-ub profile as the closest available preset for Rust repos.
-# A perl-lsp-specific profile is tracked for PR 2.
-# TODO(PR 2): Replace with a perl-lsp profile that reflects the actual
-#             unsafe surface (perl-parser FFI, tree-sitter bindings, etc.)
+# Use the bun-ub profile as the closest available preset for Rust repos while
+# retaining the perl-lsp-specific lanes below. The runtime profile is the local
+# proof-enabled extension: the old gh-runner selection declared focused proof
+# requirements but leased zero focused-build work, so the proof broker could
+# never execute them.
 review_profile = "bun-ub-v0"
-profile = "gh-runner"
+profile = "gh-runner-proof"
 
 [repo]
 kind = "rust"
@@ -24,16 +21,13 @@ base = "origin/main"
 head = "HEAD"
 
 [review]
-# Advisory: post a grouped PR review on opened/ready_for_review; skip on
-# synchronize to avoid review spam on push storms.
+# The workflow posts on opened/reopened/ready_for_review and does not trigger a
+# new full semantic review on every synchronize push.
 posting_engine = "review"
 ban_standalone_approval = false
 
-# Review body posture. Promoted from "suppress" to "post_substantive" so
-# actionable findings (severity medium+ or confidence medium-high+) reach
-# the PR; pure lane-status boilerplate stays suppressed. Under "suppress"
-# nothing posts, which structurally zeroes the acted-on-comment metric
-# tracked by the calibration artifact. See ub-review #717 / #718.
+# Actionable summary-only findings are reviewer value and must reach the PR;
+# lane/status boilerplate remains artifact-only.
 [review_body]
 include_successful_lane_table = false
 include_provider_table = "on_failure"
@@ -41,10 +35,9 @@ include_sensor_table = "on_failure"
 include_execution_summary = "none"
 summary_only_body = "post_substantive"
 
-# Core sensors: best-effort, advisory, all non-blocking.
-# Required = false means a missing sensor does not fail the gate.
-# TODO(PR 3): Review unsafe-review and ripr thresholds for perl-lsp's
-#             actual unsafe surface area.
+# Core sensors remain advisory. Missing/failed optional sensors reduce evidence
+# coverage and are surfaced by the workflow truth receipt rather than being
+# silently converted into a clean result.
 [tools.tokmd]
 enabled = true
 required = false
@@ -53,8 +46,11 @@ required = false
 enabled = true
 required = false
 
+# Standalone ripr+ is already a required, maintained PR gate in this repo. The
+# bundled ub-review copy was both duplicate and historically schema-broken, so
+# it is not a second authority here.
 [tools.ripr]
-enabled = true
+enabled = false
 required = false
 
 [tools.unsafe-review]
@@ -69,11 +65,11 @@ required = false
 enabled = true
 required = false
 
-# Heavy witnesses are off for PR 1; enable via allow-heavy in the workflow
-# when the advisory phase graduates to a proof-required mode.
+# Heavy witnesses stay off for the advisory lane. Focused proof is leased by
+# gh-runner-proof below; broad workspace tests remain selected evidence rather
+# than a default 900-second sensor tax.
 [tools.coverage]
 enabled = false
-
 
 # perl-lsp-v0 lanes: tuned to the actual risk surfaces of this repo.
 [[lanes]]
@@ -132,18 +128,15 @@ enabled = true
 env = "OPENCODE"
 role = "fallback"
 
-# Proof requirements: focused build for the perl-core-test-runner crate.
-# This enables the proof broker to produce receipts that route to lanes.
+# One bounded proof request. The proof-enabled runtime profile below gives the
+# broker one focused-build lease; a missing or timed-out result remains visible
+# evidence loss rather than being described as a clean review.
 [[proof.required]]
 command = "cargo check --package perl-core-test-runner --locked"
 reason = "Focused build check for perl-core-test-runner crate."
 cost = "focused-build"
 timeout_sec = 180
 
-
-# Custom profile with non-zero focused-build leases for proof execution.
-# This enables the proof broker to execute model-suggested focused-build
-# requests and produce receipts that route to lanes in multi-turn continuation.
 [profiles.gh-runner-proof]
 extends = "gh-runner"
 
