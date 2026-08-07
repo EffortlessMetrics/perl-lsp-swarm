@@ -60,25 +60,35 @@ if [[ -z "$CORE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
 fi
 
 get_num() {
+    local selector="$1"
     local value
-    value="$(jq -r "$1 // 0" <<<"$CORE_JSON")" || not_proven "invalid_numeric_review_fact"
-    if [[ "$value" =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$value"
-        return 0
+    if ! value="$(jq -r "$selector // 0" <<<"$CORE_JSON")"; then
+        return 1
     fi
-    not_proven "invalid_numeric_review_fact"
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$value"
+}
+
+load_num() {
+    local target="$1"
+    local selector="$2"
+    local value
+    if ! value="$(get_num "$selector")"; then
+        not_proven "invalid_numeric_review_fact"
+    fi
+    printf -v "$target" '%s' "$value"
 }
 
 IS_DRAFT="$(jq -r '.is_draft // false' <<<"$CORE_JSON")"
-PENDING_REVIEWER_COUNT="$(get_num '.pending_reviewers | length')"
+load_num PENDING_REVIEWER_COUNT '.pending_reviewers | length'
 REVIEW_DECISION="$(jq -r '.review_decision // ""' <<<"$CORE_JSON")"
-CURRENT_CHANGE_REQUEST_COUNT="$(get_num '.current_change_requests | length')"
-UNRESOLVED_ACTIVE="$(get_num '.unresolved_active')"
-UNRESOLVED_OUTDATED="$(get_num '.unresolved_outdated')"
-UNRESOLVED_TOTAL="$(get_num '.unresolved_total')"
-RESOLVED_WITHOUT_DISPOSITION="$(get_num '.resolved_without_disposition')"
-HUMAN_REVIEW_COUNT="$(get_num '.human_review_count')"
-DISMISSED_HUMAN_REVIEW_COUNT="$(get_num '.dismissed_human_review_count')"
+load_num CURRENT_CHANGE_REQUEST_COUNT '.current_change_requests | length'
+load_num UNRESOLVED_ACTIVE '.unresolved_active'
+load_num UNRESOLVED_OUTDATED '.unresolved_outdated'
+load_num UNRESOLVED_TOTAL '.unresolved_total'
+load_num RESOLVED_WITHOUT_DISPOSITION '.resolved_without_disposition'
+load_num HUMAN_REVIEW_COUNT '.human_review_count'
+load_num DISMISSED_HUMAN_REVIEW_COUNT '.dismissed_human_review_count'
 USABLE_HUMAN_REVIEW_COUNT=$((HUMAN_REVIEW_COUNT - DISMISSED_HUMAN_REVIEW_COUNT))
 if [[ "$USABLE_HUMAN_REVIEW_COUNT" -lt 0 ]]; then
     USABLE_HUMAN_REVIEW_COUNT=0
