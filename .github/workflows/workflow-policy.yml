@@ -75,7 +75,7 @@ jobs:
           npm run fmt:check
           npm run typecheck
           npm run lint
-          npm test -- --runInBand src/test/podPreview.test.ts
+          npm test -- --runInBand podPreview.test.js
       - name: Upload verified POD files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
