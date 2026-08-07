@@ -69,7 +69,7 @@ jobs:
       - name: Create unreferenced verified commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COMMIT_MESSAGE: security(ci): isolate UX gate execution authority (#6027)
+          COMMIT_MESSAGE: 'security(ci): isolate UX gate execution authority (#6027)'
         run: |
           rm .github/workflows/agent-build-security-6027.yml .agent-trigger-6027
           python3 - <<'PY'
