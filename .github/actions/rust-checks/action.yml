@@ -75,10 +75,13 @@ runs:
       if: inputs.check-fmt == 'true'
       shell: bash
       run: |
+        set +e
         echo "::group::Format Check"
         cargo xtask fmt --check
-        echo "status=$?" >> $GITHUB_OUTPUT
+        status=$?
         echo "::endgroup::"
+        printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+        exit "$status"
 
     - name: Run clippy
       id: clippy
@@ -87,11 +90,28 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
+        CARGO_CHECK_ARGS: ${{ inputs.clippy-args }}
       run: |
+        set +e
         echo "::group::Clippy Lint"
-        cargo clippy ${{ inputs.clippy-args }}
-        echo "status=$?" >> $GITHUB_OUTPUT
+        python3 - <<'PY'
+        import os
+        import shlex
+        import subprocess
+        import sys
+
+        try:
+            args = shlex.split(os.environ["CARGO_CHECK_ARGS"], posix=True)
+        except ValueError as error:
+            print(f"Invalid clippy argument string: {error}", file=sys.stderr)
+            raise SystemExit(2)
+
+        raise SystemExit(subprocess.run(["cargo", "clippy", *args], check=False).returncode)
+        PY
+        status=$?
         echo "::endgroup::"
+        printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+        exit "$status"
 
     - name: Run production clippy (no unwrap/expect)
       id: clippy-prod
@@ -100,9 +120,23 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
+        CARGO_CHECK_ARGS: ${{ inputs.clippy-prod-args }}
       run: |
         echo "::group::Production Clippy (no unwrap/expect)"
-        cargo clippy ${{ inputs.clippy-prod-args }}
+        python3 - <<'PY'
+        import os
+        import shlex
+        import subprocess
+        import sys
+
+        try:
+            args = shlex.split(os.environ["CARGO_CHECK_ARGS"], posix=True)
+        except ValueError as error:
+            print(f"Invalid production clippy argument string: {error}", file=sys.stderr)
+            raise SystemExit(2)
+
+        raise SystemExit(subprocess.run(["cargo", "clippy", *args], check=False).returncode)
+        PY
         echo "::endgroup::"
 
     - name: Run tests
@@ -114,8 +148,25 @@ runs:
         RUST_TEST_THREADS: ${{ inputs.test-threads }}
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
         RUST_BACKTRACE: '1'
+        CARGO_CHECK_ARGS: ${{ inputs.test-args }}
       run: |
+        set +e
         echo "::group::Tests"
-        cargo test ${{ inputs.test-args }}
-        echo "status=$?" >> $GITHUB_OUTPUT
+        python3 - <<'PY'
+        import os
+        import shlex
+        import subprocess
+        import sys
+
+        try:
+            args = shlex.split(os.environ["CARGO_CHECK_ARGS"], posix=True)
+        except ValueError as error:
+            print(f"Invalid test argument string: {error}", file=sys.stderr)
+            raise SystemExit(2)
+
+        raise SystemExit(subprocess.run(["cargo", "test", *args], check=False).returncode)
+        PY
+        status=$?
         echo "::endgroup::"
+        printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+        exit "$status"
