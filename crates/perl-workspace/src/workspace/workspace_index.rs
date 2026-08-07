@@ -1926,11 +1926,7 @@ impl WorkspaceIndex {
     /// query results may reflect pre-edit state.
     #[must_use]
     pub fn stale_file_count(&self) -> usize {
-        self.files
-            .read()
-            .values()
-            .filter(|idx| idx.pending_generation > idx.generation)
-            .count()
+        self.files.read().values().filter(|idx| idx.pending_generation > idx.generation).count()
     }
 
     /// Reset the generation counters for `uri` so that a close/reopen cycle
@@ -2970,55 +2966,38 @@ impl WorkspaceIndex {
     /// returning only actual usage sites. This is used by code lens to show
     /// "N references" where N means call sites, not the definition itself.
     pub fn count_usages(&self, symbol_name: &str) -> usize {
-        let files = self.files.read();
-        let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
+        // Delegate to find_references (which uses global_references) and subtract
+        // known definition locations, so count_usages and find_references always
+        // consult the same data store (#5967).
+        let references = self.find_references(symbol_name);
+        let definitions = self.find_definitions(symbol_name);
 
-        for (_uri_key, file_index) in files.iter() {
-            if let Some(refs) = file_index.references.get(symbol_name) {
-                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                    seen.insert((
-                        r.uri.clone(),
-                        r.range.start.line,
-                        r.range.start.column,
-                        r.range.end.line,
-                        r.range.end.column,
-                    ));
-                }
-            }
+        // Build a set of definition locations to exclude from the count.
+        let def_set: HashSet<(String, u32, u32, u32, u32)> = definitions
+            .iter()
+            .map(|d| {
+                (
+                    d.uri.clone(),
+                    d.range.start.line,
+                    d.range.start.column,
+                    d.range.end.line,
+                    d.range.end.column,
+                )
+            })
+            .collect();
 
-            if let Some(idx) = symbol_name.rfind("::") {
-                let bare_name = &symbol_name[idx + 2..];
-                if let Some(refs) = file_index.references.get(bare_name) {
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
-                }
-            } else {
-                for (name, refs) in &file_index.references {
-                    if !Self::is_qualified_variant_of(name, symbol_name) {
-                        continue;
-                    }
-
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
-                }
-            }
-        }
-
-        seen.len()
+        references
+            .iter()
+            .filter(|r| {
+                !def_set.contains(&(
+                    r.uri.clone(),
+                    r.range.start.line,
+                    r.range.start.column,
+                    r.range.end.line,
+                    r.range.end.column,
+                ))
+            })
+            .count()
     }
 
     fn is_qualified_variant_of(candidate: &str, bare_symbol: &str) -> bool {
