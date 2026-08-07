@@ -5,7 +5,11 @@
 //! substantive review from checks, threads, or mergeability and cannot reach merge
 //! without both predecessor judgments.
 
-use std::{fs, path::PathBuf};
+use anyhow::{Context, Result, anyhow};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 const PROVIDER_SKILLS: &[&str] = &[
     ".agents/skills/merge-reconcile/SKILL.md",
@@ -27,17 +31,16 @@ const REQUIRED_MARKERS: &[&str] = &[
     "compare-and-swap protection",
 ];
 
-fn repository_root() -> PathBuf {
+fn repository_root() -> Result<PathBuf> {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("xtask must be inside the repository root")
-        .to_path_buf()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("xtask must be inside the repository root"))
 }
 
-fn load(relative: &str) -> String {
-    let path = repository_root().join(relative);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+fn load(relative: &str) -> Result<String> {
+    let path = repository_root()?.join(relative);
+    fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
 }
 
 fn missing_markers(text: &str) -> Vec<&'static str> {
@@ -49,31 +52,33 @@ fn missing_markers(text: &str) -> Vec<&'static str> {
 }
 
 #[test]
-fn both_provider_merge_skills_require_review_and_integration() {
+fn both_provider_merge_skills_require_review_and_integration() -> Result<()> {
     for relative in PROVIDER_SKILLS {
-        let text = load(relative);
+        let text = load(relative)?;
         let missing = missing_markers(&text);
         assert!(
             missing.is_empty(),
             "{relative} is missing merge-backstop markers: {missing:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn review_backstop_marker_is_discriminating() {
-    let text = load(PROVIDER_SKILLS[0]);
+fn review_backstop_marker_is_discriminating() -> Result<()> {
+    let text = load(PROVIDER_SKILLS[0])?;
     let mutated = text.replacen("review missing or not reconstructable", "review already assumed", 1);
     let missing = missing_markers(&mutated);
     assert!(
         missing.contains(&"review missing or not reconstructable"),
         "removing the direct-entry review backstop must fail validation"
     );
+    Ok(())
 }
 
 #[test]
-fn integration_conjunction_marker_is_discriminating() {
-    let text = load(PROVIDER_SKILLS[0]);
+fn integration_conjunction_marker_is_discriminating() -> Result<()> {
+    let text = load(PROVIDER_SKILLS[0])?;
     let mutated = text.replacen(
         "`REVIEW_CURRENT` + `INTEGRATION_READY`",
         "`INTEGRATION_READY`",
@@ -84,11 +89,12 @@ fn integration_conjunction_marker_is_discriminating() {
         missing.contains(&"REVIEW_CURRENT` + `INTEGRATION_READY"),
         "removing REVIEW_CURRENT from the merge conjunction must fail validation"
     );
+    Ok(())
 }
 
 #[test]
-fn pending_integration_marker_is_discriminating() {
-    let text = load(PROVIDER_SKILLS[0]);
+fn pending_integration_marker_is_discriminating() -> Result<()> {
+    let text = load(PROVIDER_SKILLS[0])?;
     let mutated = text.replacen(
         "`REVIEW_CURRENT` + `PR_IN_FLIGHT`",
         "`REVIEW_CURRENT` + `INTEGRATION_READY`",
@@ -99,11 +105,12 @@ fn pending_integration_marker_is_discriminating() {
         missing.contains(&"REVIEW_CURRENT` + `PR_IN_FLIGHT"),
         "pending integration must remain a non-merge route"
     );
+    Ok(())
 }
 
 #[test]
-fn explicit_exclusivity_marker_is_discriminating() {
-    let text = load(PROVIDER_SKILLS[0]);
+fn explicit_exclusivity_marker_is_discriminating() -> Result<()> {
+    let text = load(PROVIDER_SKILLS[0])?;
     let mutated = text.replacen(
         "No other combination reaches merge.",
         "Other combinations may merge.",
@@ -114,4 +121,5 @@ fn explicit_exclusivity_marker_is_discriminating() {
         missing.contains(&"No other combination reaches merge."),
         "the exclusive merge conjunction must remain explicit"
     );
+    Ok(())
 }
