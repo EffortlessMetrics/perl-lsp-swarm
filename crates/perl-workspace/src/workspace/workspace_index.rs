@@ -2969,15 +2969,58 @@ impl WorkspaceIndex {
         // Delegate to find_references (which uses global_references) and subtract
         // known definition locations, so count_usages and find_references always
         // consult the same data store (#5967).
-        let references = self.find_references(symbol_name);
-        let definitions = self.find_definitions(symbol_name);
+        //
+        // Both lookups must observe the same index version. find_references already
+        // retries on a torn read, but find_definitions does not — a reindex between
+        // the two calls could let def_set describe a different version than
+        // `references`, leaking or hiding usages. We snapshot the write version and
+        // retry the whole pair when it moves (#6042 review).
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let references = self.find_references_inner(symbol_name);
+            let definitions = self.count_usages_definitions(symbol_name);
+            let v2 = self.write_version();
+            if v1 == v2 {
+                // Build a set of definition locations to exclude from the count.
+                // We borrow the URIs (`&str`) instead of cloning to avoid an
+                // allocation per entry (#6042 review).
+                let def_set: HashSet<(&str, u32, u32, u32, u32)> = definitions
+                    .iter()
+                    .map(|d| {
+                        (
+                            d.uri.as_str(),
+                            d.range.start.line,
+                            d.range.start.column,
+                            d.range.end.line,
+                            d.range.end.column,
+                        )
+                    })
+                    .collect();
 
-        // Build a set of definition locations to exclude from the count.
-        let def_set: HashSet<(String, u32, u32, u32, u32)> = definitions
+                return references
+                    .iter()
+                    .filter(|r| {
+                        !def_set.contains(&(
+                            r.uri.as_str(),
+                            r.range.start.line,
+                            r.range.start.column,
+                            r.range.end.line,
+                            r.range.end.column,
+                        ))
+                    })
+                    .count();
+            }
+            tracing::debug!("Torn read in count_usages, retrying");
+        }
+        // Fallback after retries exhausted: use the last pair without a version
+        // guarantee. This matches find_references' fallback posture.
+        let references = self.find_references_inner(symbol_name);
+        let definitions = self.count_usages_definitions(symbol_name);
+        let def_set: HashSet<(&str, u32, u32, u32, u32)> = definitions
             .iter()
             .map(|d| {
                 (
-                    d.uri.clone(),
+                    d.uri.as_str(),
                     d.range.start.line,
                     d.range.start.column,
                     d.range.end.line,
@@ -2985,12 +3028,11 @@ impl WorkspaceIndex {
                 )
             })
             .collect();
-
         references
             .iter()
             .filter(|r| {
                 !def_set.contains(&(
-                    r.uri.clone(),
+                    r.uri.as_str(),
                     r.range.start.line,
                     r.range.start.column,
                     r.range.end.line,
@@ -2998,6 +3040,26 @@ impl WorkspaceIndex {
                 ))
             })
             .count()
+    }
+
+    /// Collect definition locations for every name variant that
+    /// `find_references_inner` consults, so a definition stored under a sibling
+    /// key (e.g. `PkgB::foo`'s entry in the bare `foo` bucket) is correctly
+    /// excluded from the usage count for `PkgA::foo` (#6042 review).
+    fn count_usages_definitions(&self, symbol_name: &str) -> Vec<Location> {
+        let mut defs = self.find_definitions(symbol_name);
+        if let Some(idx) = symbol_name.rfind("::") {
+            let bare_name = &symbol_name[idx + 2..];
+            defs.extend(self.find_definitions(bare_name));
+        } else {
+            for (name, _refs) in self.global_references.read().iter() {
+                if !Self::is_qualified_variant_of(name, symbol_name) {
+                    continue;
+                }
+                defs.extend(self.find_definitions(name));
+            }
+        }
+        defs
     }
 
     fn is_qualified_variant_of(candidate: &str, bare_symbol: &str) -> bool {
@@ -9140,6 +9202,36 @@ Utils::process_data();
             2,
             "find_references should not return duplicates for qualified calls, got {} non-def refs",
             non_def_refs.len()
+        );
+    }
+
+    #[test]
+    fn test_count_usages_excludes_sibling_package_definitions() {
+        // Regression test for the cross-package definition leak (#6042 review):
+        // When two packages each define `foo` and there are no call sites,
+        // count_usages("PkgA::foo") must return 0. Without subtracting
+        // definitions from the bare `foo` bucket, PkgB's definition (also stored
+        // under bare `foo`) would be counted as a usage of PkgA::foo.
+        let index = WorkspaceIndex::new();
+
+        let uri_a = "file:///lib/PkgA.pm";
+        let code_a = "package PkgA;\nsub foo { return 1; }\n1;\n";
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+
+        let uri_b = "file:///lib/PkgB.pm";
+        let code_b = "package PkgB;\nsub foo { return 2; }\n1;\n";
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        // No call sites exist, so usages should be zero for both packages.
+        assert_eq!(
+            index.count_usages("PkgA::foo"),
+            0,
+            "PkgB::foo definition must not leak as a PkgA::foo usage"
+        );
+        assert_eq!(
+            index.count_usages("PkgB::foo"),
+            0,
+            "PkgA::foo definition must not leak as a PkgB::foo usage"
         );
     }
 
