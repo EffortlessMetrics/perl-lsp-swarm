@@ -6,7 +6,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -18,6 +18,7 @@ jobs:
         with:
           ref: agent/security-pod-preview-6030
           fetch-depth: 0
+          persist-credentials: false
       - name: Replace mixed-string renderer
         run: |
           python3 - <<'PY'
@@ -135,11 +136,12 @@ jobs:
           npm run typecheck
           npm run lint
           npm test -- --runInBand src/test/podPreview.test.ts
-      - name: Commit product-only result
-        run: |
-          rm .github/workflows/agent-build-security-6030.yml .agent-trigger-6030
-          git add .github/workflows/agent-build-security-6030.yml .agent-trigger-6030 vscode-extension/src/podPreview.ts vscode-extension/src/test/podPreview.test.ts
-          git config user.name EffortlessSteven
-          git config user.email git@effortlesssteven.com
-          git commit -m 'security(vscode): render POD from trusted tokens (#6030)'
-          git push origin HEAD:agent/security-pod-preview-6030
+      - name: Upload verified product files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-6030-product-${{ github.run_id }}
+          path: |
+            vscode-extension/src/podPreview.ts
+            vscode-extension/src/test/podPreview.test.ts
+          if-no-files-found: error
+          retention-days: 3
