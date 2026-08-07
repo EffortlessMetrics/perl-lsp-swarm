@@ -29,6 +29,12 @@ GitHub owns durable live transaction state. Runtime topology, frontier, task ord
 liveness, retries, and temporary plans are not repository authority and must not be
 written to tracked state files.
 
+Detailed cross-provider contracts remain in
+[`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md),
+[`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md),
+[`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
+[`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
+
 ## Select and run the route
 
 Choose the narrowest applicable public flow:
@@ -45,6 +51,17 @@ Choose the narrowest applicable public flow:
 Enter at the earliest absent or stale useful judgment. Existing coherent work enters
 midstream. Selecting a route is not completion: invoke it, follow its named normal and
 material backward edges, and do not invent a parallel lifecycle or run a stage locator.
+
+## Operating posture
+
+**Default-complete, recovery-forward.** Continue through every applicable judgment in
+the selected route until the claim is reconciled, reaches a real remote-owned wait, or
+returns a precise blocker or `NOT_PROVEN` boundary. Do not stop at research, a plan, a
+worker result, or green checks when the route still contains useful work.
+
+Make reasonable documented engineering decisions and proceed. Missing historical
+ceremony, labels, receipts, or named-agent handoffs is not a reason to discard coherent
+work; perform the cheapest still-useful repair and continue.
 
 ## Scope hierarchy
 
@@ -172,6 +189,9 @@ risk/rollback.
 The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed evidence, oracle, method, threat
 model, environment, or attention—not identity alone.
+
+A clean review is valid. Do not manufacture findings or edits to demonstrate that the
+review happened.
 
 Substantive review and integration posture remain separate. Pending remote checks leave
 review current and return `PR_IN_FLIGHT`.
