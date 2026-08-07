@@ -6,7 +6,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -46,14 +46,37 @@ jobs:
         run: |
           cargo run -p xtask --locked -- workflow-policy-lint
           cargo run -p xtask --locked -- workflow-trigger-lint
-      - name: Upload verified product files
+      - name: Create unreferenced verified commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COMMIT_MESSAGE: security(ci): add trusted-base workflow ratchet (#6041)
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, urllib.request
+          from pathlib import Path
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GITHUB_TOKEN']
+          parent=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(); api=f'https://api.github.com/repos/{repo}'
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+          def call(method,url,payload=None):
+              req=urllib.request.Request(url,data=None if payload is None else json.dumps(payload).encode(),method=method,headers=headers)
+              with urllib.request.urlopen(req) as response: return json.load(response)
+          base_tree=call('GET',f'{api}/git/commits/{parent}')['tree']['sha']; entries=[]
+          for relative in ('.github/workflows/workflow-security-ratchet.yml','.ci/workflow-security-baseline.json','scripts/ci/workflow_security_ratchet.py','scripts/ci/test_workflow_security_ratchet.py'):
+              content=Path(relative).read_text(encoding='utf-8')
+              blob=call('POST',f'{api}/git/blobs',{'content':content,'encoding':'utf-8'})['sha']
+              mode='100755' if relative=='scripts/ci/workflow_security_ratchet.py' else '100644'
+              entries.append({'path':relative,'mode':mode,'type':'blob','sha':blob})
+          for relative in ('.github/workflows/agent-build-security-6041.yml','.agent-trigger-6041'):
+              entries.append({'path':relative,'mode':'100644','type':'blob','sha':None})
+          tree=call('POST',f'{api}/git/trees',{'base_tree':base_tree,'tree':entries})['sha']
+          commit=call('POST',f'{api}/git/commits',{'message':os.environ['COMMIT_MESSAGE'],'tree':tree,'parents':[parent]})['sha']
+          Path('target/security-6041-commit.txt').parent.mkdir(parents=True,exist_ok=True)
+          Path('target/security-6041-commit.txt').write_text(commit+'\n',encoding='utf-8'); print(commit)
+          PY
+      - name: Upload verified commit identity
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: security-6041-product-${{ github.run_id }}
-          path: |
-            .github/workflows/workflow-security-ratchet.yml
-            .ci/workflow-security-baseline.json
-            scripts/ci/workflow_security_ratchet.py
-            scripts/ci/test_workflow_security_ratchet.py
+          name: security-6041-commit-${{ github.run_id }}
+          path: target/security-6041-commit.txt
           if-no-files-found: error
           retention-days: 3
