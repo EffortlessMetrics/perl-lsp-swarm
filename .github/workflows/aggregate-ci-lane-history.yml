@@ -47,26 +47,49 @@ jobs:
       - name: Run aggregation security self-test
         run: python3 scripts/ci/aggregate_lane_history.py --self-test
 
+      - name: Validate checked-in lane policy
+        run: |
+          set -euo pipefail
+          empty_actuals="$RUNNER_TEMP/empty-ci-actuals"
+          mkdir -p "$empty_actuals"
+          python3 scripts/ci/aggregate_lane_history.py \
+            --actuals-dir "$empty_actuals" \
+            --output "$RUNNER_TEMP/ci-lane-history.json" \
+            --static-lanes policy/ci-lanes.toml
+
   aggregate:
     name: Aggregate trusted ci-actuals into lane history
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       actions: read
+    outputs:
+      default_branch: ${{ steps.repository.outputs.default_branch }}
     env:
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       REPOSITORY: ${{ github.repository }}
 
     steps:
       - name: Checkout default branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Resolve repository metadata
+        id: repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/${REPOSITORY}" --jq '.default_branch')"
+          if [ -z "$default_branch" ]; then
+            echo "::error::Repository default branch could not be resolved"
+            exit 1
+          fi
+          printf 'DEFAULT_BRANCH=%s\n' "$default_branch" >> "$GITHUB_ENV"
+          printf 'default_branch=%s\n' "$default_branch" >> "$GITHUB_OUTPUT"
 
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -78,7 +101,7 @@ jobs:
 
       - name: Download trusted ci-actuals artifacts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           actuals_root="target/ci/actuals"
@@ -92,7 +115,7 @@ jobs:
           # The endpoint itself is repository-scoped. Filter again on recorded
           # repository identity, success, event, branch, and age before any
           # artifact is downloaded. Pull-request events are never candidates.
-          gh api -X GET "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
+          gh api --paginate -X GET "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
             -F per_page=100 \
             -F status=completed \
             --jq ".workflow_runs[]
@@ -213,12 +236,60 @@ jobs:
           summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
-      - name: Open lane-history refresh PR
-        id: cpr
+      - name: Upload aggregation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-lane-history-${{ github.run_id }}
+          path: |
+            .ci/metrics/ci-lane-history.json
+            target/ci/trusted-runs.tsv
+          if-no-files-found: error
+          retention-days: 30
+
+  open-pr:
+    name: Open lane-history refresh PR
+    needs: aggregate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.aggregate.outputs.default_branch }}
+          persist-credentials: false
+
+      - name: Download aggregation evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-lane-history-${{ github.run_id }}
+          path: .
+
+      - name: Verify generated history payload
+        run: |
+          set -euo pipefail
+          test -f .ci/metrics/ci-lane-history.json
+          if find .ci/metrics -type l -print -quit | grep -q .; then
+            echo "::error::Lane-history artifact contains a symbolic link"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path(".ci/metrics/ci-lane-history.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          if data.get("schema_version") != 1 or not isinstance(data.get("lanes"), dict):
+              raise SystemExit("invalid lane-history artifact schema")
+          PY
+
+      - name: Create lane-history refresh PR
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          base: ${{ github.event.repository.default_branch }}
+          token: ${{ github.token }}
+          base: ${{ needs.aggregate.outputs.default_branch }}
           branch: automation/ci-lane-history
           title: "chore(ci): refresh trusted lane history (#5995)"
           commit-message: "chore(ci): refresh trusted lane history (#5995)"
@@ -237,14 +308,3 @@ jobs:
             ci
           signoff: false
           delete-branch: true
-
-      - name: Upload aggregation evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ci-lane-history-${{ github.run_id }}
-          path: |
-            .ci/metrics/ci-lane-history.json
-            target/ci/trusted-runs.tsv
-          if-no-files-found: warn
-          retention-days: 30
