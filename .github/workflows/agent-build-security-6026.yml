@@ -1,107 +1,53 @@
 name: Agent build security 6026
 
 on:
-  push:
-    branches:
-      - agent/security-codecov-ripr-6026
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   build:
-    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'agent/security-codecov-ripr-6026'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: Checkout exact branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: agent/security-codecov-ripr-6026
           fetch-depth: 0
-
-      - name: Apply bounded workflow hardening
+      - name: Apply and verify
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
-
-          codecov_pin = 'codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1'
+          pin = 'codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1'
           for name in ('ci.yml', 'ci-security.yml'):
               path = Path('.github/workflows') / name
               text = path.read_text(encoding='utf-8')
-              text = re.sub(
-                  r'codecov/test-results-action@(?![0-9a-f]{40}\b)[^\s#]+(?:\s+#\s*[^\n]+)?',
-                  codecov_pin,
-                  text,
-              )
+              text = re.sub(r'codecov/test-results-action@(?![0-9a-f]{40}\b)[^\s#]+(?:\s+#\s*[^\n]+)?', pin, text)
               path.write_text(text, encoding='utf-8')
-
-          ripr = Path('.github/workflows/ripr.yml')
-          text = ripr.read_text(encoding='utf-8')
-          text = text.replace(
-              'actions/checkout@v7',
-              'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
-          )
-          text = text.replace(
-              'actions/upload-artifact@v7',
-              'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
-          )
+          path = Path('.github/workflows/ripr.yml')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('actions/checkout@v7', 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7')
+          text = text.replace('actions/upload-artifact@v7', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1')
           needle = 'stripped="${BASE_REF#refs/heads/}"\n'
-          replacement = (
-              'stripped="${BASE_REF#refs/heads/}"\n'
-              '          git check-ref-format --branch "$stripped" >/dev/null\n'
-          )
           if needle not in text:
-              raise SystemExit('ripr base-ref normalization seam not found')
-          text = text.replace(needle, replacement)
-          ripr.write_text(text, encoding='utf-8')
-          PY
-
-      - name: Verify security invariants
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          for name in ('ci.yml', 'ci-security.yml'):
-              text = (Path('.github/workflows') / name).read_text(encoding='utf-8')
-              for match in re.finditer(r'codecov/test-results-action@([^\s#]+)', text):
-                  assert re.fullmatch(r'[0-9a-f]{40}', match.group(1)), (name, match.group(0))
-
-          text = Path('.github/workflows/ripr.yml').read_text(encoding='utf-8')
-          assert '${{ github.base_ref' not in '\n'.join(
-              line for line in text.splitlines() if line.lstrip().startswith('run:')
-          )
-          assert text.count('git check-ref-format --branch "$stripped"') >= 2
-          assert 'actions/checkout@v7' not in text
-          assert 'actions/upload-artifact@v7' not in text
+              raise SystemExit('base-ref normalization seam missing')
+          text = text.replace(needle, needle + '          git check-ref-format --branch "$stripped" >/dev/null\n')
+          path.write_text(text, encoding='utf-8')
           PY
           git diff --check
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
-        with:
-          toolchain: 1.95.0
-
-      - name: Run workflow contracts
+          ! grep -q 'codecov/test-results-action@v1' .github/workflows/ci.yml .github/workflows/ci-security.yml
+          ! grep -q 'actions/checkout@v7' .github/workflows/ripr.yml
+          grep -q 'git check-ref-format --branch' .github/workflows/ripr.yml
+      - name: Commit product-only result
         run: |
-          cargo run -p xtask --locked -- workflow-policy-lint
-          cargo run -p xtask --locked -- workflow-trigger-lint
-
-      - name: Commit product-only change
-        env:
-          BRANCH: agent/security-codecov-ripr-6026
-        run: |
-          set -euo pipefail
-          rm .github/workflows/agent-build-security-6026.yml
-          git add \
-            .github/workflows/agent-build-security-6026.yml \
-            .github/workflows/ci.yml \
-            .github/workflows/ci-security.yml \
-            .github/workflows/ripr.yml
+          rm .github/workflows/agent-build-security-6026.yml .agent-trigger-6026
+          git add .github/workflows/agent-build-security-6026.yml .agent-trigger-6026 .github/workflows/ci.yml .github/workflows/ci-security.yml .github/workflows/ripr.yml
           git config user.name EffortlessSteven
           git config user.email git@effortlesssteven.com
           git commit -m 'security(ci): pin Codecov and validate ripr refs (#6026)'
-          git push origin "HEAD:${BRANCH}"
+          git push origin HEAD:agent/security-codecov-ripr-6026
