@@ -1,62 +1,155 @@
 ---
 name: deliver-pr
-description: Carry one issue, PR, branch, candidate, or coherent acceptance-and-rollback claim from its current state through Claude-native review and reconciliation.
+description: Carry one coherent claim through a traceable Claude lane route, claim-local orchestration, one writer, provider-native review, integration, and reconciliation.
 argument-hint: "[issue, PR, branch, or claim]"
 ---
 
 # Deliver PR
 
-Carry one claim through one current candidate. Reconstruct only that lane's issue,
-contract, proof, branch/worktree, PR, substantive review, live integration, explicit
-prerequisites, and closeout state.
+This is the claim-lane flow. Carry one acceptance-and-rollback claim through one
+current candidate. Reconstruct only the selected issue/contract, semantic owner and
+consumers, proof, branch/worktree, PR, findings, substantive review, integration facts,
+explicit prerequisites, and closeout state.
+
+The main Claude thread remains accountable unless it explicitly delegates the whole
+flow. A whole-flow delegate becomes the lane root for this claim and may invoke
+`orchestrate-work` within the claim.
+
+## Trace and run the route
+
+At entry, state the shortest current route and then execute it:
+
+```text
+`deliver-pr`(#123)
+→ `prepare-issue` | `prepare-proof` | `build-candidate` | `finish-pr`
+→ material backward routes as evidence requires
+→ lane result
+```
+
+When delegating the whole lane:
+
+```text
+parent: `deliver-goal`
+route: `deliver-pr`(#123) → `orchestrate-work` → current named skill
+scope: this claim only
+writer: one admitted candidate writer
+return: RECONCILED | IN_FLIGHT | PARTIAL | SUPERSEDED | BLOCKED | NOT_PROVEN
+```
+
+Do not replace the selected skill route with a hand-written lifecycle recipe.
+
+## Entry routing
+
+```text
+concern, owner, scope, or plan unsettled
+→ `prepare-issue`
+
+intent settled; proof absent or weak
+→ `prepare-proof`
+
+reviewed proof or implementation candidate needs completion
+→ `build-candidate`
+
+publication-ready candidate or existing PR needs convergence
+→ `finish-pr`
+
+merged or deliberately closed but unreconciled
+→ `finish-pr` → `merge-reconcile`
+
+claim already reconciled
+→ `RECONCILED`
+```
+
+Existing coherent work enters midstream. Do not replay completed judgments for
+ceremony.
+
+## Lane orchestration
+
+The lane root uses `orchestrate-work` to keep disposable work outside its claim-control
+context:
+
+- source/authority and production-consumer mapping;
+- external oracle research;
+- proof design and realistic wrong-implementation challenge;
+- candidate implementation and focused repair;
+- test hardening and simplification;
+- CI/log classification;
+- differentiated substantive review.
+
+One writer mutates the candidate. Read-only subagents and reviewers may run
+concurrently. A child may recursively orchestrate only when the brief explicitly
+grants claim-local orchestration authority.
+
+Use Ultracode when a dynamic task graph emerges inside this claim. Use an Agent Team
+only when lateral communication among claim-local agents changes the result.
+
+The lane root retains claim meaning, accepted authority, contradictions, evidence
+joins, candidate sufficiency, review sufficiency, integration judgment, and closeout.
+
+## Candidate and concurrency contract
 
 Before creating a candidate, check whether an equivalent current PR already implements
-the same claim. Do not inspect sibling lanes, touched-file overlap, nearby symbols, or
-unrelated worktrees as a routine ownership check.
+the same claim and whether explicit prerequisites exist. Do not routinely inspect
+sibling worktrees, touched-file overlap, or nearby symbols as ownership.
 
-Existing coherent work enters midstream. One claim normally has one candidate, and one
-writer mutates that branch/worktree at a time. Focused readers, reviewers, oracles, and
-Claude subagents may assist without creating rival implementations.
+Different claims may overlap files/crates. This lane coordinates only a duplicate
+claim, same-candidate writer collision, explicit stack, destructive shared runtime
+state, actual conflict, or demonstrated combined-tree interaction.
 
-An existing or publication-ready PR always enters `finish-pr`. `deliver-pr` does not
-infer readiness from green CI, zero threads, mergeability, or author self-review;
-`finish-pr` must establish the provider-native `review-pr` result before
-`verify-live-ci` can make an integration decision.
+- behind-only `main` movement → no action;
+- actual Git conflict → lane-local repair and affected proof/review;
+- explicit prerequisite lands/changes → retarget affected lane;
+- combined-tree failure → repair smallest affected candidate;
+- unrelated main movement → no rebase/review churn.
 
-## Routes
+## Useful GitHub boundaries
 
-Route to the earliest absent or stale useful flow:
+Update the controlling issue or PR only when the result is reusable:
 
-- unsettled concern, owner, scope, or plan → `prepare-issue`
-- settled intent with weak proof → `prepare-proof`
-- reviewed proof or incomplete candidate → `build-candidate`
-- publication-ready candidate or existing PR → `finish-pr`
-- merged but unreconciled work → `merge-reconcile` through `finish-pr`
-- claim already reconciled → return `RECONCILED`
+- corrected premise, scope, owner, plan, or proof obligation;
+- prerequisite/supersession/actual interaction;
+- candidate claim, proof, limitation, or deviation;
+- inline review finding or cumulative submitted review;
+- evidence-backed disposition;
+- named remote-owned wait needed for handoff;
+- merge/closure effect and residual work.
 
-This lane owns its integration cleanup. Behind-only movement requires no action. When
-Git reports a conflict, an explicit stack changes, or integration proof exposes a real
-interaction, repair this candidate and rerun only affected proof and review. Use a
-direct issue or PR comment when another lane genuinely needs the result; do not create
-overlap ledgers or central lane state.
+Do not post route progress, skill completion, agent liveness, polling, raw logs, or
+unchanged repeated summaries.
 
-When review, CI, queue state, or auto-merge owns the next transition, leave the
-candidate in GitHub, record the exact next action once, and return `IN_FLIGHT`. If
-invoked from `deliver-goal`, the outer loop may advance another distinct claim. Do not
-poll unchanged state or call the claim blocked merely because it is in flight.
+## Remote-owned waits
 
-## What this establishes
+When review, checks, queue state, auto-merge, or another external transition owns the
+next action:
 
-A bounded route for one coherent claim through its current issue, proof, candidate,
-Claude-native substantive review, live integration, and closeout state.
+1. leave the coherent candidate in GitHub;
+2. record the exact pending fact only when another operator needs the handoff;
+3. identify the wake event;
+4. return `IN_FLIGHT`;
+5. do not poll unchanged state.
 
-## What this does not establish
+The campaign root may advance another distinct claim.
 
-A repository scheduler, tracked active-claim pointer, competing candidate set, overlap
-ledger, or merge authorization independent of `review-pr`, live required checks,
-mergeability, rulesets, and unresolved findings.
+## Return packet
+
+Return compact graph deltas:
+
+```text
+claim and candidate identity
+current route/result
+behavior/evidence established
+proof and review currentness
+contradictions or limitations
+GitHub durable updates made
+external wait and wake event
+remaining acceptance or next named route
+```
 
 ## Completion
 
 Return `RECONCILED`, `IN_FLIGHT`, `PARTIAL`, `SUPERSEDED`, `BLOCKED`, or
-`NOT_PROVEN`, with current evidence and the issue or PR exposing remaining work.
+`NOT_PROVEN`.
+
+This skill does not create a scheduler, tracked lane state, overlap ledger, executor
+DAG, or merge authority independent of `review-pr`, `verify-live-ci`, branch
+protection, rulesets, and expected-head merge safety.
