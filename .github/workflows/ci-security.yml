@@ -21,9 +21,9 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
-# Coalesce-queue-tail: let the running CI complete; skip superseded SHAs at a
-# preflight gate instead of cancelling in-flight work mid-run.
-# Note: scheduled runs always pass the preflight gate (no SHA comparison).
+# Coalesce-queue-tail: let the running CI complete; skip superseded push SHAs at
+# a preflight gate instead of cancelling in-flight work mid-run. Pull requests,
+# scheduled runs, and manual runs always pass the preflight gate.
 concurrency:
   group: ci-security-${{ github.ref }}
   cancel-in-progress: false
@@ -36,7 +36,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Preflight: skip superseded SHAs to save cost ─────────────────────
+  # ── Preflight: skip superseded push SHAs to save cost ────────────────
   preflight-latest-check:
     name: Preflight — is this SHA latest?
     runs-on: ubuntu-24.04
@@ -44,26 +44,46 @@ jobs:
     outputs:
       is_latest: ${{ steps.check.outputs.is_latest }}
     steps:
-      - name: Check if this SHA is latest on the ref
+      - name: Check whether this trusted push SHA is latest
         id: check
         env:
+          EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-          CURRENT: ${{ github.event.pull_request.head.sha || github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          CURRENT: ${{ github.sha }}
         run: |
-          # Scheduled and manual runs always pass through — no SHA to compare.
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request)
+              echo "is_latest=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Pull request run — freshness is handled by PR concurrency; never resolving an attacker-controlled branch name in the base repository"
+              exit 0
+              ;;
+            schedule|workflow_dispatch|merge_group)
+              echo "is_latest=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::$EVENT_NAME run — always passing preflight"
+              exit 0
+              ;;
+            push)
+              ;;
+            *)
+              echo "is_latest=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::Unknown event '$EVENT_NAME'; running security CI fail-safe"
+              exit 0
+              ;;
+          esac
+
+          LATEST="$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}' || true)"
+          if [ -z "$LATEST" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Scheduled/manual run — always passing preflight"
-            exit 0
-          fi
-          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" | awk '{print $1}')
-          if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
+            echo "::warning::Could not resolve refs/heads/$BRANCH; running security CI fail-safe"
+          elif [ "$LATEST" = "$CURRENT" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::This SHA ($CURRENT) is latest on $BRANCH — running full CI"
+            echo "::notice::This push SHA ($CURRENT) is latest on $BRANCH — running full security CI"
           else
             echo "is_latest=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Superseded by $LATEST — skipping remaining jobs to save cost"
+            echo "::notice::Push SHA $CURRENT was superseded by $LATEST — skipping remaining jobs to save cost"
           fi
 
   # ============================================================================
