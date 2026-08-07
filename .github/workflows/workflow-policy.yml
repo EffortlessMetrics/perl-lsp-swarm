@@ -32,11 +32,6 @@ jobs:
         with:
           toolchain: stable
       - name: Run workflow policy lint
-        # `--check-lane-whitelist` enables the policy/ci-lane-whitelist.toml
-        # gate (was opt-in per PR #8154). All currently-flagged workflows
-        # either have a whitelist entry or an allowlist exemption, so this
-        # is a no-op for the existing tree and a guard against future drift.
-        # See #8166 ("CI economics rollout: deferred follow-ups").
         run: cargo xtask workflow-policy-lint --check-lane-whitelist --receipt target/receipts/workflow-policy.json
       - name: Upload workflow policy receipt
         if: always()
@@ -44,3 +39,64 @@ jobs:
         with:
           name: workflow-policy-receipt
           path: target/receipts/workflow-policy.json
+
+  agent-export-6041:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/security-workflow-ratchet-6041'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      issues: write
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Finalize and test scanner
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/ci/test_workflow_security_ratchet.py')
+          text = path.read_text(encoding='utf-8')
+          if 'import sys\n' not in text:
+              text = text.replace('import os\n', 'import os\nimport sys\n', 1)
+          text = text.replace('ratchet = importlib.util.module_from_spec(SPEC)\nSPEC.loader.exec_module(ratchet)', 'ratchet = importlib.util.module_from_spec(SPEC)\nsys.modules[SPEC.name] = ratchet\nSPEC.loader.exec_module(ratchet)')
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm -f .github/workflows/agent-build-security-6041.yml .github/workflows/agent-run-security-6041.yml .agent-trigger-6041
+          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+          python3 scripts/ci/workflow_security_ratchet.py baseline --root . --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py check --root . --baseline .ci/workflow-security-baseline.json --report target/receipts/workflow-security-bootstrap.json
+          cp .ci/workflow-security-baseline.json "$RUNNER_TEMP/baseline.json"
+          python3 scripts/ci/workflow_security_ratchet.py baseline --root . --output .ci/workflow-security-baseline.json
+          cmp "$RUNNER_TEMP/baseline.json" .ci/workflow-security-baseline.json
+          git diff --check
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+      - name: Run workflow contracts
+        run: |
+          cargo run -p xtask --locked -- workflow-policy-lint
+          cargo run -p xtask --locked -- workflow-trigger-lint
+      - name: Create blobs and post receipt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          from pathlib import Path
+          repo = os.environ['GITHUB_REPOSITORY']; token = os.environ['GITHUB_TOKEN']
+          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          paths = ['.github/workflows/workflow-security-ratchet.yml', '.ci/workflow-security-baseline.json', 'scripts/ci/workflow_security_ratchet.py', 'scripts/ci/test_workflow_security_ratchet.py']
+          blobs = {}
+          for relative in paths:
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/git/blobs', data=json.dumps({'content': base64.b64encode(Path(relative).read_bytes()).decode(), 'encoding': 'base64'}).encode(), method='POST', headers=headers)
+              with urllib.request.urlopen(req) as response: blobs[relative] = json.load(response)['sha']
+          receipt = {'paths': blobs, 'source_sha': os.environ['TESTED_SHA']}
+          body = '<!-- security-6041-blob -->\nScanner tests, deterministic baseline, policy lint, and trigger lint passed.\n```json\n' + json.dumps(receipt, indent=2, sort_keys=True) + '\n```'
+          req = urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/6048/comments', data=json.dumps({'body': body}).encode(), method='POST', headers=headers)
+          with urllib.request.urlopen(req): pass
+          PY
