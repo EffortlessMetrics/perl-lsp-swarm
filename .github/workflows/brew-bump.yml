@@ -35,7 +35,7 @@ jobs:
   prepare:
     name: Verify release and generate formula
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     outputs:
@@ -203,7 +203,9 @@ jobs:
           set -euo pipefail
 
           asset_dir="$RUNNER_TEMP/brew-assets"
+          verified_checksums="$RUNNER_TEMP/verified-homebrew-sha256.txt"
           mkdir -p "$asset_dir"
+          : > "$verified_checksums"
           gh release download "$TAG" --pattern SHA256SUMS --dir "$asset_dir"
 
           targets=(
@@ -230,14 +232,27 @@ jobs:
             fi
 
             printf '%s  %s\n' "$checksum" "$asset_path" | sha256sum --check --status
+            printf '%s %s\n' "$asset" "$checksum" >> "$verified_checksums"
             printf '%s: %s\n' "$asset" "$checksum"
           done
+
+          if [ "$(wc -l < "$verified_checksums")" -ne "${#targets[@]}" ]; then
+            echo "::error::Verified checksum manifest is incomplete"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         if: steps.release.outputs.should_bump == 'true'
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: 1.95.0
+
+      - name: Cache Cargo dependencies
+        if: steps.release.outputs.should_bump == 'true'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          shared-key: homebrew-formula-${{ hashFiles('Cargo.lock') }}
 
       - name: Generate formula without tap credentials
         if: steps.release.outputs.should_bump == 'true'
@@ -246,6 +261,7 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/homebrew-formula/Formula/perllsp.rb"
+          verified_checksums="$RUNNER_TEMP/verified-homebrew-sha256.txt"
           mkdir -p "$(dirname "$output")"
 
           cargo xtask update-homebrew \
@@ -267,6 +283,14 @@ jobs:
             echo "::error::Generated formula exceeds the 1 MiB envelope"
             exit 1
           fi
+
+          while read -r asset checksum; do
+            if ! grep -qF "$checksum" "$output"; then
+              printf '::error::Formula is missing the verified checksum for %s\n' "$asset"
+              exit 1
+            fi
+          done < "$verified_checksums"
+
           cat "$output"
 
       - name: Upload generated formula
@@ -335,9 +359,11 @@ jobs:
           body: |
             Problem: the owned Homebrew tap needs a perllsp formula bump for ${{ needs.prepare.outputs.tag }}.
             Fix: install the formula generated from verified release assets in a read-only preparation job.
-            Verification: every release archive was checked against SHA256SUMS before the formula artifact was produced.
+            Verification: every release archive was checked against SHA256SUMS and the generated formula was required to contain those exact digests.
           commit-message: 'perllsp ${{ needs.prepare.outputs.version }}'
-          add-paths: Formula/perllsp.rb
+          add-paths: |
+            Formula/perllsp.rb
+            Formula/perl-lsp.rb
           signoff: false
           delete-branch: true
 
@@ -345,6 +371,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+          PR_OPERATION: ${{ steps.cpr.outputs.pull-request-operation }}
         run: |
           {
             echo "## Homebrew Tap Bump"
@@ -354,5 +381,12 @@ jobs:
             printf -- '- **Formula**: %s\n' "$FORMULA_NAME"
             printf -- '- **Release**: %s\n' "$RELEASE_TAG"
             printf -- '- **Install**: `brew install %s/%s`\n' "$HOMEBREW_TAP_NAME" "$FORMULA_NAME"
-            printf -- '- **PR**: %s\n' "$PR_URL"
+            case "$PR_OPERATION" in
+              created|updated)
+                printf -- '- **PR**: %s (%s)\n' "$PR_URL" "$PR_OPERATION"
+                ;;
+              *)
+                echo '- **PR**: no changes; no PR created'
+                ;;
+            esac
           } >> "$GITHUB_STEP_SUMMARY"
