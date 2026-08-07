@@ -104,10 +104,12 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     exit 0
 fi
 
-# Stable idempotency: parse existing disposition markers and compare class and
-# evidence. A later unrelated head must not duplicate the reply. Changed
-# evidence remains a new disposition and may be posted deliberately.
-EXISTING="$(gh api graphql -f threadId="$THREAD" -f query='
+# Stable idempotency: establish the existing thread state before any mutation.
+# Provider, JSON, or marker-parser failure is NOT equivalent to a proven zero
+# match; fail closed so an unavailable observation cannot create a duplicate
+# reply and immediately resolve the thread.
+THREAD_RESPONSE=""
+if ! THREAD_RESPONSE="$(gh api graphql -f threadId="$THREAD" -f query='
     query($threadId: ID!) {
         node(id: $threadId) {
             ... on PullRequestReviewThread {
@@ -115,16 +117,50 @@ EXISTING="$(gh api graphql -f threadId="$THREAD" -f query='
                 comments(last: 50) { nodes { body } }
             }
         }
-    }' 2>/dev/null | jq -r --arg class "$CLASS" --argjson evidence "$EVIDENCE" '
-        [
-          .data.node.comments.nodes[]?.body // ""
-          | try capture("<!-- disposition:v1 (?<marker>\\{.*\\}) -->"; "s").marker catch empty
-          | try fromjson catch empty
-          | select(.class == $class and .evidence == $evidence)
-        ] | length
-    ' 2>/dev/null || echo 0)"
+    }' 2>&1)"; then
+    echo "ERROR: failed to read disposition state for thread $THREAD: $THREAD_RESPONSE" >&2
+    exit 2
+fi
 
-if [[ "${EXISTING:-0}" -gt 0 ]]; then
+MARKER_STATE=""
+if ! MARKER_STATE="$(jq -ce --arg class "$CLASS" --argjson evidence "$EVIDENCE" '
+    (.data.node // empty) as $node
+    | if (($node | type) != "object") or ((($node.comments.nodes // null) | type) != "array") then
+        error("invalid review-thread response")
+      else
+        [
+          $node.comments.nodes[]?.body // ""
+          | split("\n")[]
+          | select(startswith("<!-- disposition:v1 ") and endswith(" -->"))
+          | ltrimstr("<!-- disposition:v1 ")
+          | rtrimstr(" -->")
+        ] as $raw
+        | [$raw[] | try fromjson catch null] as $parsed
+        | {
+            invalid: ([$parsed[] | select(. == null)] | length),
+            matching: ([
+              $parsed[]
+              | select(. != null and .class == $class and .evidence == $evidence)
+            ] | length)
+          }
+      end
+' <<<"$THREAD_RESPONSE" 2>/dev/null)"; then
+    echo "ERROR: invalid disposition state for thread $THREAD" >&2
+    exit 2
+fi
+
+INVALID="$(jq -r '.invalid' <<<"$MARKER_STATE")"
+EXISTING="$(jq -r '.matching' <<<"$MARKER_STATE")"
+if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: non-numeric disposition state for thread $THREAD" >&2
+    exit 2
+fi
+if [[ "$INVALID" -gt 0 ]]; then
+    echo "ERROR: thread $THREAD contains $INVALID malformed disposition marker(s); refusing mutation" >&2
+    exit 2
+fi
+
+if [[ "$EXISTING" -gt 0 ]]; then
     echo "OK matching disposition already exists on thread $THREAD (class=$CLASS, evidence=$EVIDENCE) — re-resolving without duplicate reply"
 else
     if ! _post_reply "$THREAD" "$BODY" >/dev/null; then
