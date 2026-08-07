@@ -19,69 +19,97 @@ jobs:
           ref: agent/security-codecov-ripr-6026
           fetch-depth: 0
           persist-credentials: false
+
       - name: Apply and verify
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
+
           pin = 'codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1'
           for name in ('ci.yml', 'ci-security.yml'):
               path = Path('.github/workflows') / name
               text = path.read_text(encoding='utf-8')
-              text = re.sub(r'codecov/test-results-action@(?![0-9a-f]{40}\b)[^\s#]+(?:\s+#\s*[^\n]+)?', pin, text)
+              text = re.sub(
+                  r'codecov/test-results-action@(?![0-9a-f]{40}\b)[^\s#]+(?:\s+#\s*[^\n]+)?',
+                  pin,
+                  text,
+              )
               path.write_text(text, encoding='utf-8')
+
           path = Path('.github/workflows/ripr.yml')
           text = path.read_text(encoding='utf-8')
-          text = text.replace('actions/checkout@v7', 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7')
-          text = text.replace('actions/upload-artifact@v7', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1')
+          text = text.replace(
+              'actions/checkout@v7',
+              'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+          )
+          text = text.replace(
+              'actions/upload-artifact@v7',
+              'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
+          )
           needle = 'stripped="${BASE_REF#refs/heads/}"\n'
           if needle not in text:
               raise SystemExit('base-ref normalization seam missing')
-          text = text.replace(needle, needle + '          git check-ref-format --branch "$stripped" >/dev/null\n')
+          text = text.replace(
+              needle,
+              needle + '          git check-ref-format --branch "$stripped" >/dev/null\n',
+          )
           path.write_text(text, encoding='utf-8')
           PY
+
           git diff --check
           ! grep -q 'codecov/test-results-action@v1' .github/workflows/ci.yml .github/workflows/ci-security.yml
           ! grep -q 'actions/checkout@v7' .github/workflows/ripr.yml
           ! grep -q 'actions/upload-artifact@v7' .github/workflows/ripr.yml
           grep -q 'git check-ref-format --branch' .github/workflows/ripr.yml
-      - name: Create unreferenced verified commit
+
+      - name: Create immutable product blobs
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COMMIT_MESSAGE: 'security(ci): pin Codecov and validate ripr refs (#6026)'
         run: |
-          rm .github/workflows/agent-build-security-6026.yml .agent-trigger-6026
           python3 - <<'PY'
-          import json, os, subprocess, urllib.request
+          import base64
+          import json
+          import os
+          import urllib.request
           from pathlib import Path
+
           repo = os.environ['GITHUB_REPOSITORY']
           token = os.environ['GITHUB_TOKEN']
-          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          api = f'https://api.github.com/repos/{repo}'
-          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
-          def call(method, url, payload=None):
-              data = None if payload is None else json.dumps(payload).encode()
-              req = urllib.request.Request(url, data=data, method=method, headers=headers)
-              with urllib.request.urlopen(req) as response:
-                  return json.load(response)
-          base_tree = call('GET', f'{api}/git/commits/{parent}')['tree']['sha']
-          entries = []
-          for relative in ('.github/workflows/ci.yml', '.github/workflows/ci-security.yml', '.github/workflows/ripr.yml'):
-              content = Path(relative).read_text(encoding='utf-8')
-              blob = call('POST', f'{api}/git/blobs', {'content': content, 'encoding': 'utf-8'})['sha']
-              entries.append({'path': relative, 'mode': '100644', 'type': 'blob', 'sha': blob})
-          for relative in ('.github/workflows/agent-build-security-6026.yml', '.agent-trigger-6026'):
-              entries.append({'path': relative, 'mode': '100644', 'type': 'blob', 'sha': None})
-          tree = call('POST', f'{api}/git/trees', {'base_tree': base_tree, 'tree': entries})['sha']
-          commit = call('POST', f'{api}/git/commits', {'message': os.environ['COMMIT_MESSAGE'], 'tree': tree, 'parents': [parent]})['sha']
-          Path('target/security-6026-commit.txt').parent.mkdir(parents=True, exist_ok=True)
-          Path('target/security-6026-commit.txt').write_text(commit + '\n', encoding='utf-8')
-          print(commit)
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          paths = [
+              '.github/workflows/ci.yml',
+              '.github/workflows/ci-security.yml',
+              '.github/workflows/ripr.yml',
+          ]
+          blobs = {}
+          for relative in paths:
+              payload = {
+                  'content': base64.b64encode(Path(relative).read_bytes()).decode('ascii'),
+                  'encoding': 'base64',
+              }
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/git/blobs',
+                  data=json.dumps(payload).encode('utf-8'),
+                  method='POST',
+                  headers=headers,
+              )
+              with urllib.request.urlopen(request) as response:
+                  blobs[relative] = json.load(response)['sha']
+          output = Path('target/security-6026-blobs.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps({'paths': blobs}, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+          print(output.read_text(encoding='utf-8'))
           PY
-      - name: Upload verified commit identity
+
+      - name: Upload verified blob receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: security-6026-commit-${{ github.run_id }}
-          path: target/security-6026-commit.txt
+          name: security-6026-blobs-${{ github.run_id }}
+          path: target/security-6026-blobs.json
           if-no-files-found: error
           retention-days: 3
