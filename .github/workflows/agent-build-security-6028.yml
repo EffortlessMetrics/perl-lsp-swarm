@@ -6,7 +6,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -18,6 +18,7 @@ jobs:
         with:
           ref: agent/security-nightly-pr-authority-6028
           fetch-depth: 0
+          persist-credentials: false
       - name: Apply read-only PR execution contract
         run: |
           python3 - <<'PY'
@@ -70,12 +71,14 @@ jobs:
           ! grep -q 'actions/github-script' "$file"
           ! grep -q 'actions/checkout@v7' "$file"
           ! grep -q 'actions/upload-artifact@v7' "$file"
+          checkout_count="$(grep -c 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' "$file")"
+          persist_count="$(grep -c 'persist-credentials: false' "$file")"
+          test "$persist_count" -ge "$checkout_count"
           git diff --check
-      - name: Commit product-only result
-        run: |
-          rm .github/workflows/agent-build-security-6028.yml .agent-trigger-6028
-          git add .github/workflows/agent-build-security-6028.yml .agent-trigger-6028 .github/workflows/ci-nightly.yml
-          git config user.name EffortlessSteven
-          git config user.email git@effortlesssteven.com
-          git commit -m 'security(ci): make nightly PR lanes read-only (#6028)'
-          git push origin HEAD:agent/security-nightly-pr-authority-6028
+      - name: Upload verified product file
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-6028-product-${{ github.run_id }}
+          path: .github/workflows/ci-nightly.yml
+          if-no-files-found: error
+          retention-days: 3
