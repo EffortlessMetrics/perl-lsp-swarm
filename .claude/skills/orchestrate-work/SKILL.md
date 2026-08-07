@@ -1,59 +1,148 @@
 ---
 name: orchestrate-work
-description: Choose Claude Code's smallest useful runtime shape for a selected flow, including bounded PR-review subgraphs, one-writer protection, and evidence joining.
+description: Compile Claude Code's runtime-local campaign, lane, worker, writer, and review graph for the selected route while preserving GitHub as durable state.
 user-invocable: false
 ---
 
 # Orchestrate work
 
-Use this internal Claude root operation to choose how the selected public flow or
-atomic skill should run. It is not a public lifecycle stage, durable executor graph,
-repository scheduler, or source of transaction state.
+Use this internal Claude operation after a public flow or atomic skill has been
+selected. The orchestrator does not merely choose a topology: it runs the selected
+route, follows its named normal and material backward edges, and uses subagents,
+long-running lane agents, context forks, Ultracode workflows, or Agent Teams where
+they improve evidence, context economy, elapsed time, steering, recovery, or CI cost.
 
-The main Claude thread keeps goal meaning, claim selection, authority, contradiction
-resolution, joined evidence, review sufficiency, merge judgment, and current-main
-reconciliation. Execution may be delegated; accountability may not be.
+This skill is not a public lifecycle stage, durable executor DAG, repository scheduler,
+tracked frontier, or source of transaction state.
+
+## Scope-relative roots
+
+`Root` is scope-relative. Distinguish these contexts before dispatching work.
+
+### Campaign root
+
+Owns one durable multi-claim outcome:
+
+- original goal and current interpretation;
+- acceptance predicates and required claims;
+- cross-lane dependencies and contradictions;
+- runtime-local frontier and wake events;
+- goal-level evidence joins, exceptions, and reconciliation.
+
+The campaign root normally orchestrates. Leaf implementation, broad archaeology, raw
+log analysis, repetitive proof, and review exploration should leave this context unless
+the work is so small that briefing and joining clearly cost more than the permanent
+context pollution.
+
+### Lane root
+
+Owns one coherent acceptance-and-rollback claim. It runs `deliver-pr`, may invoke
+`orchestrate-work` inside that claim, keeps one candidate writer, joins claim-local
+evidence, publishes useful GitHub updates, and returns a typed lane result to its
+campaign root.
+
+A lane root may directly perform tiny tightly coupled claim-local work. That does not
+make campaign-root leaf execution the normal path.
+
+### Worker, writer, and reviewer contexts
+
+- read-only workers answer one bounded question or consume one named skill;
+- one writer mutates the selected candidate branch/worktree;
+- reviewers change the source, oracle, method, threat model, environment, or attention
+  surface and return evidence rather than approval.
+
+A leaf worker may not widen into a claim orchestrator unless its brief explicitly grants
+lane-root authority.
 
 ## Authoritative inputs
 
 Use current `origin/main`, the selected issue/PR and candidate identity, governing
 repository artifacts, relevant proof and review evidence, and live GitHub state.
-Runtime task lists, subagent identity, Teams state, worktrees, and prior transcripts
-are not authority.
+Runtime task lists, frontier tables, subagent/Teams identity, worktrees, retries, and
+prior transcripts are not authority and must not be written to tracked state files.
+
+## Run the specified route
+
+Anchor the goal, claim, controlling issue, current flow/skill, candidate or PR identity,
+and current missing judgment.
+
+Then run the named route:
+
+```text
+campaign outcome
+→ `deliver-goal`
+
+one coherent claim
+→ `deliver-pr`
+
+bounded transformation
+→ named atomic skill
+
+bounded factual uncertainty
+→ one focused question inside the invoking skill
+```
+
+A whole-flow assignment is a lane-root assignment, not a writer prompt:
+
+```text
+Take issue #123 through `deliver-pr`.
+You are the accountable lane root for this claim. Use GitHub and repository artifacts
+as durable state, invoke `orchestrate-work` within the claim, keep one candidate
+writer, follow the public flow's normal and material backward routes, and return
+RECONCILED, IN_FLIGHT, PARTIAL, SUPERSEDED, BLOCKED, or NOT_PROVEN.
+Do not select unrelated claims or alter the parent goal.
+```
+
+When a child is given a named skill, require it to consume that skill rather than
+replace it with an invented lifecycle recipe.
 
 ## Runtime shape
-
-Anchor the goal, claim, controlling issue, current flow/skill, and candidate or PR
-identity before dispatching work.
 
 Choose proportionally:
 
 | Work | Normal Claude Code shape |
 | --- | --- |
-| Goal interpretation, claim selection, contradiction resolution | Main thread |
-| Tiny tightly coupled edit | Main thread or current writer |
+| Goal interpretation, claim selection, contradiction resolution | Campaign root |
+| One coherent substantial claim | Whole-flow `deliver-pr` lane agent |
+| Tiny claim-local edit | Lane root or current writer |
 | High-output or bounded exploratory evidence | Focused read-only subagent |
-| One coherent claim | Whole-flow `deliver-pr` lane |
-| Distinct claims | Separate lane owners and worktrees |
 | Candidate/proof mutation | One integrating writer |
-| Substantive PR review | Root-directed differentiated review subgraph |
+| Substantive review | Lane-root-directed differentiated review subgraph or context forks |
+| Dynamic claim-local task graph | Ultracode workflow under the lane root |
+| Coupled specialists requiring lateral communication | Agent Team under the lane root |
+| Distinct claims | Separate lane roots and worktrees |
 | Unchanged remote wait | No agent; return `IN_FLIGHT` |
 
 Substantive work is normally orchestrated, but maximal fan-out is not sophistication.
-Delegate when a different source, oracle, environment, threat model, tool, or attention
-surface; evidence compression; root-context preservation; elapsed-time gain; or
-recovery value exceeds cold-start, briefing, duplication, join, and correlated-failure
-costs. Stop adding agents when another result cannot change a decision.
+Delegate when evidence gain, root-context preservation, parallel elapsed-time gain,
+changed source/oracle/tool/environment, recovery value, or avoided CI cost exceeds
+cold-start, briefing, duplicate research, resource contention, join, and correlated-
+failure costs. Stop adding agents when another result cannot change a decision.
 
-## Assignment contract
+Use ordinary subagents when results return independently to the root. Use Agent Teams
+only when lateral communication changes the result. Use Ultracode inside one coherent
+claim when the task graph becomes ready dynamically; it does not become repository
+state or a cross-claim scheduler.
 
-Use a public flow, atomic skill, or bounded question:
+## Runtime-local frontier
+
+A campaign root may keep a compact in-memory frontier:
 
 ```text
-Take issue #123 through `deliver-pr`.
-Run `review-tests` against the current proof and return only evidence and falsifiers.
-Trace the live caller path from textDocument/rename to the changed semantic owner.
+claim
+acceptance predicate
+lane context
+durable issue / PR / merge subject
+current judgment
+external wait
+next wake event
 ```
+
+Reconstruct it from GitHub and repository artifacts after compaction or replacement.
+Do not commit it, write it to a tracked file, post agent liveness, or turn it into a
+portfolio database. Revisit an in-flight lane only when its wake event occurs.
+
+## Assignment contract
 
 Every brief names:
 
@@ -61,20 +150,91 @@ Every brief names:
 - exact issue, PR, candidate, and branch/worktree identity;
 - established facts and accepted authority;
 - one bounded question or mutation boundary;
-- the provider-native skill the child should consume;
-- read-only versus writer status;
+- the provider-native skill the child must consume when known;
+- campaign-root, lane-root, read-only, writer, or reviewer authority;
 - realistic falsifiers or negative controls;
-- sufficient output and evidence references;
+- sufficient output and stable evidence references;
 - uncertainty and `NOT_PROVEN` conditions to preserve;
 - stop/backward routes and non-goals.
 
-Do not ask a child to rediscover facts already established. Do not include a claim
-digest or request a review-run receipt.
+Do not ask a child to rediscover settled facts. Do not request raw transcripts, private
+reasoning, claim digests, or review-run receipts.
 
-Keep one writer per candidate. Read-only subagents return evidence, contradictions,
-uncertainty, what is and is not established, and recommended findings. Writers return
-candidate identity, changed behavior, proof, repaired findings, limitations, and the
-typed flow result.
+## Graph-delta returns
+
+Read-only workers return:
+
+```text
+subject identity
+conclusion
+direct evidence
+contradictory evidence
+authority and searched scope
+what this establishes
+what this does not establish
+affected claim / proof / authority edge
+recommended route
+NOT_PROVEN boundary
+overflow references
+```
+
+Writers return candidate identity, changed behavior and seams, proof executed, proof
+not executed, repaired findings, limitations, current GitHub state, and the typed flow
+result. Reviewers return localized findings with severity, affected claim dimension,
+evidence, realistic falsifier, uncertainty, and suggested disposition.
+
+The orchestrator joins graph deltas rather than votes. Repeated claims sourced from the
+same evidence are not independent corroboration. Preserve contradictions until direct
+evidence resolves them.
+
+## Useful GitHub publication filter
+
+GitHub receives durable work facts, not runtime supervision.
+
+Post or update GitHub when information:
+
+- changes the claim, authority, accepted plan, proof obligation, route, prerequisite,
+  support boundary, risk, or rollback meaning;
+- is a reusable source-backed finding another lane or later context would otherwise
+  rediscover;
+- is a localized review finding that belongs inline;
+- dispositions a finding with current evidence;
+- records a real external wait and the event that should resume the lane;
+- provides a useful cumulative review, merged-effect, or goal synthesis.
+
+Keep information runtime-local when it is agent identity, topology, liveness, retry
+order, provisional reasoning, raw logs already referenced elsewhere, unchanged polling,
+or a routine transition already implied by the selected route.
+
+Use the native surface that owns the fact:
+
+- issue comment/body: durable research, ruling, dependency, accepted plan, route change,
+  or goal synthesis;
+- PR body/comment: candidate-wide route, proof, limitation, or integration synthesis;
+- inline review: localized finding;
+- review reply: evidence-backed disposition before resolution;
+- submitted review: cumulative candidate judgment;
+- issue closeout: landed effect and residual claims.
+
+## Traceable route
+
+When another context will benefit and the route is not already obvious, publish one
+compact route declaration on the controlling issue or PR:
+
+```text
+Route
+- Goal / parent: <issue or durable outcome>
+- Claim: <one acceptance-and-rollback claim>
+- Entry flow: <public flow>
+- Current useful transition: <named skill or external wait>
+- Why: <material missing judgment>
+- Durable subject: <issue / PR / merged commit>
+- Resume when: <material wake event, if any>
+```
+
+Update it only when the material route changes. Do not post one comment per skill,
+agent, poll, or head SHA. The route declaration is a resumability aid, not stage or
+lifecycle authority.
 
 ## PR review orchestration
 
@@ -82,7 +242,7 @@ When invoked from `finish-pr` or `review-pr`, build a bounded review subgraph ar
 the actual claim and risk—not a fixed reviewer roster.
 
 ```text
-main Claude thread
+lane root
 ├── `review-tests` when proof discrimination or evidence integrity is material
 ├── `review-candidate` when implementation, ownership, reachability, complexity,
 │   compatibility, risk, or rollback is material
@@ -91,64 +251,34 @@ main Claude thread
 └── focused security/package/migration/persistence/support lens when applicable
 
 joined evidence
-→ main thread verifies load-bearing seams and contradictions
+→ lane root verifies load-bearing seams and contradictions
 → one writer repairs accepted findings through `address-review-comments`
-→ main thread performs and publishes cumulative `review-pr`
+→ lane root performs and publishes cumulative `review-pr`
 → only `REVIEW_CURRENT` enters `verify-live-ci`
 ```
 
-Do not use a subagent verdict as approval. Do not count votes. Do not let the writer's
-construction context be the only detection surface supporting a substantive merge.
-Different identity without a different source, oracle, method, threat model, or
-attention surface is not meaningful independence.
-
-Example focused briefs:
-
-```text
-Consume `review-tests` for PR #123. Read only. Determine whether the current tests
-fail against the historical defect for the intended reason, whether the negative and
-stale directions are represented, and whether the schema and executable validator
-accept the same documents. Return findings with file/line evidence and name anything
-NOT_PROVEN. Do not edit or post a GitHub review.
-```
-
-```text
-Consume `review-candidate` for PR #123. Read only. Trace the real production caller to
-the changed code, identify the semantic owner and duplicate-authority risk, and test
-the PR claim against its rollback boundary. Return only evidence-backed findings or a
-clean conclusion with residual risk. Do not edit or authorize merge.
-```
-
-The root must join evidence from these returns with direct inspection of the cumulative
-PR and publish one useful GitHub review. If findings require mutation, hand them to one
-writer; after repair, rerun affected proof and only the review dimensions changed by
-the repair.
+Do not use a subagent verdict as approval. Different identity without a different
+source, oracle, method, threat model, or attention surface is not meaningful
+independence.
 
 ## Recommended procedure
 
-1. Anchor the durable subject and candidate identity.
-2. Identify unresolved judgments and choose the smallest useful execution shape.
-3. Send complete briefs with provider-native skills, one-writer status, falsifiers,
-   and stop conditions.
-4. Steer, retry, replace, or cancel only while returned evidence can change the
+1. Anchor the durable subject and selected route.
+2. Distinguish campaign, lane, writer, worker, and review scopes.
+3. Identify unresolved judgments and compile the smallest useful runtime graph.
+4. Send complete briefs with named skills, authority, falsifiers, return packets, and
+   stop conditions.
+5. Steer, retry, replace, or cancel while returned evidence can still change a
    decision.
-5. Join direct evidence, preserve contradictions, reject unsupported confidence, and
-   update the owned durable artifact.
-6. Return through the invoking flow with the exact result or `NOT_PROVEN` boundary.
+6. Join graph deltas, verify load-bearing evidence, and publish only useful durable
+   facts at their native GitHub boundary.
+7. Continue through the invoking flow's named route or return the exact typed result.
 
 ## Review currentness
 
 A later commit does not invalidate review merely because the SHA changed. Revisit only
 findings, proof, claims, production paths, authority, compatibility, risk, rollback, or
-integration dimensions materially changed by later work. Formatting, editorial
-cleanup, generated receipt refresh, and stronger tests do not trigger a full review by
-themselves.
-
-## Durable boundary
-
-Only the selected issue, plan/spec/policy, candidate, PR, submitted review, check,
-merge, or closeout surface is durable. Briefs, retries, transcripts, topology, and
-executor state remain runtime-local.
+integration dimensions materially changed by later work.
 
 ## Actual stop conditions
 
