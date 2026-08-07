@@ -65,6 +65,11 @@ jobs:
           Path('/tmp/apply.py').write_text(body + '\n', encoding='utf-8')
           PY
           python3 /tmp/apply.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/ux-regression-gate.yml')
+          path.write_text(path.read_text(encoding='utf-8').rstrip() + '\n', encoding='utf-8')
+          PY
           file=.github/workflows/ux-regression-gate.yml
           ! grep -Eq '(pull-requests|statuses): write' "$file"
           ! grep -q 'actions/github-script' "$file"
