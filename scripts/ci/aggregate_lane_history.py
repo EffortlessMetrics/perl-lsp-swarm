@@ -17,11 +17,13 @@ import argparse
 from collections import Counter
 import json
 import math
+from pathlib import Path
+import re
 import statistics
 import sys
+import tempfile
 import time
 import tomllib
-from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -39,7 +41,7 @@ def percentile(values: list[float], p: float) -> float:
     if len(values) == 1:
         return values[0]
     sorted_vals = sorted(values)
-    k = (len(values) - 1) * (p / 100.0)
+    k = (len(sorted_vals) - 1) * (p / 100.0)
     lo = int(math.floor(k))
     hi = int(math.ceil(k))
     if lo == hi:
@@ -123,7 +125,7 @@ def validate_trusted_marker(
         return False, "untrusted_event", run_id
 
     head_sha = marker.get("head_sha")
-    if not isinstance(head_sha, str) or len(head_sha) != 40:
+    if not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
         return False, "invalid_marker", run_id
     return True, "accepted", run_id
 
@@ -293,6 +295,168 @@ def build_history(
     return history
 
 
+def self_test_write_run(
+    root: Path,
+    *,
+    run_id: int = 123,
+    event: str = "push",
+    branch: str = "main",
+    repository: str = "EffortlessMetrics/perl-lsp-swarm",
+    conclusion: str = "success",
+    jobs: list[object] | None = None,
+    write_marker: bool = True,
+) -> None:
+    """Write one synthetic downloaded run for the built-in security tests."""
+    run_dir = root / f"run-{run_id}"
+    artifact_dir = run_dir / "ci-actuals-meta"
+    artifact_dir.mkdir(parents=True)
+    if write_marker:
+        (run_dir / TRUSTED_MARKER).write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "repository": repository,
+                    "event": event,
+                    "head_branch": branch,
+                    "head_sha": "a" * 40,
+                    "conclusion": conclusion,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    (artifact_dir / "ci-actuals-meta.json").write_text(
+        json.dumps({"jobs": jobs or []}) + "\n",
+        encoding="utf-8",
+    )
+
+
+def run_self_tests() -> None:
+    """Exercise provenance, lane, value, and resource rejection contracts."""
+    repository = "EffortlessMetrics/perl-lsp-swarm"
+    default_branch = "main"
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            raise AssertionError(message)
+
+    def collect(root: Path) -> tuple[dict[str, list[float]], dict[str, Any]]:
+        return collect_actuals(
+            actuals_dir=root,
+            window_days=14,
+            allowed_lanes={"meta"},
+            require_trusted_markers=True,
+            repository=repository,
+            default_branch=default_branch,
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        self_test_write_run(
+            root,
+            jobs=[{"gate_name": "meta", "actual_lem": 42.5}],
+        )
+        samples, raw_stats = collect(root)
+        stats = serializable_stats(raw_stats)
+        check(samples == {"meta": [42.5]}, "trusted default-branch push rejected")
+        check(stats["source_run_ids"] == [123], "source run identity not recorded")
+        check(stats["accepted_samples"] == 1, "accepted sample count incorrect")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        self_test_write_run(
+            root,
+            event="merge_group",
+            branch="gh-readonly-queue/main/pr-1-deadbeef",
+            jobs=[{"lane_id": "meta", "actual_lem": 7}],
+        )
+        samples, _ = collect(root)
+        check(samples == {"meta": [7.0]}, "trusted merge-group sample rejected")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        self_test_write_run(
+            root,
+            run_id=1,
+            event="pull_request",
+            branch="feature",
+            jobs=[{"lane_id": "meta", "actual_lem": 1}],
+        )
+        self_test_write_run(
+            root,
+            run_id=2,
+            jobs=[{"lane_id": "meta", "actual_lem": 2}],
+            write_marker=False,
+        )
+        samples, raw_stats = collect(root)
+        rejected = serializable_stats(raw_stats)["rejected"]
+        check(samples == {}, "untrusted run supplied a sample")
+        check(rejected.get("untrusted_event") == 1, "PR source was not rejected")
+        check(rejected.get("missing_marker") == 1, "missing marker was not rejected")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        self_test_write_run(
+            root,
+            jobs=[
+                {"lane_id": "unknown", "actual_lem": 1},
+                {"lane_id": "meta", "actual_lem": True},
+                {"lane_id": "meta", "actual_lem": "1"},
+                {"lane_id": "meta", "actual_lem": math.nan},
+                {"lane_id": "meta", "actual_lem": -1},
+                {"lane_id": "meta", "actual_lem": MAX_ACTUAL_LEM + 1},
+                {"lane_id": "meta", "actual_lem": 3},
+            ],
+        )
+        samples, raw_stats = collect(root)
+        rejected = serializable_stats(raw_stats)["rejected"]
+        check(samples == {"meta": [3.0]}, "valid sample was not isolated")
+        check(rejected.get("unknown_lane") == 1, "unknown lane was not rejected")
+        check(rejected.get("invalid_actual") == 2, "invalid actual count incorrect")
+        check(rejected.get("non_finite_actual") == 1, "NaN was not rejected")
+        check(rejected.get("out_of_range_actual") == 2, "range checks failed")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        self_test_write_run(
+            root,
+            jobs=[
+                {"lane_id": "meta", "actual_lem": index}
+                for index in range(MAX_JOBS_PER_RECEIPT + 1)
+            ],
+        )
+        samples, raw_stats = collect(root)
+        rejected = serializable_stats(raw_stats)["rejected"]
+        check(samples == {}, "oversized receipt supplied samples")
+        check(rejected.get("oversized_receipt") == 1, "oversized receipt not rejected")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        valid = root / "valid.toml"
+        valid.write_text('[lane.meta]\nbase_lem = 2.5\n', encoding="utf-8")
+        check(static_floors(valid) == {"meta": 2.5}, "valid lane policy rejected")
+
+        empty = root / "empty.toml"
+        empty.write_text("", encoding="utf-8")
+        try:
+            static_floors(empty)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("empty lane policy did not fail closed")
+
+        invalid = root / "invalid.toml"
+        invalid.write_text('[lane.meta]\nbase_lem = "large"\n', encoding="utf-8")
+        try:
+            static_floors(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-numeric lane floor did not fail closed")
+
+    print("aggregate_lane_history self-test passed")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -315,8 +479,12 @@ def main() -> int:
     parser.add_argument("--require-trusted-markers", action="store_true")
     parser.add_argument("--repository", default="")
     parser.add_argument("--default-branch", default="")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
+    if args.self_test:
+        run_self_tests()
+        return 0
     if args.window_days <= 0:
         parser.error("--window-days must be positive")
     if args.require_trusted_markers and (
