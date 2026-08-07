@@ -611,6 +611,7 @@ impl DebugAdapter {
                 variables_reference: 0,
                 named_variables: None,
                 indexed_variables: None,
+                evaluate_name: None,
             };
             session.variable_cache.upsert(
                 eval_ref,
