@@ -1,53 +1,30 @@
-# ub-review - unsafe/native-boundary advisory review
+# ub-review - advisory unsafe/native-boundary review
 #
-# Builds a UB/native-boundary evidence packet for every same-repo PR and posts
-# one grouped advisory Pull Request Review (continue-on-error; never blocks CI).
+# This lane is evidence-producing but not merge-required. It runs one complete
+# semantic review when a same-repository PR first becomes reviewable. Repair
+# pushes do not cancel the active investigation or automatically restart the
+# entire review; provider-native PR completion may request a focused later pass
+# when a material seam changes.
 #
-# Security posture:
-#   - Same-repo PRs only. Fork PRs get a skipped-by-policy metadata job — never
-#     pull_request_target with an untrusted checkout.
-#   - MINIMAX_API_KEY and OPENCODE are confirmed org-level secrets.
-#   - Secret preflight step fails clearly if MINIMAX_API_KEY is absent before any
-#     model calls. Values are never echoed.
-#
-# Runner routing: mirrors ripr.yml — CX53 primary, CX43 secondary, ubuntu-24.04
-# GitHub-hosted fallback. Each target gets its own job so runs-on is static.
-#
-# Advisory status: continue-on-error on every work job. Not a required check.
-# See policy/ci-lane-whitelist.toml entry `ub_review_advisory` and
-# docs/ci/review-gates.md.
-#
-# Install note: EffortlessMetrics/ub-review has no public release asset yet;
-# release installation remains pending #716/#4015. install-mode=auto falls back
-# to a source build. The Cargo cache can be warmed by Swatinem/rust-cache if
-# needed (PR 2 scope).
-#
-# Action pin:
-#   EffortlessMetrics/ub-review@ca616b45de025cbd70fabb3849492385a00b4290 # pre-release
-#   Immutable current-main snapshot; action inputs are checked against its
-#   unchanged action.yml. Keep source fallback until an exact-head downstream
-#   packet and verifier receipt prove the consumer path.
+# Analysis, publication, and gate truth remain separate. The job may be
+# continue-on-error without describing incomplete evidence or failed posting as
+# a clean/pass review.
 
 name: UB Review
 
 on:
   pull_request:
     branches: [master, main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review]
 
 concurrency:
   group: ub-review-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # 0. Fork-PR policy gate.
-  #    Fork PRs cannot access org secrets and must not run on self-hosted
-  #    runners. Emit a clear policy record instead of silently skipping.
-  # ---------------------------------------------------------------------------
   fork-policy:
     name: UB Review (fork policy — skipped)
     if: >-
@@ -59,406 +36,64 @@ jobs:
       - name: Skipped by policy
         shell: bash
         run: |
-          echo "ub-review skipped: fork PRs cannot access org secrets."
-          echo "Evidence collection requires trusted checkout and MINIMAX_API_KEY."
-          echo "This is expected policy — not a CI failure."
+          echo "ub-review skipped: fork PRs cannot access org review secrets."
+          echo "This is expected policy, not a product or review result."
 
-  # ---------------------------------------------------------------------------
-  # 1. Router — picks the target runner for same-repo PRs.
-  #    Mirrors the ripr.yml routing pattern exactly.
-  # ---------------------------------------------------------------------------
-  route-ub-review:
-    name: Route UB review runner
+  ub-review:
+    name: UB Review Advisory on GitHub Hosted
     if: >-
       github.event.pull_request.draft != true &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      target: ${{ steps.route.outputs.target }}
-      reason: ${{ steps.route.outputs.reason }}
-      fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
-    steps:
-      - name: Decide target runner
-        id: route
-        env:
-          GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
-          ORG: EffortlessMetrics
-          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login || '' }}
-          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type || '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          emit() {
-            local target="$1" reason="$2" fallback_allowed="$3"
-            echo "router_target=$target"
-            echo "router_reason=$reason"
-            echo "router_fallback_allowed=$fallback_allowed"
-            {
-              echo "target=$target"
-              echo "reason=$reason"
-              echo "fallback_allowed=$fallback_allowed"
-            } >> "$GITHUB_OUTPUT"
-            {
-              echo "### UB Review Runner Route"
-              echo ""
-              echo "- router_target: \`$target\`"
-              echo "- router_reason: \`$reason\`"
-              echo "- router_fallback_allowed: \`$fallback_allowed\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-          }
-
-          # Bot PRs use GitHub-hosted to preserve self-hosted capacity.
-          pr_author_login_lc="$(printf '%s' "${PR_AUTHOR_LOGIN:-}" | tr '[:upper:]' '[:lower:]')"
-          pr_author_type_lc="$(printf '%s' "${PR_AUTHOR_TYPE:-}" | tr '[:upper:]' '[:lower:]')"
-          is_bot_pr="false"
-          case "$pr_author_login_lc" in
-            dependabot*|app/*|*\[bot\]) is_bot_pr="true" ;;
-          esac
-          if [ "$pr_author_type_lc" = "bot" ]; then is_bot_pr="true"; fi
-          if [ "$is_bot_pr" = "true" ]; then
-            emit "github" "bot_pr_github_hosted" "true"
-            exit 0
-          fi
-
-          # No runner token — fall back safely without blocking.
-          if [ -z "${GH_TOKEN:-}" ]; then
-            emit "github" "runner_token_missing" "true"
-            exit 0
-          fi
-
-          response="$(mktemp)"
-          status="$(curl -sS -w '%{http_code}' -o "$response" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" || true)"
-
-          if [ "$status" != "200" ]; then
-            echo "::warning::runner API returned HTTP $status; falling back to GitHub-hosted"
-            emit "github" "runner_api_failed" "true"
-            exit 0
-          fi
-
-          idle_runner_count() {
-            local runner_label="$1"
-            jq --arg runner_label "$runner_label" '
-              [ .runners[]?
-                | select(.status == "online")
-                | select(.busy == false)
-                | ([.labels[].name | ascii_downcase] // []) as $have
-                | select(
-                    ($have | index("em-ci")) and
-                    ($have | index($runner_label)) and
-                    ($have | index("rust-small")) and
-                    ($have | index("trusted-pr"))
-                  )
-              ] | length
-            ' "$response"
-          }
-
-          # TEMPORARY: CX self-hosted runners are Docker-only — they have no
-          # host-level Rust toolchain. The ub-review action's install-mode=auto
-          # falls back to a cargo source-build when no release artifact exists
-          # (upstream EffortlessMetrics/ub-review#343), but cargo is unavailable
-          # on CX hosts outside a Docker container. The composite action cannot
-          # be trivially Docker-wrapped (it uses actions/checkout, node steps,
-          # and artifact uploads internally).
-          #
-          # Evidence: PR #1218 run 27086277244 — CX53 job failed at "Build UB
-          # review packet" with "cargo is unavailable and rustup is not installed"
-          # (~07:44). Adoption datum #3.
-          #
-          # Workaround: always prefer GitHub-hosted until upstream ships a
-          # release artifact. Revert by deleting these 5 lines and restoring
-          # the cx53/cx43 emit calls below.
-          emit "github" "pending_upstream_artifact_ub_review_343" "true"
-          exit 0
-
-          # --- BEGIN temporarily dead code (preserved for easy revert) ---
-          idle_cx53="$(idle_runner_count "cx53")"
-          idle_cx43="$(idle_runner_count "cx43")"
-
-          echo "idle_cx53=${idle_cx53:-0}"
-          echo "idle_cx43=${idle_cx43:-0}"
-
-          if [ "${idle_cx53:-0}" -gt 0 ]; then
-            emit "cx53" "cx53_idle" "false"
-          elif [ "${idle_cx43:-0}" -gt 0 ]; then
-            emit "cx43" "cx43_idle" "false"
-          else
-            emit "github" "no_idle_runner" "true"
-          fi
-          # --- END temporarily dead code ---
-
-  # ---------------------------------------------------------------------------
-  # 2a. UB review on CX53 (primary self-hosted).
-  # ---------------------------------------------------------------------------
-  ub-review-cx53:
-    name: UB Review Advisory on CX53
-    needs: route-ub-review
-    if: >-
-      needs.route-ub-review.result == 'success' &&
-      needs.route-ub-review.outputs.target == 'cx53'
-    runs-on:
-      group: em-ci-small
-      labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
-    timeout-minutes: 45
-    # Advisory: do not block PR merge signal on ub-review failures.
-    continue-on-error: true
-    permissions:
-      contents: read
-      pull-requests: write
-    env:
-      UB_REVIEW_RUNNER_SOURCE: cx53
-      UB_REVIEW_RUNNER_CLASS: self-hosted
-      UB_REVIEW_RUNNER_SIZE: large
-    steps:
-      - name: Fix workspace ownership (pre-checkout)
-        shell: bash
-        run: |
-          # Other CX jobs (ripr, rust-small) run Docker containers that write
-          # workspace files as root. If a previous run left root-owned files
-          # behind, actions/checkout@v7 fails with "Unable to clean or reset
-          # the repository" (exit 128). Use Docker (running as root) to chown
-          # back and then delete the stale workspace target/ so it cannot cause
-          # `mkdir target` failures on the next run. Fall back to a host-side
-          # rm -rf in case the Docker image is unavailable.
-          # Evidence: PR #1242 run 27084969856 job 79937532087 (ub-review
-          # adoption datum #2 — first live CX43 run, 9s failure at checkout).
-          # Safe: CARGO_TARGET_DIR is /mnt/ci-scratch/... so build artifacts are
-          # not in workspace/target/; only xtask/ripr receipts accumulate there.
-          set +e
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
-            bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
-          # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
-          rm -rf "$GITHUB_WORKSPACE/target" || true
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Fetch PR base ref
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
-      - name: Secret preflight
-        shell: bash
-        env:
-          _HAVE_MINIMAX: ${{ secrets.MINIMAX_API_KEY != '' && 'yes' || '' }}
-          _HAVE_OPENCODE: ${{ secrets.OPENCODE != '' && 'yes' || '' }}
-        run: |
-          set -euo pipefail
-          if [ -z "${_HAVE_MINIMAX:-}" ]; then
-            echo "::error::MINIMAX_API_KEY is empty or missing; ub-review requires it for model review lanes."
-            exit 1
-          fi
-          echo "MINIMAX_API_KEY: present"
-          if [ -z "${_HAVE_OPENCODE:-}" ]; then
-            echo "::warning::OPENCODE is empty or missing; OpenCode fallback lanes will be unavailable."
-          else
-            echo "OPENCODE: present"
-          fi
-      - name: Build UB review packet
-        id: ub-review
-        uses: EffortlessMetrics/ub-review@ca616b45de025cbd70fabb3849492385a00b4290 # pre-release
-        with:
-          config: policy/ub-review.toml
-          profile: gh-runner
-          root: .
-          base: origin/${{ github.base_ref }}
-          head: HEAD
-          out: target/ub-review
-          install-tools: 'true'
-          tool-bundle: core
-          posting: review
-          mode: intelligent-ci
-          fail-on-gate: 'true'
-          fail-on-post-error: 'false'
-          allow-heavy: 'false'
-          github-token: ${{ github.token }}
-          minimax-api-key: ${{ secrets.MINIMAX_API_KEY }}
-          minimax-provider-kind: anthropic
-          model-mode: auto
-          provider-policy: minimax-only
-          opencode-api-key: ${{ secrets.OPENCODE }}
-          lane-width: '6'
-          model-timeout-sec: '300'
-          max-inline-comments: '6'
-          model-concurrency: '6'
-          max-model-calls: '10'
-          github-summary: 'true'
-      - name: Upload UB review packet
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ub-review-packet-${{ github.event.pull_request.number || github.run_id }}
-          path: target/ub-review
-          if-no-files-found: warn
-          retention-days: 14
-
-  # ---------------------------------------------------------------------------
-  # 2b. UB review on CX43 (secondary self-hosted).
-  # ---------------------------------------------------------------------------
-  ub-review-cx43:
-    name: UB Review Advisory on CX43
-    needs: route-ub-review
-    if: >-
-      needs.route-ub-review.result == 'success' &&
-      needs.route-ub-review.outputs.target == 'cx43'
-    runs-on:
-      group: em-ci-small
-      labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
-    timeout-minutes: 45
-    continue-on-error: true
-    permissions:
-      contents: read
-      pull-requests: write
-    env:
-      UB_REVIEW_RUNNER_SOURCE: cx43
-      UB_REVIEW_RUNNER_CLASS: self-hosted
-      UB_REVIEW_RUNNER_SIZE: medium
-    steps:
-      - name: Fix workspace ownership (pre-checkout)
-        shell: bash
-        run: |
-          # Same root-owned-workspace recovery as CX53 above.
-          # Evidence: PR #1242 run 27084969856 job 79937532087 — CX43 died at
-          # checkout in 9s with "Unable to clean or reset the repository".
-          # Extended with rm -rf to also delete the stale target/ directory so it
-          # cannot cause `mkdir target` failures (see #1885).
-          set +e
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
-            bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
-          # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
-          rm -rf "$GITHUB_WORKSPACE/target" || true
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Fetch PR base ref
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
-      - name: Secret preflight
-        shell: bash
-        env:
-          _HAVE_MINIMAX: ${{ secrets.MINIMAX_API_KEY != '' && 'yes' || '' }}
-          _HAVE_OPENCODE: ${{ secrets.OPENCODE != '' && 'yes' || '' }}
-        run: |
-          set -euo pipefail
-          if [ -z "${_HAVE_MINIMAX:-}" ]; then
-            echo "::error::MINIMAX_API_KEY is empty or missing; ub-review requires it for model review lanes."
-            exit 1
-          fi
-          echo "MINIMAX_API_KEY: present"
-          if [ -z "${_HAVE_OPENCODE:-}" ]; then
-            echo "::warning::OPENCODE is empty or missing; OpenCode fallback lanes will be unavailable."
-          else
-            echo "OPENCODE: present"
-          fi
-      - name: Build UB review packet
-        id: ub-review
-        uses: EffortlessMetrics/ub-review@ca616b45de025cbd70fabb3849492385a00b4290 # pre-release
-        with:
-          config: policy/ub-review.toml
-          profile: gh-runner
-          root: .
-          base: origin/${{ github.base_ref }}
-          head: HEAD
-          out: target/ub-review
-          install-tools: 'true'
-          tool-bundle: core
-          posting: review
-          mode: intelligent-ci
-          fail-on-gate: 'true'
-          fail-on-post-error: 'false'
-          allow-heavy: 'false'
-          github-token: ${{ github.token }}
-          minimax-api-key: ${{ secrets.MINIMAX_API_KEY }}
-          minimax-provider-kind: anthropic
-          model-mode: auto
-          provider-policy: minimax-only
-          opencode-api-key: ${{ secrets.OPENCODE }}
-          lane-width: '6'
-          model-timeout-sec: '300'
-          max-inline-comments: '6'
-          model-concurrency: '6'
-          max-model-calls: '10'
-          github-summary: 'true'
-      - name: Upload UB review packet
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ub-review-packet-${{ github.event.pull_request.number || github.run_id }}
-          path: target/ub-review
-          if-no-files-found: warn
-          retention-days: 14
-
-  # ---------------------------------------------------------------------------
-  # 2c. UB review on GitHub-hosted ubuntu-24.04 (fallback).
-  #    Used for: no idle self-hosted runner, bot PRs, runner token missing.
-  # ---------------------------------------------------------------------------
-  ub-review-github:
-    name: UB Review Advisory on GitHub Hosted
-    needs: route-ub-review
-    if: >-
-      needs.route-ub-review.result == 'success' &&
-      needs.route-ub-review.outputs.target == 'github' &&
-      needs.route-ub-review.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     continue-on-error: true
     permissions:
       contents: read
       pull-requests: write
+      actions: read
     env:
       UB_REVIEW_RUNNER_SOURCE: github
       UB_REVIEW_RUNNER_CLASS: github-hosted
       UB_REVIEW_RUNNER_SIZE: standard
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
+
       - name: Fetch PR base ref
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags origin \
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
       - name: Secret preflight
         shell: bash
         env:
-          _HAVE_MINIMAX: ${{ secrets.MINIMAX_API_KEY != '' && 'yes' || '' }}
-          _HAVE_OPENCODE: ${{ secrets.OPENCODE != '' && 'yes' || '' }}
+          HAVE_MINIMAX: ${{ secrets.MINIMAX_API_KEY != '' && 'yes' || '' }}
+          HAVE_OPENCODE: ${{ secrets.OPENCODE != '' && 'yes' || '' }}
         run: |
           set -euo pipefail
-          if [ -z "${_HAVE_MINIMAX:-}" ]; then
-            echo "::error::MINIMAX_API_KEY is empty or missing; ub-review requires it for model review lanes."
+          if [ -z "${HAVE_MINIMAX:-}" ]; then
+            echo "::error::MINIMAX_API_KEY is empty or missing"
             exit 1
           fi
           echo "MINIMAX_API_KEY: present"
-          if [ -z "${_HAVE_OPENCODE:-}" ]; then
-            echo "::warning::OPENCODE is empty or missing; OpenCode fallback lanes will be unavailable."
+          if [ -z "${HAVE_OPENCODE:-}" ]; then
+            echo "::warning::OPENCODE is unavailable; fallback lanes may be limited"
           else
             echo "OPENCODE: present"
           fi
-      - name: Build UB review packet
+
+      - name: Build and publish UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@ca616b45de025cbd70fabb3849492385a00b4290 # pre-release
+        uses: EffortlessMetrics/ub-review@ca616b45de025cbd70fabb3849492385a00b4290 # immutable pre-release snapshot
         with:
           config: policy/ub-review.toml
-          profile: gh-runner
+          profile: gh-runner-proof
+          runtime-profile: gh-runner-proof
           root: .
           base: origin/${{ github.base_ref }}
           head: HEAD
@@ -467,8 +102,10 @@ jobs:
           tool-bundle: core
           posting: review
           mode: intelligent-ci
+          run-pass: auto
+          depth: standard
           fail-on-gate: 'true'
-          fail-on-post-error: 'false'
+          fail-on-post-error: 'true'
           allow-heavy: 'false'
           github-token: ${{ github.token }}
           minimax-api-key: ${{ secrets.MINIMAX_API_KEY }}
@@ -482,11 +119,171 @@ jobs:
           model-concurrency: '6'
           max-model-calls: '10'
           github-summary: 'true'
+
+      - name: Compile downstream review-truth receipt
+        if: always()
+        shell: bash
+        env:
+          ACTION_OUTCOME: ${{ steps.ub-review.outcome }}
+          PACKET_DIR: ${{ steps.ub-review.outputs.out || 'target/ub-review' }}
+          GATE_OUTCOME_PATH: ${{ steps.ub-review.outputs.gate-outcome-path }}
+          GITHUB_REVIEW_PATH: ${{ steps.ub-review.outputs.github-review-path }}
+          POST_RESULT_PATH: ${{ steps.ub-review.outputs.post-result-path }}
+          POST_ERROR_PATH: ${{ steps.ub-review.outputs.post-error-path }}
+        run: |
+          set -euo pipefail
+
+          packet_dir="${PACKET_DIR:-target/ub-review}"
+          receipt_path="${packet_dir}/review/consumer-truth.json"
+          mkdir -p "$(dirname "${receipt_path}")"
+
+          python3 - \
+            "${packet_dir}/review/terminal_state.json" \
+            "${GATE_OUTCOME_PATH:-${packet_dir}/review/gate_outcome.json}" \
+            "${GITHUB_REVIEW_PATH:-${packet_dir}/review/github-review.json}" \
+            "${POST_RESULT_PATH:-${packet_dir}/review/post-result.json}" \
+            "${POST_ERROR_PATH:-${packet_dir}/review/post-error.json}" \
+            "${receipt_path}" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          terminal_path, gate_path, payload_path, post_path, error_path, receipt_path = map(
+              pathlib.Path, sys.argv[1:]
+          )
+          action_outcome = os.environ.get("ACTION_OUTCOME", "unknown")
+
+          def read_json(path: pathlib.Path):
+              if not path.is_file():
+                  return None, "missing"
+              try:
+                  return json.loads(path.read_text(encoding="utf-8")), None
+              except Exception as exc:
+                  return None, f"invalid:{type(exc).__name__}"
+
+          terminal, terminal_error = read_json(terminal_path)
+          gate, gate_error = read_json(gate_path)
+          payload, payload_error = read_json(payload_path)
+          post_result, post_error_parse = read_json(post_path)
+          post_failure, post_failure_parse = read_json(error_path)
+
+          terminal_status = (
+              terminal.get("status") if isinstance(terminal, dict) else None
+          )
+          evidence_gaps = (
+              terminal.get("evidence_gaps", 0) if isinstance(terminal, dict) else 0
+          )
+          if not isinstance(evidence_gaps, int):
+              evidence_gaps = 0
+
+          if terminal_error:
+              analysis_result = "not_proven"
+              analysis_reason = f"terminal_state_{terminal_error}"
+          elif terminal_status == "needs-reviewer-attention":
+              analysis_result = "findings"
+              analysis_reason = terminal.get("reason")
+          elif terminal_status == "sufficient" and evidence_gaps == 0:
+              analysis_result = "clean"
+              analysis_reason = terminal.get("reason")
+          elif terminal_status == "sufficient" and evidence_gaps > 0:
+              analysis_result = "limited"
+              analysis_reason = "terminal_state_sufficient_but_evidence_gaps_present"
+          elif terminal_status == "artifact-only":
+              analysis_result = "limited"
+              analysis_reason = terminal.get("reason")
+          else:
+              analysis_result = "not_proven"
+              analysis_reason = (
+                  terminal.get("reason") if isinstance(terminal, dict)
+                  else "terminal_state_unavailable"
+              )
+
+          if post_result is not None:
+              publication_result = "posted"
+              publication_reason = None
+          elif post_failure is not None or post_failure_parse is None and error_path.is_file():
+              publication_result = "failed"
+              publication_reason = "post_error_receipt_present"
+          elif payload is not None:
+              publication_result = "not_proven"
+              publication_reason = "review_payload_prepared_without_post_receipt"
+          elif payload_error == "missing":
+              publication_result = "not_needed"
+              publication_reason = None
+          else:
+              publication_result = "not_proven"
+              publication_reason = f"review_payload_{payload_error}"
+
+          gate_conclusion = gate.get("conclusion") if isinstance(gate, dict) else None
+          if gate_error or gate_conclusion not in {"pass", "fail", "inconclusive"}:
+              gate_result = "not_proven"
+          else:
+              gate_result = gate_conclusion
+
+          if action_outcome != "success":
+              overall_result = "not_proven"
+              overall_reason = f"action_outcome:{action_outcome}"
+          elif analysis_result in {"not_proven", "limited"}:
+              overall_result = "not_proven"
+              overall_reason = analysis_reason
+          elif publication_result in {"failed", "not_proven"}:
+              overall_result = "not_proven"
+              overall_reason = publication_reason
+          elif gate_result in {"not_proven", "inconclusive"}:
+              overall_result = "not_proven"
+              overall_reason = f"gate_result:{gate_result}"
+          elif analysis_result == "findings" or gate_result == "fail":
+              overall_result = "findings"
+              overall_reason = analysis_reason
+          else:
+              overall_result = "clean"
+              overall_reason = None
+
+          receipt = {
+              "schema": "ub-review-consumer-truth.v1",
+              "advisory": True,
+              "action_outcome": action_outcome,
+              "analysis_result": analysis_result,
+              "analysis_reason": analysis_reason,
+              "publication_result": publication_result,
+              "publication_reason": publication_reason,
+              "gate_result": gate_result,
+              "overall_result": overall_result,
+              "overall_reason": overall_reason,
+              "terminal_status": terminal_status,
+              "evidence_gaps": evidence_gaps,
+              "review_payload_present": payload is not None,
+              "post_receipt_present": post_result is not None,
+              "post_error_present": post_failure is not None or error_path.is_file(),
+              "semantic_review_cancel_in_progress": False,
+              "automatic_full_review_on_synchronize": False,
+              "source_paths": {
+                  "terminal_state": str(terminal_path),
+                  "gate_outcome": str(gate_path),
+                  "github_review": str(payload_path),
+                  "post_result": str(post_path),
+                  "post_error": str(error_path),
+              },
+              "parse_errors": {
+                  "terminal_state": terminal_error,
+                  "gate_outcome": gate_error,
+                  "github_review": payload_error,
+                  "post_result": post_error_parse,
+                  "post_error": post_failure_parse,
+              },
+          }
+          receipt_path.write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
       - name: Upload UB review packet
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ub-review-packet-${{ github.event.pull_request.number || github.run_id }}
+          name: ub-review-packet-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
           path: target/ub-review
           if-no-files-found: warn
           retention-days: 14
