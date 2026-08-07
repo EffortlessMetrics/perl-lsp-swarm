@@ -165,8 +165,8 @@ jobs:
           terminal, terminal_error = read_json(terminal_path)
           gate, gate_error = read_json(gate_path)
           payload, payload_error = read_json(payload_path)
-          post_result, post_error_parse = read_json(post_path)
-          post_failure, post_failure_parse = read_json(error_path)
+          post_result, post_result_error = read_json(post_path)
+          post_failure, post_failure_error = read_json(error_path)
 
           terminal_status = (
               terminal.get("status") if isinstance(terminal, dict) else None
@@ -202,9 +202,13 @@ jobs:
           if post_result is not None:
               publication_result = "posted"
               publication_reason = None
-          elif post_failure is not None or post_failure_parse is None and error_path.is_file():
+          elif error_path.is_file():
               publication_result = "failed"
-              publication_reason = "post_error_receipt_present"
+              publication_reason = (
+                  "post_error_receipt_present"
+                  if post_failure is not None
+                  else f"post_error_receipt_{post_failure_error}"
+              )
           elif payload is not None:
               publication_result = "not_proven"
               publication_reason = "review_payload_prepared_without_post_receipt"
@@ -255,7 +259,7 @@ jobs:
               "evidence_gaps": evidence_gaps,
               "review_payload_present": payload is not None,
               "post_receipt_present": post_result is not None,
-              "post_error_present": post_failure is not None or error_path.is_file(),
+              "post_error_present": error_path.is_file(),
               "semantic_review_cancel_in_progress": False,
               "automatic_full_review_on_synchronize": False,
               "source_paths": {
@@ -269,8 +273,8 @@ jobs:
                   "terminal_state": terminal_error,
                   "gate_outcome": gate_error,
                   "github_review": payload_error,
-                  "post_result": post_error_parse,
-                  "post_error": post_failure_parse,
+                  "post_result": post_result_error,
+                  "post_error": post_failure_error,
               },
           }
           receipt_path.write_text(
