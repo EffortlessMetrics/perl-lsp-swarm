@@ -1,0 +1,139 @@
+name: Workflow Security Ratchet
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '.ci/workflow-security-baseline.json'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+  pull_request_target:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '.ci/workflow-security-baseline.json'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '.ci/workflow-security-baseline.json'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+  workflow_dispatch: {}
+
+concurrency:
+  group: workflow-security-ratchet-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-selftest:
+    name: Candidate scanner self-test (advisory)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate as read-only source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run scanner unit tests
+        run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+
+      - name: Check candidate against its committed baseline
+        run: |
+          python3 scripts/ci/workflow_security_ratchet.py check \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --report target/receipts/workflow-security-candidate.json
+
+      - name: Upload candidate self-test receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workflow-security-candidate-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/workflow-security-candidate.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  trusted-base-ratchet:
+    name: Trusted-base workflow security ratchet
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted evaluator and baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: evaluator
+          persist-credentials: false
+
+      - name: Checkout candidate strictly as inert files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Scan candidate with trusted evaluator
+        run: |
+          mkdir -p target/receipts
+          python3 evaluator/scripts/ci/workflow_security_ratchet.py check \
+            --root candidate \
+            --baseline evaluator/.ci/workflow-security-baseline.json \
+            --report target/receipts/workflow-security-ratchet.json
+
+      - name: Upload authoritative ratchet receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workflow-security-ratchet-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/workflow-security-ratchet.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  main-selfcheck:
+    name: Workflow security baseline self-check
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run unit tests
+        run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+
+      - name: Check committed baseline
+        run: |
+          python3 scripts/ci/workflow_security_ratchet.py check \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --report target/receipts/workflow-security-main.json
+
+      - name: Upload main self-check receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workflow-security-main-${{ github.sha }}
+          path: target/receipts/workflow-security-main.json
+          if-no-files-found: warn
+          retention-days: 30
