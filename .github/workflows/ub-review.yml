@@ -88,7 +88,7 @@ jobs:
           fi
 
       - name: Build and publish UB review packet
-        id: ub-review
+        id: ub_review
         uses: EffortlessMetrics/ub-review@ca616b45de025cbd70fabb3849492385a00b4290 # immutable pre-release snapshot
         with:
           config: policy/ub-review.toml
@@ -124,12 +124,12 @@ jobs:
         if: always()
         shell: bash
         env:
-          ACTION_OUTCOME: ${{ steps.ub-review.outcome }}
-          PACKET_DIR: ${{ steps.ub-review.outputs.out || 'target/ub-review' }}
-          GATE_OUTCOME_PATH: ${{ steps.ub-review.outputs.gate-outcome-path }}
-          GITHUB_REVIEW_PATH: ${{ steps.ub-review.outputs.github-review-path }}
-          POST_RESULT_PATH: ${{ steps.ub-review.outputs.post-result-path }}
-          POST_ERROR_PATH: ${{ steps.ub-review.outputs.post-error-path }}
+          ACTION_OUTCOME: ${{ steps.ub_review.outcome }}
+          PACKET_DIR: ${{ steps.ub_review.outputs.out || 'target/ub-review' }}
+          GATE_OUTCOME_PATH: ${{ steps.ub_review.outputs.gate-outcome-path }}
+          GITHUB_REVIEW_PATH: ${{ steps.ub_review.outputs.github-review-path }}
+          POST_RESULT_PATH: ${{ steps.ub_review.outputs.post-result-path }}
+          POST_ERROR_PATH: ${{ steps.ub_review.outputs.post-error-path }}
         run: |
           set -euo pipefail
 
