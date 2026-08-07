@@ -53,7 +53,7 @@ runs:
   steps:
     - name: Install Rust toolchain
       id: toolchain
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
@@ -61,7 +61,7 @@ runs:
     - name: Cache cargo dependencies
       id: cache
       if: inputs.cache == 'true'
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
         key: ${{ runner.os }}-${{ inputs.toolchain }}-${{ inputs.cache-key-suffix }}-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
@@ -69,24 +69,24 @@ runs:
 
     - name: Install sccache
       if: inputs.sccache == 'true'
-      uses: mozilla-actions/sccache-action@v0.0.4
+      uses: mozilla-actions/sccache-action@2e7f9ec7921547d4b46598398ca573513895d0bd # v0.0.4
 
     - name: Configure sccache
       if: inputs.sccache == 'true'
       shell: bash
       run: |
-        echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
     - name: Install just
       if: inputs.install-just == 'true'
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2
       with:
         tool: just
 
     - name: Install nextest
       if: inputs.install-nextest == 'true'
-      uses: taiki-e/install-action@nextest
+      uses: taiki-e/install-action@a8a2a6550241efe7b0655894cae976aa07ddb0e6 # nextest
 
     - name: Show toolchain info
       shell: bash
