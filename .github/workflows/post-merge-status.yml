@@ -155,8 +155,8 @@ jobs:
           token: ${{ github.token }}
           branch: automation/post-merge-status
           delete-branch: true
-          title: 'chore(docs): regenerate post-merge status (#0000)'
-          commit-message: 'chore(docs): regenerate post-merge status (#0000)'
+          title: 'chore(docs): regenerate post-merge status (#6012)'
+          commit-message: 'chore(docs): regenerate post-merge status (#6012)'
           body: |
             Regenerates the status subsystem from the current trusted default-branch tree.
 
