@@ -1,21 +1,24 @@
 name: Droid PR Review
 
 # External AI reviewer. Advisory: see policy/ci-lane-whitelist.toml entry
-# `droid_auto_review` and docs/ci/labels.md `ai-review`. The job runs on
-# ready_for_review credible PRs only (already filtered by `if:` below).
+# `droid_auto_review` and docs/ci/labels.md `ai-review`.
 #
-# The job is marked continue-on-error: true so that external-service
-# failures (rate limits, vendor outages) do not break unrelated CI signal
-# on the PR. Any review comments the action manages to post before failing
-# are still visible.
+# Full semantic review runs only when a PR first becomes reviewable. Repair
+# pushes do not cancel an investigation or automatically restart the whole
+# review. A maintainer/provider-native flow may request a focused later review
+# when a material seam changes.
+#
+# The job remains continue-on-error so vendor/model/instrument failures do not
+# break unrelated CI. Its receipt is fail-honest: action success alone never
+# means a review was posted or that the candidate was clean.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review]
 
 concurrency:
   group: droid-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
@@ -27,7 +30,7 @@ jobs:
     # Advisory lane: do not break PR signal on external-AI-review failures.
     # See docs/ci/perl-lsp-rollout-plan.md PR 14.
     continue-on-error: true
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
@@ -114,6 +117,8 @@ jobs:
           echo "path=${droid_path}" >> "${GITHUB_OUTPUT}"
       - name: Run Droid Auto Review
         id: droid_review
+        # Keep the last accepted immutable pin until the independent-validator
+        # and structured-output slices under #6007 merge upstream.
         uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # based on Factory-AI/droid-action v5; raw debug artifact upload disabled
         env:
           HOME: ${{ runner.temp }}/droid-home
@@ -124,15 +129,16 @@ jobs:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           upload_debug_artifacts: false
           automatic_review: true
-          review_depth: shallow
+          review_depth: deep
           review_model: custom:MiniMax-M3-0
           automatic_security_review: false
           path_to_droid_executable: ${{ steps.install_droid.outputs.path }}
-      - name: Write Droid live-run receipt
+      - name: Write fail-honest Droid live-run receipt
         if: always()
         shell: bash
         env:
           DROID_REVIEW_OUTCOME: ${{ steps.droid_review.outcome }}
+          REVIEW_VALIDATED_PATH: ${{ runner.temp }}/droid-prompts/review_validated.json
         run: |
           set -euo pipefail
 
@@ -140,28 +146,112 @@ jobs:
           receipt_path="${receipt_dir}/droid-live-run.json"
           mkdir -p "${receipt_dir}"
 
-          review_posted=false
-          verdict=warn
-          if [ "${DROID_REVIEW_OUTCOME:-unknown}" = "success" ]; then
-            review_posted=true
-            verdict=pass
-          fi
+          python3 - "${REVIEW_VALIDATED_PATH}" "${receipt_path}" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
 
-          cat > "${receipt_path}" <<JSON
-          {
-            "check": "droid-live-run",
-            "schema_version": "1",
-            "event": "pull_request",
-            "verdict": "${verdict}",
-            "workflow": "Droid PR Review",
-            "model": "custom:MiniMax-M3-0",
-            "runner_labels": ["self-hosted", "linux", "x64", "em-ci", "trusted-pr", "review-nano", "droid-review"],
-            "action": "EffortlessMetrics/droid-action-safe",
-            "review_posted": ${review_posted},
-            "debug_artifacts_uploaded": false,
-            "anthropic_env_cleared": true
+          validated_path = pathlib.Path(sys.argv[1])
+          receipt_path = pathlib.Path(sys.argv[2])
+          action_outcome = os.environ.get("DROID_REVIEW_OUTCOME", "unknown")
+
+          artifact = None
+          artifact_error = None
+          if validated_path.is_file():
+              try:
+                  artifact = json.loads(validated_path.read_text(encoding="utf-8"))
+              except Exception as exc:  # fail-honest receipt; never hide malformed output
+                  artifact_error = f"invalid_validated_artifact:{type(exc).__name__}"
+          else:
+              artifact_error = "validated_artifact_missing"
+
+          results = artifact.get("results", []) if isinstance(artifact, dict) else []
+          independent = (
+              artifact.get("independentFindings", [])
+              if isinstance(artifact, dict)
+              else []
+          )
+          summary = artifact.get("reviewSummary", {}) if isinstance(artifact, dict) else {}
+          if not isinstance(results, list):
+              results = []
+              artifact_error = artifact_error or "results_not_array"
+          if not isinstance(independent, list):
+              independent = []
+              artifact_error = artifact_error or "independent_findings_not_array"
+          if not isinstance(summary, dict):
+              summary = {}
+              artifact_error = artifact_error or "review_summary_not_object"
+
+          approved_candidates = sum(
+              1 for item in results
+              if isinstance(item, dict) and item.get("status") == "approved"
+          )
+          independent_findings = len(independent)
+          review_body = summary.get("body") if isinstance(summary.get("body"), str) else ""
+          declared_result = summary.get("result")
+          artifact_version = artifact.get("version") if isinstance(artifact, dict) else None
+
+          semantic_result = "not_proven"
+          not_proven_reason = artifact_error
+          if action_outcome != "success":
+              not_proven_reason = f"action_outcome:{action_outcome}"
+          elif artifact_error:
+              pass
+          elif declared_result in {"clean", "findings", "not_proven", "stale"}:
+              semantic_result = declared_result
+              if declared_result == "not_proven":
+                  raw_reason = summary.get("notProvenReason")
+                  not_proven_reason = (
+                      raw_reason if isinstance(raw_reason, str) and raw_reason.strip()
+                      else "validator_reported_not_proven"
+                  )
+              else:
+                  not_proven_reason = None
+          elif approved_candidates + independent_findings > 0:
+              # Legacy v1 output can still prove that findings were selected.
+              semantic_result = "findings"
+              not_proven_reason = None
+          else:
+              # The legacy validator cannot prove it independently inspected a
+              # zero-candidate PR or submitted a useful clean review body.
+              not_proven_reason = "legacy_validator_cannot_prove_independent_clean_review"
+
+          receipt = {
+              "check": "droid-live-run",
+              "schema_version": "2",
+              "event": "pull_request",
+              "verdict": "warn",
+              "semantic_result": semantic_result,
+              "not_proven_reason": not_proven_reason,
+              "workflow": "Droid PR Review",
+              "model": "custom:MiniMax-M3-0",
+              "review_depth": "deep",
+              "runner_labels": [
+                  "self-hosted", "linux", "x64", "em-ci", "trusted-pr",
+                  "review-nano", "droid-review"
+              ],
+              "action": "EffortlessMetrics/droid-action-safe",
+              "action_outcome": action_outcome,
+              "validated_artifact_present": artifact is not None,
+              "validated_artifact_version": artifact_version,
+              "candidate_count": len(results),
+              "validated_count": len(results),
+              "approved_candidate_count": approved_candidates,
+              "independent_finding_count": independent_findings,
+              "review_body_declared": bool(review_body.strip()),
+              "review_posted": None,
+              "publication_verified": False,
+              "automatic_full_review_on_synchronize": False,
+              "semantic_review_cancel_in_progress": False,
+              "debug_artifacts_uploaded": False,
+              "anthropic_env_cleared": True,
           }
-          JSON
+          receipt_path.write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
       - name: Upload Droid live-run receipt
         if: always()
         uses: ./.github/actions/upload-receipt
