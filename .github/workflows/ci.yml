@@ -19,7 +19,7 @@ on:
   workflow_dispatch: {}
 
 # Cancel in-progress runs for PR events on new pushes; let push/merge_group runs complete.
-# The preflight SHA-staleness check provides additional skip logic for superseded SHAs.
+# The preflight SHA-staleness check only skips superseded trusted push SHAs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
@@ -97,7 +97,7 @@ jobs:
             fi
           fi
 
-  # ── Preflight: skip superseded SHAs to save cost ─────────────────────
+  # ── Preflight: skip superseded trusted push SHAs ─────────────────────
   preflight-latest-check:
     name: Preflight — is this SHA latest?
     runs-on: ubuntu-24.04
@@ -107,20 +107,46 @@ jobs:
     outputs:
       is_latest: ${{ steps.check.outputs.is_latest }}
     steps:
-      - name: Check if this SHA is latest on the ref
+      - name: Check whether this trusted push SHA is latest
         id: check
         env:
+          EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-          CURRENT: ${{ github.event.pull_request.head.sha || github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          CURRENT: ${{ github.sha }}
         run: |
-          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" | awk '{print $1}')
-          if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request)
+              echo "is_latest=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Pull request run — freshness is handled by PR concurrency; never resolving an attacker-controlled branch name in the base repository"
+              exit 0
+              ;;
+            merge_group|workflow_dispatch|schedule)
+              echo "is_latest=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::$EVENT_NAME run — always passing preflight"
+              exit 0
+              ;;
+            push)
+              ;;
+            *)
+              echo "is_latest=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::Unknown event '$EVENT_NAME'; running CI fail-safe"
+              exit 0
+              ;;
+          esac
+
+          LATEST="$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}' || true)"
+          if [ -z "$LATEST" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::This SHA ($CURRENT) is latest on $BRANCH — running full CI"
+            echo "::warning::Could not resolve refs/heads/$BRANCH; running CI fail-safe"
+          elif [ "$LATEST" = "$CURRENT" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::This push SHA ($CURRENT) is latest on $BRANCH — running full CI"
           else
             echo "is_latest=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Superseded by $LATEST — skipping remaining jobs to save cost"
+            echo "::notice::Push SHA $CURRENT was superseded by $LATEST — skipping remaining jobs to save cost"
           fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
@@ -381,9 +407,10 @@ jobs:
             gates: docs_build non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
     permissions:
       contents: read
-    # Run on every PR push and on push to main/master
-    # Earlier gating > label-gated gating (see #4675)
-    # Frequent commits will queue; preflight skips superseded SHAs.
+    # Run on every PR push and on push to main/master.
+    # Earlier gating > label-gated gating (see #4675).
+    # Frequent PR commits are handled by concurrency; preflight only skips
+    # superseded trusted push SHAs.
     steps:
       - uses: actions/checkout@v7
         with:
