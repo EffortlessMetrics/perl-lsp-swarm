@@ -127,6 +127,38 @@ else
     fail "missing provider facts should be NOT_PROVEN — exit=$code output=$out"
 fi
 
+# Malformed numeric collector facts must also reach callers as structured
+# NOT_PROVEN output. Copy the wrapper beside a fake core so this exercises the
+# production command-substitution boundary rather than source-text assertions.
+TMP_NUMERIC="$(mktemp -d)"
+cp "$SCRIPT" "$TMP_NUMERIC/check-pr-review-convergence"
+cat >"$TMP_NUMERIC/check-pr-review-convergence-core" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "is_draft": false,
+  "headRefOid": "fixture-head",
+  "pending_reviewers": [],
+  "review_decision": "",
+  "current_change_requests": [],
+  "unresolved_active": "not-a-number",
+  "unresolved_outdated": 0,
+  "unresolved_total": 0,
+  "resolved_without_disposition": 0,
+  "human_review_count": 0,
+  "dismissed_human_review_count": 0
+}
+JSON
+EOF
+numeric_exit=0
+numeric_output="$(bash "$TMP_NUMERIC/check-pr-review-convergence" 9999 test-owner/test-repo 2>/dev/null)" || numeric_exit=$?
+if [[ "$numeric_exit" -eq 2 ]] && jq -e '.formal_review.classification == "NOT_PROVEN" and .formal_review.reason == "invalid_numeric_review_fact"' >/dev/null <<<"$(json_blob "$numeric_output")"; then
+    pass "malformed numeric fact reports structured NOT_PROVEN"
+else
+    fail "malformed numeric fact should preserve structured verdict — exit=$numeric_exit output=$numeric_output"
+fi
+rm -rf "$TMP_NUMERIC"
+
 # The state helper projects native facts, not FIXED_HEAD/VERIFIED_HEAD stages.
 run_state_case "current-change-request-blocks"
 if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '.state == "FINDINGS_OPEN" and .exact_head_review_required == false' >/dev/null <<<"$STATE_STDOUT"; then
