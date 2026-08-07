@@ -1302,11 +1302,14 @@ pub struct WorkspaceIndex {
     ///
     /// Lock order: always acquire `symbols` before `search_index`.
     search_index: Arc<RwLock<HashMap<String, Vec<WorkspaceSymbol>>>>,
-    /// Global reference index (symbol name -> locations across all files)
+    /// Global reference index (symbol name -> references across all files)
     ///
     /// Aggregated from per-file `FileIndex::references` during `index_file()`.
     /// Provides O(1) lookup for `find_references()` instead of iterating all files.
-    global_references: Arc<RwLock<HashMap<String, Vec<Location>>>>,
+    /// Stores full `SymbolReference` (including `kind`) so that `count_usages`
+    /// and `find_references` can both read from this single authoritative store
+    /// without consulting separate data maps (#5967).
+    global_references: Arc<RwLock<HashMap<String, Vec<SymbolReference>>>>,
     /// Write-through semantic fact shards keyed by normalized URI.
     fact_shards: Arc<RwLock<HashMap<String, FileFactShard>>>,
     /// Semantic cross-file reference index (typed occurrences by name and entity).
@@ -1689,16 +1692,16 @@ impl WorkspaceIndex {
 
         for symbol_name in names_to_query {
             if let Some(refs) = global_refs.get(symbol_name) {
-                for location in refs {
+                for sym_ref in refs {
                     let key = (
-                        location.uri.clone(),
-                        location.range.start.line,
-                        location.range.start.column,
-                        location.range.end.line,
-                        location.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(location.clone());
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -1950,14 +1953,14 @@ impl WorkspaceIndex {
     /// Retains only entries whose URI does not match `file_uri`.
     /// Empty keys are removed to avoid unbounded map growth.
     fn remove_file_global_refs(
-        global_refs: &mut HashMap<String, Vec<Location>>,
+        global_refs: &mut HashMap<String, Vec<SymbolReference>>,
         file_index: &FileIndex,
         file_uri: &str,
     ) {
         for name in file_index.references.keys() {
-            if let Some(locs) = global_refs.get_mut(name) {
-                locs.retain(|loc| loc.uri != file_uri);
-                if locs.is_empty() {
+            if let Some(refs) = global_refs.get_mut(name) {
+                refs.retain(|r| r.uri != file_uri);
+                if refs.is_empty() {
                     global_refs.remove(name);
                 }
             }
@@ -2347,7 +2350,7 @@ impl WorkspaceIndex {
                 for (name, refs) in &file_index.references {
                     let entry = global_refs.entry(name.clone()).or_default();
                     for reference in refs {
-                        entry.push(Location { uri: reference.uri.clone(), range: reference.range });
+                        entry.push(reference.clone());
                     }
                 }
             }
@@ -2770,10 +2773,7 @@ impl WorkspaceIndex {
                     for (name, refs) in &fi.references {
                         let entry = global_refs.entry(name.clone()).or_default();
                         for reference in refs {
-                            entry.push(Location {
-                                uri: reference.uri.clone(),
-                                range: reference.range,
-                            });
+                            entry.push(reference.clone());
                         }
                     }
                 }
@@ -2848,16 +2848,16 @@ impl WorkspaceIndex {
 
         // O(1) lookup for exact symbol name
         if let Some(refs) = global_refs.get(symbol_name) {
-            for loc in refs {
+            for sym_ref in refs {
                 let key = (
-                    loc.uri.clone(),
-                    loc.range.start.line,
-                    loc.range.start.column,
-                    loc.range.end.line,
-                    loc.range.end.column,
+                    sym_ref.uri.clone(),
+                    sym_ref.range.start.line,
+                    sym_ref.range.start.column,
+                    sym_ref.range.end.line,
+                    sym_ref.range.end.column,
                 );
                 if seen.insert(key) {
-                    locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                    locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                 }
             }
         }
@@ -2866,16 +2866,16 @@ impl WorkspaceIndex {
         if let Some(idx) = symbol_name.rfind("::") {
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
-                for loc in refs {
+                for sym_ref in refs {
                     let key = (
-                        loc.uri.clone(),
-                        loc.range.start.line,
-                        loc.range.start.column,
-                        loc.range.end.line,
-                        loc.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -2887,16 +2887,16 @@ impl WorkspaceIndex {
                     continue;
                 }
 
-                for loc in refs {
+                for sym_ref in refs {
                     let key = (
-                        loc.uri.clone(),
-                        loc.range.start.line,
-                        loc.range.start.column,
-                        loc.range.end.line,
-                        loc.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -2945,12 +2945,31 @@ impl WorkspaceIndex {
     /// Like `find_references` but excludes `ReferenceKind::Definition` entries,
     /// returning only actual usage sites. This is used by code lens to show
     /// "N references" where N means call sites, not the definition itself.
+    ///
+    /// Reads from the same `global_references` store as `find_references` so that
+    /// both methods always report consistent results even under concurrent indexing
+    /// (#5967).
     pub fn count_usages(&self, symbol_name: &str) -> usize {
-        let files = self.files.read();
+        let global_refs = self.global_references.read();
         let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
 
-        for (_uri_key, file_index) in files.iter() {
-            if let Some(refs) = file_index.references.get(symbol_name) {
+        // Collect exact symbol name hits, excluding definition entries
+        if let Some(refs) = global_refs.get(symbol_name) {
+            for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                seen.insert((
+                    r.uri.clone(),
+                    r.range.start.line,
+                    r.range.start.column,
+                    r.range.end.line,
+                    r.range.end.column,
+                ));
+            }
+        }
+
+        if let Some(idx) = symbol_name.rfind("::") {
+            // Qualified symbol: also collect bare-name hits
+            let bare_name = &symbol_name[idx + 2..];
+            if let Some(refs) = global_refs.get(bare_name) {
                 for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
                     seen.insert((
                         r.uri.clone(),
@@ -2961,35 +2980,20 @@ impl WorkspaceIndex {
                     ));
                 }
             }
-
-            if let Some(idx) = symbol_name.rfind("::") {
-                let bare_name = &symbol_name[idx + 2..];
-                if let Some(refs) = file_index.references.get(bare_name) {
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
+        } else {
+            // Bare symbol: also collect qualified variants (e.g. `Pkg::foo` when querying `foo`)
+            for (name, refs) in global_refs.iter() {
+                if !Self::is_qualified_variant_of(name, symbol_name) {
+                    continue;
                 }
-            } else {
-                for (name, refs) in &file_index.references {
-                    if !Self::is_qualified_variant_of(name, symbol_name) {
-                        continue;
-                    }
-
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
+                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                    seen.insert((
+                        r.uri.clone(),
+                        r.range.start.line,
+                        r.range.start.column,
+                        r.range.end.line,
+                        r.range.end.column,
+                    ));
                 }
             }
         }
@@ -3713,10 +3717,10 @@ impl WorkspaceIndex {
 
         // --- global references map ---
         let mut global_refs_bytes: usize = 0;
-        for (sym_name, locs) in global_refs_guard.iter() {
+        for (sym_name, refs) in global_refs_guard.iter() {
             global_refs_bytes += sym_name.len();
-            for loc in locs {
-                global_refs_bytes += loc.uri.len() + size_of::<Location>();
+            for r in refs {
+                global_refs_bytes += r.uri.len() + size_of::<SymbolReference>();
             }
         }
 
@@ -9128,6 +9132,65 @@ Utils::process_data();
             "find_references should not return duplicates for qualified calls, got {} non-def refs",
             non_def_refs.len()
         );
+    }
+
+    /// Parity test for #5967: count_usages and find_references must consult the same
+    /// data store so that rename/safe-delete never reports "0 references" while
+    /// find_references returns populated results.
+    ///
+    /// Acceptance criterion: count_usages(sym) == find_references(sym).len() - definition_count
+    /// for the same symbol, where definition_count is the number of locations that
+    /// coincide with the definition site.
+    #[test]
+    fn test_count_usages_parity_with_find_references() {
+        let index = WorkspaceIndex::new();
+        let lib_uri = "file:///parity/lib/Parity.pm";
+        let caller_uri = "file:///parity/bin/main.pl";
+
+        must(index.index_file(
+            must(url::Url::parse(lib_uri)),
+            "package Parity;\nsub greet { return 1; }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(url::Url::parse(caller_uri)),
+            "use Parity;\nParity::greet();\nParity::greet();\n".to_string(),
+        ));
+
+        let usages = index.count_usages("Parity::greet");
+        let all_refs = index.find_references("Parity::greet");
+
+        // find_references includes the definition site; count_usages excludes it.
+        // Both read from the same global_references store, so they must agree on
+        // the total reference count modulo the definition filter.
+        assert!(
+            !all_refs.is_empty(),
+            "find_references should return at least the definition site"
+        );
+        assert_eq!(
+            usages, 2,
+            "count_usages should return the two call sites (not the definition), got {usages}"
+        );
+        // The total references reported by find_references must be at least usages
+        // (it includes definitions too).
+        assert!(
+            all_refs.len() >= usages,
+            "find_references ({}) must be >= count_usages ({usages})",
+            all_refs.len()
+        );
+        // Both methods now read the same data store, so their combined view must
+        // be self-consistent: usages + definition_entries == all_refs.len().
+        // We verify this by counting definition-site locations in find_references.
+        let def_locs = index.find_definition("Parity::greet");
+        if let Some(def_loc) = def_locs {
+            let def_count = all_refs.iter().filter(|loc| **loc == def_loc).count();
+            assert_eq!(
+                usages + def_count,
+                all_refs.len(),
+                "count_usages ({usages}) + definition entries ({def_count}) \
+                 must equal find_references total ({})",
+                all_refs.len()
+            );
+        }
     }
 
     #[test]
