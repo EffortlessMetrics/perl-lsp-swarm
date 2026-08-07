@@ -1872,21 +1872,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "perl-refactoring"
-version = "0.17.0"
-dependencies = [
- "perl-module",
- "perl-parser-core",
- "perl-tdd-support",
- "perl-workspace",
- "regex",
- "serde",
- "serial_test",
- "tempfile",
- "url",
-]
-
-[[package]]
 name = "perl-regex"
 version = "0.17.0"
 dependencies = [
