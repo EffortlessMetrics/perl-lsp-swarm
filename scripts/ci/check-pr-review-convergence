@@ -60,7 +60,13 @@ if [[ -z "$CORE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
 fi
 
 get_num() {
-    jq -r "$1 // 0" <<<"$CORE_JSON"
+    local value
+    value="$(jq -r "$1 // 0" <<<"$CORE_JSON")" || not_proven "invalid_numeric_review_fact"
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+    not_proven "invalid_numeric_review_fact"
 }
 
 IS_DRAFT="$(jq -r '.is_draft // false' <<<"$CORE_JSON")"
