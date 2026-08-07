@@ -475,8 +475,7 @@ jobs:
 
             MANIFEST_BACKUP="$(mktemp)"
             cp "$MANIFEST_PATH" "$MANIFEST_BACKUP"
-            # shellcheck disable=SC2064
-            trap "cp '$MANIFEST_BACKUP' '$MANIFEST_PATH'; rm -f '$MANIFEST_BACKUP'" EXIT
+            trap 'cp "$MANIFEST_BACKUP" "$MANIFEST_PATH"; rm -f "$MANIFEST_BACKUP"' EXIT
 
             printf 'Stripping [dev-dependencies] from %s before publish\n' "$MANIFEST_REL"
             python3 "$STRIP_SCRIPT" "$MANIFEST_PATH"
