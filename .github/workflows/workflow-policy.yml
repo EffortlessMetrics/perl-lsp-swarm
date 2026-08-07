@@ -45,8 +45,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: write
-      issues: write
+      contents: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -112,22 +111,12 @@ jobs:
           npm run typecheck
           npm run lint
           npm test -- --runInBand src/test/testAdapter.test.ts
-      - name: Create blobs and post receipt
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PY'
-          import base64, json, os, urllib.request
-          from pathlib import Path
-          repo = os.environ['GITHUB_REPOSITORY']; token = os.environ['GITHUB_TOKEN']
-          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
-          paths = ['vscode-extension/package.json', 'vscode-extension/src/testAdapter.ts']
-          blobs = {}
-          for relative in paths:
-              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/git/blobs', data=json.dumps({'content': base64.b64encode(Path(relative).read_bytes()).decode(), 'encoding': 'base64'}).encode(), method='POST', headers=headers)
-              with urllib.request.urlopen(req) as response: blobs[relative] = json.load(response)['sha']
-          receipt = {'paths': blobs, 'source_sha': os.environ['TESTED_SHA']}
-          body = '<!-- security-6010-blob -->\nFocused format, typecheck, lint, and Jest proof passed.\n```json\n' + json.dumps(receipt, indent=2, sort_keys=True) + '\n```'
-          req = urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/6010/comments', data=json.dumps({'body': body}).encode(), method='POST', headers=headers)
-          with urllib.request.urlopen(req): pass
-          PY
+      - name: Upload verified Test Explorer files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-6010-product-${{ github.run_id }}
+          path: |
+            vscode-extension/package.json
+            vscode-extension/src/testAdapter.ts
+          if-no-files-found: error
+          retention-days: 3
