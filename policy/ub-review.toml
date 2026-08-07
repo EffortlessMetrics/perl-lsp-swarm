@@ -1,22 +1,15 @@
 # ub-review advisory config for perl-lsp-swarm.
 #
-# This file configures the ub-review evidence packet for this repo.
-# It is passed to the action via `config: policy/ub-review.toml`.
-#
-# Status: advisory — see docs/ci/review-gates.md.
-#
-# PR 1 (this file): minimal advisory scaffold.
-# PR 2: add runner-size profiles and tune sensor weights for Rust LSP code.
-# PR 3: add unsafe-review sensor policy and per-tool thresholds.
-#
-# See https://github.com/EffortlessMetrics/ub-review for full config reference.
+# Status: advisory. The packet is useful evidence, but analysis completion,
+# publication, and gate truth remain separate and are not merge authority.
+# See #3653 and #5778.
 
-# Use the bun-ub profile as the closest available preset for Rust repos.
-# A perl-lsp-specific profile is tracked for PR 2.
-# TODO(PR 2): Replace with a perl-lsp profile that reflects the actual
-#             unsafe surface (perl-parser FFI, tree-sitter bindings, etc.)
+# Use the closest available Rust/native-boundary preset while the dedicated
+# perl-lsp profile is still pending. Select the proof-capable budget profile so
+# configured focused proof is either executed or reported unavailable rather
+# than silently advertised with zero leases.
 review_profile = "bun-ub-v0"
-profile = "gh-runner"
+profile = "gh-runner-proof"
 
 [repo]
 kind = "rust"
@@ -24,16 +17,12 @@ base = "origin/main"
 head = "HEAD"
 
 [review]
-# Advisory: post a grouped PR review on opened/ready_for_review; skip on
-# synchronize to avoid review spam on push storms.
 posting_engine = "review"
 ban_standalone_approval = false
 
-# Review body posture. Promoted from "suppress" to "post_substantive" so
-# actionable findings (severity medium+ or confidence medium-high+) reach
-# the PR; pure lane-status boilerplate stays suppressed. Under "suppress"
-# nothing posts, which structurally zeroes the acted-on-comment metric
-# tracked by the calibration artifact. See ub-review #717 / #718.
+# Useful summary findings are reviewer value even when no safe inline location
+# exists. Publication failure must remain visible to the downstream advisory
+# workflow; it must not be reinterpreted as a clean review.
 [review_body]
 include_successful_lane_table = false
 include_provider_table = "on_failure"
@@ -41,10 +30,9 @@ include_sensor_table = "on_failure"
 include_execution_summary = "none"
 summary_only_body = "post_substantive"
 
-# Core sensors: best-effort, advisory, all non-blocking.
-# Required = false means a missing sensor does not fail the gate.
-# TODO(PR 3): Review unsafe-review and ripr thresholds for perl-lsp's
-#             actual unsafe surface area.
+# Core sensors are best-effort and advisory. The bundled RIPR copy is disabled:
+# the repository already has a dedicated required ripr+ New Gap Gate, and the
+# calibration in #3653 found the bundled sensor both broken and duplicative.
 [tools.tokmd]
 enabled = true
 required = false
@@ -54,7 +42,7 @@ enabled = true
 required = false
 
 [tools.ripr]
-enabled = true
+enabled = false
 required = false
 
 [tools.unsafe-review]
@@ -69,11 +57,8 @@ required = false
 enabled = true
 required = false
 
-# Heavy witnesses are off for PR 1; enable via allow-heavy in the workflow
-# when the advisory phase graduates to a proof-required mode.
 [tools.coverage]
 enabled = false
-
 
 # perl-lsp-v0 lanes: tuned to the actual risk surfaces of this repo.
 [[lanes]]
@@ -132,18 +117,14 @@ enabled = true
 env = "OPENCODE"
 role = "fallback"
 
-# Proof requirements: focused build for the perl-core-test-runner crate.
-# This enables the proof broker to produce receipts that route to lanes.
+# Focused proof requirement. This only becomes a meaningful claim when the
+# selected profile grants a focused-build lease; gh-runner-proof does so.
 [[proof.required]]
 command = "cargo check --package perl-core-test-runner --locked"
 reason = "Focused build check for perl-core-test-runner crate."
 cost = "focused-build"
 timeout_sec = 180
 
-
-# Custom profile with non-zero focused-build leases for proof execution.
-# This enables the proof broker to execute model-suggested focused-build
-# requests and produce receipts that route to lanes in multi-turn continuation.
 [profiles.gh-runner-proof]
 extends = "gh-runner"
 
