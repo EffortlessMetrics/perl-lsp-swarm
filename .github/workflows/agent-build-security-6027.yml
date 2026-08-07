@@ -6,7 +6,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -18,6 +18,7 @@ jobs:
         with:
           ref: agent/security-ux-gate-6027
           fetch-depth: 0
+          persist-credentials: false
       - name: Apply authority split
         run: |
           python3 - <<'PY'
@@ -30,15 +31,7 @@ jobs:
           text = text.replace('actions/checkout@v7', 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7')
           text = text.replace('actions/upload-artifact@v7', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1')
           text = re.sub(r'\n\s+token: \$\{\{ secrets\.GITHUB_TOKEN \}\}', '', text)
-          lines = text.splitlines()
-          out = []
-          for index, line in enumerate(lines):
-              out.append(line)
-              if 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' in line:
-                  # Existing checkout steps all have a with block. Insert before the next step if absent.
-                  pass
-          text = '\n'.join(out) + '\n'
-          text = re.sub(r'(uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n\s+with:\n(?:\s+[^\n]+\n)*?)(?=\s+- name:|\s+- uses:|\n\s{2}[A-Za-z0-9_-]+:)', lambda m: m.group(1) if 'persist-credentials:' in m.group(1) else m.group(1) + '          persist-credentials: false\n', text)
+          text = text.replace('          ref: ${{ github.event_name == \'pull_request\' && github.event.pull_request.head.sha || github.ref_name }}\n', '          ref: ${{ github.event_name == \'pull_request\' && github.event.pull_request.head.sha || github.ref_name }}\n          persist-credentials: false\n')
           text = text.replace('--sha "${{ github.sha }}"', '--sha "$TESTED_SHA"')
           text = text.replace('ux-regression-gate-receipt-${{ github.sha }}', 'ux-regression-gate-receipt-${{ env.TESTED_SHA }}')
           pattern = re.compile(r'\n      - name: Upload UX regression gate test results to Codecov\n.*?(?=\n      - name: Parse and summarize UX test results)', re.S)
@@ -66,13 +59,17 @@ jobs:
           ! grep -Eq '(pull-requests|statuses): write' "$file"
           ! grep -q 'actions/github-script' "$file"
           ! grep -q 'secrets.CODECOV_TOKEN' "$file"
+          ! grep -q 'token:.*GITHUB_TOKEN' "$file"
+          ! grep -q 'actions/checkout@v7' "$file"
+          ! grep -q 'actions/upload-artifact@v7' "$file"
           grep -q 'TESTED_SHA:' "$file"
+          grep -q -- '--sha "$TESTED_SHA"' "$file"
+          test "$(grep -c 'persist-credentials: false' "$file")" -ge 2
           git diff --check
-      - name: Commit product-only result
-        run: |
-          rm .github/workflows/agent-build-security-6027.yml .agent-trigger-6027
-          git add .github/workflows/agent-build-security-6027.yml .agent-trigger-6027 .github/workflows/ux-regression-gate.yml
-          git config user.name EffortlessSteven
-          git config user.email git@effortlesssteven.com
-          git commit -m 'security(ci): isolate UX gate execution authority (#6027)'
-          git push origin HEAD:agent/security-ux-gate-6027
+      - name: Upload verified product file
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-6027-product-${{ github.run_id }}
+          path: .github/workflows/ux-regression-gate.yml
+          if-no-files-found: error
+          retention-days: 3
