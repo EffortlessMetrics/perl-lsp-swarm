@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/droid-review.yml"
-STACKED_DROID_SHA = "b324e7b416fddb19581831ad3b043c0ee953d526"
+STACKED_DROID_SHA = "6e879fe5223b0ddf06eb7421cfabf13f475a568c"
 
 
 def workflow_text() -> str:
@@ -61,6 +61,7 @@ def test_receipt_uses_verified_publication_and_semantic_counts() -> None:
         '"independent_finding_count": as_int("INDEPENDENT_FINDING_COUNT")'
         in text
     )
+    assert '"summary_finding_count": as_int("SUMMARY_FINDING_COUNT")' in text
     assert '"review_body_submitted": as_bool("REVIEW_BODY_SUBMITTED")' in text
     assert '"publication_verified": as_bool("REVIEW_BODY_SUBMITTED")' in text
     assert '"not_proven_reason": os.environ.get("NOT_PROVEN_REASON") or None' in text
