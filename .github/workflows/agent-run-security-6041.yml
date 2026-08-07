@@ -1,0 +1,142 @@
+name: Agent run security 6041
+
+on:
+  push:
+    branches:
+      - agent/security-workflow-ratchet-6041
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: agent/security-workflow-ratchet-6041
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Finalize candidate and run scanner proof
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/ci/test_workflow_security_ratchet.py')
+          text = path.read_text(encoding='utf-8')
+          if 'import sys\n' not in text:
+              text = text.replace('import os\n', 'import os\nimport sys\n', 1)
+          text = text.replace(
+              'ratchet = importlib.util.module_from_spec(SPEC)\nSPEC.loader.exec_module(ratchet)',
+              'ratchet = importlib.util.module_from_spec(SPEC)\nsys.modules[SPEC.name] = ratchet\nSPEC.loader.exec_module(ratchet)',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          rm \
+            .github/workflows/agent-build-security-6041.yml \
+            .github/workflows/agent-run-security-6041.yml \
+            .agent-trigger-6041
+
+          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py check \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --report target/receipts/workflow-security-bootstrap.json
+          cp .ci/workflow-security-baseline.json "$RUNNER_TEMP/workflow-security-baseline.json"
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
+          cmp "$RUNNER_TEMP/workflow-security-baseline.json" .ci/workflow-security-baseline.json
+          git diff --check
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Run repository workflow contracts
+        run: |
+          cargo run -p xtask --locked -- workflow-policy-lint
+          cargo run -p xtask --locked -- workflow-trigger-lint
+
+      - name: Create immutable blobs and post receipt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GITHUB_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          paths = [
+              '.github/workflows/workflow-security-ratchet.yml',
+              '.ci/workflow-security-baseline.json',
+              'scripts/ci/workflow_security_ratchet.py',
+              'scripts/ci/test_workflow_security_ratchet.py',
+          ]
+          blobs = {}
+          for relative in paths:
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/git/blobs',
+                  data=json.dumps({
+                      'content': base64.b64encode(Path(relative).read_bytes()).decode('ascii'),
+                      'encoding': 'base64',
+                  }).encode('utf-8'),
+                  method='POST',
+                  headers=headers,
+              )
+              with urllib.request.urlopen(request) as response:
+                  blobs[relative] = json.load(response)['sha']
+          receipt = {'paths': blobs, 'source_sha': os.environ['GITHUB_SHA']}
+          comment = '<!-- security-6041-blob -->\nScanner unit tests, deterministic baseline regeneration, policy lint, and trigger lint passed. Verified product blobs:\n```json\n' + json.dumps(receipt, indent=2, sort_keys=True) + '\n```'
+          request = urllib.request.Request(
+              f'https://api.github.com/repos/{repo}/issues/6048/comments',
+              data=json.dumps({'body': comment}).encode('utf-8'),
+              method='POST',
+              headers=headers,
+          )
+          with urllib.request.urlopen(request):
+              pass
+          print(json.dumps(receipt, indent=2, sort_keys=True))
+          PY
+
+      - name: Post failure receipt
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          body = '<!-- security-6041-failure -->\nWorkflow security ratchet builder failed. Inspect run: ' + os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID']
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/6048/comments",
+              data=json.dumps({'body': body}).encode('utf-8'),
+              method='POST',
+              headers={
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          with urllib.request.urlopen(request):
+              pass
+          PY
