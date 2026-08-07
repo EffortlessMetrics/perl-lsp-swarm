@@ -1,13 +1,8 @@
 # PR Plan
 #
-# Advisory CI economics forecast. Runs on every PR. Reads:
-#   policy/ci-budget.toml
-#   policy/ci-lanes.toml
-#   policy/ci-risk-packs.toml
-# Emits target/ci/ci-plan.json and a step summary. Does not block merges.
-#
-# See docs/ci/perl-lsp-rollout-plan.md (PR 04). Replaced by `xtask ci plan`
-# in PR 12.
+# Advisory CI economics forecast. Runs on every non-draft PR. The planner and
+# policy are always loaded from the exact base SHA; the PR head is imported only
+# as a Git object for diffing and is never executed.
 
 name: PR Plan
 
@@ -15,10 +10,9 @@ on:
   pull_request:
     branches: [master, main]
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
-  workflow_dispatch:
 
 concurrency:
-  group: pr-plan-${{ github.event.pull_request.number || github.ref }}
+  group: pr-plan-${{ github.event.pull_request.number }}
   # Only cancel on synchronize so label add/remove events re-run the plan
   # without cancelling an in-progress run. Required by workflow-policy-lint
   # rule LABEL_EVENT_CANCELS_PR_RUN.
@@ -37,24 +31,49 @@ jobs:
     timeout-minutes: 5
     if: github.event.pull_request.draft != true
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout trusted planner and policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout exact PR head as inert diff data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .pr-plan-head
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Import and verify PR head object
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags .pr-plan-head/.git HEAD
+          resolved_head="$(git rev-parse FETCH_HEAD)"
+          if [ "$resolved_head" != "$HEAD_SHA" ]; then
+            printf '::error::Fetched PR head %s does not match event head %s\n' "$resolved_head" "$HEAD_SHA"
+            exit 1
+          fi
+          git update-ref refs/remotes/pr-plan/head "$resolved_head"
+          rm -rf .pr-plan-head
 
       # System python3 on the self-hosted runner (Ubuntu ships >=3.11 with
-      # tomllib). actions/setup-python has no tool-cache build for this
-      # runner's OS, and pr_plan.py is stdlib-only, so no setup needed.
-      - name: Compute PR Plan
+      # tomllib). pr_plan.py is stdlib-only, so no setup action is required.
+      - name: Compute PR Plan from trusted authority
         # continue-on-error so the artifact upload step still runs even when
         # the budget guard returns exit 2 (over hard ceiling, no override).
         continue-on-error: true
         id: plan
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
+          set -euo pipefail
           mkdir -p target/ci
           python3 scripts/ci/pr_plan.py \
             --base "$BASE_SHA" \
@@ -69,7 +88,7 @@ jobs:
 
       - name: Upload ci-plan.json
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-plan
           path: target/ci/ci-plan.json
@@ -78,12 +97,9 @@ jobs:
 
       - name: Budget guard (hard ceiling)
         # Re-surface a non-zero exit from the planner so over-ceiling PRs that
-        # don't have a `full-ci` or `ci-budget-override` label visibly fail.
-        # Sub-125-LEM PRs and acknowledged over-ceiling PRs pass.
+        # do not have a `full-ci` or `ci-budget-override` label visibly fail.
+        # The PR Plan workflow is advisory and not a required merge check.
         if: always() && steps.plan.outcome == 'failure'
         run: |
           echo "::error::PR Plan returned a non-success exit code; see the step summary."
-          # Fail this job so the budget guard is visible. The PR Plan workflow
-          # is not a required check, so this never blocks merges — it only
-          # surfaces budget overruns to the contributor.
           exit 1
