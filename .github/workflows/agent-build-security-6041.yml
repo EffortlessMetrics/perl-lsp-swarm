@@ -1,84 +1,54 @@
 name: Agent build security 6041
 
 on:
-  push:
-    branches:
-      - agent/security-workflow-ratchet-6041
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'agent/security-workflow-ratchet-6041'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout exact branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: agent/security-workflow-ratchet-6041
           fetch-depth: 0
-
-      - name: Finalize test import seam and remove helper from candidate scan
+      - name: Finalize and test scanner
         run: |
           python3 - <<'PY'
           from pathlib import Path
           path = Path('scripts/ci/test_workflow_security_ratchet.py')
           text = path.read_text(encoding='utf-8')
-          text = text.replace('import os\n', 'import os\nimport sys\n', 1)
-          text = text.replace(
-              'ratchet = importlib.util.module_from_spec(SPEC)\nSPEC.loader.exec_module(ratchet)',
-              'ratchet = importlib.util.module_from_spec(SPEC)\nsys.modules[SPEC.name] = ratchet\nSPEC.loader.exec_module(ratchet)',
-              1,
-          )
+          if 'import sys\n' not in text:
+              text = text.replace('import os\n', 'import os\nimport sys\n', 1)
+          text = text.replace('ratchet = importlib.util.module_from_spec(SPEC)\nSPEC.loader.exec_module(ratchet)', 'ratchet = importlib.util.module_from_spec(SPEC)\nsys.modules[SPEC.name] = ratchet\nSPEC.loader.exec_module(ratchet)')
           path.write_text(text, encoding='utf-8')
           PY
-          rm .github/workflows/agent-build-security-6041.yml
-
-      - name: Run stdlib unit suite
-        run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
-
-      - name: Generate deterministic current-main baseline
-        run: |
-          python3 scripts/ci/workflow_security_ratchet.py baseline \
-            --root . \
-            --output .ci/workflow-security-baseline.json
-          python3 scripts/ci/workflow_security_ratchet.py check \
-            --root . \
-            --baseline .ci/workflow-security-baseline.json \
-            --report target/receipts/workflow-security-bootstrap.json
-
-      - name: Verify deterministic regeneration
-        run: |
-          cp .ci/workflow-security-baseline.json "$RUNNER_TEMP/baseline-first.json"
-          python3 scripts/ci/workflow_security_ratchet.py baseline \
-            --root . \
-            --output .ci/workflow-security-baseline.json
-          cmp "$RUNNER_TEMP/baseline-first.json" .ci/workflow-security-baseline.json
+          rm .github/workflows/agent-build-security-6041.yml .agent-trigger-6041
+          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+          python3 scripts/ci/workflow_security_ratchet.py baseline --root . --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py check --root . --baseline .ci/workflow-security-baseline.json --report target/receipts/workflow-security-bootstrap.json
+          cp .ci/workflow-security-baseline.json "$RUNNER_TEMP/baseline.json"
+          python3 scripts/ci/workflow_security_ratchet.py baseline --root . --output .ci/workflow-security-baseline.json
+          cmp "$RUNNER_TEMP/baseline.json" .ci/workflow-security-baseline.json
           git diff --check
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
           toolchain: 1.95.0
-
-      - name: Run repository workflow contracts
+      - name: Run workflow contracts
         run: |
           cargo run -p xtask --locked -- workflow-policy-lint
           cargo run -p xtask --locked -- workflow-trigger-lint
-
-      - name: Commit product-only ratchet
-        env:
-          BRANCH: agent/security-workflow-ratchet-6041
+      - name: Commit product-only result
         run: |
-          set -euo pipefail
-          git add \
-            .github/workflows/agent-build-security-6041.yml \
-            .github/workflows/workflow-security-ratchet.yml \
-            .ci/workflow-security-baseline.json \
-            scripts/ci/workflow_security_ratchet.py \
-            scripts/ci/test_workflow_security_ratchet.py
+          git add .github/workflows/agent-build-security-6041.yml .agent-trigger-6041 .github/workflows/workflow-security-ratchet.yml .ci/workflow-security-baseline.json scripts/ci/workflow_security_ratchet.py scripts/ci/test_workflow_security_ratchet.py
           git config user.name EffortlessSteven
           git config user.email git@effortlesssteven.com
           git commit -m 'security(ci): add trusted-base workflow ratchet (#6041)'
-          git push origin "HEAD:${BRANCH}"
+          git push origin HEAD:agent/security-workflow-ratchet-6041
