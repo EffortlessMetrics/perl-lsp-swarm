@@ -1,0 +1,117 @@
+name: Agent fix security 6028
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'agent/security-nightly-pr-authority-6028'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: agent/security-nightly-pr-authority-6028
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Repair checkout block indentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/ci-nightly.yml')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          repaired = []
+          index = 0
+          count = 0
+
+          while index < len(lines):
+              line = lines[index]
+              if (
+                  line.strip() == 'with:'
+                  and repaired
+                  and 'uses: actions/checkout@' in repaired[-1]
+                  and not repaired[-1].lstrip().startswith('- uses:')
+              ):
+                  uses_indent = len(repaired[-1]) - len(repaired[-1].lstrip())
+                  with_indent = len(line) - len(line.lstrip())
+                  if with_indent != uses_indent + 2:
+                      raise SystemExit(
+                          f'unexpected checkout with indentation at line {index + 1}: '
+                          f'uses={uses_indent}, with={with_indent}'
+                      )
+                  repaired.append(' ' * uses_indent + 'with:')
+                  index += 1
+                  while index < len(lines):
+                      child = lines[index]
+                      child_indent = len(child) - len(child.lstrip())
+                      if child.strip() and child_indent <= with_indent:
+                          break
+                      repaired.append(child[2:] if child.strip() else child)
+                      index += 1
+                  count += 1
+                  continue
+
+              repaired.append(line)
+              index += 1
+
+          if count != 6:
+              raise SystemExit(f'expected 6 malformed checkout blocks, repaired {count}')
+
+          path.write_text('\n'.join(repaired) + '\n', encoding='utf-8')
+          PY
+
+          ruby -e 'require "yaml"; YAML.parse_file(ARGV.fetch(0))' .github/workflows/ci-nightly.yml
+          git diff --check
+
+      - name: Create immutable product blob
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          relative = '.github/workflows/ci-nightly.yml'
+          payload = {
+              'content': base64.b64encode(Path(relative).read_bytes()).decode('ascii'),
+              'encoding': 'base64',
+          }
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/git/blobs",
+              data=json.dumps(payload).encode('utf-8'),
+              method='POST',
+              headers={
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              sha = json.load(response)['sha']
+
+          output = Path('target/security-6028-fix-blobs.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(
+              json.dumps({'paths': {relative: sha}}, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(output.read_text(encoding='utf-8'))
+          PY
+
+      - name: Upload verified blob receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-6028-fix-blobs-${{ github.run_id }}
+          path: target/security-6028-fix-blobs.json
+          if-no-files-found: error
+          retention-days: 3
