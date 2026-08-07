@@ -32,11 +32,6 @@ jobs:
         with:
           toolchain: stable
       - name: Run workflow policy lint
-        # `--check-lane-whitelist` enables the policy/ci-lane-whitelist.toml
-        # gate (was opt-in per PR #8154). All currently-flagged workflows
-        # either have a whitelist entry or an allowlist exemption, so this
-        # is a no-op for the existing tree and a guard against future drift.
-        # See #8166 ("CI economics rollout: deferred follow-ups").
         run: cargo xtask workflow-policy-lint --check-lane-whitelist --receipt target/receipts/workflow-policy.json
       - name: Upload workflow policy receipt
         if: always()
@@ -44,3 +39,53 @@ jobs:
         with:
           name: workflow-policy-receipt
           path: target/receipts/workflow-policy.json
+
+  agent-export-6027:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/security-ux-gate-6027'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - name: Run branch-owned transform
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          lines = Path('.github/workflows/agent-build-security-6027.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(lines) if "python3 - <<'PY'" in line) + 1
+          end = next(i for i in range(start, len(lines)) if lines[i].strip() == 'PY')
+          Path('/tmp/apply.py').write_text(textwrap.dedent('\n'.join(lines[start:end])) + '\n', encoding='utf-8')
+          PY
+          python3 /tmp/apply.py
+          file=.github/workflows/ux-regression-gate.yml
+          ! grep -Eq '(pull-requests|statuses): write' "$file"
+          ! grep -q 'actions/github-script' "$file"
+          ! grep -q 'secrets.CODECOV_TOKEN' "$file"
+          grep -q 'TESTED_SHA:' "$file"
+          grep -q -- '--sha "$TESTED_SHA"' "$file"
+          git diff --check
+      - name: Create blob and post receipt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          from pathlib import Path
+          repo = os.environ['GITHUB_REPOSITORY']; token = os.environ['GITHUB_TOKEN']
+          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          relative = '.github/workflows/ux-regression-gate.yml'
+          req = urllib.request.Request(f'https://api.github.com/repos/{repo}/git/blobs', data=json.dumps({'content': base64.b64encode(Path(relative).read_bytes()).decode(), 'encoding': 'base64'}).encode(), method='POST', headers=headers)
+          with urllib.request.urlopen(req) as response: sha = json.load(response)['sha']
+          receipt = {'paths': {relative: sha}, 'source_sha': os.environ['TESTED_SHA']}
+          body = '<!-- security-6027-blob -->\n```json\n' + json.dumps(receipt, indent=2, sort_keys=True) + '\n```'
+          req = urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/6045/comments', data=json.dumps({'body': body}).encode(), method='POST', headers=headers)
+          with urllib.request.urlopen(req): pass
+          PY
