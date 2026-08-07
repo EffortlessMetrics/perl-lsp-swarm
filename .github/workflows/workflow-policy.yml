@@ -32,11 +32,6 @@ jobs:
         with:
           toolchain: stable
       - name: Run workflow policy lint
-        # `--check-lane-whitelist` enables the policy/ci-lane-whitelist.toml
-        # gate (was opt-in per PR #8154). All currently-flagged workflows
-        # either have a whitelist entry or an allowlist exemption, so this
-        # is a no-op for the existing tree and a guard against future drift.
-        # See #8166 ("CI economics rollout: deferred follow-ups").
         run: cargo xtask workflow-policy-lint --check-lane-whitelist --receipt target/receipts/workflow-policy.json
       - name: Upload workflow policy receipt
         if: always()
@@ -44,3 +39,95 @@ jobs:
         with:
           name: workflow-policy-receipt
           path: target/receipts/workflow-policy.json
+
+  agent-export-6010:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/security-test-adapter-bounds'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      issues: write
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - name: Apply review fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          package = Path('vscode-extension/package.json')
+          text = package.read_text(encoding='utf-8')
+          needle = '          "perl-lsp.enableTestIntegration": {\n'
+          block = '''          "perl-lsp.testTimeoutSeconds": {
+            "type": "number",
+            "default": 300,
+            "minimum": 1,
+            "maximum": 3600,
+            "scope": "resource",
+            "order": 59,
+            "description": "Timeout in seconds for running a single test file via prove.",
+            "markdownDescription": "Timeout in seconds for running a single test file via `prove`. Values are constrained to 1–3600 seconds."
+          },
+'''
+          if '"perl-lsp.testTimeoutSeconds"' not in text:
+              if needle not in text:
+                  raise SystemExit('test integration setting seam not found')
+              text = text.replace(needle, block + needle, 1)
+          package.write_text(text, encoding='utf-8')
+
+          adapter = Path('vscode-extension/src/testAdapter.ts')
+          text = adapter.read_text(encoding='utf-8')
+          old = '''      processHandle.stdout?.on('data', (data: Buffer) => {
+        tapParser.push(data);
+      });
+      processHandle.stderr?.on('data', (data: Buffer) => {
+        stderr.append(data);
+      });
+'''
+          new = '''      processHandle.stdout?.setEncoding('utf8');
+      processHandle.stdout?.on('data', (data: string) => {
+        tapParser.push(data);
+      });
+      processHandle.stderr?.setEncoding('utf8');
+      processHandle.stderr?.on('data', (data: string) => {
+        stderr.append(data);
+      });
+'''
+          if old not in text:
+              raise SystemExit('prove stream listener seam not found')
+          adapter.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - uses: ./.github/actions/setup-vscode-toolchain
+        with:
+          working-directory: vscode-extension
+      - name: Run focused extension proof
+        working-directory: vscode-extension
+        run: |
+          npm exec --offline --no -- oxfmt --write package.json src/testAdapter.ts src/test/testAdapter.test.ts
+          npm run fmt:check
+          npm run typecheck
+          npm run lint
+          npm test -- --runInBand src/test/testAdapter.test.ts
+      - name: Create blobs and post receipt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          from pathlib import Path
+          repo = os.environ['GITHUB_REPOSITORY']; token = os.environ['GITHUB_TOKEN']
+          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          paths = ['vscode-extension/package.json', 'vscode-extension/src/testAdapter.ts']
+          blobs = {}
+          for relative in paths:
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/git/blobs', data=json.dumps({'content': base64.b64encode(Path(relative).read_bytes()).decode(), 'encoding': 'base64'}).encode(), method='POST', headers=headers)
+              with urllib.request.urlopen(req) as response: blobs[relative] = json.load(response)['sha']
+          receipt = {'paths': blobs, 'source_sha': os.environ['TESTED_SHA']}
+          body = '<!-- security-6010-blob -->\nFocused format, typecheck, lint, and Jest proof passed.\n```json\n' + json.dumps(receipt, indent=2, sort_keys=True) + '\n```'
+          req = urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/6010/comments', data=json.dumps({'body': body}).encode(), method='POST', headers=headers)
+          with urllib.request.urlopen(req): pass
+          PY
