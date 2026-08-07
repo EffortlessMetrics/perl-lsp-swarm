@@ -124,7 +124,7 @@ jobs:
         # Stacked immutable D1+D2 candidate. Keep this downstream PR draft until
         # the upstream review prompt and outcome action are accepted, then pin
         # the accepted squash SHA without changing this consumer contract.
-        uses: EffortlessMetrics/droid-action-safe@b324e7b416fddb19581831ad3b043c0ee953d526
+        uses: EffortlessMetrics/droid-action-safe@6e879fe5223b0ddf06eb7421cfabf13f475a568c
         env:
           HOME: ${{ runner.temp }}/droid-home
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
@@ -142,7 +142,7 @@ jobs:
       - name: Compile and verify Droid review outcome
         id: review_outcome
         if: always()
-        uses: EffortlessMetrics/droid-action-safe/review-outcome@b324e7b416fddb19581831ad3b043c0ee953d526
+        uses: EffortlessMetrics/droid-action-safe/review-outcome@6e879fe5223b0ddf06eb7421cfabf13f475a568c
         with:
           validated-path: ${{ runner.temp }}/droid-prompts/review_validated.json
           repository: ${{ github.repository }}
@@ -163,6 +163,7 @@ jobs:
           VALIDATED_COUNT: ${{ steps.review_outcome.outputs.validated-count }}
           APPROVED_INLINE_COUNT: ${{ steps.review_outcome.outputs.approved-inline-count }}
           INDEPENDENT_FINDING_COUNT: ${{ steps.review_outcome.outputs.independent-finding-count }}
+          SUMMARY_FINDING_COUNT: ${{ steps.review_outcome.outputs.summary-finding-count }}
           REVIEW_BODY_SUBMITTED: ${{ steps.review_outcome.outputs.review-body-submitted }}
           OBSERVED_HEAD: ${{ steps.review_outcome.outputs.observed-head }}
           CURRENT_HEAD: ${{ steps.review_outcome.outputs.current-head }}
@@ -211,6 +212,7 @@ jobs:
               "validated_count": as_int("VALIDATED_COUNT"),
               "approved_inline_count": as_int("APPROVED_INLINE_COUNT"),
               "independent_finding_count": as_int("INDEPENDENT_FINDING_COUNT"),
+              "summary_finding_count": as_int("SUMMARY_FINDING_COUNT"),
               "review_body_submitted": as_bool("REVIEW_BODY_SUBMITTED"),
               "publication_verified": as_bool("REVIEW_BODY_SUBMITTED"),
               "observed_head": os.environ.get("OBSERVED_HEAD") or None,
