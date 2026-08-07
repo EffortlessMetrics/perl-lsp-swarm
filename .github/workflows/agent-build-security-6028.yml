@@ -1,0 +1,124 @@
+name: Agent build security 6028
+
+on:
+  push:
+    branches:
+      - agent/security-nightly-pr-authority-6028
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: agent/security-nightly-pr-authority-6028
+          fetch-depth: 0
+
+      - name: Remove PR writer authority and pin action code
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('.github/workflows/ci-nightly.yml')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'permissions:\n  contents: read\n  issues: write\n  pull-requests: write\n',
+              'permissions:\n  contents: read\n',
+          )
+          text, count = re.subn(
+              r'\n    - name: Comment on PR \(performance alerts\)\n.*?(?=\n    - name: Upload benchmark artifacts)',
+              '',
+              text,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'expected one performance comment writer, found {count}')
+
+          lines = text.splitlines()
+          output = []
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              if 'uses: actions/checkout@v7' in line:
+                  line = line.replace(
+                      'actions/checkout@v7',
+                      'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+                  )
+                  output.append(line)
+                  use_indent = len(line) - len(line.lstrip())
+                  next_index = index + 1
+                  if next_index < len(lines) and lines[next_index].strip() == 'with:':
+                      output.append(lines[next_index])
+                      next_index += 1
+                      with_indent = use_indent + 2
+                      inserted = False
+                      while next_index < len(lines):
+                          candidate = lines[next_index]
+                          candidate_indent = len(candidate) - len(candidate.lstrip())
+                          if candidate.strip() and candidate_indent <= use_indent:
+                              break
+                          if 'persist-credentials:' in candidate:
+                              candidate = ' ' * (with_indent + 2) + 'persist-credentials: false'
+                              inserted = True
+                          output.append(candidate)
+                          next_index += 1
+                      if not inserted:
+                          output.append(' ' * (with_indent + 2) + 'persist-credentials: false')
+                      index = next_index
+                      continue
+                  output.append(' ' * (use_indent + 2) + 'with:')
+                  output.append(' ' * (use_indent + 4) + 'persist-credentials: false')
+                  index += 1
+                  continue
+              output.append(line)
+              index += 1
+
+          text = '\n'.join(output) + '\n'
+          text = text.replace(
+              'actions/upload-artifact@v7',
+              'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Verify read-only PR execution contract
+        run: |
+          set -euo pipefail
+          file=.github/workflows/ci-nightly.yml
+          ! grep -Eq '(^|[[:space:]])(issues|pull-requests|statuses|contents): write' "$file"
+          ! grep -q 'actions/github-script' "$file"
+          ! grep -q 'actions/checkout@v7' "$file"
+          ! grep -q 'actions/upload-artifact@v7' "$file"
+          ! grep -q 'createComment' "$file"
+          checkout_count="$(grep -c 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' "$file")"
+          persist_count="$(grep -c 'persist-credentials: false' "$file")"
+          test "$persist_count" -ge "$checkout_count"
+          git diff --check
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Run workflow contracts
+        run: |
+          cargo run -p xtask --locked -- workflow-policy-lint
+          cargo run -p xtask --locked -- workflow-trigger-lint
+
+      - name: Commit product-only change
+        env:
+          BRANCH: agent/security-nightly-pr-authority-6028
+        run: |
+          set -euo pipefail
+          rm .github/workflows/agent-build-security-6028.yml
+          git add .github/workflows/agent-build-security-6028.yml .github/workflows/ci-nightly.yml
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git commit -m 'security(ci): make nightly PR lanes read-only (#6028)'
+          git push origin "HEAD:${BRANCH}"
