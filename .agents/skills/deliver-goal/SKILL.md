@@ -112,13 +112,13 @@ Write only reusable campaign or lane facts:
 Do not write frontier snapshots, assignments, liveness, skill-completion messages,
 polling updates, transcripts, or unchanged summaries.
 
-## Related-PR synthesis
+## Bounded related-PR review orchestration
 
 When a bounded related PR set has interacting contracts, each PR still receives its
 own `$deliver-pr`/`$finish-pr`/`$review-pr` route. After individual review, the campaign
 root may synthesize:
 
-| PR | Candidate/artifact identity | Substantive result | Integration posture | Explicit prerequisite | Cross-PR contract |
+| PR | Candidate/artifact identity | Substantive review result | Integration posture | Explicit prerequisite | Cross-PR contract |
 | --- | --- | --- | --- | --- | --- |
 
 Verify parent/child schema and validator agreement, complete candidate/artifact-set
