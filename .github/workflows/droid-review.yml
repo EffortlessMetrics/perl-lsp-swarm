@@ -1,21 +1,22 @@
 name: Droid PR Review
 
 # External AI reviewer. Advisory: see policy/ci-lane-whitelist.toml entry
-# `droid_auto_review` and docs/ci/labels.md `ai-review`. The job runs on
-# ready_for_review credible PRs only (already filtered by `if:` below).
+# `droid_auto_review` and docs/ci/labels.md `ai-review`.
 #
-# The job is marked continue-on-error: true so that external-service
-# failures (rate limits, vendor outages) do not break unrelated CI signal
-# on the PR. Any review comments the action manages to post before failing
-# are still visible.
+# Full semantic review runs when a PR first becomes reviewable. It is not
+# cancelled and restarted on every repair push. A later material repair may be
+# reviewed explicitly until the pinned action supports affected-seam review.
+#
+# The job remains advisory and continue-on-error. Action completion is not
+# represented as proof that a review was posted, adequate, or clean.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review]
 
 concurrency:
   group: droid-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
@@ -24,10 +25,8 @@ jobs:
   droid-review:
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review]
-    # Advisory lane: do not break PR signal on external-AI-review failures.
-    # See docs/ci/perl-lsp-rollout-plan.md PR 14.
     continue-on-error: true
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
@@ -39,6 +38,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+
       - name: Configure MiniMax M3 for Droid BYOK
         shell: bash
         run: |
@@ -65,6 +65,7 @@ jobs:
             ]
           }
           JSON
+
       - name: Install GitHub CLI for self-hosted Droid
         shell: bash
         env:
@@ -90,6 +91,7 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/${archive}" -C "${install_dir}"
           echo "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
           "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin/gh" --version
+
       - name: Install pinned Droid CLI
         id: install_droid
         shell: bash
@@ -112,9 +114,10 @@ jobs:
           chmod +x "${droid_path}"
           "${droid_path}" --version
           echo "path=${droid_path}" >> "${GITHUB_OUTPUT}"
+
       - name: Run Droid Auto Review
         id: droid_review
-        uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # based on Factory-AI/droid-action v5; raw debug artifact upload disabled
+        uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # review truth outputs tracked under #5778
         env:
           HOME: ${{ runner.temp }}/droid-home
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
@@ -124,10 +127,11 @@ jobs:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           upload_debug_artifacts: false
           automatic_review: true
-          review_depth: shallow
+          review_depth: deep
           review_model: custom:MiniMax-M3-0
           automatic_security_review: false
           path_to_droid_executable: ${{ steps.install_droid.outputs.path }}
+
       - name: Write Droid live-run receipt
         if: always()
         shell: bash
@@ -140,28 +144,38 @@ jobs:
           receipt_path="${receipt_dir}/droid-live-run.json"
           mkdir -p "${receipt_dir}"
 
-          review_posted=false
-          verdict=warn
+          action_completed=false
+          not_proven_reason="droid_action_failed_or_did_not_run"
           if [ "${DROID_REVIEW_OUTCOME:-unknown}" = "success" ]; then
-            review_posted=true
-            verdict=pass
+            action_completed=true
+            not_proven_reason="pinned_action_does_not_expose_review_publication_or_adequacy"
           fi
 
           cat > "${receipt_path}" <<JSON
           {
             "check": "droid-live-run",
-            "schema_version": "1",
+            "schema_version": "2",
             "event": "pull_request",
-            "verdict": "${verdict}",
+            "verdict": "warn",
             "workflow": "Droid PR Review",
             "model": "custom:MiniMax-M3-0",
+            "review_depth": "deep",
             "runner_labels": ["self-hosted", "linux", "x64", "em-ci", "trusted-pr", "review-nano", "droid-review"],
             "action": "EffortlessMetrics/droid-action-safe",
-            "review_posted": ${review_posted},
+            "action_completed": ${action_completed},
+            "review_posted": false,
+            "review_posted_proven": false,
+            "review_adequacy": "not_proven",
+            "review_result": "not_proven",
+            "candidate_count": null,
+            "validated_count": null,
+            "independent_finding_count": null,
+            "not_proven_reason": "${not_proven_reason}",
             "debug_artifacts_uploaded": false,
             "anthropic_env_cleared": true
           }
           JSON
+
       - name: Upload Droid live-run receipt
         if: always()
         uses: ./.github/actions/upload-receipt
