@@ -1,4 +1,10 @@
-import { parseSubtestResults, parseTapOutput } from '../testAdapter';
+import {
+  BoundedTextBuffer,
+  TapStreamParser,
+  normalizeProveTimeoutMs,
+  parseSubtestResults,
+  parseTapOutput,
+} from '../testAdapter';
 
 describe('test adapter TAP parsing', () => {
   test('summarizes top-level TAP without counting indented subtests', () => {
@@ -68,5 +74,44 @@ describe('test adapter TAP parsing', () => {
       ['passes', { ok: true, diagnostic: '', duration: 0 }],
       ['fails', { ok: false, diagnostic: "# Failed test 'assertion'", duration: 0 }],
     ]);
+  });
+
+  test('parses TAP incrementally across arbitrary chunk boundaries', () => {
+    const parser = new TapStreamParser();
+    parser.push('# Subtest: split\n    not ok 1 - asser');
+    parser.push("tion\n    # Failed test 'split'\n    1..1\nnot ok 1 - split\n1..");
+    parser.push('1');
+    parser.finish();
+
+    expect(parser.getSummary()).toEqual({
+      total: 1,
+      passed: 0,
+      failed: 1,
+      skipped: 0,
+      bailOut: null,
+    });
+    expect(parser.getSubtestResults().get('split')).toEqual({
+      ok: false,
+      diagnostic: "# Failed test 'split'",
+      duration: 0,
+    });
+  });
+});
+
+describe('bounded prove process state', () => {
+  test('keeps only the configured tail of noisy stderr', () => {
+    const buffer = new BoundedTextBuffer(8);
+    buffer.append('1234');
+    buffer.append('56789');
+
+    expect(buffer.toString()).toBe('[earlier output truncated]\n23456789');
+  });
+
+  test('clamps invalid and extreme timeout settings to a hard envelope', () => {
+    expect(normalizeProveTimeoutMs(undefined)).toBe(300000);
+    expect(normalizeProveTimeoutMs(Number.NaN)).toBe(300000);
+    expect(normalizeProveTimeoutMs(0)).toBe(1000);
+    expect(normalizeProveTimeoutMs(2.5)).toBe(2500);
+    expect(normalizeProveTimeoutMs(100000)).toBe(3600000);
   });
 });
