@@ -1919,6 +1919,20 @@ impl WorkspaceIndex {
             .is_some_and(|indexed_generation| indexed_generation < expected_generation)
     }
 
+    /// Count files where the pending generation exceeds the committed generation,
+    /// indicating edits that haven't been fully indexed yet (#5963).
+    ///
+    /// Returns 0 when all indexed files are up-to-date. A non-zero value means
+    /// query results may reflect pre-edit state.
+    #[must_use]
+    pub fn stale_file_count(&self) -> usize {
+        self.files
+            .read()
+            .values()
+            .filter(|idx| idx.pending_generation > idx.generation)
+            .count()
+    }
+
     /// Reset the generation counters for `uri` so that a close/reopen cycle
     /// does not leave a stale high-water mark that blocks the reopened file's
     /// index task (#5438).
@@ -2823,6 +2837,16 @@ impl WorkspaceIndex {
     /// let _refs = index.find_references("Utils::process_data");
     /// ```
     pub fn find_references(&self, symbol_name: &str) -> Vec<Location> {
+        // Log staleness warning when queries are made while files have pending
+        // (uncommitted) generations — results may reflect pre-edit state (#5963).
+        let stale = self.stale_file_count();
+        if stale > 0 {
+            tracing::debug!(
+                symbol = %symbol_name,
+                stale_files = stale,
+                "find_references: index has stale files; results may reflect pre-edit state"
+            );
+        }
         // Capture write version before reading to detect torn reads (#5116).
         // If a concurrent index_file_with_generation bumps the version during
         // our read, the global_references map may have been partially updated.
@@ -3024,6 +3048,16 @@ impl WorkspaceIndex {
     /// let all = index.find_definitions("MyPackage::example");
     /// ```
     pub fn find_definitions(&self, symbol_name: &str) -> Vec<Location> {
+        // Log staleness warning when queries are made while files have pending
+        // (uncommitted) generations — results may reflect pre-edit state (#5963).
+        let stale = self.stale_file_count();
+        if stale > 0 {
+            tracing::debug!(
+                symbol = %symbol_name,
+                stale_files = stale,
+                "find_definitions: index has stale files; results may reflect pre-edit state"
+            );
+        }
         let candidates = self.definition_candidates(symbol_name);
         if !candidates.is_empty() {
             return candidates;
