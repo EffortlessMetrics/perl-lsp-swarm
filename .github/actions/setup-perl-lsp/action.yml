@@ -151,18 +151,19 @@ runs:
     - name: Restore cached installation
       id: cache
       if: inputs.cache == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: ${{ steps.resolve.outputs.install_dir }}
         key: perl-lsp-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ steps.resolve.outputs.mode }}
 
     - name: Checkout perl-lsp source
       if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.mode == 'source'
-      uses: actions/checkout@v4
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       with:
         repository: EffortlessMetrics/perl-lsp
         ref: ${{ steps.resolve.outputs.tag }}
         path: ${{ runner.temp }}/perl-lsp-source
+        persist-credentials: false
 
     - name: Install release binary
       if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.mode == 'release'
@@ -246,7 +247,7 @@ runs:
 
     - name: Build perl-lsp from source
       if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.mode == 'source'
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
       with:
         toolchain: stable
 
@@ -278,13 +279,16 @@ runs:
         cp "$built_binary" "$INSTALL_DIR/$BINARY_NAME"
         chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
-        dap_binary="target/release/perl-dap"
+        dap_name="perl-dap"
+        dap_binary="target/release/$dap_name"
         if [ "$RUNNER_OS" = "Windows" ]; then
-          dap_binary="target/release/perl-dap.exe"
+          dap_name="perl-dap.exe"
+          dap_binary="target/release/$dap_name"
         fi
         if [ -f "$dap_binary" ]; then
-          cp "$dap_binary" "$INSTALL_DIR/$dap_binary"
-          chmod +x "$INSTALL_DIR/$dap_binary"
+          dap_destination="$INSTALL_DIR/$dap_name"
+          cp "$dap_binary" "$dap_destination"
+          chmod +x "$dap_destination"
         fi
 
     - name: Add perl-lsp to PATH
