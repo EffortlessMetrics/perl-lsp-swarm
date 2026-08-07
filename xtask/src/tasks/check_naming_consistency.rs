@@ -1,0 +1,429 @@
+//! Crate directory ↔ package name linter (issue #2933 AC#3).
+//!
+//! Enforces the invariant that every `crates/<dir>/` directory in the workspace
+//! has a Cargo package name that exactly equals `<dir>`.  A mismatch causes the
+//! kind of silent basename-inference bug that motivated issue #4512.
+//!
+//! ## What is checked
+//!
+//! For every direct subdirectory of `<root>/crates/` that contains a `Cargo.toml`:
+//!
+//! * Read `[package] name = "…"` from the manifest.
+//! * Compare it against the directory basename.
+//! * Report a finding if they differ.
+//! * Directories without a `Cargo.toml` are skipped with a notice (e.g.
+//!   `crates/tree-sitter-perl` is a JavaScript project, not a Rust crate).
+//!
+//! ## Exit behaviour
+//!
+//! * Exit 0 — all checked directories pass.
+//! * Exit 1 (via `bail!`) — at least one mismatch found; mismatches printed to
+//!   stdout so callers can capture them.
+//!
+//! ## Usage
+//!
+//! ```text
+//! cargo xtask check-naming-consistency [--root <path>]
+//! ```
+//!
+//! `--root` defaults to the current working directory so tests can exercise the
+//! command from a synthetic workspace by setting `current_dir` on the subprocess.
+//! Override it explicitly for cross-directory invocations.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use color_eyre::eyre::{Context, Result, bail};
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Configuration for the naming-consistency check.
+pub struct NamingConsistencyConfig {
+    /// Workspace root; `crates/` is expected at `root/crates/`.
+    pub root: PathBuf,
+}
+
+/// A single naming mismatch finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mismatch {
+    /// Relative path to the crate directory, e.g. `crates/perl-lsp-rs`.
+    pub crate_dir: String,
+    /// The directory basename, e.g. `perl-lsp-rs`.
+    pub dir_name: String,
+    /// The `[package] name` value read from `Cargo.toml`, e.g. `perl-lsp`.
+    pub package_name: String,
+}
+
+/// Run the naming-consistency check.
+///
+/// Prints a summary and returns `Ok(())` if all checked crate directories
+/// have package names that match their basename.  Returns an error if any
+/// mismatches are found, so the xtask process exits with a non-zero status.
+pub fn run(config: NamingConsistencyConfig) -> Result<()> {
+    let root = &config.root;
+    let crates_dir = root.join("crates");
+
+    if !crates_dir.exists() {
+        bail!("Expected `crates/` directory at {}", crates_dir.display());
+    }
+
+    let CheckResult { mismatches, skipped, checked } = collect_mismatches(&crates_dir)
+        .with_context(|| format!("Failed to scan crates directory: {}", crates_dir.display()))?;
+
+    println!("Crate directory ↔ package-name consistency check");
+    println!("=================================================");
+    println!("  Root: {}", root.display());
+    println!("  Directories checked: {checked}");
+    println!("  Directories skipped (no Cargo.toml): {}", skipped.len());
+
+    if !skipped.is_empty() {
+        println!();
+        println!("Skipped (no Cargo.toml — not a Rust crate):");
+        for dir in &skipped {
+            println!("  • {dir}");
+        }
+    }
+
+    if mismatches.is_empty() {
+        println!();
+        println!("✅ All {checked} crate directories have matching package names.");
+        return Ok(());
+    }
+
+    println!();
+    println!("❌ {} mismatch(es) found:", mismatches.len());
+    println!();
+    for m in &mismatches {
+        println!("  {}", m.crate_dir);
+        println!("    directory basename : {}", m.dir_name);
+        println!("    Cargo.toml name    : {}", m.package_name);
+        println!();
+    }
+
+    println!("Each `crates/<dir>/` directory must have a Cargo package name equal to `<dir>`.");
+    println!("Rename the directory or update `[package] name` in the crate's Cargo.toml to fix.");
+
+    bail!("{} crate directory/package-name mismatch(es) found", mismatches.len());
+}
+
+/// Convenience entry point.
+///
+/// When `root` is `Some`, use it directly.  When `None`, fall back to the
+/// process working directory — the same strategy used by `resolve-package-name`
+/// so that tests can exercise the command from a synthetic workspace by
+/// setting `current_dir` on the subprocess.
+///
+/// Note: `project_root()` is compile-time-pinned to the real workspace root
+/// via `CARGO_MANIFEST_DIR`; using it here would bypass `current_dir` in tests.
+pub fn run_default(root: Option<PathBuf>) -> Result<()> {
+    let root = match root {
+        Some(r) => r,
+        None => std::env::current_dir()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to get current working directory: {e}"))?,
+    };
+    run(NamingConsistencyConfig { root })
+}
+
+// ---------------------------------------------------------------------------
+// Core logic (pub(crate) for unit testing)
+// ---------------------------------------------------------------------------
+
+pub(crate) struct CheckResult {
+    pub mismatches: Vec<Mismatch>,
+    /// Directories that had no `Cargo.toml` and were skipped.
+    pub skipped: Vec<String>,
+    /// Number of directories that had a `Cargo.toml` and were checked.
+    pub checked: usize,
+}
+
+/// Scan `crates_dir` and return all findings.
+pub(crate) fn collect_mismatches(crates_dir: &Path) -> Result<CheckResult> {
+    // Collect entries in a deterministic (sorted) order so output is stable.
+    let mut entries: BTreeMap<String, PathBuf> = BTreeMap::new();
+
+    let read_dir = fs::read_dir(crates_dir)
+        .with_context(|| format!("Failed to read directory: {}", crates_dir.display()))?;
+
+    for entry in read_dir {
+        let entry = entry.with_context(|| {
+            format!("Failed to read directory entry in {}", crates_dir.display())
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                entries.insert(name.to_string(), path);
+            }
+        }
+    }
+
+    let mut mismatches = Vec::new();
+    let mut skipped = Vec::new();
+    let mut checked: usize = 0;
+
+    for (dir_name, path) in &entries {
+        let manifest = path.join("Cargo.toml");
+        if !manifest.exists() {
+            skipped.push(format!("crates/{dir_name}"));
+            continue;
+        }
+
+        let package_name = read_package_name(&manifest)
+            .with_context(|| format!("Failed to read package name from {}", manifest.display()))?;
+
+        checked += 1;
+
+        if &package_name != dir_name {
+            mismatches.push(Mismatch {
+                crate_dir: format!("crates/{dir_name}"),
+                dir_name: dir_name.clone(),
+                package_name,
+            });
+        }
+    }
+
+    Ok(CheckResult { mismatches, skipped, checked })
+}
+
+/// Read the `[package] name` value from a `Cargo.toml` file.
+///
+/// Returns the bare string value; does not follow workspace inheritance
+/// (workspace packages must have an explicit `name` field, so this is
+/// always a literal value in practice).
+pub(crate) fn read_package_name(manifest_path: &Path) -> Result<String> {
+    let content = fs::read_to_string(manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+
+    parse_package_name_from_toml(&content).ok_or_else(|| {
+        color_eyre::eyre::eyre!("No `[package] name` field found in {}", manifest_path.display())
+    })
+}
+
+/// Extract `[package] name = "…"` from raw TOML text.
+///
+/// Uses a simple line-by-line parser rather than a full TOML library so
+/// the check has zero additional dependencies.  The `name` field in
+/// `[package]` is always a simple string literal; no multi-line or
+/// dotted-key forms are used in practice.
+pub(crate) fn parse_package_name_from_toml(content: &str) -> Option<String> {
+    let mut in_package = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect section headers.
+        if trimmed.starts_with('[') {
+            // `[package]` or `[package.metadata.foo]` — both start the package section.
+            // Anything else (e.g. `[dependencies]`) ends it.
+            in_package = trimmed == "[package]" || trimmed.starts_with("[package.");
+            continue;
+        }
+
+        if !in_package {
+            continue;
+        }
+
+        // Match `name = "…"` — strip optional whitespace and inline comments.
+        if let Some(rest) = trimmed.strip_prefix("name") {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let rest = rest.trim();
+                // Strip surrounding quotes.
+                if let Some(inner) = rest.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                    return Some(inner.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_package_name_from_toml ---
+
+    #[test]
+    fn parses_simple_package_name() {
+        let toml = r#"
+[package]
+name = "perl-lsp-rs"
+version = "0.1.0"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("perl-lsp-rs"));
+    }
+
+    #[test]
+    fn parses_name_with_surrounding_whitespace_in_value() {
+        let toml = r#"
+[package]
+name = "my-crate"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("my-crate"));
+    }
+
+    #[test]
+    fn ignores_name_outside_package_section() {
+        let toml = r#"
+[dependencies]
+name = "should-not-match"
+
+[package]
+name = "real-crate"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("real-crate"));
+    }
+
+    #[test]
+    fn returns_none_for_missing_name() {
+        let toml = r#"
+[package]
+version = "0.1.0"
+"#;
+        assert!(parse_package_name_from_toml(toml).is_none());
+    }
+
+    #[test]
+    fn returns_none_for_empty_content() {
+        assert!(parse_package_name_from_toml("").is_none());
+    }
+
+    #[test]
+    fn parses_package_name_after_other_sections() {
+        let toml = r#"
+[workspace]
+members = ["crates/foo"]
+
+[package]
+name = "foo"
+version = "0.1.0"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn stops_at_next_section_after_package() {
+        // `name` appears only in [package]; should find "actual-name".
+        let toml = r#"
+[package]
+name = "actual-name"
+
+[dependencies]
+name = "not-a-package-name"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("actual-name"));
+    }
+
+    // --- collect_mismatches ---
+
+    #[test]
+    fn detects_mismatch_in_fixture_workspace() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let crates_dir = tmp.path().join("crates");
+        let crate_dir = crates_dir.join("my-dir");
+        std::fs::create_dir_all(crate_dir.join("src"))?;
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"my-package\"\nversion = \"0.1.0\"\n",
+        )?;
+
+        let result = collect_mismatches(&crates_dir)?;
+        assert_eq!(result.checked, 1);
+        assert_eq!(result.mismatches.len(), 1);
+        let m = &result.mismatches[0];
+        assert_eq!(m.crate_dir, "crates/my-dir");
+        assert_eq!(m.dir_name, "my-dir");
+        assert_eq!(m.package_name, "my-package");
+        Ok(())
+    }
+
+    #[test]
+    fn no_findings_when_names_match() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let crates_dir = tmp.path().join("crates");
+        let crate_dir = crates_dir.join("perl-parser");
+        std::fs::create_dir_all(crate_dir.join("src"))?;
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"perl-parser\"\nversion = \"0.1.0\"\n",
+        )?;
+
+        let result = collect_mismatches(&crates_dir)?;
+        assert_eq!(result.checked, 1);
+        assert!(result.mismatches.is_empty());
+        assert!(result.skipped.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn skips_directories_without_cargo_toml() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let crates_dir = tmp.path().join("crates");
+        // A dir without Cargo.toml (e.g. crates/tree-sitter-perl).
+        std::fs::create_dir_all(crates_dir.join("tree-sitter-perl"))?;
+
+        let result = collect_mismatches(&crates_dir)?;
+        assert_eq!(result.checked, 0);
+        assert!(result.mismatches.is_empty());
+        assert_eq!(result.skipped, vec!["crates/tree-sitter-perl"]);
+        Ok(())
+    }
+
+    #[test]
+    fn handles_multiple_crates_mixed() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let crates_dir = tmp.path().join("crates");
+
+        // Matching crate.
+        let ok_dir = crates_dir.join("perl-lexer");
+        std::fs::create_dir_all(ok_dir.join("src"))?;
+        std::fs::write(
+            ok_dir.join("Cargo.toml"),
+            "[package]\nname = \"perl-lexer\"\nversion = \"0.1.0\"\n",
+        )?;
+
+        // Mismatched crate.
+        let bad_dir = crates_dir.join("perl-lsp");
+        std::fs::create_dir_all(bad_dir.join("src"))?;
+        std::fs::write(
+            bad_dir.join("Cargo.toml"),
+            "[package]\nname = \"perl-lsp-rs\"\nversion = \"0.1.0\"\n",
+        )?;
+
+        // Non-Rust directory.
+        std::fs::create_dir_all(crates_dir.join("tree-sitter-perl"))?;
+
+        let result = collect_mismatches(&crates_dir)?;
+        assert_eq!(result.checked, 2);
+        assert_eq!(result.mismatches.len(), 1);
+        let m = &result.mismatches[0];
+        assert_eq!(m.dir_name, "perl-lsp");
+        assert_eq!(m.package_name, "perl-lsp-rs");
+        assert_eq!(result.skipped.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn current_workspace_is_fully_consistent() -> Result<()> {
+        // Verify the real workspace passes. This is the end-to-end guard that
+        // prevents regressions when crate directories or package names are renamed.
+        let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        root.pop(); // xtask/ -> workspace root
+        let crates_dir = root.join("crates");
+        let result = collect_mismatches(&crates_dir)?;
+        assert!(
+            result.mismatches.is_empty(),
+            "Workspace has crate directory/package-name mismatches:\n{:#?}",
+            result.mismatches
+        );
+        Ok(())
+    }
+}
