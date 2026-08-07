@@ -161,8 +161,11 @@ jobs:
           if [ "$USE_CROSS" = "true" ]; then
             BUILD_CMD="cross"
           fi
-          "$BUILD_CMD" build --locked --release --target "$TARGET" -p perllsp --bin perllsp
-          "$BUILD_CMD" build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
+          # Keep these literal `$BUILD_CMD build` command shapes: the
+          # repository-owned dist-shadow contract parses them to prove that the
+          # shadow manifest exactly matches the live release binaries.
+          $BUILD_CMD build --locked --release --target "$TARGET" -p perllsp --bin perllsp
+          $BUILD_CMD build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
 
       - name: Package binaries
         shell: bash
