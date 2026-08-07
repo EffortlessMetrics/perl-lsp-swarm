@@ -18,8 +18,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch: {}
 
-# Cancel in-progress runs for PR events on new pushes; let push/merge_group runs complete.
-# The preflight SHA-staleness check provides additional skip logic for superseded SHAs.
+# Cancel in-progress runs for PR synchronize events on new pushes; let push/merge_group runs complete.
+# For push events, preflight-latest-check provides additional skip logic for superseded SHAs.
+# PR event staleness uses only the concurrency group — never fork-controlled branch names (#5981).
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
@@ -93,7 +94,7 @@ jobs:
               echo "::notice::Docs/assets-only PR detected — running the policy shard for generated-inventory freshness"
             else
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::Non-draft PR with code/config changes — running merge-gate (pr-smoke, conflict-markers, shards, UX tests); supersede protection via preflight-latest-check (#1484)"
+              echo "::notice::Non-draft PR with code/config changes — running merge-gate (pr-smoke, conflict-markers, shards, UX tests); supersede protection via concurrency group cancel-in-progress on synchronize (#5981)"
             fi
           fi
 
@@ -111,10 +112,30 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-          CURRENT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" | awk '{print $1}')
+          # PR events: pass through unconditionally.  GitHub concurrency
+          # (cancel-in-progress on synchronize) already handles superseded SHAs.
+          # Using a fork-controlled branch name (github.head_ref) to resolve the
+          # upstream ref lets a fork author name their branch "main" and cause a
+          # newer upstream SHA to be found, bypassing all CI gates (#5981).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR event — passing preflight; concurrency group handles superseded SHAs"
+            exit 0
+          fi
+          # merge_group and workflow_dispatch always pass through — no branch name to compare.
+          if [ "${{ github.event_name }}" = "merge_group" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ github.event_name }} event — passing preflight unconditionally"
+            exit 0
+          fi
+          # push to same-repository ref: retain the cost-saving staleness check.
+          # github.ref_name for push events is always a same-repository branch, never
+          # a fork-controlled string, so the ls-remote comparison is safe here.
+          CURRENT="${{ github.sha }}"
+          BRANCH="${{ github.ref_name }}"
+          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+                    "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}') || true
           if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
             echo "::notice::This SHA ($CURRENT) is latest on $BRANCH — running full CI"

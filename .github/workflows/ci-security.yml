@@ -23,7 +23,8 @@ on:
 
 # Coalesce-queue-tail: let the running CI complete; skip superseded SHAs at a
 # preflight gate instead of cancelling in-flight work mid-run.
-# Note: scheduled runs always pass the preflight gate (no SHA comparison).
+# Note: scheduled, manual, and PR events always pass the preflight gate (no SHA comparison).
+# PR staleness uses only the concurrency group — never fork-controlled branch names (#5981).
 concurrency:
   group: ci-security-${{ github.ref }}
   cancel-in-progress: false
@@ -48,8 +49,6 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-          CURRENT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           # Scheduled and manual runs always pass through — no SHA to compare.
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -57,7 +56,21 @@ jobs:
             echo "::notice::Scheduled/manual run — always passing preflight"
             exit 0
           fi
-          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" | awk '{print $1}')
+          # PR events: pass through unconditionally.  A fork author can name their
+          # PR branch "main" and trick a branch-name ls-remote into seeing a newer
+          # upstream SHA, bypassing security scans entirely (#5981).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR event — passing preflight unconditionally"
+            exit 0
+          fi
+          # push to same-repository ref: retain the cost-saving staleness check.
+          # github.ref_name for push events is always a same-repository branch, never
+          # a fork-controlled string, so the ls-remote comparison is safe here.
+          CURRENT="${{ github.sha }}"
+          BRANCH="${{ github.ref_name }}"
+          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+                    "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}') || true
           if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
             echo "::notice::This SHA ($CURRENT) is latest on $BRANCH — running full CI"
