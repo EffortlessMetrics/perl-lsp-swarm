@@ -49,7 +49,7 @@ jobs:
       - name: Create unreferenced verified commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COMMIT_MESSAGE: security(ci): add trusted-base workflow ratchet (#6041)
+          COMMIT_MESSAGE: 'security(ci): add trusted-base workflow ratchet (#6041)'
         run: |
           python3 - <<'PY'
           import json, os, subprocess, urllib.request
@@ -71,7 +71,8 @@ jobs:
           tree=call('POST',f'{api}/git/trees',{'base_tree':base_tree,'tree':entries})['sha']
           commit=call('POST',f'{api}/git/commits',{'message':os.environ['COMMIT_MESSAGE'],'tree':tree,'parents':[parent]})['sha']
           Path('target/security-6041-commit.txt').parent.mkdir(parents=True,exist_ok=True)
-          Path('target/security-6041-commit.txt').write_text(commit+'\n',encoding='utf-8'); print(commit)
+          Path('target/security-6041-commit.txt').write_text(commit+'\n',encoding='utf-8')
+          print(commit)
           PY
       - name: Upload verified commit identity
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
