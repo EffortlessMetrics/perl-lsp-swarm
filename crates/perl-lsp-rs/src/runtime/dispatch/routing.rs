@@ -10,6 +10,7 @@ use super::super::{
     cancelled_response_with_method, enhanced_error,
 };
 use super::response::RoutedResponse;
+use crate::cancellation::GLOBAL_CANCELLATION_REGISTRY;
 
 impl LspServer {
     pub(super) fn route_request(
@@ -273,6 +274,7 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
@@ -312,6 +314,10 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            // Remove the token registered by check_cancellation_before_dispatch
+            // so it is not orphaned when the Immediate path bypasses the
+            // RequestCleanupGuard below (#5944).
+            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
