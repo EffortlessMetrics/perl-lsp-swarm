@@ -86,15 +86,11 @@ Route
 Update it only when the material route changes. Do not post one comment per skill,
 agent, poll, or head SHA.
 
-Publish goal-level information only when it changes or usefully summarizes:
-
-- accepted goal interpretation or predicate;
-- claim selection, prerequisite, supersession, or cross-PR contract;
-- a shared blocker or wake event;
-- merged effect, residual claim, or completion judgment.
-
-Keep runtime topology, task lists, liveness, retries, raw logs, and unchanged status
-local to the campaign root.
+Publish goal-level information only when it changes or usefully summarizes accepted
+goal interpretation/predicates, claim selection, prerequisite/supersession,
+cross-PR contracts, shared blockers/wake events, merged effects, residual claims, or
+completion judgment. Keep runtime topology, task lists, liveness, retries, raw logs,
+and unchanged status local to the campaign root.
 
 ## Bounded related-PR review orchestration
 
@@ -114,7 +110,7 @@ keeps its own lane and provider-native review:
 
 The campaign root may synthesize:
 
-| PR | Candidate identity | Current checks | Substantive review | Integration posture | Explicit prerequisite |
+| PR | Candidate identity | Current checks | Substantive review result | Integration posture | Explicit prerequisite |
 | --- | --- | --- | --- | --- | --- |
 
 Verify parent/child schema and validator agreement, complete candidate/artifact identity,
