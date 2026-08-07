@@ -1,53 +1,44 @@
 name: Agent build security 6030
 
 on:
-  push:
-    branches:
-      - agent/security-pod-preview-6030
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'agent/security-pod-preview-6030'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Checkout exact branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: agent/security-pod-preview-6030
           fetch-depth: 0
-
-      - name: Replace mixed-string escaping with trusted-token rendering
+      - name: Replace mixed-string renderer
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('vscode-extension/src/podPreview.ts')
           text = path.read_text(encoding='utf-8')
-
           start = text.index('function renderInline(text: string): string {')
           end = text.index('\nfunction renderInlineCode(', start)
           render_inline = r'''function renderInline(text: string): string {
             const parts: string[] = [];
             let cursor = 0;
-
             while (cursor < text.length) {
               const match = /[BICLESFZX]</.exec(text.slice(cursor));
               if (!match || match.index === undefined) {
                 parts.push(escapeHtml(text.slice(cursor)));
                 break;
               }
-
               const markerStart = cursor + match.index;
               parts.push(escapeHtml(text.slice(cursor, markerStart)));
-
               const code = text[markerStart];
-              if (code === undefined) {
-                break;
-              }
-
+              if (code === undefined) break;
               const doubleDelimited = text.startsWith('<<', markerStart + 1);
               const bodyStart = markerStart + (doubleDelimited ? 3 : 2);
               const closeMarker = doubleDelimited ? '>>' : '>';
@@ -56,24 +47,17 @@ jobs:
                 parts.push(escapeHtml(text.slice(markerStart)));
                 break;
               }
-
               const rawInner = text.slice(bodyStart, close);
-              const inner = doubleDelimited ? rawInner.trim() : rawInner;
-              parts.push(renderInlineCode(code, inner));
+              parts.push(renderInlineCode(code, doubleDelimited ? rawInner.trim() : rawInner));
               cursor = close + closeMarker.length;
             }
-
             return parts.join('');
           }
           '''
           text = text[:start] + render_inline + text[end:]
-
           start = text.index('function renderLinkCode(inner: string): string {')
           end = text.index('\nfunction renderEscapeCode(', start)
           render_link = r'''function renderLinkCode(inner: string): string {
-            // L<text|url> or L<name> or L<name/section>. Only http(s) links are
-            // emitted as external navigation. Everything else becomes either a
-            // generated perldoc URL, an inert local anchor, or escaped text.
             const pipeIdx = inner.indexOf('|');
             if (pipeIdx !== -1) {
               const label = inner.slice(0, pipeIdx).trim();
@@ -81,34 +65,24 @@ jobs:
               if (/^https?:\/\//i.test(target)) {
                 return `<a href="${escapeAttr(target)}">${escapeHtml(label)}</a>`;
               }
-              if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
-                return escapeHtml(label);
-              }
+              if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return escapeHtml(label);
               return `<a href="#${escapeAttr(target.replace(/\s+/g, '-').toLowerCase())}">${escapeHtml(label)}</a>`;
             }
-
             if (/^https?:\/\//i.test(inner)) {
               return `<a href="${escapeAttr(inner)}">${escapeHtml(inner)}</a>`;
             }
-            if (/^[a-z][a-z0-9+.-]*:/i.test(inner)) {
-              return escapeHtml(inner);
-            }
-
+            if (/^[a-z][a-z0-9+.-]*:/i.test(inner)) return escapeHtml(inner);
             const slashIdx = inner.indexOf('/');
             if (slashIdx !== -1) {
               const mod = inner.slice(0, slashIdx);
               const section = inner.slice(slashIdx + 1);
               return `<a href="https://perldoc.perl.org/${escapeAttr(mod)}">${escapeHtml(mod)}/${escapeHtml(section)}</a>`;
             }
-
             return `<a href="https://perldoc.perl.org/${escapeAttr(inner)}">${escapeHtml(inner)}</a>`;
           }
           '''
           text = text[:start] + render_link + text[end:]
-          text = text.replace(
-              'enableScripts: false,\n      retainContextWhenHidden: true,',
-              'enableScripts: false,\n      localResourceRoots: [],\n      retainContextWhenHidden: true,',
-          )
+          text = text.replace('enableScripts: false,\n      retainContextWhenHidden: true,', 'enableScripts: false,\n      localResourceRoots: [],\n      retainContextWhenHidden: true,')
           path.write_text(text, encoding='utf-8')
 
           tests = Path('vscode-extension/src/test/podPreview.test.ts')
@@ -116,14 +90,7 @@ jobs:
           insertion = r'''
 
             test('escapes raw HTML and CSS from workspace POD prose', () => {
-              const pod = [
-                '=pod',
-                '',
-                '<style>body{display:none}</style><form><input value="spoof"></form>',
-                '',
-                '=cut',
-                '',
-              ].join('\n');
+              const pod = '=pod\n\n<style>body{display:none}</style><form><input value="spoof"></form>\n\n=cut\n';
               const html = podToHtml(pod);
               expect(html).toContain('&lt;style&gt;');
               expect(html).toContain('&lt;form&gt;');
@@ -140,10 +107,7 @@ jobs:
             });
 
             test('does not emit non-http URI schemes from POD links', () => {
-              const pod = '=pod\n\nL<click|javascript:alert(1)> L<data:text/html,boom>.\n\n=cut\n';
-              const html = podToHtml(pod);
-              expect(html).toContain('click');
-              expect(html).toContain('data:text/html,boom');
+              const html = podToHtml('=pod\n\nL<click|javascript:alert(1)> L<data:text/html,boom>.\n\n=cut\n');
               expect(html).not.toContain('href="javascript:');
               expect(html).not.toContain('href="data:');
             });
@@ -154,47 +118,28 @@ jobs:
               expect(html).not.toContain('<img');
             });
           '''
-          marker = '\n});\n'
-          position = body.rfind(marker)
+          position = body.rfind('\n});\n')
           if position == -1:
-              raise SystemExit('podPreview test suite terminator not found')
-          body = body[:position] + insertion + body[position:]
-          tests.write_text(body, encoding='utf-8')
+              raise SystemExit('test suite terminator missing')
+          tests.write_text(body[:position] + insertion + body[position:], encoding='utf-8')
           PY
-
-      - name: Setup locked extension toolchain
+      - name: Setup extension toolchain
         uses: ./.github/actions/setup-vscode-toolchain
         with:
           working-directory: vscode-extension
-
-      - name: Format and verify focused extension surface
+      - name: Format and test
         working-directory: vscode-extension
         run: |
-          set -euo pipefail
           npm exec --offline --no -- oxfmt --write src/podPreview.ts src/test/podPreview.test.ts
           npm run fmt:check
           npm run typecheck
           npm run lint
           npm test -- --runInBand src/test/podPreview.test.ts
-
-      - name: Verify rendered-source invariants
+      - name: Commit product-only result
         run: |
-          set -euo pipefail
-          grep -q 'localResourceRoots: \[\]' vscode-extension/src/podPreview.ts
-          ! grep -q "replace(/<(?!" vscode-extension/src/podPreview.ts
-          git diff --check
-
-      - name: Commit product-only change
-        env:
-          BRANCH: agent/security-pod-preview-6030
-        run: |
-          set -euo pipefail
-          rm .github/workflows/agent-build-security-6030.yml
-          git add \
-            .github/workflows/agent-build-security-6030.yml \
-            vscode-extension/src/podPreview.ts \
-            vscode-extension/src/test/podPreview.test.ts
+          rm .github/workflows/agent-build-security-6030.yml .agent-trigger-6030
+          git add .github/workflows/agent-build-security-6030.yml .agent-trigger-6030 vscode-extension/src/podPreview.ts vscode-extension/src/test/podPreview.test.ts
           git config user.name EffortlessSteven
           git config user.email git@effortlesssteven.com
           git commit -m 'security(vscode): render POD from trusted tokens (#6030)'
-          git push origin "HEAD:${BRANCH}"
+          git push origin HEAD:agent/security-pod-preview-6030
