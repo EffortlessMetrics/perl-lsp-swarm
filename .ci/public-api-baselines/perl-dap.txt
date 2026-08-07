@@ -195,6 +195,7 @@ pub fn perl_dap::api::PerlVariableRenderer::render(&self, name: &str, value: &pe
 pub fn perl_dap::api::PerlVariableRenderer::render_children(&self, value: &perl_dap::value::PerlValue, start: usize, count: usize) -> alloc::vec::Vec<perl_dap::api::RenderedVariable>
 pub fn perl_dap::api::PerlVariableRenderer::render_with_reference(&self, name: &str, value: &perl_dap::value::PerlValue, reference_id: i64) -> perl_dap::api::RenderedVariable
 pub struct perl_dap::api::RenderedVariable
+pub perl_dap::api::RenderedVariable::evaluate_name: core::option::Option<alloc::string::String>
 pub perl_dap::api::RenderedVariable::indexed_variables: core::option::Option<i64>
 pub perl_dap::api::RenderedVariable::memory_reference: core::option::Option<alloc::string::String>
 pub perl_dap::api::RenderedVariable::name: alloc::string::String
@@ -205,6 +206,7 @@ pub perl_dap::api::RenderedVariable::value: alloc::string::String
 pub perl_dap::api::RenderedVariable::variables_reference: i64
 pub fn perl_dap::api::RenderedVariable::is_expandable(&self) -> bool
 pub fn perl_dap::api::RenderedVariable::new(name: impl core::convert::Into<alloc::string::String>, value: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::api::RenderedVariable::with_evaluate_name(self, evaluate_name: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn perl_dap::api::RenderedVariable::with_indexed_variables(self, count: i64) -> Self
 pub fn perl_dap::api::RenderedVariable::with_named_variables(self, count: i64) -> Self
 pub fn perl_dap::api::RenderedVariable::with_reference(self, reference: i64) -> Self
@@ -247,6 +249,7 @@ pub fn perl_dap::types::StackFrame::fmt(&self, f: &mut core::fmt::Formatter<'_>)
 pub fn perl_dap::types::StackFrame::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::types::StackFrame::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::api::TypesVariable
+pub perl_dap::api::TypesVariable::evaluate_name: core::option::Option<alloc::string::String>
 pub perl_dap::api::TypesVariable::indexed_variables: core::option::Option<i32>
 pub perl_dap::api::TypesVariable::name: alloc::string::String
 pub perl_dap::api::TypesVariable::named_variables: core::option::Option<i32>
@@ -314,6 +317,416 @@ pub fn perl_dap::api::validate_expression(expression: &str) -> core::result::Res
 pub fn perl_dap::api::validate_path(path: &std::path::Path, workspace_root: &std::path::Path) -> core::result::Result<std::path::PathBuf, perl_dap::security::SecurityError>
 pub fn perl_dap::api::validate_timeout(timeout_ms: u32) -> core::result::Result<u32, perl_dap::security::SecurityError>
 pub type perl_dap::api::ValidationResult = core::result::Result<(), perl_dap::api::ValidationError>
+pub mod perl_dap::backend
+pub mod perl_dap::backend::capabilities
+pub enum perl_dap::backend::capabilities::ControlMode
+pub perl_dap::backend::capabilities::ControlMode::Cooperative
+pub perl_dap::backend::capabilities::ControlMode::DapControlled
+pub perl_dap::backend::capabilities::ControlMode::Mirror
+pub fn perl_dap::backend::capabilities::ControlMode::clone(&self) -> perl_dap::backend::capabilities::ControlMode
+pub fn perl_dap::backend::capabilities::ControlMode::eq(&self, other: &perl_dap::backend::capabilities::ControlMode) -> bool
+pub fn perl_dap::backend::capabilities::ControlMode::default() -> perl_dap::backend::capabilities::ControlMode
+pub fn perl_dap::backend::capabilities::ControlMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::capabilities::ControlMode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::backend::capabilities::ControlMode::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::backend::capabilities::CatalogDapFlags
+pub perl_dap::backend::capabilities::CatalogDapFlags::breakpoints_basic: bool
+pub perl_dap::backend::capabilities::CatalogDapFlags::core: bool
+pub perl_dap::backend::capabilities::CatalogDapFlags::function_breakpoints: bool
+pub perl_dap::backend::capabilities::CatalogDapFlags::hit_condition: bool
+pub perl_dap::backend::capabilities::CatalogDapFlags::logpoints: bool
+pub perl_dap::backend::capabilities::CatalogDapFlags::watchpoints: bool
+pub fn perl_dap::backend::capabilities::CatalogDapFlags::from_catalog() -> Self
+pub fn perl_dap::backend::capabilities::CatalogDapFlags::clone(&self) -> perl_dap::backend::capabilities::CatalogDapFlags
+pub fn perl_dap::backend::capabilities::CatalogDapFlags::eq(&self, other: &perl_dap::backend::capabilities::CatalogDapFlags) -> bool
+pub fn perl_dap::backend::capabilities::CatalogDapFlags::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::capabilities::DebugBackendCapabilities
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::conditional_breakpoints: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::continue_execution: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::control_mode: perl_dap::backend::capabilities::ControlMode
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::data_breakpoints: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::evaluate: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::function_breakpoints: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::hit_conditions: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::logpoints: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::pause: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::scopes: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::set_variable: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::source_breakpoints: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::stack_trace: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::stepping: bool
+pub perl_dap::backend::capabilities::DebugBackendCapabilities::variables: bool
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::full() -> Self
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::none() -> Self
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::ptkdb_v1_defaults() -> Self
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::clone(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::eq(&self, other: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> bool
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::backend::capabilities::NegotiatedDapCapabilities
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_conditional_breakpoints: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_data_breakpoints: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_evaluate_for_hovers: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_function_breakpoints: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_hit_conditional_breakpoints: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_log_points: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_set_variable: bool
+pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::clone(&self) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
+pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::eq(&self, other: &perl_dap::backend::capabilities::NegotiatedDapCapabilities) -> bool
+pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_dap::backend::capabilities::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
+pub mod perl_dap::backend::external_peer
+pub enum perl_dap::backend::external_peer::ExternalPeerMode
+pub perl_dap::backend::external_peer::ExternalPeerMode::Connect
+pub perl_dap::backend::external_peer::ExternalPeerMode::Connect::host: alloc::string::String
+pub perl_dap::backend::external_peer::ExternalPeerMode::Connect::port: u16
+pub perl_dap::backend::external_peer::ExternalPeerMode::Connect::token: core::option::Option<alloc::string::String>
+pub perl_dap::backend::external_peer::ExternalPeerMode::LaunchPeer
+pub perl_dap::backend::external_peer::ExternalPeerMode::LaunchPeer::args: alloc::vec::Vec<alloc::string::String>
+pub perl_dap::backend::external_peer::ExternalPeerMode::LaunchPeer::command: std::path::PathBuf
+pub perl_dap::backend::external_peer::ExternalPeerMode::LaunchPeer::host: alloc::string::String
+pub perl_dap::backend::external_peer::ExternalPeerMode::LaunchPeer::port: u16
+pub perl_dap::backend::external_peer::ExternalPeerMode::Listen
+pub perl_dap::backend::external_peer::ExternalPeerMode::Listen::host: alloc::string::String
+pub perl_dap::backend::external_peer::ExternalPeerMode::Listen::port: u16
+pub perl_dap::backend::external_peer::ExternalPeerMode::Listen::token: core::option::Option<alloc::string::String>
+pub fn perl_dap::backend::external_peer::ExternalPeerMode::clone(&self) -> perl_dap::backend::external_peer::ExternalPeerMode
+pub fn perl_dap::backend::external_peer::ExternalPeerMode::eq(&self, other: &perl_dap::backend::external_peer::ExternalPeerMode) -> bool
+pub fn perl_dap::backend::external_peer::ExternalPeerMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::external_peer::ExternalDebuggerPeerBackend
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::connect<A: std::net::socket_addr::ToSocketAddrs>(addr: A, timeout: core::time::Duration) -> perl_dap::backend::BackendResult<Self>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::from_connected_stream(stream: std::net::tcp::TcpStream, timeout: core::time::Duration) -> perl_dap::backend::BackendResult<Self>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::from_connected_stream_with_token(stream: std::net::tcp::TcpStream, timeout: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> perl_dap::backend::BackendResult<Self>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::listen(host: &str, port: u16, timeout: core::time::Duration) -> perl_dap::backend::BackendResult<(Self, core::net::socket_addr::SocketAddr)>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::drop(&mut self)
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::attach(&mut self, _params: perl_dap::backend::AttachBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::AttachResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::continue_thread(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<perl_dap::backend::ContinueResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::disconnect(&mut self, terminate_debuggee: bool) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::drain_events(&mut self) -> alloc::vec::Vec<perl_dap::model::DebugEvent>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::evaluate(&mut self, params: perl_dap::backend::EvaluateParams) -> perl_dap::backend::BackendResult<perl_dap::backend::EvaluateResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::initialize(&mut self, _params: perl_dap::backend::InitializeBackendParams) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::is_closed(&self) -> bool
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::launch(&mut self, _params: perl_dap::backend::LaunchBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::LaunchResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::name(&self) -> &str
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::next(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::pause(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::scopes(&mut self, frame_id: perl_dap::model::FrameId) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugScope>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::set_breakpoints(&mut self, params: perl_dap::backend::SetBackendBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::set_function_breakpoints(&mut self, params: perl_dap::backend::SetFunctionBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::stack_trace(&mut self, params: perl_dap::backend::StackTraceParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugStackFrame>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::step_in(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::variables(&mut self, variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
+pub const perl_dap::backend::external_peer::DEFAULT_PEER_TIMEOUT: core::time::Duration
+pub mod perl_dap::backend::native_perldb
+pub struct perl_dap::backend::native_perldb::NativePerlDbBackend
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::adapter_mut(&mut self) -> &mut perl_dap::debug_adapter::DebugAdapter
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::new() -> Self
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::default() -> Self
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::attach(&mut self, params: perl_dap::backend::AttachBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::AttachResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::continue_thread(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<perl_dap::backend::ContinueResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::disconnect(&mut self, terminate_debuggee: bool) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::evaluate(&mut self, _params: perl_dap::backend::EvaluateParams) -> perl_dap::backend::BackendResult<perl_dap::backend::EvaluateResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::initialize(&mut self, _params: perl_dap::backend::InitializeBackendParams) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::launch(&mut self, params: perl_dap::backend::LaunchBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::LaunchResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::name(&self) -> &str
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::next(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::pause(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::scopes(&mut self, _frame_id: perl_dap::model::FrameId) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugScope>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::set_breakpoints(&mut self, params: perl_dap::backend::SetBackendBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::set_function_breakpoints(&mut self, params: perl_dap::backend::SetFunctionBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::stack_trace(&mut self, _params: perl_dap::backend::StackTraceParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugStackFrame>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_in(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::variables(&mut self, _variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
+pub mod perl_dap::backend::peer_bridge
+pub struct perl_dap::backend::peer_bridge::DapPeerBridge
+pub fn perl_dap::backend::peer_bridge::DapPeerBridge::dispatch(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub fn perl_dap::backend::peer_bridge::DapPeerBridge::new(backend: alloc::boxed::Box<dyn perl_dap::backend::DebugBackend>) -> Self
+pub fn perl_dap::backend::peer_bridge::DapPeerBridge::poll_events(&mut self) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub fn perl_dap::backend::peer_bridge::run_external_peer_session(stream: std::net::tcp::TcpStream, bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_bridge::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
+pub mod perl_dap::backend::peer_launch
+pub enum perl_dap::backend::peer_launch::ExternalDebuggerKind
+pub perl_dap::backend::peer_launch::ExternalDebuggerKind::Custom
+pub perl_dap::backend::peer_launch::ExternalDebuggerKind::Ptkdb
+pub fn perl_dap::backend::peer_launch::ExternalDebuggerKind::clone(&self) -> perl_dap::backend::peer_launch::ExternalDebuggerKind
+pub fn perl_dap::backend::peer_launch::ExternalDebuggerKind::eq(&self, other: &perl_dap::backend::peer_launch::ExternalDebuggerKind) -> bool
+pub fn perl_dap::backend::peer_launch::ExternalDebuggerKind::default() -> perl_dap::backend::peer_launch::ExternalDebuggerKind
+pub fn perl_dap::backend::peer_launch::ExternalDebuggerKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::peer_launch::ExternalDebuggerKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::backend::peer_launch::PeerRendezvousMode
+pub perl_dap::backend::peer_launch::PeerRendezvousMode::Connect
+pub perl_dap::backend::peer_launch::PeerRendezvousMode::LaunchPeer
+pub perl_dap::backend::peer_launch::PeerRendezvousMode::Listen
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::clone(&self) -> perl_dap::backend::peer_launch::PeerRendezvousMode
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::eq(&self, other: &perl_dap::backend::peer_launch::PeerRendezvousMode) -> bool
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::default() -> perl_dap::backend::peer_launch::PeerRendezvousMode
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::backend::peer_launch::ExternalPeerLaunchConfig
+pub perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::control: perl_dap::backend::capabilities::ControlMode
+pub perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::host: alloc::string::String
+pub perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::kind: perl_dap::backend::peer_launch::ExternalDebuggerKind
+pub perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::mode: perl_dap::backend::peer_launch::PeerRendezvousMode
+pub perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::port: u16
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::from_launch_arguments(args: &serde_json::value::Value) -> core::option::Option<Self>
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::clone(&self) -> perl_dap::backend::peer_launch::ExternalPeerLaunchConfig
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::eq(&self, other: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> bool
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::default() -> Self
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::peer_launch::MirrorPeerBridge
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::dispatch(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::go_live(&mut self, backend: alloc::boxed::Box<dyn perl_dap::backend::DebugBackend>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::has_pending_function_breakpoints(&self) -> bool
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::is_live(&self) -> bool
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::new_pending(control: perl_dap::backend::capabilities::ControlMode) -> Self
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::pending_source_count(&self) -> usize
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub struct perl_dap::backend::peer_launch::PeerListenEndpoint
+pub perl_dap::backend::peer_launch::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
+pub perl_dap::backend::peer_launch::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
+pub perl_dap::backend::peer_launch::PeerListenEndpoint::token: alloc::string::String
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::clone(&self) -> perl_dap::backend::peer_launch::PeerListenEndpoint
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::eq(&self, other: &perl_dap::backend::peer_launch::PeerListenEndpoint) -> bool
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_dap::backend::peer_launch::DEFAULT_LISTEN_HANDSHAKE_TIMEOUT: core::time::Duration
+pub const perl_dap::backend::peer_launch::ENV_PEER_ADDR: &str
+pub const perl_dap::backend::peer_launch::ENV_PEER_MODE: &str
+pub const perl_dap::backend::peer_launch::ENV_PEER_TOKEN: &str
+pub fn perl_dap::backend::peer_launch::control_mode_env_str(mode: perl_dap::backend::capabilities::ControlMode) -> &'static str
+pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
+pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_launch::static_mirror_capabilities() -> serde_json::value::Value
+pub enum perl_dap::backend::BackendError
+pub perl_dap::backend::BackendError::Engine(alloc::string::String)
+pub perl_dap::backend::BackendError::NotConnected
+pub perl_dap::backend::BackendError::Protocol(alloc::string::String)
+pub perl_dap::backend::BackendError::Timeout(alloc::string::String)
+pub perl_dap::backend::BackendError::Transport(alloc::string::String)
+pub perl_dap::backend::BackendError::Unsupported(alloc::string::String)
+pub fn perl_dap::backend::BackendError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::BackendError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::backend::EvaluateContext
+pub perl_dap::backend::EvaluateContext::Hover
+pub perl_dap::backend::EvaluateContext::Other(alloc::string::String)
+pub perl_dap::backend::EvaluateContext::Repl
+pub perl_dap::backend::EvaluateContext::Variables
+pub perl_dap::backend::EvaluateContext::Watch
+pub fn perl_dap::backend::EvaluateContext::clone(&self) -> perl_dap::backend::EvaluateContext
+pub fn perl_dap::backend::EvaluateContext::eq(&self, other: &perl_dap::backend::EvaluateContext) -> bool
+pub fn perl_dap::backend::EvaluateContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::backend::PeerRendezvousMode
+pub perl_dap::backend::PeerRendezvousMode::Connect
+pub perl_dap::backend::PeerRendezvousMode::LaunchPeer
+pub perl_dap::backend::PeerRendezvousMode::Listen
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::clone(&self) -> perl_dap::backend::peer_launch::PeerRendezvousMode
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::eq(&self, other: &perl_dap::backend::peer_launch::PeerRendezvousMode) -> bool
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::default() -> perl_dap::backend::peer_launch::PeerRendezvousMode
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::peer_launch::PeerRendezvousMode::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::backend::AttachBackendParams
+pub perl_dap::backend::AttachBackendParams::host: alloc::string::String
+pub perl_dap::backend::AttachBackendParams::port: u16
+pub fn perl_dap::backend::AttachBackendParams::clone(&self) -> perl_dap::backend::AttachBackendParams
+pub fn perl_dap::backend::AttachBackendParams::eq(&self, other: &perl_dap::backend::AttachBackendParams) -> bool
+pub fn perl_dap::backend::AttachBackendParams::default() -> perl_dap::backend::AttachBackendParams
+pub fn perl_dap::backend::AttachBackendParams::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::AttachResult
+pub perl_dap::backend::AttachResult::success: bool
+pub fn perl_dap::backend::AttachResult::clone(&self) -> perl_dap::backend::AttachResult
+pub fn perl_dap::backend::AttachResult::eq(&self, other: &perl_dap::backend::AttachResult) -> bool
+pub fn perl_dap::backend::AttachResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::ContinueResult
+pub perl_dap::backend::ContinueResult::all_threads_continued: bool
+pub fn perl_dap::backend::ContinueResult::clone(&self) -> perl_dap::backend::ContinueResult
+pub fn perl_dap::backend::ContinueResult::eq(&self, other: &perl_dap::backend::ContinueResult) -> bool
+pub fn perl_dap::backend::ContinueResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::DapPeerBridge
+pub fn perl_dap::backend::peer_bridge::DapPeerBridge::dispatch(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub fn perl_dap::backend::peer_bridge::DapPeerBridge::new(backend: alloc::boxed::Box<dyn perl_dap::backend::DebugBackend>) -> Self
+pub fn perl_dap::backend::peer_bridge::DapPeerBridge::poll_events(&mut self) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub struct perl_dap::backend::DebugBackendCapabilities
+pub perl_dap::backend::DebugBackendCapabilities::conditional_breakpoints: bool
+pub perl_dap::backend::DebugBackendCapabilities::continue_execution: bool
+pub perl_dap::backend::DebugBackendCapabilities::control_mode: perl_dap::backend::capabilities::ControlMode
+pub perl_dap::backend::DebugBackendCapabilities::data_breakpoints: bool
+pub perl_dap::backend::DebugBackendCapabilities::evaluate: bool
+pub perl_dap::backend::DebugBackendCapabilities::function_breakpoints: bool
+pub perl_dap::backend::DebugBackendCapabilities::hit_conditions: bool
+pub perl_dap::backend::DebugBackendCapabilities::logpoints: bool
+pub perl_dap::backend::DebugBackendCapabilities::pause: bool
+pub perl_dap::backend::DebugBackendCapabilities::scopes: bool
+pub perl_dap::backend::DebugBackendCapabilities::set_variable: bool
+pub perl_dap::backend::DebugBackendCapabilities::source_breakpoints: bool
+pub perl_dap::backend::DebugBackendCapabilities::stack_trace: bool
+pub perl_dap::backend::DebugBackendCapabilities::stepping: bool
+pub perl_dap::backend::DebugBackendCapabilities::variables: bool
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::full() -> Self
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::none() -> Self
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::ptkdb_v1_defaults() -> Self
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::clone(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::eq(&self, other: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> bool
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::backend::EvaluateParams
+pub perl_dap::backend::EvaluateParams::context: perl_dap::backend::EvaluateContext
+pub perl_dap::backend::EvaluateParams::expression: alloc::string::String
+pub perl_dap::backend::EvaluateParams::frame_id: core::option::Option<perl_dap::model::FrameId>
+pub fn perl_dap::backend::EvaluateParams::clone(&self) -> perl_dap::backend::EvaluateParams
+pub fn perl_dap::backend::EvaluateParams::eq(&self, other: &perl_dap::backend::EvaluateParams) -> bool
+pub fn perl_dap::backend::EvaluateParams::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::EvaluateResult
+pub perl_dap::backend::EvaluateResult::result: alloc::string::String
+pub perl_dap::backend::EvaluateResult::type_name: core::option::Option<alloc::string::String>
+pub perl_dap::backend::EvaluateResult::variables_reference: core::option::Option<perl_dap::model::VariablesRef>
+pub fn perl_dap::backend::EvaluateResult::clone(&self) -> perl_dap::backend::EvaluateResult
+pub fn perl_dap::backend::EvaluateResult::eq(&self, other: &perl_dap::backend::EvaluateResult) -> bool
+pub fn perl_dap::backend::EvaluateResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::ExternalPeerLaunchConfig
+pub perl_dap::backend::ExternalPeerLaunchConfig::control: perl_dap::backend::capabilities::ControlMode
+pub perl_dap::backend::ExternalPeerLaunchConfig::host: alloc::string::String
+pub perl_dap::backend::ExternalPeerLaunchConfig::kind: perl_dap::backend::peer_launch::ExternalDebuggerKind
+pub perl_dap::backend::ExternalPeerLaunchConfig::mode: perl_dap::backend::peer_launch::PeerRendezvousMode
+pub perl_dap::backend::ExternalPeerLaunchConfig::port: u16
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::from_launch_arguments(args: &serde_json::value::Value) -> core::option::Option<Self>
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::clone(&self) -> perl_dap::backend::peer_launch::ExternalPeerLaunchConfig
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::eq(&self, other: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> bool
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::default() -> Self
+pub fn perl_dap::backend::peer_launch::ExternalPeerLaunchConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::InitializeBackendParams
+pub perl_dap::backend::InitializeBackendParams::adapter_id: alloc::string::String
+pub perl_dap::backend::InitializeBackendParams::client_id: core::option::Option<alloc::string::String>
+pub perl_dap::backend::InitializeBackendParams::columns_start_at_1: bool
+pub perl_dap::backend::InitializeBackendParams::lines_start_at_1: bool
+pub fn perl_dap::backend::InitializeBackendParams::clone(&self) -> perl_dap::backend::InitializeBackendParams
+pub fn perl_dap::backend::InitializeBackendParams::eq(&self, other: &perl_dap::backend::InitializeBackendParams) -> bool
+pub fn perl_dap::backend::InitializeBackendParams::default() -> perl_dap::backend::InitializeBackendParams
+pub fn perl_dap::backend::InitializeBackendParams::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::LaunchBackendParams
+pub perl_dap::backend::LaunchBackendParams::args: alloc::vec::Vec<alloc::string::String>
+pub perl_dap::backend::LaunchBackendParams::cwd: core::option::Option<std::path::PathBuf>
+pub perl_dap::backend::LaunchBackendParams::env: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub perl_dap::backend::LaunchBackendParams::include_paths: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::backend::LaunchBackendParams::program: std::path::PathBuf
+pub perl_dap::backend::LaunchBackendParams::stop_on_entry: bool
+pub fn perl_dap::backend::LaunchBackendParams::clone(&self) -> perl_dap::backend::LaunchBackendParams
+pub fn perl_dap::backend::LaunchBackendParams::eq(&self, other: &perl_dap::backend::LaunchBackendParams) -> bool
+pub fn perl_dap::backend::LaunchBackendParams::default() -> perl_dap::backend::LaunchBackendParams
+pub fn perl_dap::backend::LaunchBackendParams::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::LaunchResult
+pub perl_dap::backend::LaunchResult::success: bool
+pub fn perl_dap::backend::LaunchResult::clone(&self) -> perl_dap::backend::LaunchResult
+pub fn perl_dap::backend::LaunchResult::eq(&self, other: &perl_dap::backend::LaunchResult) -> bool
+pub fn perl_dap::backend::LaunchResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::MirrorPeerBridge
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::dispatch(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::go_live(&mut self, backend: alloc::boxed::Box<dyn perl_dap::backend::DebugBackend>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::has_pending_function_breakpoints(&self) -> bool
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::is_live(&self) -> bool
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::new_pending(control: perl_dap::backend::capabilities::ControlMode) -> Self
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::pending_source_count(&self) -> usize
+pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
+pub struct perl_dap::backend::PeerListenEndpoint
+pub perl_dap::backend::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
+pub perl_dap::backend::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
+pub perl_dap::backend::PeerListenEndpoint::token: alloc::string::String
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::clone(&self) -> perl_dap::backend::peer_launch::PeerListenEndpoint
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::eq(&self, other: &perl_dap::backend::peer_launch::PeerListenEndpoint) -> bool
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::SetBackendBreakpointsParams
+pub perl_dap::backend::SetBackendBreakpointsParams::breakpoints: alloc::vec::Vec<perl_dap::model::DebugBreakpoint>
+pub perl_dap::backend::SetBackendBreakpointsParams::source: perl_dap::model::DebugSource
+pub fn perl_dap::backend::SetBackendBreakpointsParams::clone(&self) -> perl_dap::backend::SetBackendBreakpointsParams
+pub fn perl_dap::backend::SetBackendBreakpointsParams::eq(&self, other: &perl_dap::backend::SetBackendBreakpointsParams) -> bool
+pub fn perl_dap::backend::SetBackendBreakpointsParams::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::SetFunctionBreakpointsParams
+pub perl_dap::backend::SetFunctionBreakpointsParams::breakpoints: alloc::vec::Vec<perl_dap::model::DebugFunctionBreakpoint>
+pub fn perl_dap::backend::SetFunctionBreakpointsParams::clone(&self) -> perl_dap::backend::SetFunctionBreakpointsParams
+pub fn perl_dap::backend::SetFunctionBreakpointsParams::eq(&self, other: &perl_dap::backend::SetFunctionBreakpointsParams) -> bool
+pub fn perl_dap::backend::SetFunctionBreakpointsParams::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::StackTraceParams
+pub perl_dap::backend::StackTraceParams::levels: core::option::Option<u32>
+pub perl_dap::backend::StackTraceParams::start_frame: core::option::Option<u32>
+pub perl_dap::backend::StackTraceParams::thread_id: perl_dap::model::ThreadId
+pub fn perl_dap::backend::StackTraceParams::clone(&self) -> perl_dap::backend::StackTraceParams
+pub fn perl_dap::backend::StackTraceParams::eq(&self, other: &perl_dap::backend::StackTraceParams) -> bool
+pub fn perl_dap::backend::StackTraceParams::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub trait perl_dap::backend::DebugBackend: core::marker::Send
+pub fn perl_dap::backend::DebugBackend::attach(&mut self, params: perl_dap::backend::AttachBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::AttachResult>
+pub fn perl_dap::backend::DebugBackend::capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::backend::DebugBackend::continue_thread(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<perl_dap::backend::ContinueResult>
+pub fn perl_dap::backend::DebugBackend::disconnect(&mut self, terminate_debuggee: bool) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::DebugBackend::drain_events(&mut self) -> alloc::vec::Vec<perl_dap::model::DebugEvent>
+pub fn perl_dap::backend::DebugBackend::evaluate(&mut self, params: perl_dap::backend::EvaluateParams) -> perl_dap::backend::BackendResult<perl_dap::backend::EvaluateResult>
+pub fn perl_dap::backend::DebugBackend::initialize(&mut self, params: perl_dap::backend::InitializeBackendParams) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::DebugBackend::is_closed(&self) -> bool
+pub fn perl_dap::backend::DebugBackend::launch(&mut self, params: perl_dap::backend::LaunchBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::LaunchResult>
+pub fn perl_dap::backend::DebugBackend::name(&self) -> &str
+pub fn perl_dap::backend::DebugBackend::next(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::DebugBackend::pause(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::DebugBackend::scopes(&mut self, frame_id: perl_dap::model::FrameId) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugScope>>
+pub fn perl_dap::backend::DebugBackend::set_breakpoints(&mut self, params: perl_dap::backend::SetBackendBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::DebugBackend::set_function_breakpoints(&mut self, params: perl_dap::backend::SetFunctionBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::DebugBackend::stack_trace(&mut self, params: perl_dap::backend::StackTraceParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugStackFrame>>
+pub fn perl_dap::backend::DebugBackend::step_in(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::DebugBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::DebugBackend::variables(&mut self, variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::attach(&mut self, _params: perl_dap::backend::AttachBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::AttachResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::continue_thread(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<perl_dap::backend::ContinueResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::disconnect(&mut self, terminate_debuggee: bool) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::drain_events(&mut self) -> alloc::vec::Vec<perl_dap::model::DebugEvent>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::evaluate(&mut self, params: perl_dap::backend::EvaluateParams) -> perl_dap::backend::BackendResult<perl_dap::backend::EvaluateResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::initialize(&mut self, _params: perl_dap::backend::InitializeBackendParams) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::is_closed(&self) -> bool
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::launch(&mut self, _params: perl_dap::backend::LaunchBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::LaunchResult>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::name(&self) -> &str
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::next(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::pause(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::scopes(&mut self, frame_id: perl_dap::model::FrameId) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugScope>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::set_breakpoints(&mut self, params: perl_dap::backend::SetBackendBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::set_function_breakpoints(&mut self, params: perl_dap::backend::SetFunctionBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::stack_trace(&mut self, params: perl_dap::backend::StackTraceParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugStackFrame>>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::step_in(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::variables(&mut self, variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::attach(&mut self, params: perl_dap::backend::AttachBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::AttachResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::continue_thread(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<perl_dap::backend::ContinueResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::disconnect(&mut self, terminate_debuggee: bool) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::evaluate(&mut self, _params: perl_dap::backend::EvaluateParams) -> perl_dap::backend::BackendResult<perl_dap::backend::EvaluateResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::initialize(&mut self, _params: perl_dap::backend::InitializeBackendParams) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::launch(&mut self, params: perl_dap::backend::LaunchBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::LaunchResult>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::name(&self) -> &str
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::next(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::pause(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::scopes(&mut self, _frame_id: perl_dap::model::FrameId) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugScope>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::set_breakpoints(&mut self, params: perl_dap::backend::SetBackendBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::set_function_breakpoints(&mut self, params: perl_dap::backend::SetFunctionBreakpointsParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::stack_trace(&mut self, _params: perl_dap::backend::StackTraceParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugStackFrame>>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_in(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::variables(&mut self, _variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
+pub fn perl_dap::backend::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
+pub fn perl_dap::backend::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
+pub fn perl_dap::backend::run_external_peer_session(stream: std::net::tcp::TcpStream, bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
+pub fn perl_dap::backend::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
+pub fn perl_dap::backend::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::static_mirror_capabilities() -> serde_json::value::Value
+pub type perl_dap::backend::BackendResult<T> = core::result::Result<T, perl_dap::backend::BackendError>
 pub mod perl_dap::breakpoint
 pub enum perl_dap::breakpoint::BreakpointError
 pub perl_dap::breakpoint::BreakpointError::LineOutOfRange(i64, usize)
@@ -366,6 +779,26 @@ pub fn perl_dap::api::AstBreakpointValidator::validate(&self, line: i64) -> perl
 pub fn perl_dap::api::AstBreakpointValidator::validate_condition(&self, line: i64, condition: &str) -> perl_dap::api::BreakpointValidation
 pub fn perl_dap::api::AstBreakpointValidator::validate_with_column(&self, line: i64, column: core::option::Option<i64>) -> perl_dap::api::BreakpointValidation
 pub fn perl_dap::breakpoint::find_nearest_valid_line(validator: &perl_dap::api::AstBreakpointValidator, line: i64, direction: perl_dap::api::SearchDirection, max_distance: core::option::Option<usize>) -> core::option::Option<i64>
+pub mod perl_dap::breakpoint_oracle
+pub struct perl_dap::breakpoint_oracle::AstBreakpointOracle
+pub fn perl_dap::breakpoint_oracle::AstBreakpointOracle::new(source: perl_dap::model::DebugSource, text: &str) -> core::result::Result<Self, perl_dap::breakpoint::BreakpointError>
+pub fn perl_dap::breakpoint_oracle::AstBreakpointOracle::breakable_line_candidates(&self) -> alloc::vec::Vec<u32>
+pub fn perl_dap::breakpoint_oracle::AstBreakpointOracle::function_candidates(&self) -> alloc::vec::Vec<perl_dap::model::DebugFunctionSymbol>
+pub fn perl_dap::breakpoint_oracle::AstBreakpointOracle::validate_source_breakpoint(&self, breakpoint: &perl_dap::model::DebugBreakpoint) -> perl_dap::breakpoint_oracle::BreakpointValidationOutcome
+pub struct perl_dap::breakpoint_oracle::BreakpointValidationOutcome
+pub perl_dap::breakpoint_oracle::BreakpointValidationOutcome::actual_line: u32
+pub perl_dap::breakpoint_oracle::BreakpointValidationOutcome::message: core::option::Option<alloc::string::String>
+pub perl_dap::breakpoint_oracle::BreakpointValidationOutcome::verified: bool
+pub fn perl_dap::breakpoint_oracle::BreakpointValidationOutcome::clone(&self) -> perl_dap::breakpoint_oracle::BreakpointValidationOutcome
+pub fn perl_dap::breakpoint_oracle::BreakpointValidationOutcome::eq(&self, other: &perl_dap::breakpoint_oracle::BreakpointValidationOutcome) -> bool
+pub fn perl_dap::breakpoint_oracle::BreakpointValidationOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub trait perl_dap::breakpoint_oracle::BreakpointOracle
+pub fn perl_dap::breakpoint_oracle::BreakpointOracle::breakable_line_candidates(&self) -> alloc::vec::Vec<u32>
+pub fn perl_dap::breakpoint_oracle::BreakpointOracle::function_candidates(&self) -> alloc::vec::Vec<perl_dap::model::DebugFunctionSymbol>
+pub fn perl_dap::breakpoint_oracle::BreakpointOracle::validate_source_breakpoint(&self, breakpoint: &perl_dap::model::DebugBreakpoint) -> perl_dap::breakpoint_oracle::BreakpointValidationOutcome
+pub fn perl_dap::breakpoint_oracle::AstBreakpointOracle::breakable_line_candidates(&self) -> alloc::vec::Vec<u32>
+pub fn perl_dap::breakpoint_oracle::AstBreakpointOracle::function_candidates(&self) -> alloc::vec::Vec<perl_dap::model::DebugFunctionSymbol>
+pub fn perl_dap::breakpoint_oracle::AstBreakpointOracle::validate_source_breakpoint(&self, breakpoint: &perl_dap::model::DebugBreakpoint) -> perl_dap::breakpoint_oracle::BreakpointValidationOutcome
 pub mod perl_dap::breakpoints
 pub struct perl_dap::breakpoints::BreakpointHitOutcome
 pub perl_dap::breakpoints::BreakpointHitOutcome::log_messages: alloc::vec::Vec<alloc::string::String>
@@ -397,10 +830,12 @@ pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoints(&self, source_pat
 pub fn perl_dap::breakpoints::BreakpointStore::is_empty(&self) -> bool
 pub fn perl_dap::breakpoints::BreakpointStore::new() -> Self
 pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit(&self, source_path: &str, line: i64) -> perl_dap::breakpoints::BreakpointHitOutcome
+pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit_with_variables(&self, source_path: &str, line: i64, variables: core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> perl_dap::breakpoints::BreakpointHitOutcome
 pub fn perl_dap::breakpoints::BreakpointStore::set_breakpoints(&self, args: &perl_dap::protocol::SetBreakpointsArguments) -> alloc::vec::Vec<perl_dap::protocol::Breakpoint>
 pub fn perl_dap::breakpoints::BreakpointStore::clone(&self) -> perl_dap::breakpoints::BreakpointStore
 pub fn perl_dap::breakpoints::BreakpointStore::default() -> Self
 pub fn perl_dap::breakpoints::BreakpointStore::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::breakpoints::interpolate_logpoint_message(template: &str, variables: &std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> alloc::string::String
 pub mod perl_dap::bridge_adapter
 pub struct perl_dap::bridge_adapter::BridgeAdapter
 pub fn perl_dap::bridge_adapter::BridgeAdapter::new() -> Self
@@ -474,6 +909,37 @@ pub fn perl_dap::config::LaunchConfiguration::deserialize<__D>(__deserializer: _
 pub fn perl_dap::configuration::create_attach_json_snippet() -> alloc::string::String
 pub fn perl_dap::configuration::create_launch_json_snippet() -> alloc::string::String
 pub mod perl_dap::debug_adapter
+pub mod perl_dap::debug_adapter::var_ref
+pub enum perl_dap::debug_adapter::var_ref::ScopeKind
+pub perl_dap::debug_adapter::var_ref::ScopeKind::Arguments = 4
+pub perl_dap::debug_adapter::var_ref::ScopeKind::Globals = 3
+pub perl_dap::debug_adapter::var_ref::ScopeKind::Locals = 1
+pub perl_dap::debug_adapter::var_ref::ScopeKind::Package = 2
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::clone(&self) -> perl_dap::debug_adapter::var_ref::ScopeKind
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::eq(&self, other: &perl_dap::debug_adapter::var_ref::ScopeKind) -> bool
+pub type perl_dap::debug_adapter::var_ref::ScopeKind::Error = perl_dap::debug_adapter::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::try_from(value: i32) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::debug_adapter::var_ref::VariableReference
+pub perl_dap::debug_adapter::var_ref::VariableReference::Child
+pub perl_dap::debug_adapter::var_ref::VariableReference::Child::index: u32
+pub perl_dap::debug_adapter::var_ref::VariableReference::Child::parent: i32
+pub perl_dap::debug_adapter::var_ref::VariableReference::EvalResult
+pub perl_dap::debug_adapter::var_ref::VariableReference::EvalResult::counter: i32
+pub perl_dap::debug_adapter::var_ref::VariableReference::Scope
+pub perl_dap::debug_adapter::var_ref::VariableReference::Scope::frame_id: i32
+pub perl_dap::debug_adapter::var_ref::VariableReference::Scope::kind: perl_dap::debug_adapter::var_ref::ScopeKind
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::decode(raw: i32) -> core::option::Option<Self>
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::encode(&self) -> core::option::Option<i32>
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::clone(&self) -> perl_dap::debug_adapter::var_ref::VariableReference
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReference) -> bool
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::debug_adapter::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::clone(&self) -> perl_dap::debug_adapter::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReferenceError) -> bool
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::debug_adapter::DapMessage
 pub perl_dap::debug_adapter::DapMessage::Event
 pub perl_dap::debug_adapter::DapMessage::Event::body: core::option::Option<serde_json::value::Value>
@@ -496,20 +962,13 @@ pub fn perl_dap::debug_adapter::DapMessage::deserialize<__D>(__deserializer: __D
 pub struct perl_dap::debug_adapter::DebugAdapter
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request_mock(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
+pub fn perl_dap::debug_adapter::DebugAdapter::handle_scopes(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
+pub fn perl_dap::debug_adapter::DebugAdapter::handle_variables(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::new() -> Self
-pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::Sender<perl_dap::debug_adapter::DapMessage>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessage>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_workspace_root(&self, root: std::path::PathBuf)
 pub fn perl_dap::debug_adapter::DebugAdapter::default() -> Self
-pub mod perl_dap::dispatcher
-pub struct perl_dap::dispatcher::DapDispatcher
-pub fn perl_dap::dispatcher::DapDispatcher::dispatch(&self, request: &perl_dap::protocol::Request) -> perl_dap::protocol::Response
-pub fn perl_dap::dispatcher::DapDispatcher::dispatch_with_events(&self, request: &perl_dap::protocol::Request) -> perl_dap::dispatcher::DispatchResult
-pub fn perl_dap::dispatcher::DapDispatcher::new() -> Self
-pub fn perl_dap::dispatcher::DapDispatcher::clone(&self) -> perl_dap::dispatcher::DapDispatcher
-pub fn perl_dap::dispatcher::DapDispatcher::default() -> Self
-pub fn perl_dap::dispatcher::DapDispatcher::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_dap::dispatcher::DispatchResult
-pub perl_dap::dispatcher::DispatchResult::events: alloc::vec::Vec<perl_dap::protocol::Event>
-pub perl_dap::dispatcher::DispatchResult::response: perl_dap::protocol::Response
+pub fn perl_dap::debug_adapter::DebugAdapter::drop(&mut self)
 pub mod perl_dap::eval
 pub enum perl_dap::eval::ValidationError
 pub perl_dap::eval::ValidationError::AssignmentOperator(alloc::string::String)
@@ -541,6 +1000,659 @@ pub fn perl_dap::inline_values::collect_inline_values(source: &str, start_line: 
 pub fn perl_dap::inline_values::collect_inline_values_with_runtime(source: &str, start_line: i64, end_line: i64, runtime_values: core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> alloc::vec::Vec<perl_dap::protocol::InlineValueText>
 pub fn perl_dap::inline_values::extract_variable_names(source: &str, start_line: i64, end_line: i64) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_dap::inline_values::format_inline_value(name: &str, raw_value: &str) -> alloc::string::String
+pub mod perl_dap::model
+pub enum perl_dap::model::DebugEvent
+pub perl_dap::model::DebugEvent::BreakpointsChanged
+pub perl_dap::model::DebugEvent::BreakpointsChanged::breakpoints: alloc::vec::Vec<perl_dap::model::ResolvedBreakpoint>
+pub perl_dap::model::DebugEvent::Continued
+pub perl_dap::model::DebugEvent::Continued::thread_id: perl_dap::model::ThreadId
+pub perl_dap::model::DebugEvent::Initialized
+pub perl_dap::model::DebugEvent::Output
+pub perl_dap::model::DebugEvent::Output::category: perl_dap::model::OutputCategory
+pub perl_dap::model::DebugEvent::Output::output: alloc::string::String
+pub perl_dap::model::DebugEvent::SourceFacts
+pub perl_dap::model::DebugEvent::SourceFacts::facts: perl_dap::model::SourceDebugFacts
+pub perl_dap::model::DebugEvent::SourceFacts::source: perl_dap::model::DebugSource
+pub perl_dap::model::DebugEvent::Stopped
+pub perl_dap::model::DebugEvent::Stopped::position: core::option::Option<perl_dap::model::DebugPosition>
+pub perl_dap::model::DebugEvent::Stopped::reason: perl_dap::model::StopReason
+pub perl_dap::model::DebugEvent::Stopped::thread_id: perl_dap::model::ThreadId
+pub perl_dap::model::DebugEvent::Terminated
+pub perl_dap::model::DebugEvent::Terminated::exit_code: core::option::Option<i64>
+pub fn perl_dap::model::DebugEvent::clone(&self) -> perl_dap::model::DebugEvent
+pub fn perl_dap::model::DebugEvent::eq(&self, other: &perl_dap::model::DebugEvent) -> bool
+pub fn perl_dap::model::DebugEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugEvent::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugEvent::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::model::OutputCategory
+pub perl_dap::model::OutputCategory::Console
+pub perl_dap::model::OutputCategory::Stderr
+pub perl_dap::model::OutputCategory::Stdout
+pub fn perl_dap::model::OutputCategory::as_dap_category(self) -> &'static str
+pub fn perl_dap::model::OutputCategory::clone(&self) -> perl_dap::model::OutputCategory
+pub fn perl_dap::model::OutputCategory::eq(&self, other: &perl_dap::model::OutputCategory) -> bool
+pub fn perl_dap::model::OutputCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::OutputCategory::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::OutputCategory::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::model::StopReason
+pub perl_dap::model::StopReason::Breakpoint
+pub perl_dap::model::StopReason::DataBreakpoint
+pub perl_dap::model::StopReason::Entry
+pub perl_dap::model::StopReason::Exception
+pub perl_dap::model::StopReason::FunctionBreakpoint
+pub perl_dap::model::StopReason::Pause
+pub perl_dap::model::StopReason::Step
+pub perl_dap::model::StopReason::Unknown(alloc::string::String)
+pub fn perl_dap::model::StopReason::clone(&self) -> perl_dap::model::StopReason
+pub fn perl_dap::model::StopReason::eq(&self, other: &perl_dap::model::StopReason) -> bool
+pub fn perl_dap::model::StopReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::StopReason::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::StopReason::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugBreakpoint
+pub perl_dap::model::DebugBreakpoint::column: core::option::Option<u32>
+pub perl_dap::model::DebugBreakpoint::condition: core::option::Option<alloc::string::String>
+pub perl_dap::model::DebugBreakpoint::hit_condition: core::option::Option<alloc::string::String>
+pub perl_dap::model::DebugBreakpoint::id: core::option::Option<i64>
+pub perl_dap::model::DebugBreakpoint::line: u32
+pub perl_dap::model::DebugBreakpoint::log_message: core::option::Option<alloc::string::String>
+pub perl_dap::model::DebugBreakpoint::source: perl_dap::model::DebugSource
+pub fn perl_dap::model::DebugBreakpoint::clone(&self) -> perl_dap::model::DebugBreakpoint
+pub fn perl_dap::model::DebugBreakpoint::eq(&self, other: &perl_dap::model::DebugBreakpoint) -> bool
+pub fn perl_dap::model::DebugBreakpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugBreakpoint::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugBreakpoint::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugFunctionBreakpoint
+pub perl_dap::model::DebugFunctionBreakpoint::condition: core::option::Option<alloc::string::String>
+pub perl_dap::model::DebugFunctionBreakpoint::name: alloc::string::String
+pub fn perl_dap::model::DebugFunctionBreakpoint::clone(&self) -> perl_dap::model::DebugFunctionBreakpoint
+pub fn perl_dap::model::DebugFunctionBreakpoint::eq(&self, other: &perl_dap::model::DebugFunctionBreakpoint) -> bool
+pub fn perl_dap::model::DebugFunctionBreakpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugFunctionBreakpoint::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugFunctionBreakpoint::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugFunctionSymbol
+pub perl_dap::model::DebugFunctionSymbol::end_line: u32
+pub perl_dap::model::DebugFunctionSymbol::name: alloc::string::String
+pub perl_dap::model::DebugFunctionSymbol::source: perl_dap::model::DebugSource
+pub perl_dap::model::DebugFunctionSymbol::start_line: u32
+pub fn perl_dap::model::DebugFunctionSymbol::clone(&self) -> perl_dap::model::DebugFunctionSymbol
+pub fn perl_dap::model::DebugFunctionSymbol::eq(&self, other: &perl_dap::model::DebugFunctionSymbol) -> bool
+pub fn perl_dap::model::DebugFunctionSymbol::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugFunctionSymbol::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugFunctionSymbol::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugPosition
+pub perl_dap::model::DebugPosition::column: core::option::Option<u32>
+pub perl_dap::model::DebugPosition::line: u32
+pub perl_dap::model::DebugPosition::source: perl_dap::model::DebugSource
+pub fn perl_dap::model::DebugPosition::clone(&self) -> perl_dap::model::DebugPosition
+pub fn perl_dap::model::DebugPosition::eq(&self, other: &perl_dap::model::DebugPosition) -> bool
+pub fn perl_dap::model::DebugPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugPosition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugPosition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugScope
+pub perl_dap::model::DebugScope::expensive: bool
+pub perl_dap::model::DebugScope::name: alloc::string::String
+pub perl_dap::model::DebugScope::variables_reference: perl_dap::model::VariablesRef
+pub fn perl_dap::model::DebugScope::clone(&self) -> perl_dap::model::DebugScope
+pub fn perl_dap::model::DebugScope::eq(&self, other: &perl_dap::model::DebugScope) -> bool
+pub fn perl_dap::model::DebugScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugScope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugScope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugSessionPacket
+pub perl_dap::model::DebugSessionPacket::breakpoints: alloc::vec::Vec<perl_dap::model::DebugBreakpoint>
+pub perl_dap::model::DebugSessionPacket::cwd: core::option::Option<std::path::PathBuf>
+pub perl_dap::model::DebugSessionPacket::function_breakpoint_regexes: alloc::vec::Vec<alloc::string::String>
+pub perl_dap::model::DebugSessionPacket::function_breakpoints: alloc::vec::Vec<alloc::string::String>
+pub perl_dap::model::DebugSessionPacket::include_paths: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::model::DebugSessionPacket::program: std::path::PathBuf
+pub perl_dap::model::DebugSessionPacket::schema: alloc::string::String
+pub perl_dap::model::DebugSessionPacket::source_facts: alloc::collections::btree::map::BTreeMap<std::path::PathBuf, perl_dap::model::SourceDebugFacts>
+pub perl_dap::model::DebugSessionPacket::watch_expressions: alloc::vec::Vec<alloc::string::String>
+pub const perl_dap::model::DebugSessionPacket::SCHEMA: &'static str
+pub fn perl_dap::model::DebugSessionPacket::new(program: impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn perl_dap::model::DebugSessionPacket::clone(&self) -> perl_dap::model::DebugSessionPacket
+pub fn perl_dap::model::DebugSessionPacket::eq(&self, other: &perl_dap::model::DebugSessionPacket) -> bool
+pub fn perl_dap::model::DebugSessionPacket::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugSessionPacket::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugSessionPacket::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugSource
+pub perl_dap::model::DebugSource::name: core::option::Option<alloc::string::String>
+pub perl_dap::model::DebugSource::path: std::path::PathBuf
+pub perl_dap::model::DebugSource::source_reference: core::option::Option<i64>
+pub fn perl_dap::model::DebugSource::from_path(path: impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn perl_dap::model::DebugSource::clone(&self) -> perl_dap::model::DebugSource
+pub fn perl_dap::model::DebugSource::eq(&self, other: &perl_dap::model::DebugSource) -> bool
+pub fn perl_dap::model::DebugSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugSource::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugStackFrame
+pub perl_dap::model::DebugStackFrame::column: u32
+pub perl_dap::model::DebugStackFrame::id: i64
+pub perl_dap::model::DebugStackFrame::line: u32
+pub perl_dap::model::DebugStackFrame::name: alloc::string::String
+pub perl_dap::model::DebugStackFrame::source: perl_dap::model::DebugSource
+pub fn perl_dap::model::DebugStackFrame::clone(&self) -> perl_dap::model::DebugStackFrame
+pub fn perl_dap::model::DebugStackFrame::eq(&self, other: &perl_dap::model::DebugStackFrame) -> bool
+pub fn perl_dap::model::DebugStackFrame::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugStackFrame::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugStackFrame::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::DebugVariable
+pub perl_dap::model::DebugVariable::indexed_variables: core::option::Option<u64>
+pub perl_dap::model::DebugVariable::name: alloc::string::String
+pub perl_dap::model::DebugVariable::named_variables: core::option::Option<u64>
+pub perl_dap::model::DebugVariable::type_name: core::option::Option<alloc::string::String>
+pub perl_dap::model::DebugVariable::value: alloc::string::String
+pub perl_dap::model::DebugVariable::variables_reference: core::option::Option<perl_dap::model::VariablesRef>
+pub fn perl_dap::model::DebugVariable::clone(&self) -> perl_dap::model::DebugVariable
+pub fn perl_dap::model::DebugVariable::eq(&self, other: &perl_dap::model::DebugVariable) -> bool
+pub fn perl_dap::model::DebugVariable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::DebugVariable::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::DebugVariable::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::FrameId(pub i64)
+pub fn perl_dap::model::FrameId::clone(&self) -> perl_dap::model::FrameId
+pub fn perl_dap::model::FrameId::cmp(&self, other: &perl_dap::model::FrameId) -> core::cmp::Ordering
+pub fn perl_dap::model::FrameId::eq(&self, other: &perl_dap::model::FrameId) -> bool
+pub fn perl_dap::model::FrameId::partial_cmp(&self, other: &perl_dap::model::FrameId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_dap::model::FrameId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::FrameId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_dap::model::FrameId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::FrameId::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::ResolvedBreakpoint
+pub perl_dap::model::ResolvedBreakpoint::actual_position: perl_dap::model::DebugPosition
+pub perl_dap::model::ResolvedBreakpoint::id: i64
+pub perl_dap::model::ResolvedBreakpoint::message: core::option::Option<alloc::string::String>
+pub perl_dap::model::ResolvedBreakpoint::verified: bool
+pub fn perl_dap::model::ResolvedBreakpoint::clone(&self) -> perl_dap::model::ResolvedBreakpoint
+pub fn perl_dap::model::ResolvedBreakpoint::eq(&self, other: &perl_dap::model::ResolvedBreakpoint) -> bool
+pub fn perl_dap::model::ResolvedBreakpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::ResolvedBreakpoint::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::ResolvedBreakpoint::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::SourceDebugFacts
+pub perl_dap::model::SourceDebugFacts::breakable_line_candidates: alloc::vec::Vec<u32>
+pub perl_dap::model::SourceDebugFacts::subroutines: alloc::vec::Vec<perl_dap::model::DebugFunctionSymbol>
+pub fn perl_dap::model::SourceDebugFacts::clone(&self) -> perl_dap::model::SourceDebugFacts
+pub fn perl_dap::model::SourceDebugFacts::eq(&self, other: &perl_dap::model::SourceDebugFacts) -> bool
+pub fn perl_dap::model::SourceDebugFacts::default() -> perl_dap::model::SourceDebugFacts
+pub fn perl_dap::model::SourceDebugFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::SourceDebugFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::SourceDebugFacts::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::ThreadId(pub i64)
+pub fn perl_dap::model::ThreadId::clone(&self) -> perl_dap::model::ThreadId
+pub fn perl_dap::model::ThreadId::cmp(&self, other: &perl_dap::model::ThreadId) -> core::cmp::Ordering
+pub fn perl_dap::model::ThreadId::eq(&self, other: &perl_dap::model::ThreadId) -> bool
+pub fn perl_dap::model::ThreadId::partial_cmp(&self, other: &perl_dap::model::ThreadId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_dap::model::ThreadId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::ThreadId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_dap::model::ThreadId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::ThreadId::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::model::VariablesRef(pub i64)
+pub const perl_dap::model::VariablesRef::NONE: perl_dap::model::VariablesRef
+pub fn perl_dap::model::VariablesRef::is_expandable(self) -> bool
+pub fn perl_dap::model::VariablesRef::clone(&self) -> perl_dap::model::VariablesRef
+pub fn perl_dap::model::VariablesRef::cmp(&self, other: &perl_dap::model::VariablesRef) -> core::cmp::Ordering
+pub fn perl_dap::model::VariablesRef::eq(&self, other: &perl_dap::model::VariablesRef) -> bool
+pub fn perl_dap::model::VariablesRef::partial_cmp(&self, other: &perl_dap::model::VariablesRef) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_dap::model::VariablesRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::model::VariablesRef::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_dap::model::VariablesRef::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::model::VariablesRef::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_dap::peer_protocol
+pub mod perl_dap::peer_protocol::capabilities
+pub struct perl_dap::peer_protocol::capabilities::HostReportedCapabilities
+pub perl_dap::peer_protocol::capabilities::HostReportedCapabilities::wants_breakpoints: bool
+pub perl_dap::peer_protocol::capabilities::HostReportedCapabilities::wants_output: bool
+pub perl_dap::peer_protocol::capabilities::HostReportedCapabilities::wants_source_facts: bool
+pub perl_dap::peer_protocol::capabilities::HostReportedCapabilities::wants_stack: bool
+pub perl_dap::peer_protocol::capabilities::HostReportedCapabilities::wants_variables: bool
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::clone(&self) -> perl_dap::peer_protocol::capabilities::HostReportedCapabilities
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::eq(&self, other: &perl_dap::peer_protocol::capabilities::HostReportedCapabilities) -> bool
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::default() -> Self
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::capabilities::PeerReportedCapabilities
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_condition_breakpoints: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_continue: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_evaluate: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_list_stack: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_list_variables: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_pause: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_report_breakable_lines: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_report_subroutines: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_set_breakpoints: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_set_function_breakpoints: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_step: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::control_mode: perl_dap::backend::capabilities::ControlMode
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::to_backend_capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::clone(&self) -> perl_dap::peer_protocol::capabilities::PeerReportedCapabilities
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::eq(&self, other: &perl_dap::peer_protocol::capabilities::PeerReportedCapabilities) -> bool
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::default() -> perl_dap::peer_protocol::capabilities::PeerReportedCapabilities
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_dap::peer_protocol::command
+pub const perl_dap::peer_protocol::command::CONTINUE: &str
+pub const perl_dap::peer_protocol::command::DISCONNECT: &str
+pub const perl_dap::peer_protocol::command::EVALUATE: &str
+pub const perl_dap::peer_protocol::command::GOODBYE: &str
+pub const perl_dap::peer_protocol::command::HELLO: &str
+pub const perl_dap::peer_protocol::command::NEXT: &str
+pub const perl_dap::peer_protocol::command::PAUSE: &str
+pub const perl_dap::peer_protocol::command::SCOPES: &str
+pub const perl_dap::peer_protocol::command::SET_BREAKPOINTS: &str
+pub const perl_dap::peer_protocol::command::SET_FUNCTION_BREAKPOINTS: &str
+pub const perl_dap::peer_protocol::command::STACK_TRACE: &str
+pub const perl_dap::peer_protocol::command::STEP_IN: &str
+pub const perl_dap::peer_protocol::command::STEP_OUT: &str
+pub const perl_dap::peer_protocol::command::VARIABLES: &str
+pub mod perl_dap::peer_protocol::event
+pub const perl_dap::peer_protocol::event::BREAKPOINTS_CHANGED: &str
+pub const perl_dap::peer_protocol::event::CONTINUED: &str
+pub const perl_dap::peer_protocol::event::INITIALIZED: &str
+pub const perl_dap::peer_protocol::event::OUTPUT: &str
+pub const perl_dap::peer_protocol::event::SOURCE_FACTS: &str
+pub const perl_dap::peer_protocol::event::STOPPED: &str
+pub const perl_dap::peer_protocol::event::TERMINATED: &str
+pub mod perl_dap::peer_protocol::framing
+pub enum perl_dap::peer_protocol::framing::PeerFrameError
+pub perl_dap::peer_protocol::framing::PeerFrameError::Framing(perl_lsp_rs_core::transport::framing::FramingError)
+pub perl_dap::peer_protocol::framing::PeerFrameError::Json(alloc::string::String)
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::from(source: perl_lsp_rs_core::transport::framing::FramingError) -> Self
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::peer_protocol::framing::PeerFrameDecoder
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::new() -> Self
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::push(&mut self, bytes: &[u8])
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::try_next(&mut self) -> core::result::Result<core::option::Option<perl_dap::peer_protocol::message::PeerMessage>, perl_dap::peer_protocol::framing::PeerFrameError>
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::default() -> perl_dap::peer_protocol::framing::PeerFrameDecoder
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::framing::encode_message(msg: &perl_dap::peer_protocol::message::PeerMessage) -> core::result::Result<alloc::vec::Vec<u8>, perl_dap::peer_protocol::framing::PeerFrameError>
+pub mod perl_dap::peer_protocol::message
+pub mod perl_dap::peer_protocol::message::command
+pub const perl_dap::peer_protocol::message::command::CONTINUE: &str
+pub const perl_dap::peer_protocol::message::command::DISCONNECT: &str
+pub const perl_dap::peer_protocol::message::command::EVALUATE: &str
+pub const perl_dap::peer_protocol::message::command::GOODBYE: &str
+pub const perl_dap::peer_protocol::message::command::HELLO: &str
+pub const perl_dap::peer_protocol::message::command::NEXT: &str
+pub const perl_dap::peer_protocol::message::command::PAUSE: &str
+pub const perl_dap::peer_protocol::message::command::SCOPES: &str
+pub const perl_dap::peer_protocol::message::command::SET_BREAKPOINTS: &str
+pub const perl_dap::peer_protocol::message::command::SET_FUNCTION_BREAKPOINTS: &str
+pub const perl_dap::peer_protocol::message::command::STACK_TRACE: &str
+pub const perl_dap::peer_protocol::message::command::STEP_IN: &str
+pub const perl_dap::peer_protocol::message::command::STEP_OUT: &str
+pub const perl_dap::peer_protocol::message::command::VARIABLES: &str
+pub mod perl_dap::peer_protocol::message::event
+pub const perl_dap::peer_protocol::message::event::BREAKPOINTS_CHANGED: &str
+pub const perl_dap::peer_protocol::message::event::CONTINUED: &str
+pub const perl_dap::peer_protocol::message::event::INITIALIZED: &str
+pub const perl_dap::peer_protocol::message::event::OUTPUT: &str
+pub const perl_dap::peer_protocol::message::event::SOURCE_FACTS: &str
+pub const perl_dap::peer_protocol::message::event::STOPPED: &str
+pub const perl_dap::peer_protocol::message::event::TERMINATED: &str
+pub enum perl_dap::peer_protocol::message::PeerMessage
+pub perl_dap::peer_protocol::message::PeerMessage::Event(perl_dap::peer_protocol::message::PeerEvent)
+pub perl_dap::peer_protocol::message::PeerMessage::Request(perl_dap::peer_protocol::message::PeerRequest)
+pub perl_dap::peer_protocol::message::PeerMessage::Response(perl_dap::peer_protocol::message::PeerResponse)
+pub fn perl_dap::peer_protocol::message::PeerMessage::seq(&self) -> i64
+pub fn perl_dap::peer_protocol::message::PeerMessage::clone(&self) -> perl_dap::peer_protocol::message::PeerMessage
+pub fn perl_dap::peer_protocol::message::PeerMessage::eq(&self, other: &perl_dap::peer_protocol::message::PeerMessage) -> bool
+pub fn perl_dap::peer_protocol::message::PeerMessage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerMessage::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerMessage::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::message::PeerEvent
+pub perl_dap::peer_protocol::message::PeerEvent::body: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::message::PeerEvent::event: alloc::string::String
+pub perl_dap::peer_protocol::message::PeerEvent::seq: i64
+pub fn perl_dap::peer_protocol::message::PeerEvent::clone(&self) -> perl_dap::peer_protocol::message::PeerEvent
+pub fn perl_dap::peer_protocol::message::PeerEvent::eq(&self, other: &perl_dap::peer_protocol::message::PeerEvent) -> bool
+pub fn perl_dap::peer_protocol::message::PeerEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerEvent::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerEvent::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::message::PeerRequest
+pub perl_dap::peer_protocol::message::PeerRequest::arguments: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::message::PeerRequest::command: alloc::string::String
+pub perl_dap::peer_protocol::message::PeerRequest::seq: i64
+pub fn perl_dap::peer_protocol::message::PeerRequest::clone(&self) -> perl_dap::peer_protocol::message::PeerRequest
+pub fn perl_dap::peer_protocol::message::PeerRequest::eq(&self, other: &perl_dap::peer_protocol::message::PeerRequest) -> bool
+pub fn perl_dap::peer_protocol::message::PeerRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerRequest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::message::PeerResponse
+pub perl_dap::peer_protocol::message::PeerResponse::body: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::message::PeerResponse::command: alloc::string::String
+pub perl_dap::peer_protocol::message::PeerResponse::message: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::message::PeerResponse::request_seq: i64
+pub perl_dap::peer_protocol::message::PeerResponse::seq: i64
+pub perl_dap::peer_protocol::message::PeerResponse::success: bool
+pub fn perl_dap::peer_protocol::message::PeerResponse::clone(&self) -> perl_dap::peer_protocol::message::PeerResponse
+pub fn perl_dap::peer_protocol::message::PeerResponse::eq(&self, other: &perl_dap::peer_protocol::message::PeerResponse) -> bool
+pub fn perl_dap::peer_protocol::message::PeerResponse::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerResponse::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerResponse::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_dap::peer_protocol::payloads
+pub struct perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody
+pub perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody::breakpoints: alloc::vec::Vec<perl_dap::peer_protocol::payloads::WireResolvedBreakpoint>
+pub fn perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody::clone(&self) -> perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody
+pub fn perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody::eq(&self, other: &perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::BreakpointsChangedEventBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::ContinuedEventBody
+pub perl_dap::peer_protocol::payloads::ContinuedEventBody::thread_id: i64
+pub fn perl_dap::peer_protocol::payloads::ContinuedEventBody::clone(&self) -> perl_dap::peer_protocol::payloads::ContinuedEventBody
+pub fn perl_dap::peer_protocol::payloads::ContinuedEventBody::eq(&self, other: &perl_dap::peer_protocol::payloads::ContinuedEventBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::ContinuedEventBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::ContinuedEventBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::ContinuedEventBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::EvaluateArgs
+pub perl_dap::peer_protocol::payloads::EvaluateArgs::context: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::EvaluateArgs::expression: alloc::string::String
+pub perl_dap::peer_protocol::payloads::EvaluateArgs::frame_id: core::option::Option<i64>
+pub fn perl_dap::peer_protocol::payloads::EvaluateArgs::clone(&self) -> perl_dap::peer_protocol::payloads::EvaluateArgs
+pub fn perl_dap::peer_protocol::payloads::EvaluateArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::EvaluateArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::EvaluateArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::EvaluateArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::EvaluateArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::EvaluateResponseBody
+pub perl_dap::peer_protocol::payloads::EvaluateResponseBody::result: alloc::string::String
+pub perl_dap::peer_protocol::payloads::EvaluateResponseBody::type_name: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::EvaluateResponseBody::variables_reference: i64
+pub fn perl_dap::peer_protocol::payloads::EvaluateResponseBody::clone(&self) -> perl_dap::peer_protocol::payloads::EvaluateResponseBody
+pub fn perl_dap::peer_protocol::payloads::EvaluateResponseBody::eq(&self, other: &perl_dap::peer_protocol::payloads::EvaluateResponseBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::EvaluateResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::EvaluateResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::EvaluateResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::HelloArgs
+pub perl_dap::peer_protocol::payloads::HelloArgs::capabilities: perl_dap::peer_protocol::capabilities::PeerReportedCapabilities
+pub perl_dap::peer_protocol::payloads::HelloArgs::peer: alloc::string::String
+pub perl_dap::peer_protocol::payloads::HelloArgs::peer_version: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::HelloArgs::protocol_version: alloc::string::String
+pub perl_dap::peer_protocol::payloads::HelloArgs::token: core::option::Option<alloc::string::String>
+pub fn perl_dap::peer_protocol::payloads::HelloArgs::clone(&self) -> perl_dap::peer_protocol::payloads::HelloArgs
+pub fn perl_dap::peer_protocol::payloads::HelloArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::HelloArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::HelloArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::HelloArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::HelloArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::HelloResponseBody
+pub perl_dap::peer_protocol::payloads::HelloResponseBody::capabilities: perl_dap::peer_protocol::capabilities::HostReportedCapabilities
+pub perl_dap::peer_protocol::payloads::HelloResponseBody::protocol_version: alloc::string::String
+pub perl_dap::peer_protocol::payloads::HelloResponseBody::session_id: alloc::string::String
+pub fn perl_dap::peer_protocol::payloads::HelloResponseBody::clone(&self) -> perl_dap::peer_protocol::payloads::HelloResponseBody
+pub fn perl_dap::peer_protocol::payloads::HelloResponseBody::eq(&self, other: &perl_dap::peer_protocol::payloads::HelloResponseBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::HelloResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::HelloResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::HelloResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::OutputEventBody
+pub perl_dap::peer_protocol::payloads::OutputEventBody::category: alloc::string::String
+pub perl_dap::peer_protocol::payloads::OutputEventBody::output: alloc::string::String
+pub fn perl_dap::peer_protocol::payloads::OutputEventBody::clone(&self) -> perl_dap::peer_protocol::payloads::OutputEventBody
+pub fn perl_dap::peer_protocol::payloads::OutputEventBody::eq(&self, other: &perl_dap::peer_protocol::payloads::OutputEventBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::OutputEventBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::OutputEventBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::OutputEventBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::ScopesArgs
+pub perl_dap::peer_protocol::payloads::ScopesArgs::frame_id: i64
+pub fn perl_dap::peer_protocol::payloads::ScopesArgs::clone(&self) -> perl_dap::peer_protocol::payloads::ScopesArgs
+pub fn perl_dap::peer_protocol::payloads::ScopesArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::ScopesArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::ScopesArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::ScopesArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::ScopesArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::ScopesResponseBody
+pub perl_dap::peer_protocol::payloads::ScopesResponseBody::scopes: alloc::vec::Vec<perl_dap::peer_protocol::payloads::WireScope>
+pub fn perl_dap::peer_protocol::payloads::ScopesResponseBody::clone(&self) -> perl_dap::peer_protocol::payloads::ScopesResponseBody
+pub fn perl_dap::peer_protocol::payloads::ScopesResponseBody::eq(&self, other: &perl_dap::peer_protocol::payloads::ScopesResponseBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::ScopesResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::ScopesResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::ScopesResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::SetBreakpointsArgs
+pub perl_dap::peer_protocol::payloads::SetBreakpointsArgs::breakpoints: alloc::vec::Vec<perl_dap::peer_protocol::payloads::WireSourceBreakpoint>
+pub perl_dap::peer_protocol::payloads::SetBreakpointsArgs::source: perl_dap::peer_protocol::payloads::WireSource
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsArgs::clone(&self) -> perl_dap::peer_protocol::payloads::SetBreakpointsArgs
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::SetBreakpointsArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody
+pub perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody::breakpoints: alloc::vec::Vec<perl_dap::peer_protocol::payloads::WireResolvedBreakpoint>
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody::clone(&self) -> perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody::eq(&self, other: &perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::SetBreakpointsResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs
+pub perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs::names: alloc::vec::Vec<alloc::string::String>
+pub fn perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs::clone(&self) -> perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs
+pub fn perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::SetFunctionBreakpointsArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::SourceFactsEventBody
+pub perl_dap::peer_protocol::payloads::SourceFactsEventBody::breakable_lines: alloc::vec::Vec<u32>
+pub perl_dap::peer_protocol::payloads::SourceFactsEventBody::source: perl_dap::peer_protocol::payloads::WireSource
+pub perl_dap::peer_protocol::payloads::SourceFactsEventBody::subroutines: alloc::vec::Vec<perl_dap::peer_protocol::payloads::WireSubroutine>
+pub fn perl_dap::peer_protocol::payloads::SourceFactsEventBody::clone(&self) -> perl_dap::peer_protocol::payloads::SourceFactsEventBody
+pub fn perl_dap::peer_protocol::payloads::SourceFactsEventBody::eq(&self, other: &perl_dap::peer_protocol::payloads::SourceFactsEventBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::SourceFactsEventBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::SourceFactsEventBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::SourceFactsEventBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::StackTraceArgs
+pub perl_dap::peer_protocol::payloads::StackTraceArgs::levels: core::option::Option<u32>
+pub perl_dap::peer_protocol::payloads::StackTraceArgs::start_frame: core::option::Option<u32>
+pub perl_dap::peer_protocol::payloads::StackTraceArgs::thread_id: i64
+pub fn perl_dap::peer_protocol::payloads::StackTraceArgs::clone(&self) -> perl_dap::peer_protocol::payloads::StackTraceArgs
+pub fn perl_dap::peer_protocol::payloads::StackTraceArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::StackTraceArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::StackTraceArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::StackTraceArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::StackTraceArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::StackTraceResponseBody
+pub perl_dap::peer_protocol::payloads::StackTraceResponseBody::stack_frames: alloc::vec::Vec<perl_dap::peer_protocol::payloads::WireStackFrame>
+pub fn perl_dap::peer_protocol::payloads::StackTraceResponseBody::clone(&self) -> perl_dap::peer_protocol::payloads::StackTraceResponseBody
+pub fn perl_dap::peer_protocol::payloads::StackTraceResponseBody::eq(&self, other: &perl_dap::peer_protocol::payloads::StackTraceResponseBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::StackTraceResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::StackTraceResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::StackTraceResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::StoppedEventBody
+pub perl_dap::peer_protocol::payloads::StoppedEventBody::column: core::option::Option<u32>
+pub perl_dap::peer_protocol::payloads::StoppedEventBody::line: core::option::Option<u32>
+pub perl_dap::peer_protocol::payloads::StoppedEventBody::reason: alloc::string::String
+pub perl_dap::peer_protocol::payloads::StoppedEventBody::source: core::option::Option<perl_dap::peer_protocol::payloads::WireSource>
+pub perl_dap::peer_protocol::payloads::StoppedEventBody::thread_id: i64
+pub fn perl_dap::peer_protocol::payloads::StoppedEventBody::clone(&self) -> perl_dap::peer_protocol::payloads::StoppedEventBody
+pub fn perl_dap::peer_protocol::payloads::StoppedEventBody::eq(&self, other: &perl_dap::peer_protocol::payloads::StoppedEventBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::StoppedEventBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::StoppedEventBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::StoppedEventBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::TerminatedEventBody
+pub perl_dap::peer_protocol::payloads::TerminatedEventBody::exit_code: core::option::Option<i64>
+pub fn perl_dap::peer_protocol::payloads::TerminatedEventBody::clone(&self) -> perl_dap::peer_protocol::payloads::TerminatedEventBody
+pub fn perl_dap::peer_protocol::payloads::TerminatedEventBody::eq(&self, other: &perl_dap::peer_protocol::payloads::TerminatedEventBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::TerminatedEventBody::default() -> perl_dap::peer_protocol::payloads::TerminatedEventBody
+pub fn perl_dap::peer_protocol::payloads::TerminatedEventBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::TerminatedEventBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::TerminatedEventBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::ThreadArgs
+pub perl_dap::peer_protocol::payloads::ThreadArgs::thread_id: i64
+pub fn perl_dap::peer_protocol::payloads::ThreadArgs::clone(&self) -> perl_dap::peer_protocol::payloads::ThreadArgs
+pub fn perl_dap::peer_protocol::payloads::ThreadArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::ThreadArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::ThreadArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::ThreadArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::ThreadArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::VariablesArgs
+pub perl_dap::peer_protocol::payloads::VariablesArgs::variables_reference: i64
+pub fn perl_dap::peer_protocol::payloads::VariablesArgs::clone(&self) -> perl_dap::peer_protocol::payloads::VariablesArgs
+pub fn perl_dap::peer_protocol::payloads::VariablesArgs::eq(&self, other: &perl_dap::peer_protocol::payloads::VariablesArgs) -> bool
+pub fn perl_dap::peer_protocol::payloads::VariablesArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::VariablesArgs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::VariablesArgs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::VariablesResponseBody
+pub perl_dap::peer_protocol::payloads::VariablesResponseBody::variables: alloc::vec::Vec<perl_dap::peer_protocol::payloads::WireVariable>
+pub fn perl_dap::peer_protocol::payloads::VariablesResponseBody::clone(&self) -> perl_dap::peer_protocol::payloads::VariablesResponseBody
+pub fn perl_dap::peer_protocol::payloads::VariablesResponseBody::eq(&self, other: &perl_dap::peer_protocol::payloads::VariablesResponseBody) -> bool
+pub fn perl_dap::peer_protocol::payloads::VariablesResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::VariablesResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::VariablesResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::WireResolvedBreakpoint
+pub perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::column: core::option::Option<u32>
+pub perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::id: i64
+pub perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::line: u32
+pub perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::message: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::verified: bool
+pub fn perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::clone(&self) -> perl_dap::peer_protocol::payloads::WireResolvedBreakpoint
+pub fn perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::eq(&self, other: &perl_dap::peer_protocol::payloads::WireResolvedBreakpoint) -> bool
+pub fn perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::WireResolvedBreakpoint::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::WireScope
+pub perl_dap::peer_protocol::payloads::WireScope::expensive: bool
+pub perl_dap::peer_protocol::payloads::WireScope::name: alloc::string::String
+pub perl_dap::peer_protocol::payloads::WireScope::variables_reference: i64
+pub fn perl_dap::peer_protocol::payloads::WireScope::clone(&self) -> perl_dap::peer_protocol::payloads::WireScope
+pub fn perl_dap::peer_protocol::payloads::WireScope::eq(&self, other: &perl_dap::peer_protocol::payloads::WireScope) -> bool
+pub fn perl_dap::peer_protocol::payloads::WireScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::WireScope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::WireScope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::WireSource
+pub perl_dap::peer_protocol::payloads::WireSource::name: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::WireSource::path: alloc::string::String
+pub perl_dap::peer_protocol::payloads::WireSource::source_reference: core::option::Option<i64>
+pub fn perl_dap::peer_protocol::payloads::WireSource::clone(&self) -> perl_dap::peer_protocol::payloads::WireSource
+pub fn perl_dap::peer_protocol::payloads::WireSource::eq(&self, other: &perl_dap::peer_protocol::payloads::WireSource) -> bool
+pub fn perl_dap::peer_protocol::payloads::WireSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::WireSource::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::WireSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::WireSourceBreakpoint
+pub perl_dap::peer_protocol::payloads::WireSourceBreakpoint::column: core::option::Option<u32>
+pub perl_dap::peer_protocol::payloads::WireSourceBreakpoint::condition: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::WireSourceBreakpoint::hit_condition: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::WireSourceBreakpoint::line: u32
+pub perl_dap::peer_protocol::payloads::WireSourceBreakpoint::log_message: core::option::Option<alloc::string::String>
+pub fn perl_dap::peer_protocol::payloads::WireSourceBreakpoint::clone(&self) -> perl_dap::peer_protocol::payloads::WireSourceBreakpoint
+pub fn perl_dap::peer_protocol::payloads::WireSourceBreakpoint::eq(&self, other: &perl_dap::peer_protocol::payloads::WireSourceBreakpoint) -> bool
+pub fn perl_dap::peer_protocol::payloads::WireSourceBreakpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::WireSourceBreakpoint::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::WireSourceBreakpoint::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::WireStackFrame
+pub perl_dap::peer_protocol::payloads::WireStackFrame::column: u32
+pub perl_dap::peer_protocol::payloads::WireStackFrame::id: i64
+pub perl_dap::peer_protocol::payloads::WireStackFrame::line: u32
+pub perl_dap::peer_protocol::payloads::WireStackFrame::name: alloc::string::String
+pub perl_dap::peer_protocol::payloads::WireStackFrame::source: perl_dap::peer_protocol::payloads::WireSource
+pub fn perl_dap::peer_protocol::payloads::WireStackFrame::clone(&self) -> perl_dap::peer_protocol::payloads::WireStackFrame
+pub fn perl_dap::peer_protocol::payloads::WireStackFrame::eq(&self, other: &perl_dap::peer_protocol::payloads::WireStackFrame) -> bool
+pub fn perl_dap::peer_protocol::payloads::WireStackFrame::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::WireStackFrame::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::WireStackFrame::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::WireSubroutine
+pub perl_dap::peer_protocol::payloads::WireSubroutine::end_line: u32
+pub perl_dap::peer_protocol::payloads::WireSubroutine::name: alloc::string::String
+pub perl_dap::peer_protocol::payloads::WireSubroutine::source: perl_dap::peer_protocol::payloads::WireSource
+pub perl_dap::peer_protocol::payloads::WireSubroutine::start_line: u32
+pub fn perl_dap::peer_protocol::payloads::WireSubroutine::clone(&self) -> perl_dap::peer_protocol::payloads::WireSubroutine
+pub fn perl_dap::peer_protocol::payloads::WireSubroutine::eq(&self, other: &perl_dap::peer_protocol::payloads::WireSubroutine) -> bool
+pub fn perl_dap::peer_protocol::payloads::WireSubroutine::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::WireSubroutine::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::WireSubroutine::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::payloads::WireVariable
+pub perl_dap::peer_protocol::payloads::WireVariable::indexed_variables: core::option::Option<u64>
+pub perl_dap::peer_protocol::payloads::WireVariable::name: alloc::string::String
+pub perl_dap::peer_protocol::payloads::WireVariable::named_variables: core::option::Option<u64>
+pub perl_dap::peer_protocol::payloads::WireVariable::type_name: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::payloads::WireVariable::value: alloc::string::String
+pub perl_dap::peer_protocol::payloads::WireVariable::variables_reference: i64
+pub fn perl_dap::peer_protocol::payloads::WireVariable::clone(&self) -> perl_dap::peer_protocol::payloads::WireVariable
+pub fn perl_dap::peer_protocol::payloads::WireVariable::eq(&self, other: &perl_dap::peer_protocol::payloads::WireVariable) -> bool
+pub fn perl_dap::peer_protocol::payloads::WireVariable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::payloads::WireVariable::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::payloads::WireVariable::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::peer_protocol::PeerFrameError
+pub perl_dap::peer_protocol::PeerFrameError::Framing(perl_lsp_rs_core::transport::framing::FramingError)
+pub perl_dap::peer_protocol::PeerFrameError::Json(alloc::string::String)
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::from(source: perl_lsp_rs_core::transport::framing::FramingError) -> Self
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::peer_protocol::PeerMessage
+pub perl_dap::peer_protocol::PeerMessage::Event(perl_dap::peer_protocol::message::PeerEvent)
+pub perl_dap::peer_protocol::PeerMessage::Request(perl_dap::peer_protocol::message::PeerRequest)
+pub perl_dap::peer_protocol::PeerMessage::Response(perl_dap::peer_protocol::message::PeerResponse)
+pub fn perl_dap::peer_protocol::message::PeerMessage::seq(&self) -> i64
+pub fn perl_dap::peer_protocol::message::PeerMessage::clone(&self) -> perl_dap::peer_protocol::message::PeerMessage
+pub fn perl_dap::peer_protocol::message::PeerMessage::eq(&self, other: &perl_dap::peer_protocol::message::PeerMessage) -> bool
+pub fn perl_dap::peer_protocol::message::PeerMessage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerMessage::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerMessage::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::HostReportedCapabilities
+pub perl_dap::peer_protocol::HostReportedCapabilities::wants_breakpoints: bool
+pub perl_dap::peer_protocol::HostReportedCapabilities::wants_output: bool
+pub perl_dap::peer_protocol::HostReportedCapabilities::wants_source_facts: bool
+pub perl_dap::peer_protocol::HostReportedCapabilities::wants_stack: bool
+pub perl_dap::peer_protocol::HostReportedCapabilities::wants_variables: bool
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::clone(&self) -> perl_dap::peer_protocol::capabilities::HostReportedCapabilities
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::eq(&self, other: &perl_dap::peer_protocol::capabilities::HostReportedCapabilities) -> bool
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::default() -> Self
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::capabilities::HostReportedCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::PeerEvent
+pub perl_dap::peer_protocol::PeerEvent::body: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::PeerEvent::event: alloc::string::String
+pub perl_dap::peer_protocol::PeerEvent::seq: i64
+pub fn perl_dap::peer_protocol::message::PeerEvent::clone(&self) -> perl_dap::peer_protocol::message::PeerEvent
+pub fn perl_dap::peer_protocol::message::PeerEvent::eq(&self, other: &perl_dap::peer_protocol::message::PeerEvent) -> bool
+pub fn perl_dap::peer_protocol::message::PeerEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerEvent::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerEvent::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::PeerFrameDecoder
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::new() -> Self
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::push(&mut self, bytes: &[u8])
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::try_next(&mut self) -> core::result::Result<core::option::Option<perl_dap::peer_protocol::message::PeerMessage>, perl_dap::peer_protocol::framing::PeerFrameError>
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::default() -> perl_dap::peer_protocol::framing::PeerFrameDecoder
+pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::peer_protocol::PeerReportedCapabilities
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_condition_breakpoints: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_continue: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_evaluate: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_list_stack: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_list_variables: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_pause: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_report_breakable_lines: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_report_subroutines: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_set_breakpoints: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_set_function_breakpoints: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_step: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::control_mode: perl_dap::backend::capabilities::ControlMode
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::to_backend_capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::clone(&self) -> perl_dap::peer_protocol::capabilities::PeerReportedCapabilities
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::eq(&self, other: &perl_dap::peer_protocol::capabilities::PeerReportedCapabilities) -> bool
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::default() -> perl_dap::peer_protocol::capabilities::PeerReportedCapabilities
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::PeerRequest
+pub perl_dap::peer_protocol::PeerRequest::arguments: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::PeerRequest::command: alloc::string::String
+pub perl_dap::peer_protocol::PeerRequest::seq: i64
+pub fn perl_dap::peer_protocol::message::PeerRequest::clone(&self) -> perl_dap::peer_protocol::message::PeerRequest
+pub fn perl_dap::peer_protocol::message::PeerRequest::eq(&self, other: &perl_dap::peer_protocol::message::PeerRequest) -> bool
+pub fn perl_dap::peer_protocol::message::PeerRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerRequest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::peer_protocol::PeerResponse
+pub perl_dap::peer_protocol::PeerResponse::body: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::PeerResponse::command: alloc::string::String
+pub perl_dap::peer_protocol::PeerResponse::message: core::option::Option<alloc::string::String>
+pub perl_dap::peer_protocol::PeerResponse::request_seq: i64
+pub perl_dap::peer_protocol::PeerResponse::seq: i64
+pub perl_dap::peer_protocol::PeerResponse::success: bool
+pub fn perl_dap::peer_protocol::message::PeerResponse::clone(&self) -> perl_dap::peer_protocol::message::PeerResponse
+pub fn perl_dap::peer_protocol::message::PeerResponse::eq(&self, other: &perl_dap::peer_protocol::message::PeerResponse) -> bool
+pub fn perl_dap::peer_protocol::message::PeerResponse::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerResponse::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerResponse::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_dap::peer_protocol::PROTOCOL_VERSION: &str
+pub fn perl_dap::peer_protocol::encode_message(msg: &perl_dap::peer_protocol::message::PeerMessage) -> core::result::Result<alloc::vec::Vec<u8>, perl_dap::peer_protocol::framing::PeerFrameError>
 pub mod perl_dap::platform
 pub use perl_dap::platform::detect_perlbrew_perl
 pub use perl_dap::platform::detect_plenv_perl
@@ -907,6 +2019,7 @@ pub fn perl_dap::protocol::ProtocolStackFrame::fmt(&self, f: &mut core::fmt::For
 pub fn perl_dap::protocol::ProtocolStackFrame::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ProtocolStackFrame::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::protocol::ProtocolVariable
+pub perl_dap::protocol::ProtocolVariable::evaluate_name: core::option::Option<alloc::string::String>
 pub perl_dap::protocol::ProtocolVariable::indexed_variables: core::option::Option<i64>
 pub perl_dap::protocol::ProtocolVariable::name: alloc::string::String
 pub perl_dap::protocol::ProtocolVariable::named_variables: core::option::Option<i64>
@@ -952,7 +2065,9 @@ pub fn perl_dap::protocol::RestartFrameArguments::serialize<__S>(&self, __serial
 pub fn perl_dap::protocol::RestartFrameArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::protocol::Scope
 pub perl_dap::protocol::Scope::expensive: bool
+pub perl_dap::protocol::Scope::indexed_variables: core::option::Option<i64>
 pub perl_dap::protocol::Scope::name: alloc::string::String
+pub perl_dap::protocol::Scope::named_variables: core::option::Option<i64>
 pub perl_dap::protocol::Scope::presentation_hint: core::option::Option<alloc::string::String>
 pub perl_dap::protocol::Scope::variables_reference: i64
 pub fn perl_dap::protocol::Scope::clone(&self) -> perl_dap::protocol::Scope
@@ -1154,11 +2269,18 @@ pub fn perl_dap::protocol::VariablesArguments::fmt(&self, f: &mut core::fmt::For
 pub fn perl_dap::protocol::VariablesArguments::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::VariablesArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::protocol::VariablesResponseBody
+pub perl_dap::protocol::VariablesResponseBody::total_variables: core::option::Option<i64>
 pub perl_dap::protocol::VariablesResponseBody::variables: alloc::vec::Vec<perl_dap::protocol::ProtocolVariable>
 pub fn perl_dap::protocol::VariablesResponseBody::clone(&self) -> perl_dap::protocol::VariablesResponseBody
 pub fn perl_dap::protocol::VariablesResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::VariablesResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::VariablesResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_dap::ptkdb_bootstrap
+pub fn perl_dap::ptkdb_bootstrap::escape_perl_single_quoted(s: &str) -> alloc::string::String
+pub fn perl_dap::ptkdb_bootstrap::perl_single_quoted(s: &str) -> alloc::string::String
+pub fn perl_dap::ptkdb_bootstrap::render_env(display: core::option::Option<&str>) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn perl_dap::ptkdb_bootstrap::render_launch_command(packet: &perl_dap::model::DebugSessionPacket) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_dap::ptkdb_bootstrap::render_ptkdbrc(packet: &perl_dap::model::DebugSessionPacket, stop_on_entry: bool) -> alloc::string::String
 pub mod perl_dap::security
 pub enum perl_dap::security::SecurityError
 pub perl_dap::security::SecurityError::ExcessiveTimeout(u32)
@@ -1194,6 +2316,26 @@ pub perl_dap::server::DapServer::config: perl_dap::DapConfig
 pub fn perl_dap::DapServer::new(config: perl_dap::DapConfig) -> anyhow::Result<Self>
 pub fn perl_dap::DapServer::run(&mut self) -> anyhow::Result<()>
 pub fn perl_dap::DapServer::run_socket(&mut self, port: u16) -> anyhow::Result<()>
+pub struct perl_dap::server::DapSocketBindError
+pub perl_dap::server::DapSocketBindError::port: u16
+pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_dap::session_plan
+pub struct perl_dap::session_plan::DebugSessionPlanBuilder
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::breakpoint(self, breakpoint: perl_dap::model::DebugBreakpoint) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::build(self) -> perl_dap::model::DebugSessionPacket
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::cwd(self, cwd: impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::function_breakpoint(self, name: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::function_breakpoint_regex(self, regex: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::include_paths(self, paths: alloc::vec::Vec<std::path::PathBuf>) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::new(program: impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::source_facts(self, path: impl core::convert::Into<std::path::PathBuf>, facts: perl_dap::model::SourceDebugFacts) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::source_facts_from_text(self, source: &perl_dap::model::DebugSource, text: &str) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::to_json(self) -> core::result::Result<alloc::string::String, serde_json::error::Error>
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::watch_expression(self, expr: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::clone(&self) -> perl_dap::session_plan::DebugSessionPlanBuilder
+pub fn perl_dap::session_plan::DebugSessionPlanBuilder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::session_plan::facts_map(entries: alloc::vec::Vec<(std::path::PathBuf, perl_dap::model::SourceDebugFacts)>) -> alloc::collections::btree::map::BTreeMap<std::path::PathBuf, perl_dap::model::SourceDebugFacts>
 pub mod perl_dap::shell
 pub fn perl_dap::shell::format_command_args(args: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_dap::shell::setup_environment(include_paths: &[std::path::PathBuf]) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
@@ -1272,6 +2414,7 @@ pub fn perl_dap::stack::Source::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> 
 pub fn perl_dap::stack::Source::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::stack::Source::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::stack::StackFrame
+pub perl_dap::stack::StackFrame::arguments: alloc::vec::Vec<alloc::string::String>
 pub perl_dap::stack::StackFrame::can_restart: core::option::Option<bool>
 pub perl_dap::stack::StackFrame::column: i64
 pub perl_dap::stack::StackFrame::end_column: core::option::Option<i64>
@@ -1287,6 +2430,7 @@ pub fn perl_dap::stack::StackFrame::for_subroutine(id: i64, package: &str, sub_n
 pub fn perl_dap::stack::StackFrame::is_user_code(&self) -> bool
 pub fn perl_dap::stack::StackFrame::new(id: i64, name: impl core::convert::Into<alloc::string::String>, source: core::option::Option<perl_dap::stack::Source>, line: i64) -> Self
 pub fn perl_dap::stack::StackFrame::qualified_name(&self) -> &str
+pub fn perl_dap::stack::StackFrame::with_arguments(self, arguments: alloc::vec::Vec<alloc::string::String>) -> Self
 pub fn perl_dap::stack::StackFrame::with_column(self, column: i64) -> Self
 pub fn perl_dap::stack::StackFrame::with_end(self, end_line: i64, end_column: i64) -> Self
 pub fn perl_dap::stack::StackFrame::with_module(self, module_id: impl core::convert::Into<alloc::string::String>) -> Self
@@ -1329,8 +2473,8 @@ pub fn perl_dap::tcp_attach::DapEvent::fmt(&self, f: &mut core::fmt::Formatter<'
 pub struct perl_dap::tcp_attach::TcpAttachConfig
 pub perl_dap::tcp_attach::TcpAttachConfig::host: alloc::string::String
 pub perl_dap::tcp_attach::TcpAttachConfig::port: u16
+pub perl_dap::tcp_attach::TcpAttachConfig::resolved_addrs: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub perl_dap::tcp_attach::TcpAttachConfig::timeout_ms: core::option::Option<u32>
-pub perl_dap::tcp_attach::TcpAttachConfig::resolved_addrs: alloc::vec::Vec<std::net::SocketAddr>
 pub fn perl_dap::tcp_attach::TcpAttachConfig::new(host: alloc::string::String, port: u16) -> Self
 pub fn perl_dap::tcp_attach::TcpAttachConfig::timeout_duration(&self) -> core::time::Duration
 pub fn perl_dap::tcp_attach::TcpAttachConfig::validate(&mut self) -> anyhow::Result<()>
@@ -1375,6 +2519,7 @@ pub fn perl_dap::types::StackFrame::fmt(&self, f: &mut core::fmt::Formatter<'_>)
 pub fn perl_dap::types::StackFrame::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::types::StackFrame::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::types::Variable
+pub perl_dap::types::Variable::evaluate_name: core::option::Option<alloc::string::String>
 pub perl_dap::types::Variable::indexed_variables: core::option::Option<i32>
 pub perl_dap::types::Variable::name: alloc::string::String
 pub perl_dap::types::Variable::named_variables: core::option::Option<i32>
@@ -1423,6 +2568,37 @@ pub fn perl_dap::value::PerlValue::default() -> perl_dap::value::PerlValue
 pub fn perl_dap::value::PerlValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::value::PerlValue::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::value::PerlValue::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_dap::var_ref
+pub enum perl_dap::var_ref::ScopeKind
+pub perl_dap::var_ref::ScopeKind::Arguments = 4
+pub perl_dap::var_ref::ScopeKind::Globals = 3
+pub perl_dap::var_ref::ScopeKind::Locals = 1
+pub perl_dap::var_ref::ScopeKind::Package = 2
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::clone(&self) -> perl_dap::debug_adapter::var_ref::ScopeKind
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::eq(&self, other: &perl_dap::debug_adapter::var_ref::ScopeKind) -> bool
+pub type perl_dap::debug_adapter::var_ref::ScopeKind::Error = perl_dap::debug_adapter::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::try_from(value: i32) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::var_ref::VariableReference
+pub perl_dap::var_ref::VariableReference::Child
+pub perl_dap::var_ref::VariableReference::Child::index: u32
+pub perl_dap::var_ref::VariableReference::Child::parent: i32
+pub perl_dap::var_ref::VariableReference::EvalResult
+pub perl_dap::var_ref::VariableReference::EvalResult::counter: i32
+pub perl_dap::var_ref::VariableReference::Scope
+pub perl_dap::var_ref::VariableReference::Scope::frame_id: i32
+pub perl_dap::var_ref::VariableReference::Scope::kind: perl_dap::debug_adapter::var_ref::ScopeKind
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::decode(raw: i32) -> core::option::Option<Self>
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::encode(&self) -> core::option::Option<i32>
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::clone(&self) -> perl_dap::debug_adapter::var_ref::VariableReference
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReference) -> bool
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::clone(&self) -> perl_dap::debug_adapter::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReferenceError) -> bool
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_dap::variables
 pub enum perl_dap::variables::PerlValue
 pub perl_dap::variables::PerlValue::Array(alloc::vec::Vec<perl_dap::value::PerlValue>)
@@ -1481,6 +2657,7 @@ pub fn perl_dap::api::PerlVariableRenderer::render(&self, name: &str, value: &pe
 pub fn perl_dap::api::PerlVariableRenderer::render_children(&self, value: &perl_dap::value::PerlValue, start: usize, count: usize) -> alloc::vec::Vec<perl_dap::api::RenderedVariable>
 pub fn perl_dap::api::PerlVariableRenderer::render_with_reference(&self, name: &str, value: &perl_dap::value::PerlValue, reference_id: i64) -> perl_dap::api::RenderedVariable
 pub struct perl_dap::variables::RenderedVariable
+pub perl_dap::variables::RenderedVariable::evaluate_name: core::option::Option<alloc::string::String>
 pub perl_dap::variables::RenderedVariable::indexed_variables: core::option::Option<i64>
 pub perl_dap::variables::RenderedVariable::memory_reference: core::option::Option<alloc::string::String>
 pub perl_dap::variables::RenderedVariable::name: alloc::string::String
@@ -1491,6 +2668,7 @@ pub perl_dap::variables::RenderedVariable::value: alloc::string::String
 pub perl_dap::variables::RenderedVariable::variables_reference: i64
 pub fn perl_dap::api::RenderedVariable::is_expandable(&self) -> bool
 pub fn perl_dap::api::RenderedVariable::new(name: impl core::convert::Into<alloc::string::String>, value: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::api::RenderedVariable::with_evaluate_name(self, evaluate_name: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn perl_dap::api::RenderedVariable::with_indexed_variables(self, count: i64) -> Self
 pub fn perl_dap::api::RenderedVariable::with_named_variables(self, count: i64) -> Self
 pub fn perl_dap::api::RenderedVariable::with_reference(self, reference: i64) -> Self
@@ -1550,6 +2728,31 @@ pub fn perl_dap::DapMode::clone(&self) -> perl_dap::DapMode
 pub fn perl_dap::DapMode::eq(&self, other: &perl_dap::DapMode) -> bool
 pub fn perl_dap::DapMode::default() -> perl_dap::DapMode
 pub fn perl_dap::DapMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::ScopeKind
+pub perl_dap::ScopeKind::Arguments = 4
+pub perl_dap::ScopeKind::Globals = 3
+pub perl_dap::ScopeKind::Locals = 1
+pub perl_dap::ScopeKind::Package = 2
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::clone(&self) -> perl_dap::debug_adapter::var_ref::ScopeKind
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::eq(&self, other: &perl_dap::debug_adapter::var_ref::ScopeKind) -> bool
+pub type perl_dap::debug_adapter::var_ref::ScopeKind::Error = perl_dap::debug_adapter::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::try_from(value: i32) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::ScopeKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::VariableReference
+pub perl_dap::VariableReference::Child
+pub perl_dap::VariableReference::Child::index: u32
+pub perl_dap::VariableReference::Child::parent: i32
+pub perl_dap::VariableReference::EvalResult
+pub perl_dap::VariableReference::EvalResult::counter: i32
+pub perl_dap::VariableReference::Scope
+pub perl_dap::VariableReference::Scope::frame_id: i32
+pub perl_dap::VariableReference::Scope::kind: perl_dap::debug_adapter::var_ref::ScopeKind
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::decode(raw: i32) -> core::option::Option<Self>
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::encode(&self) -> core::option::Option<i32>
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::clone(&self) -> perl_dap::debug_adapter::var_ref::VariableReference
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReference) -> bool
+pub fn perl_dap::debug_adapter::var_ref::VariableReference::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::AttachConfiguration
 pub perl_dap::AttachConfiguration::host: alloc::string::String
 pub perl_dap::AttachConfiguration::port: u16
@@ -1626,6 +2829,7 @@ pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoints(&self, source_pat
 pub fn perl_dap::breakpoints::BreakpointStore::is_empty(&self) -> bool
 pub fn perl_dap::breakpoints::BreakpointStore::new() -> Self
 pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit(&self, source_path: &str, line: i64) -> perl_dap::breakpoints::BreakpointHitOutcome
+pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit_with_variables(&self, source_path: &str, line: i64, variables: core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> perl_dap::breakpoints::BreakpointHitOutcome
 pub fn perl_dap::breakpoints::BreakpointStore::set_breakpoints(&self, args: &perl_dap::protocol::SetBreakpointsArguments) -> alloc::vec::Vec<perl_dap::protocol::Breakpoint>
 pub fn perl_dap::breakpoints::BreakpointStore::clone(&self) -> perl_dap::breakpoints::BreakpointStore
 pub fn perl_dap::breakpoints::BreakpointStore::default() -> Self
@@ -1716,18 +2920,15 @@ pub struct perl_dap::DapConfig
 pub perl_dap::DapConfig::log_level: alloc::string::String
 pub perl_dap::DapConfig::mode: perl_dap::DapMode
 pub perl_dap::DapConfig::workspace_root: core::option::Option<std::path::PathBuf>
-pub struct perl_dap::DapDispatcher
-pub fn perl_dap::dispatcher::DapDispatcher::dispatch(&self, request: &perl_dap::protocol::Request) -> perl_dap::protocol::Response
-pub fn perl_dap::dispatcher::DapDispatcher::dispatch_with_events(&self, request: &perl_dap::protocol::Request) -> perl_dap::dispatcher::DispatchResult
-pub fn perl_dap::dispatcher::DapDispatcher::new() -> Self
-pub fn perl_dap::dispatcher::DapDispatcher::clone(&self) -> perl_dap::dispatcher::DapDispatcher
-pub fn perl_dap::dispatcher::DapDispatcher::default() -> Self
-pub fn perl_dap::dispatcher::DapDispatcher::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::DapServer
 pub perl_dap::DapServer::config: perl_dap::DapConfig
 pub fn perl_dap::DapServer::new(config: perl_dap::DapConfig) -> anyhow::Result<Self>
 pub fn perl_dap::DapServer::run(&mut self) -> anyhow::Result<()>
 pub fn perl_dap::DapServer::run_socket(&mut self, port: u16) -> anyhow::Result<()>
+pub struct perl_dap::DapSocketBindError
+pub perl_dap::DapSocketBindError::port: u16
+pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::DataBreakpoint
 pub perl_dap::DataBreakpoint::access_type: core::option::Option<alloc::string::String>
 pub perl_dap::DataBreakpoint::condition: core::option::Option<alloc::string::String>
@@ -1756,9 +2957,13 @@ pub fn perl_dap::protocol::DataBreakpointInfoResponseBody::deserialize<__D>(__de
 pub struct perl_dap::DebugAdapter
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request_mock(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
+pub fn perl_dap::debug_adapter::DebugAdapter::handle_scopes(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
+pub fn perl_dap::debug_adapter::DebugAdapter::handle_variables(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::new() -> Self
-pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::Sender<perl_dap::debug_adapter::DapMessage>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessage>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_workspace_root(&self, root: std::path::PathBuf)
 pub fn perl_dap::debug_adapter::DebugAdapter::default() -> Self
+pub fn perl_dap::debug_adapter::DebugAdapter::drop(&mut self)
 pub struct perl_dap::DisconnectArguments
 pub perl_dap::DisconnectArguments::restart: core::option::Option<bool>
 pub perl_dap::DisconnectArguments::terminate_debuggee: core::option::Option<bool>
@@ -1766,9 +2971,6 @@ pub fn perl_dap::protocol::DisconnectArguments::clone(&self) -> perl_dap::protoc
 pub fn perl_dap::protocol::DisconnectArguments::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::DisconnectArguments::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::DisconnectArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_dap::DispatchResult
-pub perl_dap::DispatchResult::events: alloc::vec::Vec<perl_dap::protocol::Event>
-pub perl_dap::DispatchResult::response: perl_dap::protocol::Response
 pub struct perl_dap::EvaluateArguments
 pub perl_dap::EvaluateArguments::allow_side_effects: core::option::Option<bool>
 pub perl_dap::EvaluateArguments::context: core::option::Option<alloc::string::String>
@@ -1962,6 +3164,7 @@ pub fn perl_dap::protocol::ProtocolStackFrame::fmt(&self, f: &mut core::fmt::For
 pub fn perl_dap::protocol::ProtocolStackFrame::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ProtocolStackFrame::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::ProtocolVariable
+pub perl_dap::ProtocolVariable::evaluate_name: core::option::Option<alloc::string::String>
 pub perl_dap::ProtocolVariable::indexed_variables: core::option::Option<i64>
 pub perl_dap::ProtocolVariable::name: alloc::string::String
 pub perl_dap::ProtocolVariable::named_variables: core::option::Option<i64>
@@ -2007,7 +3210,9 @@ pub fn perl_dap::protocol::RestartFrameArguments::serialize<__S>(&self, __serial
 pub fn perl_dap::protocol::RestartFrameArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::Scope
 pub perl_dap::Scope::expensive: bool
+pub perl_dap::Scope::indexed_variables: core::option::Option<i64>
 pub perl_dap::Scope::name: alloc::string::String
+pub perl_dap::Scope::named_variables: core::option::Option<i64>
 pub perl_dap::Scope::presentation_hint: core::option::Option<alloc::string::String>
 pub perl_dap::Scope::variables_reference: i64
 pub fn perl_dap::protocol::Scope::clone(&self) -> perl_dap::protocol::Scope
@@ -2199,6 +3404,11 @@ pub fn perl_dap::protocol::ThreadsResponseBody::clone(&self) -> perl_dap::protoc
 pub fn perl_dap::protocol::ThreadsResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::ThreadsResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ThreadsResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::clone(&self) -> perl_dap::debug_adapter::var_ref::VariableReferenceError
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReferenceError) -> bool
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::VariablesArguments
 pub perl_dap::VariablesArguments::count: core::option::Option<i64>
 pub perl_dap::VariablesArguments::filter: core::option::Option<alloc::string::String>
@@ -2209,6 +3419,7 @@ pub fn perl_dap::protocol::VariablesArguments::fmt(&self, f: &mut core::fmt::For
 pub fn perl_dap::protocol::VariablesArguments::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::VariablesArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::VariablesResponseBody
+pub perl_dap::VariablesResponseBody::total_variables: core::option::Option<i64>
 pub perl_dap::VariablesResponseBody::variables: alloc::vec::Vec<perl_dap::protocol::ProtocolVariable>
 pub fn perl_dap::protocol::VariablesResponseBody::clone(&self) -> perl_dap::protocol::VariablesResponseBody
 pub fn perl_dap::protocol::VariablesResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2216,3 +3427,4 @@ pub fn perl_dap::protocol::VariablesResponseBody::serialize<__S>(&self, __serial
 pub fn perl_dap::protocol::VariablesResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub fn perl_dap::create_attach_json_snippet() -> alloc::string::String
 pub fn perl_dap::create_launch_json_snippet() -> alloc::string::String
+pub fn perl_dap::interpolate_logpoint_message(template: &str, variables: &std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> alloc::string::String
