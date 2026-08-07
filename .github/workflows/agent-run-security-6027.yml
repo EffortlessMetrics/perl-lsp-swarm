@@ -1,0 +1,93 @@
+name: Agent run security 6027
+
+on:
+  push:
+    branches:
+      - agent/security-ux-gate-6027
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: agent/security-ux-gate-6027
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reuse branch-owned transformation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          source = Path('.github/workflows/agent-build-security-6027.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(source) if "python3 - <<'PY'" in line) + 1
+          end = next(i for i in range(start, len(source)) if source[i].strip() == 'PY')
+          Path('/tmp/security-6027-apply.py').write_text(
+              textwrap.dedent('\n'.join(source[start:end])) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          python3 /tmp/security-6027-apply.py
+
+          file=.github/workflows/ux-regression-gate.yml
+          ! grep -Eq '(pull-requests|statuses): write' "$file"
+          ! grep -q 'actions/github-script' "$file"
+          ! grep -q 'secrets.CODECOV_TOKEN' "$file"
+          ! grep -q 'token:.*GITHUB_TOKEN' "$file"
+          ! grep -q 'actions/checkout@v7' "$file"
+          ! grep -q 'actions/upload-artifact@v7' "$file"
+          grep -q 'TESTED_SHA:' "$file"
+          grep -q -- '--sha "$TESTED_SHA"' "$file"
+          test "$(grep -c 'persist-credentials: false' "$file")" -ge 2
+          git diff --check
+
+      - name: Create immutable blob and post receipt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GITHUB_TOKEN']
+          relative = '.github/workflows/ux-regression-gate.yml'
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          payload = {
+              'content': base64.b64encode(Path(relative).read_bytes()).decode('ascii'),
+              'encoding': 'base64',
+          }
+          request = urllib.request.Request(
+              f'https://api.github.com/repos/{repo}/git/blobs',
+              data=json.dumps(payload).encode('utf-8'),
+              method='POST',
+              headers=headers,
+          )
+          with urllib.request.urlopen(request) as response:
+              sha = json.load(response)['sha']
+          receipt = {'paths': {relative: sha}, 'source_sha': os.environ['GITHUB_SHA']}
+          comment = '<!-- security-6027-blob -->\nVerified product blob:\n```json\n' + json.dumps(receipt, indent=2, sort_keys=True) + '\n```'
+          request = urllib.request.Request(
+              f'https://api.github.com/repos/{repo}/issues/6045/comments',
+              data=json.dumps({'body': comment}).encode('utf-8'),
+              method='POST',
+              headers=headers,
+          )
+          with urllib.request.urlopen(request):
+              pass
+          print(json.dumps(receipt, indent=2, sort_keys=True))
+          PY
