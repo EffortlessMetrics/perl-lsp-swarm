@@ -1,14 +1,233 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 
 /**
  * Perl Test Explorer integration.
  *
  * Discovers `.t` test files in the workspace, parses `subtest` blocks,
- * and runs them via `prove -v`, mapping TAP output to VSCode test results.
+ * and runs them via `prove -v`, mapping TAP output to VS Code test results.
  */
+
+const DEFAULT_PROVE_TIMEOUT_MS = 5 * 60 * 1000;
+const MIN_PROVE_TIMEOUT_MS = 1000;
+const MAX_PROVE_TIMEOUT_MS = 60 * 60 * 1000;
+const PROVE_TERMINATION_GRACE_MS = 2000;
+const MAX_STDERR_CHARACTERS = 64 * 1024;
+const MAX_TAP_DIAGNOSTIC_CHARACTERS = 32 * 1024;
+const MAX_TAP_LINE_CHARACTERS = 64 * 1024;
+
+/** Resolve and clamp the per-file prove timeout. */
+export function normalizeProveTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_PROVE_TIMEOUT_MS;
+  }
+
+  const milliseconds = Math.round(value * 1000);
+  return Math.min(MAX_PROVE_TIMEOUT_MS, Math.max(MIN_PROVE_TIMEOUT_MS, milliseconds));
+}
+
+/** Keep only a bounded tail of noisy subprocess text. */
+export class BoundedTextBuffer {
+  private value = '';
+  private truncated = false;
+
+  constructor(private readonly maxCharacters: number) {
+    if (!Number.isSafeInteger(maxCharacters) || maxCharacters <= 0) {
+      throw new Error('BoundedTextBuffer requires a positive integer limit.');
+    }
+  }
+
+  append(chunk: string | Buffer): void {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    if (text.length >= this.maxCharacters) {
+      this.value = text.slice(-this.maxCharacters);
+      this.truncated = true;
+      return;
+    }
+
+    const combined = this.value + text;
+    if (combined.length > this.maxCharacters) {
+      this.value = combined.slice(-this.maxCharacters);
+      this.truncated = true;
+    } else {
+      this.value = combined;
+    }
+  }
+
+  clear(): void {
+    this.value = '';
+    this.truncated = false;
+  }
+
+  toString(): string {
+    return this.truncated ? `[earlier output truncated]\n${this.value}` : this.value;
+  }
+}
+
+export interface TapSummary {
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  bailOut: string | null;
+}
+
+export interface SubtestResult {
+  ok: boolean;
+  diagnostic: string;
+  duration: number;
+}
+
+/**
+ * Incrementally parse the TAP fields used by Test Explorer.
+ *
+ * stdout is never accumulated as one unbounded string. Partial lines and
+ * subtest diagnostics have explicit ceilings; top-level counters and subtest
+ * verdicts are retained as compact structured state.
+ */
+export class TapStreamParser {
+  private pendingLine = '';
+  private total = 0;
+  private passed = 0;
+  private failed = 0;
+  private skipped = 0;
+  private bailOut: string | null = null;
+  private currentSubtest: string | null = null;
+  private readonly currentDiagnostic = new BoundedTextBuffer(
+    MAX_TAP_DIAGNOSTIC_CHARACTERS,
+  );
+  private readonly subtests = new Map<string, SubtestResult>();
+
+  push(chunk: string | Buffer): void {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    let cursor = 0;
+
+    while (cursor < text.length) {
+      const newline = text.indexOf('\n', cursor);
+      if (newline === -1) {
+        this.appendPartial(text.slice(cursor));
+        return;
+      }
+
+      this.appendPartial(text.slice(cursor, newline));
+      this.flushPendingLine();
+      cursor = newline + 1;
+    }
+  }
+
+  finish(): void {
+    if (this.pendingLine.length > 0) {
+      this.flushPendingLine();
+    }
+  }
+
+  getSummary(): TapSummary {
+    return {
+      total: this.total,
+      passed: this.passed,
+      failed: this.failed,
+      skipped: this.skipped,
+      bailOut: this.bailOut,
+    };
+  }
+
+  getSubtestResults(): Map<string, SubtestResult> {
+    return new Map(this.subtests);
+  }
+
+  private appendPartial(text: string): void {
+    if (text.length === 0) {
+      return;
+    }
+
+    const remaining = MAX_TAP_LINE_CHARACTERS - this.pendingLine.length;
+    if (remaining <= 0) {
+      return;
+    }
+    this.pendingLine += text.slice(0, remaining);
+  }
+
+  private flushPendingLine(): void {
+    const line = this.pendingLine.endsWith('\r')
+      ? this.pendingLine.slice(0, -1)
+      : this.pendingLine;
+    this.pendingLine = '';
+    this.processLine(line);
+  }
+
+  private processLine(line: string): void {
+    if (/^ok \d+/.test(line)) {
+      this.total += 1;
+      if (/\s#\s*SKIP\S*/i.test(line)) {
+        this.skipped += 1;
+      } else {
+        this.passed += 1;
+      }
+    } else if (/^not ok \d+/.test(line)) {
+      this.total += 1;
+      if (/\s#\s*TODO\S*/i.test(line)) {
+        this.skipped += 1;
+      } else {
+        this.failed += 1;
+      }
+    } else {
+      const bailOut = /^Bail out!\s*(.*)/.exec(line)?.[1];
+      if (bailOut !== undefined) {
+        this.bailOut = bailOut;
+      }
+
+      const plan = /^1\.\.(\d+)/.exec(line)?.[1];
+      if (plan !== undefined) {
+        this.total = Math.max(this.total, Number.parseInt(plan, 10));
+      }
+    }
+
+    const subtestName = /^\s*#\s*Subtest:\s*(.+)/.exec(line)?.[1];
+    if (subtestName !== undefined) {
+      this.currentSubtest = subtestName.trim();
+      this.currentDiagnostic.clear();
+      return;
+    }
+
+    if (this.currentSubtest && /^\s{4,}#/.test(line)) {
+      if (this.currentDiagnostic.toString().length > 0) {
+        this.currentDiagnostic.append('\n');
+      }
+      this.currentDiagnostic.append(line.trim());
+      return;
+    }
+
+    if (!this.currentSubtest) {
+      return;
+    }
+
+    const okName = /^ok \d+\s*-\s*(.*)/.exec(line)?.[1];
+    const notOkName = /^not ok \d+\s*-\s*(.*)/.exec(line)?.[1];
+    if (okName?.trim() === this.currentSubtest) {
+      this.subtests.set(this.currentSubtest, {
+        ok: true,
+        diagnostic: this.currentDiagnostic.toString(),
+        duration: 0,
+      });
+      this.resetCurrentSubtest();
+    } else if (notOkName?.trim() === this.currentSubtest) {
+      const name = this.currentSubtest;
+      this.subtests.set(name, {
+        ok: false,
+        diagnostic: this.currentDiagnostic.toString() || `Subtest "${name}" failed`,
+        duration: 0,
+      });
+      this.resetCurrentSubtest();
+    }
+  }
+
+  private resetCurrentSubtest(): void {
+    this.currentSubtest = null;
+    this.currentDiagnostic.clear();
+  }
+}
 
 /**
  * Resolve the `prove` command for the current platform.
@@ -17,8 +236,6 @@ import { spawn } from 'child_process';
  * `shell: true` fails with ENOENT. On all platforms, attempt to derive
  * `prove` from the directory of the `perl` binary on PATH so that
  * perlbrew/plenv users get the matching `prove`.
- *
- * Returns `{ command, args, shell }` for use with `child_process.spawn`.
  */
 export function resolveProveCommand(extraArgs: string[]): {
   command: string;
@@ -27,7 +244,6 @@ export function resolveProveCommand(extraArgs: string[]): {
 } {
   const isWindows = process.platform === 'win32';
 
-  // Try to find `prove` next to `perl` on PATH.
   let provePath: string | null = null;
   try {
     const { execSync } = require('child_process');
@@ -48,7 +264,6 @@ export function resolveProveCommand(extraArgs: string[]): {
     return { command: provePath, args: extraArgs, shell: false };
   }
 
-  // Fallback: bare 'prove' with shell on Windows for .bat resolution.
   return { command: 'prove', args: extraArgs, shell: isWindows };
 }
 
@@ -57,9 +272,21 @@ export interface SubtestInfo {
   line: number;
 }
 
-// Matches: subtest 'name' => sub {   or   subtest "name" => sub {
-// Also matches: subtest 'name', sub {
 const SUBTEST_RE = /^\s*subtest\s+(['"])(.*?)\1\s*(?:=>|,)\s*sub\s*\{/;
+
+type ProveTerminationReason = 'cancelled' | 'timed-out';
+
+function terminateProcess(processToStop: ChildProcess, force: boolean): void {
+  if (processToStop.exitCode !== null || processToStop.signalCode !== null) {
+    return;
+  }
+
+  try {
+    processToStop.kill(force ? 'SIGKILL' : 'SIGTERM');
+  } catch {
+    // The process may have exited between the state check and kill request.
+  }
+}
 
 export class PerlTestAdapter implements vscode.Disposable {
   private testController: vscode.TestController;
@@ -78,14 +305,12 @@ export class PerlTestAdapter implements vscode.Disposable {
 
     this.testController.refreshHandler = () => this.discoverAllTests();
 
-    // File system watcher for .t files
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.t');
     watcher.onDidCreate((uri) => this.discoverFileTests(uri));
     watcher.onDidChange((uri) => this.discoverFileTests(uri));
     watcher.onDidDelete((uri) => this.removeFile(uri));
     this.disposables.push(watcher);
 
-    // Re-parse on document save (picks up new subtests)
     const saveListener = vscode.workspace.onDidSaveTextDocument((doc) => {
       if (doc.uri.fsPath.endsWith('.t')) {
         void this.discoverFileTests(doc.uri);
@@ -93,17 +318,13 @@ export class PerlTestAdapter implements vscode.Disposable {
     });
     this.disposables.push(saveListener);
 
-    // Initial discovery
     void this.discoverAllTests();
   }
-
-  // -- Discovery -------------------------------------------------------
 
   private async discoverAllTests(): Promise<void> {
     this.testController.items.replace([]);
     this.fileItems.clear();
 
-    // Cap at 500 files to prevent extension host freeze on large workspaces (#5110).
     const files = await vscode.workspace.findFiles(
       '**/*.t',
       '{**/node_modules/**,**/blib/**}',
@@ -131,11 +352,14 @@ export class PerlTestAdapter implements vscode.Disposable {
       fileItem.children.replace([]);
     }
 
-    // Parse subtests from file content
     const subtests = await this.parseSubtests(uri);
-    for (const st of subtests) {
-      const child = this.testController.createTestItem(`${fileId}::${st.name}`, st.name, uri);
-      child.range = new vscode.Range(st.line, 0, st.line, 0);
+    for (const subtest of subtests) {
+      const child = this.testController.createTestItem(
+        `${fileId}::${subtest.name}`,
+        subtest.name,
+        uri,
+      );
+      child.range = new vscode.Range(subtest.line, 0, subtest.line, 0);
       fileItem.children.add(child);
     }
   }
@@ -145,14 +369,11 @@ export class PerlTestAdapter implements vscode.Disposable {
       const doc = await vscode.workspace.openTextDocument(uri);
       const subtests: SubtestInfo[] = [];
 
-      for (let i = 0; i < doc.lineCount; i++) {
-        const line = doc.lineAt(i).text;
-        const match = SUBTEST_RE.exec(line);
-        if (match) {
-          const name = match[2];
-          if (name !== undefined) {
-            subtests.push({ name, line: i });
-          }
+      for (let index = 0; index < doc.lineCount; index += 1) {
+        const match = SUBTEST_RE.exec(doc.lineAt(index).text);
+        const name = match?.[2];
+        if (name !== undefined) {
+          subtests.push({ name, line: index });
         }
       }
 
@@ -168,18 +389,12 @@ export class PerlTestAdapter implements vscode.Disposable {
     this.fileItems.delete(fileId);
   }
 
-  // -- Run handler -----------------------------------------------------
-
   private async runHandler(
     request: vscode.TestRunRequest,
     token: vscode.CancellationToken,
   ): Promise<void> {
     const run = this.testController.createTestRun(request);
-
-    // Collect files to run. If no specific tests requested, run all.
     const testsToRun = request.include ?? this.gatherAllItems();
-
-    // Group by file so we run prove once per file
     const byFile = new Map<string, { fileItem: vscode.TestItem; subtests: vscode.TestItem[] }>();
 
     for (const item of testsToRun) {
@@ -188,20 +403,16 @@ export class PerlTestAdapter implements vscode.Disposable {
       }
 
       if (item.uri && item.children.size > 0) {
-        // This is a file-level item
         const children: vscode.TestItem[] = [];
-        item.children.forEach((c) => children.push(c));
+        item.children.forEach((child) => children.push(child));
         byFile.set(item.uri.fsPath, { fileItem: item, subtests: children });
       } else if (item.uri) {
-        // This is a subtest -- find parent file
         const fsPath = item.uri.fsPath;
         const entry = byFile.get(fsPath);
         if (entry) {
           entry.subtests.push(item);
         } else {
-          // Find the file item for this subtest
-          const fileId = item.uri.toString();
-          const fileItem = this.fileItems.get(fileId);
+          const fileItem = this.fileItems.get(item.uri.toString());
           if (fileItem) {
             byFile.set(fsPath, { fileItem, subtests: [item] });
           }
@@ -215,8 +426,8 @@ export class PerlTestAdapter implements vscode.Disposable {
       }
 
       run.started(fileItem);
-      for (const st of subtests) {
-        run.started(st);
+      for (const subtest of subtests) {
+        run.started(subtest);
       }
 
       await this.runProve(filePath, fileItem, subtests, run, token);
@@ -231,8 +442,6 @@ export class PerlTestAdapter implements vscode.Disposable {
     return items;
   }
 
-  // -- prove execution & TAP parsing -----------------------------------
-
   private async runProve(
     filePath: string,
     fileItem: vscode.TestItem,
@@ -242,71 +451,121 @@ export class PerlTestAdapter implements vscode.Disposable {
   ): Promise<void> {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileItem.uri!);
     const cwd = workspaceFolder?.uri.fsPath ?? path.dirname(filePath);
+    const configuredTimeoutSeconds = vscode.workspace
+      .getConfiguration('perl-lsp', fileItem.uri)
+      .get<number>('testTimeoutSeconds', DEFAULT_PROVE_TIMEOUT_MS / 1000);
+    const timeoutMs = normalizeProveTimeoutMs(configuredTimeoutSeconds);
 
     return new Promise<void>((resolve) => {
       const startTime = Date.now();
-      const {
-        command: proveCmd,
-        args: proveArgs,
-        shell: useShell,
-      } = resolveProveCommand(['-v', '--nocolor', filePath]);
-      const proc = spawn(proveCmd, proveArgs, {
+      const { command, args, shell } = resolveProveCommand(['-v', '--nocolor', filePath]);
+      const processHandle = spawn(command, args, {
         cwd,
         env: { ...process.env, HARNESS_ACTIVE: '1' },
-        shell: useShell,
+        shell,
+      });
+      const tapParser = new TapStreamParser();
+      const stderr = new BoundedTextBuffer(MAX_STDERR_CHARACTERS);
+      let terminationReason: ProveTerminationReason | undefined;
+      let settled = false;
+      let forceKillTimer: NodeJS.Timeout | undefined;
+
+      const clearProcessResources = (): void => {
+        clearTimeout(timeoutTimer);
+        if (forceKillTimer) {
+          clearTimeout(forceKillTimer);
+        }
+        cancellation.dispose();
+      };
+
+      const requestTermination = (reason: ProveTerminationReason): void => {
+        if (terminationReason || settled) {
+          return;
+        }
+        terminationReason = reason;
+        terminateProcess(processHandle, false);
+        forceKillTimer = setTimeout(() => {
+          terminateProcess(processHandle, true);
+        }, PROVE_TERMINATION_GRACE_MS);
+        forceKillTimer.unref();
+      };
+
+      const timeoutTimer = setTimeout(() => {
+        requestTermination('timed-out');
+      }, timeoutMs);
+      timeoutTimer.unref();
+
+      const cancellation = token.onCancellationRequested(() => {
+        requestTermination('cancelled');
       });
 
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString();
+      processHandle.stdout?.on('data', (data: Buffer) => {
+        tapParser.push(data);
       });
-      proc.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
+      processHandle.stderr?.on('data', (data: Buffer) => {
+        stderr.append(data);
       });
 
-      const killOnCancel = token.onCancellationRequested(() => {
-        proc.kill('SIGTERM');
-      });
-
-      proc.on('close', (code) => {
-        killOnCancel.dispose();
+      processHandle.once('close', (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearProcessResources();
+        tapParser.finish();
         const duration = Date.now() - startTime;
 
-        const tapResults = parseTapOutput(stdout);
-        const subtestResults = parseSubtestResults(stdout);
+        if (terminationReason === 'cancelled') {
+          run.skipped(fileItem);
+          for (const subtest of subtests) {
+            run.skipped(subtest);
+          }
+          resolve();
+          return;
+        }
 
-        // Map subtest results to test items
-        for (const st of subtests) {
-          const stName = st.label;
-          const result = subtestResults.get(stName);
+        if (terminationReason === 'timed-out') {
+          const timeoutMessage = new vscode.TestMessage(
+            `prove timed out after ${Math.round(timeoutMs / 1000)} seconds and was terminated.`,
+          );
+          if (fileItem.uri) {
+            timeoutMessage.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
+          }
+          run.failed(fileItem, timeoutMessage, duration);
+          for (const subtest of subtests) {
+            run.failed(subtest, timeoutMessage);
+          }
+          resolve();
+          return;
+        }
 
-          if (result !== undefined) {
-            if (result.ok) {
-              run.passed(st, result.duration);
-            } else {
-              run.failed(
-                st,
-                new vscode.TestMessage(result.diagnostic || `Subtest "${stName}" failed`),
-                result.duration,
-              );
-            }
+        const tapResults = tapParser.getSummary();
+        const subtestResults = tapParser.getSubtestResults();
+        for (const subtest of subtests) {
+          const result = subtestResults.get(subtest.label);
+          if (result === undefined) {
+            run.skipped(subtest);
+          } else if (result.ok) {
+            run.passed(subtest, result.duration);
           } else {
-            // Subtest was not in output -- mark skipped
-            run.skipped(st);
+            run.failed(
+              subtest,
+              new vscode.TestMessage(
+                result.diagnostic || `Subtest "${subtest.label}" failed`,
+              ),
+              result.duration,
+            );
           }
         }
 
-        // File-level result
         if (code === 0 && tapResults.failed === 0) {
           run.passed(fileItem, duration);
         } else {
-          const message = new vscode.TestMessage(
-            stderr.trim() ||
-              `${tapResults.failed} of ${tapResults.total} tests failed` +
-                (tapResults.bailOut ? ` (Bail out! ${tapResults.bailOut})` : ''),
-          );
+          const stderrText = stderr.toString().trim();
+          const fallback =
+            `${tapResults.failed} of ${tapResults.total} tests failed` +
+            (tapResults.bailOut ? ` (Bail out! ${tapResults.bailOut})` : '');
+          const message = new vscode.TestMessage(stderrText || fallback);
           if (fileItem.uri) {
             message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
           }
@@ -316,25 +575,26 @@ export class PerlTestAdapter implements vscode.Disposable {
         resolve();
       });
 
-      proc.on('error', (err: Error) => {
-        killOnCancel.dispose();
+      processHandle.once('error', (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearProcessResources();
         run.errored(
           fileItem,
-          new vscode.TestMessage(`Failed to run prove: ${err.message}. Is prove installed?`),
+          new vscode.TestMessage(`Failed to run prove: ${error.message}. Is prove installed?`),
         );
-        for (const st of subtests) {
-          run.errored(st, new vscode.TestMessage('prove not available'));
+        for (const subtest of subtests) {
+          run.errored(subtest, new vscode.TestMessage('prove not available'));
         }
         resolve();
       });
     });
   }
 
-  // -- Public API -------------------------------------------------------
-
   public async runFileTests(uri: vscode.Uri): Promise<void> {
-    const fileId = uri.toString();
-    const fileItem = this.fileItems.get(fileId);
+    const fileItem = this.fileItems.get(uri.toString());
 
     if (fileItem) {
       const request = new vscode.TestRunRequest([fileItem]);
@@ -353,105 +613,24 @@ export class PerlTestAdapter implements vscode.Disposable {
 
   dispose(): void {
     this.testController.dispose();
-    for (const d of this.disposables) {
-      d.dispose();
+    for (const disposable of this.disposables) {
+      disposable.dispose();
     }
   }
 }
 
 /** Parse the top-level TAP summary from prove output. */
-export function parseTapOutput(output: string): {
-  total: number;
-  passed: number;
-  failed: number;
-  skipped: number;
-  bailOut: string | null;
-} {
-  const lines = output.split('\n');
-  let total = 0;
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
-  let bailOut: string | null = null;
-
-  for (const line of lines) {
-    if (/^ok \d+/.test(line)) {
-      total++;
-      // `ok N - desc # SKIP reason` → test was intentionally skipped.
-      if (/\s#\s*SKIP\S*/i.test(line)) {
-        skipped++;
-      } else {
-        passed++;
-      }
-    } else if (/^not ok \d+/.test(line)) {
-      // `not ok N - desc # TODO reason` → a failing TODO test is expected
-      // and must NOT count as a failure per TAP semantics.
-      if (/\s#\s*TODO\S*/i.test(line)) {
-        total++;
-        skipped++;
-      } else {
-        total++;
-        failed++;
-      }
-    } else if (/^Bail out!\s*(.*)/.test(line)) {
-      bailOut = /^Bail out!\s*(.*)/.exec(line)?.[1] ?? '';
-    } else if (/^1\.\.(\d+)/.test(line)) {
-      const count = /^1\.\.(\d+)/.exec(line)?.[1];
-      if (count !== undefined) {
-        total = Math.max(total, parseInt(count, 10));
-      }
-    }
-  }
-
-  return { total, passed, failed, skipped, bailOut };
+export function parseTapOutput(output: string): TapSummary {
+  const parser = new TapStreamParser();
+  parser.push(output);
+  parser.finish();
+  return parser.getSummary();
 }
 
 /** Parse subtest results from verbose prove TAP output. */
-export function parseSubtestResults(
-  output: string,
-): Map<string, { ok: boolean; diagnostic: string; duration: number }> {
-  const results = new Map<string, { ok: boolean; diagnostic: string; duration: number }>();
-  const lines = output.split('\n');
-
-  let currentSubtest: string | null = null;
-  let diagnosticLines: string[] = [];
-
-  for (const line of lines) {
-    const subtestName = /^\s*#\s*Subtest:\s*(.+)/.exec(line)?.[1];
-    if (subtestName !== undefined) {
-      currentSubtest = subtestName.trim();
-      diagnosticLines = [];
-      continue;
-    }
-
-    if (currentSubtest && /^\s{4,}#/.test(line)) {
-      diagnosticLines.push(line.trim());
-      continue;
-    }
-
-    if (currentSubtest) {
-      const okName = /^ok \d+\s*-\s*(.*)/.exec(line)?.[1];
-      const notOkName = /^not ok \d+\s*-\s*(.*)/.exec(line)?.[1];
-
-      if (okName?.trim() === currentSubtest) {
-        results.set(currentSubtest, {
-          ok: true,
-          diagnostic: diagnosticLines.join('\n'),
-          duration: 0,
-        });
-        currentSubtest = null;
-        diagnosticLines = [];
-      } else if (notOkName?.trim() === currentSubtest) {
-        results.set(currentSubtest, {
-          ok: false,
-          diagnostic: diagnosticLines.join('\n') || `Subtest "${currentSubtest}" failed`,
-          duration: 0,
-        });
-        currentSubtest = null;
-        diagnosticLines = [];
-      }
-    }
-  }
-
-  return results;
+export function parseSubtestResults(output: string): Map<string, SubtestResult> {
+  const parser = new TapStreamParser();
+  parser.push(output);
+  parser.finish();
+  return parser.getSubtestResults();
 }
