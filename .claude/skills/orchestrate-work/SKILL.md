@@ -190,9 +190,10 @@ A reviewer returns findings with severity, affected claim dimension, evidence,
 realistic falsifier, uncertainty, and suggested disposition. It does not return
 `mergeable` or approval authority.
 
-Join evidence rather than votes. Repeated conclusions derived from one source remain
-one evidence path. Builder self-report remains author evidence. Preserve concrete
-contradictions until settled through evidence or an accountable product decision.
+The lane or campaign root must join evidence rather than votes. Repeated conclusions
+derived from one source remain one evidence path. Builder self-report remains author
+evidence. Preserve concrete contradictions until settled through evidence or an
+accountable product decision.
 
 ## Useful GitHub boundary
 
@@ -210,7 +211,7 @@ Do not post agent assignments, liveness, frontier rows, stage/skill completion,
 heartbeat/polling comments, raw logs, transcripts, or unchanged repeated summaries.
 The route stays in runtime context; useful conclusions become GitHub artifacts.
 
-## Review subgraph
+## PR review orchestration
 
 When invoked from `finish-pr` or `review-pr`, select applicable independent questions:
 
