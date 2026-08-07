@@ -178,7 +178,7 @@ claim, same-candidate writer collision, explicit prerequisite, destructive share
 runtime state, actual Git conflict, or demonstrated combined-tree interaction.
 Behind-only movement requires no action.
 
-## Review and merge
+## Claude-native PR review
 
 For a substantive PR, the normal Claude route is:
 
