@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10191 |
-| Rust-family files | 3101 |
-| Non-Rust files | 7090 |
-| Allowlisted | 4773 |
-| Unclassified | 2317 |
+| Total tracked files | 10110 |
+| Rust-family files | 3097 |
+| Non-Rust files | 7013 |
+| Allowlisted | 4730 |
+| Unclassified | 2283 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 236 |
-| documentation | 2253 |
+| documentation | 2251 |
 | generated | 1 |
 | production | 211 |
-| test | 1753 |
+| test | 1712 |
 | tooling | 319 |
-| unclassified | 2317 |
+| unclassified | 2283 |
 
 ## Unclassified files
 
@@ -311,39 +311,6 @@
 | `fixtures/debug-peer/set_breakpoints_response.json` | `json` |
 | `fixtures/debug-peer/stopped_event.json` | `json` |
 | `fuzz/artifacts/substitution_parsing/crash-b6dd6f9afe3c18f3efa0b5bb8454be7744f2a458` | `` |
-| `fuzz/corpus/builtin_functions/add_one.txt` | `txt` |
-| `fuzz/corpus/builtin_functions/array.txt` | `txt` |
-| `fuzz/corpus/builtin_functions/hash_access.txt` | `txt` |
-| `fuzz/corpus/builtin_functions/lc.txt` | `txt` |
-| `fuzz/corpus/builtin_functions/list.txt` | `txt` |
-| `fuzz/corpus/builtin_functions/multiply.txt` | `txt` |
-| `fuzz/corpus/builtin_functions/pair.txt` | `txt` |
-| `fuzz/corpus/config_surfaces/.perl-lsp.toml.example` | `example` |
-| `fuzz/corpus/config_surfaces/basic.toml` | `toml` |
-| `fuzz/corpus/config_surfaces/empty.toml` | `toml` |
-| `fuzz/corpus/config_surfaces/invalid.toml` | `toml` |
-| `fuzz/corpus/declaration_parsing/exporter.txt` | `txt` |
-| `fuzz/corpus/declaration_parsing/module.txt` | `txt` |
-| `fuzz/corpus/declaration_parsing/moose.txt` | `txt` |
-| `fuzz/corpus/declaration_parsing/var_list.txt` | `txt` |
-| `fuzz/corpus/declaration_parsing/var_name.txt` | `txt` |
-| `fuzz/corpus/declaration_parsing/var_x.txt` | `txt` |
-| `fuzz/corpus/heredoc_parsing/end.txt` | `txt` |
-| `fuzz/corpus/heredoc_parsing/eof.txt` | `txt` |
-| `fuzz/corpus/heredoc_parsing/eot.txt` | `txt` |
-| `fuzz/corpus/heredoc_parsing/html.txt` | `txt` |
-| `fuzz/corpus/heredoc_parsing/myfunc.txt` | `txt` |
-| `fuzz/corpus/heredoc_parsing/sql.txt` | `txt` |
-| `fuzz/corpus/heredoc_parsing/token.txt` | `txt` |
-| `fuzz/corpus/quote_operators/caseless.txt` | `txt` |
-| `fuzz/corpus/quote_operators/digits.txt` | `txt` |
-| `fuzz/corpus/quote_operators/hello.txt` | `txt` |
-| `fuzz/corpus/quote_operators/lowercase.txt` | `txt` |
-| `fuzz/corpus/quote_operators/pattern.txt` | `txt` |
-| `fuzz/corpus/quote_operators/replacement.txt` | `txt` |
-| `fuzz/corpus/regex_validation/basic_match.txt` | `txt` |
-| `fuzz/corpus/regex_validation/basic_subst.txt` | `txt` |
-| `fuzz/corpus/regex_validation/qr_group.txt` | `txt` |
 | `fuzz/corpus/substitution_parsing/0007cd93d6f4e497b3084b3fa6ba1c18888995b3` | `` |
 | `fuzz/corpus/substitution_parsing/0012e9743d5afd26201e4a4869eb169a5dc2488d` | `` |
 | `fuzz/corpus/substitution_parsing/0021b2b4b9f15dd7038c16779068114ecec5be13` | `` |
@@ -2224,7 +2191,6 @@
 | `xtask/tests/fixtures/aggregator/pass/advisory.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/lint.json` | `json` |
 | `xtask/tests/fixtures/aggregator/pass/tests.json` | `json` |
-| `xtask/tests/fixtures/ci-explain-run/gate-receipts/receipt.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/ci-scope-change.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/docs-only-non-parser.json` | `json` |
 | `xtask/tests/fixtures/ci-scope/parser-ratchet/lexer-token-change.json` | `json` |
@@ -3859,8 +3825,6 @@
 | `docs/ci/workflow-security-policy.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/workflow-trigger-policy.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/worktree-allocator.md` | documentation | `non-rust-docs-tree` | docs |
-| `docs/compiler/profiles/lsp_exactness_v1.yaml` | documentation | `non-rust-docs-tree` | docs |
-| `docs/compiler/profiles/selected_upstream_v1.yaml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/cache-aware-agent-lanes.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/doctrine-is-a-hypothesis.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/concepts/enforcement-over-doctrine.md` | documentation | `non-rust-docs-tree` | docs |
@@ -5168,50 +5132,9 @@
 | `flake.lock` | config | `non-rust-flake-lock` | release/ci |
 | `flake.nix` | tooling | `non-rust-flake-nix` | release/ci |
 | `fuzz/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
-| `fuzz/corpus/lexer_tokenization/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/diagnostic_provider.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/dynamic_require.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/eval_string_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/export_tags.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/format_decl.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/generated_accessor.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/heredoc_basic.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/heredoc_utf8_delimiter.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/heuristic_generated_member.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/imports_exports.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/incremental_small_edit.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/inherited_method.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/malformed_heredoc_recovery.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/medium_method_call.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/method_call.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/method_completion_provider.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/lexer_tokenization/method_decl.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/pod_extraction/negative_symbol_regions.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fuzz/corpus/semantic_model/basic_symbols.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fuzz/corpus/semantic_model/exporter_metadata.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fuzz/corpus/semantic_model/inheritance_and_methods.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/dynamic_require.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/eval_string_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/export_tags.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/format_decl.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/generated_accessor.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/heredoc_basic.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/heredoc_utf8_delimiter.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/heuristic_generated_member.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/imports_exports.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/incremental_small_edit.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/inherited_method.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/malformed_heredoc_recovery.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/medium_method_call.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/method_call.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/method_decl.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/missing_comma_list.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
-| `fuzz/corpus/structured_perl_programs/negative_symbol_regions.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `install.ps1` | tooling | `non-rust-install-powershell` | release/ci |
 | `install.sh` | tooling | `non-rust-install-shell` | release/ci |
 | `justfile` | tooling | `non-rust-justfile` | release/ci |
