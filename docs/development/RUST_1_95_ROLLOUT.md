@@ -44,7 +44,7 @@ The doc has four sections:
 | Pinned toolchain channel | `1.95.0` | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
 | `clippy.toml` `msrv` | `"1.95"` | [`clippy.toml`](../../clippy.toml) |
 | `clippy.toml` `allow-unwrap-in-tests` | `true` ← **debt** | [`clippy.toml`](../../clippy.toml) |
-| `policy/clippy-lints.toml` `msrv` | `"1.93"` ← **stale, see M-1** | [`policy/clippy-lints.toml`](../../policy/clippy-lints.toml) |
+| `policy/clippy-lints.toml` `msrv` | `"1.95"` (M-1 landed; was `"1.93"`) | [`policy/clippy-lints.toml`](../../policy/clippy-lints.toml) |
 | Workspace clippy allow set | 5 entries (`collapsible_match`, `manual_range_contains`, `useless_vec`, `vec_init_then_push`, `assertions_on_constants`) | `[workspace.lints]` in [`Cargo.toml`](../../Cargo.toml) |
 | `ripr` lane | advisory; never blocking on PR | [`.github/workflows/ripr.yml`](../../.github/workflows/ripr.yml) + [`docs/ci/ripr.md`](../ci/ripr.md) |
 | Mutation testing | targeted / nightly / release only; **not** default-PR | [`.github/workflows/`](../../.github/workflows/) + LEM ledgers |
@@ -127,7 +127,10 @@ unless its acceptance contract explicitly says so.
 Each contract has the same six fields. Where a contract is identical
 to a sibling-rail doc, the contract cell references that doc.
 
-### M-1: reconcile policy/clippy-lints.toml msrv
+### M-1: reconcile policy/clippy-lints.toml msrv — **LANDED**
+
+`policy/clippy-lints.toml` now declares `msrv = "1.95"`; the contract below is
+retained as the record of what the row required.
 
 | Slot | Value |
 |---|---|
