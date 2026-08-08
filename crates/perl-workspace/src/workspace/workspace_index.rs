@@ -1527,25 +1527,47 @@ impl WorkspaceIndex {
         }
     }
 
-    /// Incrementally remove one file's symbols from the search index by URI.
+    /// Incrementally remove one file's symbols from the search index,
+    /// re-inserting shadowed symbols from remaining files on collision.
+    ///
+    /// Mirrors [`Self::incremental_remove_symbols`]: when any key becomes empty
+    /// after removing this file's entries, the entire search index is cleared and
+    /// rebuilt from the remaining files so it cannot drift from `symbols`.
     fn incremental_remove_search(
+        files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
-        file_index: &FileIndex,
+        old_file_index: &FileIndex,
     ) {
-        for symbol in &file_index.symbols {
-            if let Some(entries) = search_index.get_mut(&symbol.name) {
-                entries.retain(|s| s.uri != symbol.uri);
-                if entries.is_empty() {
-                    search_index.remove(&symbol.name);
+        let mut affected_names: Vec<String> = Vec::new();
+        for sym in &old_file_index.symbols {
+            if let Some(ref qname) = sym.qualified_name {
+                let mut remove_key = false;
+                if let Some(entries) = search_index.get_mut(qname) {
+                    entries.retain(|s| s.uri != sym.uri);
+                    remove_key = entries.is_empty();
+                }
+                if remove_key {
+                    search_index.remove(qname);
+                    affected_names.push(qname.clone());
                 }
             }
-            if let Some(ref qname) = symbol.qualified_name {
-                if let Some(entries) = search_index.get_mut(qname) {
-                    entries.retain(|s| s.uri != symbol.uri);
-                    if entries.is_empty() {
-                        search_index.remove(qname);
-                    }
-                }
+            let mut remove_key = false;
+            if let Some(entries) = search_index.get_mut(&sym.name) {
+                entries.retain(|s| s.uri != sym.uri);
+                remove_key = entries.is_empty();
+            }
+            if remove_key {
+                search_index.remove(&sym.name);
+                affected_names.push(sym.name.clone());
+            }
+        }
+        if !affected_names.is_empty() {
+            search_index.clear();
+            for file_index in files
+                .values()
+                .filter(|file_index| file_index.source_uri != old_file_index.source_uri)
+            {
+                Self::incremental_add_search(search_index, file_index);
             }
         }
     }
@@ -2318,7 +2340,7 @@ impl WorkspaceIndex {
                 #[cfg(test)]
                 reindex_metrics::record_legacy_search_removed(old_index.symbols.len());
                 Self::incremental_remove_symbols(&files, &mut symbols, old_index);
-                Self::incremental_remove_search(&mut search_idx, old_index);
+                Self::incremental_remove_search(&files, &mut search_idx, old_index);
                 drop(search_idx);
                 drop(symbols);
             }
@@ -2454,7 +2476,7 @@ impl WorkspaceIndex {
             let mut symbols = self.symbols.write();
             let mut search_idx = self.search_index.write();
             Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
-            Self::incremental_remove_search(&mut search_idx, &file_index);
+            Self::incremental_remove_search(&files, &mut search_idx, &file_index);
 
             // Defensive sweep: purge any remaining cache entries whose value
             // points to this file's URI.  incremental_remove_symbols already
@@ -10020,6 +10042,60 @@ helper_one();
             index.definition_candidates("shared")[0].uri,
             "file:///lib/B.pm",
             "remaining shared candidate must be from B"
+        );
+    }
+
+    /// #5016 item 3: when `incremental_remove_symbols` triggers its collision
+    /// full-rebuild path, `search_index` must take the same path so
+    /// `search_source_symbols` and `find_definition` cannot diverge.
+    #[test]
+    fn test_search_index_parity_after_collision_rebuild_on_remove() {
+        let index = WorkspaceIndex::new();
+        let uri_a = must(url::Url::parse("file:///lib/A.pm"));
+        let uri_b = must(url::Url::parse("file:///lib/B.pm"));
+
+        must(index.index_file(
+            uri_a.clone(),
+            "package A;\nsub unique_to_a { 1 }\nsub shared { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(uri_b.clone(), "package B;\nsub shared { 1 }\n1;\n".to_string()));
+
+        index.remove_file(uri_a.as_str());
+
+        // symbols path (find_definition / definition_candidates)
+        assert!(index.definition_candidates("unique_to_a").is_empty());
+        assert_eq!(index.definition_candidates("shared").len(), 1);
+        assert_eq!(index.definition_candidates("shared")[0].uri, "file:///lib/B.pm");
+
+        // search_index path must agree
+        let unique_search = index.search_source_symbols("unique_to_a", None);
+        assert!(
+            unique_search.is_empty(),
+            "search_index must not retain unique_to_a after collision rebuild; got: {:?}",
+            unique_search.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let shared_search = index.search_source_symbols("shared", None);
+        assert_eq!(
+            shared_search.len(),
+            1,
+            "search_index must retain B's shared symbol after collision rebuild; got: {:?}",
+            shared_search.iter().map(|s| (&s.name, &s.uri)).collect::<Vec<_>>()
+        );
+        assert_eq!(shared_search[0].uri, "file:///lib/B.pm");
+
+        // Re-index path must also keep caches aligned (update, not just remove).
+        must(index.index_file(
+            uri_a.clone(),
+            "package A;\nsub unique_to_a { 2 }\nsub shared { 2 }\n1;\n".to_string(),
+        ));
+        assert_eq!(index.definition_candidates("shared").len(), 2);
+        let shared_after_reindex = index.search_source_symbols("shared", None);
+        assert_eq!(
+            shared_after_reindex.len(),
+            2,
+            "search_index must match symbols after re-index collision rebuild; got: {:?}",
+            shared_after_reindex.iter().map(|s| &s.uri).collect::<Vec<_>>()
         );
     }
 
