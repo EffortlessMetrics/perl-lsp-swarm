@@ -102,6 +102,38 @@ sub caller {
 1;
 "#;
 
+const STALE_SAFE_DELETE_SOURCE_URI: &str = "file:///workspace/lib/StaleSafeDelete/Source.pm";
+const STALE_SAFE_DELETE_CALLER_URI: &str = "file:///workspace/lib/StaleSafeDelete/Caller.pm";
+
+const STALE_SAFE_DELETE_SOURCE: &str = r#"package StaleSafeDelete::Source;
+use strict;
+use warnings;
+
+sub deletable_target {
+    return 1;
+}
+
+1;
+"#;
+
+const STALE_SAFE_DELETE_CALLER_V1: &str = r#"package StaleSafeDelete::Caller;
+use strict;
+use warnings;
+
+1;
+"#;
+
+const STALE_SAFE_DELETE_CALLER_V2: &str = r#"package StaleSafeDelete::Caller;
+use strict;
+use warnings;
+
+sub caller {
+    return StaleSafeDelete::Source::deletable_target();
+}
+
+1;
+"#;
+
 const DANCER2_DSL_URI: &str = "file:///workspace/lib/Dancer2/Core/DSL.pm";
 const DANCER2_APP_URI: &str = "file:///workspace/lib/Dancer2/Core/App.pm";
 const DANCER2_RESPONSE_URI: &str = "file:///workspace/lib/Dancer2/Core/Response.pm";
@@ -4167,6 +4199,73 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_blocks_dancer2_current_sou
     assert_eq!(
         request_receipt.get("returned_workspace_edit_count").and_then(Value::as_u64),
         Some(0)
+    );
+
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn safe_delete_does_not_treat_stale_workspace_index_count_as_authoritative()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_document(&server, STALE_SAFE_DELETE_SOURCE_URI, STALE_SAFE_DELETE_SOURCE)?;
+    server
+        .test_index_file_in_building_state(STALE_SAFE_DELETE_SOURCE_URI, STALE_SAFE_DELETE_SOURCE)
+        .map_err(|e| e.to_string())?;
+    open_document(&server, STALE_SAFE_DELETE_CALLER_URI, STALE_SAFE_DELETE_CALLER_V1)?;
+    server
+        .test_index_file_in_building_state(
+            STALE_SAFE_DELETE_CALLER_URI,
+            STALE_SAFE_DELETE_CALLER_V1,
+        )
+        .map_err(|e| e.to_string())?;
+    server.test_simulate_indexing_complete();
+    server
+        .test_replace_document_without_index(
+            STALE_SAFE_DELETE_CALLER_URI,
+            STALE_SAFE_DELETE_CALLER_V2,
+            2,
+        )
+        .map_err(|e| e.to_string())?;
+
+    assert!(
+        server.workspace_index_stale_for_any_open_document(),
+        "test setup must leave the workspace index stale relative to open documents"
+    );
+
+    let (target_line, target_character) =
+        position_of(STALE_SAFE_DELETE_SOURCE, "deletable_target {")?;
+    let result = server
+        .handle_execute_command(Some(json!({
+            "command": "perl.safeDeleteSymbol",
+            "arguments": [{
+                "textDocument": {"uri": STALE_SAFE_DELETE_SOURCE_URI},
+                "position": {"line": target_line, "character": target_character}
+            }]
+        })))?
+        .ok_or("missing stale-index safe-delete live pilot result")?;
+
+    assert_eq!(
+        result.get("workspace_index_stale").and_then(Value::as_bool),
+        Some(true),
+        "stale-index safe-delete receipt must record workspace_index_stale=true: {result}"
+    );
+    assert_eq!(
+        result.get("workspace_reference_count").and_then(Value::as_u64),
+        Some(0),
+        "stale index must not supply authoritative count_usages: {result}"
+    );
+    assert_eq!(
+        result.get("live_symbol_delete_enabled").and_then(Value::as_bool),
+        Some(false),
+        "stale workspace index must fail closed instead of trusting a stale zero usage count: \
+         {result}"
+    );
+    assert_eq!(
+        result.get("returned_workspace_edit_count").and_then(Value::as_u64),
+        Some(0),
+        "stale workspace index must not return a live delete edit: {result}"
     );
 
     Ok(())

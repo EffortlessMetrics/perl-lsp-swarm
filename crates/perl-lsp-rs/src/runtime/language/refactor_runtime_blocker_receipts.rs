@@ -776,10 +776,15 @@ impl LspServer {
         }
         let workspace_identity_guard_accepts =
             workspace_identity_guard_evaluated && live_identity_blockers.is_empty();
+        #[cfg(feature = "workspace")]
+        let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+        #[cfg(not(feature = "workspace"))]
+        let workspace_index_stale = false;
         let workspace_reference_count = if live_edit_guards_ready
             && !current_source_blocks
             && !source_guard_blocks
             && workspace_identity_guard_accepts
+            && !workspace_index_stale
         {
             source_guard_context
                 .as_ref()
@@ -801,7 +806,8 @@ impl LspServer {
             && !current_source_blocks
             && !source_guard_blocks
             && !workspace_reference_blocks
-            && workspace_identity_guard_accepts;
+            && workspace_identity_guard_accepts
+            && !workspace_index_stale;
         let workspace_edit = if can_return_edit {
             rollback_proof
                 .get("planned_delete_workspace_edit")
@@ -898,6 +904,7 @@ impl LspServer {
             );
             object
                 .insert("workspace_reference_count".to_string(), json!(workspace_reference_count));
+            object.insert("workspace_index_stale".to_string(), json!(workspace_index_stale));
             object.insert("workspace_edit".to_string(), workspace_edit);
             if let Some(request) = apply_edit_metadata_request {
                 object.insert("apply_edit_requested".to_string(), json!(true));
@@ -1081,6 +1088,10 @@ impl LspServer {
         character: u32,
         symbol: &str,
     ) -> Option<usize> {
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
+
         let workspace_symbol_key = {
             let documents = self.documents_guard();
             self.get_document(&documents, uri)
