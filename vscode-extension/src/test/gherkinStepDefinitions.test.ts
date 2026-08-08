@@ -147,6 +147,15 @@ describe('gherkin step definition support', () => {
     ).toBe('ambiguous');
   });
 
+  test('treats quantified alternation as ambiguous', () => {
+    const step = parseGherkinStepLine('Then aaaaaaaaaaaaaaaaaaaa!', 1);
+    expect(step).not.toBeNull();
+
+    expect(classifyStepDefinitionStatus(step!, ['Then qr/^(a|aa)+!$/, sub { return; };'])).toBe(
+      'ambiguous',
+    );
+  });
+
   test('#859 safe cases are still safe after bounded-quantifier extension', () => {
     // Regression guard: ensure the bounded-quantifier extension did not
     // accidentally widen the heuristic to flag linear-time patterns.
