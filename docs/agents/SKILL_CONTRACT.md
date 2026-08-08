@@ -46,7 +46,9 @@ expand into lane ownership unless its brief explicitly grants that authority.
 
 ## Required skill shape
 
-Every public flow and substantive atomic skill should state:
+Every public flow and substantive atomic skill must expose the applicable semantics
+below. This is an affordance vocabulary for orchestrators and validators, not a demand
+that every skill use these exact headings or include inapplicable fields.
 
 ```text
 Purpose
@@ -69,9 +71,11 @@ Valid exits and routes
 Actual stop conditions
 ```
 
-Not every heading must appear literally when the contract is obvious and proportional,
-but substantive skills must expose enough information for `orchestrate-work` to compile
-a claim-local runtime graph without inventing the method.
+A skill may combine fields under provider-native headings such as scope hierarchy,
+assignment contract, graph-delta returns, runtime boundary, or goal-completion
+contract. It must still make the relevant decision owner, mutation owner, delegation
+surface, join/return boundary, durable/runtime split, and establishment/nonclaim
+boundary unambiguous enough for `orchestrate-work` and maintenance-time validation.
 
 ## Canonical skill vocabulary
 
@@ -323,6 +327,13 @@ Maintenance-time validation may check:
 - provider semantic coverage;
 - no-proof, midstream, in-flight, repair, backward, and whole-flow-lane routes;
 - campaign-root, lane-root, worker, reviewer, and candidate-writer wording;
+- root-retained decisions and one mutation owner where mutation is applicable;
+- delegable read-only work or an explicit reason the skill remains local;
+- useful parallelism/communication boundary;
+- join predicate and graph-delta/return packet;
+- useful GitHub publication versus runtime-local state;
+- external wait and wake-event semantics for wait-bearing flows;
+- explicit establishment and nonclaim boundaries;
 - provider roots directly name their operational flows;
 - `orchestrate-work` runs the specified route and contains the provider-local review
   subgraph;
@@ -330,10 +341,12 @@ Maintenance-time validation may check:
 - `review-pr` routes current review to `verify-live-ci`;
 - `verify-live-ci` cannot infer review from integration facts;
 - substantive review and integration posture remain distinct;
-- useful GitHub updates are distinct from runtime state;
 - route trace is bounded and non-authoritative;
 - absence of tracked frontier, liveness, agent registry, comment-per-transition, and
   retired orchestration metadata.
+
+Validation should test semantic markers and route relations appropriate to each skill
+class, not require identical headings or prose across Claude and Codex.
 
 It must not inspect a live issue/PR stage, select agents, judge actual review sufficiency
 from a phrase gate, infer neighbouring-lane overlap, authorize mutation, or run between
