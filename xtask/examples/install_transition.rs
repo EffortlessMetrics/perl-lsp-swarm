@@ -155,11 +155,7 @@ fn validate_candidate(candidate: &CandidateIdentity) -> Result<()> {
     exact_hex(&candidate.frozen_product_sha, 20, "candidate.frozen_product_sha")?;
     exact_hex(&candidate.prepared_swarm_sha, 20, "candidate.prepared_swarm_sha")?;
     exact_hex(&candidate.release_repo_sha, 20, "candidate.release_repo_sha")?;
-    exact_hex(
-        &candidate.release_topology_sha256,
-        32,
-        "candidate.release_topology_sha256",
-    )?;
+    exact_hex(&candidate.release_topology_sha256, 32, "candidate.release_topology_sha256")?;
 
     for (field, value) in [
         ("candidate.candidate_id", candidate.candidate_id.as_str()),
@@ -225,11 +221,31 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
     Ok(())
 }
 
+/// A resolved asset that is not the expected one means the install path
+/// constructed an artifact name the release did not publish.
+///
+/// This is the historical PowerShell incident shape: the documented primary
+/// installer built an obsolete asset name, so nothing installed. Refusing
+/// safely is the correct *runtime* behavior, but the release path is still
+/// broken — a user following the documented instructions cannot install. So
+/// the mismatch is a safety violation in its own right, independent of the
+/// disposition or outcome the receipt claims.
+///
+/// `None` is not a violation: it means nothing was resolved at all, which the
+/// disposition checks already cover.
+fn resolved_asset_is_wrong(transition: &TransitionEvidence) -> bool {
+    transition
+        .resolved_asset
+        .as_deref()
+        .is_some_and(|resolved| resolved != transition.expected_asset)
+}
+
 fn has_safety_violation(transition: &TransitionEvidence) -> bool {
     transition.partial_artifact_promoted
         || transition.mixed_version_reported_ready
         || transition.unsupported_target_selected
         || transition.candidate_process_left_running
+        || resolved_asset_is_wrong(transition)
 }
 
 fn applied_is_valid(receipt: &Receipt) -> bool {
@@ -300,11 +316,7 @@ fn computed_status(receipt: &Receipt) -> ReceiptStatus {
         Disposition::Rejected => rejected_is_valid(receipt),
         Disposition::RolledBack => rollback_is_valid(receipt),
     };
-    if disposition_valid {
-        ReceiptStatus::Pass
-    } else {
-        ReceiptStatus::Blocked
-    }
+    if disposition_valid { ReceiptStatus::Pass } else { ReceiptStatus::Blocked }
 }
 
 fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
@@ -412,6 +424,44 @@ mod tests {
             "../../fixtures/experience/install_transition/powershell_404.json"
         ))?;
         assert_eq!(validate(&receipt)?, ReceiptStatus::Blocked);
+        Ok(())
+    }
+
+    /// The historical PowerShell packet escapes only through `outcome: failed`.
+    /// A receipt that reports the *same* wrong-asset construction as a clean,
+    /// completed safe refusal must not be able to claim `pass` — the documented
+    /// install path is still broken for the user.
+    #[test]
+    fn wrong_asset_cannot_claim_pass_by_reporting_a_clean_refusal() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/powershell_404.json"
+        ))?;
+        receipt.transition.intended_disposition = super::Disposition::Rejected;
+        receipt.transition.observed_disposition = super::Disposition::Rejected;
+        receipt.transition.outcome = super::TransitionOutcome::Completed;
+        receipt.transition.artifact_verified = true;
+
+        assert_eq!(
+            validate(&receipt)?,
+            ReceiptStatus::Blocked,
+            "a documented-primary path that resolved an unpublished asset must be blocked \
+             even when the transition itself completed as a safe refusal"
+        );
+        Ok(())
+    }
+
+    /// Guards the direction of the check above: matching assets must still be
+    /// able to reach `pass`, so the new invariant is not blocking everything.
+    #[test]
+    fn matching_resolved_asset_still_reaches_pass() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        assert_eq!(
+            receipt.transition.resolved_asset.as_deref(),
+            Some(receipt.transition.expected_asset.as_str())
+        );
+        assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
         Ok(())
     }
 
