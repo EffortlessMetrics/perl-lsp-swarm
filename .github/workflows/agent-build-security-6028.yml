@@ -6,7 +6,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -28,7 +28,9 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import json
           import re
+          import subprocess
 
           path = Path('.github/workflows/ci-nightly.yml')
           lines = path.read_text(encoding='utf-8').splitlines()
@@ -114,8 +116,6 @@ jobs:
           if 'actions/github-script@' in output or 'issues.createComment' in output:
               raise SystemExit('repository comment publisher remains')
 
-          # Structural source check: every checkout step has a local
-          # persist-credentials=false entry before the next step begins.
           output_lines = output.splitlines()
           verified = 0
           for position, checkout in enumerate(output_lines):
@@ -142,7 +142,6 @@ jobs:
                   f'checkout verification mismatch: found={checkout_count} verified={verified}'
               )
 
-          # All non-local actions must remain immutable full-SHA references.
           mutable: list[str] = []
           for number, candidate in enumerate(output_lines, start=1):
               stripped = candidate.strip()
@@ -159,6 +158,26 @@ jobs:
               raise SystemExit('mutable action references remain: ' + ', '.join(mutable))
 
           path.write_text(output, encoding='utf-8')
+          payload = Path('target/security-6028')
+          payload.mkdir(parents=True, exist_ok=True)
+          (payload / 'ci-nightly.yml').write_text(output, encoding='utf-8')
+          (payload / 'manifest.json').write_text(
+              json.dumps(
+                  {
+                      'schema_version': 1,
+                      'source_sha': subprocess.check_output(
+                          ['git', 'rev-parse', 'HEAD'], text=True
+                      ).strip(),
+                      'checkout_count': checkout_count,
+                      'inserted_persist_credentials': inserted_count,
+                      'write_permissions_removed': True,
+                      'comment_publisher_removed': True,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              ) + '\n',
+              encoding='utf-8',
+          )
           print(
               f'checkouts={checkout_count}; inserted={inserted_count}; '
               'write permissions removed; comment publisher removed'
@@ -166,34 +185,17 @@ jobs:
           PY
 
           ruby -e 'require "yaml"; YAML.parse_file(ARGV.fetch(0))' \
-            .github/workflows/ci-nightly.yml
+            target/security-6028/ci-nightly.yml
           git diff --check
-
           test "$(git diff --name-only -- .github/workflows/ci-nightly.yml | wc -l)" -eq 1
-          ! grep -qE '^\s+(issues|pull-requests): write$' .github/workflows/ci-nightly.yml
-          ! grep -q 'actions/github-script@' .github/workflows/ci-nightly.yml
-          ! grep -q 'issues.createComment' .github/workflows/ci-nightly.yml
+          ! grep -qE '^\s+(issues|pull-requests): write$' target/security-6028/ci-nightly.yml
+          ! grep -q 'actions/github-script@' target/security-6028/ci-nightly.yml
+          ! grep -q 'issues.createComment' target/security-6028/ci-nightly.yml
 
-      - name: Commit final candidate and remove builder
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git rm .github/workflows/agent-build-security-6028.yml
-          git add .github/workflows/ci-nightly.yml
-          git diff --cached --check
-
-          changed="$(git diff --cached --name-only | sort)"
-          expected=".github/workflows/agent-build-security-6028.yml
-          .github/workflows/ci-nightly.yml"
-          if [ "$changed" != "$expected" ]; then
-            printf '::error::Unexpected staged paths:\n%s\n' "$changed"
-            exit 1
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "security(ci): make nightly PR execution read-only (#6028)"
-          git remote set-url origin \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push origin HEAD:agent/security-nightly-current-6028
+      - name: Upload validated final candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: security-6028-final-${{ github.run_id }}
+          path: target/security-6028
+          if-no-files-found: error
+          retention-days: 7
