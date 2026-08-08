@@ -396,6 +396,11 @@ name = "prop_dap_protocol_roundtrip"
 path = "tests/prop_dap_protocol_roundtrip.rs"
 # Property tests: DAP protocol message JSON round-trip invariants
 
+[[test]]
+name = "prop_perl_value"
+path = "tests/prop_perl_value.rs"
+# Property tests: PerlValue JSON round-trip and renderer metadata invariants
+
 # Tests that call test-seed helpers gated behind #[cfg(any(test, feature = "test-helpers"))].
 # Run with: cargo test -p perl-dap --features test-helpers
 [[test]]
