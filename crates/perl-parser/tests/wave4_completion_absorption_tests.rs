@@ -104,7 +104,8 @@ fn test_perl_dead_code_publish_false() -> TestResult {
     if !cargo_toml_path.exists() {
         Ok(())
     } else {
-        Err("perl-dead-code/Cargo.toml still exists — absorption should have deleted the crate".into())
+        Err("perl-dead-code/Cargo.toml still exists — absorption should have deleted the crate"
+            .into())
     }
 }
 
@@ -117,7 +118,8 @@ fn test_perl_refactoring_publish_false() -> TestResult {
     if !cargo_toml_path.exists() {
         Ok(())
     } else {
-        Err("perl-refactoring/Cargo.toml still exists — absorption should have deleted the crate".into())
+        Err("perl-refactoring/Cargo.toml still exists — absorption should have deleted the crate"
+            .into())
     }
 }
 

@@ -740,10 +740,7 @@ mod tests {
             Vec::<String>::new()
         );
         // The real skill names are still extracted.
-        assert_eq!(
-            route_tokens("- `$deliver-pr` then `$skill`", true),
-            vec!["deliver-pr"]
-        );
+        assert_eq!(route_tokens("- `$deliver-pr` then `$skill`", true), vec!["deliver-pr"]);
     }
 
     #[test]
