@@ -6,6 +6,18 @@ import * as vscode from 'vscode';
 
 type ReceiptValue = Record<string, unknown>;
 
+interface VerifiedChildArtifact {
+  owner_issue: '#4346';
+  schema_version: 'verified_child_receipt.v1';
+  receipt_schema_version: 'installed_acceptance.v1';
+  candidate_id: string;
+  frozen_product_sha: string;
+  artifact_set_id: string;
+  status: 'pass' | 'limited' | 'blocked' | 'not_proven';
+  claim_boundary: string;
+  limitation: string | null;
+}
+
 function platformLabel(): string {
   switch (process.platform) {
     case 'win32':
@@ -31,6 +43,51 @@ function receiptsDir(): string {
 
 function sha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
+  const outputPath = process.env.PERL_LSP_VERIFIED_OUTPUT;
+  if (!outputPath) {
+    return;
+  }
+
+  const candidateId = process.env.PERL_LSP_CANDIDATE_ID;
+  const frozenProductSha = process.env.PERL_LSP_CURRENT_SOURCE_SHA;
+  const artifactSetId = process.env.PERL_LSP_ARTIFACT_SET_ID;
+  assert.ok(candidateId, 'PERL_LSP_CANDIDATE_ID is required for a verified artifact');
+  assert.ok(frozenProductSha, 'PERL_LSP_CURRENT_SOURCE_SHA is required for a verified artifact');
+  assert.match(
+    frozenProductSha,
+    /^[0-9a-f]{40}$/i,
+    'frozen product SHA must be 40 hex characters',
+  );
+  assert.ok(artifactSetId, 'PERL_LSP_ARTIFACT_SET_ID is required for a verified artifact');
+
+  const knownLimitations = Array.isArray(receipt.known_limitations)
+    ? receipt.known_limitations.filter((value): value is string => typeof value === 'string')
+    : [];
+  const outcome = receipt.outcome;
+  const status: VerifiedChildArtifact['status'] =
+    outcome === 'failed' ? 'blocked' : knownLimitations.length > 0 ? 'limited' : 'pass';
+  const artifact: VerifiedChildArtifact = {
+    owner_issue: '#4346',
+    schema_version: 'verified_child_receipt.v1',
+    receipt_schema_version: 'installed_acceptance.v1',
+    candidate_id: candidateId,
+    frozen_product_sha: frozenProductSha,
+    artifact_set_id: artifactSetId,
+    status,
+    claim_boundary:
+      'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.',
+    limitation:
+      knownLimitations.length > 0
+        ? knownLimitations.join(' ')
+        : status === 'blocked'
+          ? 'The packaged journey reported one or more product blockers.'
+          : null,
+  };
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
 }
 
 async function withTimeout<T>(
@@ -392,6 +449,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
         JSON.stringify(receipt, null, 2),
       );
+      writeVerifiedChildArtifact(receipt);
 
       assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
       assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
