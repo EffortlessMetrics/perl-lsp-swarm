@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10168 |
+| Total tracked files | 10173 |
 | Rust-family files | 3080 |
-| Non-Rust files | 7088 |
-| Allowlisted | 4774 |
+| Non-Rust files | 7093 |
+| Allowlisted | 4779 |
 | Unclassified | 2314 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 236 |
+| config | 240 |
 | documentation | 2248 |
 | generated | 1 |
 | production | 211 |
 | test | 1753 |
-| tooling | 325 |
+| tooling | 326 |
 | unclassified | 2314 |
 
 ## Unclassified files
@@ -2551,6 +2551,8 @@
 | `.github/PULL_REQUEST_TEMPLATE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/actions/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/actions/rust-checks/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/rust-checks/run_cargo.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/rust-checks/test_run_cargo.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-perl-lsp/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
@@ -2575,11 +2577,13 @@
 | `.github/workflows/ci-nightly.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ci-security.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ci.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/composite-action-contracts.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dependency-review.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dist-shadow.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docker-publish.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docs-deploy.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/droid-review.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/droid-security-boundary.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/droid-security-scan.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -5379,6 +5383,7 @@
 | `scripts/ci/test_aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_perl_lsp_rs_core_package.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_droid_security_boundary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_emit_ci_actuals.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_generate_coverage_pack_commands.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_learned_estimate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
