@@ -29,74 +29,6 @@ interface Release {
 // running perllsp.exe both fit comfortably.
 const MANAGED_INSTALL_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const TRANSIENT_MANAGED_INSTALL_ERROR_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ETXTBSY']);
-const WINDOWS_11_MIN_BUILD = 22000;
-
-export type WindowsArm64Support =
-  | 'not-applicable'
-  | 'windows-11-or-newer'
-  | 'windows-10-or-earlier'
-  | 'unknown';
-
-export function parseWindowsBuildNumber(release: string): number | null {
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(release);
-  if (!match) {
-    return null;
-  }
-
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  const build = Number(match[3]);
-  if (![major, minor, build].every(Number.isSafeInteger)) {
-    return null;
-  }
-
-  // Keep future Windows versions fail-open for ARM64 x64 emulation while
-  // preserving the Windows 10 build boundary. A newer major/minor version is
-  // represented as at least the Windows 11 minimum for classification.
-  if (major > 10 || (major === 10 && minor > 0)) {
-    return Math.max(build, WINDOWS_11_MIN_BUILD);
-  }
-
-  return build;
-}
-
-export function classifyWindowsArm64Support(
-  platform = process.platform,
-  arch = process.arch,
-  release = os.release(),
-): WindowsArm64Support {
-  if (platform !== 'win32' || arch !== 'arm64') {
-    return 'not-applicable';
-  }
-
-  const build = parseWindowsBuildNumber(release);
-  if (build === null) {
-    return 'unknown';
-  }
-
-  return build >= WINDOWS_11_MIN_BUILD ? 'windows-11-or-newer' : 'windows-10-or-earlier';
-}
-
-export function getUnsupportedWindowsArm64Message(
-  platform = process.platform,
-  arch = process.arch,
-  release = os.release(),
-): string | undefined {
-  const support = classifyWindowsArm64Support(platform, arch, release);
-  if (support !== 'windows-10-or-earlier' && support !== 'unknown') {
-    return undefined;
-  }
-
-  const detected = release
-    ? `detected OS release ${release}`
-    : 'the Windows build could not be detected';
-  return (
-    `Windows ARM64 x64 emulation requires Windows 11 (build ${WINDOWS_11_MIN_BUILD} or newer); ${detected}. ` +
-    'Windows 10 ARM64 cannot run the published x86_64 binary. Build from source with ' +
-    '`cargo install --locked --path crates/perllsp` and configure perl-lsp.serverPath instead.'
-  );
-}
-
 // Module-level singleflight: coalesce concurrent managed-install calls so
 // activation auto-download, manual reinstall, and silent update-check do not
 // race the same destination path. Multiple BinaryDownloader instances are
@@ -333,10 +265,6 @@ export class BinaryDownloader {
 
     // Download binary
     try {
-      const unsupportedPlatformMessage = getUnsupportedWindowsArm64Message();
-      if (unsupportedPlatformMessage) {
-        throw new Error(unsupportedPlatformMessage);
-      }
       return await this.downloadWithProgress();
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -350,10 +278,7 @@ export class BinaryDownloader {
       let message: string;
       let buttons: string[];
 
-      if (errorMsg.includes('Windows ARM64 x64 emulation')) {
-        message = `perl-lsp: ${errorMsg} ${manualInstallNote}`;
-        buttons = ['Install Manually', 'View Logs'];
-      } else if (
+      if (
         errorMsg.includes('ECONNREFUSED') ||
         errorMsg.includes('ETIMEDOUT') ||
         errorMsg.includes('timeout')
@@ -992,22 +917,7 @@ export class BinaryDownloader {
       this.outputChannel.appendLine(`Linux binary target libc: ${libc}`);
       return `${archPrefix}-unknown-linux-${libc}`;
     } else if (platform === 'win32') {
-      // Windows ships x86_64 only: the release matrix in
-      // .github/workflows/release.yml has no aarch64-pc-windows-msvc entry, so
-      // asking for one produced a 404 that surfaced as a generic download
-      // failure (#5007). ARM64 Windows runs x64 binaries under emulation, so
-      // the x64 asset is the working answer rather than merely a better error.
-      const unsupportedPlatformMessage = getUnsupportedWindowsArm64Message(platform, arch, release);
-      if (unsupportedPlatformMessage) {
-        throw new Error(unsupportedPlatformMessage);
-      }
-      if (arch === 'arm64') {
-        this.outputChannel.appendLine(
-          'Windows on ARM64 detected: installing the x86_64 build, which runs under ' +
-            'Windows 11 ARM64 x64 emulation. No native ARM64 Windows binary is published.',
-        );
-      }
-      return 'x86_64-pc-windows-msvc';
+      return arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
     }
 
     // Fallback to the old logic
