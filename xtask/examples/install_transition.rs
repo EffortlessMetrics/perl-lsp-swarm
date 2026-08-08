@@ -284,6 +284,9 @@ fn applied_is_valid(receipt: &Receipt) -> bool {
 
 fn rejected_is_valid(receipt: &Receipt) -> bool {
     let transition = &receipt.transition;
+    let asset_resolution_is_safe = !transition.documented_primary
+        || transition.resolved_asset.is_none()
+        || transition.resolved_asset.as_deref() == Some(transition.expected_asset.as_str());
     let observed_identity_is_safe = match &receipt.candidate.previous_version {
         Some(previous_version) => {
             transition.observed_release_identity.is_none()
@@ -303,6 +306,7 @@ fn rejected_is_valid(receipt: &Receipt) -> bool {
         && !transition.unsupported_target_selected
         && !transition.rollback_completed
         && !transition.candidate_process_left_running
+        && asset_resolution_is_safe
         && observed_identity_is_safe
         && mismatch_contract_holds
 }
@@ -407,8 +411,21 @@ fn write_verified_child_artifact(
         limitation: receipt.limitations.first().cloned(),
     };
     let content = serde_json::to_vec_pretty(&artifact)?;
-    fs::write(path, content)
-        .with_context(|| format!("writing verified child artifact {}", path.display()))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating verified artifact directory {}", parent.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary verified artifact near {}", path.display()))?;
+    std::io::Write::write_all(&mut temporary, &content)
+        .with_context(|| format!("writing temporary verified artifact near {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("flushing temporary verified artifact near {}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("publishing verified child artifact {}", path.display()))?;
     Ok(())
 }
 
@@ -438,6 +455,7 @@ fn main() -> Result<()> {
 mod tests {
     use super::{Receipt, ReceiptStatus, validate, write_verified_child_artifact};
     use color_eyre::eyre::Result;
+    use std::fs;
     use tempfile::tempdir;
 
     fn fixture(content: &str) -> Result<Receipt> {
@@ -459,6 +477,29 @@ mod tests {
         assert_eq!(value["candidate_id"], "v0.18.0-rc1");
         assert_eq!(value["artifact_set_id"], "v0.18.0-rc1-primary");
         assert_eq!(value["status"], ReceiptStatus::Pass.as_str());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_publish_keeps_existing_artifact_directory_intact() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let status = validate(&receipt)?;
+        let directory = tempdir()?;
+        let output = directory.path().join("existing-artifact");
+        fs::create_dir(&output)?;
+        let marker = output.join("previous.json");
+        fs::write(&marker, b"previous verified artifact")?;
+
+        let error = write_verified_child_artifact(&receipt, status, &output)
+            .expect_err("publishing over a directory must fail");
+
+        assert!(
+            format!("{error:#}").contains("publishing verified child artifact"),
+            "publish failure should identify the destination: {error:#}"
+        );
+        assert_eq!(fs::read(&marker)?, b"previous verified artifact");
         Ok(())
     }
 
