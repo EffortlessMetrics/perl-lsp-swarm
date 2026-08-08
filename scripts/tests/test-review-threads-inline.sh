@@ -53,8 +53,14 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_LOG"
 
 if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
-    if printf '%s' "$*" | grep -q 'after:'; then
+    # The cursor must match the one page 1 handed out. A stub that serves page 2
+    # for any query containing `after:` would let a paginator that forwards a
+    # stale or hard-coded cursor pass test_threads_paginates.
+    if printf '%s' "$*" | grep -qF 'after: "CURSOR-PAGE-1"'; then
         cat "$GH_STUB_DIR/threads_page2.json"
+    elif printf '%s' "$*" | grep -q 'after:'; then
+        printf '%s\n' '{"errors":[{"message":"gh stub: pagination requested with an unexpected cursor"}]}' >&2
+        exit 1
     else
         cat "$GH_STUB_DIR/threads_page1.json"
     fi
@@ -304,18 +310,20 @@ test_threads_refuses_truncation() {
 # survive.
 test_threads_survives_large_payload() {
     reset_stub
-    local big_nodes
-    big_nodes="$(jq -n '[range(0; 40) as $i | {
-        id: "PRRT_big_\($i)",
+    # The fixture itself must never travel through argv — doing so would
+    # reproduce the very failure this case guards against instead of testing
+    # for it. Build it into a file and slurp it.
+    jq -n '[range(0; 40) as $i | {
+        id: ("PRRT_big_" + ($i | tostring)),
         isResolved: false, isOutdated: false,
-        path: "crates/big/src/f\($i).rs", line: 1, originalLine: 1,
+        path: ("crates/big/src/f" + ($i | tostring) + ".rs"), line: 1, originalLine: 1,
         startLine: null, originalStartLine: null, diffSide: "RIGHT",
         comments: { nodes: [ { author: { login: "coderabbitai" },
-                               body: "Finding \($i).\n" + ("x" * 60000),
-                               url: "https://example.invalid/\($i)" } ] }
-    }]')"
-    jq -n --argjson n "$big_nodes" '{data:{repository:{pullRequest:{reviewThreads:{
-        nodes: $n, pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
+                               body: ("Finding " + ($i | tostring) + ".\n" + ("x" * 60000)),
+                               url: ("https://example.invalid/" + ($i | tostring)) } ] }
+    }]' > "$STUB_DIR/big_nodes.json"
+    jq -n --slurpfile n "$STUB_DIR/big_nodes.json" '{data:{repository:{pullRequest:{reviewThreads:{
+        nodes: $n[0], pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
         > "$STUB_DIR/threads_page1.json"
 
     run_threads 9999 test-owner/test-repo --json
@@ -427,6 +435,47 @@ test_inline_rejects_malformed_finding() {
     fi
 }
 
+# A numeric `path` must fail here with a useful message, not pass a coercing
+# check and come back as an anonymous GitHub rejection.
+test_inline_rejects_wrong_types() {
+    reset_stub
+    local f; f="$(findings_file '[{"path":123,"line":3,"body":"numeric path"}]')"
+    run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body 'x'
+    local a=$RUN_EXIT a_out="$RUN_OUT"
+    local f2; f2="$(findings_file '[{"path":"crates/a/src/lib.rs","line":"3","body":"string line"}]')"
+    run_inline --pr 9999 --repo test-owner/test-repo --findings "$f2" --body 'x'
+    if [[ "$a" -eq 2 && "$RUN_EXIT" -eq 2 && "$(review_posts)" -eq 0 ]] \
+        && grep -q 'must be a string' <<<"$a_out" \
+        && grep -q 'must be a number' <<<"$RUN_OUT"; then
+        pass "inline: a numeric \`path\` and a string \`line\` are rejected by type, not coerced"
+    else
+        fail "inline type checks — path exit=$a out=$a_out / line exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+}
+
+# A file present in the diff but with no `patch` (binary, or a patch GitHub
+# truncated) must be reported differently from a path that is simply absent.
+test_inline_distinguishes_missing_patch() {
+    reset_stub
+    cp "$STUB_DIR/pr_files.json" "$STUB_DIR/pr_files.bak"
+    jq '. + [{filename: "assets/logo.png", status: "modified"}]' \
+        "$STUB_DIR/pr_files.bak" > "$STUB_DIR/pr_files.json"
+    local f; f="$(findings_file '[{"path":"assets/logo.png","line":1,"body":"binary"}]')"
+    run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body 'x'
+    local ok=0
+    if [[ "$RUN_EXIT" -eq 2 && "$(review_posts)" -eq 0 ]] \
+        && grep -q 'IS in the pull request diff' <<<"$RUN_OUT" \
+        && grep -q 'no patch' <<<"$RUN_OUT"; then
+        ok=1
+    fi
+    mv "$STUB_DIR/pr_files.bak" "$STUB_DIR/pr_files.json"
+    if [[ "$ok" -eq 1 ]]; then
+        pass "inline: a diffed file with no patch is reported distinctly from an absent path"
+    else
+        fail "inline missing-patch — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+}
+
 test_inline_multiline_range() {
     reset_stub
     local f; f="$(findings_file '[{"path":"crates/a/src/lib.rs","line":3,"start_line":2,"body":"both new lines"}]')"
@@ -521,6 +570,8 @@ test_inline_reads_stdin
 test_inline_rejects_unaddressable_line
 test_inline_rejects_unknown_path
 test_inline_rejects_malformed_finding
+test_inline_rejects_wrong_types
+test_inline_distinguishes_missing_patch
 test_inline_multiline_range
 test_inline_rejects_unaddressable_start_line
 test_inline_dry_run_posts_nothing

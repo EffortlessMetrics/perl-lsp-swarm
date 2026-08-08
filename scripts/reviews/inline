@@ -88,21 +88,36 @@ jq -e . >/dev/null 2>&1 <<<"$RAW" || die_usage "findings are not valid JSON"
 jq -e 'type == "array"' >/dev/null <<<"$RAW" || die_usage "findings must be a JSON array of objects"
 jq -e 'length > 0' >/dev/null <<<"$RAW" || die_usage "findings array is empty — nothing to post"
 
+#
+# Types are checked, not coerced: `{"path": 123}` must fail HERE with a useful
+# message rather than pass a `tostring`-shaped check and come back as an
+# anonymous GitHub rejection.
 SHAPE_ERRORS="$(jq -r '
+    def required_string($i; $field; $v):
+        if ($v | type) != "string" then
+            if $v == null then "findings[\($i)]: missing required \"\($field)\""
+            else "findings[\($i)]: \"\($field)\" must be a string (got \($v | type))" end
+        elif ($v | length) == 0 then "findings[\($i)]: \"\($field)\" is empty"
+        else empty end;
     to_entries
     | map(
         .key as $i | .value as $f
-        | [ (if ($f | type) != "object" then "findings[\($i)]: not an object" else empty end),
-            (if ($f | type) == "object" and (($f.path // "") | tostring | length) == 0
-                then "findings[\($i)]: missing required \"path\"" else empty end),
-            (if ($f | type) == "object" and (($f.body // "") | tostring | length) == 0
-                then "findings[\($i)]: missing required \"body\"" else empty end),
-            (if ($f | type) == "object" and (($f.line | type) != "number")
-                then "findings[\($i)]: missing required numeric \"line\"" else empty end),
-            (if ($f | type) == "object" and ($f.side != null)
-                    and (($f.side | ascii_upcase) | IN("LEFT", "RIGHT") | not)
-                then "findings[\($i)]: invalid \"side\" \($f.side) (LEFT|RIGHT)" else empty end)
-          ]
+        | if ($f | type) != "object" then ["findings[\($i)]: not an object"]
+          else
+            [ required_string($i; "path"; $f.path),
+              required_string($i; "body"; $f.body),
+              (if ($f.line | type) != "number"
+                  then "findings[\($i)]: \"line\" must be a number (got \($f.line | type))" else empty end),
+              (if $f.start_line != null and ($f.start_line | type) != "number"
+                  then "findings[\($i)]: \"start_line\" must be a number (got \($f.start_line | type))" else empty end),
+              (if $f.side != null and (($f.side | type) != "string"
+                      or (($f.side | ascii_upcase) | IN("LEFT", "RIGHT") | not))
+                  then "findings[\($i)]: invalid \"side\" \($f.side | tojson) (LEFT|RIGHT)" else empty end),
+              (if $f.start_side != null and (($f.start_side | type) != "string"
+                      or (($f.start_side | ascii_upcase) | IN("LEFT", "RIGHT") | not))
+                  then "findings[\($i)]: invalid \"start_side\" \($f.start_side | tojson) (LEFT|RIGHT)" else empty end)
+            ]
+          end
       )
     | flatten | .[]
 ' <<<"$RAW")"
@@ -164,7 +179,10 @@ jq -c '
                 .right += [.new] | .left += [.old] | .new += 1 | .old += 1
             end)
         | {RIGHT: .right, LEFT: .left};
-    map(select(.patch != null) | {key: .filename, value: (.patch | hunk_lines)})
+    map({key: .filename,
+         value: (if .patch == null
+                 then {RIGHT: [], LEFT: [], no_patch: true}
+                 else (.patch | hunk_lines) end)})
     | from_entries
 ' "$FILES_FILE" > "$ADDRESSABLE_FILE"
 
@@ -179,6 +197,8 @@ ANCHOR_ERRORS="$(jq -r --slurpfile diff_slurp "$ADDRESSABLE_FILE" '
         | ($diff[$f.path]) as $d
         | if $d == null then
               ["findings[\($i)] \($f.path):\($f.line) — path is not in the pull request diff"]
+          elif ($d.no_patch // false) then
+              ["findings[\($i)] \($f.path):\($f.line) — path IS in the pull request diff, but GitHub returned no patch for it (binary file, or a patch GitHub truncated on a very large diff), so no line can be anchored"]
           else
               [ (if ($d[$s] | index($f.line)) == null
                    then "findings[\($i)] \($f.path):\($f.line) (side=\($s)) — line is not an addressable line in the diff; addressable \($s) lines here: \($d[$s] | if length > 12 then (.[0:12] | tostring) + " …" else tostring end)"
