@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # nightly (master)
         with:
@@ -47,11 +48,15 @@ jobs:
 
       - name: Run full test suite (capture results)
         id: initial_run
+        env:
+          TEST_FILTER_INPUT: ${{ github.event.inputs.test_filter }}
         run: |
           set -euo pipefail
-          FILTER="${{ github.event.inputs.test_filter }}"
+          # Split the test filter into an argv array using Python's shlex
+          # to prevent shell injection from the workflow_dispatch input (#5979).
+          read -r -a FILTER <<< "$(python3 -c 'import shlex, sys, os; print(" ".join(shlex.split(os.environ.get("TEST_FILTER_INPUT", ""))))')"
           cargo test --workspace --lib --locked -Z unstable-options --format json \
-            $FILTER > test-results.jsonl 2>&1 || true
+            "${FILTER[@]}" > test-results.jsonl 2>&1 || true
 
           python3 .ci/scripts/extract-failed-tests.py \
             test-results.jsonl > failed-tests.txt || true
