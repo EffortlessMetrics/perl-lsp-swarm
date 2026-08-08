@@ -240,6 +240,21 @@ def _cargo_install_is_pinned(command: str) -> bool:
     )
 
 
+def _run_line_with_continuations(
+    lines: Sequence[str], index: int, run_lines: set[int]
+) -> str:
+    """Return one shell command with backslash continuations folded together."""
+    command = lines[index]
+    cursor = index
+    while command.rstrip().endswith("\\"):
+        next_index = cursor + 1
+        if next_index not in run_lines:
+            break
+        command = command.rstrip()[:-1] + " " + lines[next_index].lstrip()
+        cursor = next_index
+    return command
+
+
 def _security_sensitive_indirection(line: str) -> bool:
     stripped = line.strip()
     if stripped.startswith(("<<:", "- *")):
@@ -446,7 +461,9 @@ def scan(
                 )
 
             if index in run_lines:
-                install = CARGO_INSTALL_RE.search(line)
+                install = CARGO_INSTALL_RE.search(
+                    _run_line_with_continuations(lines, index, run_lines)
+                )
                 if install and not _cargo_install_is_pinned(install.group(1)):
                     raw.append(
                         RawFinding(
