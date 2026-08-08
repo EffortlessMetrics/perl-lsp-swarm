@@ -8,7 +8,7 @@
 #![allow(clippy::print_stdout)]
 
 use clap::Parser;
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 
 const CHECK: &str = "first-ten-minutes";
 const SCHEMA_VERSION: &str = "first_ten_minutes.v1";
+const VERIFIED_CHILD_SCHEMA_VERSION: &str = "verified_child_receipt.v1";
+const OWNER_ISSUE: &str = "#5902";
 const REQUIRED_STEPS: [JourneyStepId; 4] = [
     JourneyStepId::InstallStartup,
     JourneyStepId::UnderstandProject,
@@ -31,6 +33,10 @@ struct Args {
     /// Receipt JSON to validate.
     #[arg(long)]
     receipt: PathBuf,
+
+    /// Optional verified-child envelope output consumed by the public-beta fan-in.
+    #[arg(long)]
+    verified_output: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -104,6 +110,7 @@ enum FrictionClass {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CandidateIdentity {
+    candidate_id: String,
     repository_sha: String,
     artifact_set_id: String,
     vsix_version: String,
@@ -192,6 +199,20 @@ struct Receipt {
     limitations: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VerifiedChildArtifact<'a> {
+    owner_issue: &'static str,
+    schema_version: &'static str,
+    receipt_schema_version: &'static str,
+    candidate_id: &'a str,
+    frozen_product_sha: &'a str,
+    artifact_set_id: &'a str,
+    status: ReceiptStatus,
+    claim_boundary: &'a str,
+    limitation: Option<String>,
+}
+
 fn non_empty(value: &str, field: &str) -> Result<()> {
     if value.trim().is_empty() {
         bail!("{field} must not be empty");
@@ -259,6 +280,7 @@ fn issue_identity(value: &str, field: &str) -> Result<()> {
 }
 
 fn validate_identity(receipt: &Receipt) -> Result<()> {
+    non_empty(&receipt.candidate.candidate_id, "candidate.candidate_id")?;
     exact_hex(&receipt.candidate.repository_sha, 20, "candidate.repository_sha")?;
     exact_hex(&receipt.candidate.vsix_sha256, 32, "candidate.vsix_sha256")?;
     exact_hex(&receipt.candidate.perllsp_sha256, 32, "candidate.perllsp_sha256")?;
@@ -417,11 +439,36 @@ fn load(path: &Path) -> Result<Receipt> {
     Ok(serde_json::from_value(raw)?)
 }
 
+fn write_verified_child_artifact(
+    receipt: &Receipt,
+    status: ReceiptStatus,
+    path: &Path,
+) -> Result<()> {
+    let artifact = VerifiedChildArtifact {
+        owner_issue: OWNER_ISSUE,
+        schema_version: VERIFIED_CHILD_SCHEMA_VERSION,
+        receipt_schema_version: SCHEMA_VERSION,
+        candidate_id: &receipt.candidate.candidate_id,
+        frozen_product_sha: &receipt.candidate.repository_sha,
+        artifact_set_id: &receipt.candidate.artifact_set_id,
+        status,
+        claim_boundary: &receipt.claim_boundary,
+        limitation: receipt.limitations.first().cloned(),
+    };
+    let content = serde_json::to_vec_pretty(&artifact)?;
+    fs::write(path, content)
+        .with_context(|| format!("writing verified child artifact {}", path.display()))?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let receipt = load(&args.receipt)?;
     let status = validate(&receipt)?;
+    if let Some(path) = &args.verified_output {
+        write_verified_child_artifact(&receipt, status, path)?;
+    }
     println!(
         "first-ten-minutes: status={} pass={:?} project={} trust_breakers={} findings={}",
         status.as_str(),
@@ -438,13 +485,33 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Receipt, ReceiptStatus, StepStatus, validate, validate_raw_shape};
+    use super::{
+        Receipt, ReceiptStatus, StepStatus, VerifiedChildArtifact, validate, validate_raw_shape,
+        write_verified_child_artifact,
+    };
     use color_eyre::eyre::Result;
+    use tempfile::tempdir;
 
     fn fixture(content: &str) -> Result<Receipt> {
         let raw: serde_json::Value = serde_json::from_str(content)?;
         validate_raw_shape(&raw)?;
         Ok(serde_json::from_value(raw)?)
+    }
+
+    #[test]
+    fn verified_child_output_carries_validated_identity() -> Result<()> {
+        let receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
+        let status = validate(&receipt)?;
+        let directory = tempdir()?;
+        let output = directory.path().join("child.json");
+        write_verified_child_artifact(&receipt, status, &output)?;
+        let artifact: VerifiedChildArtifact<'_> = serde_json::from_slice(&std::fs::read(output)?)?;
+        assert_eq!(artifact.schema_version, "verified_child_receipt.v1");
+        assert_eq!(artifact.receipt_schema_version, "first_ten_minutes.v1");
+        assert_eq!(artifact.candidate_id, "v0.18.0-pre-freeze");
+        assert_eq!(artifact.status, ReceiptStatus::Pass);
+        Ok(())
     }
 
     #[test]

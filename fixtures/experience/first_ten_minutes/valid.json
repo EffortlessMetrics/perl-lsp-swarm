@@ -5,6 +5,7 @@
   "claim_boundary": "Release-shaped observation of one reviewed fixture through install, core editor use, mutation, recovery, and shutdown; does not establish all-project or all-editor quality.",
   "study_pass": "pre_freeze_release_shaped",
   "candidate": {
+    "candidate_id": "v0.18.0-pre-freeze",
     "repository_sha": "0123456789abcdef0123456789abcdef01234567",
     "artifact_set_id": "v0.18.0-pre-freeze-linux-x86_64",
     "vsix_version": "0.18.0",
