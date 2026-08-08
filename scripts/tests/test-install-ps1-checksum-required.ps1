@@ -191,3 +191,4 @@ Write-Host "=== Results: $Pass passed, $Fail failed ==="
 if ($Fail -ne 0) {
     exit 1
 }
+exit 0
