@@ -3,7 +3,7 @@
 //! Standard JSON-RPC 2.0 error codes plus LSP-specific extensions.
 
 use super::jsonrpc::{JsonRpcError, JsonRpcId, JsonRpcResponse};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Typed error code enum for LSP/JSON-RPC error codes.
 ///
@@ -440,8 +440,8 @@ mod tests {
     }
 
     #[test]
-    fn server_cancelled_error_has_correct_code_and_message_starts_with(
-    ) -> Result<(), Box<dyn Error>> {
+    fn server_cancelled_error_has_correct_code_and_message_starts_with()
+    -> Result<(), Box<dyn Error>> {
         let e = server_cancelled_error();
         assert_eq!(e.code, SERVER_CANCELLED);
         assert!(e.message.starts_with("Server cancelled"), "message was: {}", e.message);
@@ -538,8 +538,8 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_response_with_method_namespaced_sets_id_code_and_data(
-    ) -> Result<(), Box<dyn Error>> {
+    fn cancelled_response_with_method_namespaced_sets_id_code_and_data()
+    -> Result<(), Box<dyn Error>> {
         let resp = cancelled_response_with_method(&json!(42), "textDocument/hover");
         assert_eq!(resp.jsonrpc, "2.0");
         assert_eq!(resp.id, Some(JsonRpcId::Integer(42)));
@@ -558,8 +558,8 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_response_with_method_no_slash_uses_method_as_provider(
-    ) -> Result<(), Box<dyn Error>> {
+    fn cancelled_response_with_method_no_slash_uses_method_as_provider()
+    -> Result<(), Box<dyn Error>> {
         // Covers the `unwrap_or(method)` branch when there is no '/' in the method name.
         let resp = cancelled_response_with_method(&json!(1), "plain");
         let error = resp.error.ok_or("expected error field")?;

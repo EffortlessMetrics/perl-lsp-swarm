@@ -7,8 +7,8 @@
 #[cfg(test)]
 use super::*;
 use super::{
-    json, md5, source_path_from_uri, Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState,
-    InternalDiagnosticSeverity, JsonRpcError, LspServer, Mutex, Ordering, Value,
+    Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
+    JsonRpcError, LspServer, Mutex, Ordering, Value, json, md5, source_path_from_uri,
 };
 use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
@@ -1334,25 +1334,27 @@ impl LspServer {
         }
 
         if !d.related_information.is_empty() {
-            diag["relatedInformation"] = json!(d
-                .related_information
-                .iter()
-                .map(|ri| {
-                    let ri_start =
-                        doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.0);
-                    let ri_end = doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.1);
-                    json!({
-                        "location": {
-                            "uri": uri,
-                            "range": {
-                                "start": {"line": ri_start.0, "character": ri_start.1},
-                                "end":   {"line": ri_end.0,   "character": ri_end.1},
-                            }
-                        },
-                        "message": ri.message
+            diag["relatedInformation"] = json!(
+                d.related_information
+                    .iter()
+                    .map(|ri| {
+                        let ri_start =
+                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.0);
+                        let ri_end =
+                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.1);
+                        json!({
+                            "location": {
+                                "uri": uri,
+                                "range": {
+                                    "start": {"line": ri_start.0, "character": ri_start.1},
+                                    "end":   {"line": ri_end.0,   "character": ri_end.1},
+                                }
+                            },
+                            "message": ri.message
+                        })
                     })
-                })
-                .collect::<Vec<_>>());
+                    .collect::<Vec<_>>()
+            );
         }
 
         if let Some(ref code_str) = d.code {
@@ -2509,8 +2511,8 @@ mod tests {
     }
 
     #[test]
-    fn publish_diagnostics_boundary_discriminator_syntax_only_mode(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn publish_diagnostics_boundary_discriminator_syntax_only_mode()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (server, buf) = make_server_with_capture_and_tuning(
             perl_lsp_rs_core::runtime::tuning::RuntimeTuning::e2e_defaults(),
         );
@@ -2538,8 +2540,8 @@ mod tests {
     }
 
     #[test]
-    fn publish_diagnostics_boundary_discriminator_generation_changed_after_snapshot(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn publish_diagnostics_boundary_discriminator_generation_changed_after_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///stale_publish_boundary.pl";
         server.test_handle_did_open(Some(json!({
@@ -2859,8 +2861,8 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_engine_adds_native_workspace_diagnostics(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn native_critic_engine_adds_native_workspace_diagnostics()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (server, _buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
@@ -3238,8 +3240,8 @@ mod tests {
     /// When no workspace folder contains the document, build_context must fall back
     /// to the global root_path.
     #[test]
-    fn build_context_falls_back_to_root_path_when_no_folder_matches(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_context_falls_back_to_root_path_when_no_folder_matches()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         let outside = temp.path().join("outside");
@@ -3285,8 +3287,8 @@ mod tests {
     /// This test uses the DEFAULT WorkspaceConfig (include_paths = ["lib", ".", ...])
     /// to match the UX harness scenario where no explicit includePaths are configured.
     #[test]
-    fn push_pl701_fires_after_no_lib_cancels_default_include_path(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn push_pl701_fires_after_no_lib_cancels_default_include_path()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(workspace.join("lib"))?;
@@ -3432,8 +3434,8 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
-    fn pull_diagnostic_boundary_discriminator_syntax_only_mode(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_diagnostic_boundary_discriminator_syntax_only_mode()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new_with_tuning(
             perl_lsp_rs_core::runtime::tuning::RuntimeTuning::e2e_defaults(),
         );
@@ -3472,8 +3474,8 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
-    fn pull_syntax_only_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_syntax_only_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = StdArc::new(LspServer::new_with_tuning(
             perl_lsp_rs_core::runtime::tuning::RuntimeTuning::e2e_defaults(),
         ));
@@ -3523,8 +3525,8 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
-    fn pull_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = StdArc::new(LspServer::new());
         let uri = "file:///stale_pull_boundary.pl";
         server.test_handle_did_open(Some(json!({
@@ -3584,8 +3586,8 @@ print \"unreachable\\n\";\n";
     /// return `Ok({"kind":"full","items":[]})` — genuinely-no-diagnostics is
     /// correct and must NOT be conflated with the error cases above.
     #[test]
-    fn pull_diagnostic_valid_uri_unopened_returns_empty_full_report(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn pull_diagnostic_valid_uri_unopened_returns_empty_full_report()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let result = server.test_handle_document_diagnostic(Some(
             json!({ "textDocument": { "uri": "file:///never_opened.pl" } }),

@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
-use perl_parser_core::error::ParseError;
 use perl_parser_core::Node;
+use perl_parser_core::error::ParseError;
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer;
 use perl_semantic_analyzer::symbol::SymbolExtractor;
