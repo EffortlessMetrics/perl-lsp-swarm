@@ -2,17 +2,18 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
+import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-MODULE_PATH = Path(__file__).with_name("check_security_reconciliation.py")
-SPEC = importlib.util.spec_from_file_location("check_security_reconciliation", MODULE_PATH)
-assert SPEC is not None and SPEC.loader is not None
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+import security_reconciliation_io as IO
+import security_reconciliation_model as MODEL
 
 LEDGER = Path(__file__).resolve().parents[2] / ".ci/security/may-2026-findings.json"
 MARKDOWN = Path(__file__).resolve().parents[2] / "docs/security/may-2026-findings.md"
@@ -21,15 +22,15 @@ MARKDOWN = Path(__file__).resolve().parents[2] / "docs/security/may-2026-finding
 class SecurityReconciliationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.valid = MODULE.load_ledger(LEDGER)
+        cls.valid = IO.load_ledger(LEDGER)
 
     def assert_invalid(self, data: dict, needle: str) -> None:
-        with self.assertRaisesRegex(MODULE.LedgerError, needle):
-            MODULE.validate_ledger(data)
+        with self.assertRaisesRegex(MODEL.LedgerError, needle):
+            MODEL.validate_ledger(data)
 
     def test_checked_in_ledger_and_markdown_are_current(self) -> None:
-        MODULE.validate_ledger(self.valid)
-        self.assertEqual(MODULE.render_markdown(self.valid), MARKDOWN.read_text(encoding="utf-8"))
+        MODEL.validate_ledger(self.valid)
+        self.assertEqual(IO.render_markdown(self.valid), MARKDOWN.read_text(encoding="utf-8"))
 
     def test_missing_original_row_fails(self) -> None:
         data = copy.deepcopy(self.valid)
@@ -60,7 +61,7 @@ class SecurityReconciliationTests(unittest.TestCase):
         row = data["findings"][0]
         row["github"]["issue_state"] = "closed"
         row["verdict"] = "open"
-        MODULE.validate_ledger(data)
+        MODEL.validate_ledger(data)
 
     def test_proven_closed_requires_landed_current_source_proof(self) -> None:
         data = copy.deepcopy(self.valid)
@@ -81,12 +82,18 @@ class SecurityReconciliationTests(unittest.TestCase):
             root = Path(raw)
             ledger = root / "ledger.json"
             markdown = root / "ledger.md"
-            ledger.write_text(json.dumps(self.valid, indent=2) + "\n", encoding="utf-8")
-            MODULE.check_or_write(ledger, markdown, True)
+            source_manifest = json.loads(LEDGER.read_text(encoding="utf-8"))
+            ledger.write_text(json.dumps(source_manifest, indent=2) + "\n", encoding="utf-8")
+            for relative in source_manifest["finding_files"]:
+                source = LEDGER.parent / relative
+                target = ledger.parent / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+            IO.check_or_write(ledger, markdown, True)
             first = markdown.read_bytes()
-            MODULE.check_or_write(ledger, markdown, True)
+            IO.check_or_write(ledger, markdown, True)
             self.assertEqual(first, markdown.read_bytes())
-            MODULE.check_or_write(ledger, markdown, False)
+            IO.check_or_write(ledger, markdown, False)
 
 
 if __name__ == "__main__":
