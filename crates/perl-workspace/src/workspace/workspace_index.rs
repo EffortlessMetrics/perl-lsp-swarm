@@ -4321,16 +4321,17 @@ impl WorkspaceIndex {
         // a background reindex cannot mix stale usage keys with fresh symbols (#6042).
         for _ in 0..3 {
             let v1 = self.write_version();
-            let used_names =
-                Self::collect_used_names_from_global_refs(&self.global_references.read());
-            let candidates: Vec<WorkspaceSymbol> = {
+            let (used_names, candidates): (HashSet<String>, Vec<WorkspaceSymbol>) = {
                 let files = self.files.read();
-                files
+                let global_refs = self.global_references.read();
+                let used_names = Self::collect_used_names_from_global_refs(&global_refs);
+                let candidates = files
                     .values()
                     .flat_map(|file_index| file_index.symbols.iter())
                     .filter(|symbol| !symbol.is_lexical)
                     .cloned()
-                    .collect()
+                    .collect();
+                (used_names, candidates)
             };
             let v2 = self.write_version();
             if v1 == v2 {
@@ -4343,15 +4344,21 @@ impl WorkspaceIndex {
         }
 
         // Fallback after retries exhausted — same posture as `count_usages`.
-        let used_names =
-            Self::collect_used_names_from_global_refs(&self.global_references.read());
-        let files = self.files.read();
-        files
-            .values()
-            .flat_map(|file_index| file_index.symbols.iter())
-            .filter(|symbol| !symbol.is_lexical)
+        let (used_names, candidates): (HashSet<String>, Vec<WorkspaceSymbol>) = {
+            let files = self.files.read();
+            let global_refs = self.global_references.read();
+            let used_names = Self::collect_used_names_from_global_refs(&global_refs);
+            let candidates = files
+                .values()
+                .flat_map(|file_index| file_index.symbols.iter())
+                .filter(|symbol| !symbol.is_lexical)
+                .cloned()
+                .collect();
+            (used_names, candidates)
+        };
+        candidates
+            .into_iter()
             .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
-            .cloned()
             .collect()
     }
 
