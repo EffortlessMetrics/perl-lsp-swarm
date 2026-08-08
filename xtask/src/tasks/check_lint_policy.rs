@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use toml::Value;
 
 const ROOT_MANIFEST: &str = "Cargo.toml";
+const GATE_POLICY: &str = ".ci/gate-policy.yaml";
+const RUST_TOOLCHAIN: &str = "rust-toolchain.toml";
 const CLIPPY_CONFIG: &str = "clippy.toml";
 const LINT_LEDGER: &str = "policy/clippy-lints.toml";
 const DEBT_LEDGER: &str = "policy/clippy-debt.toml";
@@ -83,14 +85,41 @@ struct DebtEntry {
     expires: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GatePolicy {
+    global: GateGlobal,
+}
+
+#[derive(Debug, Deserialize)]
+struct GateGlobal {
+    toolchain: GateToolchain,
+}
+
+#[derive(Debug, Deserialize)]
+struct GateToolchain {
+    msrv: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RustToolchainFile {
+    toolchain: RustToolchain,
+}
+
+#[derive(Debug, Deserialize)]
+struct RustToolchain {
+    channel: String,
+}
+
 pub fn run() -> Result<()> {
     let root = Path::new(".");
     let cargo = read_toml(root.join(ROOT_MANIFEST))?;
     let lint_ledger: LintLedger = read_toml_as(root.join(LINT_LEDGER))?;
     let debt_ledger: DebtLedger = read_toml_as(root.join(DEBT_LEDGER))?;
+    let gate_policy: GatePolicy = read_yaml_as(root.join(GATE_POLICY))?;
+    let rust_toolchain: RustToolchainFile = read_toml_as(root.join(RUST_TOOLCHAIN))?;
 
     validate_policy_header(&lint_ledger)?;
-    validate_msrv(&cargo, &lint_ledger)?;
+    validate_msrv(&cargo, &lint_ledger, &gate_policy, &rust_toolchain)?;
     validate_workspace_lints(&cargo, &lint_ledger)?;
     validate_workspace_members_inherit_lints(root, &cargo)?;
     validate_clippy_config(root.join(CLIPPY_CONFIG), &lint_ledger)?;
@@ -121,6 +150,16 @@ where
     toml::from_str(&content).map_err(|err| eyre!("failed to parse {}: {err}", path.display()))
 }
 
+fn read_yaml_as<T>(path: PathBuf) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let content = fs::read_to_string(&path)
+        .map_err(|err| eyre!("failed to read {}: {err}", path.display()))?;
+    serde_yaml_ng::from_str(&content)
+        .map_err(|err| eyre!("failed to parse {}: {err}", path.display()))
+}
+
 fn validate_policy_header(ledger: &LintLedger) -> Result<()> {
     if ledger.schema != 1 {
         bail!("{} schema must be 1", LINT_LEDGER);
@@ -137,7 +176,12 @@ fn validate_policy_header(ledger: &LintLedger) -> Result<()> {
     Ok(())
 }
 
-fn validate_msrv(cargo: &Value, ledger: &LintLedger) -> Result<()> {
+fn validate_msrv(
+    cargo: &Value,
+    ledger: &LintLedger,
+    gate_policy: &GatePolicy,
+    rust_toolchain: &RustToolchainFile,
+) -> Result<()> {
     let msrv = value_at(cargo, &["workspace", "package", "rust-version"])?
         .as_str()
         .ok_or_else(|| eyre!("workspace.package.rust-version must be a string"))?;
@@ -145,6 +189,18 @@ fn validate_msrv(cargo: &Value, ledger: &LintLedger) -> Result<()> {
         bail!(
             "workspace.package.rust-version ({msrv}) must match {LINT_LEDGER} msrv ({})",
             ledger.msrv
+        );
+    }
+    if compare_versions(msrv, &gate_policy.global.toolchain.msrv)? != 0 {
+        bail!(
+            "workspace.package.rust-version ({msrv}) must match {GATE_POLICY} toolchain.msrv ({})",
+            gate_policy.global.toolchain.msrv
+        );
+    }
+    if compare_versions(msrv, &rust_toolchain.toolchain.channel)? != 0 {
+        bail!(
+            "workspace.package.rust-version ({msrv}) must match {RUST_TOOLCHAIN} channel ({})",
+            rust_toolchain.toolchain.channel
         );
     }
     Ok(())
@@ -409,7 +465,7 @@ mod tests {
     fn ledger_with(lint: LintEntry) -> LintLedger {
         LintLedger {
             schema: 1,
-            msrv: "1.92".to_owned(),
+            msrv: "1.95".to_owned(),
             policy: LintPolicy {
                 panic_free_tests: true,
                 allow_test_carveouts: true,
@@ -419,6 +475,50 @@ mod tests {
             lint: vec![lint],
             planned: Vec::new(),
         }
+    }
+
+    fn gate_policy_with(msrv: &str) -> GatePolicy {
+        GatePolicy { global: GateGlobal { toolchain: GateToolchain { msrv: msrv.to_owned() } } }
+    }
+
+    fn rust_toolchain_with(channel: &str) -> RustToolchainFile {
+        RustToolchainFile { toolchain: RustToolchain { channel: channel.to_owned() } }
+    }
+
+    #[test]
+    fn msrv_accepts_equivalent_patch_precision_across_authorities() -> Result<()> {
+        let cargo = toml::from_str::<Value>(
+            r#"
+            [workspace.package]
+            rust-version = "1.95"
+            "#,
+        )?;
+        let ledger = ledger_with(lint_entry("clippy::indexing_slicing", "tracked"));
+
+        validate_msrv(&cargo, &ledger, &gate_policy_with("1.95.0"), &rust_toolchain_with("1.95.0"))
+    }
+
+    #[test]
+    fn msrv_rejects_gate_policy_drift() -> Result<()> {
+        let cargo = toml::from_str::<Value>(
+            r#"
+            [workspace.package]
+            rust-version = "1.95"
+            "#,
+        )?;
+        let ledger = ledger_with(lint_entry("clippy::indexing_slicing", "tracked"));
+
+        let result = validate_msrv(
+            &cargo,
+            &ledger,
+            &gate_policy_with("1.92.0"),
+            &rust_toolchain_with("1.95.0"),
+        );
+        let Err(error) = result else {
+            bail!("gate-policy MSRV drift should be rejected");
+        };
+        assert!(error.to_string().contains(GATE_POLICY));
+        Ok(())
     }
 
     #[test]
