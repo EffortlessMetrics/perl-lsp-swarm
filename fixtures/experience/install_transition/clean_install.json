@@ -4,6 +4,7 @@
   "status": "pass",
   "claim_boundary": "Fresh documented PowerShell install of one topology-bound candidate into an isolated prefix with no prior supported version.",
   "candidate": {
+    "artifact_set_id": "v0.18.0-rc1-primary",
     "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
     "prepared_swarm_sha": "1111111111111111111111111111111111111111",
     "release_repo_sha": "2222222222222222222222222222222222222222",

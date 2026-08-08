@@ -4,6 +4,7 @@
   "status": "pass",
   "claim_boundary": "Isolated VSIX upgrade from the prior public beta to one topology-bound candidate; does not establish public-channel availability.",
   "candidate": {
+    "artifact_set_id": "v0.18.0-rc1-primary",
     "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
     "prepared_swarm_sha": "1111111111111111111111111111111111111111",
     "release_repo_sha": "2222222222222222222222222222222222222222",

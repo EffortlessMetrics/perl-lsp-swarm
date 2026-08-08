@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 const CHECK: &str = "install-transition";
 const SCHEMA_VERSION: &str = "install_transition.v1";
+const VERIFIED_CHILD_SCHEMA_VERSION: &str = "verified_child_receipt.v1";
+const OWNER_ISSUE: &str = "#5903";
 
 #[derive(Debug, Parser)]
 #[command(name = "install-transition")]
@@ -24,6 +26,10 @@ struct Args {
     /// Receipt JSON to validate.
     #[arg(long)]
     receipt: PathBuf,
+
+    /// Optional verified-child envelope output consumed by the public-beta fan-in.
+    #[arg(long)]
+    verified_output: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -86,6 +92,7 @@ enum TransitionOutcome {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CandidateIdentity {
+    artifact_set_id: String,
     frozen_product_sha: String,
     prepared_swarm_sha: String,
     release_repo_sha: String,
@@ -137,6 +144,20 @@ struct Receipt {
     limitations: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VerifiedChildArtifact<'a> {
+    owner_issue: &'static str,
+    schema_version: &'static str,
+    receipt_schema_version: &'static str,
+    candidate_id: &'a str,
+    frozen_product_sha: &'a str,
+    artifact_set_id: &'a str,
+    status: ReceiptStatus,
+    claim_boundary: &'a str,
+    limitation: Option<String>,
+}
+
 fn non_empty(value: &str, field: &str) -> Result<()> {
     if value.trim().is_empty() {
         bail!("{field} must not be empty");
@@ -152,6 +173,7 @@ fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
 }
 
 fn validate_candidate(candidate: &CandidateIdentity) -> Result<()> {
+    non_empty(&candidate.artifact_set_id, "candidate.artifact_set_id")?;
     exact_hex(&candidate.frozen_product_sha, 20, "candidate.frozen_product_sha")?;
     exact_hex(&candidate.prepared_swarm_sha, 20, "candidate.prepared_swarm_sha")?;
     exact_hex(&candidate.release_repo_sha, 20, "candidate.release_repo_sha")?;
@@ -368,11 +390,36 @@ fn load(path: &Path) -> Result<Receipt> {
         .with_context(|| format!("parsing install-transition receipt {}", path.display()))
 }
 
+fn write_verified_child_artifact(
+    receipt: &Receipt,
+    status: ReceiptStatus,
+    path: &Path,
+) -> Result<()> {
+    let artifact = VerifiedChildArtifact {
+        owner_issue: OWNER_ISSUE,
+        schema_version: VERIFIED_CHILD_SCHEMA_VERSION,
+        receipt_schema_version: SCHEMA_VERSION,
+        candidate_id: &receipt.candidate.candidate_id,
+        frozen_product_sha: &receipt.candidate.frozen_product_sha,
+        artifact_set_id: &receipt.candidate.artifact_set_id,
+        status,
+        claim_boundary: &receipt.claim_boundary,
+        limitation: receipt.limitations.first().cloned(),
+    };
+    let content = serde_json::to_vec_pretty(&artifact)?;
+    fs::write(path, content)
+        .with_context(|| format!("writing verified child artifact {}", path.display()))?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let receipt = load(&args.receipt)?;
     let status = validate(&receipt)?;
+    if let Some(path) = &args.verified_output {
+        write_verified_child_artifact(&receipt, status, path)?;
+    }
     println!(
         "install-transition: status={} class={:?} path={:?} intended={:?} observed={:?}",
         status.as_str(),
@@ -389,11 +436,30 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Receipt, ReceiptStatus, validate};
+    use super::{Receipt, ReceiptStatus, validate, write_verified_child_artifact};
     use color_eyre::eyre::Result;
+    use tempfile::tempdir;
 
     fn fixture(content: &str) -> Result<Receipt> {
         Ok(serde_json::from_str(content)?)
+    }
+
+    #[test]
+    fn verified_child_output_carries_transition_identity() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let status = validate(&receipt)?;
+        let directory = tempdir()?;
+        let output = directory.path().join("child.json");
+        write_verified_child_artifact(&receipt, status, &output)?;
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(output)?)?;
+        assert_eq!(value["schema_version"], "verified_child_receipt.v1");
+        assert_eq!(value["receipt_schema_version"], "install_transition.v1");
+        assert_eq!(value["candidate_id"], "v0.18.0-rc1");
+        assert_eq!(value["artifact_set_id"], "v0.18.0-rc1-primary");
+        assert_eq!(value["status"], ReceiptStatus::Pass.as_str());
+        Ok(())
     }
 
     #[test]
