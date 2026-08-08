@@ -35,6 +35,7 @@ use perl_workspace::semantic::{
 use perl_workspace::workspace_index::{
     SymbolKind as WsSymbolKind, VarKind, WorkspaceIndex, WorkspaceSymbol,
 };
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -146,13 +147,13 @@ pub fn add_workspace_symbol_completions(
                 };
 
                 completions.push(CompletionItem {
-                    insert_text: Some(symbol.name.clone()),
-                    sort_text: Some(format!("{sort_prefix}{label}")),
-                    filter_text: Some(label.clone()),
-                    label,
+                    insert_text: Some(Cow::Owned(symbol.name.clone())),
+                    sort_text: Some(Cow::Owned(format!("{sort_prefix}{label}"))),
+                    filter_text: Some(Cow::Owned(label.clone())),
+                    label: Cow::Owned(label),
                     kind: CompletionItemKind::Function,
-                    detail: Some(detail),
-                    documentation: symbol.documentation.clone(),
+                    detail: Some(Cow::Owned(detail)),
+                    documentation: symbol.documentation.clone().map(Cow::Owned),
                     additional_edits: workspace_auto_import_edits(
                         source,
                         symbol.container_name.as_deref(),
@@ -184,13 +185,17 @@ pub fn add_workspace_symbol_completions(
                 }
 
                 completions.push(CompletionItem {
-                    insert_text: Some(label.clone()),
-                    sort_text: Some(format!("4_{}", label)), // Tier 4: after core builtins
-                    filter_text: Some(label.clone()),
-                    label,
+                    insert_text: Some(Cow::Owned(label.clone())),
+                    sort_text: Some(Cow::Owned(format!("4_{}", label))), // Tier 4: after core builtins
+                    filter_text: Some(Cow::Owned(label.clone())),
+                    label: Cow::Owned(label),
                     kind: CompletionItemKind::Variable,
-                    detail: symbol.container_name.clone().or_else(|| Some("workspace".to_string())),
-                    documentation: symbol.documentation.clone(),
+                    detail: symbol
+                        .container_name
+                        .clone()
+                        .or_else(|| Some("workspace".to_string()))
+                        .map(Cow::Owned),
+                    documentation: symbol.documentation.clone().map(Cow::Owned),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
@@ -202,13 +207,13 @@ pub fn add_workspace_symbol_completions(
                 // Add package completion — tier 4 (workspace, after core builtins)
                 let name = &symbol.name;
                 completions.push(CompletionItem {
-                    label: name.clone(),
+                    label: Cow::Owned(name.clone()),
                     kind: CompletionItemKind::Module,
-                    detail: Some("package".to_string()),
-                    documentation: symbol.documentation.clone(),
-                    insert_text: Some(name.clone()),
-                    sort_text: Some(format!("4_{name}")),
-                    filter_text: Some(name.clone()),
+                    detail: Some(Cow::Borrowed("package")),
+                    documentation: symbol.documentation.clone().map(Cow::Owned),
+                    insert_text: Some(Cow::Owned(name.clone())),
+                    sort_text: Some(Cow::Owned(format!("4_{name}"))),
+                    filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: Some(vec![":".to_string(), ";".to_string()]),
@@ -220,13 +225,17 @@ pub fn add_workspace_symbol_completions(
                 // Add constant completion — tier 4 (workspace, after core builtins)
                 let name = &symbol.name;
                 completions.push(CompletionItem {
-                    label: name.clone(),
+                    label: Cow::Owned(name.clone()),
                     kind: CompletionItemKind::Constant,
-                    detail: symbol.container_name.clone().or_else(|| Some("workspace".to_string())),
-                    documentation: symbol.documentation.clone(),
-                    insert_text: Some(name.clone()),
-                    sort_text: Some(format!("4_{name}")),
-                    filter_text: Some(name.clone()),
+                    detail: symbol
+                        .container_name
+                        .clone()
+                        .or_else(|| Some("workspace".to_string()))
+                        .map(Cow::Owned),
+                    documentation: symbol.documentation.clone().map(Cow::Owned),
+                    insert_text: Some(Cow::Owned(name.clone())),
+                    sort_text: Some(Cow::Owned(format!("4_{name}"))),
+                    filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: workspace_auto_import_edits(
                         source,
                         symbol.container_name.as_deref(),
@@ -242,13 +251,13 @@ pub fn add_workspace_symbol_completions(
                 // Add exported symbol completion
                 let name = &symbol.name;
                 completions.push(CompletionItem {
-                    label: name.clone(),
+                    label: Cow::Owned(name.clone()),
                     kind: CompletionItemKind::Function,
-                    detail: Some("exported".to_string()),
-                    documentation: symbol.documentation.clone(),
-                    insert_text: Some(name.clone()),
-                    sort_text: Some(format!("2_{name}")), // Prioritize exports
-                    filter_text: Some(name.clone()),
+                    detail: Some(Cow::Borrowed("exported")),
+                    documentation: symbol.documentation.clone().map(Cow::Owned),
+                    insert_text: Some(Cow::Owned(name.clone())),
+                    sort_text: Some(Cow::Owned(format!("2_{name}"))), // Prioritize exports
+                    filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
@@ -306,13 +315,16 @@ pub fn add_visible_symbol_completions(
         });
         let label = symbol.name.clone();
         completions.push(CompletionItem {
-            label: label.clone(),
+            label: Cow::Owned(label.clone()),
             kind: CompletionItemKind::Function,
-            detail: Some(visible_symbol_completion_detail(&symbol, source_module)),
-            documentation: Some(visible_symbol_completion_documentation(&symbol, source_module)),
-            insert_text: Some(label.clone()),
-            sort_text: Some(format!("2z_visible_{label}")),
-            filter_text: Some(label),
+            detail: Some(Cow::Owned(visible_symbol_completion_detail(&symbol, source_module))),
+            documentation: Some(Cow::Owned(visible_symbol_completion_documentation(
+                &symbol,
+                source_module,
+            ))),
+            insert_text: Some(Cow::Owned(label.clone())),
+            sort_text: Some(Cow::Owned(format!("2z_visible_{label}"))),
+            filter_text: Some(Cow::Owned(label)),
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
@@ -738,16 +750,17 @@ pub fn add_use_module_completions_with_cache(
 
             let name = &symbol.name;
             completions.push(CompletionItem {
-                label: name.clone(),
+                label: Cow::Owned(name.clone()),
                 kind: CompletionItemKind::Module,
-                detail: Some("module".to_string()),
+                detail: Some(Cow::Borrowed("module")),
                 documentation: symbol
                     .documentation
                     .clone()
-                    .or_else(|| Some(format!("Package `{name}`"))),
-                insert_text: Some(name.clone()),
-                sort_text: Some(format!("1{}_{name}", module_sort_tier(name))),
-                filter_text: Some(name.clone()),
+                    .or_else(|| Some(format!("Package `{name}`")))
+                    .map(Cow::Owned),
+                insert_text: Some(Cow::Owned(name.clone())),
+                sort_text: Some(Cow::Owned(format!("1{}_{name}", module_sort_tier(name)))),
+                filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,
@@ -817,13 +830,13 @@ pub fn add_use_module_completions_with_cache(
                 }
 
                 completions.push(CompletionItem {
-                    label: name.clone(),
+                    label: Cow::Owned(name.clone()),
                     kind: CompletionItemKind::Module,
-                    detail: Some(detail.to_string()),
-                    documentation: Some(format!("Package `{name}`")),
-                    insert_text: Some(name.clone()),
-                    sort_text: Some(format!("2{}_{name}", module_sort_tier(&name))),
-                    filter_text: Some(name),
+                    detail: Some(Cow::Owned(detail.to_string())),
+                    documentation: Some(Cow::Owned(format!("Package `{name}`"))),
+                    insert_text: Some(Cow::Owned(name.clone())),
+                    sort_text: Some(Cow::Owned(format!("2{}_{name}", module_sort_tier(&name)))),
+                    filter_text: Some(Cow::Owned(name)),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: Some(vec![":".to_string(), ";".to_string()]),
@@ -896,19 +909,20 @@ pub fn add_use_qw_import_completions(
 
         let name = &symbol.name;
         completions.push(CompletionItem {
-            label: name.clone(),
+            label: Cow::Owned(name.clone()),
             kind: match symbol.kind {
                 WsSymbolKind::Constant => CompletionItemKind::Constant,
                 _ => CompletionItemKind::Function,
             },
-            detail: Some(format!("{module_name} {kind_label}")),
+            detail: Some(Cow::Owned(format!("{module_name} {kind_label}"))),
             documentation: symbol
                 .documentation
                 .clone()
-                .or_else(|| Some(format!("`{module_name}::{name}`"))),
-            insert_text: Some(name.clone()),
-            sort_text: Some(format!("1_{name}")),
-            filter_text: Some(name.clone()),
+                .or_else(|| Some(format!("`{module_name}::{name}`")))
+                .map(Cow::Owned),
+            insert_text: Some(Cow::Owned(name.clone())),
+            sort_text: Some(Cow::Owned(format!("1_{name}"))),
+            filter_text: Some(Cow::Owned(name.clone())),
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
@@ -1630,9 +1644,6 @@ pub fn add_workspace_method_completions(
     };
 
     // Collect labels already present to avoid duplicates with local method completions
-    let existing_labels: HashSet<String> =
-        completions.iter().map(|item| item.label.clone()).collect();
-
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
 
     // Collect all methods from the receiver package AND its ancestor chain
@@ -1641,7 +1652,11 @@ pub fn add_workspace_method_completions(
 
     // Build an auto-import edit once for all methods from this package.
     let auto_import_edit = auto_import::build_auto_import_edit(source, &package_name);
-    let method_symbols = workspace_method_symbols(&members, &existing_labels, method_prefix);
+    let method_symbols = {
+        let existing_labels: HashSet<&str> =
+            completions.iter().map(|item| item.label.as_ref()).collect();
+        workspace_method_symbols(&members, &existing_labels, method_prefix)
+    };
     let method_text_edit_range = (context.method_text_edit_start(source), context.position);
 
     if add_semantic_method_completions(
@@ -1679,15 +1694,22 @@ pub fn add_workspace_method_completions(
         let method_tier = if defining_pkg == package_name { "2" } else { "3" };
 
         completions.push(CompletionItem {
-            label: symbol.name.clone(),
+            label: Cow::Owned(symbol.name.clone()),
             kind: CompletionItemKind::Function,
-            detail: Some(detail),
-            documentation: symbol.documentation.clone().or_else(|| {
-                Some(format!("Method `{}::{}` from workspace index.", defining_pkg, symbol.name))
-            }),
-            insert_text: Some(format!("{}()", symbol.name)),
-            sort_text: Some(format!("{method_tier}_{}", symbol.name)), // tier 2=own, 3=inherited, after local (tier 1)
-            filter_text: Some(symbol.name.clone()),
+            detail: Some(Cow::Owned(detail)),
+            documentation: symbol
+                .documentation
+                .clone()
+                .or_else(|| {
+                    Some(format!(
+                        "Method `{}::{}` from workspace index.",
+                        defining_pkg, symbol.name
+                    ))
+                })
+                .map(Cow::Owned),
+            insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
+            sort_text: Some(Cow::Owned(format!("{method_tier}_{}", symbol.name))), // tier 2=own, 3=inherited, after local (tier 1)
+            filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits,
             text_edit_range: Some((context.method_text_edit_start(source), context.position)),
             commit_characters: None,
@@ -1726,9 +1748,10 @@ fn add_unknown_receiver_fallback(
     }
 
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
-    let existing_labels: HashSet<String> =
-        completions.iter().map(|item| item.label.clone()).collect();
+    let existing_labels: HashSet<&str> =
+        completions.iter().map(|item| item.label.as_ref()).collect();
     let mut emitted: HashSet<String> = HashSet::new();
+    let mut pending = Vec::new();
 
     for package_name in &allowed_packages {
         let members = collect_all_package_members(index, package_name);
@@ -1739,7 +1762,7 @@ fn add_unknown_receiver_fallback(
             if !method_prefix.is_empty() && !symbol.name.starts_with(method_prefix) {
                 continue;
             }
-            if existing_labels.contains(&symbol.name) {
+            if existing_labels.contains(symbol.name.as_str()) {
                 continue;
             }
             if !emitted.insert(symbol.name.clone()) {
@@ -1754,21 +1777,21 @@ fn add_unknown_receiver_fallback(
             // Auto-insert `use <defining_pkg>;` when the method comes from a
             // package other than the current one. Symbols from already-imported,
             // `main`, or current-package namespaces yield no edit.
-            completions.push(CompletionItem {
-                label: symbol.name.clone(),
+            pending.push(CompletionItem {
+                label: Cow::Owned(symbol.name.clone()),
                 kind: CompletionItemKind::Function,
-                detail: Some(detail),
+                detail: Some(Cow::Owned(detail)),
                 documentation: symbol.documentation.clone().or_else(|| {
                     Some(format!(
                         "Workspace method `{}::{}` (low-confidence fallback for unknown receiver).",
                         defining_pkg, symbol.name
                     ))
-                }),
-                insert_text: Some(format!("{}()", symbol.name)),
+                }).map(Cow::Owned),
+                insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
                 // Tier 6: below all exact-receiver completion tiers
                 // (existing tiers 1–4) and below other tier-5 catch-alls.
-                sort_text: Some(format!("6_{}", symbol.name)),
-                filter_text: Some(symbol.name.clone()),
+                sort_text: Some(Cow::Owned(format!("6_{}", symbol.name))),
+                filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: workspace_auto_import_edits(
                     source,
                     Some(defining_pkg),
@@ -1781,18 +1804,19 @@ fn add_unknown_receiver_fallback(
             });
         }
     }
+    completions.extend(pending);
 }
 
 fn workspace_method_symbols<'a>(
     members: &'a [WorkspaceSymbol],
-    existing_labels: &HashSet<String>,
+    existing_labels: &HashSet<&str>,
     method_prefix: &str,
 ) -> Vec<&'a WorkspaceSymbol> {
     members
         .iter()
         .filter(|symbol| matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method))
         .filter(|symbol| method_prefix.is_empty() || symbol.name.starts_with(method_prefix))
-        .filter(|symbol| !existing_labels.contains(&symbol.name))
+        .filter(|symbol| !existing_labels.contains(symbol.name.as_str()))
         .collect()
 }
 
@@ -1843,17 +1867,20 @@ fn add_semantic_method_completions(
 
         let additional_edits = auto_import_edit.map(|e| vec![e.clone()]).unwrap_or_default();
         completions.push(CompletionItem {
-            label: candidate.display_name.clone(),
+            label: Cow::Owned(candidate.display_name.clone()),
             kind: CompletionItemKind::Function,
-            detail: Some(semantic_method_detail(package_name, &candidate, evidence)),
-            documentation: Some(semantic_method_documentation(package_name, &candidate)),
-            insert_text: Some(format!("{}()", candidate.display_name)),
-            sort_text: Some(format!(
+            detail: Some(Cow::Owned(semantic_method_detail(package_name, &candidate, evidence))),
+            documentation: Some(Cow::Owned(semantic_method_documentation(
+                package_name,
+                &candidate,
+            ))),
+            insert_text: Some(Cow::Owned(format!("{}()", candidate.display_name))),
+            sort_text: Some(Cow::Owned(format!(
                 "{}_{}",
                 semantic_method_sort_tier(package_name, &candidate),
                 candidate.display_name
-            )),
-            filter_text: Some(candidate.display_name.clone()),
+            ))),
+            filter_text: Some(Cow::Owned(candidate.display_name.clone())),
             additional_edits,
             text_edit_range: Some(method_text_edit_range),
             commit_characters: None,

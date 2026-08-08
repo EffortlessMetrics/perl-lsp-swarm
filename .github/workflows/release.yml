@@ -43,12 +43,17 @@ jobs:
     steps:
       - name: Resolve and validate tag
         id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
-          TAG="${{ github.event.inputs.tag }}"
-          if [ -z "$TAG" ] && [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG="${{ github.ref_name }}"
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ] && [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
           fi
-          PRERELEASE_INPUT="${{ github.event.inputs.prerelease }}"
+          PRERELEASE_INPUT="$INPUT_PRERELEASE"
 
           if [ -z "$TAG" ]; then
             echo "::error::Release tag is missing"
@@ -120,7 +125,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -130,7 +135,7 @@ jobs:
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --locked --git https://github.com/cross-rs/cross
+        run: cargo install cross --locked --git https://github.com/cross-rs/cross --tag v0.2.5
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
@@ -141,13 +146,16 @@ jobs:
 
       - name: Build binaries
         shell: bash
+        env:
+          USE_CROSS: ${{ matrix.use_cross }}
+          TARGET: ${{ matrix.target }}
         run: |
           BUILD_CMD="cargo"
-          if [[ "${{ matrix.use_cross }}" == "true" ]]; then
+          if [[ "$USE_CROSS" == "true" ]]; then
             BUILD_CMD="cross"
           fi
-          $BUILD_CMD build --locked --release --target ${{ matrix.target }} -p perllsp --bin perllsp
-          $BUILD_CMD build --locked --release --target ${{ matrix.target }} -p perl-dap --bin perl-dap
+          $BUILD_CMD build --locked --release --target "$TARGET" -p perllsp --bin perllsp
+          $BUILD_CMD build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
 
       - name: Package binaries
         shell: bash
@@ -198,7 +206,7 @@ jobs:
           echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_ENV
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ${{ env.PKG_NAME }}
           path: ${{ env.ASSET }}
@@ -216,7 +224,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -227,7 +235,7 @@ jobs:
         run: cargo install cargo-release --locked
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           path: artifacts
 
@@ -297,7 +305,13 @@ jobs:
 
       - name: Generate SBOM
         run: |
-          cargo install cargo-sbom --locked || true
+          # Install cargo-sbom pinned to v0.9.1 for reproducible SBOM generation.
+          # Previously used --locked without a version constraint and || true,
+          # which silently suppressed install failures (#5991).
+          if ! cargo install cargo-sbom --locked --version 0.9.1; then
+            echo "::warning::Failed to install cargo-sbom; SBOM will not be generated"
+            exit 0
+          fi
           cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
 
       - name: Upload SBOM as release asset

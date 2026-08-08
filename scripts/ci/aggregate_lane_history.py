@@ -75,7 +75,13 @@ def collect_actuals(
             actual = job.get("actual_lem")
             if not lane_id or not isinstance(actual, (int, float)):
                 continue
-            samples.setdefault(lane_id, []).append(float(actual))
+            # Reject non-finite or extreme samples that could corrupt the
+            # percentile history (inf, nan, or implausibly large values from
+            # a buggy or malicious ci-actuals artifact) (#5995).
+            actual_float = float(actual)
+            if not math.isfinite(actual_float) or actual_float < 0 or actual_float > 3_600_000:
+                continue
+            samples.setdefault(lane_id, []).append(actual_float)
     return samples
 
 

@@ -12,7 +12,7 @@ fn test_duplicate_parameter_code_actions() -> Result<(), Box<dyn std::error::Err
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let code_actions_provider = CodeActionsProviderV2::new(source.to_string());
@@ -39,7 +39,7 @@ sub process($data) {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let code_actions_provider = CodeActionsProviderV2::new(source.to_string());
@@ -68,7 +68,7 @@ fn test_unused_parameter_code_actions() -> Result<(), Box<dyn std::error::Error>
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let code_actions_provider = CodeActionsProviderV2::new(source.to_string());
@@ -93,7 +93,7 @@ print FOO;"#;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let code_actions_provider = CodeActionsProviderV2::new(source.to_string());
@@ -125,7 +125,7 @@ sub test($x, $y, $x, $unused) {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let code_actions_provider = CodeActionsProviderV2::new(source.to_string());
@@ -147,7 +147,7 @@ print LOGFILE "Starting process";"#;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let code_actions_provider = CodeActionsProviderV2::new(source.to_string());
@@ -172,7 +172,7 @@ fn test_edit_ranges_for_parameter_fixes() -> Result<(), Box<dyn std::error::Erro
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let code_actions_provider = CodeActionsProviderV2::new(source.to_string());

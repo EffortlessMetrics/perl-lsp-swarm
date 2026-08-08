@@ -5,9 +5,7 @@
 //! and IndexCoordinator.
 
 use perl_tdd_support::must_some;
-use perl_workspace::workspace::cache::{
-    BoundedLruCache, CacheConfig, EstimateSize,
-};
+use perl_workspace::workspace::cache::{BoundedLruCache, CacheConfig, EstimateSize};
 use perl_workspace::workspace::document_store::DocumentStore;
 use perl_workspace::workspace::state_machine::{
     BuildPhase, DegradationReason, IndexState, IndexStateKind, IndexStateMachine,

@@ -158,6 +158,19 @@ impl PullDiagnosticsOrchestrator {
         // Get client capabilities
         let markup_message_support = server.client_capabilities.lock().markup_message_support;
 
+        // Wait for index build, then sample per-document staleness before wiring
+        // workspace semantic queries or dead-code analysis into pull diagnostics
+        // (#5016 item 2).
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let workspace_index = {
+            let _ = server.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+            if server.workspace_index_stale_for_document(uri) {
+                None
+            } else {
+                server.workspace_index()
+            }
+        };
+
         // Build context
         PullDiagnosticsContext {
             perlcritic_enabled,
@@ -171,7 +184,7 @@ impl PullDiagnosticsOrchestrator {
             include_paths,
             markup_message_support,
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            workspace_index: server.workspace_index(),
+            workspace_index,
         }
     }
 
@@ -492,7 +505,6 @@ impl LspServer {
                     doc.version,
                     parsed.degradation_tier(),
                     doc.line_starts.clone(),
-                    doc.rope.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                 ))
@@ -507,7 +519,6 @@ impl LspServer {
             version,
             degradation_tier,
             line_starts,
-            rope,
             generation,
             gen_at_snapshot,
         )) = snapshot
@@ -520,8 +531,8 @@ impl LspServer {
             hook();
         }
 
-        // Position helper that works on the snapshotted line_starts + rope.
-        let pos16 = |offset: usize| line_starts.offset_to_position_rope(&rope, offset);
+        // Position helper on the snapshotted line_starts + text (no rope clone).
+        let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
 
         let lsp_diagnostics: Vec<Value> = if let Some(ast) = &ast_opt {
             // Get diagnostics (already includes unused variable detection).
@@ -535,7 +546,7 @@ impl LspServer {
             // `resolve_use_lib_paths_from_source_at_offset` instead of the whole-file
             // scan, ensuring `no lib 'lib'` strips the path before `use GoneModule` is
             // checked.
-            let provider = DiagnosticsProvider::new(ast, text.to_string());
+            let provider = DiagnosticsProvider::new();
             let resolver = |module: &str, use_site_offset: usize| {
                 self.resolve_module_to_path_with_doc_at_offset(
                     module,
@@ -551,9 +562,19 @@ impl LspServer {
                 .unwrap_or_default();
             let source_path = source_path_from_uri(uri);
 
+            // Wait for index build, then sample staleness before touching the
+            // workspace index tier (#5016 item 2).  Sample after readiness and
+            // before any documents_guard re-entry (#6199 deadlock lesson).
+            #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+            let workspace_index_tier_enabled = {
+                let _ = self.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+                !self.workspace_index_stale_for_document(uri)
+            };
+
             // Wire semantic queries when workspace data is available for this URI.
             // Falls back to NullSemanticQueries (legacy behavior) when the URI is
-            // not yet indexed or the workspace feature is disabled.
+            // not yet indexed, the workspace feature is disabled, or the index is
+            // stale relative to this open document (#5016 item 2).
             //
             // When the file consumes roles via `with 'Role'`, build a bounded
             // per-request PackageGraphIndex that includes ComposesRole edges for
@@ -562,7 +583,10 @@ impl LspServer {
             // parse; files with no `with` clauses skip the build as a fast path.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             let mut diagnostics = {
-                let semantic_diags = self.workspace_index().and_then(|workspace_index| {
+                let semantic_diags = workspace_index_tier_enabled
+                    .then(|| self.workspace_index())
+                    .flatten()
+                    .and_then(|workspace_index| {
                     use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
                         build_role_scoped_package_graph, consumed_role_names,
                     };
@@ -630,17 +654,14 @@ impl LspServer {
 
             // Add dead code diagnostics from workspace-wide symbol analysis
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            {
-                if let Some(workspace_index) = self.workspace_index() {
-                    let dead_code_diags =
-                        perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
-                            &workspace_index,
-                            uri,
-                            &text,
-                            &line_starts,
-                        );
-                    diagnostics.extend(dead_code_diags);
-                }
+            if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+                let dead_code_diags = perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
+                    &workspace_index,
+                    uri,
+                    &text,
+                    &line_starts,
+                );
+                diagnostics.extend(dead_code_diags);
             }
 
             // Deduplicate diagnostics appended after the provider's own dedup pass
@@ -775,10 +796,9 @@ impl LspServer {
         parse_errors: &[perl_parser::error::ParseError],
         text: &str,
         line_starts: &perl_parser::position::LineStartsCache,
-        rope: &ropey::Rope,
         markup_message_support: bool,
     ) -> Vec<Value> {
-        let pos16 = |offset: usize| line_starts.offset_to_position_rope(rope, offset);
+        let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
         parse_errors
             .iter()
             .map(|e| {
@@ -853,21 +873,20 @@ impl LspServer {
                     std::sync::Arc::clone(&doc.text_arc),
                     doc.version,
                     doc.line_starts.clone(),
-                    doc.rope.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                 ))
             })
         };
 
-        let Some((parse_errors, text, version, line_starts, rope, generation, gen_at_snapshot)) =
+        let Some((parse_errors, text, version, line_starts, generation, gen_at_snapshot)) =
             snapshot
         else {
             return;
         };
 
         let lsp_diagnostics =
-            Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, &rope, false);
+            Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, false);
 
         // Generation-aware staleness guard mirrors the full path.
         if generation.load(Ordering::SeqCst) != gen_at_snapshot {
@@ -939,13 +958,12 @@ impl LspServer {
                     parse_errors,
                     doc.version,
                     doc.line_starts.clone(),
-                    doc.rope.clone(),
                     std::sync::Arc::clone(&doc.text_arc),
                 )
             })
             // lock is released here
         };
-        let Some((parse_errors, version, line_starts, rope, text)) = snapshot else { return };
+        let Some((parse_errors, version, line_starts, text)) = snapshot else { return };
 
         // Nothing to fast-publish when there are no parse errors (this also
         // covers the pending-parse gap -- see comment above).
@@ -953,7 +971,7 @@ impl LspServer {
             return;
         }
 
-        let pos16 = |offset: usize| line_starts.offset_to_position_rope(&rope, offset);
+        let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
 
         let lsp_diagnostics: Vec<Value> =
             parse_errors
@@ -1094,7 +1112,6 @@ impl LspServer {
                     &parse_errors,
                     &doc.text,
                     &doc.line_starts,
-                    &doc.rope,
                     markup_message_support,
                 );
                 // Generation-aware staleness guard: discard if a didChange arrived
@@ -1463,6 +1480,11 @@ impl LspServer {
                 .collect()
         };
 
+        // Wait for index build before sampling per-document staleness for the
+        // workspace semantic tier (#5016 item 2).
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let _ = self.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+
         // Coarse workDoneProgress for the workspace diagnostic path, which
         // iterates over every open document and invokes perlcritic per
         // document — the path most consistent with #4626's "may spawn the
@@ -1486,7 +1508,7 @@ impl LspServer {
             let Some(parsed) = doc.current_parsed() else { continue };
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
-                let provider = DiagnosticsProvider::new(ast, doc.text_arc.to_string());
+                let provider = DiagnosticsProvider::new();
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
                 // cancellations that precede the statement are respected.
@@ -1505,14 +1527,21 @@ impl LspServer {
                     .unwrap_or_default();
                 let source_path = source_path_from_uri(uri_str);
 
+                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                let workspace_index_tier_enabled = !self.workspace_index_stale_for_document(uri_str);
+
                 // Wire semantic queries when workspace data is available for this URI.
                 // When the file consumes roles via `with 'Role'`, build a bounded
                 // per-request PackageGraphIndex with ComposesRole edges so PL303
                 // cross-file detection is reachable (the persistent index only holds
                 // Inherits edges). Files without `with` clauses skip the build.
+                // Skipped when the workspace index is stale for this document (#5016 item 2).
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let mut diagnostics = {
-                    let semantic_diags = self.workspace_index().and_then(|workspace_index| {
+                    let semantic_diags = workspace_index_tier_enabled
+                        .then(|| self.workspace_index())
+                        .flatten()
+                        .and_then(|workspace_index| {
                         use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
                             build_role_scoped_package_graph, consumed_role_names,
                         };
@@ -1583,17 +1612,15 @@ impl LspServer {
 
                 // Add dead code diagnostics from workspace-wide symbol analysis
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                {
-                    if let Some(workspace_index) = self.workspace_index() {
-                        let dead_code_diags =
-                            perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
-                                &workspace_index,
-                                uri_str,
-                                &doc.text,
-                                &doc.line_starts,
-                            );
-                        diagnostics.extend(dead_code_diags);
-                    }
+                if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+                    let dead_code_diags =
+                        perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
+                            &workspace_index,
+                            uri_str,
+                            &doc.text,
+                            &doc.line_starts,
+                        );
+                    diagnostics.extend(dead_code_diags);
                 }
 
                 // Generation-aware staleness guard: if a newer didChange arrived
@@ -3811,5 +3838,137 @@ print \"unreachable\\n\";\n";
             quickfixes[0].get("edit").is_some(),
             "require_use_strict quickfix must include a workspace edit: {result}"
         );
+    }
+
+    #[cfg(feature = "workspace")]
+    fn stale_dead_code_indexed_source() -> &'static str {
+        "package StaleDeadUnused;\nsub stale_unused_sub { }\n1;\n"
+    }
+
+    #[cfg(feature = "workspace")]
+    fn stale_dead_code_used_source() -> &'static str {
+        "package StaleDeadUnused;\nsub stale_unused_sub { } stale_unused_sub();\n1;\n"
+    }
+
+    #[cfg(feature = "workspace")]
+    fn make_document_index_stale_for_diagnostics(
+        server: &LspServer,
+        uri: &str,
+        indexed_text: &str,
+        updated_text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        server.test_apply_did_open(uri, indexed_text, 1)?;
+        server
+            .test_index_file_in_building_state(uri, indexed_text)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        server
+            .test_replace_document_without_index(uri, updated_text, 2)
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            server.workspace_index_stale_for_document(uri),
+            "test setup must leave the open document newer than the workspace index"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn pull_diagnostic_codes(report: &Value) -> Vec<String> {
+        report
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|diag| diag.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect()
+    }
+
+    /// Regression (#5016 item 2): stale workspace index must not drive
+    /// `detect_dead_code` on the pull diagnostic path.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn pull_diagnostic_skips_stale_workspace_dead_code_tier() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::default();
+        let uri = "file:///workspace/stale_dead_code_pull.pl";
+        make_document_index_stale_for_diagnostics(
+            &server,
+            uri,
+            stale_dead_code_indexed_source(),
+            stale_dead_code_used_source(),
+        )?;
+
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": uri }
+            })))?
+            .ok_or("pull diagnostic must return a report")?;
+        let codes = pull_diagnostic_codes(&report);
+        assert!(
+            !codes.iter().any(|code| code == "dead-code-subroutine"),
+            "stale workspace index must not emit dead-code diagnostics from outdated symbols: {codes:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Positive control (#5016 item 2): fresh workspace index still reports
+    /// unused subroutines via `detect_dead_code` on the publish path.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn publish_diagnostic_reports_dead_code_when_workspace_index_is_fresh()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///workspace/fresh_dead_code_publish.pl";
+        let source = stale_dead_code_indexed_source();
+        server.test_apply_did_open(uri, source, 1)?;
+        server
+            .test_index_file_in_building_state(uri, source)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        buf.lock().clear();
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let text = String::from_utf8(buf.lock().clone())?;
+        assert!(
+            text.contains("dead-code-subroutine"),
+            "fresh workspace index should publish dead-code-subroutine; got: {text:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): stale workspace index must not drive
+    /// `detect_dead_code` on the publish diagnostic path.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn publish_diagnostic_skips_stale_workspace_dead_code_tier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///workspace/stale_dead_code_publish.pl";
+        make_document_index_stale_for_diagnostics(
+            &server,
+            uri,
+            stale_dead_code_indexed_source(),
+            stale_dead_code_used_source(),
+        )?;
+
+        buf.lock().clear();
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let text = String::from_utf8(buf.lock().clone())?;
+        assert!(
+            !text.contains("dead-code-subroutine"),
+            "stale workspace index must not publish dead-code diagnostics from outdated symbols: {text:?}"
+        );
+
+        Ok(())
     }
 }

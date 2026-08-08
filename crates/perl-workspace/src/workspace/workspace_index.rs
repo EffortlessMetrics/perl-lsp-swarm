@@ -1295,18 +1295,23 @@ pub struct WorkspaceIndex {
     symbols: Arc<RwLock<HashMap<String, Vec<DefinitionCandidate>>>>,
     /// Workspace-symbol search index for fast query lookup.
     ///
-    /// Maps lowercase symbol name (bare or qualified) to all `WorkspaceSymbol`
-    /// instances that carry that name.  `search_source_symbols` iterates the
-    /// unique name keys in this map instead of scanning every file's symbol list,
-    /// turning the outer loop from O(total_symbols) to O(unique_lowercase_names).
+    /// Maps symbol name (bare or qualified, case-preserved) to all
+    /// `WorkspaceSymbol` instances that carry that name.
+    /// `search_source_symbols` iterates the unique name keys in this map
+    /// instead of scanning every file's symbol list, turning the outer loop from
+    /// O(total_symbols) to O(unique_names). Keys preserve Perl's case-sensitive
+    /// package identity so `Foo::Bar` and `foo::bar` remain distinct buckets.
     ///
     /// Lock order: always acquire `symbols` before `search_index`.
     search_index: Arc<RwLock<HashMap<String, Vec<WorkspaceSymbol>>>>,
-    /// Global reference index (symbol name -> locations across all files)
+    /// Global reference index (symbol name -> references across all files)
     ///
     /// Aggregated from per-file `FileIndex::references` during `index_file()`.
     /// Provides O(1) lookup for `find_references()` instead of iterating all files.
-    global_references: Arc<RwLock<HashMap<String, Vec<Location>>>>,
+    /// Stores full `SymbolReference` (including `kind`) so that `count_usages`
+    /// and `find_references` can both read from this single authoritative store
+    /// without consulting separate data maps (#5967).
+    global_references: Arc<RwLock<HashMap<String, Vec<SymbolReference>>>>,
     /// Write-through semantic fact shards keyed by normalized URI.
     fact_shards: Arc<RwLock<HashMap<String, FileFactShard>>>,
     /// Semantic cross-file reference index (typed occurrences by name and entity).
@@ -1488,8 +1493,8 @@ impl WorkspaceIndex {
 
     /// Build the search index from scratch from all file indexes.
     ///
-    /// Keyed by lowercase bare name and lowercase qualified name so that
-    /// `search_source_symbols` can iterate unique name keys (O(unique_lowercase_names))
+    /// Keyed by bare name and qualified name (case-preserved) so that
+    /// `search_source_symbols` can iterate unique name keys (O(unique_names))
     /// rather than all (file, symbol) pairs (O(total_symbols)).
     ///
     /// Lock order: hold `symbols` write before calling; acquire `search_index` write
@@ -1501,11 +1506,9 @@ impl WorkspaceIndex {
         search_index.clear();
         for file_index in files.values() {
             for symbol in &file_index.symbols {
-                let key = symbol.name.to_lowercase();
-                search_index.entry(key).or_default().push(symbol.clone());
+                search_index.entry(symbol.name.clone()).or_default().push(symbol.clone());
                 if let Some(ref qname) = symbol.qualified_name {
-                    let qkey = qname.to_lowercase();
-                    search_index.entry(qkey).or_default().push(symbol.clone());
+                    search_index.entry(qname.clone()).or_default().push(symbol.clone());
                 }
             }
         }
@@ -1517,36 +1520,54 @@ impl WorkspaceIndex {
         file_index: &FileIndex,
     ) {
         for symbol in &file_index.symbols {
-            let key = symbol.name.to_lowercase();
-            search_index.entry(key).or_default().push(symbol.clone());
+            search_index.entry(symbol.name.clone()).or_default().push(symbol.clone());
             if let Some(ref qname) = symbol.qualified_name {
-                let qkey = qname.to_lowercase();
-                search_index.entry(qkey).or_default().push(symbol.clone());
+                search_index.entry(qname.clone()).or_default().push(symbol.clone());
             }
         }
     }
 
-    /// Incrementally remove one file's symbols from the search index by URI.
+    /// Incrementally remove one file's symbols from the search index,
+    /// re-inserting shadowed symbols from remaining files on collision.
+    ///
+    /// Mirrors [`Self::incremental_remove_symbols`]: when any key becomes empty
+    /// after removing this file's entries, the entire search index is cleared and
+    /// rebuilt from the remaining files so it cannot drift from `symbols`.
     fn incremental_remove_search(
+        files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
-        file_index: &FileIndex,
+        old_file_index: &FileIndex,
     ) {
-        for symbol in &file_index.symbols {
-            let key = symbol.name.to_lowercase();
-            if let Some(entries) = search_index.get_mut(&key) {
-                entries.retain(|s| s.uri != symbol.uri);
-                if entries.is_empty() {
-                    search_index.remove(&key);
+        let mut affected_names: Vec<String> = Vec::new();
+        for sym in &old_file_index.symbols {
+            if let Some(ref qname) = sym.qualified_name {
+                let mut remove_key = false;
+                if let Some(entries) = search_index.get_mut(qname) {
+                    entries.retain(|s| s.uri != sym.uri);
+                    remove_key = entries.is_empty();
+                }
+                if remove_key {
+                    search_index.remove(qname);
+                    affected_names.push(qname.clone());
                 }
             }
-            if let Some(ref qname) = symbol.qualified_name {
-                let qkey = qname.to_lowercase();
-                if let Some(entries) = search_index.get_mut(&qkey) {
-                    entries.retain(|s| s.uri != symbol.uri);
-                    if entries.is_empty() {
-                        search_index.remove(&qkey);
-                    }
-                }
+            let mut remove_key = false;
+            if let Some(entries) = search_index.get_mut(&sym.name) {
+                entries.retain(|s| s.uri != sym.uri);
+                remove_key = entries.is_empty();
+            }
+            if remove_key {
+                search_index.remove(&sym.name);
+                affected_names.push(sym.name.clone());
+            }
+        }
+        if !affected_names.is_empty() {
+            search_index.clear();
+            for file_index in files
+                .values()
+                .filter(|file_index| file_index.source_uri != old_file_index.source_uri)
+            {
+                Self::incremental_add_search(search_index, file_index);
             }
         }
     }
@@ -1689,16 +1710,16 @@ impl WorkspaceIndex {
 
         for symbol_name in names_to_query {
             if let Some(refs) = global_refs.get(symbol_name) {
-                for location in refs {
+                for sym_ref in refs {
                     let key = (
-                        location.uri.clone(),
-                        location.range.start.line,
-                        location.range.start.column,
-                        location.range.end.line,
-                        location.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(location.clone());
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -1919,6 +1940,16 @@ impl WorkspaceIndex {
             .is_some_and(|indexed_generation| indexed_generation < expected_generation)
     }
 
+    /// Count files where the pending generation exceeds the committed generation,
+    /// indicating edits that haven't been fully indexed yet (#5963).
+    ///
+    /// Returns 0 when all indexed files are up-to-date. A non-zero value means
+    /// query results may reflect pre-edit state.
+    #[must_use]
+    pub fn stale_file_count(&self) -> usize {
+        self.files.read().values().filter(|idx| idx.pending_generation > idx.generation).count()
+    }
+
     /// Reset the generation counters for `uri` so that a close/reopen cycle
     /// does not leave a stale high-water mark that blocks the reopened file's
     /// index task (#5438).
@@ -1950,14 +1981,14 @@ impl WorkspaceIndex {
     /// Retains only entries whose URI does not match `file_uri`.
     /// Empty keys are removed to avoid unbounded map growth.
     fn remove_file_global_refs(
-        global_refs: &mut HashMap<String, Vec<Location>>,
+        global_refs: &mut HashMap<String, Vec<SymbolReference>>,
         file_index: &FileIndex,
         file_uri: &str,
     ) {
         for name in file_index.references.keys() {
-            if let Some(locs) = global_refs.get_mut(name) {
-                locs.retain(|loc| loc.uri != file_uri);
-                if locs.is_empty() {
+            if let Some(refs) = global_refs.get_mut(name) {
+                refs.retain(|r| r.uri != file_uri);
+                if refs.is_empty() {
                     global_refs.remove(name);
                 }
             }
@@ -2309,7 +2340,7 @@ impl WorkspaceIndex {
                 #[cfg(test)]
                 reindex_metrics::record_legacy_search_removed(old_index.symbols.len());
                 Self::incremental_remove_symbols(&files, &mut symbols, old_index);
-                Self::incremental_remove_search(&mut search_idx, old_index);
+                Self::incremental_remove_search(&files, &mut search_idx, old_index);
                 drop(search_idx);
                 drop(symbols);
             }
@@ -2347,7 +2378,7 @@ impl WorkspaceIndex {
                 for (name, refs) in &file_index.references {
                     let entry = global_refs.entry(name.clone()).or_default();
                     for reference in refs {
-                        entry.push(Location { uri: reference.uri.clone(), range: reference.range });
+                        entry.push(reference.clone());
                     }
                 }
             }
@@ -2445,7 +2476,7 @@ impl WorkspaceIndex {
             let mut symbols = self.symbols.write();
             let mut search_idx = self.search_index.write();
             Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
-            Self::incremental_remove_search(&mut search_idx, &file_index);
+            Self::incremental_remove_search(&files, &mut search_idx, &file_index);
 
             // Defensive sweep: purge any remaining cache entries whose value
             // points to this file's URI.  incremental_remove_symbols already
@@ -2770,10 +2801,7 @@ impl WorkspaceIndex {
                     for (name, refs) in &fi.references {
                         let entry = global_refs.entry(name.clone()).or_default();
                         for reference in refs {
-                            entry.push(Location {
-                                uri: reference.uri.clone(),
-                                range: reference.range,
-                            });
+                            entry.push(reference.clone());
                         }
                     }
                 }
@@ -2823,6 +2851,16 @@ impl WorkspaceIndex {
     /// let _refs = index.find_references("Utils::process_data");
     /// ```
     pub fn find_references(&self, symbol_name: &str) -> Vec<Location> {
+        // Log staleness warning when queries are made while files have pending
+        // (uncommitted) generations — results may reflect pre-edit state (#5963).
+        let stale = self.stale_file_count();
+        if stale > 0 {
+            tracing::debug!(
+                symbol = %symbol_name,
+                stale_files = stale,
+                "find_references: index has stale files; results may reflect pre-edit state"
+            );
+        }
         // Capture write version before reading to detect torn reads (#5116).
         // If a concurrent index_file_with_generation bumps the version during
         // our read, the global_references map may have been partially updated.
@@ -2848,16 +2886,16 @@ impl WorkspaceIndex {
 
         // O(1) lookup for exact symbol name
         if let Some(refs) = global_refs.get(symbol_name) {
-            for loc in refs {
+            for sym_ref in refs {
                 let key = (
-                    loc.uri.clone(),
-                    loc.range.start.line,
-                    loc.range.start.column,
-                    loc.range.end.line,
-                    loc.range.end.column,
+                    sym_ref.uri.clone(),
+                    sym_ref.range.start.line,
+                    sym_ref.range.start.column,
+                    sym_ref.range.end.line,
+                    sym_ref.range.end.column,
                 );
                 if seen.insert(key) {
-                    locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                    locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                 }
             }
         }
@@ -2866,16 +2904,16 @@ impl WorkspaceIndex {
         if let Some(idx) = symbol_name.rfind("::") {
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
-                for loc in refs {
+                for sym_ref in refs {
                     let key = (
-                        loc.uri.clone(),
-                        loc.range.start.line,
-                        loc.range.start.column,
-                        loc.range.end.line,
-                        loc.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -2887,16 +2925,16 @@ impl WorkspaceIndex {
                     continue;
                 }
 
-                for loc in refs {
+                for sym_ref in refs {
                     let key = (
-                        loc.uri.clone(),
-                        loc.range.start.line,
-                        loc.range.start.column,
-                        loc.range.end.line,
-                        loc.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -2945,15 +2983,46 @@ impl WorkspaceIndex {
     /// Like `find_references` but excludes `ReferenceKind::Definition` entries,
     /// returning only actual usage sites. This is used by code lens to show
     /// "N references" where N means call sites, not the definition itself.
+    ///
+    /// Reads from the same `global_references` store as `find_references` (#5967).
+    /// Torn-read protection mirrors `find_references` (#5116, #5016).
     pub fn count_usages(&self, symbol_name: &str) -> usize {
-        let files = self.files.read();
-        let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
+        // Reads from the same `global_references` store as `find_references` (#5967).
+        // Torn-read protection mirrors `find_references` (#5116, #5016).
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let result = self.count_usages_inner(symbol_name);
+            let v2 = self.write_version();
+            if v1 == v2 {
+                return result;
+            }
+            tracing::debug!("Torn read in count_usages, retrying");
+        }
+        self.count_usages_inner(symbol_name)
+    }
 
-        for (_uri_key, file_index) in files.iter() {
-            if let Some(refs) = file_index.references.get(symbol_name) {
+    fn count_usages_inner(&self, symbol_name: &str) -> usize {
+        let global_refs = self.global_references.read();
+        let mut seen: HashSet<(&str, u32, u32, u32, u32)> = HashSet::new();
+
+        if let Some(refs) = global_refs.get(symbol_name) {
+            for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                seen.insert((
+                    r.uri.as_str(),
+                    r.range.start.line,
+                    r.range.start.column,
+                    r.range.end.line,
+                    r.range.end.column,
+                ));
+            }
+        }
+
+        if let Some(idx) = symbol_name.rfind("::") {
+            let bare_name = &symbol_name[idx + 2..];
+            if let Some(refs) = global_refs.get(bare_name) {
                 for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
                     seen.insert((
-                        r.uri.clone(),
+                        r.uri.as_str(),
                         r.range.start.line,
                         r.range.start.column,
                         r.range.end.line,
@@ -2961,35 +3030,19 @@ impl WorkspaceIndex {
                     ));
                 }
             }
-
-            if let Some(idx) = symbol_name.rfind("::") {
-                let bare_name = &symbol_name[idx + 2..];
-                if let Some(refs) = file_index.references.get(bare_name) {
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
+        } else {
+            for (name, refs) in global_refs.iter() {
+                if !Self::is_qualified_variant_of(name, symbol_name) {
+                    continue;
                 }
-            } else {
-                for (name, refs) in &file_index.references {
-                    if !Self::is_qualified_variant_of(name, symbol_name) {
-                        continue;
-                    }
-
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
+                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                    seen.insert((
+                        r.uri.as_str(),
+                        r.range.start.line,
+                        r.range.start.column,
+                        r.range.end.line,
+                        r.range.end.column,
+                    ));
                 }
             }
         }
@@ -3024,6 +3077,16 @@ impl WorkspaceIndex {
     /// let all = index.find_definitions("MyPackage::example");
     /// ```
     pub fn find_definitions(&self, symbol_name: &str) -> Vec<Location> {
+        // Log staleness warning when queries are made while files have pending
+        // (uncommitted) generations — results may reflect pre-edit state (#5963).
+        let stale = self.stale_file_count();
+        if stale > 0 {
+            tracing::debug!(
+                symbol = %symbol_name,
+                stale_files = stale,
+                "find_definitions: index has stale files; results may reflect pre-edit state"
+            );
+        }
         let candidates = self.definition_candidates(symbol_name);
         if !candidates.is_empty() {
             return candidates;
@@ -3713,10 +3776,10 @@ impl WorkspaceIndex {
 
         // --- global references map ---
         let mut global_refs_bytes: usize = 0;
-        for (sym_name, locs) in global_refs_guard.iter() {
+        for (sym_name, refs) in global_refs_guard.iter() {
             global_refs_bytes += sym_name.len();
-            for loc in locs {
-                global_refs_bytes += loc.uri.len() + size_of::<Location>();
+            for r in refs {
+                global_refs_bytes += r.uri.len() + size_of::<SymbolReference>();
             }
         }
 
@@ -3787,9 +3850,12 @@ impl WorkspaceIndex {
     /// to preserve the historical source-backed live slice for trust receipts
     /// or fallback paths.
     ///
-    /// Uses the `search_index` (keyed by lowercase bare/qualified names) to
+    /// Uses the `search_index` (keyed by case-preserved bare/qualified names) to
     /// iterate unique name keys rather than all (file, symbol) pairs, turning
-    /// the outer loop from O(total_symbols) to O(unique_lowercase_names).
+    /// the outer loop from O(total_symbols) to O(unique_names). Query matching
+    /// is case-insensitive at comparison time so subroutine search stays usable,
+    /// but distinct Perl packages (`Foo::Bar` vs `foo::bar`) remain separate
+    /// index buckets and do not cross-match. (#5016)
     /// A symbol that is stored under both its bare name key and its qualified
     /// name key is deduplicated by `(uri, start_byte)` so each `WorkspaceSymbol`
     /// appears at most once in the result.
@@ -3821,19 +3887,22 @@ impl WorkspaceIndex {
         // behavior for an empty `workspace/symbol` query.
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
-            let score = if name_key == &query_lower {
+            // Compare case-insensitively at query time; index keys preserve
+            // source casing so distinct Perl packages stay separate buckets.
+            let name_key_lower = name_key.to_lowercase();
+            let score = if name_key_lower == query_lower {
                 3 // exact match
             } else if !loose_match_allowed {
                 // Short query: prefix is the only non-exact tier available.
                 // Prefix matches are a strict subset of the substring matches
                 // this replaces, so no already-returned symbol changes score.
-                if !name_key.starts_with(&query_lower) {
+                if !name_key_lower.starts_with(&query_lower) {
                     continue;
                 }
                 2 // prefix match
-            } else if name_key.contains(&query_lower) {
+            } else if name_key_lower.contains(&query_lower) {
                 2 // substring match
-            } else if is_subsequence(&query_lower, name_key) {
+            } else if is_subsequence(&query_lower, &name_key_lower) {
                 // Reaching here implies `loose_match_allowed`, i.e. a query of at
                 // least MIN_LOOSE_MATCH_QUERY_CHARS chars, so no separate
                 // subsequence-length guard is needed. (The one `main` carried was
@@ -4251,6 +4320,16 @@ impl WorkspaceIndex {
     ///
     /// Symbols that have no non-definition references in the workspace.
     ///
+    /// # Performance
+    ///
+    /// The implementation is O(Σ refs_per_file + Σ symbols_per_file).  The
+    /// previous O(symbols × files) implementation held the files read lock for
+    /// the entire scan while running a nested `files.values().any()` loop per
+    /// symbol, which blocked writers for seconds on large workspaces while
+    /// still permitting concurrent readers.  The current two-pass approach
+    /// completes in linear time and reads from the same `global_references`
+    /// store as `count_usages` / `find_references` (#5016, #5967).
+    ///
     /// # Examples
     ///
     /// ```rust,ignore
@@ -4260,38 +4339,88 @@ impl WorkspaceIndex {
     /// let _unused = index.find_unused_symbols();
     /// ```
     pub fn find_unused_symbols(&self) -> Vec<WorkspaceSymbol> {
-        let files = self.files.read();
-        let mut unused = Vec::new();
+        // Snapshot `global_references` and `files` under the same write generation so
+        // a background reindex cannot mix stale usage keys with fresh symbols (#6042).
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let (used_names, candidates): (HashSet<String>, Vec<WorkspaceSymbol>) = {
+                let files = self.files.read();
+                let global_refs = self.global_references.read();
+                let used_names = Self::collect_used_names_from_global_refs(&global_refs);
+                let candidates = files
+                    .values()
+                    .flat_map(|file_index| file_index.symbols.iter())
+                    .filter(|symbol| !symbol.is_lexical)
+                    .cloned()
+                    .collect();
+                (used_names, candidates)
+            };
+            let v2 = self.write_version();
+            if v1 == v2 {
+                return candidates
+                    .into_iter()
+                    .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+                    .collect();
+            }
+            tracing::debug!("Torn read in find_unused_symbols, retrying");
+        }
 
-        // Collect all defined symbols
-        for (_uri_key, file_index) in files.iter() {
-            for symbol in &file_index.symbols {
-                // Lexically-scoped variables (my/state) require scope-range analysis to
-                // determine whether a reference in the same file refers to *this* declaration
-                // or a same-named variable in a different block.  The bare-name lookup below
-                // cannot make that distinction, so lexical variables are excluded from this
-                // check entirely.  Proper unused-lexical detection is handled by the
-                // scope-aware ScopeAnalyzer.  See issue #1805.
-                if symbol.is_lexical {
-                    continue;
-                }
+        // Fallback after retries exhausted — same posture as `count_usages`.
+        let (used_names, candidates): (HashSet<String>, Vec<WorkspaceSymbol>) = {
+            let files = self.files.read();
+            let global_refs = self.global_references.read();
+            let used_names = Self::collect_used_names_from_global_refs(&global_refs);
+            let candidates = files
+                .values()
+                .flat_map(|file_index| file_index.symbols.iter())
+                .filter(|symbol| !symbol.is_lexical)
+                .cloned()
+                .collect();
+            (used_names, candidates)
+        };
+        candidates
+            .into_iter()
+            .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+            .collect()
+    }
 
-                // Check if this symbol has any references beyond its definition
-                let has_usage = files.values().any(|fi| {
-                    if let Some(refs) = fi.references.get(&symbol.name) {
-                        refs.iter().any(|r| r.kind != ReferenceKind::Definition)
-                    } else {
-                        false
-                    }
-                });
-
-                if !has_usage {
-                    unused.push(symbol.clone());
+    /// Names with at least one non-definition reference in `global_references`,
+    /// plus bare suffixes for qualified keys so symbol lookup stays O(1) (#5016).
+    fn collect_used_names_from_global_refs(
+        global_refs: &HashMap<String, Vec<SymbolReference>>,
+    ) -> HashSet<String> {
+        let mut set = HashSet::new();
+        for (name, refs) in global_refs.iter() {
+            if refs.iter().any(|r| r.kind != ReferenceKind::Definition) {
+                set.insert(name.clone());
+                if let Some((_, bare)) = name.rsplit_once("::") {
+                    set.insert(bare.to_string());
                 }
             }
         }
+        set
+    }
 
-        unused
+    /// Whether `symbol` has at least one non-definition usage recorded in
+    /// `used_names`, checking bare name, qualified name, and qualified variants.
+    fn symbol_has_non_definition_usage(
+        used_names: &HashSet<String>,
+        symbol: &WorkspaceSymbol,
+    ) -> bool {
+        if used_names.contains(&symbol.name) {
+            return true;
+        }
+        if let Some(ref qualified) = symbol.qualified_name {
+            if used_names.contains(qualified) {
+                return true;
+            }
+            if let Some((_, bare)) = qualified.rsplit_once("::") {
+                if bare != symbol.name.as_str() && used_names.contains(bare) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Get all symbols that belong to a specific package
@@ -9130,6 +9259,92 @@ Utils::process_data();
         );
     }
 
+    /// Parity test for #5967: count_usages and find_references must consult the same
+    /// data store so that rename/safe-delete never reports "0 references" while
+    /// find_references returns populated results.
+    ///
+    /// Acceptance criterion: count_usages(sym) == find_references(sym).len() - definition_count
+    /// for the same symbol, where definition_count is the number of locations that
+    /// coincide with the definition site.
+    #[test]
+    fn test_count_usages_parity_with_find_references() {
+        let index = WorkspaceIndex::new();
+        let lib_uri = "file:///parity/lib/Parity.pm";
+        let caller_uri = "file:///parity/bin/main.pl";
+
+        must(index.index_file(
+            must(url::Url::parse(lib_uri)),
+            "package Parity;\nsub greet { return 1; }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(url::Url::parse(caller_uri)),
+            "use Parity;\nParity::greet();\nParity::greet();\n".to_string(),
+        ));
+
+        let usages = index.count_usages("Parity::greet");
+        let all_refs = index.find_references("Parity::greet");
+
+        // find_references includes the definition site; count_usages excludes it.
+        // Both read from the same global_references store, so they must agree on
+        // the total reference count modulo the definition filter.
+        assert!(!all_refs.is_empty(), "find_references should return at least the definition site");
+        assert_eq!(
+            usages, 2,
+            "count_usages should return the two call sites (not the definition), got {usages}"
+        );
+        // The total references reported by find_references must be at least usages
+        // (it includes definitions too).
+        assert!(
+            all_refs.len() >= usages,
+            "find_references ({}) must be >= count_usages ({usages})",
+            all_refs.len()
+        );
+        // Both methods now read the same data store, so their combined view must
+        // be self-consistent: usages + definition_entries == all_refs.len().
+        // We verify this by counting definition-site locations in find_references.
+        let def_locs = index.find_definition("Parity::greet");
+        if let Some(def_loc) = def_locs {
+            let def_count = all_refs.iter().filter(|loc| **loc == def_loc).count();
+            assert_eq!(
+                usages + def_count,
+                all_refs.len(),
+                "count_usages ({usages}) + definition entries ({def_count}) \
+                 must equal find_references total ({})",
+                all_refs.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_count_usages_excludes_sibling_package_definitions() {
+        // Regression test for the cross-package definition leak (#6042 review):
+        // When two packages each define `foo` and there are no call sites,
+        // count_usages("PkgA::foo") must return 0. Without subtracting
+        // definitions from the bare `foo` bucket, PkgB's definition (also stored
+        // under bare `foo`) would be counted as a usage of PkgA::foo.
+        let index = WorkspaceIndex::new();
+
+        let uri_a = "file:///lib/PkgA.pm";
+        let code_a = "package PkgA;\nsub foo { return 1; }\n1;\n";
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+
+        let uri_b = "file:///lib/PkgB.pm";
+        let code_b = "package PkgB;\nsub foo { return 2; }\n1;\n";
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        // No call sites exist, so usages should be zero for both packages.
+        assert_eq!(
+            index.count_usages("PkgA::foo"),
+            0,
+            "PkgB::foo definition must not leak as a PkgA::foo usage"
+        );
+        assert_eq!(
+            index.count_usages("PkgB::foo"),
+            0,
+            "PkgA::foo definition must not leak as a PkgB::foo usage"
+        );
+    }
+
     #[test]
     fn test_batch_indexing() {
         let index = WorkspaceIndex::new();
@@ -9827,6 +10042,60 @@ helper_one();
             index.definition_candidates("shared")[0].uri,
             "file:///lib/B.pm",
             "remaining shared candidate must be from B"
+        );
+    }
+
+    /// #5016 item 3: when `incremental_remove_symbols` triggers its collision
+    /// full-rebuild path, `search_index` must take the same path so
+    /// `search_source_symbols` and `find_definition` cannot diverge.
+    #[test]
+    fn test_search_index_parity_after_collision_rebuild_on_remove() {
+        let index = WorkspaceIndex::new();
+        let uri_a = must(url::Url::parse("file:///lib/A.pm"));
+        let uri_b = must(url::Url::parse("file:///lib/B.pm"));
+
+        must(index.index_file(
+            uri_a.clone(),
+            "package A;\nsub unique_to_a { 1 }\nsub shared { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(uri_b.clone(), "package B;\nsub shared { 1 }\n1;\n".to_string()));
+
+        index.remove_file(uri_a.as_str());
+
+        // symbols path (find_definition / definition_candidates)
+        assert!(index.definition_candidates("unique_to_a").is_empty());
+        assert_eq!(index.definition_candidates("shared").len(), 1);
+        assert_eq!(index.definition_candidates("shared")[0].uri, "file:///lib/B.pm");
+
+        // search_index path must agree
+        let unique_search = index.search_source_symbols("unique_to_a", None);
+        assert!(
+            unique_search.is_empty(),
+            "search_index must not retain unique_to_a after collision rebuild; got: {:?}",
+            unique_search.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let shared_search = index.search_source_symbols("shared", None);
+        assert_eq!(
+            shared_search.len(),
+            1,
+            "search_index must retain B's shared symbol after collision rebuild; got: {:?}",
+            shared_search.iter().map(|s| (&s.name, &s.uri)).collect::<Vec<_>>()
+        );
+        assert_eq!(shared_search[0].uri, "file:///lib/B.pm");
+
+        // Re-index path must also keep caches aligned (update, not just remove).
+        must(index.index_file(
+            uri_a.clone(),
+            "package A;\nsub unique_to_a { 2 }\nsub shared { 2 }\n1;\n".to_string(),
+        ));
+        assert_eq!(index.definition_candidates("shared").len(), 2);
+        let shared_after_reindex = index.search_source_symbols("shared", None);
+        assert_eq!(
+            shared_after_reindex.len(),
+            2,
+            "search_index must match symbols after re-index collision rebuild; got: {:?}",
+            shared_after_reindex.iter().map(|s| &s.uri).collect::<Vec<_>>()
         );
     }
 
@@ -11183,6 +11452,47 @@ mod entity_id_file_scoped_tests {
         );
     }
 
+    /// Regression guard for #5016: case-distinct Perl packages must not merge in
+    /// the search_index. `Foo::Bar` and `foo::bar` are different packages; a
+    /// query for one must not return symbols from the other.
+    #[test]
+    fn search_source_symbols_case_distinct_packages_do_not_cross_match() {
+        let index = WorkspaceIndex::new();
+
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Foo/Bar.pm")),
+            "package Foo::Bar;\nsub upper_helper { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/foo/bar.pm")),
+            "package foo::bar;\nsub lower_helper { 2 }\n1;\n".to_string(),
+        ));
+
+        let upper_results = index.search_source_symbols("Foo::Bar::upper", None);
+        assert!(
+            upper_results.iter().any(|s| s.name == "upper_helper"),
+            "Foo::Bar query must find upper_helper; got: {:?}",
+            upper_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !upper_results.iter().any(|s| s.name == "lower_helper"),
+            "Foo::Bar query must not cross-match foo::bar symbols; got: {:?}",
+            upper_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let lower_results = index.search_source_symbols("foo::bar::lower", None);
+        assert!(
+            lower_results.iter().any(|s| s.name == "lower_helper"),
+            "foo::bar query must find lower_helper; got: {:?}",
+            lower_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !lower_results.iter().any(|s| s.name == "upper_helper"),
+            "foo::bar query must not cross-match Foo::Bar symbols; got: {:?}",
+            lower_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
     /// Regression guard for #5335: a one-character query must not return nearly
     /// every symbol in the workspace.
     ///
@@ -11570,6 +11880,210 @@ mod file_fact_shard_serde_tests {
             !unused_names.contains(&"$shared"),
             "cross-scope my variable must not appear in find_unused_symbols; got: {:?}",
             unused_names
+        );
+    }
+
+    // ── find_unused_symbols: O(N) two-pass regression gates (#5016) ──────────
+
+    /// A symbol that is called from a *different* file must not appear in
+    /// `find_unused_symbols`.  The pre-fix O(N²) implementation had the same
+    /// cross-file visibility as the post-fix O(N) implementation because both
+    /// scan per-file reference maps, but this test pins the cross-file contract
+    /// so any future regression is immediately caught.
+    ///
+    /// Regression gate for #5016 (O(N²) → O(N) fix).
+    #[test]
+    fn find_unused_symbols_detects_cross_file_usage() {
+        let index = WorkspaceIndex::new();
+
+        // File 1: defines CrossFile::helper (definition only — no usages here).
+        let uri1 = "file:///lib/CrossFile.pm";
+        let code1 = "package CrossFile;\nsub helper { return 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        // File 2: calls CrossFile::helper — should mark it as used.
+        let uri2 = "file:///app.pl";
+        let code2 = "use CrossFile;\nCrossFile::helper();\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(
+            !unused_names.contains(&"helper"),
+            "helper is called in app.pl and must not appear in find_unused_symbols; got: {:?}",
+            unused_names
+        );
+    }
+
+    /// A symbol defined in one file but never called anywhere must appear in
+    /// `find_unused_symbols`.  Positive control that the two-pass implementation
+    /// still reports genuinely-unused package-level symbols.
+    ///
+    /// Regression gate for #5016 (O(N²) → O(N) fix).
+    #[test]
+    fn find_unused_symbols_still_reports_truly_unused_cross_file_symbol() {
+        let index = WorkspaceIndex::new();
+
+        // File 1: defines Orphan::dead_code — nobody ever calls it.
+        let uri1 = "file:///lib/Orphan.pm";
+        let code1 = "package Orphan;\nsub dead_code { return 42; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        // File 2: uses a *different* function — dead_code must be reported as unused.
+        let uri2 = "file:///app.pl";
+        let code2 = "use Orphan;\n# intentionally does not call dead_code\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(
+            unused_names.contains(&"dead_code"),
+            "dead_code is never called and must appear in find_unused_symbols; got: {:?}",
+            unused_names
+        );
+    }
+
+    // ── count_usages / find_references parity (#5016) ────────────────────────
+
+    /// `count_usages` and `find_references` must both see cross-file usage
+    /// sites once the index is consistent.
+    ///
+    /// Both `find_references` and `count_usages` read `global_references` on a
+    /// quiescent index. Under concurrent edits they can still diverge (#5116),
+    /// but after indexing both must agree that a symbol has usages.
+    ///
+    /// Regression gate for #5016 (divergent store reads).
+    #[test]
+    fn count_usages_and_find_references_both_see_cross_file_usages() {
+        let index = WorkspaceIndex::new();
+
+        // File 1: defines Parity::calc (definition only in this file).
+        let uri1 = "file:///lib/Parity.pm";
+        let code1 = "package Parity;\nsub calc { return 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        // File 2: calls Parity::calc twice — creates Usage references in the index.
+        let uri2 = "file:///app.pl";
+        let code2 = "use Parity;\nParity::calc();\nParity::calc();\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let refs = index.find_references("Parity::calc");
+        let count = index.count_usages("Parity::calc");
+
+        assert_eq!(
+            count, 2,
+            "count_usages must return exactly two call sites for Parity::calc; got {count}"
+        );
+        assert!(
+            refs.len() >= 3,
+            "find_references must include two usages plus the definition; got {}",
+            refs.len()
+        );
+    }
+
+    /// A symbol with only a definition site must yield `count_usages == 0` and
+    /// must not be excluded by `find_references` returning empty.  Both must
+    /// agree that the symbol has zero non-definition call sites.
+    ///
+    /// Regression gate for #5016 (divergent store reads).
+    #[test]
+    fn count_usages_zero_when_find_references_sees_only_definition() {
+        let index = WorkspaceIndex::new();
+
+        let uri = "file:///lib/OnlyDef.pm";
+        let code = "package OnlyDef;\nsub never_called { return 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let count = index.count_usages("never_called");
+        // The definition site itself is stored in global_references, so
+        // find_references may return 1 entry.  count_usages must exclude it.
+        assert_eq!(
+            count, 0,
+            "count_usages must return 0 for a symbol with no call sites; got {}",
+            count
+        );
+    }
+
+    // ── find_unused_symbols: global_references authority (#5016 item 5) ───────
+
+    fn sample_workspace_symbol(name: &str, qualified_name: Option<&str>) -> WorkspaceSymbol {
+        WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: "file:///lib/Sample.pm".to_string(),
+            range: Range {
+                start: Position { byte: 0, line: 1, column: 1 },
+                end: Position { byte: 9, line: 1, column: 10 },
+            },
+            qualified_name: qualified_name.map(str::to_string),
+            documentation: None,
+            container_name: qualified_name
+                .and_then(|q| q.rsplit_once("::").map(|(pkg, _)| pkg.to_string())),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        }
+    }
+
+    /// The pre-#5016-item-5 pass-2 check consulted only `symbol.name`.  When the
+    /// authoritative `global_references` store records usage under a qualified key
+    /// (e.g. `Orphan::helper`) the bare name alone must not be required.
+    #[test]
+    fn symbol_has_non_definition_usage_matches_qualified_global_ref_key() {
+        let used_names = HashSet::from(["Orphan::helper".to_string()]);
+        let symbol = sample_workspace_symbol("helper", Some("Orphan::helper"));
+
+        assert!(
+            WorkspaceIndex::symbol_has_non_definition_usage(&used_names, &symbol),
+            "qualified global_references key must mark the symbol as used"
+        );
+    }
+
+    /// `find_unused_symbols` must agree with `count_usages` on the same
+    /// `global_references` authority: any symbol with non-zero usages must not
+    /// be reported unused.
+    ///
+    /// Regression gate for #5016 item 5 (find_unused_symbols data source).
+    #[test]
+    fn find_unused_symbols_agrees_with_count_usages_authority() {
+        let index = WorkspaceIndex::new();
+
+        let uri1 = "file:///lib/UnusedAuth.pm";
+        let code1 = "package UnusedAuth;\nsub live_fn { return 1; }\nsub dead_fn { return 2; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        let uri2 = "file:///app.pl";
+        let code2 = "use UnusedAuth;\nUnusedAuth::live_fn();\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_keys: HashSet<(String, String)> =
+            unused.iter().map(|s| (s.uri.clone(), s.name.clone())).collect();
+
+        let live_usages = index.count_usages("live_fn");
+        let live_qualified_usages = index.count_usages("UnusedAuth::live_fn");
+        assert!(
+            live_usages > 0 || live_qualified_usages > 0,
+            "fixture must record usages for live_fn via global_references"
+        );
+        assert!(
+            !unused_keys
+                .contains(&("file:///lib/UnusedAuth.pm".to_string(), "live_fn".to_string())),
+            "live_fn has usages and must not be reported unused; unused={unused:?}"
+        );
+
+        let dead_usages = index.count_usages("dead_fn");
+        let dead_qualified_usages = index.count_usages("UnusedAuth::dead_fn");
+        assert_eq!(dead_usages, 0, "dead_fn must have zero usages in global_references");
+        assert_eq!(
+            dead_qualified_usages, 0,
+            "UnusedAuth::dead_fn must have zero usages in global_references"
+        );
+        assert!(
+            unused_keys.contains(&("file:///lib/UnusedAuth.pm".to_string(), "dead_fn".to_string())),
+            "dead_fn must still be reported unused; unused={unused:?}"
         );
     }
 }

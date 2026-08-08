@@ -644,6 +644,9 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
                             || character.is_ascii_digit()
                             || character == '-'
                     })
+                    // Skip metasyntactic placeholders that are prose, not route
+                    // targets — mirrors the bare-$ branch (#5930).
+                    && !METASYNTACTIC_PLACEHOLDERS.contains(&token)
                 {
                     tokens.push(token.to_owned());
                 }
@@ -726,6 +729,18 @@ mod tests {
             route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`", true),
             vec!["verify-live-ci"]
         );
+    }
+
+    #[test]
+    fn ignores_metasyntactic_placeholders_in_backticks() {
+        // A `$skill` placeholder in prose under a route-bearing heading must
+        // not be treated as a route target — even inside backticks (#5930).
+        assert_eq!(
+            route_tokens("which `$skill` to consume. Do not ask agents.", true),
+            Vec::<String>::new()
+        );
+        // The real skill names are still extracted.
+        assert_eq!(route_tokens("- `$deliver-pr` then `$skill`", true), vec!["deliver-pr"]);
     }
 
     #[test]

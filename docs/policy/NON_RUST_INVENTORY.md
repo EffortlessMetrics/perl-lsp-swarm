@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10191 |
-| Rust-family files | 3101 |
-| Non-Rust files | 7090 |
-| Allowlisted | 4773 |
-| Unclassified | 2317 |
+| Total tracked files | 10171 |
+| Rust-family files | 3080 |
+| Non-Rust files | 7091 |
+| Allowlisted | 4777 |
+| Unclassified | 2314 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 236 |
-| documentation | 2253 |
+| config | 239 |
+| documentation | 2248 |
 | generated | 1 |
 | production | 211 |
 | test | 1753 |
-| tooling | 319 |
-| unclassified | 2317 |
+| tooling | 325 |
+| unclassified | 2314 |
 
 ## Unclassified files
 
@@ -146,9 +146,6 @@
 | `.codex/hooks.json` | `json` |
 | `.dockerignore` | `` |
 | `.editorconfig` | `` |
-| `.kiro/specs/parser-accuracy-observability/.config.kiro` | `kiro` |
-| `.kiro/specs/rc2-semantic-analysis/.config.kiro` | `kiro` |
-| `.kiro/specs/ux-readiness-system/.config.kiro` | `kiro` |
 | `.typos.toml` | `toml` |
 | `aqua.yaml` | `yaml` |
 | `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | `json` |
@@ -291,7 +288,6 @@
 | `crates/perl-parser/tests/snapshots/ga_lock_capabilities.json` | `json` |
 | `crates/perl-parser/tests/snapshots/production_capabilities.json` | `json` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
-| `crates/perl-refactoring/src/refactor/import_optimizer.rst` | `rst` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
 | `distribution/chocolatey/perl-lsp.nuspec` | `nuspec` |
@@ -2216,6 +2212,7 @@
 | `xtask/tests/fixtures/agent-leases/current-valid.json` | `json` |
 | `xtask/tests/fixtures/agent-leases/lease-expired.json` | `json` |
 | `xtask/tests/fixtures/agent-leases/receipt-forbidden-mutation.json` | `json` |
+| `xtask/tests/fixtures/agent-leases/receipt-valid.json` | `json` |
 | `xtask/tests/fixtures/agent-leases/task-valid.json` | `json` |
 | `xtask/tests/fixtures/aggregator/fail/lint.json` | `json` |
 | `xtask/tests/fixtures/aggregator/fail/tests.json` | `json` |
@@ -2554,6 +2551,8 @@
 | `.github/PULL_REQUEST_TEMPLATE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/actions/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/actions/rust-checks/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/rust-checks/run_cargo.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/rust-checks/test_run_cargo.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-perl-lsp/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
@@ -2578,6 +2577,7 @@
 | `.github/workflows/ci-nightly.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ci-security.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ci.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/composite-action-contracts.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dependency-review.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dist-shadow.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docker-publish.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -2663,12 +2663,15 @@
 | `.jules/palette.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.jules/sentinel.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.justfiles/security.just` | tooling | `non-rust-justfiles-tree` | release/ci |
+| `.kiro/specs/parser-accuracy-observability/.config.kiro` | tooling | `non-rust-kiro` | developer-experience |
 | `.kiro/specs/parser-accuracy-observability/design.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/parser-accuracy-observability/requirements.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/parser-accuracy-observability/tasks.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.kiro/specs/rc2-semantic-analysis/.config.kiro` | tooling | `non-rust-kiro` | developer-experience |
 | `.kiro/specs/rc2-semantic-analysis/design.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/rc2-semantic-analysis/requirements.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/rc2-semantic-analysis/tasks.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.kiro/specs/ux-readiness-system/.config.kiro` | tooling | `non-rust-kiro` | developer-experience |
 | `.kiro/specs/ux-readiness-system/audit-0.1-findings.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/ux-readiness-system/design.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/ux-readiness-system/requirements.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3349,11 +3352,6 @@
 | `crates/perl-pragma/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-pragma/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-pragma/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `crates/perl-refactoring/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `crates/perl-refactoring/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
-| `crates/perl-refactoring/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
-| `crates/perl-refactoring/README.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `crates/perl-refactoring/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-regex/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-regex/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-regex/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -5465,9 +5463,11 @@
 | `scripts/reviews/claim-digest` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/claim_digest.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/disposition` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/reviews/inline` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/lease` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/run` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/state` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/reviews/threads` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/run-gates.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/run_parser_comparison.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/safe-pull.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -5527,6 +5527,7 @@
 | `scripts/tests/test-publish-topo.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-quick-receipts-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-review-lease.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-review-threads-inline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-run-gates-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-swarm-summary-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-target-isolation.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

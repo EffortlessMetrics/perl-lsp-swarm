@@ -3,6 +3,7 @@
 //! Provides completion for Test::More functions in test contexts.
 
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
+use std::borrow::Cow;
 
 /// One Test::More export this server knows how to complete and document.
 ///
@@ -202,13 +203,13 @@ pub fn add_test_more_completions(
     for function in TEST_MORE_FUNCTIONS {
         if context.prefix.is_empty() || function.name.starts_with(&context.prefix) {
             completions.push(CompletionItem {
-                label: function.name.to_string(),
+                label: Cow::Borrowed(function.name),
                 kind: super::items::CompletionItemKind::Function,
-                detail: Some("Test::More".to_string()),
-                documentation: Some(function.description.to_string()),
-                insert_text: Some(function.snippet.to_string()),
-                sort_text: Some(format!("2_{}", function.name)),
-                filter_text: Some(function.name.to_string()),
+                detail: Some(Cow::Borrowed("Test::More")),
+                documentation: Some(Cow::Borrowed(function.description)),
+                insert_text: Some(Cow::Borrowed(function.snippet)),
+                sort_text: Some(Cow::Owned(format!("2_{}", function.name))),
+                filter_text: Some(Cow::Borrowed(function.name)),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,

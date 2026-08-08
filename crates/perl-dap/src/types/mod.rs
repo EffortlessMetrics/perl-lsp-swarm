@@ -104,6 +104,10 @@ pub struct Variable {
     /// Hint for how many indexed child variables this variable has, if it is an array.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indexed_variables: Option<i32>,
+    /// Optional evaluable name if a client can pass this to an `evaluate`
+    /// request to obtain the variable's value (DAP spec §8.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluate_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -169,6 +173,7 @@ mod tests {
             variables_reference: 0,
             named_variables: None,
             indexed_variables: None,
+            evaluate_name: None,
         };
         let json = serde_json::to_string(&var)?;
         assert!(json.contains("\"type\":"), "must serialize as 'type' not 'type_': {json}");
@@ -185,10 +190,12 @@ mod tests {
             variables_reference: 0,
             named_variables: None,
             indexed_variables: None,
+            evaluate_name: None,
         };
         let json = serde_json::to_string(&var)?;
         assert!(!json.contains("namedVariables"), "absent: {json}");
         assert!(!json.contains("indexedVariables"), "absent: {json}");
+        assert!(!json.contains("evaluateName"), "absent: {json}");
         Ok(())
     }
 
@@ -201,11 +208,33 @@ mod tests {
             variables_reference: 7,
             named_variables: None,
             indexed_variables: Some(3),
+            evaluate_name: None,
         };
         let json = serde_json::to_string(&var)?;
         let back: Variable = serde_json::from_str(&json)?;
         assert_eq!(back.variables_reference, 7);
         assert_eq!(back.indexed_variables, Some(3));
+        Ok(())
+    }
+
+    #[test]
+    fn variable_evaluate_name_serializes_as_camel_case() -> serde_json::Result<()> {
+        let var = Variable {
+            name: "$x".to_string(),
+            value: "42".to_string(),
+            type_: Some("SCALAR".to_string()),
+            variables_reference: 0,
+            named_variables: None,
+            indexed_variables: None,
+            evaluate_name: Some("$x".to_string()),
+        };
+        let json = serde_json::to_string(&var)?;
+        assert!(
+            json.contains("\"evaluateName\":\"$x\""),
+            "evaluateName must serialize as camelCase: {json}"
+        );
+        let back: Variable = serde_json::from_str(&json)?;
+        assert_eq!(back.evaluate_name, Some("$x".to_string()));
         Ok(())
     }
 }

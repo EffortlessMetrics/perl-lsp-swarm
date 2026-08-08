@@ -14,13 +14,15 @@ const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier* (e.g. `(a+)+` or `([a-z]{2,5})+`), a backreference,
-// or a lookaround. A single character class followed by one quantifier
-// (`[^"]+`, `[0-9]+`) is linear-time and safe — flagging it produced false
-// "ambiguous" classifications for ordinary step definitions, including the
-// `"([^"]+)"` patterns this module generates itself (see buildGeneratedStepPattern).
+// a lookaround, OR a *quantified group containing alternation* where the
+// alternatives overlap (e.g. `(a|aa)+` or `(a|a)*`). A single character class
+// followed by one quantifier (`[^"]+`, `[0-9]+`) is linear-time and safe —
+// flagging it produced false "ambiguous" classifications for ordinary step
+// definitions, including the `"([^"]+)"` patterns this module generates itself
+// (see buildGeneratedStepPattern).
 // Keep this in sync with the identical constant in gherkinProviders.ts.
-const POTENTIALLY_EXPENSIVE_REGEX_RE =
-  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
+const POTENTIALLY_EXPLOSIVE_REGEX_RE =
+  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|(?:\([^)]*\|[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 
 export type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But';
 export type StepDefinitionStatus = 'defined' | 'undefined' | 'ambiguous';
@@ -396,5 +398,5 @@ function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
     return false;
   }
 
-  return !POTENTIALLY_EXPENSIVE_REGEX_RE.test(source);
+  return !POTENTIALLY_EXPLOSIVE_REGEX_RE.test(source);
 }

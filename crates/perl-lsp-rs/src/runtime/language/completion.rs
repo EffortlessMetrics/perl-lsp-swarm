@@ -230,7 +230,7 @@ impl LspServer {
                         .as_deref()
                         .is_some_and(|sort_text| sort_text.starts_with("3_")))
             })
-            .map(|completion| completion.label.clone())
+            .map(|completion| completion.label.to_string())
             .collect()
     }
 
@@ -496,7 +496,7 @@ impl LspServer {
         completions: &[crate::completion::CompletionItem],
     ) -> CompletionDecisionSummary {
         let sample_labels =
-            completions.iter().take(5).map(|completion| completion.label.clone()).collect();
+            completions.iter().take(5).map(|completion| completion.label.to_string()).collect();
         let mut compiler_fact_items = 0;
         let mut generated_items = 0;
         let mut dynamic_boundary_items = 0;
@@ -785,7 +785,7 @@ impl LspServer {
         let config =
             self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
         let mut seen: HashSet<String> =
-            completions.iter().map(|completion| completion.label.clone()).collect();
+            completions.iter().map(|completion| completion.label.to_string()).collect();
 
         for dependency in config.declared_dependencies {
             if should_continue.is_some_and(|check| !check()) {
@@ -806,12 +806,12 @@ impl LspServer {
             );
 
             completions.push(crate::completion::CompletionItem {
-                label: module.clone(),
+                label: module.clone().into(),
                 kind: CompletionItemKind::Module,
-                detail: Some(detail),
-                documentation: Some(documentation),
-                insert_text: Some(module.clone()),
-                sort_text: Some(format!("080_declared_dependency_{module}")),
+                detail: Some(detail.into()),
+                documentation: Some(documentation.into()),
+                insert_text: Some(module.clone().into()),
+                sort_text: Some(format!("080_declared_dependency_{module}").into()),
                 filter_text: None,
                 additional_edits: Vec::new(),
                 text_edit_range: None,
@@ -900,7 +900,7 @@ impl LspServer {
                     qualified_variable_symbols.unwrap_or_else(|| index.find_symbols(&prefix));
                 use std::collections::HashSet;
                 let mut seen: HashSet<String> =
-                    completions.iter().map(|completion| completion.label.clone()).collect();
+                    completions.iter().map(|completion| completion.label.to_string()).collect();
 
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
@@ -968,17 +968,18 @@ impl LspServer {
                     let sort_text = format!("9_workspace_{label}");
 
                     completions.push(crate::completion::CompletionItem {
-                        label,
+                        label: label.into(),
                         kind: Self::workspace_symbol_kind(&symbol),
-                        detail,
-                        insert_text,
+                        detail: detail.map(Into::into),
+                        insert_text: insert_text.map(Into::into),
                         // Workspace enrichment is a fallback tier. Give it an
                         // explicit low-priority rank so unranked labels (for
                         // example `$...` variables) cannot displace ranked
                         // in-file methods when the final response is capped.
-                        sort_text: Some(sort_text),
+                        sort_text: Some(sort_text.into()),
                         filter_text: None,
-                        documentation: Self::workspace_symbol_documentation(&symbol),
+                        documentation: Self::workspace_symbol_documentation(&symbol)
+                            .map(Into::into),
                         additional_edits: Vec::new(),
                         text_edit_range,
                         commit_characters: None,
@@ -1134,7 +1135,8 @@ impl LspServer {
         }
 
         if let Some(insert_text) = c.insert_text {
-            item["insertText"] = json!(degraded_insert_text.unwrap_or(insert_text));
+            item["insertText"] =
+                json!(degraded_insert_text.unwrap_or_else(|| insert_text.into_owned()));
         }
 
         if let Some(documentation) = c.documentation {
@@ -1367,10 +1369,11 @@ impl LspServer {
                             if let Some(perl_type) =
                                 type_engine.as_ref().and_then(|engine| engine.get_type_at(var_name))
                             {
-                                completion.detail = Some(Self::format_type_for_detail(&perl_type));
+                                completion.detail =
+                                    Some(Self::format_type_for_detail(&perl_type).into());
                             } else {
                                 // Fallback to sigil-based type hint
-                                let type_hint = if completion.label.starts_with('$') {
+                                let type_hint: &'static str = if completion.label.starts_with('$') {
                                     "scalar"
                                 } else if completion.label.starts_with('@') {
                                     "array"
@@ -1381,7 +1384,7 @@ impl LspServer {
                                 } else {
                                     "unknown"
                                 };
-                                completion.detail = Some(type_hint.to_string());
+                                completion.detail = Some(type_hint.into());
                             }
                         }
                     }
@@ -1925,11 +1928,11 @@ impl LspServer {
             for (method, kind) in &common_methods {
                 if method.starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: method.to_string(),
+                        label: method.to_string().into(),
                         kind: CompletionItemKind::Function,
-                        detail: Some(format!("method ({})", kind)),
+                        detail: Some(format!("method ({})", kind).into()),
                         documentation: None,
-                        insert_text: Some(method.to_string()),
+                        insert_text: Some(method.to_string().into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -1948,11 +1951,11 @@ impl LspServer {
                 // Scalar variables - suggest common ones
                 if "_".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "_".to_string(),
+                        label: "_".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Default variable".to_string()),
+                        detail: Some("Default variable".into()),
                         documentation: None,
-                        insert_text: Some("_".to_string()),
+                        insert_text: Some("_".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -1967,11 +1970,11 @@ impl LspServer {
                 // Array variables - suggest common ones
                 if "ARGV".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "ARGV".to_string(),
+                        label: "ARGV".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Command line arguments".to_string()),
+                        detail: Some("Command line arguments".into()),
                         documentation: None,
-                        insert_text: Some("ARGV".to_string()),
+                        insert_text: Some("ARGV".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -1983,11 +1986,11 @@ impl LspServer {
                 }
                 if "_".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "_".to_string(),
+                        label: "_".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Function arguments".to_string()),
+                        detail: Some("Function arguments".into()),
                         documentation: None,
-                        insert_text: Some("_".to_string()),
+                        insert_text: Some("_".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -2002,11 +2005,11 @@ impl LspServer {
                 // Hash variables - suggest common ones
                 if "ENV".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "ENV".to_string(),
+                        label: "ENV".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Environment variables".to_string()),
+                        detail: Some("Environment variables".into()),
                         documentation: None,
-                        insert_text: Some("ENV".to_string()),
+                        insert_text: Some("ENV".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -2031,11 +2034,11 @@ impl LspServer {
                 for kw in LSP_RUNTIME_COMPLETION_KEYWORDS {
                     if kw.starts_with(&prefix) {
                         completions.push(crate::completion::CompletionItem {
-                            label: kw.to_string(),
+                            label: (*kw).into(),
                             kind: CompletionItemKind::Keyword,
                             detail: None,
                             documentation: None,
-                            insert_text: Some(kw.to_string()),
+                            insert_text: Some((*kw).into()),
                             additional_edits: vec![],
                             sort_text: None,
                             filter_text: None,
@@ -2232,12 +2235,12 @@ mod tests {
     #[test]
     fn completion_cap_applies_after_final_ranking() {
         let item = |label: &str, sort_text: &str| crate::completion::CompletionItem {
-            label: label.to_string(),
+            label: label.to_string().into(),
             kind: CompletionItemKind::Function,
             detail: None,
             documentation: None,
-            insert_text: Some(label.to_string()),
-            sort_text: Some(sort_text.to_string()),
+            insert_text: Some(label.to_string().into()),
+            sort_text: Some(sort_text.to_string().into()),
             filter_text: None,
             additional_edits: Vec::new(),
             text_edit_range: None,
@@ -2260,7 +2263,7 @@ mod tests {
 
         assert!(is_incomplete, "cap should mark the response incomplete");
         assert_eq!(
-            items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>(),
             ["late", "provider-first"]
         );
     }
@@ -2624,14 +2627,14 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "foreach".to_string(),
+            label: "foreach".into(),
             kind: CompletionItemKind::Snippet,
             detail: None,
             documentation: None,
-            insert_text: Some(FOREACH_SNIPPET.to_string()),
+            insert_text: Some(FOREACH_SNIPPET.into()),
             additional_edits: Vec::new(),
-            sort_text: Some("1_foreach".to_string()),
-            filter_text: Some("foreach".to_string()),
+            sort_text: Some("1_foreach".into()),
+            filter_text: Some("foreach".into()),
             text_edit_range: None,
             commit_characters: None,
             insert_text_format: InsertTextFormat::snippet(FOREACH_SNIPPET),
@@ -2663,13 +2666,13 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "fallback".to_string(),
+            label: "fallback".into(),
             kind: CompletionItemKind::Keyword,
             detail: None,
             documentation: None,
-            insert_text: Some("fallback".to_string()),
+            insert_text: Some("fallback".into()),
             additional_edits: Vec::new(),
-            sort_text: Some("9_fallback".to_string()),
+            sort_text: Some("9_fallback".into()),
             filter_text: None,
             text_edit_range: None,
             commit_characters: None,
@@ -2714,7 +2717,7 @@ mod tests {
 
         for (kind, expected_kind) in cases {
             let item = crate::completion::CompletionItem {
-                label: format!("{kind:?}"),
+                label: format!("{kind:?}").into(),
                 kind,
                 detail: None,
                 documentation: None,
@@ -2760,17 +2763,17 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "render".to_string(),
+            label: "render".into(),
             kind: CompletionItemKind::Function,
-            detail: Some("render($ctx)".to_string()),
-            documentation: Some("Render the current context.".to_string()),
-            insert_text: Some("render($ctx)".to_string()),
+            detail: Some("render($ctx)".into()),
+            documentation: Some("Render the current context.".into()),
+            insert_text: Some("render($ctx)".into()),
             additional_edits: vec![(
                 SourceLocation { start: 0, end: 0 },
                 "use Demo::Renderer;\n".to_string(),
             )],
-            sort_text: Some("2_render".to_string()),
-            filter_text: Some("render".to_string()),
+            sort_text: Some("2_render".into()),
+            filter_text: Some("render".into()),
             text_edit_range: None,
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
@@ -2821,14 +2824,14 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "foreach".to_string(),
+            label: "foreach".into(),
             kind: CompletionItemKind::Snippet,
             detail: None,
             documentation: None,
-            insert_text: Some(FOREACH_SNIPPET.to_string()),
+            insert_text: Some(FOREACH_SNIPPET.into()),
             additional_edits: Vec::new(),
             sort_text: None,
-            filter_text: Some("foreach".to_string()),
+            filter_text: Some("foreach".into()),
             text_edit_range: None,
             commit_characters: None,
             insert_text_format: InsertTextFormat::snippet(FOREACH_SNIPPET),
@@ -3124,12 +3127,12 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let item = |label: &str, kind: CompletionItemKind, sort_text: Option<&str>| {
             crate::completion::CompletionItem {
-                label: label.to_string(),
+                label: label.to_string().into(),
                 kind,
                 detail: None,
                 documentation: None,
                 insert_text: None,
-                sort_text: sort_text.map(str::to_string),
+                sort_text: sort_text.map(|s| s.to_string().into()),
                 filter_text: None,
                 additional_edits: Vec::new(),
                 text_edit_range: None,
@@ -4371,7 +4374,7 @@ mod tests {
         let labels: Vec<String> = provider
             .get_completions_with_path(source, source.len(), None)
             .into_iter()
-            .map(|item| item.label)
+            .map(|item| item.label.into_owned())
             .collect();
 
         assert!(
@@ -4416,7 +4419,8 @@ mod tests {
             false,
         );
         let uncached = uncached_provider.get_completions_with_path(source, source.len(), None);
-        let mut uncached_labels: Vec<String> = uncached.iter().map(|c| c.label.clone()).collect();
+        let mut uncached_labels: Vec<String> =
+            uncached.iter().map(|c| c.label.to_string()).collect();
         uncached_labels.sort();
 
         // Cached call — first invocation populates the cache.
@@ -4432,7 +4436,7 @@ mod tests {
         .with_scan_cache(Arc::clone(&cache));
         let cached_first = cached_provider.get_completions_with_path(source, source.len(), None);
         let mut cached_first_labels: Vec<String> =
-            cached_first.iter().map(|c| c.label.clone()).collect();
+            cached_first.iter().map(|c| c.label.to_string()).collect();
         cached_first_labels.sort();
 
         // Second invocation should hit the cache.
@@ -4447,7 +4451,7 @@ mod tests {
         .with_scan_cache(Arc::clone(&cache));
         let cached_second = cached_provider2.get_completions_with_path(source, source.len(), None);
         let mut cached_second_labels: Vec<String> =
-            cached_second.iter().map(|c| c.label.clone()).collect();
+            cached_second.iter().map(|c| c.label.to_string()).collect();
         cached_second_labels.sort();
 
         assert_eq!(
@@ -4670,7 +4674,7 @@ sub cross_folder_sub_b { 1 }
             None,
         );
 
-        let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
             !names.contains(&"cross_folder_sub_b"),
             "Strategy-B must reject cross_folder_sub_b from folder-b when doc is in folder-a;              got completions: {names:?}"
@@ -4720,7 +4724,7 @@ sub single_root_sub { 1 }
             None,
         );
 
-        let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
             names.contains(&"single_root_sub"),
             "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"

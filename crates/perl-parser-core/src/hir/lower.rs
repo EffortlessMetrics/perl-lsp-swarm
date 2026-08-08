@@ -2671,6 +2671,12 @@ fn is_compile_environment_target(node: &Node) -> bool {
         NodeKind::Binary { op, left, .. } if op == "{}" || op == "[]" => {
             is_compile_environment_target(left)
         }
+        // Array slice `@INC[0]` and hash slice `@INC{...}` — the target is the
+        // underlying variable, which may be a compile-environment target like
+        // @INC (#5929).
+        NodeKind::ArraySlice { target, .. } | NodeKind::HashSlice { target, .. } => {
+            is_compile_environment_target(target)
+        }
         _ => false,
     }
 }

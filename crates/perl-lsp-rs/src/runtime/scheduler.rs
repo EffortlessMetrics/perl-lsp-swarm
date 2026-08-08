@@ -840,7 +840,7 @@ impl Scheduler {
                 // the method name is enough for the user to know what broke.
                 tracing::error!(method = %method, "Request handler panicked: {detail}");
                 HandlerOutcome::Panicked(JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: "2.0",
                     id: Some(id),
                     result: None,
                     error: Some(JsonRpcError {
@@ -933,7 +933,7 @@ impl Scheduler {
             ),
         };
         let cancelled_response = JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id,
             result: None,
             error: Some(JsonRpcError { code: REQUEST_CANCELLED, message, data: None }),
@@ -2384,7 +2384,7 @@ mod tests {
         // Guards the refactor: the non-panicking paths must behave exactly as
         // the previous `if let Ok(Some(response))` did.
         let response = JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id: Some(JsonRpcId::Integer(3)),
             result: Some(serde_json::json!({"ok": true})),
             error: None,
