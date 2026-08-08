@@ -64,10 +64,10 @@ The lane root chooses claim-local task agents, a writer, proof agents, review ag
 context forks, or an Ultracode workflow as useful. The campaign root does not hand-
 script a substitute lifecycle.
 
-For a tiny claim where a separate lane costs more than it saves, the campaign root may
-create a bounded lane context and complete the claim directly, but it should still
-preserve campaign context and follow `deliver-pr` rather than accumulating unrelated
-leaf work in the goal thread.
+For a tiny claim where another leaf agent would cost more than it saves, keep the work
+inside a claim-local lane context and let that lane root or current writer execute it
+directly. Do not convert the campaign root into the leaf worker merely because the
+patch is small.
 
 ## Traceable route and useful GitHub boundaries
 
