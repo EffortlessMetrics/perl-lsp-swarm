@@ -37,7 +37,8 @@ A clean proof review is valid. Do not add broad tests merely to demonstrate effo
 
 The lane root retains the proof-sufficiency judgment and decides whether findings require
 proof repair, issue correction, candidate work, or an explicit `NOT_PROVEN` boundary.
-A reviewer does not approve the claim or mutate proof merely by returning `clear`.
+A reviewer does not approve the claim or mutate proof merely by returning a clean
+result.
 
 ### Useful read-only reviewers
 
