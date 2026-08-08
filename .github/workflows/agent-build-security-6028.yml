@@ -5,8 +5,10 @@ on:
     branches: [main, master]
     types: [opened, synchronize, reopened]
 
+# The builder may create an immutable Git blob. It never updates a ref, branch,
+# pull request, issue, workflow, release, or repository file through its token.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -35,16 +37,12 @@ jobs:
           path = Path('.github/workflows/ci-nightly.yml')
           lines = path.read_text(encoding='utf-8').splitlines()
 
-          # Remove workflow-wide repository mutation authority. This workflow
-          # retains artifacts, summaries, and native job conclusions only.
           lines = [
               line
               for line in lines
               if line.strip() not in {'issues: write', 'pull-requests: write'}
           ]
 
-          # Remove the sole PR comment publisher from the candidate-executing
-          # benchmark job. Its report, alert, summary, and artifacts remain.
           comment_name = '- name: Comment on PR (performance alerts)'
           upload_name = '- name: Upload benchmark artifacts'
           try:
@@ -57,7 +55,6 @@ jobs:
               raise SystemExit('benchmark comment block boundary was not found') from error
           del lines[start:stop]
 
-          # Every candidate checkout must suppress the persisted workflow token.
           transformed: list[str] = []
           checkout_count = 0
           inserted_count = 0
@@ -191,6 +188,52 @@ jobs:
           ! grep -qE '^\s+(issues|pull-requests): write$' target/security-6028/ci-nightly.yml
           ! grep -q 'actions/github-script@' target/security-6028/ci-nightly.yml
           ! grep -q 'issues.createComment' target/security-6028/ci-nightly.yml
+
+      - name: Create immutable candidate blob
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          candidate = Path('target/security-6028/ci-nightly.yml')
+          content = candidate.read_bytes()
+          payload = {
+              'content': base64.b64encode(content).decode('ascii'),
+              'encoding': 'base64',
+          }
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/git/blobs",
+              data=json.dumps(payload).encode('utf-8'),
+              method='POST',
+              headers={
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              blob_sha = json.load(response)['sha']
+
+          receipt = {
+              'schema_version': 1,
+              'path': '.github/workflows/ci-nightly.yml',
+              'blob_sha': blob_sha,
+              'sha256': hashlib.sha256(content).hexdigest(),
+              'bytes': len(content),
+          }
+          Path('target/security-6028/blob.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(receipt, sort_keys=True))
+          PY
 
       - name: Upload validated final candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
