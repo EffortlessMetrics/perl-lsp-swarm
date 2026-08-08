@@ -1,4 +1,4 @@
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -31,6 +31,8 @@ pub fn check() -> Result<()> {
     let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
     let registry = load_registry(&root.join(".ci/GATE_REGISTRY.toml"))?;
 
+    validate_msrv_authorities(&root, &policy)?;
+
     // CI Gate runs `cargo xtask gates` using `.ci/gate-policy.yaml`.
     // Ensure PR profile cannot be blocked by CPAN/parser ratchet wiring.
     let pr_effective = effective_required_gate_names(&policy, GatePolicyProfile::Pr)?;
@@ -47,6 +49,94 @@ pub fn check() -> Result<()> {
     println!("   PR required includes common_corpus_clean, excludes CPAN/parser ratchets.");
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct RustToolchainFile {
+    toolchain: RustToolchain,
+}
+
+#[derive(Debug, Deserialize)]
+struct RustToolchain {
+    channel: String,
+}
+
+fn validate_msrv_authorities(root: &Path, policy: &GatePolicy) -> Result<()> {
+    let cargo_path = root.join("Cargo.toml");
+    let cargo = read_toml(&cargo_path)?;
+    let cargo_msrv = cargo
+        .get("workspace")
+        .and_then(|value| value.get("package"))
+        .and_then(|value| value.get("rust-version"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| eyre!("workspace.package.rust-version must be a string"))?;
+    let gate_msrv = policy
+        .global
+        .toolchain
+        .as_ref()
+        .and_then(|toolchain| toolchain.msrv.as_deref())
+        .ok_or_else(|| eyre!(".ci/gate-policy.yaml global.toolchain.msrv is required"))?;
+    let toolchain_path = root.join("rust-toolchain.toml");
+    let toolchain: RustToolchainFile = read_toml_as(&toolchain_path)?;
+
+    validate_msrv_values(cargo_msrv, gate_msrv, &toolchain.toolchain.channel)
+}
+
+fn validate_msrv_values(cargo: &str, gate_policy: &str, rust_toolchain: &str) -> Result<()> {
+    for (source, value) in [
+        (".ci/gate-policy.yaml toolchain.msrv", gate_policy),
+        ("rust-toolchain.toml toolchain.channel", rust_toolchain),
+    ] {
+        if compare_versions(cargo, value)? != 0 {
+            bail!(
+                "Cargo.toml workspace.package.rust-version ({cargo}) must match {source} ({value})"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn compare_versions(left: &str, right: &str) -> Result<i8> {
+    let left_parts = version_parts(left)?;
+    let right_parts = version_parts(right)?;
+    for (left_part, right_part) in left_parts.iter().zip(right_parts.iter()) {
+        if left_part > right_part {
+            return Ok(1);
+        }
+        if left_part < right_part {
+            return Ok(-1);
+        }
+    }
+    Ok(0)
+}
+
+fn version_parts(version: &str) -> Result<Vec<u64>> {
+    let mut parts = Vec::new();
+    for part in version.split('.') {
+        parts.push(
+            part.parse::<u64>()
+                .map_err(|err| eyre!("invalid version component {part} in {version}: {err}"))?,
+        );
+    }
+    while parts.len() < 3 {
+        parts.push(0);
+    }
+    Ok(parts)
+}
+
+fn read_toml(path: &Path) -> Result<toml::Value> {
+    let content = fs::read_to_string(path)
+        .map_err(|err| eyre!("failed to read {}: {err}", path.display()))?;
+    toml::from_str(&content).map_err(|err| eyre!("failed to parse {}: {err}", path.display()))
+}
+
+fn read_toml_as<T>(path: &Path) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let content = fs::read_to_string(path)
+        .map_err(|err| eyre!("failed to read {}: {err}", path.display()))?;
+    toml::from_str(&content).map_err(|err| eyre!("failed to parse {}: {err}", path.display()))
 }
 
 pub fn effective(profile: GatePolicyProfile) -> Result<()> {
@@ -176,6 +266,27 @@ mod tests {
         assert!(required.iter().any(|name| name == "common_corpus_clean"));
         assert!(!required.iter().any(|name| name == "cpan_corpus_ratchet"));
         assert!(advisory.iter().any(|name| name == "cpan_corpus_ratchet"));
+        Ok(())
+    }
+
+    #[test]
+    fn msrv_accepts_equivalent_patch_precision() -> Result<()> {
+        validate_msrv_values("1.95", "1.95.0", "1.95.0")
+    }
+
+    #[test]
+    fn msrv_rejects_gate_policy_drift() -> Result<()> {
+        let error = validate_msrv_values("1.95", "1.92.0", "1.95.0")
+            .expect_err("gate-policy MSRV drift should be rejected");
+        assert!(error.to_string().contains("gate-policy.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn msrv_rejects_rust_toolchain_drift() -> Result<()> {
+        let error = validate_msrv_values("1.95", "1.95.0", "1.92.0")
+            .expect_err("rust-toolchain MSRV drift should be rejected");
+        assert!(error.to_string().contains("rust-toolchain.toml"));
         Ok(())
     }
 }
