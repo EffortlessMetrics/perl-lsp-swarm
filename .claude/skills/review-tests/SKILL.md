@@ -58,6 +58,9 @@ Post when a proof defect, external oracle, production-path fact, or `NOT_PROVEN`
 boundary affects implementation, review, support, or later resumption. Localized
 candidate-test findings may use inline review.
 
+The lane root posts. Focused subagents and Team members return file/line-anchored proof
+findings as evidence and do not write to GitHub themselves.
+
 Keep reviewer identity/topology, raw logs, temporary mutants, retries, and clean routine
 results runtime-local. Do not post one summary per reviewer or proof run.
 

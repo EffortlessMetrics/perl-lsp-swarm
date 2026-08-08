@@ -79,6 +79,9 @@ Use an issue/PR comment or review finding when a proof defect, external oracle,
 production-path fact, or `NOT_PROVEN` boundary will affect implementation, review,
 support, or later resumption. Localized candidate-test findings may use inline review.
 
+The integrating lane owner posts. A skill run that only answers a bounded proof question
+returns file/line-anchored findings as evidence and does not write to GitHub.
+
 Keep reviewer identity, topology, raw logs, temporary mutants, retries, and clean
 routine results runtime-local. Do not post one summary per reviewer or one comment per
 proof run.

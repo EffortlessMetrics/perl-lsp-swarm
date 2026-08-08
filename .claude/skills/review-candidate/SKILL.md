@@ -68,9 +68,12 @@ authority—not a diff impression, green CI, or ungrounded delegate verdict.
 
 ## GitHub boundary
 
-Use inline review for localized findings and a PR comment/review summary for cross-
-cutting claim, authority, proof, risk, or production-route conclusions. Preserve an
-evidence-backed disposition before resolving substantive findings.
+The lane root posts. Focused subagents, context forks, and Team members return
+file/line-anchored findings as evidence and do not write to GitHub themselves.
+
+The lane root uses inline review for localized findings and a PR comment/review summary
+for cross-cutting claim, authority, proof, risk, or production-route conclusions.
+Preserve an evidence-backed disposition before resolving substantive findings.
 
 Keep reviewer/Team topology, raw exploration, temporary tests, duplicate clean reports,
 retries, and routine progress runtime-local. One cumulative lane-root conclusion joins

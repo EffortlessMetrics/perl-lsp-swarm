@@ -83,6 +83,9 @@ a diff impression, green CI, or an ungrounded delegate verdict.
 
 ## GitHub boundary
 
+The integrating lane owner posts. A skill run that only answers a bounded review
+question returns file/line-anchored findings as evidence and does not write to GitHub.
+
 Use inline review for localized candidate findings and a PR comment/review summary for
 cross-cutting claim, authority, proof, risk, or production-route conclusions. Preserve
 an evidence-backed disposition before resolving substantive findings.
