@@ -58,12 +58,14 @@ results, unresolved contradictions, limitations, and typed result.
 
 ## Procedure
 
-1. Verify the finding against current source and authority; do not patch comments literally.
-2. Batch accepted repairs through one integrating writer.
-3. Run affected focused proof.
-4. Compose the canonical human reply with `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines, then pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
-5. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
-6. If the reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.
+1. Enumerate the PR's review threads with `scripts/reviews/threads <pr> [owner/repo] [--unresolved-only] [--json]`. This read-only enumerator is the sanctioned source of the `<threadId>` required by `disposition --thread` in step 5. `scripts/reviews/state` returns an aggregate classification without per-thread identity and cannot supply it; do not hand-roll a `reviewThreads` GraphQL query.
+2. Verify each finding against current source and authority; do not patch comments literally.
+3. Batch accepted repairs through one integrating writer.
+4. Run affected focused proof.
+5. Compose the canonical human reply with `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines, then pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
+6. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
+7. Re-run the enumerator to confirm no substantive thread remains unresolved.
+8. If the reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.
 
 Do not call raw thread-resolution APIs, resolve performatively, or use pr-responded or
 reviewer-persona labels as evidence.

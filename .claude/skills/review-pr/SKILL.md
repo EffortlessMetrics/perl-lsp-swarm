@@ -102,8 +102,23 @@ with severity/evidence/disposition, contradictions, prior dispositions, limitati
 6. **Classify GitHub facts separately.** Record checks, threads, draft state,
    mergeability, rulesets, queue state, and prerequisites as a snapshot. They inform
    integration but do not create substantive review.
-7. **Publish the review.** Put localized findings inline and publish one cumulative
-   review or useful clean conclusion.
+7. **Publish the review.** Post file/line-anchored findings and the cumulative
+   conclusion as one submitted review with
+   `scripts/reviews/inline --pr <n> --body <summary> [--findings <file>]`, which takes
+   findings as a JSON array of objects carrying a repo-relative path, a line in the
+   diff, an optional multi-line range start, and a body — on stdin or from a file.
+   Submit as `COMMENT`; this repository does not submit `APPROVE`. The
+   post is atomic — one unaddressable location aborts the whole review rather than
+   silently dropping a finding — so correct the location and resubmit rather than
+   falling back to a single top-level comment, which loses file/line anchoring and
+   cannot be dispositioned per finding. `scripts/reviews/inline` never resolves
+   anything; resolution stays in `scripts/reviews/disposition`.
+
+   **The main thread posts.** Focused review subagents return file/line-anchored
+   findings as evidence and do not write to GitHub themselves. This is the same
+   boundary `orchestrate-work` applies when it routes joined evidence to the lane root
+   for one cumulative judgment, and it is what keeps a lens from either skipping
+   anchoring or publishing an unjoined verdict.
 
 ## Substantive review results
 
