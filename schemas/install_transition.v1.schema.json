@@ -91,7 +91,8 @@
       "properties": {
         "artifact_set_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": ".*\\S.*"
         },
         "frozen_product_sha": {
           "$ref": "#/$defs/git_sha"
