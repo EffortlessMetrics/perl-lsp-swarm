@@ -492,7 +492,6 @@ impl LspServer {
                     doc.version,
                     parsed.degradation_tier(),
                     doc.line_starts.clone(),
-                    doc.rope.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                 ))
@@ -507,7 +506,6 @@ impl LspServer {
             version,
             degradation_tier,
             line_starts,
-            rope,
             generation,
             gen_at_snapshot,
         )) = snapshot
@@ -520,8 +518,8 @@ impl LspServer {
             hook();
         }
 
-        // Position helper that works on the snapshotted line_starts + rope.
-        let pos16 = |offset: usize| line_starts.offset_to_position_rope(&rope, offset);
+        // Position helper on the snapshotted line_starts + text (no rope clone).
+        let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
 
         let lsp_diagnostics: Vec<Value> = if let Some(ast) = &ast_opt {
             // Get diagnostics (already includes unused variable detection).
@@ -535,7 +533,7 @@ impl LspServer {
             // `resolve_use_lib_paths_from_source_at_offset` instead of the whole-file
             // scan, ensuring `no lib 'lib'` strips the path before `use GoneModule` is
             // checked.
-            let provider = DiagnosticsProvider::new(ast, text.to_string());
+            let provider = DiagnosticsProvider::new();
             let resolver = |module: &str, use_site_offset: usize| {
                 self.resolve_module_to_path_with_doc_at_offset(
                     module,
@@ -775,10 +773,9 @@ impl LspServer {
         parse_errors: &[perl_parser::error::ParseError],
         text: &str,
         line_starts: &perl_parser::position::LineStartsCache,
-        rope: &ropey::Rope,
         markup_message_support: bool,
     ) -> Vec<Value> {
-        let pos16 = |offset: usize| line_starts.offset_to_position_rope(rope, offset);
+        let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
         parse_errors
             .iter()
             .map(|e| {
@@ -853,21 +850,20 @@ impl LspServer {
                     std::sync::Arc::clone(&doc.text_arc),
                     doc.version,
                     doc.line_starts.clone(),
-                    doc.rope.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                 ))
             })
         };
 
-        let Some((parse_errors, text, version, line_starts, rope, generation, gen_at_snapshot)) =
+        let Some((parse_errors, text, version, line_starts, generation, gen_at_snapshot)) =
             snapshot
         else {
             return;
         };
 
         let lsp_diagnostics =
-            Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, &rope, false);
+            Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, false);
 
         // Generation-aware staleness guard mirrors the full path.
         if generation.load(Ordering::SeqCst) != gen_at_snapshot {
@@ -939,13 +935,12 @@ impl LspServer {
                     parse_errors,
                     doc.version,
                     doc.line_starts.clone(),
-                    doc.rope.clone(),
                     std::sync::Arc::clone(&doc.text_arc),
                 )
             })
             // lock is released here
         };
-        let Some((parse_errors, version, line_starts, rope, text)) = snapshot else { return };
+        let Some((parse_errors, version, line_starts, text)) = snapshot else { return };
 
         // Nothing to fast-publish when there are no parse errors (this also
         // covers the pending-parse gap -- see comment above).
@@ -953,7 +948,7 @@ impl LspServer {
             return;
         }
 
-        let pos16 = |offset: usize| line_starts.offset_to_position_rope(&rope, offset);
+        let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
 
         let lsp_diagnostics: Vec<Value> =
             parse_errors
@@ -1094,7 +1089,6 @@ impl LspServer {
                     &parse_errors,
                     &doc.text,
                     &doc.line_starts,
-                    &doc.rope,
                     markup_message_support,
                 );
                 // Generation-aware staleness guard: discard if a didChange arrived
@@ -1486,7 +1480,7 @@ impl LspServer {
             let Some(parsed) = doc.current_parsed() else { continue };
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
-                let provider = DiagnosticsProvider::new(ast, doc.text_arc.to_string());
+                let provider = DiagnosticsProvider::new();
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
                 // cancellations that precede the statement are respected.
