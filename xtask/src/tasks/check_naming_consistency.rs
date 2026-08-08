@@ -211,7 +211,10 @@ pub(crate) fn parse_package_name_from_toml(content: &str) -> Option<String> {
     let mut in_package = false;
 
     for line in content.lines() {
-        let trimmed = line.trim();
+        // TOML comments begin with `#`; strip them before recognizing section
+        // headers or parsing the quoted package name.
+        let line_without_comment = line.split_once('#').map_or(line, |(code, _)| code);
+        let trimmed = line_without_comment.trim();
 
         // Detect section headers.
         if trimmed.starts_with('[') {
@@ -268,6 +271,15 @@ version = "0.1.0"
 name = "my-crate"
 "#;
         assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("my-crate"));
+    }
+
+    #[test]
+    fn parses_package_name_with_inline_comments() {
+        let toml = r#"
+[package] # package metadata
+name = "commented-crate" # keep this package name
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("commented-crate"));
     }
 
     #[test]
