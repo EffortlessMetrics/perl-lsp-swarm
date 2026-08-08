@@ -169,9 +169,9 @@
     },
     "install_transition": {
       "owner_issue": "#5903",
-      "artifact_path": "child_receipts/install_transition.json",
+      "artifact_path": "child_receipts/install_transition_blocked.json",
       "schema_version": "install_transition.v1",
-      "sha256": "b03e2c78290b6adf6a33b68c72a197c05e383c30e5ae392b2948f5aa276ab6fd",
+      "sha256": "1d589588e8c849b46913573307bd4655352f7f2f03cc0c5a59fd2b893d53cf1e",
       "candidate_id": "v0.18.0-rc1",
       "status": "blocked",
       "claim_boundary": "Topology-bound primary install transition failed identity proof.",
