@@ -213,6 +213,19 @@ independence.
    facts at their native GitHub boundary.
 7. Continue through the invoking flow's route or return its typed result.
 
+## What this establishes
+
+A claim-local, provider-native runtime route with explicit campaign/lane/worker scopes,
+complete child briefs, one candidate writer, bounded parallelism, contradiction-aware
+evidence joins, named backward routes, and a useful GitHub publication boundary. The
+invoking flow can continue from a typed result without importing raw worker context.
+
+## What this does not establish
+
+A persistent executor graph, scheduler, tracked frontier, lane lease, fixed agent count,
+provider/model mandate, automatic truth from worker agreement, substantive review by
+itself, integration readiness, or merge authorization.
+
 ## Stop and routes
 
 Stop or return `NOT_PROVEN` for a same-candidate writer collision, unsafe destructive
