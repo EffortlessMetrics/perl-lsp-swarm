@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10166 |
+| Total tracked files | 10167 |
 | Rust-family files | 3080 |
-| Non-Rust files | 7086 |
-| Allowlisted | 4772 |
+| Non-Rust files | 7087 |
+| Allowlisted | 4773 |
 | Unclassified | 2314 |
 
 ## Non-Rust files by category
@@ -19,7 +19,7 @@
 | config | 236 |
 | documentation | 2248 |
 | generated | 1 |
-| production | 212 |
+| production | 213 |
 | test | 1753 |
 | tooling | 322 |
 | unclassified | 2314 |
@@ -6969,6 +6969,7 @@
 | `vscode-extension/src/fileCreation.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/formattingErrors.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/gherkinProviders.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/gherkinRedosGuard.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/gherkinStepDefinitions.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/healthWidget.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/healthWidgetDataSource.ts` | production | `non-rust-vscode-extension` | editor/vscode |
