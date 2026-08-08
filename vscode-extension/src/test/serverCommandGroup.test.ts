@@ -15,6 +15,7 @@ function makeDependencies(results: HealthCheckResult[] = []): ServerCommandConte
   return {
     outputChannel,
     currentServerPath: jest.fn(() => '/configured/perllsp'),
+    resolveServerPath: jest.fn(async () => '/configured/perllsp'),
     reinstallServerBinary: jest.fn(async () => ({
       ok: true,
       serverPath: '/installed/perllsp',
@@ -99,5 +100,25 @@ describe('registerServerCommandGroup', () => {
       'Health check failed: LSP binary',
       'Show Output',
     );
+  });
+
+  test('resolves the managed path before a first-run health check', async () => {
+    const dependencies = makeDependencies([
+      {
+        label: 'LSP binary',
+        ok: true,
+        status: HealthCheckStatus.Ok,
+        detail: 'Binary found: /managed/perllsp',
+      },
+    ]);
+    dependencies.currentServerPath.mockReturnValue(null);
+    dependencies.resolveServerPath.mockResolvedValue('/managed/perllsp');
+    registerServerCommandGroup(dependencies);
+
+    await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+
+    expect(dependencies.resolveServerPath).toHaveBeenCalledTimes(1);
+    expect(dependencies.currentServerPath).not.toHaveBeenCalled();
+    expect(dependencies.runHealthCheck).toHaveBeenCalledWith('/managed/perllsp');
   });
 });
