@@ -82,8 +82,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with: { toolchain: 1.95.0 }
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
@@ -93,7 +93,7 @@ jobs:
       - run: cargo mutants --timeout 60 --no-shuffle || true
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: mutation-results-${{ github.sha }}
           path: mutants.out/mutants.json
@@ -110,10 +110,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
       with:
         toolchain: stable
 
@@ -124,7 +124,7 @@ jobs:
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+      uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
       with:
         tool: just
 
@@ -294,7 +294,7 @@ jobs:
 
     - name: Comment on PR (performance alerts)
       if: github.event_name == 'pull_request' && (steps.compare.outputs.REGRESSION == '1' || steps.alert.outputs.CRITICAL != '')
-      uses: actions/github-script@v9
+      uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
       with:
         script: |
           const fs = require('fs');
@@ -318,7 +318,7 @@ jobs:
 
     - name: Upload benchmark artifacts
       if: always()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: benchmark-results-${{ github.sha }}
         path: |
@@ -345,10 +345,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
       with:
         toolchain: stable
 
@@ -367,7 +367,7 @@ jobs:
 
     - name: Upload real-repo latency artifacts
       if: always()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: real-project-latency-${{ github.sha }}
         path: |
@@ -386,10 +386,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
       with:
         toolchain: stable
 
@@ -408,7 +408,7 @@ jobs:
 
     - name: Upload corpus differential report
       if: always()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: corpus-differential-${{ github.sha }}
         path: corpus-differential-report.txt
@@ -425,10 +425,10 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:memory'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -554,7 +554,7 @@ jobs:
 
       - name: Upload memory plateau artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: lsp-memory-plateau-${{ github.sha }}
           path: |
@@ -611,7 +611,7 @@ jobs:
           fi
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # nightly (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # nightly (master)
         with:
           toolchain: nightly
           components: llvm-tools-preview
@@ -624,7 +624,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -719,7 +719,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Check for tautological assertions
         run: |
@@ -753,12 +753,12 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:semver'))
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: stable
 
@@ -818,7 +818,7 @@ jobs:
 
       - name: Upload breaking changes report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: semver-breaking-changes-report
           path: target/semver-reports/breaking-changes.json
@@ -834,10 +834,10 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:public-api'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -851,7 +851,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -869,10 +869,10 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -883,7 +883,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -901,10 +901,10 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: stable
 
@@ -933,10 +933,10 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -1003,7 +1003,7 @@ jobs:
 
       - name: Upload Kwalitee receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: perl-kwalitee-${{ github.sha }}
           # Upload the whole receipt directories rather than enumerating files:
@@ -1059,10 +1059,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Install Rust toolchain (nightly)
-      uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # nightly (master)
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # nightly (master)
       with:
         toolchain: nightly
         components: rust-src
@@ -1083,7 +1083,7 @@ jobs:
 
     - name: Upload crash artifacts
       if: failure()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: fuzz-artifacts-${{ matrix.target }}-${{ github.sha }}
         path: |

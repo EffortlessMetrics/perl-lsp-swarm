@@ -2,9 +2,11 @@
 
 ## Purpose
 
-This repository uses a shift-left, review-forward development loop so capable agents can advance work autonomously without turning process into a permission ladder.
+This repository uses a shift-left, review-forward development loop so capable agents
+can advance work autonomously without turning process into a permission ladder.
 
-The useful passes are controls. Permanent personas, lifecycle labels, completion hooks, exact-head review receipts, and tracked stage state are not controls.
+The useful passes are controls. Permanent personas, lifecycle labels, completion
+hooks, exact-head review receipts, and tracked stage state are not controls.
 
 ```text
 current artifact
@@ -17,9 +19,32 @@ current artifact
 
 **Default-complete, recovery-forward.**
 
-For substantive work, normally perform every applicable research, vision, planning, proof, hardening, simplification, review, and reconciliation pass before creating the next more expensive artifact.
+For substantive work, normally perform every applicable research, vision, planning,
+proof, hardening, simplification, review, and reconciliation pass before creating the
+next more expensive artifact.
 
-When an earlier pass was missed, perform the cheapest version that can still improve the current artifact and continue. Do not discard coherent work or replay history merely to manufacture process evidence.
+When an earlier pass was missed, perform the cheapest version that can still improve
+the current artifact and continue. Do not discard coherent work or replay history
+merely to manufacture process evidence.
+
+## Operational authority
+
+This document describes the shared method. It is not the runtime router or the
+operational authority for either provider.
+
+```text
+Claude Code operation
+→ CLAUDE.md
+→ .claude/skills/*
+
+Codex operation
+→ AGENTS.md
+→ .agents/skills/*
+```
+
+Provider-native roots and skills must contain the instructions needed to execute their
+flows. A shared-document pointer cannot substitute for `orchestrate-work`,
+`finish-pr`, `review-pr`, or `verify-live-ci` in the running provider.
 
 ## Shift-left versus handcuffs
 
@@ -35,13 +60,16 @@ concern
 → test hardening and simplification
 → candidate challenge
 → GitHub feedback repair
-→ proportional review
-→ integration and reconciliation
+→ substantive acceptance review
+→ live integration and reconciliation
 ```
 
-A handcuff notices later that an earlier ritual was not recorded and blocks work after most of the economic value has already been lost.
+A handcuff notices later that an earlier ritual was not recorded and blocks work after
+most of the economic value has already been lost.
 
-Missing labels, old stage receipts, named-agent handoffs, exact-head review comments, or arbitrary plan age are not reasons to stop. Reconstruct truth from current GitHub and repository artifacts, repair what still matters, and proceed.
+Missing labels, old stage receipts, named-agent handoffs, exact-head review comments,
+or arbitrary plan age are not reasons to stop. Reconstruct truth from current GitHub
+and repository artifacts, repair what still matters, and proceed.
 
 ## Public flows
 
@@ -52,9 +80,11 @@ Missing labels, old stage receipts, named-agent handoffs, exact-head review comm
 | `prepare-issue` | Research, challenge, vision-check, and plan the concern |
 | `prepare-proof` | Turn settled intent into discriminating executable proof |
 | `build-candidate` | Implement, harden tests, simplify, and challenge the candidate |
-| `finish-pr` | Publish or resume, repair feedback, review, merge, and reconcile |
+| `finish-pr` | Publish or resume, repair feedback, substantively review, merge, and reconcile |
 
-A fresh or resumed session starts with the narrowest applicable public flow. Once inside the loop, each skill names its normal successor and material backward routes. Do not run a lifecycle locator between skills.
+A fresh or resumed session starts with the narrowest applicable public flow. Once
+inside the loop, each provider-native skill names its normal successor and material
+backward routes. Do not run a lifecycle locator between skills.
 
 ## Runtime orchestration
 
@@ -65,9 +95,14 @@ The root chooses the smallest useful execution shape.
 - one whole coherent claim may be carried by one `deliver-pr` lane;
 - genuinely independent claims may use separate writer lanes.
 
-The root remains accountable for goal meaning, claim selection, authority, contradiction resolution, joined evidence, review sufficiency, merge judgment, and reconciliation.
+The root remains accountable for goal meaning, claim selection, authority,
+contradiction resolution, joined evidence, review sufficiency, merge judgment, and
+reconciliation.
 
-Delegation is useful when it changes the source, oracle, environment, threat model, or review method; compresses high-output evidence; preserves root context; or reduces elapsed time. The brief names target, authority, mutation boundary, sufficient result, falsifiers, stop conditions, and non-goals.
+Delegation is useful when it changes the source, oracle, environment, threat model, or
+review method; compresses high-output evidence; preserves root context; or reduces
+elapsed time. The brief names target, authority, mutation boundary, sufficient result,
+falsifiers, stop conditions, and non-goals.
 
 ## Claim and lane independence
 
@@ -79,33 +114,43 @@ one coherent claim
 → one PR
 ```
 
-Several distinct claims may be active. That does not require a frontier database, overlap map, file reservation, executor graph, or sibling-lane monitor.
+Several distinct claims may be active. That does not require a frontier database,
+overlap map, file reservation, executor graph, or sibling-lane monitor.
 
-Before creating a candidate, check only for an equivalent current PR and explicit prerequisites. Do not inspect neighbouring worktrees or touched-file overlap merely to predict coordination.
+Before creating a candidate, check only for an equivalent current PR and explicit
+prerequisites. Do not inspect neighbouring worktrees or touched-file overlap merely to
+predict coordination.
 
 Each lane owns its own proof, review repair, and integration cleanup:
 
 - if another PR lands and the candidate remains valid, do nothing;
 - behind-only movement on `main` requires no action;
-- an actual Git conflict is resolved by the affected lane, normally the one landing later;
+- an actual Git conflict is resolved by the affected lane, normally the one landing
+  later;
 - an explicit stack is retargeted after its prerequisite lands;
 - an actual combined-tree failure is repaired in the smallest affected candidate;
 - only interaction-affected proof and review are refreshed.
 
-When a coherent PR waits on CI, review, queue state, or auto-merge, leave it in GitHub and advance another distinct claim when useful. A remote-owned wait is not a goal blocker.
+When a coherent PR waits on CI, review, queue state, or auto-merge, leave it in GitHub
+and advance another distinct claim when useful. A remote-owned wait is not a goal
+blocker.
 
 ## Durable state and runtime state
 
 Repository and GitHub artifacts hold durable truth:
 
-- issues hold the problem, research, corrections, current synthesis, plan, dependencies, and next action;
-- specifications, ADRs, policies, and tests hold accepted contracts and proof obligations;
+- issues hold the problem, research, corrections, current synthesis, plan,
+  dependencies, and next action;
+- specifications, ADRs, policies, and tests hold accepted contracts and proof
+  obligations;
 - branches and worktrees hold one candidate's mutation;
 - pull requests hold one coherent acceptance-and-rollback candidate;
-- submitted reviews, threads, checks, rulesets, and mergeability hold current integration evidence;
+- submitted reviews and threads hold substantive candidate judgment;
+- checks, rulesets, queue state, and mergeability hold current integration evidence;
 - merge closeout records what landed and what remains.
 
-Runtime topology, task lists, liveness, retries, raw logs, and provisional reasoning remain ephemeral. Do not mirror them into GitHub.
+Runtime topology, task lists, liveness, retries, raw logs, and provisional reasoning
+remain ephemeral. Do not mirror them into GitHub.
 
 ## Issue-first as a paved road
 
@@ -120,7 +165,9 @@ targeted issue and PR search
 → continue immediately
 ```
 
-When implementation already exists without an issue, link or create the issue where it improves continuity. Do not pretend retrospective filing shifted the implementation left.
+When implementation already exists without an issue, link or create the issue where it
+improves continuity. Do not pretend retrospective filing shifted the implementation
+left.
 
 ## Vision checks
 
@@ -146,7 +193,8 @@ Ask whether the implementation still serves that vision:
 
 ## Proof
 
-Executable proof must discriminate realistic wrong implementations. A green test that mirrors the implementation is not sufficient.
+Executable proof must discriminate realistic wrong implementations. A green test that
+mirrors the implementation is not sufficient.
 
 After implementation, revisit:
 
@@ -156,28 +204,87 @@ After implementation, revisit:
 - whether the production seam is exercised;
 - whether the proof runs at the cheapest effective layer.
 
-Never weaken a test, ratchet, support claim, or required proof merely to obtain green status.
+Never weaken a test, ratchet, support claim, or required proof merely to obtain green
+status.
 
 ## Review
 
-Review is directed, falsifying, and verified. Reading a diff, relaying green CI, posting a head/claim hash, or repeating a subagent verdict is not review.
+Review is directed, falsifying, and verified. Reading a diff, relaying green CI,
+posting a head/claim hash, or repeating a subagent verdict is not review. Claude Code
+executes review through `CLAUDE.md` and `.claude/skills/`; Codex executes it through
+`AGENTS.md` and `.agents/skills/`.
 
 Where applicable, establish:
 
-- claim honesty;
+- claim honesty and one coherent acceptance-and-rollback boundary;
 - semantic and external correctness;
-- proof discrimination;
+- proof discrimination and evidence integrity;
 - production-path reachability;
-- negative and fallback behavior;
+- negative, fallback, stale, refusal, and recovery behavior;
 - authority and complexity;
-- compatibility and rollback;
+- compatibility, security, persistence, packaging, migration, support, release, and
+  rollback effects;
 - remaining uncertainty.
 
-A clean review is valid. Do not manufacture a finding, edit, second identity, or receipt to make review visible.
+A clean review is valid. Do not manufacture a finding, edit, second identity, or
+receipt to make review visible.
+
+For a substantive pull request, the provider-native convergence is:
+
+```text
+publish or resume the cumulative candidate
+→ verify and repair existing findings
+→ run a final mutable challenge while repairs remain allowed
+→ orchestrate applicable adversarial lenses
+→ root joins evidence and submits cumulative substantive review
+→ record one substantive review result
+→ evaluate live checks, threads, rulesets, mergeability, and prerequisites
+→ record the current integration posture
+→ merge with expected-head protection
+→ reconcile the landed result
+```
+
+Use one substantive review result:
+
+```text
+REVIEW_CURRENT
+CHANGES_REQUIRED
+NOT_PROVEN
+BLOCKED_BY_PREREQUISITE
+SUPERSEDED_OR_CLOSE
+```
+
+Green CI, `mergeable: true`, zero open threads, bot approval, or author
+self-certification cannot create `REVIEW_CURRENT`. They are integration facts only
+after the candidate has been substantively reviewed.
+
+Live integration then uses:
+
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
+
+A pending check can leave review current while integration is in flight.
+
+### Related PRs
+
+A bounded related PR set may need a goal-level synthesis after each candidate has its
+own provider-native review. Compare candidate identity, hosted/current checks,
+substantive review result, integration posture, explicit prerequisites,
+schema/identity/authority contracts, limitation propagation, fan-in behavior, and
+correct repair/merge order.
+
+That synthesis is not batch approval, a portfolio queue, sibling-lane surveillance, or
+a substitute for per-PR review.
 
 ### Review-forward currentness
 
-Review is cumulative and semantic. The durable record is the submitted review, inline findings, replies, evidence-backed dispositions, and any focused follow-up on repaired seams.
+Review is cumulative and semantic. The durable record is the submitted review, inline
+findings, replies, evidence-backed dispositions, and any focused follow-up on repaired
+seams.
 
 A later commit does not invalidate review merely because the SHA changed.
 
@@ -188,6 +295,7 @@ identify changed semantic subjects
 → rerun affected proof
 → verify addressed findings
 → review newly changed claim/risk dimensions
+→ update the cumulative substantive review result
 → continue
 ```
 
@@ -197,18 +305,27 @@ Examples:
 - generated receipt refresh → verify generator/input relation only;
 - stronger tests → review proof implications only;
 - finding repair → review the finding, proof, and changed seam;
-- material claim, production route, authority, security, compatibility, packaging, migration, support, or rollback change → review the affected dimensions;
+- material claim, production route, authority, security, compatibility, packaging,
+  migration, support, or rollback change → review the affected dimensions;
 - conflict/integration repair → review the repaired interaction.
 
-Do not restart a full `deep` review after every push. Do not post `Review pass (...) at head ... and claim ...` comments.
+Do not restart a full deep review after every push. Do not post
+`Review pass (...) at head ... and claim ...` comments.
 
-The current head SHA is still useful to identify current code and required check results. At merge time it may be used as compare-and-swap protection. That is merge safety, not review currentness.
+The current head SHA is still useful to identify current code and required check
+results. At merge time it may be used as compare-and-swap protection. That is merge
+safety, not review currentness.
 
 ## Merge boundary
 
-Merge eligibility is determined by current GitHub branch protection, rulesets, required checks, unresolved substantive threads, current change requests, actual mergeability, and any required combined-tree proof.
+Merge eligibility requires a substantively `REVIEW_CURRENT` candidate plus current
+`INTEGRATION_READY` evidence from GitHub branch protection, rulesets, required checks,
+unresolved substantive threads, current change requests, actual mergeability, and any
+required combined-tree proof.
 
-Behind-only movement does not require a rebase or review replay. If the head moves immediately before merge, re-read live state and refresh only evidence/review affected by the new commit.
+Behind-only movement does not require a rebase or review replay. If the head moves
+immediately before merge, re-read live state and refresh only evidence/review affected
+by the new commit.
 
 After squash merge, reconciliation verifies the landed effect on current `main`.
 
@@ -222,7 +339,9 @@ Stop only where a concrete hazard or unresolved authority remains:
 - a secret or unsafe release would be published;
 - a durable contract is structurally invalid;
 - substantive review findings remain unresolved;
-- current GitHub branch protection, rulesets, merge queue, or required checks block merge;
+- substantive review is `NOT_PROVEN` or blocked by an unresolved prerequisite;
+- current GitHub branch protection, rulesets, merge queue, or required checks block
+  merge;
 - a material product or semantic decision belongs to the accountable owner.
 
 Everything else normally follows:

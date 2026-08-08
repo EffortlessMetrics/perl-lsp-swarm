@@ -9,6 +9,7 @@
 
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_lexer::LSP_COMPLETION_KEYWORDS;
+use std::borrow::Cow;
 
 /// Canonical Perl keywords for completion.
 #[must_use]
@@ -95,19 +96,19 @@ pub fn add_keyword_completions(
             };
 
             completions.push(CompletionItem {
-                label: keyword.to_string(),
+                label: Cow::Borrowed(keyword),
                 kind: if snippet {
                     super::items::CompletionItemKind::Snippet
                 } else {
                     super::items::CompletionItemKind::Keyword
                 },
-                detail: Some("keyword".to_string()),
-                documentation: keyword_doc(keyword).map(str::to_string),
-                insert_text: Some(insert_text.to_string()),
+                detail: Some(Cow::Borrowed("keyword")),
+                documentation: keyword_doc(keyword).map(Cow::Borrowed),
+                insert_text: Some(Cow::Borrowed(insert_text)),
                 // Tier 5: keywords sort after special vars (0_), user vars (1_),
                 // user funcs (2_), core builtins (3_), and workspace symbols (4_).
-                sort_text: Some(format!("5_{}", keyword)),
-                filter_text: Some(keyword.to_string()),
+                sort_text: Some(Cow::Owned(format!("5_{}", keyword))),
+                filter_text: Some(Cow::Borrowed(keyword)),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,

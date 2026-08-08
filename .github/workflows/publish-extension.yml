@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
@@ -42,10 +42,13 @@ jobs:
       - name: Set version
         working-directory: vscode-extension
         id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="$INPUT_VERSION"
           if [ -z "$VERSION" ]; then
-            if [ "${{ github.ref_type }}" = "tag" ]; then
+            if [ "$REF_TYPE" = "tag" ]; then
               VERSION="${GITHUB_REF#refs/tags/v}"
             else
               echo "::error::Version input is required for workflow_dispatch"
@@ -101,14 +104,14 @@ jobs:
         run: npm run check:source-map
 
       - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ${{ steps.version.outputs.artifact_name }}
           path: vscode-extension/${{ steps.package.outputs.vsix_file }}
           retention-days: 30
 
       - name: Upload source-map evidence artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ${{ steps.version.outputs.artifact_name }}-source-map
           path: target/receipts/vscode-source-map/**
@@ -127,10 +130,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: ${{ needs.prepare-vsix.outputs.artifact_name }}
           path: vscode-extension
@@ -177,10 +180,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: ${{ needs.prepare-vsix.outputs.artifact_name }}
           path: vscode-extension
@@ -218,7 +221,7 @@ jobs:
 
     steps:
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: ${{ needs.prepare-vsix.outputs.artifact_name }}
           path: vscode-extension
@@ -262,7 +265,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
@@ -292,7 +295,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain

@@ -26,6 +26,12 @@ problem is usually in editor integration, workspace roots, or a stale cache.
 2. Turn on logging and read stderr:
 
    ```bash
+   perllsp --log --stdio
+   ```
+
+   Or use `RUST_LOG` for finer-grained control:
+
+   ```bash
    RUST_LOG=perl_lsp=debug perllsp --stdio
    ```
 

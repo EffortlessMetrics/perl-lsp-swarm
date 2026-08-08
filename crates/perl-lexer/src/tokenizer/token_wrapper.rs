@@ -75,14 +75,14 @@ impl<'a> PositionTracker<'a> {
         let line_start = self.line_starts[line];
         let column = self.calculate_column(line_start, byte);
 
-        Position::new(byte, (line + 1) as u32, column)
+        Position::new(byte, (line + 1).min(u32::MAX as usize) as u32, column)
     }
 
     /// Calculate column number accounting for UTF-8
     fn calculate_column(&self, line_start: usize, byte: usize) -> u32 {
         let byte = self.clamp_to_char_boundary(byte);
         let line_slice = &self.source[line_start..byte];
-        (line_slice.chars().count() + 1) as u32
+        (line_slice.chars().count() + 1).min(u32::MAX as usize) as u32
     }
 
     fn clamp_to_char_boundary(&self, byte: usize) -> usize {

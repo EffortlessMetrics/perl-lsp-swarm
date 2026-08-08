@@ -25,7 +25,7 @@ print FOO;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =
@@ -51,7 +51,7 @@ print STDERR;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =
@@ -80,7 +80,7 @@ my @values = @h{$k1, $k2};
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // No bareword errors expected - variables are used as keys
@@ -120,7 +120,7 @@ print BAREWORD;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =
@@ -149,7 +149,7 @@ my @values = @h{ @arr };
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // No bareword errors expected - map expression inside hash slice
@@ -172,7 +172,7 @@ my @values = @h{ get_keys() };
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Function calls in hash slices should not trigger bareword warnings
@@ -195,7 +195,7 @@ print INVALID;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =
@@ -229,7 +229,7 @@ print BAREWORD_WARNING;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =
@@ -260,7 +260,7 @@ print SHOULD_WARN;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =
@@ -288,7 +288,7 @@ print NORMAL_BAREWORD;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =
@@ -322,7 +322,7 @@ delete $hash{delete_key};
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     let bareword_errors: Vec<_> =

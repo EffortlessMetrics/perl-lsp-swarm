@@ -1,63 +1,132 @@
 ---
 name: review-pr
-description: Review one pull request cumulatively through GitHub, publishing useful findings or a useful clean conclusion without exact-head or claim-hash receipt ceremony.
+description: Run Codex's cumulative substantive pull-request review, orchestrating useful adversarial lenses and publishing one evidence-backed judgment before live integration.
 ---
 
 # Review PR
 
-## Review subject
+Run the substantive review in Codex. This skill is the operational review procedure;
+do not defer the work to a shared method document, a bot summary, green CI, or the fact
+that the root session read the diff.
 
-Review the current cumulative pull request against:
+The Codex root owns the cumulative judgment and GitHub review. Focused native
+subagents may gather evidence or challenge one dimension, but they do not authorize
+merge and their verdicts are not votes.
 
-- the controlling issue and accepted claim;
-- the changed production or operational path;
-- the proof and negative controls;
-- compatibility, security, packaging, migration, support, and rollback boundaries that actually apply.
+## Authoritative inputs
 
-The PR head identifies the code currently visible on GitHub. It is **not** a review-validity token. Do not compute a material-claim digest, post `review-start` / `review-done` receipts, or add comments that merely repeat a head SHA and hash.
+Read the selected PR, controlling issue and current synthesis, accepted claim and
+non-goals, governing specification/ADR/policy or competent external authority,
+cumulative diff, live production or operational consumers, focused proof and known
+limitations, submitted reviews and inline threads, and current GitHub integration
+facts.
 
-## Review method
+Use the PR head to identify the candidate currently visible on GitHub. It is not a
+review-validity token. Do not compute a claim digest, run review-start/review-done
+receipt machinery, or post a status-only exact-head comment.
 
-Review is directed, falsifying, and verified. Seek realistic counterexamples and check, where applicable:
+## Review orchestration
 
-- claim honesty;
-- semantic and external correctness;
-- proof discrimination;
-- production-path reachability;
-- negative, fallback, stale, and refusal behavior;
-- authority, complexity, compatibility, and rollback;
-- remaining uncertainty.
+First determine whether `$finish-pr` or an earlier invocation has already produced
+current joined adversarial evidence for this cumulative candidate. Reuse that evidence
+when its claim, production path, authority, proof, compatibility, risk, and rollback
+subjects remain current. Do not dispatch duplicate review passes merely because this
+skill was entered separately.
 
-Use native Codex review, a read-only reviewer, an external oracle, or direct inspection when that changes the evidence surface. Identity separation alone is neither required nor sufficient.
+When an applicable lens is absent, stale, contradictory, or materially changed,
+invoke `$orchestrate-work` for only the missing dimensions. Normal focused assignments
+include:
 
-Publish material findings through GitHub submitted reviews and inline threads. A clean review is valid; it still records what was examined, what evidence or authority was used, what realistic wrong behavior was challenged, and what remains unproved.
+- `$review-tests` for proof discrimination, historical-defect controls,
+  schema/validator agreement, and false-green tests;
+- `$review-candidate` for cumulative implementation correctness, semantic ownership,
+  production reachability, complexity, compatibility, risk, and rollback;
+- a bounded read-only production-path trace from the real request, command, installer,
+  workflow, or runtime consumer to the changed seam;
+- a bounded external-truth pass against perldoc, protocol/platform documentation, a
+  dependency API, release topology, or another competent authority;
+- a focused security, persistence, packaging, migration, or support pass when the
+  claim touches that boundary.
 
-## Semantic currentness
+A useful Codex subagent brief names the exact PR/candidate, controlling claim,
+established facts, authoritative files or sources, one read-only question, realistic
+falsifiers, required evidence, uncertainty to preserve, and non-goals. Tell the child
+which `$skill` to consume. Do not ask several vague agents to repeat the same review.
 
-Review is cumulative and semantic:
+The construction context must not be the only detection surface supporting a
+substantive merge. Independence comes from a different source, oracle, threat model,
+method, environment, or attention surface—not merely a different agent name.
 
-- a later commit does **not** invalidate review merely because the SHA changed;
-- a finding repair requires checking the affected finding, proof, and changed seam;
-- a material change to the claim, production route, authority, risk, rollback, or proof requires review of the affected dimensions;
-- formatting, editorial cleanup, generated receipt refresh, or test strengthening does not trigger a full review unless it changes a substantive conclusion;
-- an actual conflict resolution or integration repair receives focused review of the repaired seam.
+Join evidence rather than counting answers. Resolve contradictions against source and
+proof, reject unsupported confidence, and inspect the load-bearing seams yourself
+before publishing the cumulative judgment. One integrating writer repairs accepted
+findings through `$address-review-comments`; read-only reviewers do not mutate the
+candidate.
 
-Do not restart a full `deep` review after every push. Broaden only when the later change materially broadens the review subject.
+## Required review procedure
 
-## Useful review record
+1. **Reconstruct the candidate and evidence map.** Establish the claim and non-goals,
+   controlling authority, cumulative changed seams, live callers and consumers, proof
+   and limitations, prior findings and dispositions, and current GitHub facts.
+2. **Trace production reachability.** Show how a real request or operation reaches the
+   changed behavior. A compiled component, public setter, adapter, or fixture is not
+   system proof unless the live route consumes it.
+3. **Challenge proof discrimination and evidence integrity.** Identify realistic wrong
+   implementations the proof rejects. Check negative, stale, failure, recovery,
+   refusal, and opposite-direction controls; independent oracles; schema/validator
+   agreement; loaded or recomputed identities and hashes; generated-source binding;
+   and whether hosted proof actually exercised the claimed path.
+4. **Challenge external and semantic truth.** Verify user-visible, language, protocol,
+   platform, dependency, and release claims against competent authority. Confirm the
+   candidate extends the correct semantic owner rather than creating a second parser,
+   readiness model, schema, or compatibility authority.
+5. **Challenge claim honesty, complexity, risk, and rollback.** Keep the title, body,
+   code, tests, docs, and generated evidence inside one acceptance-and-rollback claim.
+   Do not let an intended rejection, fallback, limitation, safe refusal, or partial
+   implementation conceal the exact condition the contract says must block.
+6. **Classify GitHub facts separately.** Record checks, threads, draft state,
+   mergeability, rulesets, queue state, and prerequisites as a snapshot. They inform
+   integration but do not create a substantive review result.
+7. **Publish the review.** Put file-specific material findings in inline threads and
+   publish one cumulative review or useful clean conclusion.
 
-Submit a review that helps a fresh agent continue without reconstructing your judgment:
+## Substantive review results
+
+Use one result:
+
+```text
+REVIEW_CURRENT
+CHANGES_REQUIRED
+NOT_PROVEN
+BLOCKED_BY_PREREQUISITE
+SUPERSEDED_OR_CLOSE
+```
+
+- `REVIEW_CURRENT` means the reviewed claim is supported and no substantive finding
+  remains. It may now enter `$verify-live-ci`.
+- `CHANGES_REQUIRED` means a candidate-owned correctness, reachability, proof,
+  authority, complexity, risk, or rollback defect must be repaired.
+- `NOT_PROVEN` preserves missing, contradictory, stale, partial, or instrument-failed
+  evidence.
+- `BLOCKED_BY_PREREQUISITE` names the exact external claim or contract that must become
+  trustworthy first.
+- `SUPERSEDED_OR_CLOSE` preserves the durable reason the claim should not proceed.
+
+Green checks, `mergeable: true`, zero open threads, bot approval, or author
+self-certification cannot independently create `REVIEW_CURRENT`.
+
+## Useful GitHub review record
 
 ```markdown
 ## Review scope
-- Claim, changed seams, consumers, and prior findings examined
+- Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
 
 ## Evidence and falsifiers
-- Commands, tests, sources, or authorities used
+- Commands, tests, fixtures, sources, or authorities used
 - Realistic wrong behavior challenged
 
 ## Findings
-- Material findings with severity and evidence
+- Material findings with severity, affected claim, and evidence
 
 <!-- Or: ## No material findings -->
 
@@ -68,17 +137,48 @@ Submit a review that helps a fresh agent continue without reconstructing your ju
 - Conclusions supported by the review
 
 ## Residual risk / not proved
-- Local uncertainty and excluded surfaces
+- Local uncertainty, excluded surfaces, and instrument limitations
+
+## Current GitHub facts
+- Checks, threads, draft/ready state, mergeability, and prerequisites as a snapshot
+
+## Substantive review result
+- REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN | BLOCKED_BY_PREREQUISITE |
+  SUPERSEDED_OR_CLOSE
 
 ## Next action
-- Repair, focused re-review, merge path, or named follow-up
+- Repair, focused re-review, live integration evaluation, closeout, or named follow-up
 ```
 
-Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a claim digest, or a status line. No public review receipt comment or claim hash is required.
+Do not submit only `LGTM`, `review complete`, reviewer identity, a head SHA, a check
+summary, or a status line. A clean review is valid when it records what was examined,
+what realistic wrong behavior was challenged, and what remains unproved.
+
+## Semantic currentness
+
+Review is cumulative and semantic:
+
+- a later commit does not invalidate review merely because the SHA changed;
+- a finding repair requires checking that finding, its proof, and the changed seam;
+- a material change to claim, production route, authority, proof, compatibility, risk,
+  or rollback requires review of the affected dimensions;
+- formatting, editorial cleanup, generated receipt refresh, and stronger tests do not
+  trigger a full review unless they change a substantive conclusion;
+- conflict or combined-tree repair receives focused review of the affected interaction.
+
+Do not restart a full deep review or duplicate a still-current review merely to show
+activity.
 
 ## Routes
 
 - `REVIEW_CURRENT` → `$verify-live-ci`
-- `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
-- `REVIEW_SCOPE_CHANGED` → review the affected dimensions; route to `$prepare-issue` only when the claim or owner must change
-- `REVIEW_NOT_PROVEN` → resolve the missing evidence, authority, or review instrument
+- `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
+- weak or non-discriminating proof → `$review-tests` or `$prepare-proof`
+- candidate correctness, reachability, ownership, complexity, or rollback uncertainty
+  → `$review-candidate` through `$orchestrate-work`
+- `REVIEW_SCOPE_CHANGED` → review the affected dimensions; use `$prepare-issue` only
+  when the claim or owner changed
+- `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite in the invoking flow
+- `SUPERSEDED_OR_CLOSE` → preserve the durable disposition through the invoking flow
+- `NOT_PROVEN` / `REVIEW_NOT_PROVEN` → resolve the missing evidence, authority, or
+  review instrument

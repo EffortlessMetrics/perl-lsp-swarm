@@ -1919,6 +1919,16 @@ impl WorkspaceIndex {
             .is_some_and(|indexed_generation| indexed_generation < expected_generation)
     }
 
+    /// Count files where the pending generation exceeds the committed generation,
+    /// indicating edits that haven't been fully indexed yet (#5963).
+    ///
+    /// Returns 0 when all indexed files are up-to-date. A non-zero value means
+    /// query results may reflect pre-edit state.
+    #[must_use]
+    pub fn stale_file_count(&self) -> usize {
+        self.files.read().values().filter(|idx| idx.pending_generation > idx.generation).count()
+    }
+
     /// Reset the generation counters for `uri` so that a close/reopen cycle
     /// does not leave a stale high-water mark that blocks the reopened file's
     /// index task (#5438).
@@ -2823,6 +2833,16 @@ impl WorkspaceIndex {
     /// let _refs = index.find_references("Utils::process_data");
     /// ```
     pub fn find_references(&self, symbol_name: &str) -> Vec<Location> {
+        // Log staleness warning when queries are made while files have pending
+        // (uncommitted) generations — results may reflect pre-edit state (#5963).
+        let stale = self.stale_file_count();
+        if stale > 0 {
+            tracing::debug!(
+                symbol = %symbol_name,
+                stale_files = stale,
+                "find_references: index has stale files; results may reflect pre-edit state"
+            );
+        }
         // Capture write version before reading to detect torn reads (#5116).
         // If a concurrent index_file_with_generation bumps the version during
         // our read, the global_references map may have been partially updated.
@@ -2945,56 +2965,105 @@ impl WorkspaceIndex {
     /// Like `find_references` but excludes `ReferenceKind::Definition` entries,
     /// returning only actual usage sites. This is used by code lens to show
     /// "N references" where N means call sites, not the definition itself.
+    ///
+    /// Applies the same write-version torn-read protection as `find_references`
+    /// (#5116) so that a concurrent `index_file_with_generation` cannot cause
+    /// the per-file reference maps to be partially updated during the scan.
     pub fn count_usages(&self, symbol_name: &str) -> usize {
-        let files = self.files.read();
-        let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
+        // Delegate to find_references (which uses global_references) and subtract
+        // known definition locations, so count_usages and find_references always
+        // consult the same data store (#5967).
+        //
+        // Both lookups must observe the same index version. find_references already
+        // retries on a torn read, but find_definitions does not — a reindex between
+        // the two calls could let def_set describe a different version than
+        // `references`, leaking or hiding usages. We snapshot the write version and
+        // retry the whole pair when it moves (#6042 review).
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let references = self.find_references_inner(symbol_name);
+            let definitions = self.count_usages_definitions(symbol_name);
+            let v2 = self.write_version();
+            if v1 == v2 {
+                // Build a set of definition locations to exclude from the count.
+                // We borrow the URIs (`&str`) instead of cloning to avoid an
+                // allocation per entry (#6042 review).
+                let def_set: HashSet<(&str, u32, u32, u32, u32)> = definitions
+                    .iter()
+                    .map(|d| {
+                        (
+                            d.uri.as_str(),
+                            d.range.start.line,
+                            d.range.start.column,
+                            d.range.end.line,
+                            d.range.end.column,
+                        )
+                    })
+                    .collect();
 
-        for (_uri_key, file_index) in files.iter() {
-            if let Some(refs) = file_index.references.get(symbol_name) {
-                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                    seen.insert((
-                        r.uri.clone(),
-                        r.range.start.line,
-                        r.range.start.column,
-                        r.range.end.line,
-                        r.range.end.column,
-                    ));
-                }
+                return references
+                    .iter()
+                    .filter(|r| {
+                        !def_set.contains(&(
+                            r.uri.as_str(),
+                            r.range.start.line,
+                            r.range.start.column,
+                            r.range.end.line,
+                            r.range.end.column,
+                        ))
+                    })
+                    .count();
             }
+            tracing::debug!("Torn read in count_usages, retrying");
+        }
+        // Fallback after retries exhausted: use the last pair without a version
+        // guarantee. This matches find_references' fallback posture.
+        let references = self.find_references_inner(symbol_name);
+        let definitions = self.count_usages_definitions(symbol_name);
+        let def_set: HashSet<(&str, u32, u32, u32, u32)> = definitions
+            .iter()
+            .map(|d| {
+                (
+                    d.uri.as_str(),
+                    d.range.start.line,
+                    d.range.start.column,
+                    d.range.end.line,
+                    d.range.end.column,
+                )
+            })
+            .collect();
+        references
+            .iter()
+            .filter(|r| {
+                !def_set.contains(&(
+                    r.uri.as_str(),
+                    r.range.start.line,
+                    r.range.start.column,
+                    r.range.end.line,
+                    r.range.end.column,
+                ))
+            })
+            .count()
+    }
 
-            if let Some(idx) = symbol_name.rfind("::") {
-                let bare_name = &symbol_name[idx + 2..];
-                if let Some(refs) = file_index.references.get(bare_name) {
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
+    /// Collect definition locations for every name variant that
+    /// `find_references_inner` consults, so a definition stored under a sibling
+    /// key (e.g. `PkgB::foo`'s entry in the bare `foo` bucket) is correctly
+    /// excluded from the usage count for `PkgA::foo` (#6042 review).
+    fn count_usages_definitions(&self, symbol_name: &str) -> Vec<Location> {
+        let mut defs = self.find_definitions(symbol_name);
+        if let Some(idx) = symbol_name.rfind("::") {
+            let bare_name = &symbol_name[idx + 2..];
+            defs.extend(self.find_definitions(bare_name));
+        } else {
+            for (name, _refs) in self.global_references.read().iter() {
+                if !Self::is_qualified_variant_of(name, symbol_name) {
+                    continue;
                 }
-            } else {
-                for (name, refs) in &file_index.references {
-                    if !Self::is_qualified_variant_of(name, symbol_name) {
-                        continue;
-                    }
-
-                    for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
-                        seen.insert((
-                            r.uri.clone(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ));
-                    }
-                }
+                defs.extend(self.find_definitions(name));
             }
         }
-
-        seen.len()
+        defs
     }
 
     fn is_qualified_variant_of(candidate: &str, bare_symbol: &str) -> bool {
@@ -3024,6 +3093,16 @@ impl WorkspaceIndex {
     /// let all = index.find_definitions("MyPackage::example");
     /// ```
     pub fn find_definitions(&self, symbol_name: &str) -> Vec<Location> {
+        // Log staleness warning when queries are made while files have pending
+        // (uncommitted) generations — results may reflect pre-edit state (#5963).
+        let stale = self.stale_file_count();
+        if stale > 0 {
+            tracing::debug!(
+                symbol = %symbol_name,
+                stale_files = stale,
+                "find_definitions: index has stale files; results may reflect pre-edit state"
+            );
+        }
         let candidates = self.definition_candidates(symbol_name);
         if !candidates.is_empty() {
             return candidates;
@@ -4251,6 +4330,15 @@ impl WorkspaceIndex {
     ///
     /// Symbols that have no non-definition references in the workspace.
     ///
+    /// # Performance
+    ///
+    /// The implementation is O(Σ refs_per_file + Σ symbols_per_file).  The
+    /// previous O(symbols × files) implementation held the files read lock for
+    /// the entire scan while running a nested `files.values().any()` loop per
+    /// symbol, which blocked writers for seconds on large workspaces while
+    /// still permitting concurrent readers.  The current two-pass approach holds
+    /// the same read lock across both passes but completes in linear time.
+    ///
     /// # Examples
     ///
     /// ```rust,ignore
@@ -4261,10 +4349,28 @@ impl WorkspaceIndex {
     /// ```
     pub fn find_unused_symbols(&self) -> Vec<WorkspaceSymbol> {
         let files = self.files.read();
-        let mut unused = Vec::new();
 
-        // Collect all defined symbols
-        for (_uri_key, file_index) in files.iter() {
+        // Pass 1: collect the bare names of all symbols that have at least one
+        // non-definition reference anywhere in the workspace.
+        //
+        // O(Σ refs_per_file) — a single linear scan over every file's reference
+        // map, replacing the previous O(symbols × files) nested loop (#5016).
+        let mut used_names: HashSet<String> = HashSet::new();
+        for file_index in files.values() {
+            for (name, refs) in &file_index.references {
+                if refs.iter().any(|r| r.kind != ReferenceKind::Definition)
+                    && !used_names.contains(name)
+                {
+                    used_names.insert(name.clone());
+                }
+            }
+        }
+
+        // Pass 2: collect symbols whose bare name is absent from `used_names`.
+        //
+        // O(Σ symbols_per_file) with O(1) HashSet lookup per symbol.
+        let mut unused = Vec::new();
+        for file_index in files.values() {
             for symbol in &file_index.symbols {
                 // Lexically-scoped variables (my/state) require scope-range analysis to
                 // determine whether a reference in the same file refers to *this* declaration
@@ -4276,16 +4382,7 @@ impl WorkspaceIndex {
                     continue;
                 }
 
-                // Check if this symbol has any references beyond its definition
-                let has_usage = files.values().any(|fi| {
-                    if let Some(refs) = fi.references.get(&symbol.name) {
-                        refs.iter().any(|r| r.kind != ReferenceKind::Definition)
-                    } else {
-                        false
-                    }
-                });
-
-                if !has_usage {
+                if !used_names.contains(&symbol.name) {
                     unused.push(symbol.clone());
                 }
             }
@@ -9131,6 +9228,36 @@ Utils::process_data();
     }
 
     #[test]
+    fn test_count_usages_excludes_sibling_package_definitions() {
+        // Regression test for the cross-package definition leak (#6042 review):
+        // When two packages each define `foo` and there are no call sites,
+        // count_usages("PkgA::foo") must return 0. Without subtracting
+        // definitions from the bare `foo` bucket, PkgB's definition (also stored
+        // under bare `foo`) would be counted as a usage of PkgA::foo.
+        let index = WorkspaceIndex::new();
+
+        let uri_a = "file:///lib/PkgA.pm";
+        let code_a = "package PkgA;\nsub foo { return 1; }\n1;\n";
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+
+        let uri_b = "file:///lib/PkgB.pm";
+        let code_b = "package PkgB;\nsub foo { return 2; }\n1;\n";
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        // No call sites exist, so usages should be zero for both packages.
+        assert_eq!(
+            index.count_usages("PkgA::foo"),
+            0,
+            "PkgB::foo definition must not leak as a PkgA::foo usage"
+        );
+        assert_eq!(
+            index.count_usages("PkgB::foo"),
+            0,
+            "PkgA::foo definition must not leak as a PkgB::foo usage"
+        );
+    }
+
+    #[test]
     fn test_batch_indexing() {
         let index = WorkspaceIndex::new();
         let files: Vec<(Url, String)> = (0..5)
@@ -11570,6 +11697,129 @@ mod file_fact_shard_serde_tests {
             !unused_names.contains(&"$shared"),
             "cross-scope my variable must not appear in find_unused_symbols; got: {:?}",
             unused_names
+        );
+    }
+
+    // ── find_unused_symbols: O(N) two-pass regression gates (#5016) ──────────
+
+    /// A symbol that is called from a *different* file must not appear in
+    /// `find_unused_symbols`.  The pre-fix O(N²) implementation had the same
+    /// cross-file visibility as the post-fix O(N) implementation because both
+    /// scan per-file reference maps, but this test pins the cross-file contract
+    /// so any future regression is immediately caught.
+    ///
+    /// Regression gate for #5016 (O(N²) → O(N) fix).
+    #[test]
+    fn find_unused_symbols_detects_cross_file_usage() {
+        let index = WorkspaceIndex::new();
+
+        // File 1: defines CrossFile::helper (definition only — no usages here).
+        let uri1 = "file:///lib/CrossFile.pm";
+        let code1 = "package CrossFile;\nsub helper { return 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        // File 2: calls CrossFile::helper — should mark it as used.
+        let uri2 = "file:///app.pl";
+        let code2 = "use CrossFile;\nCrossFile::helper();\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(
+            !unused_names.contains(&"helper"),
+            "helper is called in app.pl and must not appear in find_unused_symbols; got: {:?}",
+            unused_names
+        );
+    }
+
+    /// A symbol defined in one file but never called anywhere must appear in
+    /// `find_unused_symbols`.  Positive control that the two-pass implementation
+    /// still reports genuinely-unused package-level symbols.
+    ///
+    /// Regression gate for #5016 (O(N²) → O(N) fix).
+    #[test]
+    fn find_unused_symbols_still_reports_truly_unused_cross_file_symbol() {
+        let index = WorkspaceIndex::new();
+
+        // File 1: defines Orphan::dead_code — nobody ever calls it.
+        let uri1 = "file:///lib/Orphan.pm";
+        let code1 = "package Orphan;\nsub dead_code { return 42; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        // File 2: uses a *different* function — dead_code must be reported as unused.
+        let uri2 = "file:///app.pl";
+        let code2 = "use Orphan;\n# intentionally does not call dead_code\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(
+            unused_names.contains(&"dead_code"),
+            "dead_code is never called and must appear in find_unused_symbols; got: {:?}",
+            unused_names
+        );
+    }
+
+    // ── count_usages / find_references parity (#5016) ────────────────────────
+
+    /// `count_usages` and `find_references` must both see cross-file usage
+    /// sites once the index is consistent.
+    ///
+    /// Both `find_references` and `count_usages` read `global_references` on a
+    /// quiescent index. Under concurrent edits they can still diverge (#5116),
+    /// but after indexing both must agree that a symbol has usages.
+    ///
+    /// Regression gate for #5016 (divergent store reads).
+    #[test]
+    fn count_usages_and_find_references_both_see_cross_file_usages() {
+        let index = WorkspaceIndex::new();
+
+        // File 1: defines Parity::calc (definition only in this file).
+        let uri1 = "file:///lib/Parity.pm";
+        let code1 = "package Parity;\nsub calc { return 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        // File 2: calls Parity::calc twice — creates Usage references in the index.
+        let uri2 = "file:///app.pl";
+        let code2 = "use Parity;\nParity::calc();\nParity::calc();\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let refs = index.find_references("Parity::calc");
+        let count = index.count_usages("Parity::calc");
+
+        assert_eq!(
+            count, 2,
+            "count_usages must return exactly two call sites for Parity::calc; got {count}"
+        );
+        assert!(
+            refs.len() >= 3,
+            "find_references must include two usages plus the definition; got {}",
+            refs.len()
+        );
+    }
+
+    /// A symbol with only a definition site must yield `count_usages == 0` and
+    /// must not be excluded by `find_references` returning empty.  Both must
+    /// agree that the symbol has zero non-definition call sites.
+    ///
+    /// Regression gate for #5016 (divergent store reads).
+    #[test]
+    fn count_usages_zero_when_find_references_sees_only_definition() {
+        let index = WorkspaceIndex::new();
+
+        let uri = "file:///lib/OnlyDef.pm";
+        let code = "package OnlyDef;\nsub never_called { return 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let count = index.count_usages("never_called");
+        // The definition site itself is stored in global_references, so
+        // find_references may return 1 entry.  count_usages must exclude it.
+        assert_eq!(
+            count, 0,
+            "count_usages must return 0 for a symbol with no call sites; got {}",
+            count
         );
     }
 }

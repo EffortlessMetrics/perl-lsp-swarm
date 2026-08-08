@@ -47,18 +47,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload UX regression artifacts
         if: always() && steps.harness_check.outputs.harness_available == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ux-regression-gate-receipt-${{ github.sha }}
           path: |
@@ -161,7 +161,7 @@ jobs:
       - name: Upload UX regression gate test results to Codecov
         if: always() && steps.harness_check.outputs.harness_available == 'true' && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/ux-regression-gate-junit.xml
@@ -345,7 +345,7 @@ jobs:
 
       - name: Set commit status
         if: always()
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
         with:
           script: |
             const harnessAvailable = '${{ steps.harness_check.outputs.harness_available }}' === 'true';
@@ -405,7 +405,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
@@ -431,9 +431,12 @@ jobs:
 
       # TypeScript 7 is the sole type-check authority — Rolldown (the build
       # step below) does not type-check, it only bundles already-valid TS.
-      - name: Typecheck (tsc --noEmit, TS7)
+      # Run all five authority tsconfigs so a diagnostic in scripts/** or
+      # the published-smoke suite fails on PR rather than first surfacing
+      # during a publish (#5528).
+      - name: Typecheck all configs (tsc --noEmit, TS7)
         working-directory: vscode-extension
-        run: npm run typecheck
+        run: npm run typecheck:all
 
       # Rolldown (#3662, final step of the TS7 migration train) replaces TS
       # emission as the production artifact builder: src/extension.ts ->
@@ -457,7 +460,7 @@ jobs:
 
       - name: Report extension Jest result (ci/extension-jest)
         if: always()
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
         with:
           script: |
             // Blocking gate: the commit status reflects the real jest + grammar outcome.

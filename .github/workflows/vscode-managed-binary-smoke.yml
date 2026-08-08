@@ -33,7 +33,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Install Perl
+        uses: shogo82148/actions-setup-perl@05e67354f08b143fe5bd8495e9b80657a3086754  # v1.43.0
+        with:
+          perl-version: '5.40'
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
@@ -55,7 +60,7 @@ jobs:
 
       - name: Upload smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: vscode-smoke-source-${{ matrix.os }}
           path: target/receipts/vscode-smoke/**

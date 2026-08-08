@@ -565,3 +565,391 @@ pub fn generate_report(analysis: &DeadCodeAnalysis) -> String {
 
     report
 }
+
+#[cfg(test)]
+mod tests {
+    //! In-crate branch-coverage proof for the private helpers in this module.
+    //!
+    //! Each helper has at least one positive and one negative case so that
+    //! polarity inversions, dropped guards, and first-hit-only scans are caught
+    //! by named tests rather than blanket failure. These complement (do not
+    //! replace) the integration tests in `crates/perl-parser/tests/` which prove
+    //! composition through `WorkspaceIndex`.
+
+    use super::*;
+
+    // ---- is_structural_line ----
+
+    #[test]
+    fn structural_line_empty_is_not_structural() {
+        // `trimmed` is empty only when the original line was whitespace-only;
+        // is_structural_line("") returns false so an empty line after a
+        // terminator does NOT clear the terminator (it has no brace content).
+        assert!(!is_structural_line(""));
+    }
+
+    #[test]
+    fn structural_line_closing_brace_is_structural() {
+        assert!(is_structural_line("}"));
+        assert!(is_structural_line("};"));
+        assert!(is_structural_line("}}"));
+    }
+
+    #[test]
+    fn structural_line_code_is_not_structural() {
+        // A real statement is not structural, so it CAN be flagged unreachable.
+        assert!(!is_structural_line("print 1;"));
+    }
+
+    #[test]
+    fn structural_line_block_continuation_is_structural() {
+        // `} else {` is structural — it clears the terminator.
+        assert!(is_structural_line("} else {"));
+        assert!(is_structural_line("} elsif ($x) {"));
+        assert!(is_structural_line("} continue {"));
+    }
+
+    // ---- is_block_continuation ----
+
+    #[test]
+    fn block_continuation_recognizes_all_forms() {
+        assert!(is_block_continuation("} else {"));
+        assert!(is_block_continuation("} elsif ($x) {"));
+        assert!(is_block_continuation("} continue {"));
+        assert!(is_block_continuation("} unless {"));
+        assert!(is_block_continuation("} while (1) {"));
+    }
+
+    #[test]
+    fn block_continuation_rejects_non_continuation() {
+        assert!(!is_block_continuation("print 1;"));
+        assert!(!is_block_continuation("}"));
+        assert!(!is_block_continuation("else {")); // missing leading `}`
+    }
+
+    // ---- detect_unconditional_terminator ----
+
+    #[test]
+    fn terminator_detects_plain_keywords() {
+        assert_eq!(detect_unconditional_terminator("return;"), Some("return"));
+        assert_eq!(detect_unconditional_terminator("die;"), Some("die"));
+        assert_eq!(detect_unconditional_terminator("exit;"), Some("exit"));
+        assert_eq!(detect_unconditional_terminator("CORE::exit;"), Some("CORE::exit"));
+        assert_eq!(detect_unconditional_terminator("goto LABEL;"), Some("goto"));
+        assert_eq!(detect_unconditional_terminator("exec('cmd');"), Some("exec"));
+        assert_eq!(detect_unconditional_terminator("croak 'nope';"), Some("croak"));
+        assert_eq!(detect_unconditional_terminator("confess 'oops';"), Some("confess"));
+    }
+
+    #[test]
+    fn terminator_rejects_non_terminator() {
+        assert_eq!(detect_unconditional_terminator("print 1;"), None);
+        assert_eq!(detect_unconditional_terminator("my $x = 1;"), None);
+    }
+
+    #[test]
+    fn terminator_rejects_postfix_modifier() {
+        // `return if $x` is conditional — not a terminator.
+        assert_eq!(detect_unconditional_terminator("return if $x;"), None);
+        assert_eq!(detect_unconditional_terminator("die unless $ok;"), None);
+        assert_eq!(detect_unconditional_terminator("exit when $done;"), None);
+        assert_eq!(detect_unconditional_terminator("return for @list;"), None);
+        assert_eq!(detect_unconditional_terminator("return foreach @list;"), None);
+    }
+
+    #[test]
+    fn terminator_accepts_postfix_comment() {
+        // A trailing comment after a real terminator is fine.
+        assert_eq!(detect_unconditional_terminator("return; # done"), Some("return"));
+    }
+
+    #[test]
+    fn terminator_keyword_as_substring_is_not_terminator() {
+        // `return` inside `returns` must not match — boundary check.
+        assert_eq!(detect_unconditional_terminator("returns_value();"), None);
+    }
+
+    // ---- contains_keyword ----
+
+    #[test]
+    fn contains_keyword_respects_boundaries() {
+        assert!(contains_keyword("if $x", "if"));
+        assert!(contains_keyword("$x if 1", "if"));
+        assert!(!contains_keyword("swifty", "if")); // 'if' inside a word
+        assert!(!contains_keyword("notify", "if")); // 'if' inside a word
+    }
+
+    #[test]
+    fn keyword_boundary_classification() {
+        assert!(is_keyword_boundary(None)); // start/end of string
+        assert!(is_keyword_boundary(Some(' ')));
+        assert!(is_keyword_boundary(Some('$')));
+        assert!(!is_keyword_boundary(Some('a')));
+        assert!(!is_keyword_boundary(Some('_')));
+        assert!(!is_keyword_boundary(Some('1')));
+    }
+
+    // ---- is_always_false ----
+
+    #[test]
+    fn always_false_recognizes_standard_idioms() {
+        assert!(is_always_false("0"));
+        assert!(is_always_false("\"\""));
+        assert!(is_always_false("''"));
+        assert!(is_always_false("undef"));
+        assert!(is_always_false("(0)"));
+        assert!(is_always_false("( 0 )"));
+        assert!(is_always_false("(((0)))"));
+    }
+
+    #[test]
+    fn always_false_rejects_non_false() {
+        assert!(!is_always_false("1"));
+        assert!(!is_always_false("0 but true")); // not a recognized idiom
+        assert!(!is_always_false("$x"));
+        assert!(!is_always_false("0.1"));
+        assert!(!is_always_false("0x0")); // hex — not matched (intentional)
+    }
+
+    // ---- is_always_true ----
+
+    #[test]
+    fn always_true_recognizes_non_zero_int() {
+        assert!(is_always_true("1"));
+        assert!(is_always_true("42"));
+        assert!(is_always_true("-1"));
+        assert!(is_always_true("(1)"));
+    }
+
+    #[test]
+    fn always_true_recognizes_non_zero_float() {
+        assert!(is_always_true("1.5"));
+        assert!(is_always_true("0.1"));
+        assert!(is_always_true("-0.5"));
+    }
+
+    #[test]
+    fn always_true_recognizes_non_empty_string() {
+        assert!(is_always_true("\"hello\""));
+        assert!(is_always_true("'hello'"));
+        assert!(is_always_true("\"1\""));
+    }
+
+    #[test]
+    fn always_true_rejects_zero_and_empty_string_and_zero_string() {
+        // Integer zero is falsy in Perl.
+        assert!(!is_always_true("0"));
+        // Empty quoted strings are falsy.
+        assert!(!is_always_true("\"\""));
+        assert!(!is_always_true("''"));
+        // The string "0" is also falsy in Perl.
+        assert!(!is_always_true("\"0\""));
+        assert!(!is_always_true("'0'"));
+    }
+
+    #[test]
+    fn always_true_rejects_variables_and_expressions() {
+        assert!(!is_always_true("$x"));
+        assert!(!is_always_true("1 + 1"));
+    }
+
+    // ---- strip_outer_parens / is_outer_paren_balanced ----
+
+    #[test]
+    fn strip_outer_parens_simple() {
+        assert_eq!(strip_outer_parens("0"), "0");
+        assert_eq!(strip_outer_parens("(0)"), "0");
+        assert_eq!(strip_outer_parens("(((0)))"), "0");
+        assert_eq!(strip_outer_parens("( 0 )"), "0");
+    }
+
+    #[test]
+    fn strip_outer_parens_does_not_strip_unbalanced() {
+        // `(a)(b)` — the first `(` closes before the last `)`, so stripping
+        // would be wrong. Must NOT strip.
+        assert_eq!(strip_outer_parens("(a)(b)"), "(a)(b)");
+    }
+
+    #[test]
+    fn is_outer_paren_balanced_cases() {
+        assert!(is_outer_paren_balanced("0"));
+        assert!(is_outer_paren_balanced("(a)"));
+        assert!(!is_outer_paren_balanced("a)(b")); // depth goes negative
+    }
+
+    // ---- extract_balanced_parens ----
+
+    #[test]
+    fn extract_balanced_parens_valid() {
+        assert_eq!(extract_balanced_parens("(0)"), Some("0"));
+        assert_eq!(extract_balanced_parens("(a, b)"), Some("a, b"));
+        assert_eq!(extract_balanced_parens("((nested))"), Some("(nested)"));
+    }
+
+    #[test]
+    fn extract_balanced_parens_missing_or_unbalanced() {
+        assert_eq!(extract_balanced_parens("0"), None); // doesn't start with `(`
+        assert_eq!(extract_balanced_parens("(unbalanced"), None);
+        assert_eq!(extract_balanced_parens(""), None);
+    }
+
+    // ---- find_block_end ----
+
+    #[test]
+    fn find_block_end_same_line() {
+        let lines = vec!["sub foo { return 1; }"];
+        assert_eq!(find_block_end(&lines, 0), 1);
+    }
+
+    #[test]
+    fn find_block_end_multiline() {
+        let lines = vec!["if (1) {", "  print;", "}"];
+        assert_eq!(find_block_end(&lines, 0), 3);
+    }
+
+    #[test]
+    fn find_block_end_unbalanced_falls_back_to_eof() {
+        let lines = vec!["if (1) {", "  print;"]; // no closing brace
+        assert_eq!(find_block_end(&lines, 0), 2);
+    }
+
+    // ---- detect_dead_branches ----
+
+    fn dead_branch_reasons(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        detect_dead_branches(Path::new("/test.pl"), text, &mut out);
+        out.into_iter().map(|d| d.reason).collect()
+    }
+
+    #[test]
+    fn detect_dead_branches_if_zero() {
+        let reasons = dead_branch_reasons("if (0) {\n  print;\n}\n");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("always false"));
+    }
+
+    #[test]
+    fn detect_dead_branches_while_zero() {
+        let reasons = dead_branch_reasons("while (0) {\n  print;\n}\n");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("always false"));
+    }
+
+    #[test]
+    fn detect_dead_branches_unless_one() {
+        let reasons = dead_branch_reasons("unless (1) {\n  print;\n}\n");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("always true"));
+    }
+
+    #[test]
+    fn detect_dead_branches_until_one() {
+        let reasons = dead_branch_reasons("until (1) {\n  print;\n}\n");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("always true"));
+    }
+
+    #[test]
+    fn detect_dead_branches_living_condition_not_flagged() {
+        // A real variable condition is never dead.
+        let reasons = dead_branch_reasons("if ($x) {\n  print;\n}\n");
+        assert!(reasons.is_empty(), "living condition should not be flagged: {reasons:?}");
+    }
+
+    #[test]
+    fn detect_dead_branches_if_one_not_flagged() {
+        // `if (1)` is always-true so the if-body executes — NOT dead.
+        // Only the *else* would be dead, and else-detection is deferred.
+        let reasons = dead_branch_reasons("if (1) {\n  print;\n}\n");
+        assert!(reasons.is_empty(), "if(1) body is reachable, not dead: {reasons:?}");
+    }
+
+    #[test]
+    fn detect_dead_branches_for_loop_not_flagged() {
+        // `for`/`foreach` are list iterators, not boolean guards.
+        // `for (0) {}` runs once with $_ = 0 — not dead.
+        let reasons = dead_branch_reasons("for (0) {\n  print;\n}\n");
+        assert!(reasons.is_empty(), "for(0) is a list iterator, not dead: {reasons:?}");
+        let reasons = dead_branch_reasons("foreach (0) {\n  print;\n}\n");
+        assert!(reasons.is_empty(), "foreach(0) is a list iterator, not dead: {reasons:?}");
+    }
+
+    #[test]
+    fn detect_dead_branches_nested_inside_dead_skipped() {
+        // A dead branch skips to its block end, so a nested dead branch
+        // inside it is not separately reported.
+        let text = "if (0) {\n  if (0) {\n    print;\n  }\n}\n";
+        let reasons = dead_branch_reasons(text);
+        assert_eq!(reasons.len(), 1, "nested dead branch should be skipped: {reasons:?}");
+    }
+
+    #[test]
+    fn detect_dead_branches_elsif_zero() {
+        // `elsif` on its own line is detected. Note: `} elsif` on the same
+        // line as a closing brace is NOT detected because the scanner matches
+        // `elsif` only as a line-start prefix — this is a known limitation of
+        // the text-based analyzer, documented here as a behavioral boundary.
+        let reasons = dead_branch_reasons("elsif (0) {\n  die;\n}\n");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("always false"));
+    }
+
+    #[test]
+    fn detect_dead_branches_multiline_condition_skipped() {
+        // Multi-line conditions are skipped to avoid false positives.
+        let text = "if\n(0) {\n  print;\n}\n";
+        let reasons = dead_branch_reasons(text);
+        assert!(reasons.is_empty(), "multiline condition should be skipped: {reasons:?}");
+    }
+
+    // ---- contains_postfix_modifier ----
+
+    #[test]
+    fn contains_postfix_modifier_detects_all() {
+        assert!(contains_postfix_modifier("if $x"));
+        assert!(contains_postfix_modifier("unless $x"));
+        assert!(contains_postfix_modifier("when $x"));
+        assert!(contains_postfix_modifier("while $x"));
+        assert!(contains_postfix_modifier("until $x"));
+        assert!(contains_postfix_modifier("for @list"));
+        assert!(contains_postfix_modifier("foreach @list"));
+    }
+
+    #[test]
+    fn contains_postfix_modifier_rejects_word_substring() {
+        // `swifty` contains "if" but it's inside a word — must not match.
+        assert!(!contains_postfix_modifier("swifty"));
+        // No modifier at all.
+        assert!(!contains_postfix_modifier("$x;"));
+    }
+
+    // ---- generate_report ----
+
+    #[test]
+    fn generate_report_contains_all_stats() {
+        let analysis = DeadCodeAnalysis {
+            dead_code: vec![],
+            stats: DeadCodeStats {
+                unused_subroutines: 1,
+                unused_variables: 2,
+                unused_constants: 3,
+                unused_packages: 4,
+                unreachable_statements: 5,
+                dead_branches: 6,
+                total_dead_lines: 7,
+            },
+            files_analyzed: 8,
+            total_lines: 9,
+        };
+        let report = generate_report(&analysis);
+        assert!(report.contains("Files analyzed: 8"));
+        assert!(report.contains("Total lines: 9"));
+        assert!(report.contains("Unused subroutines: 1"));
+        assert!(report.contains("Unused variables: 2"));
+        assert!(report.contains("Unused constants: 3"));
+        assert!(report.contains("Unused packages: 4"));
+        assert!(report.contains("Unreachable statements: 5"));
+        assert!(report.contains("Dead branches: 6"));
+        assert!(report.contains("Total dead lines: 7"));
+    }
+}

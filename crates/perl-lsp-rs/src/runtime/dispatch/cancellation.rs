@@ -44,7 +44,7 @@ pub fn enhanced_cancelled_response(
     }
 
     JsonRpcResponse {
-        jsonrpc: "2.0".to_string(),
+        jsonrpc: "2.0",
         id: Some(token.request_id().clone()),
         result: None,
         error: Some(JsonRpcError { code: REQUEST_CANCELLED, message, data: Some(data) }),

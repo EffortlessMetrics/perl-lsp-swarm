@@ -70,13 +70,13 @@ impl Edit {
         } else if pos.byte >= self.old_end_byte {
             // Position is after the edit - shift it
             Some(Position {
-                byte: (pos.byte as isize + self.byte_shift()) as usize,
-                line: (pos.line as i32 + self.line_shift()) as u32,
+                byte: (pos.byte as isize + self.byte_shift()).max(0) as usize,
+                line: (pos.line as i32 + self.line_shift()).max(0) as u32,
                 column: if pos.line == self.old_end_position.line {
                     // Same line as edit end - adjust column
                     let col_shift =
                         self.new_end_position.column as i32 - self.old_end_position.column as i32;
-                    (pos.column as i32 + col_shift) as u32
+                    (pos.column as i32 + col_shift).max(0) as u32
                 } else {
                     // Different line - column unchanged
                     pos.column

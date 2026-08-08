@@ -1194,6 +1194,13 @@
           "when": "editorLangId == perl",
           "group": "navigation"
         }
+      ],
+      "problem/context": [
+        {
+          "command": "perl-lsp.explainDiagnostic",
+          "when": "resourceLangId == perl",
+          "group": "navigation"
+        }
       ]
     },
     "keybindings": [
@@ -1413,7 +1420,7 @@
     "oxfmt": "0.61.0",
     "oxlint": "1.76.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.0",
+    "rolldown": "1.2.1",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"
