@@ -2050,6 +2050,7 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
+            let live_cutover = compiler_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
@@ -2057,8 +2058,12 @@ impl LspServer {
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
                 "compiler_receipt": compiler_receipt,
-                "no_live_behavior_change": false,
-                "live_cutover": "partial_exact_imported"
+                "no_live_behavior_change": !live_cutover,
+                "live_cutover": if live_cutover {
+                    Some("partial_exact_imported")
+                } else {
+                    None
+                }
             })))
         }
     }
