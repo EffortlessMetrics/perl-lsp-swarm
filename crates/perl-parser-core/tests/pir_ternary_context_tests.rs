@@ -19,6 +19,18 @@ use perl_tdd_support::must_some;
 fn lower(source: &str) -> PirGraph {
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
+
+    // Every source below must parse cleanly. Without this guard a parser
+    // regression could hand these tests a recovery AST that still happens to
+    // carry a BranchShell, and the context assertions would keep passing while
+    // proving something else. All seven sources currently yield zero
+    // diagnostics.
+    assert!(
+        output.diagnostics.is_empty(),
+        "source must parse without diagnostics, got {:?} for {source:?}",
+        output.diagnostics
+    );
+
     let hir: HirFile = lower_ast(&output.ast);
     lower_hir(&hir)
 }
