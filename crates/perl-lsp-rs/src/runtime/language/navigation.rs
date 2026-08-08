@@ -2417,6 +2417,10 @@ impl LspServer {
 
             #[cfg(feature = "workspace")]
             {
+                // Compute before any index access; do not call while holding
+                // `documents_guard()` (#5016 / #6199 deadlock lesson).
+                let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+
                 // Build doc_map outside the lock, pinning `uri`'s own entry
                 // to the captured generation -- mirrors
                 // `handle_type_definition` above; see `pinned_doc_map_for`'s
@@ -2430,13 +2434,22 @@ impl LspServer {
                 // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
                 let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
 
-                // Use routing policy - only provide workspace index in Full mode
-                let access_mode = route_index_access(self.coordinator());
-                let workspace_index = if let IndexAccessMode::Full(coordinator) = access_mode {
-                    Some(coordinator.index().clone())
-                } else {
-                    // Partial/None: same-file analysis only
+                // Use routing policy - only provide workspace index in Full mode.
+                // When any open document is ahead of the index, skip the index tier
+                // and rely on the open-document AST scan only (#5016).
+                let workspace_index = if workspace_index_stale {
+                    tracing::debug!(
+                        "Implementation: skipping stale workspace index tier, using open-doc scan only"
+                    );
                     None
+                } else {
+                    let access_mode = route_index_access(self.coordinator());
+                    if let IndexAccessMode::Full(coordinator) = access_mode {
+                        Some(coordinator.index().clone())
+                    } else {
+                        // Partial/None: same-file analysis only
+                        None
+                    }
                 };
 
                 let provider = ImplementationProvider::new(workspace_index);
@@ -2676,6 +2689,69 @@ mod tests {
             "position": { "line": 1, "character": 4 }
         })));
         assert!(result.is_ok(), "handle_implementation must not error: {result:?}");
+    }
+
+    /// Regression (#5016): when the workspace index is stale relative to an open
+    /// document, `handle_implementation` must not return implementors from the
+    /// outdated index tier (open-document AST scan may still answer).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn implementation_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let base_uri = "file:///workspace/stale_impl_base.pm";
+        let derived_uri = "file:///workspace/stale_impl_derived.pm";
+        let base_text = "package StaleImpl::Base;\nsub new { bless {}, shift }\n1;\n";
+        let derived_v1 = "package StaleImpl::Derived;\nuse parent 'StaleImpl::Base';\n1;\n";
+        let derived_v2 = "package StaleImpl::Derived;\n1;\n";
+
+        server.test_apply_did_open(base_uri, base_text, 1)?;
+        server.test_apply_did_open(derived_uri, derived_v1, 1)?;
+        server
+            .test_index_file_in_building_state(base_uri, base_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(derived_uri, derived_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        // Cursor on the `Base` package identifier.
+        let fresh = server.handle_implementation(Some(json!({
+            "textDocument": { "uri": base_uri },
+            "position": { "line": 0, "character": 19 }
+        })))?;
+        let fresh_locations = fresh.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_locations.iter().any(|loc| {
+                loc.get("targetUri")
+                    .and_then(|u| u.as_str())
+                    .is_some_and(|uri| uri.contains("stale_impl_derived"))
+            }),
+            "fresh workspace index should return Derived implementor: {fresh_locations:?}"
+        );
+
+        server
+            .test_replace_document_without_index(derived_uri, derived_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_implementation(Some(json!({
+            "textDocument": { "uri": base_uri },
+            "position": { "line": 0, "character": 19 }
+        })))?;
+        let stale_locations = stale.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_locations.iter().any(|loc| {
+                loc.get("targetUri")
+                    .and_then(|u| u.as_str())
+                    .is_some_and(|uri| uri.contains("stale_impl_derived"))
+            }),
+            "stale workspace index must not return removed parent relationship: {stale_locations:?}"
+        );
+
+        Ok(())
     }
 
     /// Verifies `wait_at_same_doc_fallback_gap`'s poison-recovery path
