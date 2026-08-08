@@ -448,6 +448,9 @@ impl LspServer {
         if !(budget.should_continue)() {
             return None;
         }
+        if self.workspace_index_stale_for_document(uri) {
+            return None;
+        }
         let index = coordinator.index();
         let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             if !(budget.should_continue)() {
@@ -3006,6 +3009,10 @@ mod tests {
             receipt.get("workspace_index_state").and_then(Value::as_str),
             Some("none"),
             "stale current-document index must downgrade regular completion index access"
+        );
+        assert!(
+            receipt.get("semantic_shadow_receipt").is_none(),
+            "stale workspace index must not run completion visibility shadow queries"
         );
 
         Ok(())
