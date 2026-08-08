@@ -305,7 +305,7 @@ impl PullDiagnosticsProvider {
                 // Retrieve any collected parse errors from error recovery
                 let parse_errors: Vec<ParseError> = parser.errors().to_vec();
                 let ast = std::sync::Arc::new(ast);
-                let provider = DiagnosticsProvider::new(&ast, content.to_string());
+                let provider = DiagnosticsProvider::new(&ast);
                 let uri_str = uri.to_string();
                 let source_path = url::Url::parse(&uri_str)
                     .map_err(|e| {
@@ -651,7 +651,7 @@ impl PullDiagnosticsProvider {
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
-            let provider = DiagnosticsProvider::new(ast, doc_state.text_arc.to_string());
+            let provider = DiagnosticsProvider::new(ast);
             let source_path =
                 url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
             // Build the baseline include paths (configured + PERL5LIB, without lexical

@@ -2301,7 +2301,7 @@ fn score_diagnostic_provider_expectations(
         let mut parser = Parser::new(&provider_source);
         let output = parser.parse_with_recovery();
         let ast = Arc::new(output.ast);
-        let provider = DiagnosticsProvider::new(&ast, provider_source.clone());
+        let provider = DiagnosticsProvider::new(&ast);
         let diagnostics = index
             .with_semantic_queries_for_uri(&source_path_text, |file_id, semantic_queries| {
                 provider.get_diagnostics_with_path_and_semantics(

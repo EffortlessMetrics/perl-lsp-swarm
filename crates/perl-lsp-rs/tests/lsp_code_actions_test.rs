@@ -16,7 +16,7 @@ fn test_undefined_variable_quick_fix() -> Result<(), Box<dyn std::error::Error>>
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new(&ast);
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Find undeclared variable diagnostic
@@ -54,7 +54,7 @@ fn test_unused_variable_quick_fix() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new(&ast);
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Find unused variable diagnostic
@@ -92,7 +92,7 @@ fn test_variable_shadowing_quick_fix() -> Result<(), Box<dyn std::error::Error>>
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new(&ast);
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Find shadowing diagnostic
@@ -172,7 +172,7 @@ fn test_multiple_diagnostics_multiple_actions() -> Result<(), Box<dyn std::error
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new(&ast);
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should have undeclared variable diagnostic

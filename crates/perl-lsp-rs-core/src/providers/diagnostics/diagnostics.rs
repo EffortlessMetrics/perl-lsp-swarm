@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
-use perl_parser_core::Node;
 use perl_parser_core::error::ParseError;
+use perl_parser_core::Node;
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer;
 use perl_semantic_analyzer::symbol::SymbolExtractor;
@@ -122,13 +122,16 @@ pub use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
 /// parse errors, scope issues, and lint warnings.
 pub struct DiagnosticsProvider {
     _ast: std::sync::Arc<Node>,
-    _source: String,
 }
 
 impl DiagnosticsProvider {
-    /// Create a new diagnostics provider
-    pub fn new(ast: &std::sync::Arc<Node>, source: String) -> Self {
-        Self { _ast: ast.clone(), _source: source }
+    /// Create a new diagnostics provider.
+    ///
+    /// Source text is supplied per call to [`Self::get_diagnostics`] and related
+    /// methods; it is not stored on the provider to avoid an extra full-document
+    /// allocation on every diagnostic publish (#5053).
+    pub fn new(ast: &std::sync::Arc<Node>) -> Self {
+        Self { _ast: ast.clone() }
     }
 
     /// Generate diagnostics for the given AST
