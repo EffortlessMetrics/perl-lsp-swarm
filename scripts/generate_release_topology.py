@@ -398,7 +398,20 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
         raise TopologyError("primary channel set is not the accepted v0.18 set")
     if manifest.get("vsix", {}).get("version") != manifest.get("release"):
         raise TopologyError("VSIX version must equal release version")
-    for relative, source in manifest.get("sources", {}).items():
+    sources = manifest.get("sources")
+    if not isinstance(sources, dict):
+        raise TopologyError("sources must be an object")
+    expected_source_paths = set(SOURCE_PATHS)
+    source_paths = set(sources)
+    if source_paths != expected_source_paths:
+        raise TopologyError(
+            "source hash set does not match the topology source set: "
+            f"missing={sorted(expected_source_paths - source_paths)}, "
+            f"extra={sorted(source_paths - expected_source_paths)}"
+        )
+    for relative, source in sources.items():
+        if not isinstance(source, dict):
+            raise TopologyError(f"source hash entry is not an object: {relative}")
         if source.get("path") != relative:
             raise TopologyError(f"source path key disagrees with its path field: {relative}")
         path = root / relative
