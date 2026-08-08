@@ -1644,9 +1644,6 @@ pub fn add_workspace_method_completions(
     };
 
     // Collect labels already present to avoid duplicates with local method completions
-    let existing_labels: HashSet<String> =
-        completions.iter().map(|item| item.label.to_string()).collect();
-
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
 
     // Collect all methods from the receiver package AND its ancestor chain
@@ -1655,7 +1652,11 @@ pub fn add_workspace_method_completions(
 
     // Build an auto-import edit once for all methods from this package.
     let auto_import_edit = auto_import::build_auto_import_edit(source, &package_name);
-    let method_symbols = workspace_method_symbols(&members, &existing_labels, method_prefix);
+    let method_symbols = {
+        let existing_labels: HashSet<&str> =
+            completions.iter().map(|item| item.label.as_ref()).collect();
+        workspace_method_symbols(&members, &existing_labels, method_prefix)
+    };
     let method_text_edit_range = (context.method_text_edit_start(source), context.position);
 
     if add_semantic_method_completions(
@@ -1747,9 +1748,10 @@ fn add_unknown_receiver_fallback(
     }
 
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
-    let existing_labels: HashSet<String> =
-        completions.iter().map(|item| item.label.to_string()).collect();
+    let existing_labels: HashSet<&str> =
+        completions.iter().map(|item| item.label.as_ref()).collect();
     let mut emitted: HashSet<String> = HashSet::new();
+    let mut pending = Vec::new();
 
     for package_name in &allowed_packages {
         let members = collect_all_package_members(index, package_name);
@@ -1760,7 +1762,7 @@ fn add_unknown_receiver_fallback(
             if !method_prefix.is_empty() && !symbol.name.starts_with(method_prefix) {
                 continue;
             }
-            if existing_labels.contains(&symbol.name) {
+            if existing_labels.contains(symbol.name.as_str()) {
                 continue;
             }
             if !emitted.insert(symbol.name.clone()) {
@@ -1775,7 +1777,7 @@ fn add_unknown_receiver_fallback(
             // Auto-insert `use <defining_pkg>;` when the method comes from a
             // package other than the current one. Symbols from already-imported,
             // `main`, or current-package namespaces yield no edit.
-            completions.push(CompletionItem {
+            pending.push(CompletionItem {
                 label: Cow::Owned(symbol.name.clone()),
                 kind: CompletionItemKind::Function,
                 detail: Some(Cow::Owned(detail)),
@@ -1802,18 +1804,19 @@ fn add_unknown_receiver_fallback(
             });
         }
     }
+    completions.extend(pending);
 }
 
 fn workspace_method_symbols<'a>(
     members: &'a [WorkspaceSymbol],
-    existing_labels: &HashSet<String>,
+    existing_labels: &HashSet<&str>,
     method_prefix: &str,
 ) -> Vec<&'a WorkspaceSymbol> {
     members
         .iter()
         .filter(|symbol| matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method))
         .filter(|symbol| method_prefix.is_empty() || symbol.name.starts_with(method_prefix))
-        .filter(|symbol| !existing_labels.contains(&symbol.name))
+        .filter(|symbol| !existing_labels.contains(symbol.name.as_str()))
         .collect()
 }
 
