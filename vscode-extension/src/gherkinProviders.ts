@@ -67,8 +67,8 @@ const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // (`[^"]+`, `[0-9]+`) is linear-time and safe — flagging it produced false
 // negatives that suppressed step-definition links for ordinary `"([^"]+)"`
 // patterns (see #859). Keep this in sync with gherkinStepDefinitions.ts.
-const POTENTIALLY_EXPENSIVE_REGEX_RE =
-  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
+const POTENTIALLY_EXPLOSIVE_REGEX_RE =
+  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|(?:\([^)]*\|[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 const DELIMITER_PAIRS: Record<string, string> = {
   '{': '}',
   '[': ']',
@@ -572,7 +572,7 @@ function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
     return false;
   }
 
-  return !POTENTIALLY_EXPENSIVE_REGEX_RE.test(source);
+  return !POTENTIALLY_EXPLOSIVE_REGEX_RE.test(source);
 }
 
 function normalizeRegexFlags(flags: string): string {
