@@ -122,6 +122,12 @@ pub use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
 /// parse errors, scope issues, and lint warnings.
 pub struct DiagnosticsProvider;
 
+impl Default for DiagnosticsProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DiagnosticsProvider {
     /// Create a new diagnostics provider.
     ///
