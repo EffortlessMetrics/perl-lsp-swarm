@@ -687,6 +687,7 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
+    let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
     let packet = pr_evidence_packet_with_count(
         options,
         &check_value,
@@ -694,6 +695,7 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         &head_sha,
         &suppressions,
         changed_file_count,
+        Some(&head_extents),
     );
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
@@ -758,25 +760,32 @@ struct RiprPrSummaryCounts {
     /// to a specific bucket, but their paths matched a suppression rule.  Used to decrement
     /// `severe_gaps` after per-bucket suppression has been applied.
     suppressed_unclassified: usize,
+    /// Findings on a `(file, line)` that does not exist in the head revision (#6260) —
+    /// probes on code the change removes. Reported for transparency; not a suppression.
+    outside_head_revision: usize,
+    /// Same, for findings whose classification was not recognized. Decrements
+    /// `severe_gaps` directly, like `suppressed_unclassified`.
+    outside_head_unclassified: usize,
 }
 
 fn ripr_pr_summary_counts(
     check_value: &Value,
     check_summary: Option<&Map<String, Value>>,
     suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
 ) -> RiprPrSummaryCounts {
     let summary_counts = RiprPrSummaryCounts {
         weakly_exposed: count_field(check_summary, "weakly_exposed"),
         reachable_unrevealed: count_field(check_summary, "reachable_unrevealed"),
         no_static_path: count_field(check_summary, "no_static_path"),
-        suppressed_by_policy: 0,
-        suppressed_unclassified: 0,
+        ..RiprPrSummaryCounts::default()
     };
     let Some(findings) = check_value.get("findings").and_then(Value::as_array) else {
         return summary_counts;
     };
 
     let mut suppressed = RiprPrSummaryCounts::default();
+    let mut outside_head = RiprPrSummaryCounts::default();
     let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
     for finding in findings {
         // ripr 0.5.x: "classification" field, values "weakly_exposed" | "reachable_unrevealed" | "no_static_path".
@@ -796,6 +805,10 @@ fn ripr_pr_summary_counts(
             Some("no_static_path") => Some("no_static_path"),
             _ => None,
         };
+        // A finding is discounted for exactly one reason: suppression policy takes
+        // precedence so `suppressed_by_policy` keeps its established meaning, and
+        // head-range filtering (#6260) applies only to what policy left standing.
+        let outside = head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding));
         // Path suppression is checked BEFORE the classification guard (#1346).
         // A finding whose classification is unrecognized must still be suppressed if its
         // path matches a policy rule — skipping only path-unknown findings, not
@@ -804,12 +817,18 @@ fn ripr_pr_summary_counts(
             if suppression_matches_finding(suppressions, finding) {
                 suppressed.suppressed_by_policy += 1;
                 suppressed.suppressed_unclassified += 1;
+            } else if outside {
+                outside_head.outside_head_revision += 1;
+                outside_head.outside_head_unclassified += 1;
             }
             continue;
         };
         let counts = if suppression_matches_finding(suppressions, finding) {
             suppressed.suppressed_by_policy += 1;
             &mut suppressed
+        } else if outside {
+            outside_head.outside_head_revision += 1;
+            &mut outside_head
         } else {
             &mut unsuppressed_from_findings
         };
@@ -824,14 +843,24 @@ fn ripr_pr_summary_counts(
         // Per-bucket suppression: subtract classified suppressions from their respective buckets.
         // Unclassified suppressions (suppressed_unclassified) cannot be attributed to a bucket,
         // so they are carried through for the caller to subtract from severe_gaps directly.
+        // Findings outside the head revision (#6260) are subtracted the same way.
         return RiprPrSummaryCounts {
-            weakly_exposed: summary_counts.weakly_exposed.saturating_sub(suppressed.weakly_exposed),
+            weakly_exposed: summary_counts
+                .weakly_exposed
+                .saturating_sub(suppressed.weakly_exposed)
+                .saturating_sub(outside_head.weakly_exposed),
             reachable_unrevealed: summary_counts
                 .reachable_unrevealed
-                .saturating_sub(suppressed.reachable_unrevealed),
-            no_static_path: summary_counts.no_static_path.saturating_sub(suppressed.no_static_path),
+                .saturating_sub(suppressed.reachable_unrevealed)
+                .saturating_sub(outside_head.reachable_unrevealed),
+            no_static_path: summary_counts
+                .no_static_path
+                .saturating_sub(suppressed.no_static_path)
+                .saturating_sub(outside_head.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
+            outside_head_revision: outside_head.outside_head_revision,
+            outside_head_unclassified: outside_head.outside_head_unclassified,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -842,6 +871,8 @@ fn ripr_pr_summary_counts(
     RiprPrSummaryCounts {
         suppressed_by_policy: suppressed.suppressed_by_policy,
         suppressed_unclassified: 0,
+        outside_head_revision: outside_head.outside_head_revision,
+        outside_head_unclassified: 0,
         ..unsuppressed_from_findings
     }
 }
@@ -888,6 +919,137 @@ fn ripr_finding_path(finding: &Value) -> Option<String> {
         .filter(|path| !path.trim().is_empty())
 }
 
+/// Line a RIPR finding points at, across the receipt shapes xtask accepts.
+///
+/// ripr 0.5.x carries it under `probe.line`; 0.9.x under `seam.line`. A finding
+/// with no line cannot be located in the head revision and is never filtered.
+fn ripr_finding_line(finding: &Value) -> Option<u64> {
+    ["probe", "seam"]
+        .into_iter()
+        .find_map(|key| finding.get(key).and_then(|node| node.get("line")))
+        .or_else(|| finding.get("line"))
+        .and_then(Value::as_u64)
+        .filter(|line| *line > 0)
+}
+
+/// Where a finding's path sits in the head revision of the change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadPathState {
+    /// The path exists at head with this many lines.
+    Present(usize),
+    /// The change removes the path (deleted outright, or renamed away).
+    Removed,
+    /// The path could not be tied to the change's file set. Never filtered.
+    Unknown,
+}
+
+/// Line extents of the changed files as they exist in the **head** revision (#6260).
+///
+/// `ripr check --diff` probes both sides of the diff and reports findings by line
+/// number, so a probe on a line the change *deletes* is emitted against the head
+/// path. Counting those as new gaps produces an unsatisfiable required check: no
+/// test can cover a line that no longer exists, and the guidance generator
+/// correctly names no seam for them, so the count and the guidance disagree.
+///
+/// This index answers "does `(file, line)` exist at head?" for the change's own
+/// file set. It is built from the committed-diff receipt, so it costs one
+/// `git show` per changed file and needs no second ripr run.
+///
+/// Every ambiguous answer is `Unknown`, which does **not** filter: an unreadable
+/// blob, a finding with no path or no line, and a path that cannot be tied to
+/// the change all keep their finding counted. The gate keeps failing closed on
+/// real new gaps; it stops counting probes on code the change removes.
+#[derive(Debug, Default, Clone)]
+struct HeadLineExtents {
+    /// Repo-relative path -> line count in the head revision.
+    present: BTreeMap<String, usize>,
+    /// Repo-relative paths the change removes.
+    removed: BTreeSet<String>,
+}
+
+impl HeadLineExtents {
+    fn from_committed_diff(repo: &Path, diff: &CommittedDiffReceipt) -> Self {
+        let mut present = BTreeMap::new();
+        let mut removed = BTreeSet::new();
+        for entry in &diff.entries {
+            if let Some(new_path) = entry.new_path.as_deref() {
+                // An unreadable blob yields no entry, so its findings resolve to
+                // `Unknown` and stay counted.
+                if let Some(lines) = head_file_line_count(repo, &diff.head_sha, new_path) {
+                    present.insert(normalize_repo_relative_path(new_path), lines);
+                }
+            }
+            if let Some(old_path) = entry.old_path.as_deref() {
+                removed.insert(normalize_repo_relative_path(old_path));
+            }
+        }
+        // A rename's old path is removed, but a path that is also some entry's new
+        // path still exists at head and must keep its extent.
+        removed.retain(|path| !present.contains_key(path));
+        Self { present, removed }
+    }
+
+    fn resolve(&self, raw_path: &str) -> HeadPathState {
+        let normalized = normalize_repo_relative_path(raw_path);
+        if let Some(lines) = self.present.get(&normalized) {
+            return HeadPathState::Present(*lines);
+        }
+        if self.removed.contains(&normalized) {
+            return HeadPathState::Removed;
+        }
+        // Findings may carry an absolute or checkout-prefixed path. Accept a
+        // unique repo-relative suffix; anything ambiguous stays `Unknown`.
+        let candidates = self
+            .present
+            .iter()
+            .map(|(path, lines)| (path, HeadPathState::Present(*lines)))
+            .chain(self.removed.iter().map(|path| (path, HeadPathState::Removed)))
+            .filter(|(path, _)| path_suffix_matches(&normalized, path))
+            .map(|(_, state)| state)
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [state] => *state,
+            _ => HeadPathState::Unknown,
+        }
+    }
+
+    /// True only when the finding is positively known to sit outside the head revision.
+    fn finding_is_outside_head(&self, finding: &Value) -> bool {
+        let Some(path) = ripr_finding_path(finding) else {
+            return false;
+        };
+        let Some(line) = ripr_finding_line(finding) else {
+            return false;
+        };
+        match self.resolve(&path) {
+            HeadPathState::Present(lines) => line > lines as u64,
+            HeadPathState::Removed => true,
+            HeadPathState::Unknown => false,
+        }
+    }
+}
+
+fn head_file_line_count(repo: &Path, head_sha: &str, path: &str) -> Option<usize> {
+    let spec = format!("{head_sha}:{path}");
+    run_git_output(repo, &["show", spec.as_str()]).ok().map(|blob| blob.lines().count())
+}
+
+fn normalize_repo_relative_path(path: &str) -> String {
+    let normalized = normalize_path_text(path);
+    normalized.strip_prefix("./").unwrap_or(&normalized).to_string()
+}
+
+/// True when `candidate` ends with `repo_path` at a path boundary.
+fn path_suffix_matches(candidate: &str, repo_path: &str) -> bool {
+    if repo_path.is_empty() {
+        return false;
+    }
+    let Some(prefix) = candidate.strip_suffix(repo_path) else {
+        return false;
+    };
+    prefix.is_empty() || prefix.ends_with('/')
+}
+
 fn normalize_suppression_match_path(path: &str) -> String {
     let normalized = normalize_path_text(path);
     let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
@@ -913,6 +1075,7 @@ fn pr_evidence_packet(
         head_sha,
         suppressions,
         changed_files.len(),
+        None,
     )
 }
 
@@ -923,9 +1086,10 @@ fn pr_evidence_packet_with_count(
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
     changed_file_count: usize,
+    head_extents: Option<&HeadLineExtents>,
 ) -> Value {
     let check_summary = check_value.get("summary").and_then(Value::as_object);
-    let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions);
+    let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions, head_extents);
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
     let no_static_path = summary.no_static_path;
@@ -935,7 +1099,8 @@ fn pr_evidence_packet_with_count(
     let severe_gaps = weakly_exposed
         .saturating_add(reachable_unrevealed)
         .saturating_add(no_static_path)
-        .saturating_sub(summary.suppressed_unclassified);
+        .saturating_sub(summary.suppressed_unclassified)
+        .saturating_sub(summary.outside_head_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
     let warnings = if check_summary.is_some() {
         Vec::new()
@@ -970,6 +1135,7 @@ fn pr_evidence_packet_with_count(
             "ripr_severe_gap": ripr_severe_gap,
             "routing_reason": if ripr_severe_gap { json!("ripr severe gap") } else { Value::Null },
             "suppressed_by_policy": summary.suppressed_by_policy,
+            "outside_head_revision": summary.outside_head_revision,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "artifacts": [
@@ -1113,6 +1279,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
     out.push_str(&format!(
         "- suppressed_by_policy: {}\n",
         count_field(summary, "suppressed_by_policy")
+    ));
+    out.push_str(&format!(
+        "- outside_head_revision: {}\n",
+        count_field(summary, "outside_head_revision")
     ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
@@ -3202,6 +3372,274 @@ paths = ["archive/["]
         assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
         assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
         assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    fn no_suppressions() -> RiprSuppressionRules {
+        RiprSuppressionRules {
+            display_patterns: Vec::new(),
+            path_patterns: Vec::new(),
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        }
+    }
+
+    fn packet_with_extents(
+        check_value: &Value,
+        suppressions: &RiprSuppressionRules,
+        extents: &HeadLineExtents,
+    ) -> Value {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        pr_evidence_packet_with_count(
+            &options,
+            check_value,
+            "base-sha",
+            "head-sha",
+            suppressions,
+            1,
+            Some(extents),
+        )
+    }
+
+    /// #6260 reproduction, from the `raw-check.json` of run 31273961774 on #6161:
+    /// two `no_static_path` probes at `check_version_sync.rs:29`, a line the change
+    /// deletes — the file is 13 lines long at head. No test can cover a line that no
+    /// longer exists, so the required gate was unsatisfiable.
+    #[test]
+    fn deleted_line_findings_do_not_count_as_new_gaps() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 2 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "kind": "call_deletion",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 29 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "kind": "return_value",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 29 }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(false)));
+        // Head-range filtering is not suppression and must not inflate the policy count.
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Gate teeth: the filter is bounded to lines that do not exist at head. A probe on a
+    /// line the head revision still has must keep blocking, or #6260's fix would be worse
+    /// than the bug it closes.
+    #[test]
+    fn findings_inside_the_head_revision_still_count_as_new_gaps() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 2 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 12 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 13 }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    /// A file the change deletes outright has no coverable line at all, whatever the
+    /// reported line number.
+    #[test]
+    fn findings_on_a_deleted_file_do_not_count_as_new_gaps() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-lsp-rs/src/removed.rs", "line": 4 }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::new(),
+            removed: BTreeSet::from(["crates/perl-lsp-rs/src/removed.rs".to_string()]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(1)));
+        Ok(())
+    }
+
+    /// Fail closed on every ambiguity: a path outside the change's file set, and a finding
+    /// with no line at all, are both still counted.
+    #[test]
+    fn unlocatable_findings_stay_counted() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 2 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "crates/perl-lsp-rs/src/untracked_by_the_diff.rs", "line": 900 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs" }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// A suppressed finding that is also outside the head revision is discounted once, and
+    /// stays attributed to policy so `suppressed_by_policy` keeps its established meaning.
+    #[test]
+    fn suppression_takes_precedence_over_head_range_filtering() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 1 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "archive/old.rs", "line": 99 }
+                }
+            ]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["archive/**".to_string()],
+            path_patterns: vec![Pattern::new("archive/**")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([("archive/old.rs".to_string(), 4usize)]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &suppressions, &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Findings carry checkout-prefixed and Windows-separator paths (see the 0.9.x
+    /// suppression cases above), so head-range resolution must survive both.
+    #[test]
+    fn head_extents_resolve_absolute_and_windows_finding_paths() {
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        assert_eq!(
+            extents
+                .resolve("/home/runner/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
+            HeadPathState::Present(13)
+        );
+        assert_eq!(
+            extents.resolve("C:\\code\\perl-lsp-swarm\\xtask/src/tasks/check_version_sync.rs"),
+            HeadPathState::Present(13)
+        );
+        // Suffix matching respects path boundaries rather than raw string ends.
+        assert_eq!(extents.resolve("vendored_check_version_sync.rs"), HeadPathState::Unknown);
+        assert_eq!(extents.resolve("some/other/file.rs"), HeadPathState::Unknown);
+    }
+
+    /// Wiring proof: the extents actually come from the change's committed diff, so the
+    /// filter sees the real head line count rather than a hand-built map.
+    #[test]
+    fn head_extents_are_built_from_the_committed_diff() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let shrunk = repo.join("shrunk.rs");
+        let deleted = repo.join("deleted.rs");
+        fs::write(&shrunk, (1..=30).map(|n| format!("// line {n}\n")).collect::<String>())?;
+        fs::write(&deleted, "// gone\n")?;
+        init_git_repo(repo)?;
+        run_git(repo, &["add", "shrunk.rs", "deleted.rs"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "base"],
+        )?;
+        let base = run_git(repo, &["rev-parse", "HEAD"])?;
+        fs::write(&shrunk, (1..=13).map(|n| format!("// line {n}\n")).collect::<String>())?;
+        fs::remove_file(&deleted)?;
+        run_git(repo, &["add", "-A"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "head"],
+        )?;
+
+        let diff = resolve_committed_diff(repo, &base, "HEAD")?;
+        let extents = HeadLineExtents::from_committed_diff(repo, &diff);
+
+        assert_eq!(extents.resolve("shrunk.rs"), HeadPathState::Present(13));
+        assert_eq!(extents.resolve("deleted.rs"), HeadPathState::Removed);
+        assert!(extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "shrunk.rs", "line": 29 }
+        })));
+        assert!(!extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "shrunk.rs", "line": 13 }
+        })));
+        assert!(extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "deleted.rs", "line": 1 }
+        })));
         Ok(())
     }
 
