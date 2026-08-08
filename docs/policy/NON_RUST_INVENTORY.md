@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10163 |
+| Total tracked files | 10164 |
 | Rust-family files | 3079 |
-| Non-Rust files | 7084 |
+| Non-Rust files | 7085 |
 | Allowlisted | 4768 |
-| Unclassified | 2316 |
+| Unclassified | 2317 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 211 |
 | test | 1753 |
 | tooling | 319 |
-| unclassified | 2316 |
+| unclassified | 2317 |
 
 ## Unclassified files
 
@@ -2215,6 +2215,7 @@
 | `xtask/tests/fixtures/agent-leases/current-valid.json` | `json` |
 | `xtask/tests/fixtures/agent-leases/lease-expired.json` | `json` |
 | `xtask/tests/fixtures/agent-leases/receipt-forbidden-mutation.json` | `json` |
+| `xtask/tests/fixtures/agent-leases/receipt-valid.json` | `json` |
 | `xtask/tests/fixtures/agent-leases/task-valid.json` | `json` |
 | `xtask/tests/fixtures/aggregator/fail/lint.json` | `json` |
 | `xtask/tests/fixtures/aggregator/fail/tests.json` | `json` |
