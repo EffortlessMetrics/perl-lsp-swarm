@@ -1302,11 +1302,14 @@ pub struct WorkspaceIndex {
     ///
     /// Lock order: always acquire `symbols` before `search_index`.
     search_index: Arc<RwLock<HashMap<String, Vec<WorkspaceSymbol>>>>,
-    /// Global reference index (symbol name -> locations across all files)
+    /// Global reference index (symbol name -> references across all files)
     ///
     /// Aggregated from per-file `FileIndex::references` during `index_file()`.
     /// Provides O(1) lookup for `find_references()` instead of iterating all files.
-    global_references: Arc<RwLock<HashMap<String, Vec<Location>>>>,
+    /// Stores full `SymbolReference` (including `kind`) so that `count_usages`
+    /// and `find_references` can both read from this single authoritative store
+    /// without consulting separate data maps (#5967).
+    global_references: Arc<RwLock<HashMap<String, Vec<SymbolReference>>>>,
     /// Write-through semantic fact shards keyed by normalized URI.
     fact_shards: Arc<RwLock<HashMap<String, FileFactShard>>>,
     /// Semantic cross-file reference index (typed occurrences by name and entity).
@@ -1689,16 +1692,16 @@ impl WorkspaceIndex {
 
         for symbol_name in names_to_query {
             if let Some(refs) = global_refs.get(symbol_name) {
-                for location in refs {
+                for sym_ref in refs {
                     let key = (
-                        location.uri.clone(),
-                        location.range.start.line,
-                        location.range.start.column,
-                        location.range.end.line,
-                        location.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(location.clone());
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -1960,14 +1963,14 @@ impl WorkspaceIndex {
     /// Retains only entries whose URI does not match `file_uri`.
     /// Empty keys are removed to avoid unbounded map growth.
     fn remove_file_global_refs(
-        global_refs: &mut HashMap<String, Vec<Location>>,
+        global_refs: &mut HashMap<String, Vec<SymbolReference>>,
         file_index: &FileIndex,
         file_uri: &str,
     ) {
         for name in file_index.references.keys() {
-            if let Some(locs) = global_refs.get_mut(name) {
-                locs.retain(|loc| loc.uri != file_uri);
-                if locs.is_empty() {
+            if let Some(refs) = global_refs.get_mut(name) {
+                refs.retain(|r| r.uri != file_uri);
+                if refs.is_empty() {
                     global_refs.remove(name);
                 }
             }
@@ -2357,7 +2360,7 @@ impl WorkspaceIndex {
                 for (name, refs) in &file_index.references {
                     let entry = global_refs.entry(name.clone()).or_default();
                     for reference in refs {
-                        entry.push(Location { uri: reference.uri.clone(), range: reference.range });
+                        entry.push(reference.clone());
                     }
                 }
             }
@@ -2780,10 +2783,7 @@ impl WorkspaceIndex {
                     for (name, refs) in &fi.references {
                         let entry = global_refs.entry(name.clone()).or_default();
                         for reference in refs {
-                            entry.push(Location {
-                                uri: reference.uri.clone(),
-                                range: reference.range,
-                            });
+                            entry.push(reference.clone());
                         }
                     }
                 }
@@ -2868,16 +2868,16 @@ impl WorkspaceIndex {
 
         // O(1) lookup for exact symbol name
         if let Some(refs) = global_refs.get(symbol_name) {
-            for loc in refs {
+            for sym_ref in refs {
                 let key = (
-                    loc.uri.clone(),
-                    loc.range.start.line,
-                    loc.range.start.column,
-                    loc.range.end.line,
-                    loc.range.end.column,
+                    sym_ref.uri.clone(),
+                    sym_ref.range.start.line,
+                    sym_ref.range.start.column,
+                    sym_ref.range.end.line,
+                    sym_ref.range.end.column,
                 );
                 if seen.insert(key) {
-                    locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                    locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                 }
             }
         }
@@ -2886,16 +2886,16 @@ impl WorkspaceIndex {
         if let Some(idx) = symbol_name.rfind("::") {
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
-                for loc in refs {
+                for sym_ref in refs {
                     let key = (
-                        loc.uri.clone(),
-                        loc.range.start.line,
-                        loc.range.start.column,
-                        loc.range.end.line,
-                        loc.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -2907,16 +2907,16 @@ impl WorkspaceIndex {
                     continue;
                 }
 
-                for loc in refs {
+                for sym_ref in refs {
                     let key = (
-                        loc.uri.clone(),
-                        loc.range.start.line,
-                        loc.range.start.column,
-                        loc.range.end.line,
-                        loc.range.end.column,
+                        sym_ref.uri.clone(),
+                        sym_ref.range.start.line,
+                        sym_ref.range.start.column,
+                        sym_ref.range.end.line,
+                        sym_ref.range.end.column,
                     );
                     if seen.insert(key) {
-                        locations.push(Location { uri: loc.uri.clone(), range: loc.range });
+                        locations.push(Location { uri: sym_ref.uri.clone(), range: sym_ref.range });
                     }
                 }
             }
@@ -2966,104 +2966,70 @@ impl WorkspaceIndex {
     /// returning only actual usage sites. This is used by code lens to show
     /// "N references" where N means call sites, not the definition itself.
     ///
-    /// Applies the same write-version torn-read protection as `find_references`
-    /// (#5116) so that a concurrent `index_file_with_generation` cannot cause
-    /// the per-file reference maps to be partially updated during the scan.
+    /// Reads from the same `global_references` store as `find_references` (#5967).
+    /// Torn-read protection mirrors `find_references` (#5116, #5016).
     pub fn count_usages(&self, symbol_name: &str) -> usize {
-        // Delegate to find_references (which uses global_references) and subtract
-        // known definition locations, so count_usages and find_references always
-        // consult the same data store (#5967).
-        //
-        // Both lookups must observe the same index version. find_references already
-        // retries on a torn read, but find_definitions does not — a reindex between
-        // the two calls could let def_set describe a different version than
-        // `references`, leaking or hiding usages. We snapshot the write version and
-        // retry the whole pair when it moves (#6042 review).
+        // Reads from the same `global_references` store as `find_references` (#5967).
+        // Torn-read protection mirrors `find_references` (#5116, #5016).
         for _ in 0..3 {
             let v1 = self.write_version();
-            let references = self.find_references_inner(symbol_name);
-            let definitions = self.count_usages_definitions(symbol_name);
+            let result = self.count_usages_inner(symbol_name);
             let v2 = self.write_version();
             if v1 == v2 {
-                // Build a set of definition locations to exclude from the count.
-                // We borrow the URIs (`&str`) instead of cloning to avoid an
-                // allocation per entry (#6042 review).
-                let def_set: HashSet<(&str, u32, u32, u32, u32)> = definitions
-                    .iter()
-                    .map(|d| {
-                        (
-                            d.uri.as_str(),
-                            d.range.start.line,
-                            d.range.start.column,
-                            d.range.end.line,
-                            d.range.end.column,
-                        )
-                    })
-                    .collect();
-
-                return references
-                    .iter()
-                    .filter(|r| {
-                        !def_set.contains(&(
-                            r.uri.as_str(),
-                            r.range.start.line,
-                            r.range.start.column,
-                            r.range.end.line,
-                            r.range.end.column,
-                        ))
-                    })
-                    .count();
+                return result;
             }
             tracing::debug!("Torn read in count_usages, retrying");
         }
-        // Fallback after retries exhausted: use the last pair without a version
-        // guarantee. This matches find_references' fallback posture.
-        let references = self.find_references_inner(symbol_name);
-        let definitions = self.count_usages_definitions(symbol_name);
-        let def_set: HashSet<(&str, u32, u32, u32, u32)> = definitions
-            .iter()
-            .map(|d| {
-                (
-                    d.uri.as_str(),
-                    d.range.start.line,
-                    d.range.start.column,
-                    d.range.end.line,
-                    d.range.end.column,
-                )
-            })
-            .collect();
-        references
-            .iter()
-            .filter(|r| {
-                !def_set.contains(&(
+        self.count_usages_inner(symbol_name)
+    }
+
+    fn count_usages_inner(&self, symbol_name: &str) -> usize {
+        let global_refs = self.global_references.read();
+        let mut seen: HashSet<(&str, u32, u32, u32, u32)> = HashSet::new();
+
+        if let Some(refs) = global_refs.get(symbol_name) {
+            for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                seen.insert((
                     r.uri.as_str(),
                     r.range.start.line,
                     r.range.start.column,
                     r.range.end.line,
                     r.range.end.column,
-                ))
-            })
-            .count()
-    }
+                ));
+            }
+        }
 
-    /// Collect definition locations for every name variant that
-    /// `find_references_inner` consults, so a definition stored under a sibling
-    /// key (e.g. `PkgB::foo`'s entry in the bare `foo` bucket) is correctly
-    /// excluded from the usage count for `PkgA::foo` (#6042 review).
-    fn count_usages_definitions(&self, symbol_name: &str) -> Vec<Location> {
-        let mut defs = self.find_definitions(symbol_name);
         if let Some(idx) = symbol_name.rfind("::") {
             let bare_name = &symbol_name[idx + 2..];
-            defs.extend(self.find_definitions(bare_name));
+            if let Some(refs) = global_refs.get(bare_name) {
+                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                    seen.insert((
+                        r.uri.as_str(),
+                        r.range.start.line,
+                        r.range.start.column,
+                        r.range.end.line,
+                        r.range.end.column,
+                    ));
+                }
+            }
         } else {
-            for (name, _refs) in self.global_references.read().iter() {
+            for (name, refs) in global_refs.iter() {
                 if !Self::is_qualified_variant_of(name, symbol_name) {
                     continue;
                 }
-                defs.extend(self.find_definitions(name));
+                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                    seen.insert((
+                        r.uri.as_str(),
+                        r.range.start.line,
+                        r.range.start.column,
+                        r.range.end.line,
+                        r.range.end.column,
+                    ));
+                }
             }
         }
-        defs
+
+        seen.len()
     }
 
     fn is_qualified_variant_of(candidate: &str, bare_symbol: &str) -> bool {
@@ -3792,10 +3758,10 @@ impl WorkspaceIndex {
 
         // --- global references map ---
         let mut global_refs_bytes: usize = 0;
-        for (sym_name, locs) in global_refs_guard.iter() {
+        for (sym_name, refs) in global_refs_guard.iter() {
             global_refs_bytes += sym_name.len();
-            for loc in locs {
-                global_refs_bytes += loc.uri.len() + size_of::<Location>();
+            for r in refs {
+                global_refs_bytes += r.uri.len() + size_of::<SymbolReference>();
             }
         }
 
@@ -9225,6 +9191,62 @@ Utils::process_data();
             "find_references should not return duplicates for qualified calls, got {} non-def refs",
             non_def_refs.len()
         );
+    }
+
+    /// Parity test for #5967: count_usages and find_references must consult the same
+    /// data store so that rename/safe-delete never reports "0 references" while
+    /// find_references returns populated results.
+    ///
+    /// Acceptance criterion: count_usages(sym) == find_references(sym).len() - definition_count
+    /// for the same symbol, where definition_count is the number of locations that
+    /// coincide with the definition site.
+    #[test]
+    fn test_count_usages_parity_with_find_references() {
+        let index = WorkspaceIndex::new();
+        let lib_uri = "file:///parity/lib/Parity.pm";
+        let caller_uri = "file:///parity/bin/main.pl";
+
+        must(index.index_file(
+            must(url::Url::parse(lib_uri)),
+            "package Parity;\nsub greet { return 1; }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(url::Url::parse(caller_uri)),
+            "use Parity;\nParity::greet();\nParity::greet();\n".to_string(),
+        ));
+
+        let usages = index.count_usages("Parity::greet");
+        let all_refs = index.find_references("Parity::greet");
+
+        // find_references includes the definition site; count_usages excludes it.
+        // Both read from the same global_references store, so they must agree on
+        // the total reference count modulo the definition filter.
+        assert!(!all_refs.is_empty(), "find_references should return at least the definition site");
+        assert_eq!(
+            usages, 2,
+            "count_usages should return the two call sites (not the definition), got {usages}"
+        );
+        // The total references reported by find_references must be at least usages
+        // (it includes definitions too).
+        assert!(
+            all_refs.len() >= usages,
+            "find_references ({}) must be >= count_usages ({usages})",
+            all_refs.len()
+        );
+        // Both methods now read the same data store, so their combined view must
+        // be self-consistent: usages + definition_entries == all_refs.len().
+        // We verify this by counting definition-site locations in find_references.
+        let def_locs = index.find_definition("Parity::greet");
+        if let Some(def_loc) = def_locs {
+            let def_count = all_refs.iter().filter(|loc| **loc == def_loc).count();
+            assert_eq!(
+                usages + def_count,
+                all_refs.len(),
+                "count_usages ({usages}) + definition entries ({def_count}) \
+                 must equal find_references total ({})",
+                all_refs.len()
+            );
+        }
     }
 
     #[test]
