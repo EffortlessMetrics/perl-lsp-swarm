@@ -51,6 +51,14 @@ fn missing_markers(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
+fn remove_marker(text: &str, marker: &str, replacement: &str) -> String {
+    assert!(
+        text.contains(marker),
+        "fixture must contain the marker before mutation: {marker}"
+    );
+    text.replace(marker, replacement)
+}
+
 #[test]
 fn both_provider_merge_skills_require_review_and_integration() -> Result<()> {
     for relative in PROVIDER_SKILLS {
@@ -67,7 +75,11 @@ fn both_provider_merge_skills_require_review_and_integration() -> Result<()> {
 #[test]
 fn review_backstop_marker_is_discriminating() -> Result<()> {
     let text = load(PROVIDER_SKILLS[0])?;
-    let mutated = text.replacen("review missing or not reconstructable", "review already assumed", 1);
+    let mutated = remove_marker(
+        &text,
+        "review missing or not reconstructable",
+        "review already assumed",
+    );
     let missing = missing_markers(&mutated);
     assert!(
         missing.contains(&"review missing or not reconstructable"),
@@ -79,10 +91,10 @@ fn review_backstop_marker_is_discriminating() -> Result<()> {
 #[test]
 fn integration_conjunction_marker_is_discriminating() -> Result<()> {
     let text = load(PROVIDER_SKILLS[0])?;
-    let mutated = text.replacen(
+    let mutated = remove_marker(
+        &text,
         "`REVIEW_CURRENT` + `INTEGRATION_READY`",
         "`INTEGRATION_READY`",
-        1,
     );
     let missing = missing_markers(&mutated);
     assert!(
@@ -95,10 +107,10 @@ fn integration_conjunction_marker_is_discriminating() -> Result<()> {
 #[test]
 fn pending_integration_marker_is_discriminating() -> Result<()> {
     let text = load(PROVIDER_SKILLS[0])?;
-    let mutated = text.replacen(
+    let mutated = remove_marker(
+        &text,
         "`REVIEW_CURRENT` + `PR_IN_FLIGHT`",
         "`REVIEW_CURRENT` + `INTEGRATION_READY`",
-        1,
     );
     let missing = missing_markers(&mutated);
     assert!(
@@ -111,10 +123,10 @@ fn pending_integration_marker_is_discriminating() -> Result<()> {
 #[test]
 fn explicit_exclusivity_marker_is_discriminating() -> Result<()> {
     let text = load(PROVIDER_SKILLS[0])?;
-    let mutated = text.replacen(
+    let mutated = remove_marker(
+        &text,
         "No other combination reaches merge.",
         "Other combinations may merge.",
-        1,
     );
     let missing = missing_markers(&mutated);
     assert!(
