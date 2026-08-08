@@ -294,6 +294,42 @@ jobs:
           echo "CRITICAL=0" >> $GITHUB_OUTPUT
         fi
 
+    - name: Summarize performance evidence
+      if: always()
+      run: |
+        # This replaces the PR comment removed by #6028. That comment was the
+        # only inline surface for these alerts, and it was the sole reason this
+        # workflow held issue and pull-request write scopes while also executing
+        # candidate code. A step summary restores the same visibility at zero
+        # permission cost.
+        #
+        # Keyed off file presence rather than the `compare`/`alert` step
+        # outputs: those are computed through a `tee` pipeline without
+        # `pipefail`, so they do not carry the real exit status. That is a
+        # pre-existing defect and is deliberately not depended on here.
+        {
+          echo "## Performance Benchmarks"
+          echo
+          if [ -s alert.md ]; then
+            cat alert.md
+            echo
+          fi
+          if [ -s comparison.txt ]; then
+            echo "<details><summary>Baseline comparison</summary>"
+            echo
+            echo '```text'
+            cat comparison.txt
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+          fi
+          if [ ! -s alert.md ] && [ ! -s comparison.txt ]; then
+            echo "No baseline comparison or alert output was produced."
+          fi
+          echo "Full benchmark artifacts are attached to this run."
+        } >> "$GITHUB_STEP_SUMMARY"
+
     - name: Upload benchmark artifacts
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
