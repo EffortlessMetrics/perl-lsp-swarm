@@ -32,10 +32,11 @@ pub enum UseLibAction {
 }
 
 /// A `use lib` / `no lib` operation with the byte offset immediately after its
-/// terminating statement slice (semicolon or end-of-source).
+/// parsed argument text, falling back to the enclosing statement slice when
+/// argument parsing cannot determine an extent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseLibOperation {
-    /// Byte offset in the original source immediately after this statement.
+    /// Byte offset in the original source immediately after the parsed arguments.
     pub end_offset: usize,
     /// The extracted operation.
     pub action: UseLibAction,
@@ -72,23 +73,22 @@ pub fn extract_use_lib_operations(source: &str) -> Vec<UseLibAction> {
     extract_use_lib_operations_with_offsets(source).into_iter().map(|op| op.action).collect()
 }
 
-/// Extract ordered `use lib` / `no lib` operations with statement end offsets.
+/// Extract ordered `use lib` / `no lib` operations with argument end offsets.
 ///
 /// Offsets match the prefix slicing semantics used by
 /// [`resolve_use_lib_paths_from_source_at_offset`]: only complete statements
-/// whose `end_offset <= use_site_offset` are active at that offset.
+/// whose parsed argument text has ended at or before `use_site_offset` is active.
 #[must_use]
 pub fn extract_use_lib_operations_with_offsets(source: &str) -> Vec<UseLibOperation> {
     let mut ops = Vec::new();
 
     for statement in split_perl_statements(source) {
         let trimmed = statement.trim();
-        let end_offset = statement_end_offset(source, statement);
-
         if let Some(rest) = strip_use_lib_prefix(trimmed) {
             let mut paths = Vec::new();
-            extract_paths_from_args(rest, &mut paths);
+            let consumed = extract_paths_from_args(rest, &mut paths);
             if !paths.is_empty() {
+                let end_offset = operation_end_offset(source, statement, rest, consumed);
                 ops.push(UseLibOperation { end_offset, action: UseLibAction::Add(paths) });
             }
             continue;
@@ -96,8 +96,9 @@ pub fn extract_use_lib_operations_with_offsets(source: &str) -> Vec<UseLibOperat
 
         if let Some(rest) = strip_no_lib_prefix(trimmed) {
             let mut paths = Vec::new();
-            extract_paths_from_args(rest, &mut paths);
+            let consumed = extract_paths_from_args(rest, &mut paths);
             if !paths.is_empty() {
+                let end_offset = operation_end_offset(source, statement, rest, consumed);
                 ops.push(UseLibOperation { end_offset, action: UseLibAction::Remove(paths) });
             }
         }
@@ -109,6 +110,15 @@ pub fn extract_use_lib_operations_with_offsets(source: &str) -> Vec<UseLibOperat
 fn statement_end_offset(source: &str, statement: &str) -> usize {
     let start = statement.as_ptr() as usize - source.as_ptr() as usize;
     start + statement.len()
+}
+
+fn operation_end_offset(source: &str, statement: &str, args: &str, consumed: usize) -> usize {
+    if consumed == 0 {
+        return statement_end_offset(source, statement);
+    }
+
+    let args_start = args.as_ptr() as usize - source.as_ptr() as usize;
+    args_start + consumed
 }
 
 fn use_lib_actions_before_offset(

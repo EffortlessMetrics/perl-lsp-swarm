@@ -6,6 +6,7 @@ use perl_module::resolution::use_lib::{
     no_lib_cancelled_paths_from_operations_at_offset, resolve_use_lib_paths,
     resolve_use_lib_paths_from_operations_at_offset, resolve_use_lib_paths_from_source_at_offset,
 };
+use perl_tdd_support::must_some;
 
 #[test]
 fn findbin_parent_traversal_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
@@ -155,6 +156,52 @@ use Lib::Thing;\n\
     );
 
     assert_eq!(include_paths, vec!["second".to_string()]);
+}
+
+#[test]
+fn unterminated_use_lib_is_active_after_its_argument_before_next_statement() {
+    let source = "use lib 'lib'\nuse My::Test;\n";
+    let argument_offset = must_some(source.find("'lib'")) + 1;
+    let use_site = must_some(source.find("use My::Test;"));
+    let operations = extract_use_lib_operations_with_offsets(source);
+
+    assert_eq!(operations[0].end_offset, "use lib 'lib'".len());
+    assert!(
+        resolve_use_lib_paths_from_source_at_offset(
+            source,
+            argument_offset,
+            Path::new("/workspace"),
+            None
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        resolve_use_lib_paths_from_source_at_offset(
+            source,
+            use_site,
+            Path::new("/workspace"),
+            None
+        ),
+        vec!["lib".to_string()]
+    );
+}
+
+#[test]
+fn unterminated_no_lib_is_applied_before_next_statement() {
+    let source = "use lib 'lib';\nno lib 'lib'\nuse My::Test;\n";
+    let use_site = must_some(source.find("use My::Test;"));
+    let operations = extract_use_lib_operations_with_offsets(source);
+
+    assert_eq!(operations[1].end_offset, "use lib 'lib';\nno lib 'lib'".len());
+    assert!(
+        resolve_use_lib_paths_from_source_at_offset(
+            source,
+            use_site,
+            Path::new("/workspace"),
+            None
+        )
+        .is_empty()
+    );
 }
 
 #[test]
