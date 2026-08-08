@@ -110,6 +110,10 @@ function Expand-Archive {
 }
 
 & $Installer -Version "0.18.0" -InstallDir $InstallDir
+$InstallerSucceeded = $?
+if (-not $InstallerSucceeded) {
+    exit 1
+}
 '@ | Set-Content -LiteralPath $Harness -Encoding utf8
 
 $Payload = Join-Path $TempRoot "archive.zip"
