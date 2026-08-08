@@ -30,6 +30,10 @@ struct Args {
     /// Optional verified-child envelope output consumed by the public-beta fan-in.
     #[arg(long)]
     verified_output: Option<PathBuf>,
+
+    /// Authoritative expected topology path record for this receipt.
+    #[arg(long)]
+    topology_path_record: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -144,6 +148,17 @@ struct Receipt {
     limitations: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopologyPathRecord {
+    schema_version: String,
+    release_topology_sha256: String,
+    path_id: String,
+    platform: String,
+    target: String,
+    expected_asset: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 struct VerifiedChildArtifact<'a> {
@@ -202,6 +217,37 @@ fn validate_candidate(candidate: &CandidateIdentity) -> Result<()> {
         || candidate.dap_version != candidate.candidate_version
     {
         bail!("candidate extension, server, and DAP versions must agree");
+    }
+    Ok(())
+}
+
+fn validate_topology_path(receipt: &Receipt, record: &TopologyPathRecord) -> Result<()> {
+    if record.schema_version != "release_topology_path.v1" {
+        bail!("topology path record schema_version must be release_topology_path.v1");
+    }
+    exact_hex(&record.release_topology_sha256, 32, "topology path record.release_topology_sha256")?;
+    for (field, value) in [
+        ("topology path record.path_id", record.path_id.as_str()),
+        ("topology path record.platform", record.platform.as_str()),
+        ("topology path record.target", record.target.as_str()),
+        ("topology path record.expected_asset", record.expected_asset.as_str()),
+    ] {
+        non_empty(value, field)?;
+    }
+    if receipt.candidate.release_topology_sha256 != record.release_topology_sha256 {
+        bail!("receipt topology digest is not the authoritative path-record digest");
+    }
+    if receipt.transition.topology_path_id != record.path_id {
+        bail!("receipt topology_path_id is not a member of the authoritative topology");
+    }
+    if receipt.candidate.platform != record.platform {
+        bail!("receipt platform disagrees with the authoritative topology path");
+    }
+    if receipt.candidate.target != record.target {
+        bail!("receipt target disagrees with the authoritative topology path");
+    }
+    if receipt.transition.expected_asset != record.expected_asset {
+        bail!("receipt expected_asset disagrees with the authoritative topology path");
     }
     Ok(())
 }
@@ -394,6 +440,13 @@ fn load(path: &Path) -> Result<Receipt> {
         .with_context(|| format!("parsing install-transition receipt {}", path.display()))
 }
 
+fn load_topology_path_record(path: &Path) -> Result<TopologyPathRecord> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading topology path record {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("parsing topology path record {}", path.display()))
+}
+
 fn write_verified_child_artifact(
     receipt: &Receipt,
     status: ReceiptStatus,
@@ -433,6 +486,8 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let receipt = load(&args.receipt)?;
+    let topology_path_record = load_topology_path_record(&args.topology_path_record)?;
+    validate_topology_path(&receipt, &topology_path_record)?;
     let status = validate(&receipt)?;
     if let Some(path) = &args.verified_output {
         write_verified_child_artifact(&receipt, status, path)?;
@@ -509,6 +564,41 @@ mod tests {
             "../../fixtures/experience/install_transition/clean_install.json"
         ))?;
         assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_must_match_authoritative_topology_path_record() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let record: TopologyPathRecord = serde_json::from_str(include_str!(
+            "../../fixtures/experience/install_transition/powershell_path_record.json"
+        ))?;
+        validate_topology_path(&receipt, &record)?;
+        Ok(())
+    }
+
+    #[test]
+    fn fabricated_topology_path_record_is_rejected() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let mut record: TopologyPathRecord = serde_json::from_str(include_str!(
+            "../../fixtures/experience/install_transition/powershell_path_record.json"
+        ))?;
+        record.expected_asset = "perllsp-0.18.0-fabricated.zip".to_string();
+        match validate_topology_path(&receipt, &record) {
+            Ok(()) => bail!("fabricated topology path record unexpectedly validated"),
+            Err(error) => {
+                let rendered = format!("{error:#}");
+                if !rendered.contains(
+                    "receipt expected_asset disagrees with the authoritative topology path",
+                ) {
+                    bail!("unexpected topology rejection: {rendered}");
+                }
+            }
+        }
         Ok(())
     }
 

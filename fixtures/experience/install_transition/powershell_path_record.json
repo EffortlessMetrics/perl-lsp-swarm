@@ -1,0 +1,8 @@
+{
+  "schema_version": "release_topology_path.v1",
+  "release_topology_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "path_id": "powershell-windows-x86_64",
+  "platform": "windows-x86_64",
+  "target": "x86_64-pc-windows-msvc",
+  "expected_asset": "perllsp-0.18.0-x86_64-pc-windows-msvc.zip"
+}
