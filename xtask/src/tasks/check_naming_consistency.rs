@@ -26,9 +26,11 @@
 //! cargo xtask check-naming-consistency [--root <path>]
 //! ```
 //!
-//! `--root` defaults to the current working directory so tests can exercise the
-//! command from a synthetic workspace by setting `current_dir` on the subprocess.
-//! Override it explicitly for cross-directory invocations.
+//! `--root` defaults to the workspace root enclosing the current working
+//! directory, so the command works from a member directory such as
+//! `crates/perl-parser`. Tests still point it at a synthetic workspace by
+//! setting `current_dir` on the subprocess. Override `--root` explicitly to
+//! check a workspace elsewhere on disk.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -111,20 +113,48 @@ pub fn run(config: NamingConsistencyConfig) -> Result<()> {
 
 /// Convenience entry point.
 ///
-/// When `root` is `Some`, use it directly.  When `None`, fall back to the
-/// process working directory — the same strategy used by `resolve-package-name`
-/// so that tests can exercise the command from a synthetic workspace by
-/// setting `current_dir` on the subprocess.
+/// When `root` is `Some`, use it directly. When `None`, search upward from the
+/// process working directory for the enclosing workspace root, falling back to
+/// the working directory itself when no `[workspace]` manifest is found.
 ///
-/// Note: `project_root()` is compile-time-pinned to the real workspace root
-/// via `CARGO_MANIFEST_DIR`; using it here would bypass `current_dir` in tests.
+/// Searching upward is what makes `cargo xtask check-naming-consistency` work
+/// from a member directory such as `crates/perl-parser`: Cargo resolves the
+/// alias from `.cargo/config.toml` wherever it is invoked, so the bare working
+/// directory is not reliably the workspace root.
+///
+/// Note: `project_root()` is compile-time-pinned to the real workspace root via
+/// `CARGO_MANIFEST_DIR`; using it here would bypass `current_dir`, which tests
+/// set to point the command at a synthetic fixture workspace. Upward search
+/// keeps that seam — a fixture root carrying `[workspace]` is found first.
 pub fn run_default(root: Option<PathBuf>) -> Result<()> {
     let root = match root {
         Some(r) => r,
-        None => std::env::current_dir()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to get current working directory: {e}"))?,
+        None => {
+            let cwd = std::env::current_dir().map_err(|e| {
+                color_eyre::eyre::eyre!("Failed to get current working directory: {e}")
+            })?;
+            enclosing_workspace_root(&cwd).unwrap_or(cwd)
+        }
     };
     run(NamingConsistencyConfig { root })
+}
+
+/// Find the nearest ancestor of `start` whose `Cargo.toml` declares
+/// `[workspace]`.
+///
+/// Unreadable or unparsable manifests are skipped rather than failing the
+/// search: this is a best-effort locator, and [`run`] reports the real error if
+/// the resolved root turns out to have no `crates/` directory.
+fn enclosing_workspace_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| {
+            fs::read_to_string(dir.join("Cargo.toml"))
+                .ok()
+                .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+                .is_some_and(|manifest| manifest.get("workspace").is_some())
+        })
+        .map(Path::to_path_buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -189,59 +219,53 @@ pub(crate) fn collect_mismatches(crates_dir: &Path) -> Result<CheckResult> {
 
 /// Read the `[package] name` value from a `Cargo.toml` file.
 ///
-/// Returns the bare string value; does not follow workspace inheritance
-/// (workspace packages must have an explicit `name` field, so this is
-/// always a literal value in practice).
+/// Returns Cargo's *decoded* package name; does not follow workspace
+/// inheritance (workspace packages must have an explicit `name` field, so this
+/// is always a literal value in practice).
+///
+/// A manifest that is not valid TOML is reported as a parse failure rather than
+/// as a missing `name`, so the two causes stay distinguishable to the caller.
 pub(crate) fn read_package_name(manifest_path: &Path) -> Result<String> {
     let content = fs::read_to_string(manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
 
-    parse_package_name_from_toml(&content).ok_or_else(|| {
+    let manifest: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("Failed to parse TOML in {}", manifest_path.display()))?;
+
+    package_name_of(&manifest).map(str::to_string).ok_or_else(|| {
         color_eyre::eyre::eyre!("No `[package] name` field found in {}", manifest_path.display())
     })
 }
 
-/// Extract `[package] name = "…"` from raw TOML text.
+/// Look up `package.name` in an already-parsed manifest.
 ///
-/// Uses a simple line-by-line parser rather than a full TOML library so
-/// the check has zero additional dependencies.  The `name` field in
-/// `[package]` is always a simple string literal; no multi-line or
-/// dotted-key forms are used in practice.
+/// Single authority for the lookup path, shared by [`read_package_name`] and
+/// [`parse_package_name_from_toml`]. Resolving through the parsed document is
+/// what makes `[package.metadata.*]` subtables non-shadowing: a `name` key
+/// there is `package.metadata.….name`, never `package.name`.
+fn package_name_of(manifest: &toml::Value) -> Option<&str> {
+    manifest.get("package")?.get("name")?.as_str()
+}
+
+/// Extract the `[package] name` value from raw TOML text.
+///
+/// Parses with the `toml` crate — already an xtask dependency, and already how
+/// xtask reads Cargo manifests elsewhere — so the value returned is Cargo's own
+/// decoded package name. That matters for manifests a hand-rolled line scanner
+/// gets wrong: literal strings (`name = 'foo'`), dotted keys
+/// (`package.name = "foo"`), and escapes inside basic strings, all of which are
+/// valid Cargo and must not be reported as a missing or differently-spelled
+/// name.
+///
+/// Returns `None` for both "not valid TOML" and "no `package.name`";
+/// [`read_package_name`] distinguishes the two for its error message.
+///
+/// Test-only: production reads manifests from disk through
+/// [`read_package_name`], which shares the same [`package_name_of`] lookup.
+#[cfg(test)]
 pub(crate) fn parse_package_name_from_toml(content: &str) -> Option<String> {
-    let mut in_package = false;
-
-    for line in content.lines() {
-        // TOML comments begin with `#`; strip them before recognizing section
-        // headers or parsing the quoted package name.
-        let line_without_comment = line.split_once('#').map_or(line, |(code, _)| code);
-        let trimmed = line_without_comment.trim();
-
-        // Detect section headers.
-        if trimmed.starts_with('[') {
-            // `[package]` or `[package.metadata.foo]` — both start the package section.
-            // Anything else (e.g. `[dependencies]`) ends it.
-            in_package = trimmed == "[package]" || trimmed.starts_with("[package.");
-            continue;
-        }
-
-        if !in_package {
-            continue;
-        }
-
-        // Match `name = "…"` — strip optional whitespace and inline comments.
-        if let Some(rest) = trimmed.strip_prefix("name") {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix('=') {
-                let rest = rest.trim();
-                // Strip surrounding quotes.
-                if let Some(inner) = rest.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-                    return Some(inner.to_string());
-                }
-            }
-        }
-    }
-
-    None
+    let manifest: toml::Value = toml::from_str(content).ok()?;
+    package_name_of(&manifest).map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +330,54 @@ version = "0.1.0"
     #[test]
     fn returns_none_for_empty_content() {
         assert!(parse_package_name_from_toml("").is_none());
+    }
+
+    #[test]
+    fn parses_literal_string_package_name() {
+        // Valid Cargo: TOML literal strings are as legal as basic strings.
+        let toml = r#"
+[package]
+name = 'literal-crate'
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("literal-crate"));
+    }
+
+    #[test]
+    fn parses_dotted_key_package_name() {
+        let toml = r#"
+package.name = "dotted-crate"
+package.version = "0.1.0"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("dotted-crate"));
+    }
+
+    #[test]
+    fn returns_cargos_decoded_name_for_escaped_basic_string() {
+        // `\u002D` is an escaped `-`. Cargo sees the decoded name, so the
+        // decoded form is what a directory basename must be compared against;
+        // returning the raw encoded text would report a bogus mismatch.
+        let toml = r#"
+[package]
+name = "escaped\u002Dcrate"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("escaped-crate"));
+    }
+
+    #[test]
+    fn package_metadata_subtable_name_does_not_shadow_package_name() {
+        let toml = r#"
+[package]
+name = "real-crate"
+
+[package.metadata.deb]
+name = "not-the-package-name"
+"#;
+        assert_eq!(parse_package_name_from_toml(toml).as_deref(), Some("real-crate"));
+    }
+
+    #[test]
+    fn returns_none_for_malformed_toml() {
+        assert!(parse_package_name_from_toml("[package\nname = \"x\"").is_none());
     }
 
     #[test]
