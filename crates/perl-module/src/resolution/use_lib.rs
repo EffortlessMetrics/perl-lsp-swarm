@@ -31,6 +31,16 @@ pub enum UseLibAction {
     Remove(Vec<UseLibPath>),
 }
 
+/// A `use lib` / `no lib` operation with the byte offset immediately after its
+/// terminating statement slice (semicolon or end-of-source).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseLibOperation {
+    /// Byte offset in the original source immediately after this statement.
+    pub end_offset: usize,
+    /// The extracted operation.
+    pub action: UseLibAction,
+}
+
 /// Extract include paths from `use lib` statements in Perl source text.
 ///
 /// Handles the following patterns:
@@ -59,15 +69,27 @@ pub fn extract_use_lib_paths(source: &str) -> Vec<UseLibPath> {
 /// Extract ordered `use lib` and `no lib` operations from source text.
 #[must_use]
 pub fn extract_use_lib_operations(source: &str) -> Vec<UseLibAction> {
+    extract_use_lib_operations_with_offsets(source).into_iter().map(|op| op.action).collect()
+}
+
+/// Extract ordered `use lib` / `no lib` operations with statement end offsets.
+///
+/// Offsets match the prefix slicing semantics used by
+/// [`resolve_use_lib_paths_from_source_at_offset`]: only complete statements
+/// whose `end_offset <= use_site_offset` are active at that offset.
+#[must_use]
+pub fn extract_use_lib_operations_with_offsets(source: &str) -> Vec<UseLibOperation> {
     let mut ops = Vec::new();
 
     for statement in split_perl_statements(source) {
         let trimmed = statement.trim();
+        let end_offset = statement_end_offset(source, statement);
+
         if let Some(rest) = strip_use_lib_prefix(trimmed) {
             let mut paths = Vec::new();
             extract_paths_from_args(rest, &mut paths);
             if !paths.is_empty() {
-                ops.push(UseLibAction::Add(paths));
+                ops.push(UseLibOperation { end_offset, action: UseLibAction::Add(paths) });
             }
             continue;
         }
@@ -76,12 +98,82 @@ pub fn extract_use_lib_operations(source: &str) -> Vec<UseLibAction> {
             let mut paths = Vec::new();
             extract_paths_from_args(rest, &mut paths);
             if !paths.is_empty() {
-                ops.push(UseLibAction::Remove(paths));
+                ops.push(UseLibOperation { end_offset, action: UseLibAction::Remove(paths) });
             }
         }
     }
 
     ops
+}
+
+fn statement_end_offset(source: &str, statement: &str) -> usize {
+    let start = statement.as_ptr() as usize - source.as_ptr() as usize;
+    start + statement.len()
+}
+
+fn use_lib_actions_before_offset(
+    ops: &[UseLibOperation],
+    offset: usize,
+) -> impl Iterator<Item = &UseLibAction> {
+    ops.iter().filter(move |op| op.end_offset <= offset).map(|op| &op.action)
+}
+
+fn resolve_effective_paths_from_actions(
+    actions: impl IntoIterator<Item = UseLibAction>,
+    workspace_root: &Path,
+    file_dir: Option<&Path>,
+) -> Vec<String> {
+    let mut resolved = Vec::new();
+    for action in actions {
+        match action {
+            UseLibAction::Add(paths) => {
+                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
+                for path in added.into_iter().rev() {
+                    resolved.retain(|existing| existing != &path);
+                    resolved.insert(0, path);
+                }
+            }
+            UseLibAction::Remove(paths) => {
+                for path in resolve_use_lib_paths(&paths, workspace_root, file_dir) {
+                    resolved.retain(|existing| existing != &path);
+                }
+            }
+        }
+    }
+    resolved
+}
+
+fn cancelled_paths_from_actions(
+    actions: impl IntoIterator<Item = UseLibAction>,
+    workspace_root: &Path,
+    file_dir: Option<&Path>,
+) -> Vec<String> {
+    let mut effective = Vec::<String>::new();
+    let mut cancelled = Vec::<String>::new();
+    for action in actions {
+        match action {
+            UseLibAction::Add(paths) => {
+                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
+                for path in &added {
+                    cancelled.retain(|c| c != path);
+                }
+                for path in added.into_iter().rev() {
+                    effective.retain(|e| e != &path);
+                    effective.insert(0, path);
+                }
+            }
+            UseLibAction::Remove(paths) => {
+                let removed = resolve_use_lib_paths(&paths, workspace_root, file_dir);
+                for path in removed {
+                    effective.retain(|e| e != &path);
+                    if !cancelled.contains(&path) {
+                        cancelled.push(path);
+                    }
+                }
+            }
+        }
+    }
+    cancelled
 }
 
 /// Resolve effective include paths from lexical `use lib` / `no lib` operations.
@@ -103,25 +195,20 @@ pub fn resolve_use_lib_paths_from_source_at_offset(
     workspace_root: &Path,
     file_dir: Option<&Path>,
 ) -> Vec<String> {
-    let mut resolved = Vec::new();
-    let source_prefix = source.get(..offset).unwrap_or(source);
-    for op in extract_use_lib_operations(source_prefix) {
-        match op {
-            UseLibAction::Add(paths) => {
-                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
-                for path in added.into_iter().rev() {
-                    resolved.retain(|existing| existing != &path);
-                    resolved.insert(0, path);
-                }
-            }
-            UseLibAction::Remove(paths) => {
-                for path in resolve_use_lib_paths(&paths, workspace_root, file_dir) {
-                    resolved.retain(|existing| existing != &path);
-                }
-            }
-        }
-    }
-    resolved
+    let ops = extract_use_lib_operations_with_offsets(source);
+    resolve_use_lib_paths_from_operations_at_offset(&ops, offset, workspace_root, file_dir)
+}
+
+/// Resolve effective include paths from pre-extracted operations at a byte offset.
+#[must_use]
+pub fn resolve_use_lib_paths_from_operations_at_offset(
+    ops: &[UseLibOperation],
+    offset: usize,
+    workspace_root: &Path,
+    file_dir: Option<&Path>,
+) -> Vec<String> {
+    let actions = use_lib_actions_before_offset(ops, offset).cloned();
+    resolve_effective_paths_from_actions(actions, workspace_root, file_dir)
 }
 
 /// Compute the set of paths that are currently excluded from `@INC` at a given
@@ -145,32 +232,18 @@ pub fn no_lib_cancelled_paths_at_offset(
     workspace_root: &Path,
     file_dir: Option<&Path>,
 ) -> Vec<String> {
-    let mut effective = Vec::<String>::new();
-    let mut cancelled = Vec::<String>::new();
-    let source_prefix = source.get(..offset).unwrap_or(source);
-    for op in extract_use_lib_operations(source_prefix) {
-        match op {
-            UseLibAction::Add(paths) => {
-                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
-                for path in &added {
-                    // If it was cancelled, re-adding it removes the cancellation.
-                    cancelled.retain(|c| c != path);
-                }
-                for path in added.into_iter().rev() {
-                    effective.retain(|e| e != &path);
-                    effective.insert(0, path);
-                }
-            }
-            UseLibAction::Remove(paths) => {
-                let removed = resolve_use_lib_paths(&paths, workspace_root, file_dir);
-                for path in removed {
-                    effective.retain(|e| e != &path);
-                    if !cancelled.contains(&path) {
-                        cancelled.push(path);
-                    }
-                }
-            }
-        }
-    }
-    cancelled
+    let ops = extract_use_lib_operations_with_offsets(source);
+    no_lib_cancelled_paths_from_operations_at_offset(&ops, offset, workspace_root, file_dir)
+}
+
+/// Compute cancelled paths from pre-extracted operations at a byte offset.
+#[must_use]
+pub fn no_lib_cancelled_paths_from_operations_at_offset(
+    ops: &[UseLibOperation],
+    offset: usize,
+    workspace_root: &Path,
+    file_dir: Option<&Path>,
+) -> Vec<String> {
+    let actions = use_lib_actions_before_offset(ops, offset).cloned();
+    cancelled_paths_from_actions(actions, workspace_root, file_dir)
 }

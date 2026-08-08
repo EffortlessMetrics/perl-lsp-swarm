@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use perl_module::resolution::use_lib::{
-    UseLibAction, UseLibPath, extract_use_lib_operations, extract_use_lib_paths,
-    no_lib_cancelled_paths_at_offset, resolve_use_lib_paths,
-    resolve_use_lib_paths_from_source_at_offset,
+    UseLibAction, UseLibPath, extract_use_lib_operations, extract_use_lib_operations_with_offsets,
+    extract_use_lib_paths, no_lib_cancelled_paths_at_offset,
+    no_lib_cancelled_paths_from_operations_at_offset, resolve_use_lib_paths,
+    resolve_use_lib_paths_from_operations_at_offset, resolve_use_lib_paths_from_source_at_offset,
 };
 
 #[test]
@@ -877,4 +878,32 @@ fn no_lib_cancelled_paths_excludes_readded_paths() {
         "re-added path must not appear in cancelled list; got: {:?}",
         cancelled
     );
+}
+
+/// Pre-extracted operations must match per-offset source scanning (#1683).
+#[test]
+fn pre_extracted_use_lib_operations_match_source_scanning() {
+    let workspace = std::path::Path::new("/workspace");
+    let source = "use lib 'lib';\nno lib 'lib';\nuse lib 'extra';\nuse Mod;\n";
+    let ops = extract_use_lib_operations_with_offsets(source);
+
+    let offsets = [
+        "use lib 'lib';\n".len(),
+        "use lib 'lib';\nno lib 'lib';\n".len(),
+        "use lib 'lib';\nno lib 'lib';\nuse lib 'extra';\n".len(),
+        source.len(),
+    ];
+
+    for offset in offsets {
+        let from_source =
+            resolve_use_lib_paths_from_source_at_offset(source, offset, workspace, None);
+        let from_ops =
+            resolve_use_lib_paths_from_operations_at_offset(&ops, offset, workspace, None);
+        assert_eq!(from_ops, from_source, "resolve paths mismatch at offset {offset}");
+
+        let cancelled_source = no_lib_cancelled_paths_at_offset(source, offset, workspace, None);
+        let cancelled_ops =
+            no_lib_cancelled_paths_from_operations_at_offset(&ops, offset, workspace, None);
+        assert_eq!(cancelled_ops, cancelled_source, "cancelled paths mismatch at offset {offset}");
+    }
 }

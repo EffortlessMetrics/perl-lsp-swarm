@@ -920,6 +920,36 @@ impl LspServer {
 
         tracing::debug!(query, "Workspace symbol search");
 
+        // Try the prebuilt workspace index first to avoid re-indexing every
+        // open document on each workspace/symbol request (#4999 claim 1).
+        // Only fall back to the expensive per-document re-index when the
+        // index is genuinely unavailable or returned no results.
+        #[cfg(feature = "workspace")]
+        {
+            let _ = self.check_index_readiness(IndexReadinessPolicy::NoWait);
+            let access_mode = route_index_access(self.coordinator());
+            if let IndexAccessMode::Full(coordinator) = access_mode {
+                let cap = workspace_symbol_cap();
+                let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                symbols.extend(
+                    coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
+                );
+                if !symbols.is_empty() {
+                    let lsp_symbols: Vec<Value> = symbols
+                        .iter()
+                        .map(|sym| serde_json::to_value(sym).unwrap_or_else(|_| json!({})))
+                        .collect();
+                    tracing::debug!(
+                        count = lsp_symbols.len(),
+                        "Workspace symbol: served from prebuilt index (v1 fast path)"
+                    );
+                    return Ok(Some(json!(lsp_symbols)));
+                }
+                // Index returned empty — fall through to re-index fallback.
+            }
+        }
+
+        // Fallback: re-index open documents (expensive, O(docs × size)).
         // Lightweight snapshot: only clone fields needed for symbol extraction,
         // avoiding expensive Rope, ParentMap, LineStartsCache, and parse_errors clones.
         let docs_snapshot: Vec<(String, String, Option<Arc<perl_parser::ast::Node>>)> = {
