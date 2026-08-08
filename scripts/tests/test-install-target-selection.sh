@@ -145,6 +145,29 @@ assert_only_built_windows_targets() {
     pass "$label"
 }
 
+reachable_windows_targets() {
+    local file
+
+    for file in "$@"; do
+        case "$file" in
+            *.ps1)
+                strip_comments "$file" \
+                    | grep -E '^[[:space:]]*\$[A-Za-z][A-Za-z0-9_]*[Tt]arget[[:space:]]*=' \
+                    | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' || true
+                ;;
+            *.ts)
+                strip_comments "$file" \
+                    | grep -E '^[[:space:]]*(export[[:space:]]+)?const[[:space:]]+[A-Z0-9_]*TARGET[[:space:]]*=' \
+                    | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' || true
+                ;;
+            *)
+                fail "Windows target reachability" "unsupported install surface type: $file"
+                return
+                ;;
+        esac
+    done
+}
+
 # The other half of the contract (#6196).
 #
 # assert_only_built_windows_targets checks containment: surfaces must not
@@ -175,16 +198,17 @@ assert_every_built_windows_target_is_reachable() {
         return
     fi
 
-    reachable=""
     for file in "$@"; do
         if [[ ! -f "$file" ]]; then
             fail "$label" "missing $file"
             return
         fi
-        reachable+="$(strip_comments "$file" \
-            | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' || true)"
-        reachable+=$'\n'
     done
+
+    # Count only target-bearing assignments/constants. A target string in a
+    # diagnostic or explanatory comment is not a requestable release asset and
+    # must not make the reverse-direction contract pass.
+    reachable="$(reachable_windows_targets "$@" | sort -u || true)"
 
     reachable="$(printf '%s' "$reachable" | grep -E '\S' | sort -u || true)"
 
