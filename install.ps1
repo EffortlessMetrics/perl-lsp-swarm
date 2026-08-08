@@ -56,6 +56,45 @@ function Write-Success {
     Write-Host $Message
 }
 
+function Get-ExpectedAssetHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ChecksumPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Asset
+    )
+
+    $EntryPattern = [regex]'^(?<hash>[0-9a-f]{64})[ \t]+\*?(?<name>.+)$'
+    $Entries = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($RawLine in Get-Content -LiteralPath $ChecksumPath) {
+        $Line = $RawLine.TrimEnd("`r")
+        if ([string]::IsNullOrWhiteSpace($Line)) {
+            continue
+        }
+
+        $Match = $EntryPattern.Match($Line)
+        if (-not $Match.Success) {
+            continue
+        }
+
+        if ($Match.Groups['name'].Value -ne $Asset) {
+            continue
+        }
+
+        $Entries.Add($Match.Groups['hash'].Value)
+    }
+
+    if ($Entries.Count -eq 0) {
+        throw "SHA256SUMS contains no exact lowercase SHA-256 entry for $Asset"
+    }
+    if ($Entries.Count -ne 1) {
+        throw "SHA256SUMS contains duplicate entries for $Asset"
+    }
+
+    return $Entries[0]
+}
+
 # Detect architecture.
 #
 # Only x86_64-pc-windows-msvc is published: the release matrix in
@@ -141,6 +180,7 @@ $VersionNum = $Tag.TrimStart("v")
 # Construct download URL
 $Asset = "$Name-$VersionNum-$Target.zip"
 $Url = "https://github.com/$Repo/releases/download/$Tag/$Asset"
+$ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
 
 Write-Info "Downloading $Name $Tag for $Target"
 
@@ -148,70 +188,75 @@ Write-Info "Downloading $Name $Tag for $Target"
 $TempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
 
 try {
-    # Download binary
+    # Integrity metadata is required and selected before the archive download.
+    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
+    Write-Info "Downloading required checksum manifest"
+    try {
+        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
+    } catch {
+        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+    }
+
+    try {
+        $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
+    } catch {
+        Write-Error "Invalid checksum manifest for $Asset : $($_.Exception.Message)"
+    }
+
+    # Download the exact selected archive only after its checksum identity is usable.
     $ZipPath = Join-Path $TempDir $Asset
     Write-Info "Downloading from $Url"
-    
     try {
         Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download from $Url : $_"
     }
-    
-    # Download and verify checksum (optional)
-    $ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
-    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
-    
+
     try {
-        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
-        
-        # Verify checksum
-        $ExpectedHash = (Get-Content $ChecksumPath | Select-String $Asset).Line.Split(" ")[0]
-        $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
-        
-        if ($ExpectedHash -eq $ActualHash) {
-            Write-Success "Checksum verified"
-        } else {
-            Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
-        }
+        $ActualHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     } catch {
-        Write-Warn "Could not download or verify checksums"
+        Write-Error "Failed to calculate SHA-256 for $Asset : $_"
     }
-    
+
+    if ($ExpectedHash -ne $ActualHash) {
+        Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
+    }
+    Write-Success "Checksum verified"
+
     # Extract archive
     Write-Info "Extracting archive"
     $ExtractDir = Join-Path $TempDir "extract"
     Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-    
+
     # Find the binary
     $ExtractedDir = Join-Path $ExtractDir "$Name-$VersionNum-$Target"
     if (-not (Test-Path $ExtractedDir)) {
         # Try without nested directory
         $ExtractedDir = $ExtractDir
     }
-    
+
     $BinaryPath = Join-Path $ExtractedDir "$Name.exe"
     if (-not (Test-Path $BinaryPath)) {
         Write-Error "Binary not found at $BinaryPath"
     }
-    
+
     # Create install directory
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
-    
+
     # Install binary
     $DestPath = Join-Path $InstallDir "$Name.exe"
     Write-Info "Installing $Name to $DestPath"
-    
+
     # Remove old binary if exists
     if (Test-Path $DestPath) {
         Remove-Item $DestPath -Force
     }
-    
+
     # Copy binary
     Copy-Item -Path $BinaryPath -Destination $DestPath -Force
-    
+
     Write-Success "Installed $Name to $DestPath"
 
     # Install the perl-dap companion binary when the archive carries it.
@@ -240,7 +285,7 @@ try {
     } catch {
         Write-Warn "Could not verify installation"
     }
-    
+
     # Check PATH
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($UserPath -like "*$InstallDir*") {
@@ -257,7 +302,7 @@ try {
         Write-Host "  `$env:Path += `";$InstallDir`"" -ForegroundColor White
         Write-Host ""
     }
-    
+
     Write-Host ""
     Write-Host "Installation complete! 🎉" -ForegroundColor Green
     Write-Host ""
@@ -271,7 +316,7 @@ try {
     }
     Write-Host ""
     Write-Host "For more information: https://github.com/$Repo"
-    
+
 } finally {
     # Cleanup
     if (Test-Path $TempDir) {
