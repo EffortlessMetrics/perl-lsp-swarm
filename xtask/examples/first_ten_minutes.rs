@@ -10,6 +10,7 @@
 use clap::Parser;
 use color_eyre::eyre::{Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -198,6 +199,48 @@ fn non_empty(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_raw_shape(raw: &Value) -> Result<()> {
+    let object =
+        raw.as_object().ok_or_else(|| color_eyre::eyre::eyre!("receipt must be a JSON object"))?;
+
+    for field in [
+        "check",
+        "schema_version",
+        "status",
+        "claim_boundary",
+        "study_pass",
+        "candidate",
+        "project",
+        "steps",
+        "first_useful_ms",
+        "first_correct_ms",
+        "counts",
+        "findings",
+        "expected_beta_boundaries",
+        "linked_issues",
+        "limitations",
+    ] {
+        if !object.contains_key(field) {
+            bail!("missing required receipt field: {field}");
+        }
+    }
+
+    for field in ["expected_beta_boundaries", "linked_issues", "limitations"] {
+        let values = object
+            .get(field)
+            .and_then(Value::as_array)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{field} must be an array"))?;
+        let mut unique = BTreeSet::new();
+        for value in values {
+            if !unique.insert(value.to_string()) {
+                bail!("{field} must not contain duplicate items");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
     if value.len() != bytes * 2 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("{field} must be exactly {} hexadecimal characters", bytes * 2);
@@ -218,16 +261,8 @@ fn issue_identity(value: &str, field: &str) -> Result<()> {
 fn validate_identity(receipt: &Receipt) -> Result<()> {
     exact_hex(&receipt.candidate.repository_sha, 20, "candidate.repository_sha")?;
     exact_hex(&receipt.candidate.vsix_sha256, 32, "candidate.vsix_sha256")?;
-    exact_hex(
-        &receipt.candidate.perllsp_sha256,
-        32,
-        "candidate.perllsp_sha256",
-    )?;
-    exact_hex(
-        &receipt.candidate.perl_dap_sha256,
-        32,
-        "candidate.perl_dap_sha256",
-    )?;
+    exact_hex(&receipt.candidate.perllsp_sha256, 32, "candidate.perllsp_sha256")?;
+    exact_hex(&receipt.candidate.perl_dap_sha256, 32, "candidate.perl_dap_sha256")?;
     exact_hex(&receipt.project.content_sha256, 32, "project.content_sha256")?;
 
     for (field, value) in [
@@ -280,11 +315,29 @@ fn validate_findings(receipt: &Receipt) -> Result<()> {
     Ok(())
 }
 
+fn validate_limited_steps(receipt: &Receipt) -> Result<()> {
+    let has_receipt_limitation = !receipt.limitations.is_empty();
+    let has_explanation_finding = receipt.findings.iter().any(|finding| {
+        matches!(finding.class, FrictionClass::ExpectedBetaBoundary | FrictionClass::Actionability)
+    });
+
+    for step in &receipt.steps {
+        if step.status == StepStatus::Limited {
+            if step.limitations.is_empty() {
+                bail!("a limited journey step must explain its limitation");
+            }
+            if !has_receipt_limitation && !has_explanation_finding {
+                bail!(
+                    "a limited journey step must bind to a receipt limitation or an expected-beta/actionability finding"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn computed_status(receipt: &Receipt) -> ReceiptStatus {
-    let blocked_step = receipt
-        .steps
-        .iter()
-        .any(|step| step.status == StepStatus::Failed);
+    let blocked_step = receipt.steps.iter().any(|step| step.status == StepStatus::Failed);
     let blocked_finding = receipt.findings.iter().any(|finding| {
         matches!(finding.class, FrictionClass::Broken | FrictionClass::TrustBreaker)
     });
@@ -292,14 +345,9 @@ fn computed_status(receipt: &Receipt) -> ReceiptStatus {
         return ReceiptStatus::Blocked;
     }
 
-    let unproven_step = receipt
-        .steps
-        .iter()
-        .any(|step| step.status == StepStatus::NotProven);
-    let unproven_finding = receipt
-        .findings
-        .iter()
-        .any(|finding| finding.class == FrictionClass::NotProven);
+    let unproven_step = receipt.steps.iter().any(|step| step.status == StepStatus::NotProven);
+    let unproven_finding =
+        receipt.findings.iter().any(|finding| finding.class == FrictionClass::NotProven);
     if unproven_step || unproven_finding {
         return ReceiptStatus::NotProven;
     }
@@ -318,6 +366,7 @@ fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
     validate_identity(receipt)?;
     validate_steps(receipt)?;
     validate_findings(receipt)?;
+    validate_limited_steps(receipt)?;
 
     if let (Some(first_useful), Some(first_correct)) =
         (receipt.first_useful_ms, receipt.first_correct_ms)
@@ -363,7 +412,9 @@ fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
 
 fn load(path: &Path) -> Result<Receipt> {
     let content = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+    let raw: Value = serde_json::from_str(&content)?;
+    validate_raw_shape(&raw)?;
+    Ok(serde_json::from_value(raw)?)
 }
 
 fn main() -> Result<()> {
@@ -387,18 +438,19 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Receipt, ReceiptStatus, validate};
+    use super::{Receipt, ReceiptStatus, StepStatus, validate, validate_raw_shape};
     use color_eyre::eyre::Result;
 
     fn fixture(content: &str) -> Result<Receipt> {
-        Ok(serde_json::from_str(content)?)
+        let raw: serde_json::Value = serde_json::from_str(content)?;
+        validate_raw_shape(&raw)?;
+        Ok(serde_json::from_value(raw)?)
     }
 
     #[test]
     fn valid_fixture_passes() -> Result<()> {
-        let receipt = fixture(include_str!(
-            "../../fixtures/experience/first_ten_minutes/valid.json"
-        ))?;
+        let receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
         Ok(())
     }
@@ -414,9 +466,8 @@ mod tests {
 
     #[test]
     fn a_missing_required_step_fails_closed() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/first_ten_minutes/valid.json"
-        ))?;
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         let removed = receipt.steps.pop();
         assert!(removed.is_some());
         assert!(validate(&receipt).is_err());
@@ -425,9 +476,8 @@ mod tests {
 
     #[test]
     fn a_false_green_status_is_rejected() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/first_ten_minutes/valid.json"
-        ))?;
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         receipt.counts.stale_exact = 1;
         assert!(validate(&receipt).is_err());
         Ok(())
@@ -435,9 +485,8 @@ mod tests {
 
     #[test]
     fn malformed_issue_identity_is_rejected() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/first_ten_minutes/valid.json"
-        ))?;
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         receipt.linked_issues[0] = "#not-a-number".to_string();
         assert!(validate(&receipt).is_err());
         Ok(())
@@ -445,12 +494,52 @@ mod tests {
 
     #[test]
     fn first_correct_cannot_precede_first_useful() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/first_ten_minutes/valid.json"
-        ))?;
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         receipt.first_useful_ms = Some(500);
         receipt.first_correct_ms = Some(400);
         assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn limited_step_requires_an_explanation() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
+        receipt.steps[0].status = StepStatus::Limited;
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_required_nullable_timings_cannot_be_omitted() -> Result<()> {
+        let mut raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../fixtures/experience/first_ten_minutes/valid.json"
+        ))?;
+        raw.as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture is not an object"))?
+            .remove("first_useful_ms");
+        assert!(validate_raw_shape(&raw).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_unique_arrays_cannot_contain_duplicates() -> Result<()> {
+        let mut raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../fixtures/experience/first_ten_minutes/valid.json"
+        ))?;
+        let issues = raw
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture is not an object"))?
+            .get_mut("linked_issues")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no linked issues"))?;
+        let first = issues
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no issue identity"))?;
+        issues.push(first);
+        assert!(validate_raw_shape(&raw).is_err());
         Ok(())
     }
 }
