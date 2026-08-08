@@ -8,7 +8,7 @@
 #![allow(clippy::print_stdout)]
 
 use clap::Parser;
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
@@ -40,6 +40,18 @@ const REQUIRED_CORE_LOOP: [&str; 9] = [
     "formatting",
     "safe_rename_or_refusal",
 ];
+const REQUIRED_PROJECT_FAMILIES: [&str; 5] = [
+    "conventional_modules",
+    "test_heavy",
+    "framework_shaped",
+    "environment_sensitive",
+    "dynamic_boundary_control",
+];
+const EXPECTED_EDITOR: &str = "VS Code is the first-class installed experience.";
+const EXPECTED_OTHER_EDITORS: &str =
+    "Standard LSP compatibility only; no equivalent UI-polish claim.";
+const EXPECTED_DYNAMIC_PERL: &str =
+    "Bounded fallback, degraded answer, or refusal with an intelligible reason; never manufactured certainty.";
 
 #[derive(Debug, Parser)]
 #[command(name = "public-beta-experience")]
@@ -175,11 +187,13 @@ impl ZeroBudgetCounts {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReceiptRef {
+    owner_issue: String,
     schema_version: String,
     sha256: String,
     candidate_id: String,
     status: InputStatus,
     claim_boundary: String,
+    limitation: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -250,16 +264,8 @@ fn issue_identity(value: &str, field: &str) -> Result<()> {
 }
 
 fn validate_candidate(receipt: &Receipt) -> Result<()> {
-    exact_hex(
-        &receipt.candidate.frozen_product_sha,
-        20,
-        "candidate.frozen_product_sha",
-    )?;
-    exact_hex(
-        &receipt.candidate.release_topology_sha256,
-        32,
-        "candidate.release_topology_sha256",
-    )?;
+    exact_hex(&receipt.candidate.frozen_product_sha, 20, "candidate.frozen_product_sha")?;
+    exact_hex(&receipt.candidate.release_topology_sha256, 32, "candidate.release_topology_sha256")?;
     for (field, value) in [
         ("candidate.release", receipt.candidate.release.as_str()),
         ("candidate.candidate_id", receipt.candidate.candidate_id.as_str()),
@@ -271,14 +277,16 @@ fn validate_candidate(receipt: &Receipt) -> Result<()> {
 }
 
 fn validate_envelope(envelope: &SupportedEnvelope) -> Result<()> {
-    non_empty(&envelope.editor, "supported_envelope.editor")?;
-    non_empty(&envelope.other_editors, "supported_envelope.other_editors")?;
-    non_empty(&envelope.dynamic_perl, "supported_envelope.dynamic_perl")?;
-    if envelope.project_families.is_empty() {
-        bail!("supported_envelope.project_families must not be empty");
+    if envelope.editor != EXPECTED_EDITOR
+        || envelope.other_editors != EXPECTED_OTHER_EDITORS
+        || envelope.dynamic_perl != EXPECTED_DYNAMIC_PERL
+    {
+        bail!("supported_envelope prose must match the accepted v0.18 envelope");
     }
-    for family in &envelope.project_families {
-        non_empty(family, "supported_envelope.project_families[]")?;
+    let observed: BTreeSet<&str> = envelope.project_families.iter().map(String::as_str).collect();
+    let required = BTreeSet::from(REQUIRED_PROJECT_FAMILIES);
+    if observed != required {
+        bail!("supported_envelope.project_families must match the accepted representative set");
     }
 
     let observed: BTreeSet<&str> = envelope.core_loop.iter().map(String::as_str).collect();
@@ -320,33 +328,46 @@ fn validate_journey_cells(receipt: &Receipt) -> Result<()> {
 
 fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
     for (name, child) in receipt.child_receipts.iter() {
-        non_empty(
-            &child.schema_version,
-            &format!("child_receipts.{name}.schema_version"),
-        )?;
+        let (expected_schema, expected_owner) = match name {
+            "user_state_presentation" => ("workspace_experience.v1", "#5901"),
+            "first_ten_minutes" => ("first_ten_minutes.v1", "#5902"),
+            "install_transition" => ("install_transition.v1", "#5903"),
+            "installed_acceptance" => ("installed_acceptance.v1", "#4346"),
+            "first_useful_answer" => ("first_useful_answer.v1", "#4048"),
+            "representative_workload" => ("scenario67.v1", "#4050"),
+            "release_topology" => ("release_topology.v1", "#5889"),
+            "release_integrity" => ("release_integrity.v1", "#4145"),
+            _ => bail!("unknown child receipt slot: {name}"),
+        };
+        if child.schema_version != expected_schema {
+            bail!("child_receipts.{name} must use schema {expected_schema}");
+        }
         exact_hex(&child.sha256, 32, &format!("child_receipts.{name}.sha256"))?;
-        non_empty(
-            &child.claim_boundary,
-            &format!("child_receipts.{name}.claim_boundary"),
-        )?;
+        non_empty(&child.claim_boundary, &format!("child_receipts.{name}.claim_boundary"))?;
+        if child.owner_issue != expected_owner {
+            bail!("child_receipts.{name} must be owned by {expected_owner}");
+        }
         if child.candidate_id != receipt.candidate.candidate_id {
             bail!("child_receipts.{name} belongs to a different candidate");
         }
+        match child.status {
+            InputStatus::Limited => {
+                let limitation = child.limitation.as_deref().unwrap_or_default();
+                non_empty(limitation, &format!("child_receipts.{name}.limitation"))?;
+            }
+            InputStatus::Pass | InputStatus::Blocked | InputStatus::NotProven => {}
+        }
     }
 
-    if receipt.child_receipts.release_topology.sha256
-        != receipt.candidate.release_topology_sha256
-    {
+    if receipt.child_receipts.release_topology.sha256 != receipt.candidate.release_topology_sha256 {
         bail!("release_topology child digest differs from candidate topology digest");
     }
     Ok(())
 }
 
 fn computed_status(receipt: &Receipt) -> OverallStatus {
-    let blocked_cell = receipt
-        .journey_cells
-        .iter()
-        .any(|cell| cell.disposition == CellDisposition::Failed);
+    let blocked_cell =
+        receipt.journey_cells.iter().any(|cell| cell.disposition == CellDisposition::Failed);
     let blocked_child = receipt
         .child_receipts
         .iter()
@@ -356,10 +377,8 @@ fn computed_status(receipt: &Receipt) -> OverallStatus {
         return OverallStatus::Blocked;
     }
 
-    let unproven_cell = receipt
-        .journey_cells
-        .iter()
-        .any(|cell| cell.disposition == CellDisposition::NotProven);
+    let unproven_cell =
+        receipt.journey_cells.iter().any(|cell| cell.disposition == CellDisposition::NotProven);
     let unproven_child = receipt
         .child_receipts
         .iter()
@@ -426,7 +445,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CellDisposition, OverallStatus, Receipt, validate};
+    use super::{validate, CellDisposition, OverallStatus, Receipt};
     use color_eyre::eyre::Result;
 
     fn fixture(content: &str) -> Result<Receipt> {
@@ -435,27 +454,22 @@ mod tests {
 
     #[test]
     fn ready_fixture_passes() -> Result<()> {
-        let receipt = fixture(include_str!(
-            "../../fixtures/experience/public_beta/ready.json"
-        ))?;
+        let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         assert_eq!(validate(&receipt)?, OverallStatus::Ready);
         Ok(())
     }
 
     #[test]
     fn blocked_fixture_is_blocked() -> Result<()> {
-        let receipt = fixture(include_str!(
-            "../../fixtures/experience/public_beta/blocked.json"
-        ))?;
+        let receipt = fixture(include_str!("../../fixtures/experience/public_beta/blocked.json"))?;
         assert_eq!(validate(&receipt)?, OverallStatus::Blocked);
         Ok(())
     }
 
     #[test]
     fn a_nonzero_zero_budget_count_cannot_claim_ready() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/public_beta/ready.json"
-        ))?;
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         receipt.zero_budget.wrong_binary_or_version = 1;
         assert!(validate(&receipt).is_err());
         Ok(())
@@ -463,30 +477,59 @@ mod tests {
 
     #[test]
     fn cross_candidate_child_evidence_fails_closed() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/public_beta/ready.json"
-        ))?;
-        receipt.child_receipts.install_transition.candidate_id =
-            "another-candidate".to_string();
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.install_transition.candidate_id = "another-candidate".to_string();
         assert!(validate(&receipt).is_err());
         Ok(())
     }
 
     #[test]
     fn release_topology_digest_must_match_candidate() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/public_beta/ready.json"
-        ))?;
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         receipt.child_receipts.release_topology.sha256 = "9".repeat(64);
         assert!(validate(&receipt).is_err());
         Ok(())
     }
 
     #[test]
+    fn child_slot_schema_and_owner_are_not_substitutable() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.install_transition.schema_version = "other.v1".to_string();
+        assert!(validate(&receipt).is_err());
+
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.install_transition.owner_issue = "#4048".to_string();
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn limited_child_requires_visible_limitation() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.first_ten_minutes.status = super::InputStatus::Limited;
+        receipt.child_receipts.first_ten_minutes.limitation = None;
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn supported_envelope_cannot_shrink_project_family_set() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.supported_envelope.project_families.pop();
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn limited_cell_requires_an_explicit_limitation() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/public_beta/ready.json"
-        ))?;
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         if let Some(cell) = receipt
             .journey_cells
             .iter_mut()
@@ -500,12 +543,9 @@ mod tests {
 
     #[test]
     fn missing_journey_cell_fails_closed() -> Result<()> {
-        let mut receipt = fixture(include_str!(
-            "../../fixtures/experience/public_beta/ready.json"
-        ))?;
-        receipt
-            .journey_cells
-            .retain(|cell| cell.id != super::JourneyCellId::Shutdown);
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.journey_cells.retain(|cell| cell.id != super::JourneyCellId::Shutdown);
         assert!(validate(&receipt).is_err());
         Ok(())
     }

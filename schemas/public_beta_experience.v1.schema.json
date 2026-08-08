@@ -274,13 +274,19 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "owner_issue",
         "schema_version",
         "sha256",
         "candidate_id",
         "status",
-        "claim_boundary"
+        "claim_boundary",
+        "limitation"
       ],
       "properties": {
+        "owner_issue": {
+          "type": "string",
+          "pattern": "^#[0-9]+$"
+        },
         "schema_version": {
           "type": "string",
           "minLength": 1
@@ -303,6 +309,17 @@
         "claim_boundary": {
           "type": "string",
           "minLength": 1
+        },
+        "limitation": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
