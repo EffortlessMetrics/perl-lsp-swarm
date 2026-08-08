@@ -67,20 +67,31 @@ A useful worker brief names the exact PR/candidate, controlling claim, establish
 facts, authorities, one read-only question, named `$skill`, realistic falsifiers,
 required evidence, uncertainty, and non-goals.
 
-**Brief the worker to break the claim, not to confirm it.** State the asserted property
-as something to falsify and supply concrete attack hypotheses — the specific way it
-would fail if it were wrong. "Check whether the guard is correct" returns agreement;
-"can a failed first attempt leave the tree dirty for later attempts?" returns a defect
-or a reasoned refutation, and both are useful. Decompose a chained claim into
-individually checkable propositions, since a chain fails if any single link does. When
-the integrating reviewer already holds a positive read, submit that read for
-falsification rather than asserting it on its own authority.
+**Decompose the claim into individually checkable propositions and check each one.**
+A claim such as "the guard binds publishing to a clean tree" is a chain, and a chain
+fails if any single link does. Split it — the guard runs before every publish attempt;
+the guard's notion of dirty covers the set that gets packaged; the packaged set has no
+member the guard cannot see — then check each proposition separately against source,
+reporting it as confirmed, refuted, or `NOT_PROVEN`. This separates a worker that
+agrees from a worker that found the one link that does not hold.
+
+Supply concrete attack hypotheses, phrased as the specific way the claim would fail if
+it were wrong. "Check whether the guard is correct" returns agreement; "can a failed
+first attempt leave the tree dirty for attempts 2 and 3?" returns a defect or a
+reasoned refutation, and both are useful. When the integrating reviewer already holds a
+positive read, submit that read for falsification rather than asserting it on its own
+authority.
 
 **Differing directions beat additional workers.** When two lenses examine one surface,
-give them different sources, oracles, methods, or threat models. Workers briefed the
-same way share a blind spot, and their agreement is not corroboration. An external
-oracle, a production-path trace, and a proof-discrimination pass over one seam are
-three directions; three workers asked "is this correct?" are one.
+give them different sources, oracles, methods, or threat models. Two reviewers once
+examined the same flag on the same line and reached opposite verdicts: one cleared
+`git ls-files --exclude-standard` while reasoning about build artifacts, the other found
+that a gitignored file matched by a crate's packaging-include pattern still gets
+packaged. Same
+evidence, different threat model, different answer — and the second was right. Workers
+briefed the same way share a blind spot, so their agreement is not corroboration. An
+external oracle, a production-path trace, and a proof-discrimination pass over one seam
+are three directions; three workers asked "is this correct?" are one.
 
 Do not ask vague workers to repeat the same review.
 
@@ -177,10 +188,12 @@ certification cannot create `REVIEW_CURRENT`.
 ## Review scope
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
 
-## Lenses run
-- Each lens or attack angle attempted, and its outcome: finding | refuted | NOT_PROVEN
-- Refuted angles belong in the record rather than being dropped — they state what was
-  attacked and survived, and they make a later reviewer's differing conclusion visible
+## Propositions checked
+- Each proposition the claim decomposes into, with its outcome:
+  confirmed | refuted | NOT_PROVEN, and the source or authority that settled it
+- Refuted propositions belong here rather than being dropped — they record what was
+  attacked and survived. Two reviewers reporting only findings look like agreement;
+  two reporting their propositions reveal whether they checked the same one
 
 ## Evidence and falsifiers
 - Commands, tests, fixtures, sources, or authorities used

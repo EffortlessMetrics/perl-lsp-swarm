@@ -64,21 +64,31 @@ A useful child brief names the exact PR/candidate, claim, settled facts, authori
 one read-only question, named skill, falsifiers, required evidence, uncertainty, and
 non-goals.
 
-**Brief the child to break the claim, not to confirm it.** State the asserted property
-as something to falsify and supply concrete attack hypotheses — the specific way it
-would fail if it were wrong. "Check whether the guard is correct" returns agreement;
-"can a failed first attempt leave the tree dirty for later attempts?" returns a defect
-or a reasoned refutation, and both are useful. Decompose a chained claim into
-individually checkable propositions, because a chain fails if any single link does.
-When the lane root already holds a positive read, send *that read* out to be falsified
-rather than asserting it on its own authority.
+**Decompose the claim into individually checkable propositions and check each one.**
+A claim like "the guard binds publishing to a clean tree" is a chain, and a chain fails
+if any single link does. Split it — the guard runs before every publish attempt; the
+guard's notion of dirty covers the set that gets packaged; the packaged set has no
+member the guard cannot see — then check each proposition separately against source.
+Report each as confirmed, refuted, or `NOT_PROVEN`. This is the difference between a
+reviewer who agrees and a reviewer who found the one link that does not hold.
+
+Give the child concrete attack hypotheses, phrased as the specific way the claim would
+fail if it were wrong. "Check whether the guard is correct" returns agreement; "can a
+failed first attempt leave the tree dirty for attempts 2 and 3?" returns a defect or a
+reasoned refutation, and both are useful. When the lane root already holds a positive
+read, send *that read* out to be falsified rather than asserting it on its own
+authority.
 
 **Differing directions beat additional reviewers.** When two lenses examine the same
-surface, give them different sources, oracles, methods, or threat models — two agents
-briefed the same way share the same blind spot and their agreement is not
-corroboration. An external oracle, a production-path trace, and a proof-discrimination
-pass over one seam are three directions; three subagents asked "is this correct?" are
-one.
+surface, give them different sources, oracles, methods, or threat models. Two reviewers
+once examined the same flag on the same line and reached opposite verdicts: one cleared
+`git ls-files --exclude-standard` while reasoning about build artifacts, the other found
+that a gitignored file matched by a crate's packaging-include pattern still gets
+packaged. Same
+evidence, different threat model, different answer — and the second was right. Agents
+briefed the same way share a blind spot, so their agreement is not corroboration. An
+external oracle, a production-path trace, and a proof-discrimination pass over one seam
+are three directions; three subagents asked "is this correct?" are one.
 
 Use ordinary subagents/context forks for independent returns; use an Agent Team only
 when lateral communication changes the result. Do not ask vague agents to repeat the
@@ -177,11 +187,12 @@ certification cannot create `REVIEW_CURRENT`.
 ## Review scope
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
 
-## Lenses run
-- Each lens or attack angle attempted, and its outcome: finding | refuted | NOT_PROVEN
-- Refuted angles are part of the record, not omissions — they say what was attacked
-  and survived, and they are what makes a later reviewer's differing conclusion
-  visible instead of invisible
+## Propositions checked
+- Each proposition the claim decomposes into, with its outcome:
+  confirmed | refuted | NOT_PROVEN, and the source or authority that settled it
+- Refuted propositions belong here, not omitted — they record what was attacked and
+  survived. Two reviewers who both report only findings look like agreement; two who
+  report their propositions reveal whether they checked the same one
 
 ## Evidence and falsifiers
 - Commands, tests, fixtures, sources, or authorities used
