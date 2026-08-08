@@ -85,7 +85,10 @@ def collect_actuals(
             # Reject non-finite or extreme samples that could corrupt the
             # percentile history (inf, nan, or implausibly large values from
             # a buggy or malicious ci-actuals artifact) (#5995).
-            actual_float = float(actual)
+            try:
+                actual_float = float(actual)
+            except (OverflowError, ValueError):
+                continue
             if (
                 not math.isfinite(actual_float)
                 or actual_float < 0

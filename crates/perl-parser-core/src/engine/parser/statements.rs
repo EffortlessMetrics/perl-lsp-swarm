@@ -918,6 +918,10 @@ impl<'a> Parser<'a> {
     /// bodies from being mistaken for a heredoc introducer. Paired delimiters
     /// are balanced, escapes are skipped, and substitution-like operators
     /// consume both bodies.
+    #[expect(
+        clippy::question_mark,
+        reason = "policy:ripr-quote-like-body: intentional let-else return None so RIPR None-oracles observe the miss path (#5838)"
+    )]
     fn quote_like_body_end(span: &[u8], index: usize) -> Option<usize> {
         const OPERATORS: &[&[u8]] = &[b"tr", b"qq", b"qx", b"qr", b"qw", b"m", b"s", b"y", b"q"];
 

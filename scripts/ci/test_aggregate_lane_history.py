@@ -78,6 +78,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
                             {"lane_id": "bool", "actual_lem": True},
                             {"lane_id": "infinity", "actual_lem": float("inf")},
                             {"lane_id": "nan", "actual_lem": float("nan")},
+                            {"lane_id": "oversized-int", "actual_lem": 10**400},
                         ]
                     }
                 ),
