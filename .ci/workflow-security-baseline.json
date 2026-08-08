@@ -1,6 +1,6 @@
 {
   "control_files": {
-    ".github/workflows/workflow-security-ratchet.yml": "sha256:f114cccf40297c7f325afee3a3f39d5522d88ce5047133176c77a89d9ad6cee6",
+    ".github/workflows/workflow-security-ratchet.yml": "sha256:55901fbf8b6c87901950e3f5f518d1f2b34db793077925b43d77fbf33ac04603",
     "scripts/ci/test_workflow_security_ratchet.py": "sha256:cd8f711a705a54860fd7dc65c6e110343216ce828b935bd5fb67b1c2550f5575",
     "scripts/ci/workflow_security_ratchet.py": "sha256:81661e48ffb6777309d9513917e12941c64f9d0aa20ac8f701421917d6257dec"
   },
@@ -1012,14 +1012,6 @@
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/docs-deploy.yml",
       "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "47faddb157c557c90e8142902232e947fd21ea398b39c903ab0d0b106ad50397",
-      "line": 29,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/droid-security-scan.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
     },
     {
       "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
