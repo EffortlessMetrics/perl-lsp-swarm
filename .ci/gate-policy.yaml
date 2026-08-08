@@ -1012,6 +1012,7 @@ gates:
       cargo xtask check-provider-promotion-ledger &&
       cargo xtask check-provider-confidence-matrix &&
       cargo xtask check-native-product-surface --strict &&
+      cargo xtask ci-hygiene check-doc-links docs/adr &&
       bash scripts/check-version-sync.sh &&
       bash scripts/check_release_history.sh &&
       bash ci/check_missing_docs.sh &&

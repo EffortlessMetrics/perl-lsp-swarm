@@ -234,7 +234,7 @@ The test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` provides:
 ## Related Documents
 - [API_DOCUMENTATION_STANDARDS.md](../reference/API_DOCUMENTATION_STANDARDS.md) - Enterprise-grade documentation requirements
 - [MISSING_DOCUMENTATION_GUIDE.md](../reference/MISSING_DOCUMENTATION_GUIDE.md) - 4-phase systematic resolution strategy
-- [CLAUDE.md](../CLAUDE.md) - Project overview with documentation command integration
+- [SKILL_AND_AGENT_DESIGN.md](../reference/SKILL_AND_AGENT_DESIGN.md) - Project overview with documentation command integration
 - [LSP_IMPLEMENTATION_GUIDE.md](../reference/LSP_IMPLEMENTATION_GUIDE.md) - LSP feature documentation context
 - [CRATE_ARCHITECTURE_GUIDE.md](../reference/CRATE_ARCHITECTURE_GUIDE.md) - System design documentation integration
 
