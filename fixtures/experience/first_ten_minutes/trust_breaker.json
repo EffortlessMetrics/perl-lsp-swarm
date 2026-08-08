@@ -5,6 +5,7 @@
   "claim_boundary": "Negative control proving a stale exact answer blocks the packaged first-ten-minutes disposition.",
   "study_pass": "exact_candidate_confirmation",
   "candidate": {
+    "candidate_id": "v0.18.0-rc1",
     "repository_sha": "0123456789abcdef0123456789abcdef01234567",
     "artifact_set_id": "v0.18.0-rc1-linux-x86_64",
     "vsix_version": "0.18.0",
