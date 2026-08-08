@@ -1,0 +1,63 @@
+name: Reconcile installer bootstrap with current main
+
+on:
+  push:
+    branches: [agent/installer-bootstrap-identity-6097]
+    paths: ['.github/workflows/reconcile-installer-bootstrap-main.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: agent/installer-bootstrap-identity-6097
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge exact current-main authority and regenerate inventory
+        env:
+          EXPECTED_MAIN_SHA: f3a0097a46876ba5e22dd3d5a4d3985403c0774f
+        run: |
+          set -euo pipefail
+          git fetch origin "$EXPECTED_MAIN_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_MAIN_SHA"
+
+          set +e
+          git merge --no-commit --no-ff "$EXPECTED_MAIN_SHA"
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "docs/policy/NON_RUST_INVENTORY.md"
+            git checkout --theirs docs/policy/NON_RUST_INVENTORY.md
+            git add docs/policy/NON_RUST_INVENTORY.md
+          fi
+
+          # The one-shot workflow must not become part of the generated final
+          # inventory. Remove it only while generating, then restore it
+          # unchanged so the Actions token does not push a workflow-file edit.
+          git rm .github/workflows/reconcile-installer-bootstrap-main.yml
+          cargo run -p xtask -- non-rust inventory
+          git checkout HEAD -- .github/workflows/reconcile-installer-bootstrap-main.yml
+          git add docs/policy/NON_RUST_INVENTORY.md
+
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --check
+
+      - name: Commit reconciled merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git commit -m 'merge: reconcile installer bootstrap with current main (#6097)'
+          gh auth setup-git
+          git push origin HEAD:agent/installer-bootstrap-identity-6097
