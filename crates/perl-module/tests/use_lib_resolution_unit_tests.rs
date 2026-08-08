@@ -985,3 +985,67 @@ fn use_lib_is_inactive_at_an_offset_inside_its_own_arguments() {
         "a path is not active before its argument text ends"
     );
 }
+
+/// A terminated pragma stays gated on its whole argument list (#6208 review).
+///
+/// Perl evaluates the argument list before running the pragma's `import`, so a
+/// compile-time `use` nested inside that list executes *before* `lib` joins
+/// `@INC` and must not see it. Activating at the end of the last recognized
+/// literal would wrongly suppress PL701 at the nested use-site, so a pragma
+/// whose argument list continues past what this extractor parses keeps the
+/// enclosing statement's end as its activation point.
+#[test]
+fn terminated_use_lib_with_trailing_expression_is_inactive_inside_its_own_arguments() {
+    let workspace = Path::new("/workspace");
+    let source = "use lib 'lib', do { use Nested::Only; 1 };\n";
+    let nested_use = source.find("use Nested::Only").unwrap_or_default();
+
+    let ops = extract_use_lib_operations_with_offsets(source);
+    assert_eq!(ops.len(), 1, "one `use lib` operation expected: {ops:?}");
+    assert!(
+        ops[0].end_offset > nested_use,
+        "a terminated pragma must not activate before its argument list ends: \
+         end_offset {} should be past the nested use-site at {nested_use}",
+        ops[0].end_offset
+    );
+
+    assert!(
+        resolve_use_lib_paths_from_operations_at_offset(&ops, nested_use, workspace, None)
+            .is_empty(),
+        "`lib` must not be visible to a `use` nested in the pragma's own argument list"
+    );
+    assert_eq!(
+        resolve_use_lib_paths_from_operations_at_offset(&ops, source.len(), workspace, None),
+        vec!["lib"],
+        "`lib` is still active after the pragma completes"
+    );
+}
+
+/// The same gating applies to a terminated `no lib` (#6208 review).
+///
+/// The inverse hazard: activating early would cancel `lib` before the nested
+/// compile-time `use` runs, which in Perl still sees it.
+#[test]
+fn terminated_no_lib_with_trailing_expression_cancels_only_after_its_arguments() {
+    let workspace = Path::new("/workspace");
+    let source = "use lib 'lib';\nno lib 'lib', do { use Nested::Only; 1 };\n";
+    let nested_use = source.find("use Nested::Only").unwrap_or_default();
+
+    let ops = extract_use_lib_operations_with_offsets(source);
+
+    assert_eq!(
+        resolve_use_lib_paths_from_operations_at_offset(&ops, nested_use, workspace, None),
+        vec!["lib"],
+        "`lib` is still in @INC for a `use` nested in the `no lib` argument list"
+    );
+    assert_eq!(
+        no_lib_cancelled_paths_from_operations_at_offset(&ops, nested_use, workspace, None),
+        Vec::<String>::new(),
+        "the cancellation has not taken effect yet at the nested use-site"
+    );
+    assert_eq!(
+        no_lib_cancelled_paths_from_operations_at_offset(&ops, source.len(), workspace, None),
+        vec!["lib"],
+        "the cancellation applies once the pragma completes"
+    );
+}

@@ -6,11 +6,12 @@ use super::{UseLibPath, byte_offset_within};
 ///
 /// Returns the number of bytes of `args` consumed by the recognized argument
 /// list — i.e. the offset just past the last path token that was pushed to
-/// `out`. Returns `0` when no path was extracted. Callers that need to know
-/// where a pragma's arguments end in the original source (see
-/// [`super::UseLibOperation`]) use this instead of the enclosing statement's
-/// terminator, because an unterminated pragma's statement slice can run past
-/// unrelated later code.
+/// `out`. Returns `0` when no path was extracted.
+///
+/// The count lets a caller inspect what follows the argument list. That is how
+/// [`super::UseLibOperation`] tells a properly terminated pragma from one whose
+/// semicolon has not been typed yet, whose statement slice runs past unrelated
+/// later code.
 pub(super) fn extract_paths_from_args(args: &str, out: &mut Vec<UseLibPath>) -> usize {
     let body = args.trim_end_matches(';').trim();
 
