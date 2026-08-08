@@ -149,8 +149,9 @@
   "child_receipts": {
     "user_state_presentation": {
       "owner_issue": "#5901",
+      "artifact_path": "child_receipts/user_state_presentation.json",
       "schema_version": "workspace_experience.v1",
-      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "sha256": "2fe3028a497b906d52679091ee06fc1e6c617e0bc1e424ebef966a48fb34041b",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "Installed VS Code state presentation.",
@@ -158,8 +159,9 @@
     },
     "first_ten_minutes": {
       "owner_issue": "#5902",
+      "artifact_path": "child_receipts/first_ten_minutes.json",
       "schema_version": "first_ten_minutes.v1",
-      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "sha256": "fd638e3596e696b50ed0804d76a10a60c95da2d405d9d40893742013556149d3",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "Finite representative first-use observation.",
@@ -167,8 +169,9 @@
     },
     "install_transition": {
       "owner_issue": "#5903",
+      "artifact_path": "child_receipts/install_transition.json",
       "schema_version": "install_transition.v1",
-      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "sha256": "b03e2c78290b6adf6a33b68c72a197c05e383c30e5ae392b2948f5aa276ab6fd",
       "candidate_id": "v0.18.0-rc1",
       "status": "blocked",
       "claim_boundary": "Topology-bound primary install transition failed identity proof.",
@@ -176,8 +179,9 @@
     },
     "installed_acceptance": {
       "owner_issue": "#4346",
+      "artifact_path": "child_receipts/installed_acceptance.json",
       "schema_version": "installed_acceptance.v1",
-      "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "sha256": "ca05a9192040b45c5861686fabceb011a5e8fb9675c66bbe3895d25000bca3c6",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "Exact packaged VSIX and binary journey.",
@@ -185,8 +189,9 @@
     },
     "first_useful_answer": {
       "owner_issue": "#4048",
+      "artifact_path": "child_receipts/first_useful_answer.json",
       "schema_version": "first_useful_answer.v1",
-      "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "sha256": "1493ee113e675e1c7eea1de8b3074ea1b94037ceb9978ff9708d474e1b534c8e",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "First useful and correct provider answers.",
@@ -194,8 +199,9 @@
     },
     "representative_workload": {
       "owner_issue": "#4050",
+      "artifact_path": "child_receipts/representative_workload.json",
       "schema_version": "scenario67.v1",
-      "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "sha256": "9df140b5951e15accbd8f1d32904d175e1a974258b9e608b22d69c86d2b15f60",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "Finite representative Perl project workload.",
@@ -203,8 +209,9 @@
     },
     "release_topology": {
       "owner_issue": "#5889",
+      "artifact_path": "child_receipts/release_topology.json",
       "schema_version": "release_topology.v1",
-      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "sha256": "6e5827e2d379d0a84fe83b14798041234765619b3d52c71ff24f99f3f38eab82",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "Publishable crates, targets, archives, installers, and channels.",
@@ -212,8 +219,9 @@
     },
     "release_integrity": {
       "owner_issue": "#4145",
+      "artifact_path": "child_receipts/release_integrity.json",
       "schema_version": "release_integrity.v1",
-      "sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+      "sha256": "5e45ec5cd82d542768068fee454cfb4c691489a0ee1f9b731f6987cef64dd077",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "Candidate archives, checksums, SBOM, and attestation subject set.",

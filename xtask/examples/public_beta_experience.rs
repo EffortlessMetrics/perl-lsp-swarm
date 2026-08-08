@@ -8,14 +8,16 @@
 #![allow(clippy::print_stdout)]
 
 use clap::Parser;
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const CHECK: &str = "public-beta-experience";
 const SCHEMA_VERSION: &str = "public_beta_experience.v1";
+const VERIFIED_CHILD_SCHEMA_VERSION: &str = "verified_child_receipt.v1";
 const REQUIRED_CELLS: [JourneyCellId; 11] = [
     JourneyCellId::InstallUpgrade,
     JourneyCellId::Startup,
@@ -188,6 +190,7 @@ impl ZeroBudgetCounts {
 #[serde(deny_unknown_fields)]
 struct ReceiptRef {
     owner_issue: String,
+    artifact_path: String,
     schema_version: String,
     sha256: String,
     candidate_id: String,
@@ -207,6 +210,20 @@ struct ChildReceipts {
     representative_workload: ReceiptRef,
     release_topology: ReceiptRef,
     release_integrity: ReceiptRef,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifiedChildArtifact {
+    owner_issue: String,
+    schema_version: String,
+    receipt_schema_version: String,
+    candidate_id: String,
+    frozen_product_sha: String,
+    artifact_set_id: String,
+    status: InputStatus,
+    claim_boundary: String,
+    limitation: Option<String>,
 }
 
 impl ChildReceipts {
@@ -347,6 +364,13 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
         if child.owner_issue != expected_owner {
             bail!("child_receipts.{name} must be owned by {expected_owner}");
         }
+        non_empty(&child.artifact_path, &format!("child_receipts.{name}.artifact_path"))?;
+        let artifact_path = Path::new(&child.artifact_path);
+        if artifact_path.is_absolute()
+            || artifact_path.components().any(|component| component == Component::ParentDir)
+        {
+            bail!("child_receipts.{name}.artifact_path must stay below the receipt directory");
+        }
         if child.candidate_id != receipt.candidate.candidate_id {
             bail!("child_receipts.{name} belongs to a different candidate");
         }
@@ -361,6 +385,55 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
 
     if receipt.child_receipts.release_topology.sha256 != receipt.candidate.release_topology_sha256 {
         bail!("release_topology child digest differs from candidate topology digest");
+    }
+    Ok(())
+}
+
+fn load_verified_child_artifact(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    artifact_root: &Path,
+) -> Result<()> {
+    let path = artifact_root.join(&child.artifact_path);
+    let bytes = fs::read(&path)
+        .with_context(|| format!("reading child receipt artifact {name}: {}", path.display()))?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    if digest != child.sha256 {
+        bail!("child_receipts.{name} digest does not match artifact bytes");
+    }
+    let artifact: VerifiedChildArtifact = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing child receipt artifact {name}: {}", path.display()))?;
+    if artifact.schema_version != VERIFIED_CHILD_SCHEMA_VERSION {
+        bail!("child_receipts.{name} artifact is not a verified child envelope");
+    }
+    if artifact.receipt_schema_version != child.schema_version {
+        bail!("child_receipts.{name} artifact schema differs from the declared schema");
+    }
+    if artifact.owner_issue != child.owner_issue {
+        bail!("child_receipts.{name} artifact owner differs from the declared owner");
+    }
+    if artifact.candidate_id != receipt.candidate.candidate_id {
+        bail!("child_receipts.{name} artifact belongs to a different candidate");
+    }
+    if artifact.frozen_product_sha != receipt.candidate.frozen_product_sha {
+        bail!("child_receipts.{name} artifact belongs to a different frozen product");
+    }
+    if artifact.artifact_set_id != receipt.candidate.artifact_set_id {
+        bail!("child_receipts.{name} artifact belongs to a different artifact set");
+    }
+    if artifact.status != child.status || artifact.claim_boundary != child.claim_boundary {
+        bail!("child_receipts.{name} metadata differs from the verified artifact");
+    }
+    if artifact.limitation != child.limitation {
+        bail!("child_receipts.{name} limitation differs from the verified artifact");
+    }
+    Ok(())
+}
+
+fn validate_child_artifacts(receipt: &Receipt, artifact_root: &Path) -> Result<()> {
+    for (name, child) in receipt.child_receipts.iter() {
+        load_verified_child_artifact(name, child, receipt, artifact_root)?;
     }
     Ok(())
 }
@@ -428,6 +501,11 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let receipt = load(&args.receipt)?;
     let status = validate(&receipt)?;
+    let artifact_root = args
+        .receipt
+        .parent()
+        .ok_or_else(|| color_eyre::eyre::eyre!("receipt path has no parent directory"))?;
+    validate_child_artifacts(&receipt, artifact_root)?;
     println!(
         "public-beta-experience: release={} candidate={} status={} zero_budget={} cells={} inputs={}",
         receipt.candidate.release,
@@ -445,8 +523,9 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate, CellDisposition, OverallStatus, Receipt};
+    use super::{validate, validate_child_artifacts, CellDisposition, OverallStatus, Receipt};
     use color_eyre::eyre::Result;
+    use std::path::Path;
 
     fn fixture(content: &str) -> Result<Receipt> {
         Ok(serde_json::from_str(content)?)
@@ -456,6 +535,23 @@ mod tests {
     fn ready_fixture_passes() -> Result<()> {
         let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         assert_eq!(validate(&receipt)?, OverallStatus::Ready);
+        Ok(())
+    }
+
+    #[test]
+    fn ready_fixture_consumes_hashed_child_artifacts() -> Result<()> {
+        let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        validate_child_artifacts(&receipt, Path::new("fixtures/experience/public_beta"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn child_artifact_digest_mismatch_fails_closed() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.install_transition.sha256 = "0".repeat(64);
+        assert!(validate_child_artifacts(&receipt, Path::new("fixtures/experience/public_beta"))
+            .is_err());
         Ok(())
     }
 

@@ -275,6 +275,7 @@
       "additionalProperties": false,
       "required": [
         "owner_issue",
+        "artifact_path",
         "schema_version",
         "sha256",
         "candidate_id",
@@ -286,6 +287,10 @@
         "owner_issue": {
           "type": "string",
           "pattern": "^#[0-9]+$"
+        },
+        "artifact_path": {
+          "type": "string",
+          "minLength": 1
         },
         "schema_version": {
           "type": "string",
