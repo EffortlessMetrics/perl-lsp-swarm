@@ -6,6 +6,7 @@ use perl_module::resolution::use_lib::{
     no_lib_cancelled_paths_from_operations_at_offset, resolve_use_lib_paths,
     resolve_use_lib_paths_from_operations_at_offset, resolve_use_lib_paths_from_source_at_offset,
 };
+use perl_tdd_support::must_some;
 
 #[test]
 fn findbin_parent_traversal_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
@@ -155,6 +156,85 @@ use Lib::Thing;\n\
     );
 
     assert_eq!(include_paths, vec!["second".to_string()]);
+}
+
+/// Regression for #6208: an unterminated `use lib 'path'` (no semicolon) must
+/// remain active at a use-site that lexically follows its argument text.
+///
+/// Pre-#6172 this worked because `resolve_use_lib_paths_from_source_at_offset`
+/// sliced `source[..offset]` and re-extracted.  After #6172 the function uses
+/// pre-extracted operations with `end_offset <= offset` filtering.  The
+/// regression occurred because `end_offset` tracked the enclosing statement
+/// slice rather than the parsed argument extent: when no semicolon is present
+/// `split_perl_statements` joins the pragma with the next statement, so
+/// `end_offset` landed after the following use-site and the filter excluded it.
+#[test]
+fn unterminated_use_lib_is_active_after_its_argument_before_next_statement() {
+    // "use lib 'lib'" is 13 bytes; the \n puts "use My::Test;" at byte 14.
+    let source = "use lib 'lib'\nuse My::Test;\n";
+
+    // end_offset for the use-lib operation must stop at the argument text (byte 13),
+    // not at the end of the combined statement.
+    let ops = extract_use_lib_operations_with_offsets(source);
+    assert_eq!(
+        ops[0].end_offset,
+        "use lib 'lib'".len(),
+        "end offset must track the pragma's arguments, not the swallowed statement"
+    );
+
+    // A use-site inside the argument text must NOT activate the path.
+    let inside_arg = must_some(source.find("'lib'")) + 1;
+    assert!(
+        resolve_use_lib_paths_from_source_at_offset(
+            source,
+            inside_arg,
+            Path::new("/workspace"),
+            None
+        )
+        .is_empty(),
+        "use-site inside argument text must not see the path"
+    );
+
+    // A use-site after the argument text MUST activate the path.
+    let use_site = must_some(source.find("use My::Test;"));
+    assert_eq!(
+        resolve_use_lib_paths_from_source_at_offset(
+            source,
+            use_site,
+            Path::new("/workspace"),
+            None
+        ),
+        vec!["lib".to_string()],
+        "use-site after unterminated pragma must see the path"
+    );
+}
+
+/// Regression for #6208 (no lib variant): an unterminated `no lib 'path'` must
+/// cancel the path before a following use-site.
+#[test]
+fn unterminated_no_lib_is_applied_before_next_statement() {
+    let source = "use lib 'lib';\nno lib 'lib'\nuse My::Test;\n";
+    let use_site = must_some(source.find("use My::Test;"));
+
+    // The no-lib operation must be active before "use My::Test;" so the path
+    // is cancelled and the effective INC set is empty at that point.
+    let ops = extract_use_lib_operations_with_offsets(source);
+    // ops[0] is use lib (terminated), ops[1] is no lib (unterminated)
+    assert_eq!(
+        ops[1].end_offset,
+        "use lib 'lib';\nno lib 'lib'".len(),
+        "no lib end_offset must stop after its argument text"
+    );
+    assert!(
+        resolve_use_lib_paths_from_source_at_offset(
+            source,
+            use_site,
+            Path::new("/workspace"),
+            None
+        )
+        .is_empty(),
+        "no lib cancels the path before the following use-site"
+    );
 }
 
 #[test]
