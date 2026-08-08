@@ -28,17 +28,48 @@ The claim is already reconciled, or the requested work is a genuinely mechanical
 - accepted specifications or ADRs where present;
 - primary external Perl, LSP, DAP, dependency, or packaging authority where relevant.
 
-## Orchestration
+## Orchestration affordances
 
-May run independently where useful:
+### Lane-root decisions
 
-- source owner and consumer mapping;
-- related issue and PR search;
+The lane root retains:
+
+- the accepted problem and whether the work should exist;
+- semantic owner and live consumers;
+- one coherent claim, scope, non-goals, risk, and rollback boundary;
+- contradiction resolution and the current plan;
+- whether a durable cross-PR specification is warranted.
+
+### Delegable read-only questions
+
+Run independently where useful:
+
+- source owner and production-consumer mapping;
+- related issue, PR, and landed-work search;
 - reproduction and current proof inventory;
-- external-truth research;
-- vision, duplication, and slice challenge.
+- external language/protocol/dependency truth;
+- vision, duplication, slice, risk, and rollback challenge.
 
-Join those results into one current issue synthesis and plan. One issue-body integrator owns durable updates.
+Each worker receives settled facts, exact authorities and scope, one question, falsifiers,
+and a bounded return. It does not choose the claim or update the issue independently.
+
+### Mutation owner and join
+
+One issue-body integrator owns durable synthesis and plan updates. Join worker returns as
+evidence and contradictions, not votes.
+
+The join is ready when:
+
+- the problem, owner, consumers, scope, non-goals, and proof obligations are current;
+- material contradictions are resolved or explicitly `NOT_PROVEN`;
+- related work and prerequisites have a durable disposition;
+- the plan is adequate for proof design or an honest no-proof route.
+
+### Return packet
+
+Return the current claim, owner/consumers, accepted plan, evidence references,
+contradictions and dispositions, proof obligations, limitations, material return-to-
+issue conditions, and the typed route result.
 
 ## Procedure
 
@@ -52,9 +83,16 @@ Join those results into one current issue synthesis and plan. One issue-body int
 
 ## GitHub contract
 
-Read the selected issue, narrowly related issues and PRs, and directly linked umbrellas or contracts. Preserve research and corrections in comments; keep one current usable synthesis and plan in the issue body. Use only stable classification/risk labels.
+Read the selected issue, narrowly related issues and PRs, and directly linked umbrellas or contracts.
 
-Do not apply lifecycle-completion labels or stop merely because an old marker, reviewer identity, or receipt is absent.
+Publish comments when research, corrected assumptions, external truth, dependencies,
+alternatives, or contradictions will remain useful. Update the issue body when a durable
+current synthesis or plan helps builders and later contexts. Post one route change only
+when the material next judgment changes.
+
+Keep worker identity, topology, task state, raw logs, provisional reasoning, and routine
+skill transitions runtime-local. Use only stable classification/risk labels; do not use
+labels or comments as lifecycle completion or lane ownership.
 
 ## What this establishes
 
