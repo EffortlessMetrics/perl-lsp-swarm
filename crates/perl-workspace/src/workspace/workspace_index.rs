@@ -4317,46 +4317,59 @@ impl WorkspaceIndex {
     /// let _unused = index.find_unused_symbols();
     /// ```
     pub fn find_unused_symbols(&self) -> Vec<WorkspaceSymbol> {
-        // Pass 1: collect names with at least one non-definition reference from the
-        // authoritative global_references store (#5016 item 5, #5967).
-        //
-        // O(Σ refs_in_global_store) — release the lock before scanning symbols.
-        let used_names: HashSet<String> = {
-            let global_refs = self.global_references.read();
-            let mut set = HashSet::new();
-            for (name, refs) in global_refs.iter() {
-                if refs.iter().any(|r| r.kind != ReferenceKind::Definition) {
-                    set.insert(name.clone());
-                }
+        // Snapshot `global_references` and `files` under the same write generation so
+        // a background reindex cannot mix stale usage keys with fresh symbols (#6042).
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let used_names =
+                Self::collect_used_names_from_global_refs(&self.global_references.read());
+            let candidates: Vec<WorkspaceSymbol> = {
+                let files = self.files.read();
+                files
+                    .values()
+                    .flat_map(|file_index| file_index.symbols.iter())
+                    .filter(|symbol| !symbol.is_lexical)
+                    .cloned()
+                    .collect()
+            };
+            let v2 = self.write_version();
+            if v1 == v2 {
+                return candidates
+                    .into_iter()
+                    .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+                    .collect();
             }
-            set
-        };
+            tracing::debug!("Torn read in find_unused_symbols, retrying");
+        }
 
-        // Pass 2: collect symbols with no matching usage in `used_names`.
-        //
-        // O(Σ symbols_per_file) with O(1) HashSet lookup per symbol (plus qualified
-        // variant checks for bare names).
+        // Fallback after retries exhausted — same posture as `count_usages`.
+        let used_names =
+            Self::collect_used_names_from_global_refs(&self.global_references.read());
         let files = self.files.read();
-        let mut unused = Vec::new();
-        for file_index in files.values() {
-            for symbol in &file_index.symbols {
-                // Lexically-scoped variables (my/state) require scope-range analysis to
-                // determine whether a reference in the same file refers to *this* declaration
-                // or a same-named variable in a different block.  The bare-name lookup below
-                // cannot make that distinction, so lexical variables are excluded from this
-                // check entirely.  Proper unused-lexical detection is handled by the
-                // scope-aware ScopeAnalyzer.  See issue #1805.
-                if symbol.is_lexical {
-                    continue;
-                }
+        files
+            .values()
+            .flat_map(|file_index| file_index.symbols.iter())
+            .filter(|symbol| !symbol.is_lexical)
+            .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+            .cloned()
+            .collect()
+    }
 
-                if !Self::symbol_has_non_definition_usage(&used_names, symbol) {
-                    unused.push(symbol.clone());
+    /// Names with at least one non-definition reference in `global_references`,
+    /// plus bare suffixes for qualified keys so symbol lookup stays O(1) (#5016).
+    fn collect_used_names_from_global_refs(
+        global_refs: &HashMap<String, Vec<SymbolReference>>,
+    ) -> HashSet<String> {
+        let mut set = HashSet::new();
+        for (name, refs) in global_refs.iter() {
+            if refs.iter().any(|r| r.kind != ReferenceKind::Definition) {
+                set.insert(name.clone());
+                if let Some((_, bare)) = name.rsplit_once("::") {
+                    set.insert(bare.to_string());
                 }
             }
         }
-
-        unused
+        set
     }
 
     /// Whether `symbol` has at least one non-definition usage recorded in
@@ -4376,16 +4389,6 @@ impl WorkspaceIndex {
                 if bare != symbol.name.as_str() && used_names.contains(bare) {
                     return true;
                 }
-            }
-        }
-        for used in used_names {
-            if Self::is_qualified_variant_of(used, &symbol.name) {
-                return true;
-            }
-            if let Some(ref qualified) = symbol.qualified_name
-                && (used == qualified || Self::is_qualified_variant_of(used, qualified))
-            {
-                return true;
             }
         }
         false
