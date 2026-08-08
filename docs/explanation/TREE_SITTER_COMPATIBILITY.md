@@ -2,7 +2,12 @@
 
 ## Overview
 
-Our Perl parser maintains **100% tree-sitter compatibility** even when handling the most exotic edge cases. This document explains how we achieve this while providing advanced diagnostics and recovery capabilities.
+Our Perl parser provides a **tiered Tree-sitter compatibility surface**. Tier A
+Rust API behavior is substantially implemented; grammar/query compatibility and
+native-host/WASM compatibility remain partial or future work. This document
+describes the supported edge-case behavior without claiming an unqualified
+drop-in contract; the governing tiers and proof requirements are tracked in
+issue #4752.
 
 ## Core Principles
 
@@ -175,7 +180,7 @@ let diagnostics = ts_output.diagnostics;
 
 ## Benefits
 
-1. **IDE Compatibility**: All tree-sitter based tools work out of the box
+1. **Tiered IDE compatibility**: supported tree-sitter-shaped tooling works within the documented adapter surface; native-host compatibility is not implied
 2. **Graceful Degradation**: Partial parses still provide useful structure
 3. **Rich Diagnostics**: Detailed explanations without polluting the AST
 4. **Progressive Enhancement**: Standard code parses normally, edge cases get extra handling
@@ -240,4 +245,6 @@ Our approach ensures that:
 - **Tools get maximum value even from problematic code**
 - **Users get actionable feedback about code issues**
 
-This makes our parser not just tree-sitter compatible, but a best-in-class implementation that enhances the tree-sitter ecosystem while maintaining full compatibility.
+This makes the parser useful to Tree-sitter-shaped consumers while keeping the
+compatibility claim bounded: native-host and distribution tiers require their
+own host and artifact proof before they can be described as supported.
