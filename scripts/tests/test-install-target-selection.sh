@@ -298,7 +298,7 @@ assert_only_built_windows_targets \
     "extension downloader requests only built Windows targets" \
     "$ROOT/vscode-extension/src/downloader.ts"
 
-assert_windows_arm64_version_guard() {
+assert_windows_arm64_native_preference() {
     local label="$1" file="$2"
 
     if [[ ! -f "$file" ]]; then
@@ -306,53 +306,63 @@ assert_windows_arm64_version_guard() {
         return
     fi
 
-    local guard_line guard_end guard_block build_line threshold_line error_line stop_line
-    local target_line download_line
-    guard_line="$(grep -nE '^[[:space:]]*if \(\$IsArm64Host\) \{[[:space:]]*$' "$file" | head -n1 | cut -d: -f1)"
-    stop_line="$(grep -nE '^[[:space:]]*\$ErrorActionPreference[[:space:]]*=[[:space:]]*"Stop"[[:space:]]*$' "$file" | head -n1 | cut -d: -f1)"
+    # Every capture below is `|| true`-guarded. Under `set -euo pipefail` an
+    # unmatched grep inside a command substitution aborts the whole script, so
+    # the previous version of this assertion killed the run with no diagnostic
+    # at all the moment the installer stopped matching it -- a gate that fails
+    # closed but silently, which is nearly as unhelpful as failing open.
+    local native_line probe_line floor_line error_line fallback_line download_line
 
-    if [[ -z "$guard_line" || -z "$stop_line" ]] || (( stop_line >= guard_line )); then
-        fail "$label" "must prove an executable ARM64 guard with terminating error behavior"
+    # The native target must be named as a whole literal, for the same reason
+    # the triples are: this file cannot be executed on the Linux CI host, so
+    # the contract is checked by reading the source.
+    native_line="$(grep -nE '^[[:space:]]*\$NativeTarget[[:space:]]*=[[:space:]]*"aarch64-pc-windows-msvc"' "$file" | head -n1 | cut -d: -f1 || true)"
+    probe_line="$(grep -nE '^[[:space:]]*if \(Test-ReleaseAsset ' "$file" | head -n1 | cut -d: -f1 || true)"
+    floor_line="$(grep -nE '^[[:space:]]*if \(\$WindowsBuild -lt 22000\) \{' "$file" | head -n1 | cut -d: -f1 || true)"
+    error_line="$(grep -nE 'Write-Error "[^"]*emulation requires Windows 11' "$file" | head -n1 | cut -d: -f1 || true)"
+    fallback_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=[[:space:]]*"x86_64-pc-windows-msvc"' "$file" | head -n1 | cut -d: -f1 || true)"
+    download_line="$(grep -nE '^[[:space:]]*Invoke-WebRequest -Uri \$Url' "$file" | head -n1 | cut -d: -f1 || true)"
+
+    if [[ -z "$native_line" ]]; then
+        fail "$label" "does not name aarch64-pc-windows-msvc as a preferred target literal"
         return
     fi
 
-    guard_end="$(awk -v start="$guard_line" '
-        NR < start { next }
-        {
-            opens = gsub(/\{/, "{")
-            closes = gsub(/\}/, "}")
-            depth += opens - closes
-            if (NR > start && depth == 0) {
-                print NR
-                exit
-            }
-        }
-    ' "$file")"
-    if [[ -z "$guard_end" ]]; then
-        fail "$label" "must prove the ARM64 guard has a complete executable block"
+    if [[ -z "$probe_line" ]]; then
+        fail "$label" "does not probe whether the release carries the native asset; preferring it unconditionally would 404 on every release predating that target"
         return
     fi
 
-    guard_block="$(sed -n "${guard_line},${guard_end}p" "$file")"
-    build_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*\$WindowsBuild[[:space:]]*=[[:space:]]*Get-WindowsBuildNumber[[:space:]]*$' | head -n1 | cut -d: -f1)"
-    threshold_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*if \(\$WindowsBuild -lt 22000\) \{[[:space:]]*$' | head -n1 | cut -d: -f1)"
-    error_line="$(printf '%s\n' "$guard_block" | grep -nE '^[[:space:]]*Write-Error[[:space:]]+"Windows ARM64 x64 emulation requires' | head -n1 | cut -d: -f1)"
-    target_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=' "$file" | head -n1 | cut -d: -f1)"
-    download_line="$(grep -nE '^[[:space:]]*Invoke-WebRequest[[:space:]]' "$file" | head -n1 | cut -d: -f1)"
+    if [[ -z "$floor_line" || -z "$error_line" || -z "$fallback_line" || -z "$download_line" ]]; then
+        fail "$label" "must keep an executable Windows 11 build floor, an emulation-specific error, an x64 fallback assignment, and a download call"
+        return
+    fi
 
-    if [[ -z "$build_line" || -z "$threshold_line" || -z "$error_line" || -z "$target_line" || \
-        -z "$download_line" ]] || \
-        (( build_line >= threshold_line || threshold_line >= error_line || \
-            target_line <= guard_end || guard_end >= download_line )); then
-        fail "$label" "must prove the executable ARM64 rejection guard before target selection and download"
+    # The whole point of #6196: the build-22000 floor is a property of x64
+    # emulation, not of ARM64. It must sit *after* the native-asset probe, so a
+    # release carrying the native build installs on Windows 10 ARM64 instead of
+    # being refused.
+    if (( probe_line >= floor_line )); then
+        fail "$label" "the Windows 11 build floor must come after the native-asset probe, or it will refuse Windows 10 ARM64 installs that a native build would satisfy"
+        return
+    fi
+
+    if (( native_line >= probe_line )); then
+        fail "$label" "the native target must be named before it is probed"
+        return
+    fi
+
+    if (( floor_line >= download_line || fallback_line >= download_line )); then
+        fail "$label" "target selection must complete before the download"
         return
     fi
 
     pass "$label"
 }
 
-assert_windows_arm64_version_guard \
-    "PowerShell installer rejects unsupported Windows 10 ARM64 fallback" "$ROOT/install.ps1"
+assert_windows_arm64_native_preference \
+    "PowerShell installer prefers the native ARM64 build and gates emulation only" \
+    "$ROOT/install.ps1"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     skip "Linux target-selection checks (host is $(uname -s))"

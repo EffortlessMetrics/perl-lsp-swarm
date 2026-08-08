@@ -58,14 +58,20 @@ function Write-Success {
 
 # Detect architecture.
 #
-# Only x86_64-pc-windows-msvc is published: the release matrix in
-# .github/workflows/release.yml has no aarch64-pc-windows-msvc entry. Asking
-# for one built a URL that always 404s, and the failure surfaced as a bare
-# "Failed to download" with nothing actionable in it (#5007).
+# The release matrix builds both x86_64-pc-windows-msvc and, since #5208, a
+# native aarch64-pc-windows-msvc on the windows-11-arm runner. Prefer the
+# native ARM64 asset and fall back to the x64 build under emulation only when
+# a given release does not carry it.
 #
-# ARM64 Windows runs x64 binaries under emulation on Windows 11 (build 22000
-# or newer), so the x64 asset is the working answer there. Windows 10 ARM64
-# cannot run the published x64 asset and must fail before downloading it.
+# The fallback must stay: the ARM64 target was added on 2026-08-03 and no
+# release has been cut since, so that asset has never actually been produced.
+# Nothing here may *require* it. Releases predating #5208 legitimately have
+# only the x64 archive, and installing from an older tag must keep working.
+#
+# The Windows 11 build-22000 floor applies ONLY to the emulation fallback --
+# it exists because x64 emulation needs Windows 11, not because of anything
+# about ARM64 itself. A native ARM64 binary runs fine on Windows 10 ARM64, so
+# gating the native path on it would refuse an install that works (#6196).
 #
 # A 32-bit PowerShell host on 64-bit Windows reports "x86" in
 # PROCESSOR_ARCHITECTURE and the real architecture in PROCESSOR_ARCHITEW6432,
@@ -95,35 +101,13 @@ function Get-WindowsBuildNumber {
     }
 }
 
-if ($IsArm64Host) {
-    $WindowsBuild = Get-WindowsBuildNumber
-    if ($WindowsBuild -lt 22000) {
-        $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
-        Write-Error "Windows ARM64 x64 emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Windows 10 ARM64 cannot run the published x86_64 binary. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-    }
+if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
+    Write-Error "Unsupported architecture: $HostArch. Windows releases ship x86_64 and ARM64 builds only. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
 }
 
-# Name the target as a whole literal rather than assembling it from an arch
-# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
-# the Linux CI host, so the contract test in
-# scripts/tests/test-install-target-selection.sh checks which targets this
-# script can request by reading them out of the source. Assembling the triple
-# from a variable hides it from that check, which is how the original defect
-# ($Arch = "aarch64") stayed invisible.
-$Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
-    "x86_64-pc-windows-msvc"
-} else {
-    Write-Error "Unsupported architecture: $HostArch. Only x86_64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-}
-
-if ($IsArm64Host) {
-    Write-Info "Detected system: Windows (ARM64) - installing $Target"
-    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM."
-} else {
-    Write-Info "Detected system: Windows ($HostArch) - $Target"
-}
-
-# Get version
+# Resolve the version before selecting a target. Target selection now depends
+# on which assets a specific release actually carries, so the tag has to be
+# known first.
 if ($Version -eq "latest") {
     try {
         $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
@@ -137,10 +121,60 @@ if ($Version -eq "latest") {
 }
 
 $VersionNum = $Tag.TrimStart("v")
+$ReleaseBaseUrl = "https://github.com/$Repo/releases/download/$Tag"
+
+# Probe for an asset without downloading it. Any non-success outcome -- 404,
+# a network error, a proxy that rejects HEAD -- is reported as "absent" so the
+# caller falls back rather than failing. Preferring the native build must never
+# be able to break an install that the fallback would have completed.
+function Test-ReleaseAsset {
+    param([string]$AssetName)
+
+    try {
+        $Response = Invoke-WebRequest -Uri "$ReleaseBaseUrl/$AssetName" -Method Head -UseBasicParsing -ErrorAction Stop
+        return [int]$Response.StatusCode -lt 400
+    } catch {
+        return $false
+    }
+}
+
+# Name each target as a whole literal rather than assembling it from an arch
+# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
+# the Linux CI host, so the contract test in
+# scripts/tests/test-install-target-selection.sh checks which targets this
+# script can request by reading them out of the source. Assembling the triple
+# from a variable hides it from that check, which is how the original defect
+# ($Arch = "aarch64") stayed invisible.
+if ($IsArm64Host) {
+    Write-Info "Detected system: Windows (ARM64)"
+
+    $NativeTarget = "aarch64-pc-windows-msvc"
+    $NativeAsset = "$Name-$VersionNum-$NativeTarget.zip"
+
+    if (Test-ReleaseAsset $NativeAsset) {
+        $Target = $NativeTarget
+        Write-Info "Using the native ARM64 build for $Target"
+    } else {
+        # Emulation fallback only. The build floor belongs here and nowhere
+        # else: it is a property of running x64 code on ARM64, so it must not
+        # gate the native path above.
+        $WindowsBuild = Get-WindowsBuildNumber
+        if ($WindowsBuild -lt 22000) {
+            $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
+            Write-Error "$Tag ships no native ARM64 Windows build, and running the x86_64 build under emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Install a release that carries $NativeAsset, or build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
+        }
+
+        $Target = "x86_64-pc-windows-msvc"
+        Write-Warn "$Tag ships no native ARM64 Windows build; using the x86_64 build, which runs under the x64 emulation in Windows 11 on ARM."
+    }
+} else {
+    $Target = "x86_64-pc-windows-msvc"
+    Write-Info "Detected system: Windows ($HostArch) - $Target"
+}
 
 # Construct download URL
 $Asset = "$Name-$VersionNum-$Target.zip"
-$Url = "https://github.com/$Repo/releases/download/$Tag/$Asset"
+$Url = "$ReleaseBaseUrl/$Asset"
 
 Write-Info "Downloading $Name $Tag for $Target"
 
