@@ -2217,7 +2217,10 @@ fn score_method_completion_provider_expectations(
             let query_start = Instant::now();
             let completions = provider.get_completions(&provider_source, cursor);
             score.completion_query_micros.push(query_start.elapsed().as_micros() as u64);
-            let labels = completions.iter().map(|item| item.label.clone()).collect::<BTreeSet<_>>();
+            let labels = completions
+                .iter()
+                .map(|item| item.label.as_ref().to_owned())
+                .collect::<BTreeSet<_>>();
             score_method_completion_expectation(expectation, &labels, &mut score);
         }
     }

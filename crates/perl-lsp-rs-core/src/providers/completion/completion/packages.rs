@@ -13,6 +13,7 @@ use perl_semantic_analyzer::symbol::{
 use perl_workspace::workspace_index::{
     SymbolKind as WsSymbolKind, WorkspaceIndex, WorkspaceSymbol,
 };
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -180,7 +181,7 @@ fn add_known_core_module_completions(
     member_prefix: &str,
 ) {
     let mut seen_labels: HashSet<String> =
-        completions.iter().map(|item| item.label.clone()).collect();
+        completions.iter().map(|item| item.label.to_string()).collect();
 
     for (member_name, summary) in known_core_module_members(package_name) {
         if !member_name.starts_with(member_prefix)
@@ -190,17 +191,17 @@ fn add_known_core_module_completions(
         }
 
         completions.push(CompletionItem {
-            label: (*member_name).to_string(),
+            label: Cow::Owned((*member_name).to_string()),
             kind: CompletionItemKind::Function,
-            detail: Some(package_name.to_string()),
-            documentation: Some(known_core_member_documentation(
+            detail: Some(Cow::Owned(package_name.to_string())),
+            documentation: Some(Cow::Owned(known_core_member_documentation(
                 package_name,
                 member_name,
                 summary,
-            )),
-            insert_text: Some((*member_name).to_string()),
-            sort_text: Some(format!("2_{member_name}")),
-            filter_text: Some((*member_name).to_string()),
+            ))),
+            insert_text: Some(Cow::Owned((*member_name).to_string())),
+            sort_text: Some(Cow::Owned(format!("2_{member_name}"))),
+            filter_text: Some(Cow::Owned((*member_name).to_string())),
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
@@ -271,7 +272,7 @@ fn add_local_package_completions(
     requested_sigil: Option<char>,
 ) -> usize {
     let mut seen_labels: HashSet<String> =
-        completions.iter().map(|item| item.label.clone()).collect();
+        completions.iter().map(|item| item.label.to_string()).collect();
     let qualified_prefix = format!("{package_name}::");
     let mut added = 0;
 
@@ -300,16 +301,16 @@ fn add_local_package_completions(
         }
 
         completions.push(CompletionItem {
-            label: symbol.name.clone(),
+            label: Cow::Owned(symbol.name.clone()),
             kind: item_kind,
-            detail: Some(package_name.to_string()),
-            documentation: Some(format!(
+            detail: Some(Cow::Owned(package_name.to_string())),
+            documentation: Some(Cow::Owned(format!(
                 "Source-backed package member `{}` from current document.",
                 symbol.qualified_name
-            )),
-            insert_text: Some(symbol.qualified_name.clone()),
-            sort_text: Some(format!("0_{}", symbol.name)),
-            filter_text: Some(symbol.name.clone()),
+            ))),
+            insert_text: Some(Cow::Owned(symbol.qualified_name.clone())),
+            sort_text: Some(Cow::Owned(format!("0_{}", symbol.name))),
+            filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits: vec![],
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
@@ -348,7 +349,7 @@ pub fn add_package_completions(
         requested_sigil,
     );
     let mut seen_labels: HashSet<String> =
-        completions.iter().map(|item| item.label.clone()).collect();
+        completions.iter().map(|item| item.label.to_string()).collect();
 
     // Query workspace index for members of the package (if available)
     let mut workspace_member_count = 0;
@@ -402,17 +403,18 @@ pub fn add_package_completions(
                 let tier = if defining_pkg == package_name { "2" } else { "3" };
 
                 completions.push(CompletionItem {
-                    label: symbol.name.clone(),
+                    label: Cow::Owned(symbol.name.clone()),
                     kind: item_kind,
                     detail: if defining_pkg == package_name {
-                        Some(package_name.clone())
+                        Some(Cow::Owned(package_name.clone()))
                     } else {
-                        Some(format!("{package_name} (from {defining_pkg})"))
+                        Some(Cow::Owned(format!("{package_name} (from {defining_pkg})")))
                     },
-                    documentation: package_member_documentation(&package_name, &symbol),
-                    insert_text: Some(qualified_member_name(&package_name, &symbol)),
-                    sort_text: Some(format!("{}_{}", tier, symbol.name)),
-                    filter_text: Some(symbol.name.clone()),
+                    documentation: package_member_documentation(&package_name, &symbol)
+                        .map(Cow::Owned),
+                    insert_text: Some(Cow::Owned(qualified_member_name(&package_name, &symbol))),
+                    sort_text: Some(Cow::Owned(format!("{}_{}", tier, symbol.name))),
+                    filter_text: Some(Cow::Owned(symbol.name.clone())),
                     additional_edits: auto_import_edits.clone(),
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
