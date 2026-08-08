@@ -24,11 +24,23 @@ import statistics
 import sys
 import time
 import tomllib
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
 MIN_SAMPLES_FOR_LEARNED = 5
+
+# Artifacts emitted before `--lane-id` existed carry no `lane_id`, and the
+# aggregator reads a 14-day window, so for a couple of weeks after the #6217
+# wiring lands there will legitimately be nothing to attribute. That is a
+# mechanical, self-resolving fact and it warns rather than fails.
+#
+# It expires. A workflow that never got the `--lane-id` wiring must not sit
+# warning forever, because a permanent warning is the same silence this change
+# exists to remove, just arrived at more slowly. After this date, "no artifact
+# carries lane_id" is itself an error.
+LANE_ID_ROLLOUT_DEADLINE = date(2026, 9, 1)
 
 
 def percentile(values: list[float], p: float) -> float:
@@ -69,6 +81,11 @@ def collect_actuals(
         "source_files": 0,
         "jobs_seen": 0,
         "jobs_with_sample": 0,
+        # Jobs carrying a `lane_id` field at all, whether or not it names a
+        # known lane. Zero means every artifact in the window predates the
+        # emitter's --lane-id wiring, which is the rollout state rather than a
+        # mapping failure.
+        "jobs_with_lane_id": 0,
         "accepted_samples": 0,
         "unmapped_samples": 0,
         "unmapped_keys": {},
@@ -111,6 +128,8 @@ def collect_actuals(
             # (#6217).
             gate_name = job.get("gate_name")
             lane_id = job.get("lane_id")
+            if lane_id:
+                stats["jobs_with_lane_id"] += 1
             if lane_id not in known_lanes:
                 lane_id = gate_name if gate_name in known_lanes else None
 
@@ -185,6 +204,64 @@ def build_history(
     return out
 
 
+def attribution_verdict(
+    stats: dict[str, Any],
+    *,
+    today: date,
+    deadline: date = LANE_ID_ROLLOUT_DEADLINE,
+) -> tuple[int, str | None]:
+    """Decide whether this run's attribution is acceptable.
+
+    Three outcomes, deliberately distinguished (#6217):
+
+    - **quiet ok** — nothing arrived, or samples attributed to real lanes.
+      Nothing was claimed and nothing was lost.
+    - **warn** — samples arrived, none attributed, and *no artifact in the
+      window carries a lane_id at all*. Every artifact predates the emitter
+      wiring, which is mechanical and self-resolving. Expires at ``deadline``.
+    - **error** — samples arrived, none attributed, and artifacts *do* carry
+      lane_ids. The wiring exists and is still producing nothing usable, which
+      is the real defect and fails from day one.
+
+    Returns ``(exit_code, message)``.
+    """
+    if stats["jobs_with_sample"] == 0:
+        return 0, None
+    if stats["accepted_samples"] > 0:
+        return 0, None
+
+    worst = sorted(stats["unmapped_keys"].items(), key=lambda kv: -kv[1])[:10]
+    detail = ", ".join(f"{name}={count}" for name, count in worst)
+    preamble = (
+        f"Lane-history aggregation attributed 0 of {stats['jobs_with_sample']} "
+        "samples to a known lane, so every lane in the written history is "
+        f"empty. Most frequent unmapped keys: {detail}."
+    )
+
+    if stats["jobs_with_lane_id"] == 0 and today < deadline:
+        return 0, (
+            f"::warning::{preamble} No artifact in the window carries a "
+            "lane_id yet, so this is the expected #6217 rollout window while "
+            "pre-wiring artifacts age out. This becomes an ERROR on "
+            f"{deadline.isoformat()}; if it is still warning then, the "
+            "emitting workflow never got its --lane-id and must be fixed."
+        )
+
+    if stats["jobs_with_lane_id"] == 0:
+        return 1, (
+            f"::error::{preamble} No artifact carries a lane_id and the "
+            f"rollout window closed on {deadline.isoformat()}: the emitting "
+            "workflow is not passing --lane-id (#6217)."
+        )
+
+    return 1, (
+        f"::error::{preamble} Artifacts do carry lane_ids "
+        f"({stats['jobs_with_lane_id']} of {stats['jobs_with_sample']} "
+        "sampled jobs), so this is not the rollout window: those lane_ids do "
+        "not name lanes in policy/ci-lanes.toml (#6217)."
+    )
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
@@ -232,28 +309,15 @@ def main() -> int:
         )
     )
 
-    # Loudness. Samples arrived and none of them attributed to a known lane:
-    # the history that was just written is uniformly empty and a planner
-    # reading it will silently fall back to static floors forever. Before
-    # #6217 this exited 0, which made a totally unusable run indistinguishable
-    # from a quiet one. It is the same "reports success because nothing
-    # declared otherwise" shape as #6188 and #6193, so it fails.
-    if stats["jobs_with_sample"] > 0 and stats["accepted_samples"] == 0:
-        worst = sorted(
-            stats["unmapped_keys"].items(), key=lambda kv: -kv[1]
-        )[:10]
-        detail = ", ".join(f"{name}={count}" for name, count in worst)
-        print(
-            "::error::Lane-history aggregation attributed 0 of "
-            f"{stats['jobs_with_sample']} samples to a known lane. Every lane "
-            "in the written history is empty. Most frequent unmapped keys: "
-            f"{detail}. These are gate names, not lane ids: the emitting "
-            "workflow must pass --lane-id (#6217).",
-            file=sys.stderr,
-        )
-        return 1
-
-    return 0
+    # Loudness, discriminated. A run that attributed nothing is either the
+    # mechanical rollout window (warn, expiring) or a live mapping failure
+    # (error from day one). Collapsing the two would either hide the real
+    # defect or emit a chronic red that everyone learns to ignore — the same
+    # ignored-signal failure as #6188, #6193, #6202, and #6229.
+    code, message = attribution_verdict(stats, today=date.today())
+    if message is not None:
+        print(message, file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
+from datetime import date
 from pathlib import Path
 
 
@@ -203,10 +204,66 @@ class AggregateLaneHistoryTests(unittest.TestCase):
         self.assertEqual(1, stats["accepted_samples"])
 
     def test_main_fails_loudly_when_no_sample_maps_to_a_lane(self) -> None:
-        """Samples arrived, none attributed: exit non-zero instead of exit 0.
+        """Samples arrived carrying lane_ids, none attributed: exit non-zero.
 
         Before #6217 this wrote a valid-looking all-zero history and returned
         success, which is indistinguishable from "no data" to every consumer.
+
+        The artifact carries a `lane_id`, so this is the live mapping failure
+        rather than the rollout window, and it fails regardless of date. The
+        rollout counterpart is
+        `test_main_warns_but_succeeds_for_pre_wiring_artifacts`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            actuals = root / "actuals"
+            actuals.mkdir()
+            (actuals / "ci-actuals.json").write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "lane_id": "not_a_real_lane",
+                                "gate_name": "fmt",
+                                "actual_lem": 5.0,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text("[lane.merge_gate_shards]\nbase_lem = 24\n", encoding="utf-8")
+            output = root / "history.json"
+
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "aggregate_lane_history.py",
+                    "--actuals-dir", str(actuals),
+                    "--output", str(output),
+                    "--static-lanes", str(lanes),
+                ]
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = aggregate_lane_history.main()
+            finally:
+                sys.argv = old_argv
+
+            history = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(1, rc, "an all-unmapped run must not report success")
+        self.assertEqual(0, history["validation"]["accepted_samples"])
+        self.assertEqual(1, history["validation"]["unmapped_samples"])
+        # The written history must not have grown a `fmt` lane.
+        self.assertEqual(["merge_gate_shards"], sorted(history["lanes"]))
+
+    def test_main_warns_but_succeeds_for_pre_wiring_artifacts(self) -> None:
+        """End-to-end rollout case: gate-name-only artifacts warn, exit 0.
+
+        Every artifact in the window predates `--lane-id`. That is mechanical
+        and self-resolving, so it must not red a scheduled workflow for two
+        weeks — a chronic red is an ignored red.
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -236,11 +293,14 @@ class AggregateLaneHistoryTests(unittest.TestCase):
 
             history = json.loads(output.read_text(encoding="utf-8"))
 
-        self.assertEqual(1, rc, "an all-unmapped run must not report success")
+        # Guarded so this does not silently flip to a failure assertion the
+        # day the deadline passes and start testing a different thing.
+        if date.today() < aggregate_lane_history.LANE_ID_ROLLOUT_DEADLINE:
+            self.assertEqual(0, rc, "the rollout window must not fail the workflow")
+        else:
+            self.assertEqual(1, rc, "past the deadline this must have become an error")
+        self.assertEqual(0, history["validation"]["jobs_with_lane_id"])
         self.assertEqual(0, history["validation"]["accepted_samples"])
-        self.assertEqual(1, history["validation"]["unmapped_samples"])
-        # The written history must not have grown a `fmt` lane.
-        self.assertEqual(["merge_gate_shards"], sorted(history["lanes"]))
 
     def test_main_succeeds_when_samples_attribute_to_a_lane(self) -> None:
         """Opposite direction: the loudness must not fire on a healthy run."""
@@ -315,6 +375,90 @@ class AggregateLaneHistoryTests(unittest.TestCase):
                 sys.argv = old_argv
 
         self.assertEqual(0, rc)
+
+    # ------------------------------------------------------------------
+    # #6217 rollout discrimination. "Nothing attributed" has two causes with
+    # opposite correct responses, and collapsing them either hides the real
+    # defect or ships a chronic red that trains everyone to ignore it.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _stats(**over: object) -> dict:
+        base = {
+            "source_files": 1,
+            "jobs_seen": 3,
+            "jobs_with_sample": 3,
+            "jobs_with_lane_id": 0,
+            "accepted_samples": 0,
+            "unmapped_samples": 3,
+            "unmapped_keys": {"fmt": 2, "clippy_full": 1},
+        }
+        base.update(over)
+        return base
+
+    def test_verdict_is_quiet_when_nothing_arrived(self) -> None:
+        code, msg = aggregate_lane_history.attribution_verdict(
+            self._stats(jobs_with_sample=0, unmapped_samples=0, unmapped_keys={}),
+            today=date(2026, 8, 10),
+        )
+        self.assertEqual(0, code)
+        self.assertIsNone(msg)
+
+    def test_verdict_is_quiet_when_samples_attributed(self) -> None:
+        code, msg = aggregate_lane_history.attribution_verdict(
+            self._stats(accepted_samples=3, unmapped_samples=0, unmapped_keys={}),
+            today=date(2026, 8, 10),
+        )
+        self.assertEqual(0, code)
+        self.assertIsNone(msg)
+
+    def test_verdict_warns_during_rollout_when_no_artifact_has_lane_id(self) -> None:
+        """Pre-wiring artifacts are mechanical and self-resolving: warn, do not fail."""
+        code, msg = aggregate_lane_history.attribution_verdict(
+            self._stats(jobs_with_lane_id=0),
+            today=date(2026, 8, 10),
+            deadline=date(2026, 9, 1),
+        )
+        self.assertEqual(0, code, "the rollout window must not fail the workflow")
+        self.assertIsNotNone(msg)
+        self.assertIn("::warning::", msg)
+        # The expiry must be stated in the text, so a reader of the warning
+        # knows it is time-boxed rather than permanent.
+        self.assertIn("2026-09-01", msg)
+
+    def test_verdict_fails_when_lane_ids_are_present_but_unmapped(self) -> None:
+        """The real defect: wiring exists and still produces nothing usable.
+
+        Fails from day one, inside the rollout window, because this is not
+        the rollout condition.
+        """
+        code, msg = aggregate_lane_history.attribution_verdict(
+            self._stats(jobs_with_lane_id=3),
+            today=date(2026, 8, 10),
+            deadline=date(2026, 9, 1),
+        )
+        self.assertEqual(1, code)
+        self.assertIn("::error::", msg)
+        self.assertIn("not the rollout window", msg)
+
+    def test_verdict_fails_after_the_rollout_deadline(self) -> None:
+        """The warn expires, so a never-wired workflow cannot warn forever."""
+        code, msg = aggregate_lane_history.attribution_verdict(
+            self._stats(jobs_with_lane_id=0),
+            today=date(2026, 9, 1),
+            deadline=date(2026, 9, 1),
+        )
+        self.assertEqual(1, code, "the rollout grace must expire on the deadline")
+        self.assertIn("::error::", msg)
+        self.assertIn("rollout window closed", msg)
+
+    def test_rollout_deadline_is_in_the_future_relative_to_the_change(self) -> None:
+        """Guards against shipping a grace period that is already expired."""
+        self.assertGreater(
+            aggregate_lane_history.LANE_ID_ROLLOUT_DEADLINE,
+            date(2026, 8, 8),
+            "the rollout deadline must postdate the change that introduces it",
+        )
 
     def test_static_floors_reads_lane_base_lem_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
