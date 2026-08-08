@@ -35,7 +35,12 @@ jobs:
       - name: Checkout trusted source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.ref_name }}
+          # Pin to the immutable event commit, matching the writer. The manifest
+          # records `git rev-parse HEAD` and the writer requires it to equal
+          # `github.sha`, so generating from the moving branch tip would make the
+          # writer reject the payload after a full Cargo build and silently drop
+          # the status update for that push.
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -63,6 +68,7 @@ jobs:
 
           import hashlib
           import json
+          import os
           from pathlib import Path
           import shutil
           import stat
@@ -173,7 +179,7 @@ jobs:
               encoding="utf-8",
           )
 
-          output_path = Path(__import__("os").environ["GITHUB_OUTPUT"])
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
           with output_path.open("a", encoding="utf-8") as output:
               output.write(f"changed={'true' if changed else 'false'}\n")
           print(
@@ -341,10 +347,18 @@ jobs:
               destination.parent.mkdir(parents=True, exist_ok=True)
               shutil.copyfile(files_root / relative, destination)
 
+          # Observe the whole working tree. Restricting `git diff` to `canonical`
+          # made this guard unfalsifiable: the pathspec filtered the output down
+          # to exactly the set it was then compared against, so the difference was
+          # empty by construction and no unexpected write could ever trip it.
+          # The payload itself lives in RUNNER_TEMP, outside this checkout.
           changed = subprocess.check_output(
-              ["git", "diff", "--name-only", "--", *canonical], text=True
+              ["git", "diff", "--name-only"], text=True
           ).splitlines()
-          unexpected = sorted(set(changed) - expected_paths)
+          untracked = subprocess.check_output(
+              ["git", "ls-files", "--others", "--exclude-standard"], text=True
+          ).splitlines()
+          unexpected = sorted((set(changed) | set(untracked)) - expected_paths)
           if unexpected:
               raise SystemExit(f"writer staged unexpected paths: {unexpected}")
           PY
@@ -356,7 +370,7 @@ jobs:
       # full self-merge is the #1004 follow-up. This is still strictly better
       # than the former direct push, which branch protection always rejected.
       - name: Create generated status PR
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ github.token }}
           branch: automation/post-merge-status

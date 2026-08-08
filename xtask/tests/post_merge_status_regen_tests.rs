@@ -168,13 +168,33 @@ fn test_post_merge_workflow_proposes_pull_request() -> Result<(), Box<dyn std::e
          Workflow content:\n{}",
         content
     );
-    assert!(
-        !content.contains("git push"),
-        "post-merge-status.yml must not push directly to the protected default \
-         branch; generated files are proposed through a reviewable PR.\n\
-         Workflow content:\n{}",
-        content
-    );
+    // Inspect only executable `run:` bodies. A whole-file substring search would
+    // also match prose: this workflow's own comments discuss the direct push that
+    // #6012 removed, so a future comment mentioning it would fail the test while
+    // no step actually pushes.
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+    for (name, job) in jobs {
+        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        for step in steps {
+            let Some(run) = step.get("run").and_then(Value::as_str) else {
+                continue;
+            };
+            assert!(
+                !run.contains("git push") && !run.contains("git commit"),
+                "post-merge-status.yml must not push directly to the protected \
+                 default branch; generated files are proposed through a \
+                 reviewable PR. Offending job `{:?}` step:\n{}",
+                name,
+                run
+            );
+        }
+    }
     Ok(())
 }
 
