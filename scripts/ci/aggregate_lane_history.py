@@ -244,7 +244,11 @@ def collect_actuals(
             if isinstance(actual, bool) or not isinstance(actual, (int, float)):
                 rejected["invalid_actual"] += 1
                 continue
-            actual_value = float(actual)
+            try:
+                actual_value = float(actual)
+            except (OverflowError, ValueError):
+                rejected["invalid_actual"] += 1
+                continue
             if not math.isfinite(actual_value):
                 rejected["non_finite_actual"] += 1
                 continue
@@ -476,6 +480,7 @@ def run_self_tests() -> None:
                 {"lane_id": "meta", "actual_lem": math.nan},
                 {"lane_id": "meta", "actual_lem": -1},
                 {"lane_id": "meta", "actual_lem": MAX_ACTUAL_LEM + 1},
+                {"lane_id": "meta", "actual_lem": 10**400},
                 {"lane_id": "meta", "actual_lem": 3},
             ],
         )
@@ -483,7 +488,7 @@ def run_self_tests() -> None:
         rejected = serializable_stats(raw_stats)["rejected"]
         check(samples == {"meta": [3.0]}, "valid sample was not isolated")
         check(rejected.get("unknown_lane") == 1, "unknown lane was not rejected")
-        check(rejected.get("invalid_actual") == 2, "invalid actual count incorrect")
+        check(rejected.get("invalid_actual") == 3, "invalid actual count incorrect")
         check(rejected.get("non_finite_actual") == 1, "NaN was not rejected")
         check(rejected.get("out_of_range_actual") == 2, "range checks failed")
 

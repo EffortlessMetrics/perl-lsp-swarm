@@ -43,6 +43,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
                             {"lane_id": "ripr", "actual_lem": 42.5},
                             {"lane_id": "missing-actual"},
                             {"lane_id": "bad-actual", "actual_lem": "slow"},
+                            {"lane_id": "meta", "actual_lem": 10**400},
                         ]
                     }
                 ),
@@ -67,13 +68,14 @@ class AggregateLaneHistoryTests(unittest.TestCase):
                     "missing-actual",
                     "bad-actual",
                     "old",
+                    "meta",
                 },
             )
 
         self.assertEqual({"ripr": [42.5], "rust-small": [120.0]}, samples)
         self.assertEqual(2, stats["accepted_samples"])
-        self.assertEqual(4, stats["jobs_seen"])
-        self.assertEqual(2, stats["rejected"]["invalid_actual"])
+        self.assertEqual(5, stats["jobs_seen"])
+        self.assertEqual(3, stats["rejected"]["invalid_actual"])
 
 
     def test_static_floors_reads_lane_base_lem_values(self) -> None:
