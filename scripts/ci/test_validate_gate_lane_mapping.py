@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -26,14 +27,20 @@ class ValidateGateLaneMappingTests(unittest.TestCase):
         *,
         strict: bool,
         json_out: bool = False,
+        workflow_text: str | None = None,
     ) -> tuple[int, str, dict[str, object] | None]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             gate_policy = root / "gate-policy.yaml"
             lanes = root / "ci-lanes.toml"
+            workflow = root / "ci.yml"
             report = root / "reports" / "gate-lane-mapping.json"
             gate_policy.write_text(gate_policy_text, encoding="utf-8")
             lanes.write_text(lanes_text, encoding="utf-8")
+            if workflow_text is None:
+                names = re.findall(r"^\s*- name:\s*([a-z][a-z0-9_]*)", gate_policy_text, re.M)
+                workflow_text = "jobs:\n  test:\n    gates: " + " ".join(names) + "\n"
+            workflow.write_text(workflow_text, encoding="utf-8")
 
             old_argv = sys.argv
             try:
@@ -43,6 +50,8 @@ class ValidateGateLaneMappingTests(unittest.TestCase):
                     str(gate_policy),
                     "--lanes",
                     str(lanes),
+                    "--workflow",
+                    str(workflow),
                 ]
                 if strict:
                     sys.argv.append("--strict")
@@ -82,6 +91,36 @@ gates:
         self.assertEqual(2, report["gate_count"])
         self.assertEqual([], report["unmapped_gates"])
         self.assertEqual([], report["missing_lanes"])
+
+    def test_strict_fails_when_required_gate_has_no_workflow_path(self) -> None:
+        status, output, report = self.run_validator(
+            """
+gates:
+  - name: fmt
+    tier: pr_fast
+    required: true
+  - name: docs_build
+    tier: merge_gate
+    required: true
+""",
+            """
+[lane.pr_smoke]
+[lane.docs_gate]
+""",
+            strict=True,
+            json_out=True,
+            workflow_text="""
+jobs:
+  test:
+    run: cargo xtask gates --tier pr_fast
+""",
+        )
+
+        self.assertEqual(1, status)
+        self.assertIn("Required unreachable gates: 1", output)
+        self.assertIn("  - docs_build", output)
+        assert report is not None
+        self.assertEqual(["docs_build"], report["required_unreachable_gates"])
 
     def test_strict_fails_on_unmapped_gate_and_missing_lane_reference(self) -> None:
         status, output, report = self.run_validator(
