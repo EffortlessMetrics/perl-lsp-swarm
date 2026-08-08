@@ -2488,8 +2488,7 @@ mod tests {
         let source_uri = "file:///workspace/stale_code_lens_source.pl";
         let caller_uri = "file:///workspace/stale_code_lens_caller.pl";
         let source_text = "package StaleCount::Source;\nsub count_me { return 1; }\n1;\n";
-        let caller_v1 =
-            "package StaleCount::Caller;\nsub a { count_me(); count_me(); }\n1;\n";
+        let caller_v1 = "package StaleCount::Caller;\nsub a { count_me(); count_me(); }\n1;\n";
         let caller_v2 =
             "package StaleCount::Caller;\nsub a { count_me(); count_me(); count_me(); }\n1;\n";
 
@@ -2543,9 +2542,7 @@ mod tests {
         let lens = lenses
             .iter()
             .find(|lens| {
-                lens.get("data")
-                    .and_then(|d| d.get("name"))
-                    .and_then(|n| n.as_str())
+                lens.get("data").and_then(|d| d.get("name")).and_then(|n| n.as_str())
                     == Some(symbol_name)
             })
             .ok_or_else(|| format!("expected {symbol_name} code lens"))?;
@@ -2553,7 +2550,9 @@ mod tests {
         let resolved = if lens.get("command").is_some() {
             lens.clone()
         } else {
-            server.handle_code_lens_resolve(Some(lens.clone()))?.ok_or("expected resolved code lens")?
+            server
+                .handle_code_lens_resolve(Some(lens.clone()))?
+                .ok_or("expected resolved code lens")?
         };
 
         resolved

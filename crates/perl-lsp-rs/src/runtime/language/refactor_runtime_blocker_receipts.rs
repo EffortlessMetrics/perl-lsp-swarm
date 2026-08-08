@@ -780,18 +780,31 @@ impl LspServer {
         let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
         #[cfg(not(feature = "workspace"))]
         let workspace_index_stale = false;
+        let mut workspace_index_stale = workspace_index_stale;
         let workspace_reference_count = if live_edit_guards_ready
             && !current_source_blocks
             && !source_guard_blocks
             && workspace_identity_guard_accepts
             && !workspace_index_stale
         {
-            source_guard_context
-                .as_ref()
-                .and_then(|(uri, line, character, symbol, _byte_offset)| {
+            let reference_count = source_guard_context.as_ref().and_then(
+                |(uri, line, character, symbol, _byte_offset)| {
                     self.safe_delete_workspace_reference_count(uri, *line, *character, symbol)
-                })
-                .unwrap_or(0)
+                },
+            );
+            // The helper rechecks freshness immediately before consulting the
+            // index. Propagate that result instead of treating `None` as an
+            // authoritative zero-usage count if an edit raced this request.
+            #[cfg(feature = "workspace")]
+            let became_stale = self.workspace_index_stale_for_any_open_document();
+            #[cfg(not(feature = "workspace"))]
+            let became_stale = false;
+            if became_stale {
+                workspace_index_stale = true;
+                0
+            } else {
+                reference_count.unwrap_or(0)
+            }
         } else {
             0
         };
@@ -1997,10 +2010,8 @@ fn mark_safe_delete_workspace_index_stale_blocker(receipt: &mut Value) {
     object.insert("blocker_count".to_string(), json!(1));
     object.insert("blocker_reasons".to_string(), json!(["WorkspaceIndexStale"]));
     object.insert("dynamic_boundary".to_string(), json!(false));
-    object.insert(
-        "workspace_reference_guard".to_string(),
-        json!("blocked_by_workspace_index_stale"),
-    );
+    object
+        .insert("workspace_reference_guard".to_string(), json!("blocked_by_workspace_index_stale"));
     object.insert(
         "live_blocker_ux".to_string(),
         json!({
