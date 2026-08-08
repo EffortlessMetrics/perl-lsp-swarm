@@ -35,7 +35,7 @@ Use focused subagents, context forks, or an Agent Team only where useful for:
 - high-output CI log/artifact classification;
 - reproduction and production-path tracing;
 - proof/oracle challenge;
-- detecting a test, ratchet, support, or policy weakening disguised as a fix.
+- detecting a test, ratchet, support claim, or policy weakening disguised as a fix.
 
 Children return finding identity, direct/contradictory evidence, searched scope,
 classification, suggested disposition, uncertainty, and affected dimensions. They do
