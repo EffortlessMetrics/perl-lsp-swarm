@@ -56,7 +56,7 @@ The script installs into `%USERPROFILE%\\.local\\bin` by default.
           set -euo pipefail
           test "$(git diff --name-only)" = "docs/how-to/INSTALLATION.md"
           git diff --check
-          rg -n "require `SHA256SUMS`|fails closed|does not independently prove" docs/how-to/INSTALLATION.md
+          rg -n 'require `SHA256SUMS`|fails closed|does not independently prove' docs/how-to/INSTALLATION.md
 
       - name: Commit validated documentation repair
         env:
