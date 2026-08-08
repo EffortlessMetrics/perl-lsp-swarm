@@ -2048,7 +2048,11 @@ fn build_completion_package_graph(
     const MAX_DISCOVERED_ROLE_FILES: usize = 32;
 
     let mut graph = PackageGraphIndex::new();
-    let mut pending_uris = VecDeque::from_iter(source_uris.iter().cloned());
+    // `source_uris` is a `HashSet`; make the bounded discovery order stable so
+    // the cap cannot select different role files across hash iterations.
+    let mut initial_uris: Vec<_> = source_uris.iter().cloned().collect();
+    initial_uris.sort_unstable();
+    let mut pending_uris = VecDeque::from(initial_uris);
     let mut visited_uris = HashSet::new();
     let max_files = source_uris.len().saturating_add(MAX_DISCOVERED_ROLE_FILES);
 
