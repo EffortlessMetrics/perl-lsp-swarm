@@ -79,7 +79,49 @@ fn validate_msrv_authorities(root: &Path, policy: &GatePolicy) -> Result<()> {
     let toolchain_path = root.join("rust-toolchain.toml");
     let toolchain: RustToolchainFile = read_toml_as(&toolchain_path)?;
 
-    validate_msrv_values(cargo_msrv, gate_msrv, &toolchain.toolchain.channel)
+    validate_msrv_values(cargo_msrv, gate_msrv, &toolchain.toolchain.channel)?;
+    validate_matrix_msrv_legs(cargo_msrv, &matrix_toolchain_legs(policy))
+}
+
+/// Collect every pinned toolchain version declared by a gate matrix leg.
+///
+/// `GateDefinition::matrix` is deserialized as an untyped YAML value, so the
+/// legs are read structurally here rather than by widening the shared policy
+/// model. Named channels (`stable`, `beta`, `nightly`, ...) carry no MSRV
+/// claim and are skipped; only numeric pins are returned.
+fn matrix_toolchain_legs(policy: &GatePolicy) -> Vec<(String, String)> {
+    let mut legs = Vec::new();
+    for gate in &policy.gates {
+        let Some(toolchains) = gate
+            .matrix
+            .as_ref()
+            .and_then(|matrix| matrix.get("toolchain"))
+            .and_then(serde_yaml_ng::Value::as_sequence)
+        else {
+            continue;
+        };
+        for entry in toolchains {
+            let Some(value) = entry.as_str() else {
+                continue;
+            };
+            if value.starts_with(|ch: char| ch.is_ascii_digit()) {
+                legs.push((gate.name.clone(), value.to_owned()));
+            }
+        }
+    }
+    legs
+}
+
+fn validate_matrix_msrv_legs(cargo: &str, legs: &[(String, String)]) -> Result<()> {
+    for (gate, value) in legs {
+        if compare_versions(cargo, value)? != 0 {
+            bail!(
+                "Cargo.toml workspace.package.rust-version ({cargo}) must match \
+                 .ci/gate-policy.yaml gates[{gate}].matrix.toolchain pin ({value})"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_msrv_values(cargo: &str, gate_policy: &str, rust_toolchain: &str) -> Result<()> {
@@ -287,6 +329,50 @@ mod tests {
         let error = validate_msrv_values("1.95", "1.95.0", "1.92.0")
             .expect_err("rust-toolchain MSRV drift should be rejected");
         assert!(error.to_string().contains("rust-toolchain.toml"));
+        Ok(())
+    }
+
+    #[test]
+    fn msrv_rejects_matrix_leg_drift() -> Result<()> {
+        let legs = [("full_matrix".to_owned(), "1.92.0".to_owned())];
+        let error = validate_matrix_msrv_legs("1.95", &legs)
+            .expect_err("matrix-only MSRV drift should be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("gates[full_matrix].matrix.toolchain"),
+            "error must name the drifted matrix leg; got {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn msrv_matrix_legs_ignore_named_channels() -> Result<()> {
+        // `stable`/`beta` legs float by design and carry no MSRV claim, so the
+        // collector must not turn them into version-comparison failures.
+        let legs = [("full_matrix".to_owned(), "1.95.0".to_owned())];
+        validate_matrix_msrv_legs("1.95", &legs)
+    }
+
+    /// Guards against a vacuous matrix check: if the collector ever stops
+    /// finding the pinned leg, `validate_matrix_msrv_legs` would pass on an
+    /// empty list and the authority would silently lose its protection.
+    #[test]
+    fn msrv_matrix_collector_finds_the_real_pinned_leg() -> Result<()> {
+        let root = project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let legs = matrix_toolchain_legs(&policy);
+        assert!(
+            !legs.is_empty(),
+            ".ci/gate-policy.yaml must declare at least one pinned matrix toolchain leg; \
+             an empty collection makes the MSRV matrix check vacuous"
+        );
+        assert!(
+            legs.iter().all(|(_, value)| !value.starts_with("stable")
+                && !value.starts_with("beta")
+                && !value.starts_with("nightly")),
+            "collector must skip named channels; got {legs:?}"
+        );
         Ok(())
     }
 }

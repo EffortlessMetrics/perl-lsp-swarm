@@ -1078,6 +1078,26 @@ gates:
       - docs
       - generated
 
+  # Guards the MSRV declared by Cargo.toml, rust-toolchain.toml, this file's
+  # global.toolchain.msrv, and the pinned matrix legs below. #6106 exists
+  # because those authorities drifted apart with nothing running to notice;
+  # this gate is what makes the comparison load-bearing rather than a command
+  # a contributor has to remember to type. Runs in the `policy` shard.
+  - name: msrv_authority_sync
+    tier: merge_gate
+    description: "Run the gate-policy validator: every MSRV authority (Cargo.toml, rust-toolchain.toml, gate-policy global + matrix legs) agrees, plus PR-profile and registry invariants"
+    required: true
+    command: cargo xtask gate-policy check
+    timeout_seconds: 60
+    retry_count: 0
+    budgets:
+      max_duration_ms: 30000
+    quarantine: false
+    tags:
+      - policy
+      - version
+      - hygiene
+
   - name: v2_parity
     tier: merge_gate
     description: "Verify in-crate v2 and perl-parser-pest v2 produce identical corpus output"
