@@ -5,8 +5,17 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use walkdir::WalkDir;
 
+/// A live inline link. The leading `(^|[^\\])` group rejects `\[escaped](x)`,
+/// which renders as literal text rather than a link; the target is capture 2.
 static MARKDOWN_LINK_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r#"\[[^\]]*\]\(\s*<?([^\s)>]+)>?"#));
+    LazyLock::new(|| Regex::new(r#"(^|[^\\])\[[^\]]*\]\(\s*<?([^\s)>]+)>?"#));
+
+/// An inline code span. ADR prose demonstrates Markdown syntax inside
+/// backticks; that text does not render as a link, so it must not be resolved
+/// as one. Fenced blocks are handled separately by the fence toggle in
+/// [`check_file`].
+static INLINE_CODE_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"`[^`]*`"));
 
 pub(crate) fn check_doc_links(repo_root: &Path, docs_dir: Option<&str>) -> Result<i32> {
     let docs_dir = docs_dir.unwrap_or("docs/adr");
@@ -91,9 +100,15 @@ fn markdown_link_targets(line: &str) -> Result<Vec<String>> {
     let regex = MARKDOWN_LINK_RE
         .as_ref()
         .map_err(|err| eyre!("failed to compile Markdown link matcher: {err}"))?;
+    let inline_code = INLINE_CODE_RE
+        .as_ref()
+        .map_err(|err| eyre!("failed to compile inline code matcher: {err}"))?;
+    // Blank out code spans rather than dropping them, so neighbouring text
+    // cannot be spliced together into a link that was never written.
+    let line = inline_code.replace_all(line, " ");
     Ok(regex
-        .captures_iter(line)
-        .filter_map(|capture| capture.get(1))
+        .captures_iter(&line)
+        .filter_map(|capture| capture.get(2))
         .map(|target| target.as_str().to_owned())
         .collect())
 }
@@ -135,7 +150,7 @@ fn display_path(repo_root: &Path, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_doc_links, check_file};
+    use super::{check_doc_links, check_file, markdown_link_targets};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -184,20 +199,100 @@ mod tests {
         Ok(())
     }
 
+    /// Each skip test pairs the skipped entry with a positive control: the same
+    /// broken-link text in a real `.md` file must still be reported. Without
+    /// the control, a walker that skipped *everything* would also pass.
     #[test]
-    fn check_doc_links_skips_non_markdown_files_and_directories() -> TestResult {
-        let root = unique_temp_dir("skipped-entries")?;
+    fn check_doc_links_skips_directories_named_like_markdown() -> TestResult {
+        let root = unique_temp_dir("skip-dir")?;
         let docs = root.join("docs/adr");
+        // A directory whose name ends in `.md` passes the extension test and is
+        // rejected only by `!entry.file_type().is_file()`.
         fs::create_dir_all(docs.join("ignored.md"))?;
-        fs::write(docs.join("notes.txt"), "[missing](missing-from-non-markdown-file.md)\n")?;
-        fs::write(docs.join("source.md"), "[target](target.md)\n")?;
-        fs::write(docs.join("target.md"), "target\n")?;
 
         let exit_code = check_doc_links(&root, None)?;
         if exit_code != 0 {
-            return Err(format!("expected skipped entries to be ignored, got {exit_code}").into());
+            return Err(format!("a directory named *.md must be skipped, got {exit_code}").into());
+        }
+
+        // Positive control: identical name, but a real file with a broken link.
+        fs::remove_dir_all(docs.join("ignored.md"))?;
+        fs::write(docs.join("ignored.md"), "[missing](missing.md)\n")?;
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 1 {
+            return Err(format!("the same path as a file must be checked, got {exit_code}").into());
         }
         fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_skips_files_without_a_markdown_extension() -> TestResult {
+        let root = unique_temp_dir("skip-ext")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        // A real file, so `is_file()` holds; rejected only by the extension test.
+        fs::write(docs.join("notes.txt"), "[missing](missing.md)\n")?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(format!("a non-markdown file must be skipped, got {exit_code}").into());
+        }
+
+        // Positive control: identical content, `.md` extension.
+        fs::write(docs.join("notes.md"), "[missing](missing.md)\n")?;
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 1 {
+            return Err(format!("the same content as .md must be checked, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_errors_when_docs_directory_is_missing() -> TestResult {
+        // A mistyped or moved docs directory must fail loudly. Returning Ok(0)
+        // here would report "no broken links" for a tree that was never read.
+        let root = unique_temp_dir("missing-docs-dir")?;
+
+        let error = match check_doc_links(&root, Some("docs/does-not-exist")) {
+            Ok(code) => {
+                return Err(format!("a missing docs directory must error, got exit {code}").into());
+            }
+            Err(error) => error.to_string(),
+        };
+        if !error.contains("Docs directory not found") || !error.contains("does-not-exist") {
+            return Err(format!("unexpected missing-directory error: {error}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_link_targets_ignores_inline_code_and_escaped_links() -> TestResult {
+        // ADRs that document Markdown syntax must not be rejected: neither
+        // form renders as a link, so neither is a resolvable target.
+        let live = markdown_link_targets("see [guide](../reference/GUIDE.md) for detail")?;
+        if live != vec!["../reference/GUIDE.md".to_string()] {
+            return Err(format!("expected the live link target, got {live:?}").into());
+        }
+
+        let in_code = markdown_link_targets("write it as `[literal](missing.md)` in prose")?;
+        if !in_code.is_empty() {
+            return Err(format!("inline code must yield no targets, got {in_code:?}").into());
+        }
+
+        let escaped = markdown_link_targets(r"escape it as \[literal](missing.md) instead")?;
+        if !escaped.is_empty() {
+            return Err(format!("an escaped link must yield no targets, got {escaped:?}").into());
+        }
+
+        // A code span inside a link *label* still leaves a real link, so the
+        // target must remain checked -- masking must not swallow the link.
+        let labelled = markdown_link_targets("[the `Foo` type](../reference/FOO.md)")?;
+        if labelled != vec!["../reference/FOO.md".to_string()] {
+            return Err(format!("code in a link label must keep the target, got {labelled:?}").into());
+        }
         Ok(())
     }
 
