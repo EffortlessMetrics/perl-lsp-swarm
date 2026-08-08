@@ -54,7 +54,9 @@ jobs:
           set -euo pipefail
           # Split the test filter into an argv array using Python's shlex
           # to prevent shell injection from the workflow_dispatch input (#5979).
-          read -r -a FILTER <<< "$(python3 -c 'import shlex, sys, os; print(" ".join(shlex.split(os.environ.get("TEST_FILTER_INPUT", ""))))')"
+          # Use mapfile with newline-delimited output to preserve arguments
+          # containing spaces (read -r -a would re-split on spaces).
+          mapfile -t FILTER < <(python3 -c 'import shlex, os; print("\n".join(shlex.split(os.environ.get("TEST_FILTER_INPUT", ""))))')
           cargo test --workspace --lib --locked -Z unstable-options --format json \
             "${FILTER[@]}" > test-results.jsonl 2>&1 || true
 
