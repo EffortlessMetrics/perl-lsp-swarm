@@ -110,6 +110,9 @@ pub struct ScopeIssue {
 #[derive(Debug)]
 struct Variable {
     declaration_offset: usize,
+    /// Statement-modifier declarations are analyzed before their statement to model Perl's
+    /// hoisting rule, even when their source span follows a use in that statement.
+    is_hoisted: bool,
     is_used: RefCell<bool>,
     is_our: bool,
     is_initialized: RefCell<bool>,
@@ -190,6 +193,25 @@ impl Scope {
         is_our: bool,
         is_initialized: bool,
     ) -> Option<IssueKind> {
+        self.declare_variable_parts_with_hoisting(
+            sigil,
+            name,
+            offset,
+            is_our,
+            is_initialized,
+            false,
+        )
+    }
+
+    fn declare_variable_parts_with_hoisting(
+        &self,
+        sigil: &str,
+        name: &str,
+        offset: usize,
+        is_our: bool,
+        is_initialized: bool,
+        is_hoisted: bool,
+    ) -> Option<IssueKind> {
         let idx = sigil_to_index(sigil);
 
         // First check if already declared in this scope
@@ -217,6 +239,7 @@ impl Scope {
             name.to_string(),
             Rc::new(Variable {
                 declaration_offset: offset,
+                is_hoisted,
                 is_used: RefCell::new(is_our), // 'our' variables are considered used
                 is_our,
                 is_initialized: RefCell::new(is_initialized),
@@ -256,6 +279,38 @@ impl Scope {
                 let vars = current_scope.variables.borrow();
                 if let Some(map) = &vars[idx] {
                     if let Some(var) = map.get(name) {
+                        *var.is_used.borrow_mut() = true;
+                        return (true, *var.is_initialized.borrow());
+                    }
+                }
+            }
+
+            if let Some(ref parent) = current_scope.parent {
+                current_scope = parent;
+            } else {
+                return (false, false);
+            }
+        }
+    }
+
+    /// Look up a variable at a source offset, rejecting declarations that occur later in the
+    /// same traversal unless the declaration was explicitly marked as hoisted.
+    fn use_variable_parts_at(&self, sigil: &str, name: &str, use_offset: usize) -> (bool, bool) {
+        let idx = sigil_to_index(sigil);
+        let mut current_scope = self;
+
+        loop {
+            {
+                let vars = current_scope.variables.borrow();
+                if let Some(map) = &vars[idx] {
+                    if let Some(var) = map.get(name) {
+                        if var.declaration_offset > use_offset && !var.is_hoisted {
+                            if let Some(ref parent) = current_scope.parent {
+                                current_scope = parent;
+                                continue;
+                            }
+                            return (false, false);
+                        }
                         *var.is_used.borrow_mut() = true;
                         return (true, *var.is_initialized.borrow());
                     }
@@ -421,6 +476,9 @@ pub(super) struct AnalysisContext<'a> {
     /// - different generation → package switched since last declaration → silently accepted
     ///   as a re-import; the entry is updated to the new generation.
     pub(super) our_decl_generations: RefCell<HashMap<String, u64>>,
+    /// Set while traversing a statement-modifier condition whose declarations are hoisted over
+    /// the statement by `analyze_node`.
+    pub(super) in_hoisted_statement_condition: Cell<bool>,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -436,6 +494,7 @@ impl<'a> AnalysisContext<'a> {
             current_package: RefCell::new("main".to_string()),
             package_change_generation: Cell::new(0),
             our_decl_generations: RefCell::new(HashMap::new()),
+            in_hoisted_statement_condition: Cell::new(false),
         }
     }
 
@@ -564,6 +623,37 @@ impl ScopeAnalyzer {
         scope.declare_variable_parts(sigil, name, offset, is_our, is_initialized)
     }
 
+    pub(super) fn declare_hoisted_variable_parts_in_context(
+        &self,
+        scope: &Rc<Scope>,
+        sigil: &str,
+        name: &str,
+        offset: usize,
+        is_our: bool,
+        is_initialized: bool,
+        context: &AnalysisContext<'_>,
+    ) -> Option<IssueKind> {
+        if is_our && let Some(qualified_name) = self.package_variable_name(name, context) {
+            return scope.declare_variable_parts_with_hoisting(
+                sigil,
+                &qualified_name,
+                offset,
+                is_our,
+                is_initialized,
+                true,
+            );
+        }
+
+        scope.declare_variable_parts_with_hoisting(
+            sigil,
+            name,
+            offset,
+            is_our,
+            is_initialized,
+            true,
+        )
+    }
+
     pub(super) fn has_variable_parts_in_context(
         &self,
         scope: &Rc<Scope>,
@@ -593,6 +683,24 @@ impl ScopeAnalyzer {
 
         self.package_variable_name(name, context).map_or((false, false), |qualified_name| {
             scope.use_variable_parts(sigil, &qualified_name)
+        })
+    }
+
+    pub(super) fn use_variable_parts_at_in_context(
+        &self,
+        scope: &Rc<Scope>,
+        sigil: &str,
+        name: &str,
+        use_offset: usize,
+        context: &AnalysisContext<'_>,
+    ) -> (bool, bool) {
+        let (found, initialized) = scope.use_variable_parts_at(sigil, name, use_offset);
+        if found {
+            return (found, initialized);
+        }
+
+        self.package_variable_name(name, context).map_or((false, false), |qualified_name| {
+            scope.use_variable_parts_at(sigil, &qualified_name, use_offset)
         })
     }
 
@@ -960,7 +1068,9 @@ impl ScopeAnalyzer {
                 // Analyze the condition first so any `my` it introduces is visible
                 // to the statement.
                 ancestors.push(node);
+                let was_in_hoisted_condition = context.in_hoisted_statement_condition.replace(true);
                 self.analyze_node(condition, scope, ancestors, issues, context);
+                context.in_hoisted_statement_condition.set(was_in_hoisted_condition);
                 self.analyze_node(statement, scope, ancestors, issues, context);
                 ancestors.pop();
             }
@@ -1157,7 +1267,7 @@ impl ScopeAnalyzer {
         name: &str,
     ) {
         let (variable_used, is_initialized) =
-            self.use_variable_parts_in_context(scope, sigil, name, context);
+            self.use_variable_parts_at_in_context(scope, sigil, name, node.location.start, context);
         if !variable_used {
             if strict_vars_mode {
                 self.push_undeclared_variable_issue(issues, context, node, sigil, name);
@@ -2573,5 +2683,60 @@ mod tests_uninitialized_warning_gate {
             "read after use warnings 'uninitialized' must be reported; got: {:?}",
             issues
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_declaration_order {
+    use super::Scope;
+
+    #[test]
+    fn later_non_hoisted_declaration_does_not_satisfy_earlier_use() -> Result<(), String> {
+        let scope = Scope::new();
+        scope.declare_variable_parts("$", "future", 10, false, true);
+
+        if scope.use_variable_parts_at("$", "future", 5) == (false, false) {
+            Ok(())
+        } else {
+            Err("a later non-hoisted declaration satisfied an earlier use".to_string())
+        }
+    }
+
+    #[test]
+    fn hoisted_declaration_can_satisfy_an_earlier_use() -> Result<(), String> {
+        let scope = Scope::new();
+        scope.declare_variable_parts_with_hoisting("$", "hoisted", 10, false, true, true);
+
+        if scope.use_variable_parts_at("$", "hoisted", 5) == (true, true) {
+            Ok(())
+        } else {
+            Err("a hoisted declaration did not satisfy an earlier use".to_string())
+        }
+    }
+
+    #[test]
+    fn ordinary_lookup_keeps_legacy_offset_independence() -> Result<(), String> {
+        let scope = Scope::new();
+        scope.declare_variable_parts("$", "future", 10, false, true);
+
+        if scope.use_variable_parts("$", "future") == (true, true) {
+            Ok(())
+        } else {
+            Err("ordinary lookup unexpectedly applied source-order filtering".to_string())
+        }
+    }
+
+    #[test]
+    fn later_inner_declaration_does_not_hide_prior_outer_binding() -> Result<(), String> {
+        let parent = std::rc::Rc::new(Scope::new());
+        parent.declare_variable_parts("$", "outer", 0, false, true);
+        let child = Scope::with_parent(parent);
+        child.declare_variable_parts("$", "outer", 10, false, true);
+
+        if child.use_variable_parts_at("$", "outer", 5) == (true, true) {
+            Ok(())
+        } else {
+            Err("a later inner declaration hid an earlier outer binding".to_string())
+        }
     }
 }

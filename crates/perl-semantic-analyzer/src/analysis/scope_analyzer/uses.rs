@@ -59,8 +59,13 @@ pub(super) fn handle_variable<'a>(
     // container sigil that the syntax implies.
     let (lookup_sigil, lookup_name) =
         analyzer.resolve_variable_use_target(node, ancestors, context).unwrap_or((sigil, name));
-    let (variable_used, is_initialized) =
-        analyzer.use_variable_parts_in_context(scope, lookup_sigil, lookup_name, context);
+    let (variable_used, is_initialized) = analyzer.use_variable_parts_at_in_context(
+        scope,
+        lookup_sigil,
+        lookup_name,
+        node.location.start,
+        context,
+    );
 
     // Variable not found - check if we should report it
     if !variable_used {

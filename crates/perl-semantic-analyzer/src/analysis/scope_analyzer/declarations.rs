@@ -70,15 +70,27 @@ pub(super) fn handle_variable_declaration<'a>(
     let our_qualified =
         if is_our { analyzer.package_variable_name(var_name_part, context) } else { None };
 
-    let issue_kind_opt = analyzer.declare_variable_parts_in_context(
-        scope,
-        sigil,
-        var_name_part,
-        variable.location.start,
-        is_our,
-        is_initialized,
-        context,
-    );
+    let issue_kind_opt = if context.in_hoisted_statement_condition.get() {
+        analyzer.declare_hoisted_variable_parts_in_context(
+            scope,
+            sigil,
+            var_name_part,
+            variable.location.start,
+            is_our,
+            is_initialized,
+            context,
+        )
+    } else {
+        analyzer.declare_variable_parts_in_context(
+            scope,
+            sigil,
+            var_name_part,
+            variable.location.start,
+            is_our,
+            is_initialized,
+            context,
+        )
+    };
 
     match issue_kind_opt {
         Some(IssueKind::VariableRedeclaration) if is_our => {
@@ -194,15 +206,27 @@ pub(super) fn handle_variable_list_declaration<'a>(
         let our_qualified =
             if is_our { analyzer.package_variable_name(var_name_part, context) } else { None };
 
-        let issue_kind_opt = analyzer.declare_variable_parts_in_context(
-            scope,
-            sigil,
-            var_name_part,
-            variable.location.start,
-            is_our,
-            is_initialized,
-            context,
-        );
+        let issue_kind_opt = if context.in_hoisted_statement_condition.get() {
+            analyzer.declare_hoisted_variable_parts_in_context(
+                scope,
+                sigil,
+                var_name_part,
+                variable.location.start,
+                is_our,
+                is_initialized,
+                context,
+            )
+        } else {
+            analyzer.declare_variable_parts_in_context(
+                scope,
+                sigil,
+                var_name_part,
+                variable.location.start,
+                is_our,
+                is_initialized,
+                context,
+            )
+        };
 
         match issue_kind_opt {
             Some(IssueKind::VariableRedeclaration) if is_our => {
