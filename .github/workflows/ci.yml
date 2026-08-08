@@ -111,10 +111,24 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           CURRENT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" | awk '{print $1}')
+          # The freshness optimization (skip CI for superseded SHAs) is only
+          # safe for push events on same-repo refs. For pull_request and
+          # merge_group events, github.head_ref is attacker-controlled: a fork
+          # author can name their branch "main" so the ls-remote resolves the
+          # upstream branch, making every fork PR look "superseded" and
+          # silently skipping all gated jobs (#5981).
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR/merge_group event — freshness optimization bypassed for safety ($CURRENT)"
+            exit 0
+          fi
+
+          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git" "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}')
           if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
             echo "::notice::This SHA ($CURRENT) is latest on $BRANCH — running full CI"
