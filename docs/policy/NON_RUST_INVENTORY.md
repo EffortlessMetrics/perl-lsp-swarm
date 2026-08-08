@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10164 |
-| Rust-family files | 3079 |
-| Non-Rust files | 7085 |
-| Allowlisted | 4768 |
-| Unclassified | 2317 |
+| Total tracked files | 10168 |
+| Rust-family files | 3080 |
+| Non-Rust files | 7088 |
+| Allowlisted | 4774 |
+| Unclassified | 2314 |
 
 ## Non-Rust files by category
 
@@ -21,8 +21,8 @@
 | generated | 1 |
 | production | 211 |
 | test | 1753 |
-| tooling | 319 |
-| unclassified | 2317 |
+| tooling | 325 |
+| unclassified | 2314 |
 
 ## Unclassified files
 
@@ -146,9 +146,6 @@
 | `.codex/hooks.json` | `json` |
 | `.dockerignore` | `` |
 | `.editorconfig` | `` |
-| `.kiro/specs/parser-accuracy-observability/.config.kiro` | `kiro` |
-| `.kiro/specs/rc2-semantic-analysis/.config.kiro` | `kiro` |
-| `.kiro/specs/ux-readiness-system/.config.kiro` | `kiro` |
 | `.typos.toml` | `toml` |
 | `aqua.yaml` | `yaml` |
 | `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | `json` |
@@ -2663,12 +2660,15 @@
 | `.jules/palette.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.jules/sentinel.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.justfiles/security.just` | tooling | `non-rust-justfiles-tree` | release/ci |
+| `.kiro/specs/parser-accuracy-observability/.config.kiro` | tooling | `non-rust-kiro` | developer-experience |
 | `.kiro/specs/parser-accuracy-observability/design.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/parser-accuracy-observability/requirements.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/parser-accuracy-observability/tasks.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.kiro/specs/rc2-semantic-analysis/.config.kiro` | tooling | `non-rust-kiro` | developer-experience |
 | `.kiro/specs/rc2-semantic-analysis/design.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/rc2-semantic-analysis/requirements.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/rc2-semantic-analysis/tasks.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.kiro/specs/ux-readiness-system/.config.kiro` | tooling | `non-rust-kiro` | developer-experience |
 | `.kiro/specs/ux-readiness-system/audit-0.1-findings.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/ux-readiness-system/design.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.kiro/specs/ux-readiness-system/requirements.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5460,9 +5460,11 @@
 | `scripts/reviews/claim-digest` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/claim_digest.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/disposition` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/reviews/inline` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/lease` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/run` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/reviews/state` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/reviews/threads` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/run-gates.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/run_parser_comparison.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/safe-pull.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -5522,6 +5524,7 @@
 | `scripts/tests/test-publish-topo.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-quick-receipts-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-review-lease.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-review-threads-inline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-run-gates-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-swarm-summary-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-target-isolation.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
