@@ -398,5 +398,5 @@ function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
     return false;
   }
 
-  return !POTENTIALLY_EXPLOSIVE_REGEX_RE.test(source);
+  return !POTENTIALLY_EXPENSIVE_REGEX_RE.test(source);
 }
