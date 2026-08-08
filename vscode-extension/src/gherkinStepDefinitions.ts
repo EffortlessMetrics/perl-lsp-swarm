@@ -21,7 +21,7 @@ const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // definitions, including the `"([^"]+)"` patterns this module generates itself
 // (see buildGeneratedStepPattern).
 // Keep this in sync with the identical constant in gherkinProviders.ts.
-const POTENTIALLY_EXPLOSIVE_REGEX_RE =
+const POTENTIALLY_EXPENSIVE_REGEX_RE =
   /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|(?:\([^)]*\|[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 
 export type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But';

@@ -98,6 +98,15 @@ describe('gherkin step definition support', () => {
     );
   });
 
+  test('treats quantified alternation as ambiguous', () => {
+    const step = parseGherkinStepLine('Then aaaaaaaaaaaaaaaaaaaa!', 1);
+    expect(step).not.toBeNull();
+
+    expect(classifyStepDefinitionStatus(step!, ['Then qr/^(a|aa)+!$/, sub { return; };'])).toBe(
+      'ambiguous',
+    );
+  });
+
   test('does not treat named-capture groups as expensive (no false positive)', () => {
     const step = parseGherkinStepLine('Then I have 5 items in the cart', 1);
     expect(step).not.toBeNull();
