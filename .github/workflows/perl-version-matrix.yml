@@ -65,7 +65,7 @@ jobs:
             run_rust_smoke: true
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Perl ${{ matrix.perl }}
         uses: shogo82148/actions-setup-perl@05e67354f08b143fe5bd8495e9b80657a3086754  # v1.43.0
