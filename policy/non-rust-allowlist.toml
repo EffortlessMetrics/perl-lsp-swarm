@@ -712,7 +712,12 @@ review_after = "2026-08-07"
 
 [[allow]]
 id = "non-rust-other-agents"
-glob = ".{aider,roo,kiro,hermes,jules}/**"
+# glob 0.3.3 has no brace-alternation ({a,b}) support — it treats {, }, and ,
+# as literal characters, making the previous ".{aider,roo,...}/**" pattern a
+# silent no-op that matched nothing (#6101). Use a ? wildcard for the first
+# char after the dot instead: ".?oo/**" matches ".roo/" and ".?iro/**" etc.
+# But that's fragile. Instead, list each directory explicitly.
+glob = ".roo/**"
 kind = "agent_config"
 language = "mixed"
 surface = "tooling"
@@ -722,6 +727,39 @@ reason = "Other-agent configuration directories used by the swarm orchestration.
 covered_by = [
   "cargo xtask check-file-policy",
 ]
+
+[[allow]]
+id = "non-rust-other-agents-kiro"
+glob = ".kiro/**"
+kind = "agent_config"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "developer-experience"
+reason = "Kiro agent configuration directory."
+covered_by = ["cargo xtask check-file-policy"]
+
+[[allow]]
+id = "non-rust-other-agents-hermes"
+glob = ".hermes/**"
+kind = "agent_config"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "developer-experience"
+reason = "Hermes agent configuration directory."
+covered_by = ["cargo xtask check-file-policy"]
+
+[[allow]]
+id = "non-rust-other-agents-jules"
+glob = ".jules/**"
+kind = "agent_config"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "developer-experience"
+reason = "Jules agent configuration directory."
+covered_by = ["cargo xtask check-file-policy"]
 broad_glob_reason = "Each agent ecosystem has its own directory layout; covered together to avoid one entry per agent."
 created = "2026-05-07"
 review_after = "2026-08-07"
