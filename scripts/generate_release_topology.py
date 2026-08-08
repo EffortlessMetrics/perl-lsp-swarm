@@ -223,6 +223,8 @@ def source_hashes(root: Path) -> dict[str, str]:
 def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_swarm_sha: str | None = None) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{40}", frozen_product_sha):
         raise TopologyError("frozen_product_sha must be a full lowercase commit SHA")
+    if git_head(root) != frozen_product_sha:
+        raise TopologyError("frozen_product_sha must identify the exact checkout being inventoried")
     metadata = cargo_metadata(root)
     cargo_manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
     workspace_version = cargo_manifest.get("workspace", {}).get("package", {}).get("version")
@@ -278,9 +280,20 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
         raise TopologyError("manifest schema must be 1")
     if expected_sha is not None and manifest.get("frozen_product_sha") != expected_sha:
         raise TopologyError("manifest frozen_product_sha differs from the reviewed candidate SHA")
+    if expected_sha is not None and git_head(root) != expected_sha:
+        raise TopologyError("reviewed candidate SHA is not the exact checkout being validated")
+    release = manifest.get("release")
+    if not isinstance(release, str):
+        raise TopologyError("manifest release is missing")
+    metadata = cargo_metadata(root)
+    expected_crates = derive_crates(metadata)
+    for entry in expected_crates:
+        entry["package_path"] = Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
     crates = manifest.get("published_crates")
     if not isinstance(crates, list) or manifest.get("crate_count") != len(crates):
         raise TopologyError("crate_count must be derived from published_crates")
+    if crates != expected_crates:
+        raise TopologyError("published_crates does not match current Cargo metadata")
     orders = [entry.get("publish_order") for entry in crates]
     if orders != list(range(1, len(crates) + 1)):
         raise TopologyError("publish_order must be a contiguous topological sequence")
@@ -303,6 +316,18 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
     archive_names = [entry.get("archive_name") for entry in targets]
     if len(archive_names) != len(set(archive_names)):
         raise TopologyError("archive names must be unique")
+    workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    expected_targets = derive_targets(workflow, release)
+    if targets != expected_targets:
+        raise TopologyError("binary_targets does not match the release workflow")
+    downstream = json.loads((root / "docs/reference/downstream-dap-integrations.json").read_text())
+    if {entry["triple"] for entry in downstream.get("targets", [])} != set(target_names):
+        raise TopologyError("binary_targets does not match the downstream archive contract")
+    package = json.loads((root / "vscode-extension/package.json").read_text(encoding="utf-8"))
+    if package.get("version") != release or manifest.get("vsix", {}).get("version") != package.get("version"):
+        raise TopologyError("VSIX version does not match the release or current extension manifest")
+    if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(target_names):
+        raise TopologyError("VSIX managed targets do not match the release target matrix")
     if manifest.get("primary_channels") != PRIMARY_CHANNELS:
         raise TopologyError("primary channel set is not the accepted v0.18 set")
     if manifest.get("vsix", {}).get("version") != manifest.get("release"):
@@ -327,6 +352,8 @@ def main() -> int:
     try:
         if args.check:
             manifest = json.loads(args.output.read_text(encoding="utf-8"))
+            if manifest.get("release") != args.release:
+                raise TopologyError("manifest release differs from --release")
             validate_manifest(manifest, root, args.frozen_product_sha)
         else:
             manifest = build_manifest(root, args.release, args.frozen_product_sha, args.prepared_swarm_sha)
