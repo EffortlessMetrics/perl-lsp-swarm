@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# scripts/reviews/inline — post file/line-anchored findings as ONE submitted
+# review (#6178).
+#
+# `.claude/skills/review-pr` mandates "put file-specific material findings in
+# inline threads" and gives no mechanics. The `gh api` shape is non-obvious: a
+# single POST to /pulls/{n}/reviews carrying a `comments[]` array, NOT N
+# standalone comment calls. Agents fell back to one top-level comment, which
+# loses file/line anchoring and cannot be dispositioned per finding — each
+# inline comment becomes its own review thread, which is exactly what
+# `scripts/reviews/threads` enumerates and `scripts/reviews/disposition`
+# resolves.
+#
+# GitHub rejects (422) any comment whose (path, line, side) is not an
+# addressable line in the PR diff, and its error body does NOT say which
+# comment was bad. This script therefore validates every finding against the
+# actual diff hunks FIRST and names the offending finding by index and
+# location. Because a review is atomic, one unaddressable finding aborts the
+# whole post — a partial publication would silently lose a finding the agent
+# believes it filed.
+#
+# This script does not resolve anything; resolution stays exclusively in
+# `scripts/reviews/disposition` (#3693 R1 FILE 3).
+#
+# ── Usage ────────────────────────────────────────────────────────────────────
+#   scripts/reviews/inline --pr <n> --body <summary> \
+#       [--findings <file>] [--repo <owner/repo>] [--event <COMMENT|REQUEST_CHANGES|APPROVE>] \
+#       [--commit <sha>] [--dry-run]
+#
+# Findings arrive as a JSON array on stdin, or from --findings <file>:
+#
+#   [ { "path": "crates/a/src/lib.rs",   # required, repo-relative
+#       "line": 42,                      # required, line in the diff
+#       "start_line": 40,                # optional, multi-line range start
+#       "side": "RIGHT",                 # optional, RIGHT (default) | LEFT
+#       "start_side": "RIGHT",           # optional, defaults to side
+#       "body": "…" } ]                  # required, the finding text
+#
+# --event defaults to COMMENT: this repo submits COMMENT reviews, not APPROVE.
+#
+# ── Exit codes ───────────────────────────────────────────────────────────────
+#   0 review submitted, or --dry-run printed the request payload
+#   2 usage error, malformed findings, a finding outside the diff, or an API
+#     failure (the GitHub error body is echoed)
+#
+# ── Test seam ────────────────────────────────────────────────────────────────
+#   --dry-run still performs the read-only diff validation (that is the part
+#   worth rehearsing) and prints the exact payload, but makes no POST.
+set -euo pipefail
+
+die_usage() { echo "ERROR: $1" >&2; exit 2; }
+
+PR="" REPO="" BODY="" FINDINGS_FILE="" EVENT="COMMENT" COMMIT="" DRY_RUN=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --pr)        PR="${2:-}"; shift 2 ;;
+        --repo)      REPO="${2:-}"; shift 2 ;;
+        --body)      BODY="${2:-}"; shift 2 ;;
+        --findings)  FINDINGS_FILE="${2:-}"; shift 2 ;;
+        --event)     EVENT="${2:-}"; shift 2 ;;
+        --commit)    COMMIT="${2:-}"; shift 2 ;;
+        --dry-run)   DRY_RUN=1; shift ;;
+        -h|--help)   sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *) die_usage "unknown argument: $1" ;;
+    esac
+done
+
+[[ -n "$PR" ]] || die_usage "--pr is required"
+[[ "$PR" =~ ^[0-9]+$ ]] || die_usage "--pr must be a positive integer (got '$PR')"
+[[ -n "$BODY" ]] || die_usage "--body <summary> is required (the review's top-level text)"
+case "$EVENT" in
+    COMMENT|REQUEST_CHANGES|APPROVE) ;;
+    *) die_usage "invalid --event '$EVENT' (COMMENT|REQUEST_CHANGES|APPROVE)" ;;
+esac
+command -v jq >/dev/null 2>&1 || die_usage "jq not found on PATH"
+command -v gh >/dev/null 2>&1 || die_usage "gh not found on PATH"
+
+# ── Read and shape-check the findings ───────────────────────────────────────
+if [[ -n "$FINDINGS_FILE" ]]; then
+    [[ -f "$FINDINGS_FILE" ]] || die_usage "--findings file not found: $FINDINGS_FILE"
+    RAW="$(cat "$FINDINGS_FILE")"
+else
+    [[ ! -t 0 ]] || die_usage "no findings: pass --findings <file> or pipe a JSON array on stdin"
+    RAW="$(cat)"
+fi
+
+jq -e . >/dev/null 2>&1 <<<"$RAW" || die_usage "findings are not valid JSON"
+jq -e 'type == "array"' >/dev/null <<<"$RAW" || die_usage "findings must be a JSON array of objects"
+jq -e 'length > 0' >/dev/null <<<"$RAW" || die_usage "findings array is empty — nothing to post"
+
+#
+# Types are checked, not coerced: `{"path": 123}` must fail HERE with a useful
+# message rather than pass a `tostring`-shaped check and come back as an
+# anonymous GitHub rejection.
+SHAPE_ERRORS="$(jq -r '
+    def required_string($i; $field; $v):
+        if ($v | type) != "string" then
+            if $v == null then "findings[\($i)]: missing required \"\($field)\""
+            else "findings[\($i)]: \"\($field)\" must be a string (got \($v | type))" end
+        elif ($v | length) == 0 then "findings[\($i)]: \"\($field)\" is empty"
+        else empty end;
+    to_entries
+    | map(
+        .key as $i | .value as $f
+        | if ($f | type) != "object" then ["findings[\($i)]: not an object"]
+          else
+            [ required_string($i; "path"; $f.path),
+              required_string($i; "body"; $f.body),
+              (if ($f.line | type) != "number"
+                  then "findings[\($i)]: \"line\" must be a number (got \($f.line | type))" else empty end),
+              (if $f.start_line != null and ($f.start_line | type) != "number"
+                  then "findings[\($i)]: \"start_line\" must be a number (got \($f.start_line | type))" else empty end),
+              (if $f.side != null and (($f.side | type) != "string"
+                      or (($f.side | ascii_upcase) | IN("LEFT", "RIGHT") | not))
+                  then "findings[\($i)]: invalid \"side\" \($f.side | tojson) (LEFT|RIGHT)" else empty end),
+              (if $f.start_side != null and (($f.start_side | type) != "string"
+                      or (($f.start_side | ascii_upcase) | IN("LEFT", "RIGHT") | not))
+                  then "findings[\($i)]: invalid \"start_side\" \($f.start_side | tojson) (LEFT|RIGHT)" else empty end)
+            ]
+          end
+      )
+    | flatten | .[]
+' <<<"$RAW")"
+if [[ -n "$SHAPE_ERRORS" ]]; then
+    printf 'ERROR: malformed findings — nothing was posted:\n' >&2
+    printf '  %s\n' "$SHAPE_ERRORS" >&2
+    exit 2
+fi
+
+REPO_RESOLVED=1
+if [[ -z "$REPO" ]]; then
+    REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || REPO_RESOLVED=0
+fi
+if [[ "$REPO_RESOLVED" -eq 0 || -z "$REPO" ]]; then
+    die_usage "could not resolve owner/repo from the current checkout; pass --repo owner/name"
+fi
+[[ "$REPO" == */* ]] || die_usage "--repo must look like owner/name (got '$REPO')"
+
+# ── Addressable-line map from the PR's actual diff hunks ────────────────────
+# GitHub will only accept a comment anchored to a line that appears in a diff
+# hunk: on RIGHT, added ('+') and context (' ') lines; on LEFT, removed ('-')
+# and context lines. Walking each hunk header reproduces exactly that set, so a
+# bad anchor is caught here — with the finding's index — instead of arriving as
+# an anonymous 422.
+#
+# Every jq handoff below goes through a FILE, not argv: a large PR's diff and
+# addressable-line map easily exceed the argv limit, and `jq --argjson … "$BIG"`
+# then dies with "Argument list too long" on exactly the reviews that carry the
+# most findings.
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+FILES_FILE="$WORK_DIR/files.json"
+if ! gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" 2>"$WORK_DIR/files.err" \
+        | jq -s 'add // []' > "$FILES_FILE" 2>/dev/null; then
+    echo "ERROR: could not fetch the file list for $REPO#$PR" >&2
+    cat "$WORK_DIR/files.err" >&2 || true
+    exit 2
+fi
+if ! jq -e 'type == "array"' "$FILES_FILE" >/dev/null 2>&1; then
+    echo "ERROR: unexpected file-list response for $REPO#$PR" >&2
+    exit 2
+fi
+
+ADDRESSABLE_FILE="$WORK_DIR/addressable.json"
+jq -c '
+    def hunk_lines:
+        split("\n")
+        | reduce .[] as $l ({old: 0, new: 0, right: [], left: []};
+            if ($l | startswith("@@")) then
+                (($l | capture("^@@ -(?<o>[0-9]+)(,[0-9]+)? \\+(?<n>[0-9]+)(,[0-9]+)? @@")) // null) as $h
+                | if $h == null then .
+                  else .old = ($h.o | tonumber) | .new = ($h.n | tonumber) end
+            elif ($l | startswith("\\")) then .
+            elif ($l | startswith("+")) then
+                .right += [.new] | .new += 1
+            elif ($l | startswith("-")) then
+                .left += [.old] | .old += 1
+            else
+                .right += [.new] | .left += [.old] | .new += 1 | .old += 1
+            end)
+        | {RIGHT: .right, LEFT: .left};
+    map({key: .filename,
+         value: (if .patch == null
+                 then {RIGHT: [], LEFT: [], no_patch: true}
+                 else (.patch | hunk_lines) end)})
+    | from_entries
+' "$FILES_FILE" > "$ADDRESSABLE_FILE"
+
+ANCHOR_ERRORS="$(jq -r --slurpfile diff_slurp "$ADDRESSABLE_FILE" '
+    ($diff_slurp[0] // {}) as $diff |
+    def side($f): (($f.side // "RIGHT") | ascii_upcase);
+    def start_side($f): (($f.start_side // $f.side // "RIGHT") | ascii_upcase);
+    to_entries
+    | map(
+        .key as $i | .value as $f
+        | (side($f)) as $s
+        | ($diff[$f.path]) as $d
+        | if $d == null then
+              ["findings[\($i)] \($f.path):\($f.line) — path is not in the pull request diff"]
+          elif ($d.no_patch // false) then
+              ["findings[\($i)] \($f.path):\($f.line) — path IS in the pull request diff, but GitHub returned no patch for it (binary file, or a patch GitHub truncated on a very large diff), so no line can be anchored"]
+          else
+              [ (if ($d[$s] | index($f.line)) == null
+                   then "findings[\($i)] \($f.path):\($f.line) (side=\($s)) — line is not an addressable line in the diff; addressable \($s) lines here: \($d[$s] | if length > 12 then (.[0:12] | tostring) + " …" else tostring end)"
+                   else empty end),
+                (if $f.start_line != null and ($d[start_side($f)] | index($f.start_line)) == null
+                   then "findings[\($i)] \($f.path) — start_line \($f.start_line) (side=\(start_side($f))) is not an addressable line in the diff"
+                   else empty end),
+                (if $f.start_line != null and $f.start_line > $f.line
+                   then "findings[\($i)] \($f.path) — start_line \($f.start_line) is after line \($f.line)"
+                   else empty end)
+              ]
+          end
+      )
+    | flatten | .[]
+' <<<"$RAW")"
+if [[ -n "$ANCHOR_ERRORS" ]]; then
+    printf 'ERROR: %s finding(s) are not anchored to the pull request diff — NOTHING was posted\n' \
+        "$(printf '%s\n' "$ANCHOR_ERRORS" | wc -l | tr -d ' ')" >&2
+    printf '  %s\n' "$ANCHOR_ERRORS" >&2
+    printf 'A review is atomic: fix or drop the listed finding(s) and re-run.\n' >&2
+    exit 2
+fi
+
+# ── Compose the single-review payload ───────────────────────────────────────
+if [[ -z "$COMMIT" ]]; then
+    COMMIT="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+fi
+if [[ -z "$COMMIT" && "$DRY_RUN" -eq 0 ]]; then
+    echo "ERROR: could not resolve the PR head SHA for $REPO#$PR; pass --commit <sha>" >&2
+    exit 2
+fi
+
+PAYLOAD="$(jq -c --arg body "$BODY" --arg event "$EVENT" --arg commit "$COMMIT" '{
+    body: $body,
+    event: $event,
+    comments: map({
+        path: .path,
+        line: .line,
+        side: ((.side // "RIGHT") | ascii_upcase),
+        body: .body
+    } + (if .start_line != null
+         then {start_line: .start_line, start_side: ((.start_side // .side // "RIGHT") | ascii_upcase)}
+         else {} end))
+} + (if ($commit | length) > 0 then {commit_id: $commit} else {} end)' <<<"$RAW")"
+
+COUNT="$(jq -r '.comments | length' <<<"$PAYLOAD")"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "DRY-RUN inline review for $REPO#$PR — 1 submitted review, $COUNT inline comment(s), event=$EVENT"
+    echo "All $COUNT finding(s) are anchored to addressable diff lines."
+    echo "--- POST repos/$REPO/pulls/$PR/reviews ---"
+    jq . <<<"$PAYLOAD"
+    exit 0
+fi
+
+API_EXIT=0
+RESPONSE="$(printf '%s' "$PAYLOAD" | gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input - 2>&1)" || API_EXIT=$?
+if [[ "$API_EXIT" -ne 0 ]]; then
+    echo "ERROR: GitHub rejected the review for $REPO#$PR (no review was submitted):" >&2
+    printf '%s\n' "$RESPONSE" >&2
+    echo "Local diff validation passed, so this is a rejection this script does not model —" >&2
+    echo "re-check the findings against \`gh pr diff $PR\` before retrying." >&2
+    exit 2
+fi
+
+REVIEW_URL="$(jq -r '.html_url // empty' <<<"$RESPONSE" 2>/dev/null || true)"
+echo "OK submitted 1 $EVENT review on $REPO#$PR with $COUNT inline comment(s)${REVIEW_URL:+ — $REVIEW_URL}"
+echo "Each inline comment is now its own review thread; enumerate them with:"
+echo "  scripts/reviews/threads $PR $REPO --unresolved-only"
+exit 0

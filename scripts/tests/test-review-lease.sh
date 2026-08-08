@@ -1,28 +1,24 @@
 #!/usr/bin/env bash
-# Test suite for scripts/reviews/lease (#3693 R1, FILE 5).
-#
-# This is the relocated home of fixture 11 (expired-lease → block +
-# route-takeover). Lease state is NOT GitHub PR data and "route-takeover" is
-# not a 0/1/2 convergence verdict, so it does NOT belong in the
-# check-pr-review-convergence closeout — it lives here, keyed on branch, in
-# .ops-perl-lsp/review-leases/<branch>.json. All cases run offline against a
-# temp REVIEW_LEASES_DIR; no network, no real lease store touched.
+# Offline tests for review leases and evidence-backed thread dispositions.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LEASE="$SCRIPT_DIR/../reviews/lease"
+DISPOSITION="$SCRIPT_DIR/../reviews/disposition"
 PASS_COUNT=0
 FAIL_COUNT=0
 
 pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
-if [[ ! -f "$LEASE" ]]; then echo "ERROR: lease script not found at $LEASE"; exit 1; fi
+for required in "$LEASE" "$DISPOSITION"; do
+    [[ -f "$required" ]] || { echo "ERROR: review script not found at $required"; exit 1; }
+done
 if ! command -v jq >/dev/null 2>&1; then echo "ERROR: jq not found on PATH"; exit 1; fi
 
-TMPDIR_LEASE="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_LEASE"' EXIT
-export REVIEW_LEASES_DIR="$TMPDIR_LEASE/review-leases"
+TMPDIR_REVIEW="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_REVIEW"' EXIT
+export REVIEW_LEASES_DIR="$TMPDIR_REVIEW/review-leases"
 
 run() { local e=0; RUN_OUT="$(REVIEW_LEASES_DIR="$REVIEW_LEASES_DIR" bash "$LEASE" "$@" 2>&1)" || e=$?; RUN_EXIT=$e; }
 
@@ -128,7 +124,127 @@ test_lease_json_shape() {
     fi
 }
 
-echo "=== review-lease test suite ==="
+# ── disposition fake-GitHub seam ───────────────────────────────────────────
+FAKE_BIN="$TMPDIR_REVIEW/fake-bin"
+FAKE_LOG="$TMPDIR_REVIEW/gh-mutations.log"
+mkdir -p "$FAKE_BIN"
+cat >"$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+log="${FAKE_GH_LOG:?}"
+mode="${FAKE_GH_MODE:-ok}"
+
+if [[ "$args" == *'query($threadId: ID!)'* ]]; then
+    [[ "$mode" != "query-fail" ]] || exit 41
+    jq -cn --arg body "${FAKE_EXISTING_BODY:-}" '{
+      data:{node:{isResolved:false,comments:{nodes:[{body:$body}]}}}
+    }'
+    exit 0
+fi
+if [[ "$args" == *'addPullRequestReviewThreadReply'* ]]; then
+    printf 'reply\n' >>"$log"
+    printf '%s\n' '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"C1"}}}}'
+    exit 0
+fi
+if [[ "$args" == *'resolveReviewThread'* ]]; then
+    printf 'resolve\n' >>"$log"
+    printf '%s\n' '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD","isResolved":true}}}}'
+    exit 0
+fi
+
+echo "unexpected fake gh invocation: $args" >&2
+exit 42
+EOF
+chmod +x "$FAKE_BIN/gh"
+
+run_disposition() {
+    local mode="$1" existing_body="$2" commit="$3"
+    : >"$FAKE_LOG"
+    DISPOSITION_EXIT=0
+    DISPOSITION_OUT="$(
+      PATH="$FAKE_BIN:$PATH" \
+      FAKE_GH_LOG="$FAKE_LOG" \
+      FAKE_GH_MODE="$mode" \
+      FAKE_EXISTING_BODY="$existing_body" \
+      bash "$DISPOSITION" \
+        --pr 42 \
+        --thread THREAD \
+        --class fixed \
+        --reply "Disposition: fixed" \
+        --commit "$commit" \
+        --repo owner/repo \
+        --head h2 \
+        --by tester 2>&1
+    )" || DISPOSITION_EXIT=$?
+}
+
+existing_h1=$'Prior repair.\n\n<!-- disposition:v1 {"v":1,"class":"fixed","thread_id":"THREAD","by":"tester","head":"h1","evidence":{"commit":"abc"}} -->'
+
+# ── unrelated head movement reuses the stable disposition ──────────────────
+# @risk: an unrelated candidate SHA duplicates a previously supported disposition reply.
+# @return_path: a matching class and evidence marker is reused regardless of observed head.
+# @side_effect: re-resolution is allowed; no new review reply is posted.
+test_disposition_reuses_h1_at_h2() {
+    run_disposition ok "$existing_h1" abc
+    local mutations
+    mutations="$(paste -sd, "$FAKE_LOG")"
+    if [[ "$DISPOSITION_EXIT" -eq 0 && "$mutations" == "resolve" && "$DISPOSITION_OUT" == *"without duplicate reply"* ]]; then
+        pass "matching H1 disposition is reused at H2 without duplicate reply"
+    else
+        fail "stable disposition reuse — exit=$DISPOSITION_EXIT mutations=$mutations out=$DISPOSITION_OUT"
+    fi
+}
+
+# ── changed evidence is a new disposition ──────────────────────────────────
+# @risk: stable idempotency suppresses a materially different repair disposition.
+# @return_path: changed evidence is treated as a new supported disposition.
+# @side_effect: one evidence-bearing reply is posted before the thread is resolved.
+test_disposition_posts_changed_evidence() {
+    run_disposition ok "$existing_h1" def
+    local mutations
+    mutations="$(paste -sd, "$FAKE_LOG")"
+    if [[ "$DISPOSITION_EXIT" -eq 0 && "$mutations" == "reply,resolve" ]]; then
+        pass "changed evidence posts one new reply before resolution"
+    else
+        fail "changed evidence — exit=$DISPOSITION_EXIT mutations=$mutations out=$DISPOSITION_OUT"
+    fi
+}
+
+# ── unavailable provider state causes zero mutation ─────────────────────────
+# @risk: an unavailable GitHub observation is misclassified as a proven zero match.
+# @return_path: provider failure returns exit 2 and preserves unknown disposition state.
+# @side_effect: neither a review reply nor a thread-resolution mutation is permitted.
+test_disposition_provider_failure_is_inert() {
+    run_disposition query-fail "" abc
+    local mutations
+    mutations="$(paste -sd, "$FAKE_LOG")"
+    if [[ "$DISPOSITION_EXIT" -eq 2 && -z "$mutations" ]]; then
+        pass "provider failure exits 2 with no reply or resolution mutation"
+    else
+        fail "provider failure — exit=$DISPOSITION_EXIT mutations=$mutations out=$DISPOSITION_OUT"
+    fi
+}
+
+# ── malformed historical marker causes zero mutation ───────────────────────
+# @risk: malformed historical evidence is silently discarded and replaced with a duplicate reply.
+# @return_path: marker parse failure returns exit 2 for explicit repair or adjudication.
+# @side_effect: neither a review reply nor a thread-resolution mutation is permitted.
+test_disposition_malformed_marker_is_inert() {
+    local malformed
+    malformed=$'Broken marker.\n\n<!-- disposition:v1 {not-json} -->\n\n'
+    malformed+="$existing_h1"
+    run_disposition ok "$malformed" abc
+    local mutations
+    mutations="$(paste -sd, "$FAKE_LOG")"
+    if [[ "$DISPOSITION_EXIT" -eq 2 && -z "$mutations" && "$DISPOSITION_OUT" == *"malformed disposition marker"* ]]; then
+        pass "malformed marker exits 2 with no reply or resolution mutation"
+    else
+        fail "malformed marker — exit=$DISPOSITION_EXIT mutations=$mutations out=$DISPOSITION_OUT"
+    fi
+}
+
+echo "=== review lease + disposition test suite ==="
 echo ""
 test_acquire_then_verify
 test_verify_absent_fails
@@ -138,6 +254,10 @@ test_same_owner_refreshes
 test_release_then_verify_fails
 test_release_non_holder_refused
 test_lease_json_shape
+test_disposition_reuses_h1_at_h2
+test_disposition_posts_changed_evidence
+test_disposition_provider_failure_is_inert
+test_disposition_malformed_marker_is_inert
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 

@@ -28,15 +28,12 @@ fn assert_review_backstop(skill: &str, provider: &str) {
         );
     }
 
-    let review = skill
-        .find("## Review predecessor")
-        .expect("review predecessor marker checked above");
+    let review =
+        skill.find("## Review predecessor").expect("review predecessor marker checked above");
     let integration = skill
         .find("## Integration predecessor")
         .expect("integration predecessor marker checked above");
-    let merge = skill
-        .find("## Protected merge")
-        .expect("protected merge marker checked above");
+    let merge = skill.find("## Protected merge").expect("protected merge marker checked above");
 
     assert!(
         review < integration && integration < merge,

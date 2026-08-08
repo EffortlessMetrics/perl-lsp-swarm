@@ -453,7 +453,8 @@ impl LspServer {
                     // unreachable under `--lib` coverage (same class as #1301 false-low, #1282).
                     #[cfg(feature = "workspace")]
                     let ws_resolver = |method: &str| -> Option<Vec<String>> {
-                        let sig = self.resolve_method_in_workspace(method, workspace_index_stale)?;
+                        let sig =
+                            self.resolve_method_in_workspace(method, workspace_index_stale)?;
                         let params = sig.get("parameters")?.as_array()?;
                         let names: Vec<String> = params
                             .iter()
