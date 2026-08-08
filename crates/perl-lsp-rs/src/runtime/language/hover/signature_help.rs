@@ -1366,9 +1366,7 @@ sub format {
         server.test_simulate_indexing_complete();
 
         assert!(
-            server
-                .resolve_method_in_workspace("format", false)
-                .is_some(),
+            server.resolve_method_in_workspace("format", false).is_some(),
             "fresh workspace index should resolve format signature"
         );
 
