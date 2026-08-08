@@ -73,6 +73,17 @@ def collect_actuals(
     lanes, so doing that builds a parallel keyspace no planner can read while
     every real lane stays empty, which is the #6217 defect.
 
+    **One sample per lane execution, not per gate.** A single
+    ``merge_gate_shards`` run spans eight matrix jobs and dozens of gates, all
+    stamped with the same lane. Appending each gate's ``actual_lem``
+    separately would let one workflow run clear the five-sample threshold on
+    its own, and would make p50/p90/p95 describe a typical *gate* rather than
+    the lane's total cost. ``pr_plan.py`` consumes those percentiles as
+    whole-lane actuals, so per-gate samples would sit permanently below the
+    lane's static floor and the lane could never calibrate *upward* — which is
+    the entire purpose of a learned estimate. Jobs are therefore grouped by
+    (run, workflow, lane) across shard artifacts and summed into one sample.
+
     Returns ``(samples, stats)``; ``stats`` is the validation record the caller
     uses to decide whether the run learned anything at all.
     """
@@ -87,9 +98,15 @@ def collect_actuals(
         # mapping failure.
         "jobs_with_lane_id": 0,
         "accepted_samples": 0,
+        # Distinct (run, workflow, lane) groups, i.e. how many samples actually
+        # land in the history. Always <= accepted_samples, and much smaller for
+        # a shard lane.
+        "lane_executions": 0,
         "unmapped_samples": 0,
         "unmapped_keys": {},
     }
+    # (run, workflow, lane) -> summed LEM for that one lane execution.
+    executions: dict[tuple[str, str, str], float] = {}
     if not actuals_dir.exists():
         return samples, stats
 
@@ -108,6 +125,13 @@ def collect_actuals(
         if not isinstance(doc, dict):
             continue
         stats["source_files"] += 1
+        # Identity of the workflow run this artifact came from. The eight shard
+        # artifacts of one run share a sha, which is what lets them sum into a
+        # single lane execution. Falling back to the artifact's own directory
+        # keeps unrelated runs apart when sha is absent, which over-counts
+        # rather than merging distinct runs into one inflated sample.
+        run_key = str(doc.get("sha") or path.parent)
+        workflow_key = str(doc.get("workflow") or "")
         for job in doc.get("jobs", []):
             if not isinstance(job, dict):
                 continue
@@ -140,7 +164,13 @@ def collect_actuals(
                 continue
 
             stats["accepted_samples"] += 1
-            samples.setdefault(lane_id, []).append(actual_float)
+            key = (run_key, workflow_key, lane_id)
+            executions[key] = executions.get(key, 0.0) + actual_float
+
+    # One sample per lane execution, summed across that run's gates and shards.
+    for (_run, _workflow, lane_id), total in executions.items():
+        samples.setdefault(lane_id, []).append(total)
+    stats["lane_executions"] = len(executions)
     return samples, stats
 
 

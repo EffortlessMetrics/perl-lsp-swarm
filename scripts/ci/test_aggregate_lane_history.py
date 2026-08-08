@@ -115,7 +115,9 @@ class AggregateLaneHistoryTests(unittest.TestCase):
 
         The positive half of the pair above: several gates inside one shard
         lane all attribute to that lane, which is what makes a learned
-        estimate possible at all.
+        estimate possible at all. They also *sum* into one sample for the
+        lane execution rather than landing as one sample each — see
+        `test_one_sample_per_lane_execution_not_per_gate` for why.
         """
         with tempfile.TemporaryDirectory() as tmp:
             actuals = Path(tmp)
@@ -145,9 +147,140 @@ class AggregateLaneHistoryTests(unittest.TestCase):
                 known_lanes={"merge_gate_shards", "pr_smoke"},
             )
 
-        self.assertEqual({"merge_gate_shards": [1.0, 2.0]}, samples)
-        self.assertEqual(2, stats["accepted_samples"])
+        self.assertEqual({"merge_gate_shards": [3.0]}, samples)
+        self.assertEqual(2, stats["accepted_samples"], "two gates accepted")
+        self.assertEqual(1, stats["lane_executions"], "summed into one lane sample")
         self.assertEqual(0, stats["unmapped_samples"])
+
+    def test_one_sample_per_lane_execution_not_per_gate(self) -> None:
+        """Gates in one lane run sum into a single sample, across shard artifacts.
+
+        Production shape: one `merge_gate_shards` execution spans eight matrix
+        jobs and dozens of gates, all stamped with the same lane. One sample
+        per gate would let a single run clear the five-sample learned
+        threshold on its own, and would make the percentiles describe a gate
+        rather than the lane.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp)
+            for shard, gates in (("meta", (5.0, 6.0)), ("lsp", (7.0,))):
+                d = actuals / f"ci-actuals-{shard}"
+                d.mkdir()
+                (d / "ci-actuals.json").write_text(
+                    json.dumps(
+                        {
+                            "sha": "abc123",
+                            "workflow": "CI",
+                            "jobs": [
+                                {
+                                    "lane_id": "merge_gate_shards",
+                                    "gate_name": f"{shard}_gate_{i}",
+                                    "actual_lem": lem,
+                                }
+                                for i, lem in enumerate(gates)
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            samples, stats = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals,
+                window_days=14,
+                known_lanes={"merge_gate_shards"},
+            )
+
+        # 5 + 6 + 7 across two shard artifacts of the same run = one 18.0 sample.
+        self.assertEqual({"merge_gate_shards": [18.0]}, samples)
+        self.assertEqual(3, stats["accepted_samples"], "three gates were accepted")
+        self.assertEqual(1, stats["lane_executions"], "but they are one lane execution")
+
+    def test_separate_runs_stay_separate_samples(self) -> None:
+        """Grouping must not merge distinct runs into one sample.
+
+        The opposite-direction control for the grouping: summing is keyed on
+        run identity, so two runs of the same lane produce two samples rather
+        than one inflated one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp)
+            for sha, lem in (("sha_one", 10.0), ("sha_two", 20.0)):
+                d = actuals / sha
+                d.mkdir()
+                (d / "ci-actuals.json").write_text(
+                    json.dumps(
+                        {
+                            "sha": sha,
+                            "workflow": "CI",
+                            "jobs": [
+                                {
+                                    "lane_id": "merge_gate_shards",
+                                    "gate_name": "fmt",
+                                    "actual_lem": lem,
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            samples, stats = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals,
+                window_days=14,
+                known_lanes={"merge_gate_shards"},
+            )
+
+        self.assertEqual([10.0, 20.0], sorted(samples["merge_gate_shards"]))
+        self.assertEqual(2, stats["lane_executions"])
+
+    def test_lane_can_calibrate_above_its_static_floor(self) -> None:
+        """The harm the grouping prevents: a lane that can never learn upward.
+
+        Five runs of a lane whose gates each cost less than the 24-LEM floor
+        but which together cost 30. Per-gate sampling would put p50 at 10, lose
+        to the floor in `max(static_floor, p50 * 1.15)`, and report 24 forever
+        even though the lane really costs 30.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp)
+            for run in range(5):
+                d = actuals / f"run-{run}"
+                d.mkdir()
+                (d / "ci-actuals.json").write_text(
+                    json.dumps(
+                        {
+                            "sha": f"sha{run}",
+                            "workflow": "CI",
+                            "jobs": [
+                                {
+                                    "lane_id": "merge_gate_shards",
+                                    "gate_name": g,
+                                    "actual_lem": 10.0,
+                                }
+                                for g in ("a", "b", "c")
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            samples, _stats = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals,
+                window_days=14,
+                known_lanes={"merge_gate_shards"},
+            )
+            history = aggregate_lane_history.build_history(
+                samples=samples,
+                floors={"merge_gate_shards": 24.0},
+                window_days=14,
+            )
+
+        lane = history["lanes"]["merge_gate_shards"]
+        self.assertEqual(5, lane["samples"], "five runs, not fifteen gates")
+        self.assertTrue(lane["learned"])
+        self.assertEqual(30.0, lane["p50"], "the lane's real cost, not one gate's")
+        # p50 * 1.15 must now beat the floor, so the lane can calibrate upward.
+        self.assertGreater(lane["p50"] * 1.15, lane["static_floor"])
 
     def test_near_miss_gate_name_does_not_bind_to_a_similar_lane(self) -> None:
         """`compile_all_targets` must not be matched to lane `check_all_targets`.
