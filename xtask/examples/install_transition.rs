@@ -9,7 +9,7 @@
 #![allow(clippy::print_stdout)]
 
 use clap::Parser;
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -359,8 +359,10 @@ fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
 }
 
 fn load(path: &Path) -> Result<Receipt> {
-    let content = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading install-transition receipt {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("parsing install-transition receipt {}", path.display()))
 }
 
 fn main() -> Result<()> {
@@ -465,13 +467,36 @@ mod tests {
         Ok(())
     }
 
+    /// Assert that validation rejected the receipt *for the intended reason*.
+    ///
+    /// A bare `is_err()` passes for any error, including a schema or parse
+    /// failure that never reaches the invariant under test — so it cannot
+    /// distinguish "the guard fired" from "the fixture stopped deserializing".
+    #[track_caller]
+    fn assert_rejected_because(receipt: &Receipt, expected: &str) {
+        match validate(receipt) {
+            Ok(status) => {
+                panic!(
+                    "expected rejection mentioning {expected:?}, but validation returned {status:?}"
+                )
+            }
+            Err(error) => {
+                let rendered = format!("{error:#}");
+                assert!(
+                    rendered.contains(expected),
+                    "expected rejection mentioning {expected:?}, got: {rendered}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn mixed_version_ready_state_cannot_claim_pass() -> Result<()> {
         let mut receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/normal_upgrade.json"
         ))?;
         receipt.transition.mixed_version_reported_ready = true;
-        assert!(validate(&receipt).is_err());
+        assert_rejected_because(&receipt, "disagrees with computed status blocked");
         Ok(())
     }
 
@@ -484,7 +509,7 @@ mod tests {
         receipt.transition.intended_disposition = super::Disposition::RolledBack;
         receipt.transition.observed_disposition = super::Disposition::RolledBack;
         receipt.transition.rollback_completed = true;
-        assert!(validate(&receipt).is_err());
+        assert_rejected_because(&receipt, "require a previous version");
         Ok(())
     }
 
@@ -498,7 +523,7 @@ mod tests {
         receipt.transition.observed_disposition = super::Disposition::RolledBack;
         receipt.transition.rollback_completed = true;
         receipt.transition.observed_release_identity = Some("0.18.0".to_string());
-        assert!(validate(&receipt).is_err());
+        assert_rejected_because(&receipt, "disagrees with computed status blocked");
         Ok(())
     }
 }
