@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,15 @@ MODULE_PATH = Path(__file__).with_name("workflow_security_ratchet.py")
 SPEC = importlib.util.spec_from_file_location("workflow_security_ratchet", MODULE_PATH)
 assert SPEC and SPEC.loader
 ratchet = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = ratchet
 SPEC.loader.exec_module(ratchet)
+
+
+class Args:
+    max_files = 512
+    max_file_bytes = 2 * 1024 * 1024
+    max_total_bytes = 16 * 1024 * 1024
+    baseline_root: Path | None = None
 
 
 class WorkflowSecurityRatchetTests(unittest.TestCase):
@@ -22,6 +31,12 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / ".github/workflows").mkdir(parents=True)
         (self.root / ".github/actions/example").mkdir(parents=True)
+        self.write(
+            ".github/workflows/workflow-security-ratchet.yml",
+            "name: ratchet\non: [workflow_dispatch]\npermissions:\n  contents: read\njobs: {}\n",
+        )
+        self.write("scripts/ci/workflow_security_ratchet.py", "# scanner\n")
+        self.write("scripts/ci/test_workflow_security_ratchet.py", "# tests\n")
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -38,6 +53,19 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
     def rules(self) -> list[str]:
         return [finding.rule for finding in ratchet.scan(self.root)]
 
+    def baseline_path(self) -> Path:
+        return self.root / ".ci/workflow-security-baseline.json"
+
+    def write_current_baseline(self) -> Path:
+        path = self.baseline_path()
+        self.assertEqual(ratchet.write_baseline(self.root, path, Args()), 0)
+        return path
+
+    def exact_args(self) -> Args:
+        args = Args()
+        args.baseline_root = self.root
+        return args
+
     def test_detects_mutable_external_action_in_composite_action(self) -> None:
         self.write(
             ".github/actions/example/action.yml",
@@ -52,10 +80,24 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertNotIn("mutable_action_ref", self.rules())
 
-    def test_detects_expression_embedded_in_run_source(self) -> None:
+    def test_detects_expression_in_list_form_run_source(self) -> None:
         self.write(
             ".github/workflows/injection.yml",
             "name: injection\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo '${{ github.event.inputs.value }}'\n",
+        )
+        self.assertIn("expression_in_run_source", self.rules())
+
+    def test_detects_expression_in_quoted_run_key(self) -> None:
+        self.write(
+            ".github/workflows/injection.yml",
+            "name: injection\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - 'run': echo '${{ github.event.inputs.value }}'\n",
+        )
+        self.assertIn("expression_in_run_source", self.rules())
+
+    def test_detects_expression_in_block_run_source(self) -> None:
+        self.write(
+            ".github/workflows/injection.yml",
+            "name: injection\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          echo '${{ github.event.inputs.value }}'\n",
         )
         self.assertIn("expression_in_run_source", self.rules())
 
@@ -67,6 +109,13 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         rules = self.rules()
         self.assertIn("pr_write_permission", rules)
         self.assertIn("pr_secret_reference", rules)
+
+    def test_detects_pr_write_all(self) -> None:
+        self.write(
+            ".github/workflows/pr.yml",
+            "name: pr\non: [pull_request]\npermissions: write-all\njobs: {}\n",
+        )
+        self.assertIn("pr_write_permission", self.rules())
 
     def test_detects_persisted_checkout_credentials_on_write_surface(self) -> None:
         self.write(
@@ -82,7 +131,7 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertNotIn("checkout_persists_credentials_on_write_surface", self.rules())
 
-    def test_detects_floating_cargo_install(self) -> None:
+    def test_detects_floating_cargo_install_in_list_form_run(self) -> None:
         self.write(
             ".github/workflows/install.yml",
             "name: install\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install cargo-example --locked\n",
@@ -96,22 +145,41 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertNotIn("floating_cargo_install", self.rules())
 
+    def test_security_sensitive_alias_is_not_silently_accepted(self) -> None:
+        self.write(
+            ".github/workflows/alias.yml",
+            "name: alias\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - *shared_step\n",
+        )
+        self.assertIn("unsupported_security_yaml_indirection", self.rules())
+
+    def test_security_sensitive_flow_map_is_not_silently_accepted(self) -> None:
+        self.write(
+            ".github/workflows/flow.yml",
+            "name: flow\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - { run: cargo install cargo-example }\n",
+        )
+        self.assertIn("unsupported_security_yaml_indirection", self.rules())
+
     def test_baseline_ratchets_new_existing_and_resolved_findings(self) -> None:
         workflow = self.write(
             ".github/workflows/example.yml",
             "name: example\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v7\n",
         )
-        baseline_path = self.root / "baseline.json"
-        args = type("Args", (), {"max_files": 512, "max_file_bytes": 2 * 1024 * 1024, "max_total_bytes": 16 * 1024 * 1024})()
-        self.assertEqual(ratchet.write_baseline(self.root, baseline_path, args), 0)
-        self.assertEqual(ratchet.check(self.root, baseline_path, None, args), 0)
+        baseline_path = self.write_current_baseline()
+        args = Args()
+        args.baseline_root = self.root
+        self.assertEqual(
+            ratchet.check(self.root, baseline_path, None, args, exact=False), 0
+        )
 
         workflow.write_text(
-            workflow.read_text(encoding="utf-8") + "      - run: cargo install cargo-new --locked\n",
+            workflow.read_text(encoding="utf-8")
+            + "      - run: cargo install cargo-new --locked\n",
             encoding="utf-8",
         )
         report = self.root / "report.json"
-        self.assertEqual(ratchet.check(self.root, baseline_path, report, args), 1)
+        self.assertEqual(
+            ratchet.check(self.root, baseline_path, report, args, exact=False), 1
+        )
         payload = json.loads(report.read_text(encoding="utf-8"))
         self.assertEqual(payload["counts"]["new"], 1)
         self.assertGreaterEqual(payload["counts"]["existing"], 1)
@@ -120,9 +188,87 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
             "name: example\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "a" * 40 + "\n",
             encoding="utf-8",
         )
-        self.assertEqual(ratchet.check(self.root, baseline_path, report, args), 0)
+        self.assertEqual(
+            ratchet.check(self.root, baseline_path, report, args, exact=False), 0
+        )
         payload = json.loads(report.read_text(encoding="utf-8"))
         self.assertGreaterEqual(payload["counts"]["resolved"], 1)
+
+    def test_exact_baseline_rejects_preseeded_future_finding(self) -> None:
+        baseline = self.write_current_baseline()
+        payload = json.loads(baseline.read_text(encoding="utf-8"))
+        raw = ratchet.RawFinding(
+            "floating_cargo_install",
+            ".github/workflows/future.yml",
+            10,
+            "cargo install future-tool",
+            "cargo install must use --version, --path, or --git with --rev",
+        )
+        payload["findings"].extend(
+            finding.as_dict() for finding in ratchet._fingerprint_findings([raw])
+        )
+        payload["findings"].sort(
+            key=lambda item: (
+                item["path"],
+                item["rule"],
+                item["line"],
+                item["evidence"],
+            )
+        )
+        baseline.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            ratchet.check(self.root, baseline, None, self.exact_args(), exact=True),
+            1,
+        )
+
+    def test_exact_baseline_rejects_resolved_debt_until_regenerated(self) -> None:
+        workflow = self.write(
+            ".github/workflows/debt.yml",
+            "name: debt\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/cache@v4\n",
+        )
+        baseline = self.write_current_baseline()
+        workflow.write_text(
+            "name: debt\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/cache@" + "a" * 40 + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            ratchet.check(self.root, baseline, None, self.exact_args(), exact=True),
+            1,
+        )
+
+    def test_baseline_fingerprint_tampering_is_rejected(self) -> None:
+        self.write(
+            ".github/workflows/debt.yml",
+            "name: debt\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/cache@v4\n",
+        )
+        baseline = self.write_current_baseline()
+        payload = json.loads(baseline.read_text(encoding="utf-8"))
+        payload["findings"][0]["fingerprint"] = "0" * 64
+        baseline.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError, "invalid fingerprints"):
+            ratchet._load_baseline(baseline, root=self.root)
+
+    def test_control_digest_tampering_is_rejected(self) -> None:
+        baseline = self.write_current_baseline()
+        self.write("scripts/ci/workflow_security_ratchet.py", "# weakened\n")
+        with self.assertRaisesRegex(ValueError, "control digests"):
+            ratchet._load_baseline(baseline, root=self.root)
+
+    def test_deleted_control_file_is_rejected(self) -> None:
+        baseline = self.write_current_baseline()
+        (self.root / "scripts/ci/test_workflow_security_ratchet.py").unlink()
+        with self.assertRaisesRegex(ValueError, "control is unavailable"):
+            ratchet._load_baseline(baseline, root=self.root)
+
+    def test_baseline_generation_is_byte_deterministic(self) -> None:
+        first = self.write_current_baseline().read_bytes()
+        second_path = self.root / ".ci/second.json"
+        self.assertEqual(ratchet.write_baseline(self.root, second_path, Args()), 0)
+        self.assertEqual(first, second_path.read_bytes())
 
     def test_invalid_utf8_is_an_actionable_finding(self) -> None:
         self.write(".github/workflows/invalid.yml", b"name: invalid\n\xff")
@@ -131,7 +277,9 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
     def test_oversized_candidate_is_an_actionable_finding(self) -> None:
         self.write(".github/workflows/large.yml", "x" * 256)
         findings = ratchet.scan(self.root, max_file_bytes=64)
-        self.assertIn("candidate_file_oversized", [finding.rule for finding in findings])
+        self.assertIn(
+            "candidate_file_oversized", [finding.rule for finding in findings]
+        )
 
     @unittest.skipIf(os.name == "nt", "symlink semantics differ on Windows")
     def test_symlink_candidate_is_rejected_without_following_it(self) -> None:
