@@ -409,12 +409,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Reject known-unmerged PR attributions in reference docs
+      - name: Reject unsupported PR attributions in reference docs
         if: matrix.name == 'meta'
         run: |
-          if git grep -n -E 'PR #153|pull/153' -- docs/reference ':(exclude)docs/reference/archive/**'; then
-            echo "Reference documentation contains an attribution to closed, unmerged PR #153."
-            echo "Use the merged PR that owns the behavior, or remove the PR attribution when the source is historical."
+          if git grep -n -E 'PR #153|pull/153|PR #753|pull/753' -- docs/reference ':(exclude)docs/reference/archive/**'; then
+            echo "Reference documentation contains an unsupported numbered PR attribution."
+            echo "Use a source-backed implementation reference, or remove the PR attribution when the source is historical."
             exit 1
           fi
 

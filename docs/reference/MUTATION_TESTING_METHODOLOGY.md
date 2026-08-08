@@ -79,7 +79,7 @@ fn convert_position_unsafe(utf8_pos: usize) -> u32 {
 - **Result**: Test failed, revealing asymmetric position handling
 - **Impact**: Boundary violations in UTF-16 position conversion
 
-**Secure Implementation (UTF-16 position mapping, PR #753):**
+**Secure Implementation (UTF-16 position mapping):**
 ```rust
 // SECURE: Symmetric conversion with comprehensive validation
 pub fn convert_utf8_to_utf16_position(text: &str, utf8_offset: usize) -> u32 {

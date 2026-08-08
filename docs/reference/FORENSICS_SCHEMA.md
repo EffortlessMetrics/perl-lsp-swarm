@@ -497,7 +497,7 @@ Severity levels:
 ## Panel 1: Change Surface (Measured)
 
 ### Intent
-- **UTF-16 implementation**: PR #753
+- **UTF-16 implementation**: shared line-index and position-mapping helpers
 - **Issue/AC**: #148 (mutation testing), #150 (UTF-16 security)
 - **Stated goal**: Add mutation testing, fix UTF-16 boundary vulnerabilities
 
