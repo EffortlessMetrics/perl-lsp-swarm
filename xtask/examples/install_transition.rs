@@ -576,6 +576,58 @@ mod tests {
     }
 
     #[test]
+    fn every_install_path_has_one_canonical_path_and_asset() -> Result<()> {
+        let cases = [
+            (InstallPath::Vsix, "vscode-linux-x86_64", "perl-lsp-rs-0.18.0.vsix"),
+            (
+                InstallPath::GithubArchive,
+                "github-archive-linux-x86_64",
+                "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz",
+            ),
+            (
+                InstallPath::PosixInstaller,
+                "posix-linux-x86_64",
+                "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz",
+            ),
+            (
+                InstallPath::PowershellInstaller,
+                "powershell-windows-x86_64",
+                "perllsp-0.18.0-x86_64-pc-windows-msvc.zip",
+            ),
+            (
+                InstallPath::CargoInstall,
+                "cargo-linux-x86_64",
+                "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz",
+            ),
+            (
+                InstallPath::ManualArchive,
+                "manual-archive-linux-x86_64",
+                "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz",
+            ),
+        ];
+        for (path, path_id, asset) in cases {
+            let mut receipt = fixture(include_str!(
+                "../../fixtures/experience/install_transition/clean_install.json"
+            ))?;
+            receipt.candidate.platform = if path == InstallPath::PowershellInstaller {
+                "windows-x86_64".to_string()
+            } else {
+                "linux-x86_64".to_string()
+            };
+            receipt.candidate.target = if path == InstallPath::PowershellInstaller {
+                "x86_64-pc-windows-msvc".to_string()
+            } else {
+                "x86_64-unknown-linux-gnu".to_string()
+            };
+            receipt.transition.path = path;
+            receipt.transition.topology_path_id = path_id.to_string();
+            receipt.transition.expected_asset = asset.to_string();
+            validate_topology_path(&receipt)?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn normal_upgrade_fixture_passes() -> Result<()> {
         let receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/normal_upgrade.json"
