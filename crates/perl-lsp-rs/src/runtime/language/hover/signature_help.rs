@@ -62,6 +62,14 @@ impl LspServer {
                 .ok_or_else(invalid_signature_help_params)?;
             let active_signature = active_signature_from_context(&params);
 
+            // Freshness reads open-document generations and must run before acquiring
+            // `documents_guard()` — `resolve_method_in_workspace` is called while that
+            // guard is held and must not re-lock the same non-reentrant mutex.
+            #[cfg(feature = "workspace")]
+            let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+            #[cfg(not(feature = "workspace"))]
+            let workspace_index_stale = false;
+
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
                 let offset = self.pos16_to_offset(doc, line, character);
@@ -109,7 +117,9 @@ impl LspServer {
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                     #[cfg(feature = "workspace")]
                     if Self::is_method_call_context(&doc.text, offset) {
-                        if let Some(signature) = self.resolve_method_in_workspace(&function_name) {
+                        if let Some(signature) =
+                            self.resolve_method_in_workspace(&function_name, workspace_index_stale)
+                        {
                             return Ok(Some(json!({
                                 "signatures": [signature],
                                 "activeSignature": active_signature,
@@ -948,8 +958,16 @@ impl LspServer {
     /// This helper is intentionally self-contained and reusable. A later slice will
     /// call it from the inlay hints provider without rebuilding the lookup logic.
     #[cfg(feature = "workspace")]
-    pub(crate) fn resolve_method_in_workspace(&self, method_name: &str) -> Option<Value> {
+    pub(crate) fn resolve_method_in_workspace(
+        &self,
+        method_name: &str,
+        workspace_index_stale: bool,
+    ) -> Option<Value> {
         use crate::runtime::routing::{IndexAccessMode, route_index_access};
+
+        if workspace_index_stale {
+            return None;
+        }
 
         let coord = match route_index_access(self.coordinator()) {
             IndexAccessMode::Full(c) => c,
@@ -1157,7 +1175,7 @@ mod tests {
         // files have been indexed, so route_index_access returns Partial (not
         // Full), and the method exits via the `_ => return None` branch.
         let server = LspServer::new();
-        let result = server.resolve_method_in_workspace("format");
+        let result = server.resolve_method_in_workspace("format", false);
         assert!(
             result.is_none(),
             "resolve_method_in_workspace must return None when workspace index is not ready, got: {:?}",
@@ -1173,7 +1191,7 @@ mod tests {
     #[test]
     fn test_resolve_method_empty_name_returns_none() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        let result = server.resolve_method_in_workspace("");
+        let result = server.resolve_method_in_workspace("", false);
         assert!(
             result.is_none(),
             "resolve_method_in_workspace with empty name must return None, got: {:?}",
@@ -1219,7 +1237,7 @@ sub format_output {
         server.index_coordinator = Some(coordinator);
 
         // Invoke the full resolution path.
-        let result = server.resolve_method_in_workspace("format_output");
+        let result = server.resolve_method_in_workspace("format_output", false);
 
         // The method has `my ($self, $template, @args) = @_` — a signature SHOULD
         // be returned containing "format_output".
@@ -1261,7 +1279,7 @@ sub format_output {
         server.index_coordinator = Some(coordinator);
 
         // A method name that was never indexed — must return None, not panic.
-        let result = server.resolve_method_in_workspace("completely_nonexistent_xyz");
+        let result = server.resolve_method_in_workspace("completely_nonexistent_xyz", false);
         assert!(
             result.is_none(),
             "Unknown method in ready workspace must return None, got: {:?}",
@@ -1300,12 +1318,101 @@ sub format_output {
         let mut server = LspServer::new();
         server.index_coordinator = Some(coordinator);
 
-        let result = server.resolve_method_in_workspace("haunt");
+        let result = server.resolve_method_in_workspace("haunt", false);
         assert!(
             result.is_none(),
             "Method with unavailable source file must return None, got: {:?}",
             result
         );
+        Ok(())
+    }
+
+    /// Regression (#5016): when the workspace index is stale relative to an open
+    /// document, resolve_method_in_workspace must not return signatures derived
+    /// from the outdated index tier.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn resolve_method_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let class_uri = "file:///workspace/stale_sig_class.pl";
+        let caller_uri = "file:///workspace/stale_sig_caller.pl";
+        let class_v1 = r#"
+package StaleSig::Class;
+sub format {
+    my ($self, $template, @args) = @_;
+    return sprintf($template, @args);
+}
+1;
+"#;
+        let class_v2 = r#"
+package StaleSig::Class;
+sub format {
+    my ($self, $only) = @_;
+    return $only;
+}
+1;
+"#;
+        let caller_v1 = "package main;\nmy $obj = StaleSig::Class->new;\n$obj->format();\n";
+        let caller_v2 = "package main;\nmy $obj = StaleSig::Class->new;\n$obj->format(); # extra\n";
+
+        server.test_apply_did_open(class_uri, class_v1, 1)?;
+        server.test_apply_did_open(caller_uri, caller_v1, 1)?;
+        server
+            .test_index_file_in_building_state(class_uri, class_v1)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        assert!(
+            server
+                .resolve_method_in_workspace("format", false)
+                .is_some(),
+            "fresh workspace index should resolve format signature"
+        );
+
+        server
+            .test_replace_document_without_index(class_uri, class_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        assert!(
+            server
+                .resolve_method_in_workspace(
+                    "format",
+                    server.workspace_index_stale_for_any_open_document(),
+                )
+                .is_none(),
+            "stale workspace index must not supply workspace-derived method signature"
+        );
+
+        // Unrelated caller edit alone must also block the workspace tier.
+        server.test_apply_did_open(class_uri, class_v1, 1)?;
+        server
+            .test_index_file_in_building_state(class_uri, class_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        server
+            .test_replace_document_without_index(caller_uri, caller_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "caller-only edit must also mark the workspace index stale"
+        );
+        assert!(
+            server
+                .resolve_method_in_workspace(
+                    "format",
+                    server.workspace_index_stale_for_any_open_document(),
+                )
+                .is_none(),
+            "stale workspace index must skip tier even when only an unrelated caller changed"
+        );
+
         Ok(())
     }
 
