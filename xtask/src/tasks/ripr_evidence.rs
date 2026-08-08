@@ -3651,7 +3651,10 @@ paths = ["archive/["]
         Ok(())
     }
 
-    /// A copy leaves its source in place, so `C` must not remove the source path.
+    /// A copy leaves its source in place, so `C` must not remove the source path — the
+    /// old-path inference this commit replaced would have. The source is not indexed at
+    /// all (the index covers head-side paths), so it resolves `Unknown` and its findings
+    /// stay counted; what matters is that it is never `Removed`.
     #[test]
     fn a_copy_source_is_not_treated_as_removed() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -3669,9 +3672,13 @@ paths = ["archive/["]
 
         let extents = HeadLineExtents::from_committed_diff(repo, &diff);
 
-        // `tracked.txt` still exists at head; `copy.txt` does not exist in this fixture,
-        // so it stays `Unknown` rather than becoming a phantom deletion.
-        assert_eq!(extents.resolve("tracked.txt"), HeadPathState::Present(1));
+        assert_eq!(extents.resolve("tracked.txt"), HeadPathState::Unknown);
+        assert!(!extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "tracked.txt", "line": 1 }
+        })));
+        // `copy.txt` is not in this fixture's head revision, so its extent lookup fails
+        // and it too stays `Unknown` rather than becoming a phantom deletion.
         assert_eq!(extents.resolve("copy.txt"), HeadPathState::Unknown);
         Ok(())
     }
