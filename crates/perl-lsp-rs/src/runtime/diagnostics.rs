@@ -163,7 +163,9 @@ impl PullDiagnosticsOrchestrator {
         // (#5016 item 2).
         #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
         let workspace_index = {
-            let _ = server.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+            let _ = server.check_index_readiness(
+                crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
+            );
             if server.workspace_index_stale_for_document(uri) {
                 None
             } else {
@@ -567,7 +569,9 @@ impl LspServer {
             // before any documents_guard re-entry (#6199 deadlock lesson).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             let workspace_index_tier_enabled = {
-                let _ = self.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+                let _ = self.check_index_readiness(
+                    crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
+                );
                 !self.workspace_index_stale_for_document(uri)
             };
 
@@ -587,44 +591,47 @@ impl LspServer {
                     .then(|| self.workspace_index())
                     .flatten()
                     .and_then(|workspace_index| {
-                    use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
-                        build_role_scoped_package_graph, consumed_role_names,
-                    };
-                    let role_names = consumed_role_names(ast);
-                    if role_names.is_empty() {
-                        workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-                            provider.get_diagnostics_with_search_context_and_semantics(
-                                ast,
-                                &parse_errors,
-                                &text,
-                                Some(&resolver),
-                                &search_context,
-                                source_path.as_deref(),
-                                file_id,
-                                &queries,
+                        use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
+                            build_role_scoped_package_graph, consumed_role_names,
+                        };
+                        let role_names = consumed_role_names(ast);
+                        if role_names.is_empty() {
+                            workspace_index.with_semantic_queries_for_uri(
+                                uri,
+                                |file_id, queries| {
+                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                        ast,
+                                        &parse_errors,
+                                        &text,
+                                        Some(&resolver),
+                                        &search_context,
+                                        source_path.as_deref(),
+                                        file_id,
+                                        &queries,
+                                    )
+                                },
                             )
-                        })
-                    } else {
-                        let scoped_graph =
-                            build_role_scoped_package_graph(&workspace_index, &role_names);
-                        workspace_index.with_semantic_queries_for_uri_and_graph(
-                            uri,
-                            &scoped_graph,
-                            |file_id, queries| {
-                                provider.get_diagnostics_with_search_context_and_semantics(
-                                    ast,
-                                    &parse_errors,
-                                    &text,
-                                    Some(&resolver),
-                                    &search_context,
-                                    source_path.as_deref(),
-                                    file_id,
-                                    &queries,
-                                )
-                            },
-                        )
-                    }
-                });
+                        } else {
+                            let scoped_graph =
+                                build_role_scoped_package_graph(&workspace_index, &role_names);
+                            workspace_index.with_semantic_queries_for_uri_and_graph(
+                                uri,
+                                &scoped_graph,
+                                |file_id, queries| {
+                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                        ast,
+                                        &parse_errors,
+                                        &text,
+                                        Some(&resolver),
+                                        &search_context,
+                                        source_path.as_deref(),
+                                        file_id,
+                                        &queries,
+                                    )
+                                },
+                            )
+                        }
+                    });
                 semantic_diags.unwrap_or_else(|| {
                     provider.get_diagnostics_with_search_context(
                         ast,
@@ -1483,7 +1490,8 @@ impl LspServer {
         // Wait for index build before sampling per-document staleness for the
         // workspace semantic tier (#5016 item 2).
         #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-        let _ = self.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+        let _ = self
+            .check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
 
         // Coarse workDoneProgress for the workspace diagnostic path, which
         // iterates over every open document and invokes perlcritic per
@@ -1528,7 +1536,8 @@ impl LspServer {
                 let source_path = source_path_from_uri(uri_str);
 
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                let workspace_index_tier_enabled = !self.workspace_index_stale_for_document(uri_str);
+                let workspace_index_tier_enabled =
+                    !self.workspace_index_stale_for_document(uri_str);
 
                 // Wire semantic queries when workspace data is available for this URI.
                 // When the file consumes roles via `with 'Role'`, build a bounded
@@ -1542,47 +1551,47 @@ impl LspServer {
                         .then(|| self.workspace_index())
                         .flatten()
                         .and_then(|workspace_index| {
-                        use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
-                            build_role_scoped_package_graph, consumed_role_names,
-                        };
-                        let role_names = consumed_role_names(ast);
-                        if role_names.is_empty() {
-                            workspace_index.with_semantic_queries_for_uri(
-                                uri_str,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
-                                        ast,
-                                        parse_errors,
-                                        &doc.text,
-                                        Some(&resolver),
-                                        &search_context,
-                                        source_path.as_deref(),
-                                        file_id,
-                                        &queries,
-                                    )
-                                },
-                            )
-                        } else {
-                            let scoped_graph =
-                                build_role_scoped_package_graph(&workspace_index, &role_names);
-                            workspace_index.with_semantic_queries_for_uri_and_graph(
-                                uri_str,
-                                &scoped_graph,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
-                                        ast,
-                                        parse_errors,
-                                        &doc.text,
-                                        Some(&resolver),
-                                        &search_context,
-                                        source_path.as_deref(),
-                                        file_id,
-                                        &queries,
-                                    )
-                                },
-                            )
-                        }
-                    });
+                            use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
+                                build_role_scoped_package_graph, consumed_role_names,
+                            };
+                            let role_names = consumed_role_names(ast);
+                            if role_names.is_empty() {
+                                workspace_index.with_semantic_queries_for_uri(
+                                    uri_str,
+                                    |file_id, queries| {
+                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                            ast,
+                                            parse_errors,
+                                            &doc.text,
+                                            Some(&resolver),
+                                            &search_context,
+                                            source_path.as_deref(),
+                                            file_id,
+                                            &queries,
+                                        )
+                                    },
+                                )
+                            } else {
+                                let scoped_graph =
+                                    build_role_scoped_package_graph(&workspace_index, &role_names);
+                                workspace_index.with_semantic_queries_for_uri_and_graph(
+                                    uri_str,
+                                    &scoped_graph,
+                                    |file_id, queries| {
+                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                            ast,
+                                            parse_errors,
+                                            &doc.text,
+                                            Some(&resolver),
+                                            &search_context,
+                                            source_path.as_deref(),
+                                            file_id,
+                                            &queries,
+                                        )
+                                    },
+                                )
+                            }
+                        });
                     semantic_diags.unwrap_or_else(|| {
                         provider.get_diagnostics_with_search_context(
                             ast,
@@ -1612,7 +1621,9 @@ impl LspServer {
 
                 // Add dead code diagnostics from workspace-wide symbol analysis
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+                if workspace_index_tier_enabled
+                    && let Some(workspace_index) = self.workspace_index()
+                {
                     let dead_code_diags =
                         perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
                             &workspace_index,
@@ -3889,8 +3900,8 @@ print \"unreachable\\n\";\n";
     /// `detect_dead_code` on the pull diagnostic path.
     #[cfg(feature = "workspace")]
     #[test]
-    fn pull_diagnostic_skips_stale_workspace_dead_code_tier() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn pull_diagnostic_skips_stale_workspace_dead_code_tier()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
         let uri = "file:///workspace/stale_dead_code_pull.pl";
         make_document_index_stale_for_diagnostics(
@@ -3924,9 +3935,7 @@ print \"unreachable\\n\";\n";
         let uri = "file:///workspace/fresh_dead_code_publish.pl";
         let source = stale_dead_code_indexed_source();
         server.test_apply_did_open(uri, source, 1)?;
-        server
-            .test_index_file_in_building_state(uri, source)
-            .map_err(std::io::Error::other)?;
+        server.test_index_file_in_building_state(uri, source).map_err(std::io::Error::other)?;
         server.test_simulate_indexing_complete();
 
         buf.lock().clear();
