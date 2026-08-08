@@ -804,6 +804,18 @@ mod tests {
         }
     }
 
+    // Third in-the-wild instance, from a different lane:
+    //   route from 'deliver-goal' points to missing provider-local skill 'main'
+    // on agent/6077-hierarchical-orchestration. `main` is the git branch, written
+    // in backticks in prose. Named explicitly because these three occurrences are
+    // the dominant failure mode of the `Compile agent-flow control plane` gate.
+    #[test]
+    fn branch_name_prose_token_gets_the_prose_hint() {
+        let hint = unresolved_route_hint("main", &known());
+        assert!(hint.contains("backticks"), "`main` should get the prose hint: {hint}");
+        assert!(!hint.contains("did you mean"), "`main` resembles no skill: {hint}");
+    }
+
     // A misspelled REAL route must be told what it meant, not lectured about
     // backticks — that is a routing bug and the hint must not disguise it.
     #[test]
