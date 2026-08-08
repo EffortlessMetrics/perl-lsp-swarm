@@ -1295,10 +1295,12 @@ pub struct WorkspaceIndex {
     symbols: Arc<RwLock<HashMap<String, Vec<DefinitionCandidate>>>>,
     /// Workspace-symbol search index for fast query lookup.
     ///
-    /// Maps lowercase symbol name (bare or qualified) to all `WorkspaceSymbol`
-    /// instances that carry that name.  `search_source_symbols` iterates the
-    /// unique name keys in this map instead of scanning every file's symbol list,
-    /// turning the outer loop from O(total_symbols) to O(unique_lowercase_names).
+    /// Maps symbol name (bare or qualified, case-preserved) to all
+    /// `WorkspaceSymbol` instances that carry that name.
+    /// `search_source_symbols` iterates the unique name keys in this map
+    /// instead of scanning every file's symbol list, turning the outer loop from
+    /// O(total_symbols) to O(unique_names). Keys preserve Perl's case-sensitive
+    /// package identity so `Foo::Bar` and `foo::bar` remain distinct buckets.
     ///
     /// Lock order: always acquire `symbols` before `search_index`.
     search_index: Arc<RwLock<HashMap<String, Vec<WorkspaceSymbol>>>>,
@@ -1491,8 +1493,8 @@ impl WorkspaceIndex {
 
     /// Build the search index from scratch from all file indexes.
     ///
-    /// Keyed by lowercase bare name and lowercase qualified name so that
-    /// `search_source_symbols` can iterate unique name keys (O(unique_lowercase_names))
+    /// Keyed by bare name and qualified name (case-preserved) so that
+    /// `search_source_symbols` can iterate unique name keys (O(unique_names))
     /// rather than all (file, symbol) pairs (O(total_symbols)).
     ///
     /// Lock order: hold `symbols` write before calling; acquire `search_index` write
@@ -1504,11 +1506,9 @@ impl WorkspaceIndex {
         search_index.clear();
         for file_index in files.values() {
             for symbol in &file_index.symbols {
-                let key = symbol.name.to_lowercase();
-                search_index.entry(key).or_default().push(symbol.clone());
+                search_index.entry(symbol.name.clone()).or_default().push(symbol.clone());
                 if let Some(ref qname) = symbol.qualified_name {
-                    let qkey = qname.to_lowercase();
-                    search_index.entry(qkey).or_default().push(symbol.clone());
+                    search_index.entry(qname.clone()).or_default().push(symbol.clone());
                 }
             }
         }
@@ -1520,11 +1520,9 @@ impl WorkspaceIndex {
         file_index: &FileIndex,
     ) {
         for symbol in &file_index.symbols {
-            let key = symbol.name.to_lowercase();
-            search_index.entry(key).or_default().push(symbol.clone());
+            search_index.entry(symbol.name.clone()).or_default().push(symbol.clone());
             if let Some(ref qname) = symbol.qualified_name {
-                let qkey = qname.to_lowercase();
-                search_index.entry(qkey).or_default().push(symbol.clone());
+                search_index.entry(qname.clone()).or_default().push(symbol.clone());
             }
         }
     }
@@ -1535,19 +1533,17 @@ impl WorkspaceIndex {
         file_index: &FileIndex,
     ) {
         for symbol in &file_index.symbols {
-            let key = symbol.name.to_lowercase();
-            if let Some(entries) = search_index.get_mut(&key) {
+            if let Some(entries) = search_index.get_mut(&symbol.name) {
                 entries.retain(|s| s.uri != symbol.uri);
                 if entries.is_empty() {
-                    search_index.remove(&key);
+                    search_index.remove(&symbol.name);
                 }
             }
             if let Some(ref qname) = symbol.qualified_name {
-                let qkey = qname.to_lowercase();
-                if let Some(entries) = search_index.get_mut(&qkey) {
+                if let Some(entries) = search_index.get_mut(qname) {
                     entries.retain(|s| s.uri != symbol.uri);
                     if entries.is_empty() {
-                        search_index.remove(&qkey);
+                        search_index.remove(qname);
                     }
                 }
             }
@@ -3832,9 +3828,12 @@ impl WorkspaceIndex {
     /// to preserve the historical source-backed live slice for trust receipts
     /// or fallback paths.
     ///
-    /// Uses the `search_index` (keyed by lowercase bare/qualified names) to
+    /// Uses the `search_index` (keyed by case-preserved bare/qualified names) to
     /// iterate unique name keys rather than all (file, symbol) pairs, turning
-    /// the outer loop from O(total_symbols) to O(unique_lowercase_names).
+    /// the outer loop from O(total_symbols) to O(unique_names). Query matching
+    /// is case-insensitive at comparison time so subroutine search stays usable,
+    /// but distinct Perl packages (`Foo::Bar` vs `foo::bar`) remain separate
+    /// index buckets and do not cross-match. (#5016)
     /// A symbol that is stored under both its bare name key and its qualified
     /// name key is deduplicated by `(uri, start_byte)` so each `WorkspaceSymbol`
     /// appears at most once in the result.
@@ -3866,19 +3865,22 @@ impl WorkspaceIndex {
         // behavior for an empty `workspace/symbol` query.
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
-            let score = if name_key == &query_lower {
+            // Compare case-insensitively at query time; index keys preserve
+            // source casing so distinct Perl packages stay separate buckets.
+            let name_key_lower = name_key.to_lowercase();
+            let score = if name_key_lower == query_lower {
                 3 // exact match
             } else if !loose_match_allowed {
                 // Short query: prefix is the only non-exact tier available.
                 // Prefix matches are a strict subset of the substring matches
                 // this replaces, so no already-returned symbol changes score.
-                if !name_key.starts_with(&query_lower) {
+                if !name_key_lower.starts_with(&query_lower) {
                     continue;
                 }
                 2 // prefix match
-            } else if name_key.contains(&query_lower) {
+            } else if name_key_lower.contains(&query_lower) {
                 2 // substring match
-            } else if is_subsequence(&query_lower, name_key) {
+            } else if is_subsequence(&query_lower, &name_key_lower) {
                 // Reaching here implies `loose_match_allowed`, i.e. a query of at
                 // least MIN_LOOSE_MATCH_QUERY_CHARS chars, so no separate
                 // subsequence-length guard is needed. (The one `main` carried was
@@ -11329,6 +11331,47 @@ mod entity_id_file_scoped_tests {
         assert_eq!(
             process_count, 1,
             "'process' must appear exactly once (no dup from dual-key indexing); got: {process_count}"
+        );
+    }
+
+    /// Regression guard for #5016: case-distinct Perl packages must not merge in
+    /// the search_index. `Foo::Bar` and `foo::bar` are different packages; a
+    /// query for one must not return symbols from the other.
+    #[test]
+    fn search_source_symbols_case_distinct_packages_do_not_cross_match() {
+        let index = WorkspaceIndex::new();
+
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Foo/Bar.pm")),
+            "package Foo::Bar;\nsub upper_helper { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/foo/bar.pm")),
+            "package foo::bar;\nsub lower_helper { 2 }\n1;\n".to_string(),
+        ));
+
+        let upper_results = index.search_source_symbols("Foo::Bar::upper", None);
+        assert!(
+            upper_results.iter().any(|s| s.name == "upper_helper"),
+            "Foo::Bar query must find upper_helper; got: {:?}",
+            upper_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !upper_results.iter().any(|s| s.name == "lower_helper"),
+            "Foo::Bar query must not cross-match foo::bar symbols; got: {:?}",
+            upper_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let lower_results = index.search_source_symbols("foo::bar::lower", None);
+        assert!(
+            lower_results.iter().any(|s| s.name == "lower_helper"),
+            "foo::bar query must find lower_helper; got: {:?}",
+            lower_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !lower_results.iter().any(|s| s.name == "upper_helper"),
+            "foo::bar query must not cross-match Foo::Bar symbols; got: {:?}",
+            lower_results.iter().map(|s| &s.name).collect::<Vec<_>>()
         );
     }
 
