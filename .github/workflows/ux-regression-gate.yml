@@ -28,7 +28,16 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+# TESTED_SHA is deliberately NOT a workflow- or job-level `env:`. Candidate code
+# invoked by `just ux-tests` can append `TESTED_SHA=<any value>` to $GITHUB_ENV,
+# and GitHub then supplies that value to every subsequent step — which would let
+# the candidate choose the subject that the receipt emitter records and that the
+# verifier then checks against, so the two would agree on an attacker-selected
+# SHA and the identity binding would prove nothing. Every step below that must
+# be anchored to the real candidate declares TESTED_SHA in its own step-level
+# `env:` from the immutable `github` context. Step-level env takes precedence
+# over anything written to $GITHUB_ENV, so it cannot be rebound.
 
 jobs:
   ux-regression-gate:
@@ -46,6 +55,8 @@ jobs:
           persist-credentials: false
 
       - name: Verify tested candidate identity
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           actual_sha="$(git rev-parse 'HEAD^{commit}')"
@@ -126,6 +137,8 @@ jobs:
 
       - name: Emit structured UX regression receipt
         if: always() && steps.harness_check.outputs.harness_available == 'true'
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           cargo xtask ux-regression-receipt \
             --input target/receipts/ux-regression.log \
@@ -134,7 +147,10 @@ jobs:
             --sha "$TESTED_SHA"
 
       - name: Verify receipt subject identity
+        id: verify_receipt
         if: always() && steps.harness_check.outputs.harness_available == 'true'
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           python3 - <<'PY'
           import json
@@ -152,16 +168,34 @@ jobs:
               )
           PY
 
-      - name: Upload UX regression artifacts
-        if: always() && steps.harness_check.outputs.harness_available == 'true'
+      # Evidence publication is gated on the subject check. Uploading on bare
+      # `always()` would publish a receipt whose subject the verifier had just
+      # rejected, under an artifact name asserting the exact candidate SHA — the
+      # artifact would carry more authority than the check that produced it.
+      - name: Upload UX regression evidence
+        if: always() && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
-          name: ux-regression-gate-receipt-${{ env.TESTED_SHA }}
+          name: ux-regression-gate-receipt-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: |
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
             target/receipts/editor-ux/golden-editor-workload-v3.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Unverified output is still worth keeping for triage, but under a name
+      # that does not claim to be evidence about a specific candidate.
+      - name: Upload unverified UX diagnostics
+        if: always() && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome != 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: ux-regression-gate-unverified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/receipts/ux-regression.json
+            target/receipts/ux-regression.log
+            target/receipts/ux-regression.exit
           if-no-files-found: warn
           retention-days: 7
 
@@ -184,6 +218,7 @@ jobs:
       - name: Summarize UX evidence
         if: always()
         env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           HARNESS_AVAILABLE: ${{ steps.harness_check.outputs.harness_available }}
           UX_TEST_OUTCOME: ${{ steps.ux_tests.outcome }}
         run: |
@@ -288,6 +323,8 @@ jobs:
           persist-credentials: false
 
       - name: Verify tested candidate identity
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           actual_sha="$(git rev-parse 'HEAD^{commit}')"
@@ -329,6 +366,7 @@ jobs:
       - name: Summarize extension evidence
         if: always()
         env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           JEST_OUTCOME: ${{ steps.jest.outcome }}
           GRAMMAR_OUTCOME: ${{ steps.grammar.outcome }}
         run: |
