@@ -8,6 +8,8 @@ const outputChannel = {
 } as unknown as vscode.LogOutputChannel;
 
 function makeDependencies(results: HealthCheckResult[] = []): ServerCommandContext & {
+  currentServerPath: jest.Mock;
+  resolveServerPath: jest.Mock;
   reinstallServerBinary: jest.Mock;
   restartServer: jest.Mock;
   runHealthCheck: jest.Mock;
