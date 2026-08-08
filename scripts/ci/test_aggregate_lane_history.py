@@ -58,12 +58,23 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             (actuals / "invalid.json").write_text("{", encoding="utf-8")
             (actuals / "array.json").write_text("[]", encoding="utf-8")
 
-            samples = aggregate_lane_history.collect_actuals(
+            samples, stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=1,
+                allowed_lanes={
+                    "ripr",
+                    "rust-small",
+                    "missing-actual",
+                    "bad-actual",
+                    "old",
+                },
             )
 
         self.assertEqual({"ripr": [42.5], "rust-small": [120.0]}, samples)
+        self.assertEqual(2, stats["accepted_samples"])
+        self.assertEqual(4, stats["jobs_seen"])
+        self.assertEqual(2, stats["rejected"]["invalid_actual"])
+
 
     def test_static_floors_reads_lane_base_lem_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,14 +88,28 @@ base_lem = 20
 base_lem = 2.5
 
 [lane.no-floor]
-label = "No floor"
+base_lem = 1
 """,
                 encoding="utf-8",
             )
 
             floors = aggregate_lane_history.static_floors(lanes)
 
-        self.assertEqual({"docs": 2.5, "rust-small": 20.0}, floors)
+        self.assertEqual({"docs": 2.5, "no-floor": 1.0, "rust-small": 20.0}, floors)
+
+    def test_static_floors_rejects_missing_lane_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lanes = Path(tmp) / "ci-lanes.toml"
+            lanes.write_text(
+                """
+[lane.docs]
+label = "Missing floor"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "non-numeric base_lem"):
+                aggregate_lane_history.static_floors(lanes)
 
     def test_build_history_includes_policy_lanes_without_samples(self) -> None:
         history = aggregate_lane_history.build_history(
@@ -150,7 +175,17 @@ base_lem = 2
         self.assertEqual(0, status)
         self.assertEqual(2, history["lane_count"])
         self.assertEqual(1, history["lanes"]["rust-small"]["samples"])
-        self.assertEqual({"lanes": 2, "learned": 0, "window_days": 14}, printed)
+        self.assertEqual(
+            {
+                "lanes": 2,
+                "learned": 0,
+                "window_days": 14,
+                "accepted_samples": 1,
+                "rejected_samples": 0,
+                "source_runs": 0,
+            },
+            printed,
+        )
 
 
 if __name__ == "__main__":
