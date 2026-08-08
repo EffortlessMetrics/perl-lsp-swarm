@@ -12,6 +12,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use serde_yaml_ng::Value;
+
 fn project_root() -> PathBuf {
     // Walk up from the manifest directory to the workspace root.
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -146,18 +148,111 @@ fn test_post_merge_workflow_runs_status_update() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// The post-merge workflow must auto-commit changed files.
+/// The post-merge workflow must propose regenerated files through a reviewable
+/// pull request, and must never push to the protected default branch itself.
+///
+/// Before #6012 this asserted the opposite — that the workflow contained a
+/// literal `git commit`/`git push`. That direct push ran with `contents: write`
+/// alongside repository-owned generator code, and branch protection rejected it
+/// anyway. The contract is now the create-pull-request boundary.
 #[test]
-fn test_post_merge_workflow_auto_commits() -> Result<(), Box<dyn std::error::Error>> {
+fn test_post_merge_workflow_proposes_pull_request() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let workflow_path = root.join(".github/workflows/post-merge-status.yml");
     let content = fs::read_to_string(&workflow_path)?;
 
     assert!(
-        content.contains("git commit") || content.contains("git push"),
-        "post-merge-status.yml must commit and push regenerated status files.\n\
+        content.contains("peter-evans/create-pull-request"),
+        "post-merge-status.yml must propose regenerated status files through \
+         peter-evans/create-pull-request.\n\
          Workflow content:\n{}",
         content
+    );
+    // Inspect only executable `run:` bodies. A whole-file substring search would
+    // also match prose: this workflow's own comments discuss the direct push that
+    // #6012 removed, so a future comment mentioning it would fail the test while
+    // no step actually pushes.
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+    for (name, job) in jobs {
+        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        for step in steps {
+            let Some(run) = step.get("run").and_then(Value::as_str) else {
+                continue;
+            };
+            assert!(
+                !run.contains("git push") && !run.contains("git commit"),
+                "post-merge-status.yml must not push directly to the protected \
+                 default branch; generated files are proposed through a \
+                 reviewable PR. Offending job `{:?}` step:\n{}",
+                name,
+                run
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The job that executes the repository's own generator must not hold write
+/// authority (issue #6012 acceptance: generation runs with `contents: read`).
+#[test]
+fn test_post_merge_generator_job_is_read_only() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+    let content = fs::read_to_string(&workflow_path)?;
+
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+
+    // Locate the job that actually runs the repository's own generator, rather
+    // than trusting a job name that a later edit could rename.
+    let (_name, generator) = jobs
+        .iter()
+        .find(|(_, job)| {
+            job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
+                steps.iter().any(|step| {
+                    step.get("run")
+                        .and_then(Value::as_str)
+                        .is_some_and(|run| run.contains("update-status --write"))
+                })
+            })
+        })
+        .ok_or("no job in post-merge-status.yml runs `update-status --write`")?;
+
+    let contents = generator
+        .get("permissions")
+        .and_then(|perms| perms.get("contents"))
+        .and_then(Value::as_str)
+        .ok_or("the generating job must declare an explicit `permissions.contents`")?;
+    assert_eq!(
+        contents, "read",
+        "the job running `update-status --write` must hold only `contents: read`"
+    );
+
+    let steps = generator
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .ok_or("the generating job must declare steps")?;
+    let checkout = steps
+        .iter()
+        .find(|step| {
+            step.get("uses")
+                .and_then(Value::as_str)
+                .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+        })
+        .ok_or("the generating job must check out the repository")?;
+    assert_eq!(
+        checkout.get("with").and_then(|with| with.get("persist-credentials")),
+        Some(&Value::Bool(false)),
+        "the generating checkout must set `persist-credentials: false`"
     );
     Ok(())
 }
