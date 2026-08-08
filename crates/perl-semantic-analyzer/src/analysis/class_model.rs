@@ -1,4 +1,4 @@
-//! Class model for Moose/Moo/Mouse/Class::Accessor/Class::Tiny intelligence.
+//! Class model for Moose/Moo/Mouse/Class::Accessor/Class::Tiny/DBIx::Class intelligence.
 //!
 //! Provides a structured representation of Perl OOP class declarations,
 //! including attributes, methods, inheritance, and role composition.
@@ -6,6 +6,7 @@
 
 use crate::SourceLocation;
 use crate::ast::{Node, NodeKind};
+use perl_semantic_facts::GeneratedMemberKind;
 use std::collections::{HashMap, HashSet};
 
 /// Which OO framework a package uses.
@@ -31,6 +32,8 @@ pub enum Framework {
     RoleTiny,
     /// `use Class::Tiny;` or `use Class::Tiny::RW;`
     ClassTiny,
+    /// `use DBIx::Class;` or `use DBIx::Class::Core;`
+    DbixClass,
     /// No OO framework detected
     None,
 }
@@ -158,12 +161,14 @@ pub struct MethodInfo {
     pub synthetic: bool,
     /// Accessor mode for `Class::Accessor`-generated methods.
     pub accessor_mode: Option<ClassAccessorMode>,
+    /// Explicit generated-member classification for framework-synthesized methods.
+    pub generated_kind: Option<GeneratedMemberKind>,
 }
 
 impl MethodInfo {
     /// Construct a regular declared method.
     pub fn new(name: String, location: SourceLocation) -> Self {
-        Self { name, location, synthetic: false, accessor_mode: None }
+        Self { name, location, synthetic: false, accessor_mode: None, generated_kind: None }
     }
 
     /// Construct a synthetic method generated from framework metadata.
@@ -172,7 +177,22 @@ impl MethodInfo {
         location: SourceLocation,
         accessor_mode: Option<ClassAccessorMode>,
     ) -> Self {
-        Self { name, location, synthetic: true, accessor_mode }
+        Self { name, location, synthetic: true, accessor_mode, generated_kind: None }
+    }
+
+    /// Construct a framework-generated member with an explicit semantic kind.
+    pub fn synthetic_generated(
+        name: String,
+        location: SourceLocation,
+        generated_kind: GeneratedMemberKind,
+    ) -> Self {
+        Self {
+            name,
+            location,
+            synthetic: true,
+            accessor_mode: None,
+            generated_kind: Some(generated_kind),
+        }
     }
 }
 
@@ -559,6 +579,12 @@ impl ClassModelBuilder {
                     idx += consumed;
                     continue;
                 }
+                if self.current_framework == Framework::DbixClass
+                    && let Some(consumed) = self.try_extract_dbix_class_members(statements, idx)
+                {
+                    idx += consumed;
+                    continue;
+                }
                 // Try to extract `has` declarations
                 if let Some(consumed) = self.try_extract_has(statements, idx) {
                     idx += consumed;
@@ -594,6 +620,7 @@ impl ClassModelBuilder {
             "Mouse" | "Mouse::Role" => Framework::Mouse,
             "Role::Tiny" | "Role::Tiny::With" => Framework::RoleTiny,
             "Class::Tiny" | "Class::Tiny::RW" => Framework::ClassTiny,
+            "DBIx::Class" | "DBIx::Class::Core" => Framework::DbixClass,
             "Class::Accessor" => Framework::ClassAccessor,
             "Object::Pad" => Framework::ObjectPad,
             "base" | "parent" => {
@@ -1065,6 +1092,47 @@ impl ClassModelBuilder {
         Some(2)
     }
 
+    /// Extract DBIx::Class generated members from declaration method calls.
+    fn try_extract_dbix_class_members(&mut self, statements: &[Node], idx: usize) -> Option<usize> {
+        let first = &statements[idx];
+        let NodeKind::ExpressionStatement { expression } = &first.kind else {
+            return None;
+        };
+        let NodeKind::MethodCall { object, method, args } = &expression.kind else {
+            return None;
+        };
+        if !matches!(method.as_str(), "add_columns" | "has_many" | "belongs_to")
+            || !self.class_accessor_target_matches_current_package(object)
+        {
+            return None;
+        }
+
+        let (kind, names) = match method.as_str() {
+            "add_columns" => (
+                GeneratedMemberKind::Accessor,
+                args.iter().flat_map(collect_dbix_column_names).collect::<Vec<_>>(),
+            ),
+            "has_many" | "belongs_to" => (
+                GeneratedMemberKind::Method,
+                args.first().map(collect_dbix_relationship_name).into_iter().flatten().collect(),
+            ),
+            _ => return None,
+        };
+
+        let mut seen = HashSet::new();
+        for name in names {
+            if seen.insert(name.clone()) {
+                self.current_methods.push(MethodInfo::synthetic_generated(
+                    name,
+                    first.location,
+                    kind,
+                ));
+            }
+        }
+
+        Some(1)
+    }
+
     /// Extract `Class::Accessor` generated methods from `mk_*_accessors` calls.
     fn try_extract_class_accessor_methods(
         &mut self,
@@ -1385,6 +1453,22 @@ fn class_tiny_default_hash_pairs(statement: &Node) -> Option<(&[(Node, Node)], S
         return None;
     };
     Some((pairs.as_slice(), statement.location))
+}
+
+fn collect_dbix_column_names(node: &Node) -> Vec<String> {
+    match &node.kind {
+        NodeKind::Binary { op, left, .. } if op == "=>" => collect_symbol_names(left),
+        _ => collect_symbol_names(node),
+    }
+}
+
+fn collect_dbix_relationship_name(node: &Node) -> Option<String> {
+    match &node.kind {
+        NodeKind::Binary { op, left, .. } if op == "=>" => {
+            collect_symbol_names(left).into_iter().next()
+        }
+        _ => collect_symbol_names(node).into_iter().next(),
+    }
 }
 
 fn collect_symbol_names(node: &Node) -> Vec<String> {
@@ -1866,6 +1950,48 @@ sub greet { }
         assert!(age_attr.required);
 
         assert!(model.methods.iter().any(|m| m.name == "greet"));
+    }
+
+    #[test]
+    fn dbix_class_generates_anchored_members_with_distinct_kinds() -> Result<(), String> {
+        let models = build_models(
+            r#"
+package MyApp::Schema::Result::Author;
+use DBIx::Class(:Core);
+
+__PACKAGE__->add_columns(qw(id name));
+__PACKAGE__->has_many('posts', 'MyApp::Schema::Result::Post', 'author_id');
+__PACKAGE__->belongs_to('profile' => 'MyApp::Schema::Result::Profile');
+Other::Package->has_many('ignored', 'Other::Result', 'id');
+"#,
+        );
+
+        let model = find_model(&models, "MyApp::Schema::Result::Author")
+            .ok_or_else(|| "expected a DBIx::Class model".to_string())?;
+        assert_eq!(model.framework, Framework::DbixClass);
+
+        for name in ["id", "name"] {
+            let method = model
+                .methods
+                .iter()
+                .find(|method| method.name == name)
+                .ok_or_else(|| format!("expected generated member {name}"))?;
+            assert_eq!(method.generated_kind, Some(GeneratedMemberKind::Accessor));
+            assert!(method.synthetic);
+            assert!(method.location.start > 0);
+        }
+        for name in ["posts", "profile"] {
+            let method = model
+                .methods
+                .iter()
+                .find(|method| method.name == name)
+                .ok_or_else(|| format!("expected generated member {name}"))?;
+            assert_eq!(method.generated_kind, Some(GeneratedMemberKind::Method));
+            assert!(method.synthetic);
+            assert!(method.location.start > 0);
+        }
+        assert!(model.methods.iter().all(|method| method.name != "ignored"));
+        Ok(())
     }
 
     #[test]

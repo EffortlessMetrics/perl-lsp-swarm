@@ -74,6 +74,7 @@ fn arb_generated_member_kind() -> impl Strategy<Value = GeneratedMemberKind> {
         Just(GeneratedMemberKind::Getter),
         Just(GeneratedMemberKind::Setter),
         Just(GeneratedMemberKind::Accessor),
+        Just(GeneratedMemberKind::Method),
         Just(GeneratedMemberKind::Predicate),
         Just(GeneratedMemberKind::Clearer),
         Just(GeneratedMemberKind::Builder),

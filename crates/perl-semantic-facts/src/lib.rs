@@ -630,6 +630,8 @@ pub enum GeneratedMemberKind {
     Setter,
     /// Combined read-write accessor (single method for both get and set).
     Accessor,
+    /// Framework-generated relationship or other ordinary method.
+    Method,
     /// Predicate method (`has_<attr>`).
     Predicate,
     /// Clearer method (`clear_<attr>`).
@@ -1549,6 +1551,7 @@ mod tests {
             GeneratedMemberKind::Getter,
             GeneratedMemberKind::Setter,
             GeneratedMemberKind::Accessor,
+            GeneratedMemberKind::Method,
             GeneratedMemberKind::Predicate,
             GeneratedMemberKind::Clearer,
             GeneratedMemberKind::Builder,
