@@ -751,14 +751,14 @@ impl LspServer {
                     // Sample after the readiness wait and before index/semantic use; do
                     // not call while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
                     #[cfg(feature = "workspace")]
-                    let workspace_index_stale_for_document =
-                        self.workspace_index_stale_for_document(uri);
+                    let workspace_index_stale_for_any_open_document =
+                        self.workspace_index_stale_for_any_open_document();
 
                     // Check index state and use appropriate search strategy
                     #[cfg(feature = "workspace")]
                     {
                         let mut access_mode = route_index_access(self.coordinator());
-                        if workspace_index_stale_for_document {
+                        if workspace_index_stale_for_any_open_document {
                             access_mode = IndexAccessMode::None;
                         }
                         // A Full index can still fall through to semantic_analyzer when no symbol
@@ -1553,7 +1553,7 @@ impl LspServer {
                 SourceBackedReferenceDecline::WorkspaceIndexUnavailable,
             );
         };
-        if self.workspace_index_stale_for_document(uri) {
+        if self.workspace_index_stale_for_any_open_document() {
             return SourceBackedReferenceAttempt::Declined(
                 SourceBackedReferenceDecline::WorkspaceIndexStale,
             );
@@ -1647,7 +1647,7 @@ impl LspServer {
                 SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
             );
         };
-        if self.workspace_index_stale_for_document(uri) {
+        if self.workspace_index_stale_for_any_open_document() {
             return SourceBackedReferenceAttempt::Declined(
                 SourceBackedReferenceDecline::WorkspaceIndexStale,
             );
@@ -1801,7 +1801,8 @@ impl LspServer {
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt_and_cutover = if self.workspace_index_stale_for_document(uri) {
+            let compiler_receipt_and_cutover = if self.workspace_index_stale_for_any_open_document()
+            {
                 None
             } else {
                 match route_index_access(self.coordinator()) {
@@ -2292,6 +2293,77 @@ mod tests {
         assert!(
             server.workspace_index_stale_for_document(uri),
             "test setup must leave the open document newer than the workspace index"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): cross-file references must not use the
+    /// workspace semantic tier while an unrelated open document is ahead of
+    /// the indexed snapshot.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn references_skip_semantic_tier_when_unrelated_open_document_is_stale()
+    -> Result<(), Box<dyn Error>> {
+        let server = crate::runtime::LspServer::default();
+        let source_uri = "file:///workspace/reference-source.pl";
+        let unrelated_uri = "file:///workspace/reference-unrelated.pl";
+        let source_text = "package ReferenceSource;\nsub target { return 1; }\ntarget();\n";
+        let unrelated_v1 = "package ReferenceUnrelated;\nsub helper {}\n";
+        let unrelated_v2 = "package ReferenceUnrelated;\nsub renamed {}\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let params = || {
+            json!({
+                "textDocument": { "uri": source_uri, "version": 1 },
+                "position": { "line": 2, "character": 1 },
+                "context": { "includeDeclaration": false }
+            })
+        };
+        server.test_handle_references(Some(params()))?;
+        let fresh = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .ok_or("missing fresh references receipt")?;
+        assert_eq!(
+            fresh
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("index_state"))
+                .and_then(Value::as_str),
+            Some("full"),
+            "fresh references request should observe the full index: {fresh:?}"
+        );
+
+        server
+            .test_replace_document_without_index(unrelated_uri, unrelated_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        server.test_handle_references(Some(params()))?;
+        let stale = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .ok_or("missing stale references receipt")?;
+        assert_eq!(
+            stale
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("index_state"))
+                .and_then(Value::as_str),
+            Some("none"),
+            "unrelated stale open document must disable cross-file index access: {stale:?}"
         );
 
         Ok(())

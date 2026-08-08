@@ -1948,13 +1948,13 @@ impl LspServer {
         ) {
             return None;
         }
-        let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
-            return None;
-        };
         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
         if self.workspace_index_stale_for_any_open_document() {
             return None;
         }
+        let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
+            return None;
+        };
         let index = coordinator.index();
         let snapshot_is_current = || {
             document_generation == 0
