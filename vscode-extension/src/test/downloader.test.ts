@@ -17,8 +17,6 @@ import {
   buildBinaryAssetCandidateNames,
   compareVersions,
   copyManagedFileWithRetry,
-  classifyWindowsArm64Support,
-  getUnsupportedWindowsArm64Message,
   findReleaseAssetName,
   isTransientManagedInstallError,
   parseLocalVersion,
@@ -207,35 +205,19 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     }
   }
 
-  test('Windows on ARM64 resolves to the published x86_64 build', () => {
+  test('Windows on ARM64 resolves to the published native ARM64 build', () => {
     expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.22631'))).toBe(
-      'x86_64-pc-windows-msvc',
+      'aarch64-pc-windows-msvc',
     );
   });
 
-  test('Windows 10 ARM64 refuses the x64 fallback', () => {
-    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.19045')).toBe(
-      'windows-10-or-earlier',
+  test('native Windows ARM64 selection is independent of Windows build number', () => {
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.19045'))).toBe(
+      'aarch64-pc-windows-msvc',
     );
-    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.21999')).toBe(
-      'windows-10-or-earlier',
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader, 'unknown'))).toBe(
+      'aarch64-pc-windows-msvc',
     );
-    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.22000')).toBe('windows-11-or-newer');
-    expect(classifyWindowsArm64Support('win32', 'arm64', 'unknown')).toBe('unknown');
-    expect(getUnsupportedWindowsArm64Message('win32', 'arm64', '10.0.19045')).toMatch(
-      /Windows ARM64 x64 emulation requires Windows 11.*Windows 10 ARM64 cannot run/,
-    );
-    expect(() =>
-      withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.19045')),
-    ).toThrow(/Build from source/);
-    expect(() =>
-      withProcess('win32', 'arm64', () => getPlatformTarget(downloader, 'unknown')),
-    ).toThrow(/Build from source/);
-  });
-
-  test('future Windows version formats remain supported on ARM64', () => {
-    expect(classifyWindowsArm64Support('win32', 'arm64', '10.1.0')).toBe('windows-11-or-newer');
-    expect(classifyWindowsArm64Support('win32', 'arm64', '11.0.0')).toBe('windows-11-or-newer');
   });
 
   test('Windows on x64 is unaffected', () => {
@@ -244,34 +226,23 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     );
   });
 
-  // Assert the exact published target rather than the absence of the one
-  // historical bad substring. `not.toContain('aarch64')` would let any other
-  // unbuilt triple through — i686-pc-windows-msvc from a new fallback branch,
-  // or arm64-pc-windows-msvc spelled with Node's arch name.
+  // Assert exact published targets rather than the absence of a bad substring.
+  // `not.toContain('aarch64')` would let an unbuilt triple through, while
+  // `arm64-pc-windows-msvc` would use Node's arch name rather than Rust's.
   //
   // The release matrix is the authority for which targets exist, and it is read
   // directly by assert_only_built_windows_targets in
   // scripts/tests/test-install-target-selection.sh. This unit test cannot read
   // that matrix without coupling the extension suite to a repository path, so it
-  // pins the single value the matrix currently yields; the shell gate is what
-  // fails if the matrix and this constant ever diverge.
-  test('every Windows arch resolves to the one published Windows target', () => {
+  // pins the two values the matrix currently yields; the shell gate is what
+  // fails if the matrix and these constants ever diverge.
+  test('every Windows arch resolves to its published Windows target', () => {
     for (const arch of ['arm64', 'x64', 'ia32', 'ppc64']) {
+      const expected = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
       expect(withProcess('win32', arch, () => getPlatformTarget(downloader, '10.0.22631'))).toBe(
-        'x86_64-pc-windows-msvc',
+        expected,
       );
     }
-  });
-
-  test('ARM64 Windows explains the emulation fallback in the output channel', () => {
-    const channel = makeOutputChannel();
-    const dl = new BinaryDownloader(makeContext(), channel) as unknown as TestDownloader;
-
-    withProcess('win32', 'arm64', () => dl.getPlatformTarget('10.0.22631'));
-
-    const logged = (channel.appendLine as jest.Mock).mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logged).toMatch(/ARM64/);
-    expect(logged).toMatch(/emulation/i);
   });
 });
 

@@ -139,14 +139,12 @@ The extension automatically downloads the correct `perllsp` binary for your plat
 
 | Platform    | Architectures                      |
 | ----------- | ---------------------------------- |
-| **Windows** | x64                                |
+| **Windows** | x64, ARM64                         |
 | **macOS**   | Intel (x64), Apple Silicon (ARM64) |
 | **Linux**   | x64, ARM64 (glibc and musl)        |
 
-There is no native ARM64 Windows build. On ARM64 the extension installs the x64
-binary on Windows 11, where x64 emulation is available. Windows 10 on ARM
-emulates x86 but not x64; the extension rejects that fallback and you must
-[build from source](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md).
+On Windows ARM64 the extension installs the native ARM64 build. x64 systems
+continue to use the x64 build.
 
 On Linux, `auto` selects the GNU/glibc archive for mainstream distributions and
 the musl archive for Alpine Linux or musl-based containers. Set

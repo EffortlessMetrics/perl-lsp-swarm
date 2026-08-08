@@ -58,14 +58,8 @@ function Write-Success {
 
 # Detect architecture.
 #
-# Only x86_64-pc-windows-msvc is published: the release matrix in
-# .github/workflows/release.yml has no aarch64-pc-windows-msvc entry. Asking
-# for one built a URL that always 404s, and the failure surfaced as a bare
-# "Failed to download" with nothing actionable in it (#5007).
-#
-# ARM64 Windows runs x64 binaries under emulation on Windows 11 (build 22000
-# or newer), so the x64 asset is the working answer there. Windows 10 ARM64
-# cannot run the published x64 asset and must fail before downloading it.
+# The release matrix publishes native x86_64 and ARM64 Windows assets. Select
+# the exact target so the installed artifact matches the host architecture.
 #
 # A 32-bit PowerShell host on 64-bit Windows reports "x86" in
 # PROCESSOR_ARCHITECTURE and the real architecture in PROCESSOR_ARCHITEW6432,
@@ -78,31 +72,6 @@ $HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
 
 $IsArm64Host = $HostArch -eq "ARM64"
 
-function Get-WindowsBuildNumber {
-    try {
-        $build = [int](Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "CurrentBuildNumber")
-        if ($build -ge 0) {
-            return $build
-        }
-    } catch {
-        # Fall back for restricted registry access or older PowerShell hosts.
-    }
-
-    try {
-        return [int][System.Environment]::OSVersion.Version.Build
-    } catch {
-        return -1
-    }
-}
-
-if ($IsArm64Host) {
-    $WindowsBuild = Get-WindowsBuildNumber
-    if ($WindowsBuild -lt 22000) {
-        $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
-        Write-Error "Windows ARM64 x64 emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Windows 10 ARM64 cannot run the published x86_64 binary. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-    }
-}
-
 # Name the target as a whole literal rather than assembling it from an arch
 # variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
 # the Linux CI host, so the contract test in
@@ -110,15 +79,16 @@ if ($IsArm64Host) {
 # script can request by reading them out of the source. Assembling the triple
 # from a variable hides it from that check, which is how the original defect
 # ($Arch = "aarch64") stayed invisible.
-$Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
+$Target = if ($IsArm64Host) {
+    "aarch64-pc-windows-msvc"
+} elseif ($HostArch -eq "AMD64") {
     "x86_64-pc-windows-msvc"
 } else {
-    Write-Error "Unsupported architecture: $HostArch. Only x86_64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
+    Write-Error "Unsupported architecture: $HostArch. Only x86_64 and ARM64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
 }
 
 if ($IsArm64Host) {
     Write-Info "Detected system: Windows (ARM64) - installing $Target"
-    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM."
 } else {
     Write-Info "Detected system: Windows ($HostArch) - $Target"
 }
