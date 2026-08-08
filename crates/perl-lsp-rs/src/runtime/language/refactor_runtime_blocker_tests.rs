@@ -4324,3 +4324,64 @@ fn safe_delete_does_not_treat_stale_workspace_index_count_as_authoritative()
 
     Ok(())
 }
+
+#[cfg(feature = "workspace")]
+#[test]
+fn safe_delete_source_guard_skips_stale_request_document_semantic_tier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    let stale_source = format!("{STALE_SAFE_DELETE_SOURCE}\n# stale\n");
+    open_document(&server, STALE_SAFE_DELETE_SOURCE_URI, STALE_SAFE_DELETE_SOURCE)?;
+    server
+        .test_index_file_in_building_state(STALE_SAFE_DELETE_SOURCE_URI, STALE_SAFE_DELETE_SOURCE)
+        .map_err(|e| e.to_string())?;
+    open_document(&server, STALE_SAFE_DELETE_CALLER_URI, STALE_SAFE_DELETE_CALLER_V1)?;
+    server
+        .test_index_file_in_building_state(
+            STALE_SAFE_DELETE_CALLER_URI,
+            STALE_SAFE_DELETE_CALLER_V1,
+        )
+        .map_err(|e| e.to_string())?;
+    server.test_simulate_indexing_complete();
+    server
+        .test_replace_document_without_index(STALE_SAFE_DELETE_SOURCE_URI, &stale_source, 2)
+        .map_err(|e| e.to_string())?;
+    assert!(
+        server.workspace_index_stale_for_document(STALE_SAFE_DELETE_SOURCE_URI),
+        "test setup must leave the request document newer than the workspace index"
+    );
+    assert!(
+        !server.workspace_index_stale_for_document(STALE_SAFE_DELETE_CALLER_URI),
+        "caller document should remain indexed for this discriminator"
+    );
+
+    let (target_line, target_character) = position_of(&stale_source, "deletable_target {")?;
+    let result = server
+        .handle_execute_command(Some(json!({
+            "command": "perl.safeDeleteSymbol",
+            "arguments": [{
+                "textDocument": {"uri": STALE_SAFE_DELETE_SOURCE_URI},
+                "position": {"line": target_line, "character": target_character}
+            }]
+        })))?
+        .ok_or("missing generation-stale safe-delete live pilot result")?;
+
+    assert_eq!(
+        result.get("reason").and_then(Value::as_str),
+        Some("workspace_index_stale"),
+        "stale request document must classify workspace_index_stale, not source-guard failure: \
+         {result}"
+    );
+    assert_ne!(
+        result.get("reason").and_then(Value::as_str),
+        Some("not_source_backed_exact_subroutine_definition"),
+        "stale request document must not masquerade as a source-guard failure: {result}"
+    );
+    assert_eq!(
+        result.get("freshness").and_then(Value::as_str),
+        Some("stale"),
+        "stale request document must record stale freshness: {result}"
+    );
+
+    Ok(())
+}

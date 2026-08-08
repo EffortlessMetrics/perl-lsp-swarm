@@ -740,6 +740,11 @@ impl LspServer {
                 self.safe_delete_symbol_live_source_guard(uri, *byte_offset, symbol)
             },
         );
+        let request_document_stale = source_guard_context.as_ref().is_some_and(
+            |(uri, _line, _character, _symbol, _byte_offset)| {
+                self.workspace_index_stale_for_document(uri)
+            },
+        );
         let source_guard_accepts = source_guard_result.unwrap_or(false);
         let live_edit_guards_ready = compiler_allowed && rollback_is_safe && source_guard_accepts;
         let current_source_reference_count = source_guard_context
@@ -828,10 +833,10 @@ impl LspServer {
             mark_safe_delete_workspace_reference_blocker(&mut receipt, workspace_reference_count);
         }
         if workspace_index_stale
-            && live_edit_guards_ready
             && !current_source_blocks
             && !source_guard_blocks
-            && workspace_identity_guard_accepts
+            && (request_document_stale
+                || (live_edit_guards_ready && workspace_identity_guard_accepts))
         {
             mark_safe_delete_workspace_index_stale_blocker(&mut receipt);
         }
@@ -1049,7 +1054,8 @@ impl LspServer {
         symbol: &str,
     ) -> Option<bool> {
         if self.workspace_index_stale_for_document(uri) {
-            return Some(false);
+            // Unevaluated: distinguish staleness from a failed source-identity check.
+            return None;
         }
         let byte_offset = u32::try_from(byte_offset).ok()?;
         let coordinator = match route_index_access(self.coordinator()) {
