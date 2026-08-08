@@ -1012,7 +1012,6 @@ gates:
       cargo xtask check-provider-promotion-ledger &&
       cargo xtask check-provider-confidence-matrix &&
       cargo xtask check-native-product-surface --strict &&
-      cargo xtask ci-hygiene check-doc-links docs/adr &&
       bash scripts/check-version-sync.sh &&
       bash scripts/check_release_history.sh &&
       bash ci/check_missing_docs.sh &&
@@ -1049,6 +1048,20 @@ gates:
       - policy
       - docs
       - advisory
+
+  - name: adr_link_check
+    tier: merge_gate
+    description: "ADR Markdown relative links resolve to files inside the repository"
+    required: true
+    command: cargo xtask ci-hygiene check-doc-links docs/adr
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - docs
+      - policy
 
   - name: docs_build
     tier: merge_gate
