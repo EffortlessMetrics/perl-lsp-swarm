@@ -5,6 +5,8 @@ use crate::protocol::{req_position, req_uri};
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use crate::runtime::readiness::IndexReadinessPolicy;
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 #[cfg(all(
     feature = "workspace",
@@ -218,10 +220,14 @@ impl LspServer {
                 }
             }
 
-            let compiler_receipt_parts = match route_index_access(self.coordinator()) {
-                IndexAccessMode::Full(coordinator) => {
-                    let index = coordinator.index();
-                    index
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let compiler_receipt_parts = if self.workspace_index_stale_for_document(uri) {
+                None
+            } else {
+                match route_index_access(self.coordinator()) {
+                    IndexAccessMode::Full(coordinator) => {
+                        let index = coordinator.index();
+                        index
                         .with_semantic_queries_for_uri(uri, |file_id, queries| {
                             let entity_id = refactor_entity_id(
                                 &queries,
@@ -257,8 +263,9 @@ impl LspServer {
                             Some((receipt, compiler_plan_edit_count, blockers, package_pilot))
                         })
                         .flatten()
+                    }
+                    IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
-                IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
             };
             let (compiler_receipt, compiler_plan_edit_count, compiler_blockers, package_pilot) =
                 compiler_receipt_parts.map_or(
@@ -466,10 +473,14 @@ impl LspServer {
                 return self.record_safe_delete_decision_receipt(receipt);
             }
 
-            let compiler_receipt_parts = match route_index_access(self.coordinator()) {
-                IndexAccessMode::Full(coordinator) => {
-                    let index = coordinator.index();
-                    index
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let compiler_receipt_parts = if self.workspace_index_stale_for_document(uri) {
+                None
+            } else {
+                match route_index_access(self.coordinator()) {
+                    IndexAccessMode::Full(coordinator) => {
+                        let index = coordinator.index();
+                        index
                         .with_semantic_queries_for_uri(uri, |file_id, queries| {
                             let entity_id = refactor_entity_id(
                                 &queries,
@@ -496,8 +507,9 @@ impl LspServer {
                             Some((receipt, blockers))
                         })
                         .flatten()
+                    }
+                    IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
-                IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
             };
             let (compiler_receipt, compiler_blockers) = compiler_receipt_parts
                 .map_or((None, None), |(receipt, blockers)| (Some(receipt), Some(blockers)));
@@ -1036,6 +1048,9 @@ impl LspServer {
         byte_offset: usize,
         symbol: &str,
     ) -> Option<bool> {
+        if self.workspace_index_stale_for_document(uri) {
+            return Some(false);
+        }
         let byte_offset = u32::try_from(byte_offset).ok()?;
         let coordinator = match route_index_access(self.coordinator()) {
             IndexAccessMode::Full(coordinator) => coordinator,
