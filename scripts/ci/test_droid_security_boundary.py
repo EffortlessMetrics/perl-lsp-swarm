@@ -41,8 +41,10 @@ def _top_level_mapping(text: str, parent: str) -> list[str]:
     for indent, line in lines[parent_index + 1 :]:
         if indent == 0:
             break
-        if indent == 2 and line.endswith(":"):
-            keys.append(line[:-1])
+        if indent == 2:
+            match = re.match(r"([A-Za-z0-9_-]+):(?:\\s|$)", line)
+            if match:
+                keys.append(match.group(1))
     return keys
 
 
