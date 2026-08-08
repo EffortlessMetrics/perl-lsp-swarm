@@ -919,12 +919,14 @@ pub fn collect_semantic_tokens(
                     _ => 0,      // "&" (code ref), "*" (glob), others
                 };
                 let mods = match decl_info {
-                    // `our` creates a package-variable alias — it does NOT make
-                    // the variable immutable, so the `readonly` modifier (bit 2)
-                    // must not be applied (#4968). Use `declaration` only, same
-                    // as my/local/state.
-                    Some((_, _, true)) => 1 | special_mod | sigil_mod, // declaration (our)
-                    Some((_, _, false)) => 1 | special_mod | sigil_mod, // declaration (my/local/state)
+                    // Variable proven immutable by `Const::Fast::const` or `Readonly`
+                    // (#4968 Slice 1): emit `declaration | readonly` (bits 0 | 2 = 1 | 4).
+                    // `our`/`my`/`state`/`local` are NOT readonly — their flag is `false`.
+                    Some((_, _, true)) => 1 | 4 | special_mod | sigil_mod, // declaration | readonly (Const::Fast/Readonly)
+                    // `my`, `state`, `local`, `our`: all carry `declaration` (bit 0)
+                    // only. `our` creates a package-variable alias in lexical scope;
+                    // it does not make the variable immutable.
+                    Some((_, _, false)) => 1 | special_mod | sigil_mod, // declaration (my/local/state/our)
                     None => {
                         // Apply "modification" modifier (bit 7 = 128) when the variable is
                         // the direct LHS of an assignment expression ($x = ...).
@@ -1727,6 +1729,203 @@ print "ok" foreach @ys;
             "declaration `my $x` must NOT carry the modification modifier (it is a declaration), got mods={decl_mods}"
         );
 
+        Ok(())
+    }
+
+    // ── Slice 1 acceptance tests (#4968) ───────────────────────────────────────
+    //
+    // Pin exact modifier bitsets for declarators and immutable-proven variables.
+    // Tests inspect the legend index and modifier bitfield — not theme colours.
+
+    /// Helper: collect `(painted_text, modifiers)` for every `variable` token in
+    /// a decoded semantic-token stream.
+    fn variable_tokens(source: &str) -> Result<Vec<(String, u32)>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let variable_idx =
+            *legend().map.get("variable").ok_or("variable token type missing from legend")?;
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut result = Vec::new();
+        for [delta_line, delta_start, length, token_type, mods] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == variable_idx {
+                let src_line = lines.get(line as usize).ok_or("token line out of range")?;
+                let painted: String =
+                    src_line.chars().skip(col as usize).take(length as usize).collect();
+                result.push((painted, mods));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Extracts the modifier bits for the first variable token matching `name`.
+    fn mods_for<'a>(vars: &'a [(String, u32)], name: &str) -> Option<u32> {
+        vars.iter().find(|(painted, _)| painted == name).map(|(_, mods)| *mods)
+    }
+
+    /// `my`, `state`, `local`, `our` all carry `declaration` (bit 0) and nothing
+    /// else in the modifier family {readonly, modification} — confirming the
+    /// #4968 Slice 1 rule: "our is not readonly".
+    #[test]
+    fn declarators_my_state_local_our_carry_declaration_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DECLARATION_BIT: u32 = 1; // bit 0
+        const READONLY_BIT: u32 = 4; // bit 2
+
+        // Each declarator on its own line for clear per-line assertion.
+        // State and local are valid in any scope; wrap in a sub to silence
+        // any parser warnings about `state` at file scope.
+        let source = concat!(
+            "sub _x {\n",          // line 0  (no variable on this line)
+            "    my $a = 1;\n",    // line 1  — my
+            "    state $b = 2;\n", // line 2  — state
+            "    local $c = 3;\n", // line 3  — local
+            "    our $d = 4;\n",   // line 4  — our
+            "}\n",                 // line 5
+        );
+
+        let vars = variable_tokens(source)?;
+
+        for (name, declarator) in [("$a", "my"), ("$b", "state"), ("$c", "local"), ("$d", "our")] {
+            let mods = mods_for(&vars, name).ok_or_else(|| {
+                format!("{declarator} variable `{name}` not found in tokens; got {vars:?}")
+            })?;
+            assert_eq!(
+                mods & DECLARATION_BIT,
+                DECLARATION_BIT,
+                "{declarator} `{name}` must carry declaration bit (bit 0), got mods={mods}"
+            );
+            assert_eq!(
+                mods & READONLY_BIT,
+                0,
+                "{declarator} `{name}` must NOT carry readonly bit (bit 2) — \
+                 only Const::Fast/Readonly prove immutability, got mods={mods}"
+            );
+        }
+        Ok(())
+    }
+
+    /// `Const::Fast::const` declarations carry `declaration | readonly`
+    /// (bits 0 | 2 = 1 | 4) while an ordinary `my` in the same file does not.
+    #[test]
+    fn const_fast_declaration_carries_declaration_and_readonly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DECLARATION_BIT: u32 = 1;
+        const READONLY_BIT: u32 = 4;
+
+        let source = concat!(
+            "use Const::Fast;\n",          // line 0
+            "const my $IMMUTABLE = 42;\n", // line 1 — Const::Fast declaration
+            "my $mutable = 1;\n",          // line 2 — ordinary my, NOT readonly
+        );
+
+        let vars = variable_tokens(source)?;
+
+        let immutable_mods = mods_for(&vars, "$IMMUTABLE")
+            .ok_or_else(|| format!("$IMMUTABLE not found in tokens; got {vars:?}"))?;
+        assert_eq!(
+            immutable_mods & (DECLARATION_BIT | READONLY_BIT),
+            DECLARATION_BIT | READONLY_BIT,
+            "Const::Fast `$IMMUTABLE` must carry declaration|readonly (bits 0|2), \
+             got mods={immutable_mods}"
+        );
+
+        let mutable_mods = mods_for(&vars, "$mutable")
+            .ok_or_else(|| format!("$mutable not found in tokens; got {vars:?}"))?;
+        assert_eq!(
+            mutable_mods & READONLY_BIT,
+            0,
+            "ordinary `my $mutable` must NOT carry readonly bit (bit 2), got mods={mutable_mods}"
+        );
+        Ok(())
+    }
+
+    /// `Readonly` declarations carry `declaration | readonly` (bits 0 | 2 = 1 | 4).
+    #[test]
+    fn readonly_module_declaration_carries_declaration_and_readonly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DECLARATION_BIT: u32 = 1;
+        const READONLY_BIT: u32 = 4;
+
+        let source = concat!(
+            "use Readonly;\n",               // line 0
+            "Readonly my $PI => 3.14159;\n", // line 1 — Readonly declaration
+            "my $radius = 5;\n",             // line 2 — ordinary my
+        );
+
+        let vars = variable_tokens(source)?;
+
+        let pi_mods = mods_for(&vars, "$PI")
+            .ok_or_else(|| format!("$PI not found in tokens; got {vars:?}"))?;
+        assert_eq!(
+            pi_mods & (DECLARATION_BIT | READONLY_BIT),
+            DECLARATION_BIT | READONLY_BIT,
+            "Readonly `$PI` must carry declaration|readonly (bits 0|2), got mods={pi_mods}"
+        );
+
+        let radius_mods = mods_for(&vars, "$radius")
+            .ok_or_else(|| format!("$radius not found in tokens; got {vars:?}"))?;
+        assert_eq!(
+            radius_mods & READONLY_BIT,
+            0,
+            "ordinary `my $radius` must NOT carry readonly bit (bit 2), got mods={radius_mods}"
+        );
+        Ok(())
+    }
+
+    /// Reads (RHS use) of an `our` variable carry no declaration or readonly bits.
+    /// Package-qualified references (`$Pkg::var`) are not variable declarations
+    /// and must not carry the declaration bit.
+    #[test]
+    fn our_variable_reads_and_package_qualified_uses_carry_no_declaration_bit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DECLARATION_BIT: u32 = 1;
+        const READONLY_BIT: u32 = 4;
+
+        // Line 0: our declaration (has declaration bit, NOT readonly)
+        // Line 1: plain read — no declaration bit
+        let source = concat!(
+            "our $counter = 0;\n", // line 0 — declaration
+            "print $counter;\n",   // line 1 — read (no declaration, no readonly)
+        );
+
+        let vars = variable_tokens(source)?;
+
+        // Find both occurrences: declaration and read.
+        let decl_mods = vars
+            .iter()
+            .find(|(name, mods)| name == "$counter" && (mods & DECLARATION_BIT) != 0)
+            .map(|(_, mods)| *mods)
+            .ok_or_else(|| format!("`our $counter` declaration not found; got {vars:?}"))?;
+        assert_eq!(
+            decl_mods & READONLY_BIT,
+            0,
+            "`our $counter` declaration must NOT carry readonly (bit 2), got mods={decl_mods}"
+        );
+
+        let read_mods = vars
+            .iter()
+            .find(|(name, mods)| name == "$counter" && (mods & DECLARATION_BIT) == 0)
+            .map(|(_, mods)| *mods)
+            .ok_or_else(|| format!("`$counter` read not found; got {vars:?}"))?;
+        assert_eq!(
+            read_mods & DECLARATION_BIT,
+            0,
+            "read `$counter` must NOT carry the declaration bit, got mods={read_mods}"
+        );
+        assert_eq!(
+            read_mods & READONLY_BIT,
+            0,
+            "read `$counter` must NOT carry the readonly bit, got mods={read_mods}"
+        );
         Ok(())
     }
 }
