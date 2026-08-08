@@ -822,8 +822,20 @@ export async function activate(context: vscode.ExtensionContext) {
     outputChannel.info(
       '[startup] Workspace is not trusted — deferring language server startup until trust is granted.',
     );
+    // Deferred startup is a configuration decision, not a slow start. Without
+    // this the widget stays on 'starting' indefinitely, which is
+    // indistinguishable from a server that hung — the exact conflation the
+    // #5900 experience contract forbids.
+    healthWidget?.setWorkspaceLifecycleState('configuration_action_required', {
+      detail: 'Perl language features are paused because this workspace is not trusted.',
+      action: 'Trust this workspace to start the Perl language server.',
+      reasonCode: 'workspace_untrusted',
+    });
     const trustDisposable = vscode.workspace.onDidGrantWorkspaceTrust(() => {
       outputChannel.info('[startup] Workspace trust granted — starting language server.');
+      // Hand the widget back to the ordinary startup lifecycle so the
+      // action-required state cannot outlive the condition that caused it.
+      healthWidget?.setWorkspaceLifecycleState('starting');
       startLanguageClientAfterActivation(context, whatsNewManager);
     });
     context.subscriptions.push(trustDisposable);
