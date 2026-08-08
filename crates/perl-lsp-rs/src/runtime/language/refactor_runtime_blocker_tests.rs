@@ -4252,6 +4252,21 @@ fn safe_delete_does_not_treat_stale_workspace_index_count_as_authoritative()
         "stale-index safe-delete receipt must record workspace_index_stale=true: {result}"
     );
     assert_eq!(
+        result.get("decision").and_then(Value::as_str),
+        Some("fallback"),
+        "stale-index safe-delete must not inherit compiler_allowed decision: {result}"
+    );
+    assert_eq!(
+        result.get("reason").and_then(Value::as_str),
+        Some("workspace_index_stale"),
+        "stale-index safe-delete must classify index staleness in the receipt: {result}"
+    );
+    assert_eq!(
+        result.get("freshness").and_then(Value::as_str),
+        Some("stale"),
+        "stale-index safe-delete must record stale freshness: {result}"
+    );
+    assert_eq!(
         result.get("workspace_reference_count").and_then(Value::as_u64),
         Some(0),
         "stale index must not supply authoritative count_usages: {result}"
