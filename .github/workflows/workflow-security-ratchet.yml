@@ -31,7 +31,7 @@ on:
 
 concurrency:
   group: workflow-security-ratchet-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -50,14 +50,16 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Run scanner unit tests
+      - name: Run candidate scanner unit tests
         run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
 
-      - name: Check candidate against its committed baseline
+      - name: Validate candidate baseline and control digests
         run: |
-          python3 scripts/ci/workflow_security_ratchet.py check \
+          mkdir -p target/receipts
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
             --root . \
             --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
             --report target/receipts/workflow-security-candidate.json
 
       - name: Upload candidate self-test receipt
@@ -91,20 +93,32 @@ jobs:
           path: candidate
           persist-credentials: false
 
-      - name: Scan candidate with trusted evaluator
+      - name: Prove trusted evaluator before use
+        run: python3 -m unittest evaluator/scripts/ci/test_workflow_security_ratchet.py
+
+      - name: Reject new findings against the trusted base baseline
         run: |
           mkdir -p target/receipts
           python3 evaluator/scripts/ci/workflow_security_ratchet.py check \
             --root candidate \
             --baseline evaluator/.ci/workflow-security-baseline.json \
+            --baseline-root evaluator \
             --report target/receipts/workflow-security-ratchet.json
 
-      - name: Upload authoritative ratchet receipt
+      - name: Reject stale, pre-seeded, or tampered candidate baseline
+        run: |
+          python3 evaluator/scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root candidate \
+            --baseline candidate/.ci/workflow-security-baseline.json \
+            --baseline-root candidate \
+            --report target/receipts/workflow-security-candidate-baseline.json
+
+      - name: Upload authoritative ratchet receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: workflow-security-ratchet-${{ github.event.pull_request.head.sha }}
-          path: target/receipts/workflow-security-ratchet.json
+          path: target/receipts/workflow-security-*.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -122,11 +136,13 @@ jobs:
       - name: Run unit tests
         run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
 
-      - name: Check committed baseline
+      - name: Validate committed baseline and control digests
         run: |
-          python3 scripts/ci/workflow_security_ratchet.py check \
+          mkdir -p target/receipts
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
             --root . \
             --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
             --report target/receipts/workflow-security-main.json
 
       - name: Upload main self-check receipt
