@@ -60,9 +60,8 @@ Use the release archive. Download
 [Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
 and add the folder containing `perllsp.exe` to your `PATH`.
 
-The PowerShell installer script does not work yet — the published copy resolves
-a `perl-lsp-…zip` asset that releases do not produce, so it fails with a 404.
-Windows support is also narrower generally: `x86_64` only. See
+The PowerShell installer selects the native `aarch64-pc-windows-msvc` archive
+on Windows ARM64 and the `x86_64-pc-windows-msvc` archive on x64. See
 [INSTALLATION.md](../how-to/INSTALLATION.md#windows) for the current limits.
 
 ### Option 4: GitHub release archive
