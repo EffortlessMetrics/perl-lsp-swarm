@@ -141,11 +141,11 @@ try {
         $Status = $LASTEXITCODE
 
         $LogPath = Join-Path $CaseRoot "requests.log"
-        $Requests = if (Test-Path -LiteralPath $LogPath) {
-            @(Get-Content -LiteralPath $LogPath)
-        } else {
-            @()
-        }
+        $Requests = @(
+            if (Test-Path -LiteralPath $LogPath) {
+                Get-Content -LiteralPath $LogPath
+            }
+        )
         $AssetRequest = @($Requests | Where-Object { $_ -like "*.zip" }).Count -eq 1
         $Expanded = Test-Path -LiteralPath (Join-Path $CaseRoot "expanded")
         $ServerInstalled = Test-Path -LiteralPath (Join-Path $CaseRoot "install/perllsp.exe")
