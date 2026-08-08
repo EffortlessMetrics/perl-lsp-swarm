@@ -182,6 +182,9 @@ run_disposition() {
 existing_h1=$'Prior repair.\n\n<!-- disposition:v1 {"v":1,"class":"fixed","thread_id":"THREAD","by":"tester","head":"h1","evidence":{"commit":"abc"}} -->'
 
 # ── unrelated head movement reuses the stable disposition ──────────────────
+# @risk: an unrelated candidate SHA duplicates a previously supported disposition reply.
+# @return_path: a matching class and evidence marker is reused regardless of observed head.
+# @side_effect: re-resolution is allowed; no new review reply is posted.
 test_disposition_reuses_h1_at_h2() {
     run_disposition ok "$existing_h1" abc
     local mutations
@@ -194,6 +197,9 @@ test_disposition_reuses_h1_at_h2() {
 }
 
 # ── changed evidence is a new disposition ──────────────────────────────────
+# @risk: stable idempotency suppresses a materially different repair disposition.
+# @return_path: changed evidence is treated as a new supported disposition.
+# @side_effect: one evidence-bearing reply is posted before the thread is resolved.
 test_disposition_posts_changed_evidence() {
     run_disposition ok "$existing_h1" def
     local mutations
@@ -206,6 +212,9 @@ test_disposition_posts_changed_evidence() {
 }
 
 # ── unavailable provider state causes zero mutation ─────────────────────────
+# @risk: an unavailable GitHub observation is misclassified as a proven zero match.
+# @return_path: provider failure returns exit 2 and preserves unknown disposition state.
+# @side_effect: neither a review reply nor a thread-resolution mutation is permitted.
 test_disposition_provider_failure_is_inert() {
     run_disposition query-fail "" abc
     local mutations
@@ -218,6 +227,9 @@ test_disposition_provider_failure_is_inert() {
 }
 
 # ── malformed historical marker causes zero mutation ───────────────────────
+# @risk: malformed historical evidence is silently discarded and replaced with a duplicate reply.
+# @return_path: marker parse failure returns exit 2 for explicit repair or adjudication.
+# @side_effect: neither a review reply nor a thread-resolution mutation is permitted.
 test_disposition_malformed_marker_is_inert() {
     local malformed
     malformed=$'Broken marker.\n\n<!-- disposition:v1 {not-json} -->'
