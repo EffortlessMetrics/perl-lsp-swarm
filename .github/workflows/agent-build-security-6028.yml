@@ -5,7 +5,7 @@ on:
     branches: [main, master]
     types: [opened, synchronize, reopened]
 
-# The builder may create an immutable Git blob. It never updates a ref, branch,
+# The builder creates inert Git objects only. It never updates a ref, branch,
 # pull request, issue, workflow, release, or repository file through its token.
 permissions:
   contents: write
@@ -189,7 +189,7 @@ jobs:
           ! grep -q 'actions/github-script@' target/security-6028/ci-nightly.yml
           ! grep -q 'issues.createComment' target/security-6028/ci-nightly.yml
 
-      - name: Create immutable candidate blob
+      - name: Create immutable final tree and commit objects
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -199,36 +199,85 @@ jobs:
           import hashlib
           import json
           import os
+          import subprocess
           import urllib.request
           from pathlib import Path
 
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GITHUB_TOKEN']
+          source_sha = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD'], text=True
+          ).strip()
           candidate = Path('target/security-6028/ci-nightly.yml')
           content = candidate.read_bytes()
-          payload = {
-              'content': base64.b64encode(content).decode('ascii'),
-              'encoding': 'base64',
-          }
-          request = urllib.request.Request(
-              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/git/blobs",
-              data=json.dumps(payload).encode('utf-8'),
+
+          def request_json(path: str, *, method: str = 'GET', body=None):
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/{repository}{path}',
+                  data=data,
+                  method=method,
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  },
+              )
+              with urllib.request.urlopen(request) as response:
+                  return json.load(response)
+
+          blob = request_json(
+              '/git/blobs',
               method='POST',
-              headers={
-                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
-                  'Accept': 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
+              body={
+                  'content': base64.b64encode(content).decode('ascii'),
+                  'encoding': 'base64',
               },
           )
-          with urllib.request.urlopen(request) as response:
-              blob_sha = json.load(response)['sha']
+          parent = request_json(f'/git/commits/{source_sha}')
+          tree = request_json(
+              '/git/trees',
+              method='POST',
+              body={
+                  'base_tree': parent['tree']['sha'],
+                  'tree': [
+                      {
+                          'path': '.github/workflows/ci-nightly.yml',
+                          'mode': '100644',
+                          'type': 'blob',
+                          'sha': blob['sha'],
+                      },
+                      {
+                          'path': '.github/workflows/agent-build-security-6028.yml',
+                          'mode': '100644',
+                          'type': 'blob',
+                          'sha': None,
+                      },
+                  ],
+              },
+          )
+          commit = request_json(
+              '/git/commits',
+              method='POST',
+              body={
+                  'message': 'security(ci): make nightly PR execution read-only (#6028)',
+                  'tree': tree['sha'],
+                  'parents': [source_sha],
+              },
+          )
 
           receipt = {
               'schema_version': 1,
+              'source_sha': source_sha,
               'path': '.github/workflows/ci-nightly.yml',
-              'blob_sha': blob_sha,
+              'blob_sha': blob['sha'],
+              'tree_sha': tree['sha'],
+              'commit_sha': commit['sha'],
               'sha256': hashlib.sha256(content).hexdigest(),
               'bytes': len(content),
+              'deleted_path': '.github/workflows/agent-build-security-6028.yml',
           }
-          Path('target/security-6028/blob.json').write_text(
+          Path('target/security-6028/git-objects.json').write_text(
               json.dumps(receipt, indent=2, sort_keys=True) + '\n',
               encoding='utf-8',
           )
