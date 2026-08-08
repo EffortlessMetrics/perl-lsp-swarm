@@ -4304,8 +4304,9 @@ impl WorkspaceIndex {
     /// previous O(symbols × files) implementation held the files read lock for
     /// the entire scan while running a nested `files.values().any()` loop per
     /// symbol, which blocked writers for seconds on large workspaces while
-    /// still permitting concurrent readers.  The current two-pass approach holds
-    /// the same read lock across both passes but completes in linear time.
+    /// still permitting concurrent readers.  The current two-pass approach
+    /// completes in linear time and reads from the same `global_references`
+    /// store as `count_usages` / `find_references` (#5016, #5967).
     ///
     /// # Examples
     ///
@@ -4316,47 +4317,88 @@ impl WorkspaceIndex {
     /// let _unused = index.find_unused_symbols();
     /// ```
     pub fn find_unused_symbols(&self) -> Vec<WorkspaceSymbol> {
-        let files = self.files.read();
+        // Snapshot `global_references` and `files` under the same write generation so
+        // a background reindex cannot mix stale usage keys with fresh symbols (#6042).
+        for _ in 0..3 {
+            let v1 = self.write_version();
+            let (used_names, candidates): (HashSet<String>, Vec<WorkspaceSymbol>) = {
+                let files = self.files.read();
+                let global_refs = self.global_references.read();
+                let used_names = Self::collect_used_names_from_global_refs(&global_refs);
+                let candidates = files
+                    .values()
+                    .flat_map(|file_index| file_index.symbols.iter())
+                    .filter(|symbol| !symbol.is_lexical)
+                    .cloned()
+                    .collect();
+                (used_names, candidates)
+            };
+            let v2 = self.write_version();
+            if v1 == v2 {
+                return candidates
+                    .into_iter()
+                    .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+                    .collect();
+            }
+            tracing::debug!("Torn read in find_unused_symbols, retrying");
+        }
 
-        // Pass 1: collect the bare names of all symbols that have at least one
-        // non-definition reference anywhere in the workspace.
-        //
-        // O(Σ refs_per_file) — a single linear scan over every file's reference
-        // map, replacing the previous O(symbols × files) nested loop (#5016).
-        let mut used_names: HashSet<String> = HashSet::new();
-        for file_index in files.values() {
-            for (name, refs) in &file_index.references {
-                if refs.iter().any(|r| r.kind != ReferenceKind::Definition)
-                    && !used_names.contains(name)
-                {
-                    used_names.insert(name.clone());
+        // Fallback after retries exhausted — same posture as `count_usages`.
+        let (used_names, candidates): (HashSet<String>, Vec<WorkspaceSymbol>) = {
+            let files = self.files.read();
+            let global_refs = self.global_references.read();
+            let used_names = Self::collect_used_names_from_global_refs(&global_refs);
+            let candidates = files
+                .values()
+                .flat_map(|file_index| file_index.symbols.iter())
+                .filter(|symbol| !symbol.is_lexical)
+                .cloned()
+                .collect();
+            (used_names, candidates)
+        };
+        candidates
+            .into_iter()
+            .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+            .collect()
+    }
+
+    /// Names with at least one non-definition reference in `global_references`,
+    /// plus bare suffixes for qualified keys so symbol lookup stays O(1) (#5016).
+    fn collect_used_names_from_global_refs(
+        global_refs: &HashMap<String, Vec<SymbolReference>>,
+    ) -> HashSet<String> {
+        let mut set = HashSet::new();
+        for (name, refs) in global_refs.iter() {
+            if refs.iter().any(|r| r.kind != ReferenceKind::Definition) {
+                set.insert(name.clone());
+                if let Some((_, bare)) = name.rsplit_once("::") {
+                    set.insert(bare.to_string());
                 }
             }
         }
+        set
+    }
 
-        // Pass 2: collect symbols whose bare name is absent from `used_names`.
-        //
-        // O(Σ symbols_per_file) with O(1) HashSet lookup per symbol.
-        let mut unused = Vec::new();
-        for file_index in files.values() {
-            for symbol in &file_index.symbols {
-                // Lexically-scoped variables (my/state) require scope-range analysis to
-                // determine whether a reference in the same file refers to *this* declaration
-                // or a same-named variable in a different block.  The bare-name lookup below
-                // cannot make that distinction, so lexical variables are excluded from this
-                // check entirely.  Proper unused-lexical detection is handled by the
-                // scope-aware ScopeAnalyzer.  See issue #1805.
-                if symbol.is_lexical {
-                    continue;
-                }
-
-                if !used_names.contains(&symbol.name) {
-                    unused.push(symbol.clone());
+    /// Whether `symbol` has at least one non-definition usage recorded in
+    /// `used_names`, checking bare name, qualified name, and qualified variants.
+    fn symbol_has_non_definition_usage(
+        used_names: &HashSet<String>,
+        symbol: &WorkspaceSymbol,
+    ) -> bool {
+        if used_names.contains(&symbol.name) {
+            return true;
+        }
+        if let Some(ref qualified) = symbol.qualified_name {
+            if used_names.contains(qualified) {
+                return true;
+            }
+            if let Some((_, bare)) = qualified.rsplit_once("::") {
+                if bare != symbol.name.as_str() && used_names.contains(bare) {
+                    return true;
                 }
             }
         }
-
-        unused
+        false
     }
 
     /// Get all symbols that belong to a specific package
@@ -11885,6 +11927,87 @@ mod file_fact_shard_serde_tests {
             count, 0,
             "count_usages must return 0 for a symbol with no call sites; got {}",
             count
+        );
+    }
+
+    // ── find_unused_symbols: global_references authority (#5016 item 5) ───────
+
+    fn sample_workspace_symbol(name: &str, qualified_name: Option<&str>) -> WorkspaceSymbol {
+        WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: "file:///lib/Sample.pm".to_string(),
+            range: Range {
+                start: Position { byte: 0, line: 1, column: 1 },
+                end: Position { byte: 9, line: 1, column: 10 },
+            },
+            qualified_name: qualified_name.map(str::to_string),
+            documentation: None,
+            container_name: qualified_name
+                .and_then(|q| q.rsplit_once("::").map(|(pkg, _)| pkg.to_string())),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        }
+    }
+
+    /// The pre-#5016-item-5 pass-2 check consulted only `symbol.name`.  When the
+    /// authoritative `global_references` store records usage under a qualified key
+    /// (e.g. `Orphan::helper`) the bare name alone must not be required.
+    #[test]
+    fn symbol_has_non_definition_usage_matches_qualified_global_ref_key() {
+        let used_names = HashSet::from(["Orphan::helper".to_string()]);
+        let symbol = sample_workspace_symbol("helper", Some("Orphan::helper"));
+
+        assert!(
+            WorkspaceIndex::symbol_has_non_definition_usage(&used_names, &symbol),
+            "qualified global_references key must mark the symbol as used"
+        );
+    }
+
+    /// `find_unused_symbols` must agree with `count_usages` on the same
+    /// `global_references` authority: any symbol with non-zero usages must not
+    /// be reported unused.
+    ///
+    /// Regression gate for #5016 item 5 (find_unused_symbols data source).
+    #[test]
+    fn find_unused_symbols_agrees_with_count_usages_authority() {
+        let index = WorkspaceIndex::new();
+
+        let uri1 = "file:///lib/UnusedAuth.pm";
+        let code1 = "package UnusedAuth;\nsub live_fn { return 1; }\nsub dead_fn { return 2; }\n";
+        must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
+
+        let uri2 = "file:///app.pl";
+        let code2 = "use UnusedAuth;\nUnusedAuth::live_fn();\n";
+        must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_keys: HashSet<(String, String)> =
+            unused.iter().map(|s| (s.uri.clone(), s.name.clone())).collect();
+
+        let live_usages = index.count_usages("live_fn");
+        let live_qualified_usages = index.count_usages("UnusedAuth::live_fn");
+        assert!(
+            live_usages > 0 || live_qualified_usages > 0,
+            "fixture must record usages for live_fn via global_references"
+        );
+        assert!(
+            !unused_keys
+                .contains(&("file:///lib/UnusedAuth.pm".to_string(), "live_fn".to_string())),
+            "live_fn has usages and must not be reported unused; unused={unused:?}"
+        );
+
+        let dead_usages = index.count_usages("dead_fn");
+        let dead_qualified_usages = index.count_usages("UnusedAuth::dead_fn");
+        assert_eq!(dead_usages, 0, "dead_fn must have zero usages in global_references");
+        assert_eq!(
+            dead_qualified_usages, 0,
+            "UnusedAuth::dead_fn must have zero usages in global_references"
+        );
+        assert!(
+            unused_keys.contains(&("file:///lib/UnusedAuth.pm".to_string(), "dead_fn".to_string())),
+            "dead_fn must still be reported unused; unused={unused:?}"
         );
     }
 }
