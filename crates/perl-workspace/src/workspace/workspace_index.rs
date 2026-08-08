@@ -4335,10 +4335,9 @@ impl WorkspaceIndex {
     /// The implementation is O(Σ refs_per_file + Σ symbols_per_file).  The
     /// previous O(symbols × files) implementation held the files read lock for
     /// the entire scan while running a nested `files.values().any()` loop per
-    /// symbol, which blocked all writers and readers for seconds on large
-    /// workspaces.  The current two-pass approach builds a HashSet of used
-    /// symbol names in a single pass over all per-file references and then
-    /// filters symbols using O(1) set membership.  (#5016)
+    /// symbol, which blocked writers for seconds on large workspaces while
+    /// still permitting concurrent readers.  The current two-pass approach holds
+    /// the same read lock across both passes but completes in linear time.
     ///
     /// # Examples
     ///
@@ -11748,7 +11747,7 @@ mod file_fact_shard_serde_tests {
         let code1 = "package Orphan;\nsub dead_code { return 42; }\n";
         must(index.index_file(must(url::Url::parse(uri1)), code1.to_string()));
 
-        // File 2: uses a *different* function — dead_code must remain unreported.
+        // File 2: uses a *different* function — dead_code must be reported as unused.
         let uri2 = "file:///app.pl";
         let code2 = "use Orphan;\n# intentionally does not call dead_code\n";
         must(index.index_file(must(url::Url::parse(uri2)), code2.to_string()));
@@ -11768,11 +11767,9 @@ mod file_fact_shard_serde_tests {
     /// `count_usages` and `find_references` must both see cross-file usage
     /// sites once the index is consistent.
     ///
-    /// `find_references` reads `global_references` while `count_usages` reads
-    /// per-file `FileIndex::references`.  Under concurrent edits they can diverge
-    /// (#5116), but after a quiescent index both must agree that a symbol has
-    /// usages.  This test pins that invariant so any regression in consistency
-    /// is immediately caught.
+    /// Both `find_references` and `count_usages` read `global_references` on a
+    /// quiescent index. Under concurrent edits they can still diverge (#5116),
+    /// but after indexing both must agree that a symbol has usages.
     ///
     /// Regression gate for #5016 (divergent store reads).
     #[test]
@@ -11792,19 +11789,13 @@ mod file_fact_shard_serde_tests {
         let refs = index.find_references("Parity::calc");
         let count = index.count_usages("Parity::calc");
 
-        // find_references returns all locations (including the definition), so
-        // the slice must be non-empty.
-        assert!(
-            !refs.is_empty(),
-            "find_references must find Parity::calc references across files; got none"
+        assert_eq!(
+            count, 2,
+            "count_usages must return exactly two call sites for Parity::calc; got {count}"
         );
-
-        // count_usages must also observe the usages — a zero here while
-        // find_references is non-empty is the divergence bug described in #5016.
         assert!(
-            count > 0,
-            "count_usages must agree with find_references on Parity::calc; got 0 but \
-             find_references returned {} location(s)",
+            refs.len() >= 3,
+            "find_references must include two usages plus the definition; got {}",
             refs.len()
         );
     }
