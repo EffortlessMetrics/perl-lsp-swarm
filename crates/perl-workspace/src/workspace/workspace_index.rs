@@ -4923,6 +4923,7 @@ impl IndexVisitor {
 
     fn project_symbol_declarations(&self, node: &Node, file_index: &mut FileIndex) {
         for decl in extract_symbol_decls(node, self.current_package.as_deref()) {
+            let definition_package = decl.container.clone();
             let (start, end) = match decl.kind {
                 SymbolKind::Variable(_) => match decl.anchor_span {
                     Some(span) => span,
@@ -4977,7 +4978,9 @@ impl IndexVisitor {
                 uri: self.uri.clone(),
                 range,
                 kind: ReferenceKind::Definition,
-                package: self.current_package.clone(),
+                // Use the declaration's enclosing package from extract_symbol_decls,
+                // not the visitor's pre-walk current_package (still "main" here).
+                package: definition_package,
             });
         }
     }
