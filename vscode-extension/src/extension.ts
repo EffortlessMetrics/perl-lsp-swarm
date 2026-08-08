@@ -875,7 +875,11 @@ function startLanguageClientAfterActivation(
   finishStartupAfterActivation(context, whatsNewManager).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
     outputChannel.error(`[startup] Background startup failed: ${msg}`);
-    healthWidget?.onStateChange(ClientState.Stopped);
+    healthWidget?.setWorkspaceLifecycleState('failed', {
+      detail: `Perl Language Server failed to start: ${msg}`,
+      action: 'Run the Health Check or fix the server configuration.',
+      reasonCode: 'startup_failure',
+    });
   });
 }
 
@@ -1846,6 +1850,15 @@ export function handleClientStateChange(event: StateChangeEvent): void {
     remediation:
       'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
   };
+
+  // ClientState.Stopped is ambiguous and is rendered neutrally by the widget.
+  // This path has established the stronger meaning: an unexpected mid-session
+  // crash with an actionable diagnosis.
+  healthWidget?.setWorkspaceLifecycleState('failed', {
+    detail: 'The Perl Language Server stopped unexpectedly.',
+    action: 'Restart the server or run the Health Check.',
+    reasonCode: 'unexpected_server_stop',
+  });
 
   outputChannel?.info('[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).');
 

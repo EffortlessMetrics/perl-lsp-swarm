@@ -106,8 +106,15 @@ export class HealthWidget {
         // clear it. The file count is derived from the client-visible workspace
         // and remains current across a server restart.
         this._errorCount = 0;
-        this._experience = { lifecycle: 'failed' };
-        this._render();
+        // A client stop is not, by itself, a product failure: normal restart
+        // and extension shutdown use the same language-client state. The
+        // authoritative crash/diagnosis path promotes an unexpected stop to
+        // `failed` explicitly after it has established that meaning.
+        this.setWorkspaceLifecycleState('starting', {
+          detail: 'Perl Language Server is restarting or shutting down.',
+          action: 'Wait for the server to reconnect, or start it again.',
+          reasonCode: 'client_stopped',
+        });
         break;
     }
   }
