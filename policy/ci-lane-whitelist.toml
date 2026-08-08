@@ -861,6 +861,27 @@ review_after = "2026-06-11"
 expires = "2026-11-11"
 
 [[lane]]
+id = "validate_ci_lane_history"
+workflow = ".github/workflows/validate-ci-lane-history.yml"
+job = "validate-contract"
+tier = "frontdoor"
+kind = "security"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 2
+owner = "ci"
+intent = "Validate the lane-history producer and receipt trust contract on pull requests."
+failure_mode = "An unsafe lane-history aggregation change reaches main without contract proof."
+proof_obligation = "Run the aggregation security self-test and validate the checked-in lane policy."
+evidence = ["job output"]
+allowed_triggers = ["pull_request"]
+expensive = false
+duplicate_of = []
+review_after = "2026-08-08"
+expires = "2026-11-08"
+
+[[lane]]
 id = "badge_endpoints"
 workflow = ".github/workflows/badge-endpoints.yml"
 job = "refresh"
