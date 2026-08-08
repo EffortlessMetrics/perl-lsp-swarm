@@ -503,6 +503,28 @@ def run_self_tests() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        for run_id in range(11):
+            self_test_write_run(
+                root,
+                run_id=100 + run_id,
+                jobs=[
+                    {"lane_id": "meta", "actual_lem": 1}
+                    for _ in range(100)
+                ],
+            )
+        samples, raw_stats = collect(root)
+        rejected = serializable_stats(raw_stats)["rejected"]
+        check(
+            len(samples["meta"]) == MAX_SAMPLES_PER_LANE,
+            "per-lane sample cap was not enforced",
+        )
+        check(
+            rejected.get("lane_sample_cap") == 100,
+            "per-lane overflow samples were not rejected",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
         valid = root / "valid.toml"
         valid.write_text('[lane.meta]\nbase_lem = 2.5\n', encoding="utf-8")
         check(static_floors(valid) == {"meta": 2.5}, "valid lane policy rejected")
