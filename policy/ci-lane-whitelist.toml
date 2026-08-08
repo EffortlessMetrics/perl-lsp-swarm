@@ -729,6 +729,27 @@ review_after = "2026-08-08"
 expires = "2026-11-08"
 
 [[lane]]
+id = "workflow_security_ratchet"
+workflow = ".github/workflows/workflow-security-ratchet.yml"
+job = "trusted-base-ratchet"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "ci"
+intent = "Reject new workflow/composite-action security findings against the trusted-base baseline."
+failure_mode = "Workflow and composite-action security debt regrows unnoticed between remediations."
+proof_obligation = "Run the base-branch evaluator and baseline against candidate files without executing candidate code."
+evidence = ["target/receipts/workflow-security-ratchet.json"]
+allowed_triggers = ["pull_request", "pull_request_target", "push", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-11-08"
+expires = "2027-02-08"
+
+[[lane]]
 id = "methodology_gate"
 workflow = ".github/workflows/methodology-gate.yml"
 job = "methodology"
