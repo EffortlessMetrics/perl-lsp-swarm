@@ -1,5 +1,5 @@
-//! Workspace-side generated member extraction for Moo/Moose/Mouse `has`
-//! and Class::Tiny accessors.
+//! Workspace-side generated member extraction for supported framework
+//! accessors, including DBIx::Class columns and relationships.
 //!
 //! Recognizes statically visible framework attribute declarations and emits
 //! [`EntityFact`] entries with `kind = EntityKind::GeneratedMember` anchored to
@@ -7,8 +7,9 @@
 //!
 //! # Scope
 //!
-//! Only package-level `has` calls after an order-visible `use Moo`, `use Moose`,
-//! `use Mouse`, `use Class::Tiny`, or `use Class::Tiny::RW` are recognized.
+//! Only package-level declarations after an order-visible supported framework
+//! import are recognized. DBIx::Class supports `add_columns`, `has_many`, and
+//! `belongs_to` method calls.
 //! Class::Tiny import arguments and the optional following default hash are also
 //! recognized. Plain packages without a supported framework import are skipped.
 //!
@@ -37,6 +38,7 @@ pub(crate) struct GeneratedMemberFact {
 struct WalkCtx {
     current_package: Option<String>,
     accessor_framework_active: bool,
+    dbix_class_active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +69,7 @@ fn walk(node: &Node, file_id: FileId, ctx: &mut WalkCtx, out: &mut Vec<Generated
                 let saved = ctx.clone();
                 ctx.current_package = Some(name.clone());
                 ctx.accessor_framework_active = false;
+                ctx.dbix_class_active = false;
                 walk(block, file_id, ctx, out);
                 *ctx = saved;
             } else {
@@ -80,12 +83,21 @@ fn walk(node: &Node, file_id: FileId, ctx: &mut WalkCtx, out: &mut Vec<Generated
                 emit_class_tiny_use_members(args, node, file_id, ctx, out);
             }
         }
+        NodeKind::Use { module, .. } if is_dbix_class_module(module) => {
+            ctx.dbix_class_active = true;
+        }
         NodeKind::No { module, .. } if is_accessor_framework_module(module) => {
             ctx.accessor_framework_active = false;
+        }
+        NodeKind::No { module, .. } if is_dbix_class_module(module) => {
+            ctx.dbix_class_active = false;
         }
         NodeKind::ExpressionStatement { expression } => {
             if ctx.accessor_framework_active {
                 extract_has_call(expression, file_id, ctx, out);
+            }
+            if ctx.dbix_class_active {
+                extract_dbix_class_call(expression, file_id, ctx, out);
             }
         }
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
@@ -150,6 +162,60 @@ fn extract_has_call(
         return;
     };
     emit_members_for_names(&args[..options_idx], pairs, file_id, ctx, out);
+}
+
+fn extract_dbix_class_call(
+    expression: &Node,
+    file_id: FileId,
+    ctx: &WalkCtx,
+    out: &mut Vec<GeneratedMemberFact>,
+) {
+    let NodeKind::MethodCall { object, method, args } = &expression.kind else {
+        return;
+    };
+    if !matches!(method.as_str(), "add_columns" | "has_many" | "belongs_to")
+        || !dbix_target_matches_current_package(object, ctx.current_package.as_deref())
+    {
+        return;
+    }
+
+    let names = match method.as_str() {
+        "add_columns" => args.iter().flat_map(collect_name_candidates).collect::<Vec<_>>(),
+        "has_many" | "belongs_to" => {
+            args.first().into_iter().flat_map(collect_name_candidates).collect()
+        }
+        _ => return,
+    };
+
+    let mut seen = BTreeSet::new();
+    for candidate in names {
+        let name = candidate.name.clone();
+        if seen.insert(name.clone()) {
+            let anchored = NameCandidate {
+                name: name.clone(),
+                span_start: expression.location.start,
+                span_end: expression.location.end,
+            };
+            push_member(
+                ctx.current_package.as_deref().unwrap_or("main"),
+                &name,
+                &anchored,
+                file_id,
+                out,
+            );
+        }
+    }
+}
+
+fn dbix_target_matches_current_package(object: &Node, current_package: Option<&str>) -> bool {
+    let Some(current_package) = current_package else { return false };
+    match &object.kind {
+        NodeKind::Identifier { name } => name == "__PACKAGE__" || name == current_package,
+        NodeKind::String { value, .. } => {
+            normalize_symbol_name(value).is_some_and(|name| name == current_package)
+        }
+        _ => false,
+    }
 }
 
 fn emit_members_for_names(
@@ -320,6 +386,7 @@ fn collect_name_candidates(node: &Node) -> Vec<NameCandidate> {
             names.extend(collect_name_candidates(right));
             names
         }
+        NodeKind::Binary { op, left, .. } if op == "=>" => collect_name_candidates(left),
         _ => Vec::new(),
     }
 }
@@ -527,6 +594,10 @@ fn is_class_tiny_module(module: &str) -> bool {
     matches!(module, "Class::Tiny" | "Class::Tiny::RW")
 }
 
+fn is_dbix_class_module(module: &str) -> bool {
+    matches!(module, "DBIx::Class" | "DBIx::Class::Core")
+}
+
 fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
     const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
     const FNV_PRIME: u64 = 1_099_511_628_211;
@@ -653,5 +724,61 @@ has 'color';
         let names = canonical_names(&facts);
         assert!(names.contains(&"Shape::color"));
         Ok(())
+    }
+
+    #[test]
+    fn dbix_class_declarations_emit_anchored_generated_member_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = r#"
+package MyApp::Schema::Result::Author;
+use DBIx::Class(:Core);
+__PACKAGE__->add_columns(qw(id name id));
+__PACKAGE__->has_many('posts' => 'MyApp::Schema::Result::Post', 'author_id');
+__PACKAGE__->belongs_to('profile', 'MyApp::Schema::Result::Profile');
+Other::Package->has_many('ignored', 'Other::Result', 'id');
+"#;
+        let facts = extract_from_source(source);
+        let names = canonical_names(&facts);
+
+        assert!(names.contains(&"MyApp::Schema::Result::Author::id"));
+        assert!(names.contains(&"MyApp::Schema::Result::Author::name"));
+        assert!(names.contains(&"MyApp::Schema::Result::Author::posts"));
+        assert!(names.contains(&"MyApp::Schema::Result::Author::profile"));
+        assert!(!names.contains(&"MyApp::Schema::Result::Author::ignored"));
+        assert_eq!(
+            names.iter().filter(|name| **name == "MyApp::Schema::Result::Author::id").count(),
+            1
+        );
+
+        let posts = generated_fact(&facts, "MyApp::Schema::Result::Author::posts")?;
+        let anchor_start = posts.anchor.span_start_byte as usize;
+        assert!(source[anchor_start..].starts_with("__PACKAGE__->has_many"));
+        assert_eq!(posts.entity.kind, EntityKind::GeneratedMember);
+        assert_eq!(posts.entity.provenance, Provenance::FrameworkSynthesis);
+        assert_eq!(posts.entity.confidence, Confidence::Medium);
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_syntax_without_dbix_import_is_not_synthesized() {
+        let facts = extract_from_source(
+            r#"
+package Plain::Package;
+__PACKAGE__->has_many('posts', 'Post', 'author_id');
+"#,
+        );
+        assert!(facts.is_empty());
+    }
+
+    #[test]
+    fn dbix_calls_on_foreign_targets_are_not_synthesized() {
+        let facts = extract_from_source(
+            r#"
+package MyApp::Schema::Result::Author;
+use DBIx::Class(:Core);
+Other::Package->has_many('ignored', 'Other::Result', 'id');
+"#,
+        );
+        assert!(facts.is_empty());
     }
 }

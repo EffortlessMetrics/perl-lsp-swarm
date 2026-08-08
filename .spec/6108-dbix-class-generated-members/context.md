@@ -6,7 +6,7 @@ DBIx::Class is parsed successfully, but the current framework model has no DBIx 
 
 ## Why this approach
 
-The existing `ClassModelBuilder` already owns framework detection, walks parsed `MethodCall` nodes, and records source locations. The existing `GeneratedMemberExtractor` already owns deterministic IDs, anchors, provenance, and confidence. Extending those seams keeps DBIx support additive and lets downstream consumers reuse the existing fact contract. The missing `GeneratedMemberKind::Method` is made explicit because relationship methods are semantically distinct from column accessors.
+The existing `ClassModelBuilder` already owns framework detection, walks parsed `MethodCall` nodes, and records source locations. The analyzer and workspace `GeneratedMemberExtractor` paths already own deterministic IDs, anchors, provenance, and confidence for their respective consumers. Extending those seams keeps DBIx support additive and lets semantic queries and the LSP completion path reuse the existing fact contract. The missing `GeneratedMemberKind::Method` is made explicit in analyzer facts because relationship methods are semantically distinct from column accessors.
 
 ## Alternatives rejected
 
@@ -17,7 +17,7 @@ The existing `ClassModelBuilder` already owns framework detection, walks parsed 
 
 ## Prior art / duplicates
 
-`GeneratedMemberExtractor` is the canonical existing synthesis path. `ClassModelBuilder::try_extract_class_accessor_methods` is the closest target-matching and anchor precedent. Parser tests already prove DBIx `has_many`, `belongs_to`, and `add_columns` forms parse cleanly. Related #2978 (relationship navigation) and #2976 (schema migration) remain separate concerns; this PR produces declaration facts only.
+The analyzer and workspace `GeneratedMemberExtractor` paths are the canonical existing synthesis paths for their consumers. `ClassModelBuilder::try_extract_class_accessor_methods` is the closest target-matching and anchor precedent. Parser tests already prove DBIx `has_many`, `belongs_to`, and `add_columns` forms parse cleanly. Related #2978 (relationship navigation) and #2976 (schema migration) remain separate concerns; this PR produces declaration facts and completion inputs, but does not add relationship graph navigation.
 
 ## Links
 

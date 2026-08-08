@@ -17,19 +17,19 @@
 - **Depends on:** Step 1
 - **Verify:** `cargo check --locked -p perl-semantic-analyzer`
 
-### Step 3: Emit DBIx generated members through the existing extractor
+### Step 3: Emit DBIx generated members through both producer paths
 
-- **File:** `crates/perl-semantic-analyzer/src/analysis/generated_member_extractor.rs`
-- **Change:** Map the captured synthetic metadata to `GeneratedMember` facts with the existing deterministic anchor/entity/provenance path.
+- **Files:** `crates/perl-semantic-analyzer/src/analysis/generated_member_extractor.rs`, `crates/perl-workspace/src/semantic/generated_member_extractor.rs`
+- **Change:** Map the captured metadata to analyzer `GeneratedMember` facts and workspace `EntityFact` entries with the existing deterministic anchor/entity/provenance paths.
 - **Details:** Keep Moo/Moose/Mouse/Class::Tiny/Class::Accessor behavior unchanged; preserve declaration anchors for downstream goto-definition resolution.
 - **Depends on:** Steps 1–2
 - **Verify:** `cargo check --locked -p perl-semantic-analyzer`
 
 ### Step 4: Add focused positive and negative proof
 
-- **Files:** `crates/perl-semantic-analyzer/src/analysis/class_model.rs`, `crates/perl-semantic-analyzer/src/analysis/generated_member_extractor.rs`, and existing semantic-model tests only if the public consumer needs an additional assertion.
+- **Files:** analyzer tests, `crates/perl-workspace/src/semantic/generated_member_extractor.rs`, and `crates/perl-workspace/tests/generated_member_facts.rs`.
 - **Change:** Cover `add_columns`, `has_many`, `belongs_to`, `use DBIx::Class(:Core)`, foreign-package negative control, duplicate names, and declaration anchors.
-- **Details:** Retain existing framework tests and prove generated facts are visible with the expected package, kind, provenance, confidence, and source anchor.
+- **Details:** Retain existing framework tests and prove generated facts are visible with the expected package, kind, provenance, confidence, source anchor, workspace method candidates, and semantic definition lookup.
 - **Depends on:** Steps 1–3
 - **Verify:** `cargo test --locked -p perl-semantic-analyzer --lib generated_member -- --test-threads=2`
 
@@ -45,7 +45,7 @@
 
 ## Scope boundary
 
-Files IN scope: `crates/perl-semantic-facts/src/lib.rs`, the directly related semantic-facts tests, `crates/perl-semantic-analyzer/src/analysis/class_model.rs`, `crates/perl-semantic-analyzer/src/analysis/generated_member_extractor.rs`, and focused tests/spec files.
+Files IN scope: `crates/perl-semantic-facts/src/lib.rs`, the directly related semantic-facts tests, `crates/perl-semantic-analyzer/src/analysis/class_model.rs`, `crates/perl-semantic-analyzer/src/analysis/generated_member_extractor.rs`, `crates/perl-workspace/src/semantic/generated_member_extractor.rs`, `crates/perl-workspace/tests/generated_member_facts.rs`, and focused tests/spec files.
 
 Files OUT of scope: parser grammar changes, DBIx relationship navigation, schema migration support, `many_to_many`, arbitrary foreign-package calls, new workspace graph machinery, release/CI changes, and changes to Moo/Moose semantics.
 

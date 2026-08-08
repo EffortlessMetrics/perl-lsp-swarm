@@ -4465,6 +4465,56 @@ impl WorkspaceIndex {
             }
         }
 
+        drop(files);
+        members.extend(self.generated_member_package_symbols(package_name));
+
+        members
+    }
+
+    fn generated_member_package_symbols(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        let shards = self.fact_shards.read();
+        let mut members = Vec::new();
+
+        for shard in shards.values() {
+            for entity in &shard.entities {
+                if entity.kind != EntityKind::GeneratedMember
+                    || !is_framework_generated_member_entity(entity)
+                {
+                    continue;
+                }
+                let Some((container_name, member_name)) =
+                    split_qualified_symbol_name(&entity.canonical_name)
+                else {
+                    continue;
+                };
+                if container_name != package_name {
+                    continue;
+                }
+                let Some(anchor_id) = entity.anchor_id else {
+                    continue;
+                };
+                let Some(range) = self.generated_member_anchor_range(shard, anchor_id) else {
+                    continue;
+                };
+
+                members.push(WorkspaceSymbol {
+                    name: member_name.to_string(),
+                    kind: SymbolKind::Method,
+                    uri: shard.source_uri.clone(),
+                    range,
+                    qualified_name: Some(entity.canonical_name.clone()),
+                    documentation: Some(
+                        "Generated/framework member; virtual symbol anchored to source declaration"
+                            .to_string(),
+                    ),
+                    container_name: Some(container_name.to_string()),
+                    has_body: false,
+                    workspace_folder_uri: None,
+                    is_lexical: false,
+                });
+            }
+        }
+
         members
     }
 

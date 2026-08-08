@@ -1738,6 +1738,38 @@ $self->"#;
 }
 
 #[test]
+fn test_dbix_generated_members_complete_for_constructor_receiver()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/Result/Author.pm")?,
+        "package MyApp::Schema::Result::Author;\n\
+use DBIx::Class(:Core);\n\
+__PACKAGE__->add_columns(qw(id name));\n\
+__PACKAGE__->has_many('posts' => 'MyApp::Schema::Result::Post');\n\
+1;\n"
+            .to_string(),
+    )?;
+
+    let code = "my $row = MyApp::Schema::Result::Author->new;\n$row->";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+    let labels: Vec<&str> = completions.iter().map(|item| item.label.as_str()).collect();
+
+    assert!(
+        labels.contains(&"id"),
+        "DBIx generated column should complete after $row->: {labels:?}"
+    );
+    assert!(
+        labels.contains(&"posts"),
+        "DBIx generated relationship should complete after $row->: {labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_typed_arrow_preserves_workspace_receiver_lookup() -> Result<(), Box<dyn std::error::Error>>
 {
     let index = Arc::new(WorkspaceIndex::new());
