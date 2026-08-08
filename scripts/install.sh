@@ -363,13 +363,17 @@ download_and_verify() {
 
     # Fail before network access when this host cannot verify the downloaded
     # artifact. Integrity is a required control, not a warning-only feature.
-    _sha_tool="$(select_sha256_tool)"
+    if ! _sha_tool="$(select_sha256_tool)"; then
+        return 1
+    fi
 
     info "downloading SHA256SUMS"
     if ! curl -fsSL "$CHECKSUM_URL" -o "$_sums"; then
         err "failed to download required checksum manifest: $CHECKSUM_URL"
     fi
-    _expected="$(checksum_for_asset "$_sums" "$_asset")"
+    if ! _expected="$(checksum_for_asset "$_sums" "$_asset")"; then
+        return 1
+    fi
 
     info "downloading ${_asset}"
     if ! curl -fsSL --progress-bar "$ASSET_URL" -o "$_archive"; then
@@ -381,7 +385,9 @@ If this version does not have a pre-built binary for your platform, try:
   cargo install perllsp --target $TARGET"
     fi
 
-    _actual="$(calculate_sha256 "$_sha_tool" "$_archive")"
+    if ! _actual="$(calculate_sha256 "$_sha_tool" "$_archive")"; then
+        return 1
+    fi
     if [ "$_expected" != "$_actual" ]; then
         err "checksum mismatch for ${_asset}
   expected: $_expected
