@@ -44,16 +44,16 @@ jobs:
       - name: Resolve and validate tag
         id: meta
         env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
+          TAG_INPUT: ${{ github.event.inputs.tag }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-          INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
+          PRERELEASE_INPUT: ${{ github.event.inputs.prerelease }}
         run: |
-          TAG="$INPUT_TAG"
+          set -euo pipefail
+          TAG="$TAG_INPUT"
           if [ -z "$TAG" ] && [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
           fi
-          PRERELEASE_INPUT="$INPUT_PRERELEASE"
 
           if [ -z "$TAG" ]; then
             echo "::error::Release tag is missing"
@@ -61,12 +61,12 @@ jobs:
           fi
 
           if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "::error::Invalid release tag: $TAG"
+            printf '::error::Invalid release tag: %s\n' "$TAG"
             exit 1
           fi
 
           VERSION="${TAG#v}"
-          PRERELEASE="${PRERELEASE_INPUT}"
+          PRERELEASE="$PRERELEASE_INPUT"
           if [ -z "$PRERELEASE" ]; then
             if [[ "$VERSION" == *-* ]]; then
               PRERELEASE="true"
@@ -75,13 +75,13 @@ jobs:
             fi
           fi
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'prerelease=%s\n' "$PRERELEASE" >> "$GITHUB_OUTPUT"
 
-          echo "Resolved release tag: $TAG"
-          echo "Resolved version: $VERSION"
-          echo "Resolved prerelease: $PRERELEASE"
+          printf 'Resolved release tag: %s\n' "$TAG"
+          printf 'Resolved version: %s\n' "$VERSION"
+          printf 'Resolved prerelease: %s\n' "$PRERELEASE"
 
   build:
     name: Build ${{ matrix.target }}
@@ -125,20 +125,30 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --locked --git https://github.com/cross-rs/cross --tag v0.2.5
+        run: |
+          # Immutable pin of the commit that tag v0.2.5 dereferences to, so the
+          # build cannot change if the tag is ever re-pointed upstream. This is
+          # the same code the previous `--tag v0.2.5` resolved to — a pinning
+          # change with no version move.
+          cargo install cross \
+            --locked \
+            --git https://github.com/cross-rs/cross \
+            --rev 88f49ff79e777bef6d3564531636ee4d3cc2f8d2
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.target }}
           cache-on-failure: true
@@ -147,22 +157,29 @@ jobs:
       - name: Build binaries
         shell: bash
         env:
-          USE_CROSS: ${{ matrix.use_cross }}
           TARGET: ${{ matrix.target }}
+          USE_CROSS: ${{ matrix.use_cross }}
         run: |
+          set -euo pipefail
           BUILD_CMD="cargo"
-          if [[ "$USE_CROSS" == "true" ]]; then
+          if [ "$USE_CROSS" = "true" ]; then
             BUILD_CMD="cross"
           fi
+          # Keep these literal `$BUILD_CMD build` command shapes: the
+          # repository-owned dist-shadow contract parses them to prove that the
+          # shadow manifest exactly matches the live release binaries.
           $BUILD_CMD build --locked --release --target "$TARGET" -p perllsp --bin perllsp
           $BUILD_CMD build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
 
       - name: Package binaries
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          USE_CROSS: ${{ matrix.use_cross }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
         run: |
+          set -euo pipefail
           NAME="perllsp"
-          TARGET="${{ matrix.target }}"
-          VERSION="${{ needs.release-metadata.outputs.version }}"
 
           if [[ "$TARGET" == *"windows"* ]]; then
             BIN="${NAME}.exe"
@@ -175,38 +192,38 @@ jobs:
           fi
 
           PKG_NAME="${NAME}-${VERSION}-${TARGET}"
-          mkdir -p "${PKG_NAME}"
+          mkdir -p "$PKG_NAME"
 
-          cp "target/${TARGET}/release/${BIN}" "${PKG_NAME}/"
-          cp "target/${TARGET}/release/${DAP_BIN}" "${PKG_NAME}/"
+          cp "target/${TARGET}/release/${BIN}" "$PKG_NAME/"
+          cp "target/${TARGET}/release/${DAP_BIN}" "$PKG_NAME/"
 
-          if [[ "$TARGET" != *"windows"* ]] && [[ "${{ matrix.use_cross }}" != "true" ]]; then
+          if [[ "$TARGET" != *"windows"* ]] && [ "$USE_CROSS" != "true" ]; then
             strip "${PKG_NAME}/${BIN}" 2>/dev/null || true
             strip "${PKG_NAME}/${DAP_BIN}" 2>/dev/null || true
           fi
 
           # Copy additional files
-          cp README.md LICENSE-APACHE LICENSE-MIT "${PKG_NAME}/" 2>/dev/null || true
+          cp README.md LICENSE-APACHE LICENSE-MIT "$PKG_NAME/" 2>/dev/null || true
 
-          cd "${PKG_NAME}"
+          cd "$PKG_NAME"
           if command -v sha256sum >/dev/null; then
-            sha256sum "${BIN}" "${DAP_BIN}" > SHA256SUMS.txt
+            sha256sum "$BIN" "$DAP_BIN" > SHA256SUMS.txt
           else
-            shasum -a 256 "${BIN}" "${DAP_BIN}" > SHA256SUMS.txt
+            shasum -a 256 "$BIN" "$DAP_BIN" > SHA256SUMS.txt
           fi
           cd ..
 
-          if [[ "$EXT" == ".zip" ]]; then
+          if [ "$EXT" = ".zip" ]; then
             7z a "${PKG_NAME}${EXT}" "${PKG_NAME}"/*
           else
-            tar czf "${PKG_NAME}${EXT}" "${PKG_NAME}"
+            tar czf "${PKG_NAME}${EXT}" "$PKG_NAME"
           fi
 
-          echo "ASSET=${PKG_NAME}${EXT}" >> $GITHUB_ENV
-          echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_ENV
+          printf 'ASSET=%s%s\n' "$PKG_NAME" "$EXT" >> "$GITHUB_ENV"
+          printf 'PKG_NAME=%s\n' "$PKG_NAME" >> "$GITHUB_ENV"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.PKG_NAME }}
           path: ${{ env.ASSET }}
@@ -219,23 +236,20 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      id-token: write
-      attestations: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: stable
 
-      - name: Install cargo-release
-        run: cargo install cargo-release --locked
-
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
 
@@ -244,6 +258,7 @@ jobs:
 
       - name: Generate consolidated SHA256SUMS
         run: |
+          set -euo pipefail
           cd artifacts
           find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | \
             sort -z | \
@@ -253,7 +268,10 @@ jobs:
           cat SHA256SUMS
 
       - name: Verify release archives ship the DAP binary
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.version }}
         run: |
+          set -euo pipefail
           # Flatten the per-artifact download tree into a single dist/ dir that
           # holds every archive plus the consolidated SHA256SUMS, then enforce
           # the downstream DAP contract (perl-dap present in every archive).
@@ -262,24 +280,28 @@ jobs:
           cp SHA256SUMS dist/
           cargo xtask release artifact-check \
             --dist dist \
-            --version "${{ needs.release-metadata.outputs.version }}"
+            --version "$VERSION"
 
       - name: Verify curated release notes exist
         id: release_notes_preflight
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
         run: |
-          TAG="${{ needs.release-metadata.outputs.tag }}"
+          set -euo pipefail
           NOTE_FILE="docs/releases/${TAG}.md"
           if [ ! -f "$NOTE_FILE" ]; then
-            echo "::error file=$NOTE_FILE::Curated release notes missing for ${TAG}. See RELEASE.md \"Release History Updates\" — every release must ship docs/releases/${TAG}.md before tagging."
+            printf '::error file=%s::Curated release notes missing for %s. See RELEASE.md "Release History Updates" — every release must ship docs/releases/%s.md before tagging.\n' "$NOTE_FILE" "$TAG" "$TAG"
             exit 1
           fi
-          echo "note_file=$NOTE_FILE" >> "$GITHUB_OUTPUT"
-          echo "✅ Found curated release notes: $NOTE_FILE"
+          printf 'note_file=%s\n' "$NOTE_FILE" >> "$GITHUB_OUTPUT"
+          printf 'Found curated release notes: %s\n' "$NOTE_FILE"
 
       - name: Generate release notes from docs/releases/<tag>.md
         id: release_notes
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
         run: |
-          TAG="${{ needs.release-metadata.outputs.tag }}"
+          set -euo pipefail
           # xtask strips YAML frontmatter and emits the curated body. The
           # command fails hard if the note file is missing — the earlier
           # preflight step makes that a clearer error message in the UI.
@@ -288,9 +310,27 @@ jobs:
           cat release_notes.md
           echo "--- /release_notes.md ---"
 
+      # Preflight before anything irreversible. Installing cargo-sbom is the
+      # part that can fail on a transient registry error, and the SBOM step now
+      # fails hard rather than warning. Running the install before the Release
+      # is created means such a failure aborts the job while nothing has been
+      # published yet, instead of leaving a public Release with no SBOM asset
+      # and a red job that cannot be cleanly re-run.
+      #
+      # Intentionally ungated, unlike the Release steps below which are gated on
+      # `workflow_dispatch`. The previous combined "Generate SBOM" step already
+      # ran this install unconditionally on every trigger, so leaving it ungated
+      # keeps `release: published` behaviour identical and changes only the
+      # ordering on `workflow_dispatch`. Gating it here would break SBOM
+      # generation on the `release: published` path.
+      - name: Install cargo-sbom (preflight)
+        run: |
+          set -euo pipefail
+          cargo install cargo-sbom --version 0.9.1 --locked
+
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: |
             artifacts/*/*
@@ -305,18 +345,13 @@ jobs:
 
       - name: Generate SBOM
         run: |
-          # Install cargo-sbom pinned to v0.9.1 for reproducible SBOM generation.
-          # Previously used --locked without a version constraint and || true,
-          # which silently suppressed install failures (#5991).
-          if ! cargo install cargo-sbom --locked --version 0.9.1; then
-            echo "::warning::Failed to install cargo-sbom; SBOM will not be generated"
-            exit 0
-          fi
+          set -euo pipefail
           cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
+          test -s sbom-spdx.json
 
       - name: Upload SBOM as release asset
         if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: sbom-spdx.json
           tag_name: ${{ needs.release-metadata.outputs.tag }}
