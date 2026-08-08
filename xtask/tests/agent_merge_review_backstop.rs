@@ -51,8 +51,7 @@ fn assert_review_backstop(skill: &str, provider: &str) {
 }
 
 #[test]
-fn merge_reconcile_requires_review_and_integration_for_both_providers(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn merge_requires_review_and_integration() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let codex = fs::read_to_string(root.join(".agents/skills/merge-reconcile/SKILL.md"))?;
     let claude = fs::read_to_string(root.join(".claude/skills/merge-reconcile/SKILL.md"))?;
