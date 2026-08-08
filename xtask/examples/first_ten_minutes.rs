@@ -456,8 +456,21 @@ fn write_verified_child_artifact(
         limitation: receipt.limitations.first().cloned(),
     };
     let content = serde_json::to_vec_pretty(&artifact)?;
-    fs::write(path, content)
-        .with_context(|| format!("writing verified child artifact {}", path.display()))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating verified artifact directory {}", parent.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary verified artifact near {}", path.display()))?;
+    std::io::Write::write_all(&mut temporary, &content)
+        .with_context(|| format!("writing temporary verified artifact near {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("flushing temporary verified artifact near {}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("publishing verified child artifact {}", path.display()))?;
     Ok(())
 }
 
@@ -511,6 +524,28 @@ mod tests {
         assert_eq!(artifact.receipt_schema_version, "first_ten_minutes.v1");
         assert_eq!(artifact.candidate_id, "v0.18.0-pre-freeze");
         assert_eq!(artifact.status, ReceiptStatus::Pass);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_verified_child_publish_preserves_existing_destination() -> Result<()> {
+        let receipt =
+            fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
+        let status = validate(&receipt)?;
+        let directory = tempdir()?;
+        let destination = directory.path().join("existing");
+        std::fs::create_dir(&destination)?;
+        let result = write_verified_child_artifact(&receipt, status, &destination);
+        if result.is_ok() {
+            return Err(color_eyre::eyre::eyre!(
+                "publishing over a directory unexpectedly succeeded"
+            ));
+        }
+        if !destination.is_dir() {
+            return Err(color_eyre::eyre::eyre!(
+                "failed publication did not preserve the existing destination"
+            ));
+        }
         Ok(())
     }
 
