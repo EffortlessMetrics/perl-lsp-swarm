@@ -60,6 +60,22 @@ impl fmt::Display for FramingError {
 
 impl std::error::Error for FramingError {}
 
+impl perl_parser_core::ErrorClass for FramingError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Protocol violations: the client sent a malformed frame that does
+            // not conform to the LSP base protocol (Content-Length) spec.
+            Self::InvalidHeader
+            | Self::InvalidHeaderUtf8
+            | Self::MissingContentLength
+            | Self::InvalidContentLength => perl_parser_core::ErrorCategory::Protocol,
+            // A configured safety limit was exceeded — the frame is larger than
+            // MAX_FRAME_SIZE, which is a resource-protection guard.
+            Self::FrameTooLarge { .. } => perl_parser_core::ErrorCategory::ResourceLimit,
+        }
+    }
+}
+
 /// Stateful extractor for `Content-Length` framed payloads.
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct ContentLengthFramer {

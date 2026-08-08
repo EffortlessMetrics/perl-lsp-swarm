@@ -596,6 +596,24 @@ impl fmt::Display for LaunchParseError {
 
 impl Error for LaunchParseError {}
 
+impl perl_parser_core::ErrorClass for LaunchParseError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // All LaunchParseError variants represent invalid CLI input from the
+        // user — unknown options, invalid values, missing arguments. None are
+        // infrastructure, protocol, or transient failures.
+        match self {
+            Self::UnknownOption { .. }
+            | Self::ParserDiagnostic { .. }
+            | Self::MissingValue { .. }
+            | Self::InvalidFeatureProfile { .. }
+            | Self::InvalidPort { .. }
+            | Self::InvalidShell { .. }
+            | Self::InvalidRuntimeMode { .. }
+            | Self::InvalidDiagnosticMode { .. } => perl_parser_core::ErrorCategory::UserError,
+        }
+    }
+}
+
 /// Parse command line arguments for the Perl LSP launcher.
 pub fn parse_args<I>(args: I) -> Result<LaunchPlan, LaunchParseError>
 where
