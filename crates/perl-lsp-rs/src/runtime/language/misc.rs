@@ -845,7 +845,11 @@ impl LspServer {
         deadline: Duration,
     ) -> usize {
         #[cfg(feature = "workspace")]
-        let index_count = self.coordinator().map(|coord| coord.index().count_usages(symbol_name));
+        let index_count = if self.workspace_index_stale_for_any_open_document() {
+            None
+        } else {
+            self.coordinator().map(|coord| coord.index().count_usages(symbol_name))
+        };
         #[cfg(not(feature = "workspace"))]
         let index_count: Option<usize> = None;
 
@@ -2474,5 +2478,88 @@ mod tests {
             err.message
         );
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn code_lens_skips_workspace_index_tier_when_open_document_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/stale_code_lens_source.pl";
+        let caller_uri = "file:///workspace/stale_code_lens_caller.pl";
+        let source_text = "package StaleCount::Source;\nsub count_me { return 1; }\n1;\n";
+        let caller_v1 = "package StaleCount::Caller;\nsub a { count_me(); count_me(); }\n1;\n";
+        let caller_v2 =
+            "package StaleCount::Caller;\nsub a { count_me(); count_me(); count_me(); }\n1;\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(caller_uri, caller_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh_title = resolve_code_lens_reference_title(&server, source_uri, "count_me")?;
+        assert_eq!(
+            fresh_title, "2 references",
+            "fresh workspace index should supply tier-1 count_usages before the edit: {fresh_title}"
+        );
+
+        server
+            .test_replace_document_without_index(caller_uri, caller_v2, 2)
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale_title = resolve_code_lens_reference_title(&server, source_uri, "count_me")?;
+        assert_ne!(
+            stale_title, "2 references",
+            "stale workspace index must not supply tier-1 count_usages; got stale index count: \
+             {stale_title}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn resolve_code_lens_reference_title(
+        server: &LspServer,
+        uri: &str,
+        symbol_name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let lenses = server
+            .handle_code_lens(Some(json!({
+                "textDocument": { "uri": uri }
+            })))?
+            .ok_or("expected code lens response")?;
+        let lenses = lenses.as_array().ok_or("expected code lens array")?;
+        let lens = lenses
+            .iter()
+            .find(|lens| {
+                lens.get("data").and_then(|d| d.get("name")).and_then(|n| n.as_str())
+                    == Some(symbol_name)
+            })
+            .ok_or_else(|| format!("expected {symbol_name} code lens"))?;
+
+        let resolved = if lens.get("command").is_some() {
+            lens.clone()
+        } else {
+            server
+                .handle_code_lens_resolve(Some(lens.clone()))?
+                .ok_or("expected resolved code lens")?
+        };
+
+        resolved
+            .get("command")
+            .and_then(|c| c.get("title"))
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "expected resolved command title".into())
     }
 }
