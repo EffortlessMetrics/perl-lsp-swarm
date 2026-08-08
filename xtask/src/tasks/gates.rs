@@ -5428,6 +5428,32 @@ error: aborting due to previous error
     }
 
     #[test]
+    fn run_single_gate_dispatches_version_sync_in_process() -> color_eyre::eyre::Result<()> {
+        // Reaches the production dispatch branch itself, rather than the helper
+        // it delegates to. If the branch were dropped, this gate would be
+        // spawned as `bash scripts/check-version-sync.sh` and restart the
+        // nested Cargo builds this change removes -- observable here as a
+        // subprocess exit code and a captured-output summary.
+        let gate = tier_gate("version_sync", "release", VERSION_SYNC_GATE_COMMAND);
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        let summary = result.output_summary.clone().unwrap_or_default();
+        assert!(
+            summary == "Executed internally via xtask task dispatch"
+                || summary.starts_with("Internal xtask execution failed:"),
+            "version sync must run through the internal dispatch, got: {summary}"
+        );
+        // The verdict itself belongs to the gate, not to this test; what this
+        // test owns is that no subprocess was spawned to produce it.
+        assert_eq!(result.exit_code, None, "an in-process gate reports no subprocess exit code");
+        Ok(())
+    }
+
+    #[test]
     fn run_internal_xtask_gate_maps_error_to_fail_status() -> color_eyre::eyre::Result<()> {
         // The in-process path replaces a subprocess whose exit code failed the
         // gate. A version sync that stops reporting drift is worse than a slow
