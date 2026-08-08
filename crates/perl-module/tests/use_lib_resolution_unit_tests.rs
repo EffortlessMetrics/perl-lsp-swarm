@@ -880,30 +880,108 @@ fn no_lib_cancelled_paths_excludes_readded_paths() {
     );
 }
 
-/// Pre-extracted operations must match per-offset source scanning (#1683).
+/// Pre-extracted operations must reproduce the per-offset lexical semantics
+/// the source-scanning API promised (#1683).
+///
+/// The expectations here are absolute rather than a comparison against
+/// `resolve_use_lib_paths_from_source_at_offset`: that function now delegates
+/// to the pre-extracted path, so comparing the two would be vacuous.
 #[test]
-fn pre_extracted_use_lib_operations_match_source_scanning() {
-    let workspace = std::path::Path::new("/workspace");
+fn pre_extracted_use_lib_operations_honor_per_offset_semantics() {
+    let workspace = Path::new("/workspace");
     let source = "use lib 'lib';\nno lib 'lib';\nuse lib 'extra';\nuse Mod;\n";
     let ops = extract_use_lib_operations_with_offsets(source);
 
-    let offsets = [
-        "use lib 'lib';\n".len(),
-        "use lib 'lib';\nno lib 'lib';\n".len(),
-        "use lib 'lib';\nno lib 'lib';\nuse lib 'extra';\n".len(),
-        source.len(),
+    let after_use = "use lib 'lib';\n".len();
+    let after_no = "use lib 'lib';\nno lib 'lib';\n".len();
+    let after_extra = "use lib 'lib';\nno lib 'lib';\nuse lib 'extra';\n".len();
+
+    let expected: [(usize, Vec<&str>, Vec<&str>); 4] = [
+        (after_use, vec!["lib"], vec![]),
+        (after_no, vec![], vec!["lib"]),
+        (after_extra, vec!["extra"], vec!["lib"]),
+        (source.len(), vec!["extra"], vec!["lib"]),
     ];
 
-    for offset in offsets {
-        let from_source =
-            resolve_use_lib_paths_from_source_at_offset(source, offset, workspace, None);
-        let from_ops =
-            resolve_use_lib_paths_from_operations_at_offset(&ops, offset, workspace, None);
-        assert_eq!(from_ops, from_source, "resolve paths mismatch at offset {offset}");
-
-        let cancelled_source = no_lib_cancelled_paths_at_offset(source, offset, workspace, None);
-        let cancelled_ops =
-            no_lib_cancelled_paths_from_operations_at_offset(&ops, offset, workspace, None);
-        assert_eq!(cancelled_ops, cancelled_source, "cancelled paths mismatch at offset {offset}");
+    for (offset, want_paths, want_cancelled) in expected {
+        assert_eq!(
+            resolve_use_lib_paths_from_operations_at_offset(&ops, offset, workspace, None),
+            want_paths,
+            "resolved paths at offset {offset}"
+        );
+        assert_eq!(
+            no_lib_cancelled_paths_from_operations_at_offset(&ops, offset, workspace, None),
+            want_cancelled,
+            "cancelled paths at offset {offset}"
+        );
     }
+}
+
+/// An unterminated pragma must stay visible to a later use-site (#1683).
+///
+/// `split_perl_statements` returns one slice spanning both lines when the
+/// editor buffer has no semicolon after `use lib 'lib'`. Keying activation on
+/// the statement terminator would hide `lib` from `use My::Test`, producing a
+/// spurious PL701 while the user is mid-typing.
+#[test]
+fn incomplete_use_lib_pragma_is_active_at_a_later_use_site() {
+    let workspace = Path::new("/workspace");
+    let source = "use lib 'lib'\nuse My::Test;\n";
+    let use_site = source.find("use My::Test").unwrap_or_default();
+
+    let ops = extract_use_lib_operations_with_offsets(source);
+    assert_eq!(ops.len(), 1, "one `use lib` operation expected: {ops:?}");
+    assert_eq!(
+        ops[0].end_offset,
+        "use lib 'lib'".len(),
+        "end offset must track the pragma's arguments, not the swallowed statement"
+    );
+
+    assert_eq!(
+        resolve_use_lib_paths_from_operations_at_offset(&ops, use_site, workspace, None),
+        vec!["lib"],
+        "`lib` must be active at the later use-site"
+    );
+    assert_eq!(
+        resolve_use_lib_paths_from_source_at_offset(source, use_site, workspace, None),
+        vec!["lib"],
+        "source-scanning API must agree"
+    );
+}
+
+/// The same holds for an unterminated `no lib` pragma (#1683).
+#[test]
+fn incomplete_no_lib_pragma_is_active_at_a_later_use_site() {
+    let workspace = Path::new("/workspace");
+    let source = "use lib 'lib';\nno lib 'lib'\nuse My::Test;\n";
+    let use_site = source.find("use My::Test").unwrap_or_default();
+
+    let ops = extract_use_lib_operations_with_offsets(source);
+    assert_eq!(
+        no_lib_cancelled_paths_from_operations_at_offset(&ops, use_site, workspace, None),
+        vec!["lib"],
+        "`no lib 'lib'` must cancel `lib` at the later use-site"
+    );
+    assert!(
+        resolve_use_lib_paths_from_operations_at_offset(&ops, use_site, workspace, None).is_empty(),
+        "no lexical paths remain after the cancellation"
+    );
+}
+
+/// A pragma whose arguments extend past the queried offset stays inactive.
+///
+/// This is the boundary the argument-end offset must preserve: mid-statement
+/// offsets never see a path whose text has not been reached yet.
+#[test]
+fn use_lib_is_inactive_at_an_offset_inside_its_own_arguments() {
+    let workspace = Path::new("/workspace");
+    let source = "use lib 'lib';\n";
+    let ops = extract_use_lib_operations_with_offsets(source);
+    let inside_quote = "use lib 'l".len();
+
+    assert!(
+        resolve_use_lib_paths_from_operations_at_offset(&ops, inside_quote, workspace, None)
+            .is_empty(),
+        "a path is not active before its argument text ends"
+    );
 }
