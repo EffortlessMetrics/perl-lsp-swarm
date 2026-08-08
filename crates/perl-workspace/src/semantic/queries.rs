@@ -500,12 +500,21 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)> {
         let shard = self.shard_for_file(file_id)?;
 
-        // Find the anchor that encloses the byte offset.
-        let anchor = shard.anchors.iter().find(|a| {
-            a.file_id == file_id
-                && a.span_start_byte <= byte_offset
-                && byte_offset < a.span_end_byte
-        })?;
+        // Find the most specific anchor that encloses the byte offset. Parent
+        // expression anchors can overlap a nested variable anchor; choosing
+        // the first insertion-order match would stop on the parent occurrence
+        // even when the cursor is on the nested variable.
+        let anchor = shard
+            .anchors
+            .iter()
+            .filter(|a| {
+                a.file_id == file_id
+                    && a.span_start_byte <= byte_offset
+                    && byte_offset < a.span_end_byte
+            })
+            .min_by_key(|a| {
+                (a.span_end_byte.saturating_sub(a.span_start_byte), a.span_start_byte)
+            })?;
 
         // Find an occurrence at this anchor.
         let occurrence = shard.occurrences.iter().find(|o| o.anchor_id == anchor.id)?;
@@ -1703,6 +1712,79 @@ mod tests {
         assert_eq!(entity.id, EntityId(100));
         assert_eq!(entity.canonical_name, "Foo::bar");
         assert_eq!(occ.kind, OccurrenceKind::Definition);
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_at_prefers_nested_anchor_over_overlapping_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(2);
+        let parent_anchor = AnchorId(30);
+        let nested_anchor = AnchorId(31);
+        let entity_id = EntityId(201);
+        let shard = make_shard(
+            "file:///lib/Nested.pm",
+            file_id,
+            vec![
+                AnchorFact {
+                    id: parent_anchor,
+                    file_id,
+                    span_start_byte: 0,
+                    span_end_byte: 30,
+                    scope_id: None,
+                    provenance: Provenance::ExactAst,
+                    confidence: Confidence::High,
+                },
+                AnchorFact {
+                    id: nested_anchor,
+                    file_id,
+                    span_start_byte: 10,
+                    span_end_byte: 17,
+                    scope_id: None,
+                    provenance: Provenance::ExactAst,
+                    confidence: Confidence::High,
+                },
+            ],
+            vec![EntityFact {
+                id: entity_id,
+                kind: EntityKind::Variable,
+                canonical_name: "method".to_string(),
+                anchor_id: Some(nested_anchor),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![
+                OccurrenceFact {
+                    id: OccurrenceId(230),
+                    kind: OccurrenceKind::MethodCall,
+                    entity_id: None,
+                    anchor_id: parent_anchor,
+                    scope_id: None,
+                    provenance: Provenance::ExactAst,
+                    confidence: Confidence::High,
+                },
+                OccurrenceFact {
+                    id: OccurrenceId(231),
+                    kind: OccurrenceKind::Read,
+                    entity_id: Some(entity_id),
+                    anchor_id: nested_anchor,
+                    scope_id: None,
+                    provenance: Provenance::ExactAst,
+                    confidence: Confidence::High,
+                },
+            ],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let (entity, occurrence) = queries.symbol_at(file_id, 12).ok_or("nested symbol missing")?;
+        assert_eq!(entity.id, entity_id);
+        assert_eq!(occurrence.id, OccurrenceId(231));
         Ok(())
     }
 

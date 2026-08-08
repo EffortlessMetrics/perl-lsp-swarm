@@ -59,6 +59,64 @@ pub fn symbol_refs_to_semantic_facts(
     file_id: FileId,
     entity_ids_by_qualified_name: &BTreeMap<String, EntityId>,
 ) -> SymbolRefSemanticFacts {
+    symbol_refs_to_semantic_facts_with_resolver(refs, file_id, |symbol_ref| {
+        entity_ids_by_qualified_name.get(&symbol_ref.qualified_name).copied()
+    })
+}
+
+/// Convert references while retaining declaration sites for lexical lookup.
+///
+/// A bare lexical name is not a stable entity key when a file contains
+/// shadowing declarations such as two `my $method` bindings.  The ordinary
+/// adapter intentionally accepts a name-to-entity map for callers that do not
+/// have declaration metadata; workspace indexing should use this variant so
+/// same-name lexical references resolve to the latest preceding declaration
+/// anchor instead of whichever declaration happened to be inserted last.
+pub fn symbol_refs_to_semantic_facts_with_declarations(
+    refs: &[SymbolRef],
+    file_id: FileId,
+    decls: &[SymbolDecl],
+) -> SymbolRefSemanticFacts {
+    let entity_ids_by_qualified_name: BTreeMap<String, EntityId> = decls
+        .iter()
+        .map(|decl| (decl.qualified_name.clone(), entity_id_for_decl(decl, file_id)))
+        .collect();
+    let mut lexical_decls_by_name: BTreeMap<String, Vec<&SymbolDecl>> = BTreeMap::new();
+    for decl in decls.iter().filter(|decl| {
+        decl.kind.is_variable() && matches!(decl.declarator.as_deref(), Some("my" | "state"))
+    }) {
+        lexical_decls_by_name.entry(decl.name.clone()).or_default().push(decl);
+    }
+
+    symbol_refs_to_semantic_facts_with_resolver(refs, file_id, |symbol_ref| {
+        let lexical_decls = if symbol_ref.package_qualifier.is_none() {
+            lexical_decls_by_name.get(&symbol_ref.name).map(Vec::as_slice).unwrap_or_default()
+        } else {
+            &[]
+        };
+
+        if !lexical_decls.is_empty() {
+            let reference_start = symbol_ref.anchor_span.unwrap_or(symbol_ref.full_span).0;
+            let preceding = lexical_decls
+                .iter()
+                .copied()
+                .filter(|decl| decl.full_span.1 <= reference_start)
+                .max_by_key(|decl| decl.full_span.0);
+
+            return preceding
+                .or_else(|| (lexical_decls.len() == 1).then(|| lexical_decls[0]))
+                .map(|decl| entity_id_for_decl(decl, file_id));
+        }
+
+        entity_ids_by_qualified_name.get(&symbol_ref.qualified_name).copied()
+    })
+}
+
+fn symbol_refs_to_semantic_facts_with_resolver(
+    refs: &[SymbolRef],
+    file_id: FileId,
+    mut resolve_entity: impl FnMut(&SymbolRef) -> Option<EntityId>,
+) -> SymbolRefSemanticFacts {
     let mut anchors = Vec::with_capacity(refs.len());
     let mut occurrences = Vec::with_capacity(refs.len());
     let mut reference_edges = Vec::new();
@@ -85,7 +143,7 @@ pub fn symbol_refs_to_semantic_facts(
             confidence,
         });
 
-        let entity_id = entity_ids_by_qualified_name.get(&symbol_ref.qualified_name).copied();
+        let entity_id = resolve_entity(symbol_ref);
         let occurrence_id = OccurrenceId(stable_id(
             "occurrence",
             &symbol_ref.qualified_name,
@@ -129,6 +187,10 @@ pub fn symbol_refs_to_semantic_facts(
     }
 
     SymbolRefSemanticFacts { anchors, occurrences, reference_edges }
+}
+
+fn entity_id_for_decl(decl: &SymbolDecl, file_id: FileId) -> EntityId {
+    EntityId(stable_id("entity", &decl.qualified_name, decl.full_span.0, decl.full_span.1, file_id))
 }
 
 fn occurrence_kind(kind: &SymbolRefKind) -> OccurrenceKind {
@@ -720,6 +782,60 @@ mod tests {
         assert_eq!(facts.occurrences[4].confidence, Confidence::High);
         assert_eq!(facts.occurrences[5].confidence, Confidence::Low);
         assert_eq!(facts.occurrences[5].provenance, Provenance::DynamicBoundary);
+    }
+
+    #[test]
+    fn lexical_reference_adapter_uses_latest_preceding_same_name_declaration() {
+        let decls = vec![
+            SymbolDecl {
+                kind: SymbolKind::Variable(VarKind::Scalar),
+                name: "method".to_string(),
+                qualified_name: "method".to_string(),
+                full_span: (10, 25),
+                anchor_span: Some((14, 21)),
+                container: None,
+                declarator: Some("my".to_string()),
+            },
+            SymbolDecl {
+                kind: SymbolKind::Variable(VarKind::Scalar),
+                name: "method".to_string(),
+                qualified_name: "method".to_string(),
+                full_span: (100, 115),
+                anchor_span: Some((104, 111)),
+                container: None,
+                declarator: Some("my".to_string()),
+            },
+        ];
+        let refs = vec![
+            SymbolRef {
+                kind: SymbolRefKind::Variable(VarKind::Scalar),
+                name: "method".to_string(),
+                qualified_name: "method".to_string(),
+                sigil: Some("$".to_string()),
+                package_qualifier: None,
+                full_span: (40, 47),
+                anchor_span: Some((40, 47)),
+            },
+            SymbolRef {
+                kind: SymbolRefKind::Variable(VarKind::Scalar),
+                name: "method".to_string(),
+                qualified_name: "method".to_string(),
+                sigil: Some("$".to_string()),
+                package_qualifier: None,
+                full_span: (140, 147),
+                anchor_span: Some((140, 147)),
+            },
+        ];
+
+        let facts = symbol_refs_to_semantic_facts_with_declarations(&refs, FileId(9), &decls);
+        assert_eq!(
+            facts.occurrences.iter().map(|occurrence| occurrence.entity_id).collect::<Vec<_>>(),
+            vec![
+                Some(entity_id_for_decl(&decls[0], FileId(9))),
+                Some(entity_id_for_decl(&decls[1], FileId(9))),
+            ],
+            "same-name lexical references must follow their preceding declaration"
+        );
     }
 
     /// Test: Entity ID file ID is recoverable via the anchor fact.
