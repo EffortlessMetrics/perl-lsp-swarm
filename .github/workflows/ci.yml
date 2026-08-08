@@ -409,6 +409,15 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Reject known-unmerged PR attributions in reference docs
+        if: matrix.name == 'meta'
+        run: |
+          if git grep -n -E 'PR #153|pull/153' -- docs/reference ':(exclude)docs/reference/archive/**'; then
+            echo "Reference documentation contains an attribution to closed, unmerged PR #153."
+            echo "Use the merged PR that owns the behavior, or remove the PR attribution when the source is historical."
+            exit 1
+          fi
+
       - name: Fetch release tags from canonical repo
         run: |
           # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none.

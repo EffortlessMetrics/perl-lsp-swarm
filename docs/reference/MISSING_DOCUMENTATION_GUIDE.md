@@ -219,7 +219,7 @@ Performance-critical modules must document:
 ### Unicode Safety and Security
 
 All text processing functions must document:
-- **UTF-16/UTF-8 position mapping** security enhancements (PR #153)
+- **UTF-16/UTF-8 position mapping** security enhancements (PR #753)
 - **Boundary validation** and overflow prevention
 - **Enterprise security patterns** and vulnerability mitigation
 - **Path traversal prevention** and file completion safeguards
