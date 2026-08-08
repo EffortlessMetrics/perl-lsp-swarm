@@ -23,8 +23,8 @@ use perl_semantic_analyzer::{
     type_inference::{PerlType, TypeInferenceEngine},
 };
 use perl_semantic_facts::{
-    Confidence, DefinitionCandidate, EntityKind, FileId, PackageEdge, Provenance, VisibleSymbol,
-    VisibleSymbolSource,
+    Confidence, DefinitionCandidate, EntityKind, FileId, PackageEdge, PackageEdgeKind, Provenance,
+    VisibleSymbol, VisibleSymbolSource,
 };
 use perl_workspace::semantic::{
     imports::ImportExportIndex,
@@ -2045,10 +2045,21 @@ fn build_completion_package_graph(
     index: &WorkspaceIndex,
     source_uris: &HashSet<String>,
 ) -> PackageGraphIndex {
-    let mut graph = PackageGraphIndex::new();
+    const MAX_DISCOVERED_ROLE_FILES: usize = 32;
 
-    for uri in source_uris {
-        let Some(text) = workspace_text_for_uri(index, uri) else {
+    let mut graph = PackageGraphIndex::new();
+    let mut pending_uris = VecDeque::from_iter(source_uris.iter().cloned());
+    let mut visited_uris = HashSet::new();
+    let max_files = source_uris.len().saturating_add(MAX_DISCOVERED_ROLE_FILES);
+
+    while let Some(uri) = pending_uris.pop_front() {
+        if !visited_uris.insert(uri.clone()) {
+            continue;
+        }
+        if visited_uris.len() > max_files {
+            break;
+        }
+        let Some(text) = workspace_text_for_uri(index, &uri) else {
             continue;
         };
         let Ok(ast) = parse_workspace_source(&text) else {
@@ -2064,8 +2075,21 @@ fn build_completion_package_graph(
             })
             .cloned()
             .collect();
+
+        for edge in &edges {
+            if edge.kind != PackageEdgeKind::ComposesRole {
+                continue;
+            }
+            let Some(location) = index.find_definition(&edge.to_package) else {
+                continue;
+            };
+            if !visited_uris.contains(&location.uri) {
+                pending_uris.push_back(location.uri);
+            }
+        }
+
         if !edges.is_empty() {
-            graph.add_edges(uri, semantic_file_id(uri), edges);
+            graph.add_edges(&uri, semantic_file_id(&uri), edges);
         }
     }
 
