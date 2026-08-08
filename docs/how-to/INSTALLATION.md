@@ -231,6 +231,7 @@ vendor field and is expected; choose based on the final `gnu` or `musl` segment.
 | macOS Intel | `x86_64-apple-darwin` |
 | macOS Apple Silicon | `aarch64-apple-darwin` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` |
+| Windows ARM64 | `aarch64-pc-windows-msvc` |
 
 ## After Installation
 
