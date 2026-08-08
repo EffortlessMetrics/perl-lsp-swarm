@@ -220,11 +220,53 @@ def source_hashes(root: Path) -> dict[str, str]:
     return result
 
 
+def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
+    """Derive the release targets reachable through the managed downloader.
+
+    The downloader deliberately constructs the Linux target from architecture and
+    libc, so this is a small structural check of that production authority rather
+    than a second hand-written release matrix.  Every workflow target must be
+    represented by an explicit downloader branch or by the corresponding
+    architecture/libc construction.
+    """
+    managed: set[str] = set()
+
+    if "aarch64-apple-darwin" in source:
+        managed.add("aarch64-apple-darwin")
+    if "x86_64-apple-darwin" in source:
+        managed.add("x86_64-apple-darwin")
+    if "return 'x86_64-pc-windows-msvc'" in source:
+        managed.add("x86_64-pc-windows-msvc")
+    if "return 'aarch64-pc-windows-msvc'" in source:
+        managed.add("aarch64-pc-windows-msvc")
+
+    constructs_linux_targets = (
+        "return `${archPrefix}-unknown-linux-${libc}`" in source
+        and "archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64'" in source
+        and "value === 'gnu'" in source
+        and "value === 'musl'" in source
+    )
+    if constructs_linux_targets:
+        managed.update(
+            target
+            for target in workflow_targets
+            if target.endswith("-unknown-linux-gnu") or target.endswith("-unknown-linux-musl")
+        )
+
+    return managed & workflow_targets
+
+
 def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_swarm_sha: str | None = None) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{40}", frozen_product_sha):
         raise TopologyError("frozen_product_sha must be a full lowercase commit SHA")
-    if git_head(root) != frozen_product_sha:
+    current_sha = git_head(root)
+    if current_sha != frozen_product_sha:
         raise TopologyError("frozen_product_sha must identify the exact checkout being inventoried")
+    if prepared_swarm_sha is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", prepared_swarm_sha):
+            raise TopologyError("prepared_swarm_sha must be a full lowercase commit SHA")
+        if prepared_swarm_sha != current_sha:
+            raise TopologyError("prepared_swarm_sha must identify the exact prepared checkout")
     metadata = cargo_metadata(root)
     cargo_manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
     workspace_version = cargo_manifest.get("workspace", {}).get("package", {}).get("version")
@@ -244,6 +286,16 @@ def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_s
             "downstream archive contract disagrees with release workflow: "
             f"missing={sorted(workflow_targets - downstream_targets)}, "
             f"extra={sorted(downstream_targets - workflow_targets)}"
+        )
+    downloader_targets = derive_downloader_targets(
+        (root / "vscode-extension/src/downloader.ts").read_text(encoding="utf-8"),
+        workflow_targets,
+    )
+    if downloader_targets != workflow_targets:
+        raise TopologyError(
+            "managed downloader target contract disagrees with release workflow: "
+            f"missing={sorted(workflow_targets - downloader_targets)}, "
+            f"extra={sorted(downloader_targets - workflow_targets)}"
         )
     package = json.loads((root / "vscode-extension/package.json").read_text(encoding="utf-8"))
     if package.get("version") != release:
@@ -265,7 +317,7 @@ def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_s
         "vsix": {
             "version": package["version"],
             "package_path": "vscode-extension",
-            "managed_targets": sorted(workflow_targets),
+            "managed_targets": sorted(downloader_targets),
             "bundled_targets": [],
         },
         "primary_channels": PRIMARY_CHANNELS,
@@ -282,6 +334,14 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
         raise TopologyError("manifest frozen_product_sha differs from the reviewed candidate SHA")
     if expected_sha is not None and git_head(root) != expected_sha:
         raise TopologyError("reviewed candidate SHA is not the exact checkout being validated")
+    prepared_swarm_sha = manifest.get("prepared_swarm_sha")
+    if prepared_swarm_sha is not None:
+        if not isinstance(prepared_swarm_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", prepared_swarm_sha
+        ):
+            raise TopologyError("prepared_swarm_sha must be a full lowercase commit SHA")
+        if prepared_swarm_sha != git_head(root):
+            raise TopologyError("prepared_swarm_sha must identify the exact checkout being validated")
     release = manifest.get("release")
     if not isinstance(release, str):
         raise TopologyError("manifest release is missing")
@@ -323,10 +383,16 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
     downstream = json.loads((root / "docs/reference/downstream-dap-integrations.json").read_text())
     if {entry["triple"] for entry in downstream.get("targets", [])} != set(target_names):
         raise TopologyError("binary_targets does not match the downstream archive contract")
+    downloader_targets = derive_downloader_targets(
+        (root / "vscode-extension/src/downloader.ts").read_text(encoding="utf-8"),
+        set(target_names),
+    )
+    if downloader_targets != set(target_names):
+        raise TopologyError("binary_targets does not match the managed downloader target contract")
     package = json.loads((root / "vscode-extension/package.json").read_text(encoding="utf-8"))
     if package.get("version") != release or manifest.get("vsix", {}).get("version") != package.get("version"):
         raise TopologyError("VSIX version does not match the release or current extension manifest")
-    if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(target_names):
+    if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(downloader_targets):
         raise TopologyError("VSIX managed targets do not match the release target matrix")
     if manifest.get("primary_channels") != PRIMARY_CHANNELS:
         raise TopologyError("primary channel set is not the accepted v0.18 set")

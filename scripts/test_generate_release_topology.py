@@ -54,6 +54,44 @@ class ReleaseTopologyTests(unittest.TestCase):
         with self.assertRaises(MODULE.TopologyError):
             MODULE.derive_crates(metadata)
 
+    def test_downloader_target_derivation_requires_native_windows_arm64(self):
+        source = """
+        return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        return `${archPrefix}-unknown-linux-${libc}`;
+        return 'x86_64-pc-windows-msvc';
+        """
+        workflow_targets = {
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        }
+        self.assertNotIn(
+            "aarch64-pc-windows-msvc",
+            MODULE.derive_downloader_targets(source, workflow_targets),
+        )
+
+    def test_downloader_target_derivation_accepts_all_reachable_targets(self):
+        source = """
+        return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        return `${archPrefix}-unknown-linux-${libc}`;
+        value === 'gnu';
+        value === 'musl';
+        return 'x86_64-pc-windows-msvc';
+        return 'aarch64-pc-windows-msvc';
+        """
+        workflow_targets = {
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        }
+        self.assertEqual(
+            MODULE.derive_downloader_targets(source, workflow_targets),
+            workflow_targets,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
