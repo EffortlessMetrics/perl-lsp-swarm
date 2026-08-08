@@ -69,6 +69,9 @@ fn run() -> Result<i32> {
         CliCommand::CheckDocPaths { docs_dir } => {
             cmd_check_doc_paths(&repo_root, docs_dir.as_deref())?
         }
+        CliCommand::CheckDocLinks { docs_dir } => {
+            commands::doc_links::check_doc_links(&repo_root, docs_dir.as_deref())?
+        }
         CliCommand::CheckDocDrift => commands::doc_drift::check_doc_drift(&repo_root)?,
         CliCommand::Preflight => cmd_preflight(&repo_root)?,
         CliCommand::TestCapped { cargo_args } => cmd_test_capped(&repo_root, &cargo_args)?,
