@@ -1,4 +1,4 @@
-import { parseSubtestResults, parseTapOutput } from '../testAdapter';
+import { parseSubtestResults, parseTapOutput, runBoundedProcess } from '../testAdapter';
 
 describe('test adapter TAP parsing', () => {
   test('summarizes top-level TAP without counting indented subtests', () => {
@@ -68,5 +68,89 @@ describe('test adapter TAP parsing', () => {
       ['passes', { ok: true, diagnostic: '', duration: 0 }],
       ['fails', { ok: false, diagnostic: "# Failed test 'assertion'", duration: 0 }],
     ]);
+  });
+});
+
+describe('bounded prove process execution', () => {
+  test('returns normal output without truncation', async () => {
+    const result = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write("ok")'], {
+      shell: false,
+      timeoutMs: 500,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      stdout: 'ok',
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('terminates a process that exceeds the wall-clock deadline', async () => {
+    const result = await runBoundedProcess(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], {
+      shell: false,
+      timeoutMs: 25,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+    });
+
+    expect(result.outcome).toBe('timed_out');
+    expect(result.diagnostic).toContain('deadline');
+  });
+
+  test('allows a process to exit during the termination grace period', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.on("SIGTERM", () => process.exit(0)); setTimeout(() => {}, 5000)'],
+      {
+        shell: false,
+        timeoutMs: 25,
+        maxOutputBytes: 32,
+        terminationGraceMs: 100,
+      },
+    );
+
+    expect(result.outcome).toBe('timed_out');
+    expect(result.exitCode).toBe(0);
+  });
+
+  test('terminates a process that exceeds the combined output ceiling', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.stdout.write("x".repeat(4096))'],
+      {
+        shell: false,
+        timeoutMs: 500,
+        maxOutputBytes: 128,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result.outcome).toBe('output_limit');
+    expect(result.capturedOutputBytes).toBe(128);
+    expect(result.stdout.length).toBeLessThanOrEqual(128);
+    expect(result.diagnostic).toContain('capture limit');
+  });
+
+  test('terminates a process when the caller aborts', async () => {
+    const controller = new AbortController();
+    const resultPromise = runBoundedProcess(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 5000)'],
+      {
+        shell: false,
+        signal: controller.signal,
+        timeoutMs: 500,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+      },
+    );
+    controller.abort();
+
+    const result = await resultPromise;
+    expect(result.outcome).toBe('cancelled');
+    expect(result.diagnostic).toContain('cancelled');
   });
 });
