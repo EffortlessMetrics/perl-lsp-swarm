@@ -1102,10 +1102,16 @@ gates:
     description: "Run the gate-policy validator: every MSRV authority (Cargo.toml, rust-toolchain.toml, gate-policy global + matrix legs) agrees, plus PR-profile and registry invariants"
     required: true
     command: cargo xtask gate-policy check
-    timeout_seconds: 60
+    # 300s to match non_rust_inventory_check, the sibling `cargo xtask ...`
+    # gate in this shard. The validator itself is near-instant; the cost is
+    # the cargo invocation, which took >60s on a cold shard even after the
+    # "Warm xtask" step and timed out at exit 124 on the first CI run that
+    # reached this gate. Sizing it off a prebuilt-binary measurement was the
+    # error — the gate pays cargo's price, not the binary's.
+    timeout_seconds: 300
     retry_count: 0
     budgets:
-      max_duration_ms: 30000
+      max_duration_ms: 240000
     quarantine: false
     tags:
       - policy
