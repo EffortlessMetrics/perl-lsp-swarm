@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use perl_module::resolution::use_lib::{
-    extract_use_lib_operations, extract_use_lib_operations_with_offsets, extract_use_lib_paths,
-    no_lib_cancelled_paths_at_offset, no_lib_cancelled_paths_from_operations_at_offset,
-    resolve_use_lib_paths, resolve_use_lib_paths_from_operations_at_offset,
-    resolve_use_lib_paths_from_source_at_offset, UseLibAction, UseLibPath,
+    UseLibAction, UseLibPath, extract_use_lib_operations, extract_use_lib_operations_with_offsets,
+    extract_use_lib_paths, no_lib_cancelled_paths_at_offset,
+    no_lib_cancelled_paths_from_operations_at_offset, resolve_use_lib_paths,
+    resolve_use_lib_paths_from_operations_at_offset, resolve_use_lib_paths_from_source_at_offset,
 };
 
 #[test]
@@ -63,8 +63,8 @@ fn absolute_use_lib_path_outside_workspace_is_rejected() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn absolute_use_lib_path_inside_workspace_is_normalized_to_relative(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn absolute_use_lib_path_inside_workspace_is_normalized_to_relative()
+-> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let workspace = temp.path().join("workspace");
     let inside = workspace.join("lib").join("Nested");
@@ -520,8 +520,8 @@ fn double_quoted_path_with_escaped_double_quote() {
 }
 
 #[test]
-fn double_quoted_path_with_escaped_double_quote_and_semicolon(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn double_quoted_path_with_escaped_double_quote_and_semicolon()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = r#"use lib "path/\"with;quote"; use lib 'also';"#;
 
     let paths = extract_use_lib_paths(source);
@@ -771,8 +771,8 @@ use lib '/path';
 }
 
 #[test]
-fn findbin_variable_with_path_containing_semicolon_in_comment(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn findbin_variable_with_path_containing_semicolon_in_comment()
+-> Result<(), Box<dyn std::error::Error>> {
     // Regression: FindBin extraction should work even with tricky comments.
     let source = "\
 use lib \"$RealBin/../lib\"; # Historical reason; keep this
