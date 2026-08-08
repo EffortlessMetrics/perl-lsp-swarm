@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 30,
-  "total_bytes": 18473796,
+  "total_bytes": 18474084,
   "files": {
     "package.nls.json": 2041,
     "package.json": 56596,
@@ -29,7 +29,7 @@
     "media/walkthrough/debug-first-script.svg": 1778,
     "media/walkthrough/configure-settings.svg": 1935,
     "media/walkthrough/ai-completion.svg": 1624,
-    "bin/linux-x64/perllsp": 16956984,
+    "bin/linux-x64/perllsp": 16957272,
     "assets/demo-project/main.pl": 203,
     "assets/demo-project/lib/Utils.pm": 485,
     "assets/demo-project/lib/Database.pm": 298
