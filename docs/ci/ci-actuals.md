@@ -42,8 +42,22 @@ accepts a bare `gate_name` only when it is *literally* a known lane id, and drop
 anything else rather than inventing a lane for it.
 
 Omitting `--lane-id` for a multi-gate lane produces actuals whose samples the aggregator
-cannot attribute; it will fail loudly rather than record an empty history (#6217). An
-unknown `--lane-id` is refused at emit time.
+cannot attribute. An unknown `--lane-id` is refused at emit time.
+
+The aggregator distinguishes two reasons for attributing nothing, because they have
+opposite correct responses (#6217):
+
+| Condition | Response |
+| --- | --- |
+| samples arrived, none attributed, and **no** artifact in the window carries `lane_id` | **warn**, exit 0 — every artifact predates the wiring, which is mechanical and self-resolving. Expires on `LANE_ID_ROLLOUT_DEADLINE`, and the warning names that date. |
+| samples arrived, none attributed, and artifacts **do** carry `lane_id` | **error**, exit 1, from day one — the wiring exists and is still producing nothing usable |
+| nothing arrived, or samples attributed to real lanes | quiet, exit 0 |
+
+Collapsing those into one hard failure would red the daily aggregation for the whole
+14-day window while pre-wiring artifacts age out, and a chronically red scheduled
+workflow is an ignored one. The warn expires so that a workflow which never got its
+`--lane-id` cannot sit warning indefinitely, which would recreate the original silence
+by a slower route.
 
 The schema is otherwise tolerant: missing `duration_ms` results in `actual_lem: null`.
 This avoids the actuals collector becoming a brittle gate.
