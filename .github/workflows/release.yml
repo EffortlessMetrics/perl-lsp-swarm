@@ -316,6 +316,13 @@ jobs:
       # is created means such a failure aborts the job while nothing has been
       # published yet, instead of leaving a public Release with no SBOM asset
       # and a red job that cannot be cleanly re-run.
+      #
+      # Intentionally ungated, unlike the Release steps below which are gated on
+      # `workflow_dispatch`. The previous combined "Generate SBOM" step already
+      # ran this install unconditionally on every trigger, so leaving it ungated
+      # keeps `release: published` behaviour identical and changes only the
+      # ordering on `workflow_dispatch`. Gating it here would break SBOM
+      # generation on the `release: published` path.
       - name: Install cargo-sbom (preflight)
         run: |
           set -euo pipefail
