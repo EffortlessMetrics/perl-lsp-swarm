@@ -264,6 +264,38 @@ test_threads_is_read_only() {
     fi
 }
 
+# A truncated list that exits 0 is worse than an error: the agent dispositions
+# what it sees and the PR stays BLOCKED on the rest. "More pages exist" with no
+# cursor to fetch them must be a hard failure, not a quiet stop.
+test_threads_refuses_truncation() {
+    reset_stub
+    jq -n '{data:{repository:{pullRequest:{reviewThreads:{
+        nodes: [{id: "PRRT_only", isResolved: false, isOutdated: false,
+                 path: "a.rs", line: 1, originalLine: 1, startLine: null,
+                 originalStartLine: null, diffSide: "RIGHT",
+                 comments: {nodes: [{author: {login: "bot"}, body: "x", url: null}]}}],
+        pageInfo: {hasNextPage: true, endCursor: null}}}}}}' \
+        > "$STUB_DIR/threads_page1.json"
+
+    run_threads 9999 test-owner/test-repo --json
+    local ok=0
+    if [[ "$RUN_EXIT" -eq 2 ]] && grep -qi 'truncated' <<<"$RUN_OUT"; then ok=1; fi
+
+    jq -n \
+        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.')" \
+        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.')" \
+        '{data:{repository:{pullRequest:{reviewThreads:{
+            nodes: [$a, $b],
+            pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
+        > "$STUB_DIR/threads_page1.json"
+
+    if [[ "$ok" -eq 1 ]]; then
+        pass "threads: hasNextPage with a null cursor exits 2 rather than reporting a truncated list"
+    else
+        fail "threads truncation guard — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+}
+
 # Regression: bot review bodies are long, and an accumulator passed to jq
 # through argv (`jq --argjson acc "$SO_FAR"`) dies with "Argument list too
 # long" — observed live on a real 12-thread PR before the fix, and it would hit
@@ -482,6 +514,7 @@ test_threads_id_feeds_disposition
 test_threads_human_output_is_actionable
 test_threads_usage_error
 test_threads_is_read_only
+test_threads_refuses_truncation
 test_threads_survives_large_payload
 test_inline_posts_one_review
 test_inline_reads_stdin
