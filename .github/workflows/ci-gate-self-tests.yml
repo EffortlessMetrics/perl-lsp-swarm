@@ -43,6 +43,7 @@ on:
       - 'scripts/tests/test-check-pr-review-convergence.sh'
       - 'scripts/reviews/**'
       - 'scripts/tests/test-review-lease.sh'
+      - 'scripts/tests/test-review-threads-inline.sh'
       - 'scripts/worktree-manager.py'
       - 'scripts/tests/test-worktree-manager.sh'
       - '.cargo/config.toml'
@@ -222,6 +223,31 @@ jobs:
             echo "## Review-lease self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The review-lease contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  review-threads-inline-self-test:
+    name: Review threads/inline self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run review threads/inline self-test
+        run: bash scripts/tests/test-review-threads-inline.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## Review threads/inline self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "scripts/reviews/threads (issue #6178) pages through a multi-page reviewThreads connection without dropping a thread, filters with --unresolved-only, makes no mutating call, and emits thread IDs that scripts/reviews/disposition --thread accepts. scripts/reviews/inline posts findings as ONE submitted review and refuses to post anything when a finding is not anchored to an addressable diff line, naming the offending finding." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Review threads/inline self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The review threads/inline contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   worktree-manager-self-test:
