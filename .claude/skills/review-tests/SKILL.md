@@ -16,7 +16,7 @@ proof-ready.
 
 ## Orchestration affordances
 
-### Lane-root decision
+### Lane-root decisions
 
 The lane root retains proof sufficiency and decides whether findings require proof
 repair, issue correction, candidate work, or an explicit `NOT_PROVEN` boundary. A

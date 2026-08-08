@@ -33,7 +33,7 @@ A clean proof review is valid. Do not add broad tests merely to demonstrate effo
 
 ## Orchestration affordances
 
-### Lane-root decision
+### Lane-root decisions
 
 The lane root retains the proof-sufficiency judgment and decides whether findings require
 proof repair, issue correction, candidate work, or an explicit `NOT_PROVEN` boundary.
