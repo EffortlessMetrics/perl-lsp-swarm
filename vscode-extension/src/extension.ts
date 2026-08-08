@@ -1302,6 +1302,60 @@ function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      provideCompletionItem: async (document, position, context, token, next) => {
+        try {
+          const result = await next(document, position, context, token);
+          recordLspProviderOutcome('Completion', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Completion', error);
+        }
+      },
+      provideDefinition: async (document, position, token, next) => {
+        try {
+          const result = await next(document, position, token);
+          recordLspProviderOutcome('Definition', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Definition', error);
+        }
+      },
+      provideHover: async (document, position, token, next) => {
+        try {
+          const result = await next(document, position, token);
+          recordLspProviderOutcome('Hover', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Hover', error);
+        }
+      },
+      provideReferences: async (document, position, options, token, next) => {
+        try {
+          const result = await next(document, position, options, token);
+          recordLspProviderOutcome('References', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('References', error);
+        }
+      },
+      provideDocumentSymbols: async (document, token, next) => {
+        try {
+          const result = await next(document, token);
+          recordLspProviderOutcome('Symbols', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Symbols', error);
+        }
+      },
+      provideRenameEdits: async (document, position, newName, token, next) => {
+        try {
+          const result = await next(document, position, newName, token);
+          recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Rename', error);
+        }
+      },
       provideCodeLenses: async (document, token, next) => {
         const lenses = await next(document, token);
         return lenses?.map(rewriteTestLensCommand);
@@ -1379,6 +1433,112 @@ function createLanguageClient(serverPath: string): LanguageClient {
   });
   void lc.setTrace(getTraceLevel());
   return lc;
+}
+
+function recordLspProviderOutcome(
+  label: string,
+  document: vscode.TextDocument,
+  result: unknown,
+  emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
+): void {
+  const presentation = presentLspProviderOutcome(
+    label,
+    result,
+    activeDocumentReadiness.isReady(document.uri.toString()),
+    emptyOutcome,
+  );
+  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+}
+
+function handleLspProviderError(label: string, error: unknown): null {
+  if (isRequestCancellation(error)) {
+    return null;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const presentation = presentLspProviderError(label, message);
+  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  outputChannel?.warn(`[provider] ${label} failed: ${message}`);
+  return null;
+}
+
+function isRequestCancellation(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === -32800
+  );
+}
+
+function providerResultHasValue(result: unknown): boolean {
+  if (result === undefined || result === null) {
+    return false;
+  }
+  if (Array.isArray(result)) {
+    return result.length > 0;
+  }
+  if (typeof result === 'object' && 'items' in result) {
+    const items = (result as { items?: unknown }).items;
+    return Array.isArray(items) ? items.length > 0 : Boolean(items);
+  }
+  return true;
+}
+
+export function presentLspProviderOutcome(
+  label: string,
+  result: unknown,
+  ready: boolean,
+  emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
+): {
+  providerOutcome: 'exact_current' | 'legitimate_empty' | 'safe_refusal' | 'not_ready';
+  detail: string;
+  action?: string;
+  reasonCode: string;
+} {
+  if (!ready) {
+    return {
+      providerOutcome: 'not_ready',
+      detail: `${label} is waiting for the active Perl document and workspace index to become ready.`,
+      action: 'Wait for workspace readiness, then retry the request.',
+      reasonCode: `${label.toLowerCase()}_before_readiness`,
+    };
+  }
+  if (providerResultHasValue(result)) {
+    return {
+      providerOutcome: 'exact_current',
+      detail: `${label} returned a current source-backed result.`,
+      reasonCode: `${label.toLowerCase()}_result_available`,
+    };
+  }
+  return emptyOutcome === 'safe_refusal'
+    ? {
+        providerOutcome: 'safe_refusal',
+        detail: `${label} declined to produce an edit for this request.`,
+        action: 'Review the provider decision before applying changes.',
+        reasonCode: `${label.toLowerCase()}_safe_refusal`,
+      }
+    : {
+        providerOutcome: 'legitimate_empty',
+        detail: `${label} returned no result for the current source.`,
+        reasonCode: `${label.toLowerCase()}_legitimate_empty`,
+      };
+}
+
+export function presentLspProviderError(
+  label: string,
+  message: string,
+): {
+  providerOutcome: 'product_or_instrument_error';
+  detail: string;
+  action: string;
+  reasonCode: string;
+} {
+  return {
+    providerOutcome: 'product_or_instrument_error',
+    detail: `${label} failed: ${message}`,
+    action: 'Run the Health Check or inspect the provider decision explanation.',
+    reasonCode: `${label.toLowerCase()}_provider_error`,
+  };
 }
 
 export function shouldNudgeArrowCompletion(linePrefix: string): boolean {

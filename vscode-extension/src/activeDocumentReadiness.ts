@@ -58,6 +58,11 @@ export class ActiveDocumentReadiness {
     }
   }
 
+  /** Whether the current generation may answer provider requests for a URI. */
+  public isReady(uri: string): boolean {
+    return this.indexReady || this.readyUris.has(uri);
+  }
+
   private resolveWaiters(uri: string): void {
     const waiters = this.waiters.get(uri);
     if (!waiters) {
