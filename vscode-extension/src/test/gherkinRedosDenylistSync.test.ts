@@ -23,7 +23,10 @@ const SRC = path.resolve(__dirname, '..', '..', 'src');
 
 function readDenylist(file: string): { name: string; pattern: RegExp } {
   const source = fs.readFileSync(path.join(SRC, file), 'utf8');
-  const match = source.match(/const (POTENTIALLY_\w+_REGEX_RE) =\s*\n\s*(\/.*\/);/);
+  // `\s*` rather than `\s*\n\s*`: the declaration currently wraps after the
+  // `=`, but a formatter is free to collapse it onto one line, and this test
+  // failing to *find* the constant would be a confusing way to learn that.
+  const match = source.match(/const (POTENTIALLY_\w+_REGEX_RE) =\s*(\/.*\/);/);
   if (!match?.[1] || !match[2]) {
     throw new Error(`could not locate the ReDoS denylist declaration in ${file}`);
   }
