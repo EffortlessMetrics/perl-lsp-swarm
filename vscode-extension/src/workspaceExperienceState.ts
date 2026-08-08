@@ -75,7 +75,19 @@ function effectiveLifecycle(snapshot: WorkspaceExperienceSnapshot): WorkspaceLif
   }
 }
 
-function detailTooltip(snapshot: WorkspaceExperienceSnapshot, fallback: string): string {
+/**
+ * Trailing click affordance.
+ *
+ * States that have one obvious repair name it, so a user in a broken state is
+ * told what clicking does rather than being offered generic "options".
+ */
+type ClickAffordance = 'click for options' | 'click to restart';
+
+function detailTooltip(
+  snapshot: WorkspaceExperienceSnapshot,
+  fallback: string,
+  affordance: ClickAffordance = 'click for options',
+): string {
   const details = [snapshot.detail ?? fallback];
   if (snapshot.reasonCode) {
     details.push(`Reason: ${snapshot.reasonCode}`);
@@ -83,7 +95,7 @@ function detailTooltip(snapshot: WorkspaceExperienceSnapshot, fallback: string):
   if (snapshot.action) {
     details.push(`Next: ${snapshot.action}`);
   }
-  return `${details.join(' — ')} (click for options)`;
+  return `${details.join(' — ')} (${affordance})`;
 }
 
 function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
@@ -191,7 +203,7 @@ export function presentWorkspaceExperience(
       return {
         mode: 'stopped',
         text: snapshot.detail ? '$(error) perl-lsp: failed' : '$(error) perl-lsp: stopped',
-        tooltip: detailTooltip(snapshot, 'Perl Language Server has stopped'),
+        tooltip: detailTooltip(snapshot, 'Perl Language Server has stopped', 'click to restart'),
         background: 'error',
       };
   }

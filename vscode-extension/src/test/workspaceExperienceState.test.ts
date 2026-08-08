@@ -73,6 +73,40 @@ describe('workspace experience presentation', () => {
     expect(presentation.background).toBe('error');
   });
 
+  test('tells a stopped user how to recover instead of offering generic options', () => {
+    const presentation = presentWorkspaceExperience({ lifecycle: 'failed' });
+
+    expect(presentation.mode).toBe('stopped');
+    expect(presentation.background).toBe('error');
+    // The pre-experience-state widget ended this tooltip with "(click to
+    // restart)". A failed server is the one state where the click target is
+    // not a menu of options but the single repair, so the affordance must
+    // survive the projection through presentWorkspaceExperience.
+    expect(presentation.tooltip).toBe('Perl Language Server has stopped (click to restart)');
+  });
+
+  test('keeps the restart affordance when a failure carries diagnostic detail', () => {
+    const presentation = presentWorkspaceExperience({
+      lifecycle: 'failed',
+      detail: 'The server exited during startup.',
+      reasonCode: 'startup_exit',
+    });
+
+    expect(presentation.tooltip).toContain('The server exited during startup.');
+    expect(presentation.tooltip).toContain('Reason: startup_exit');
+    expect(presentation.tooltip.endsWith('(click to restart)')).toBe(true);
+  });
+
+  test('leaves non-failure states on the generic options affordance', () => {
+    const ready = presentWorkspaceExperience({ lifecycle: 'ready' });
+    const actionRequired = presentWorkspaceExperience({
+      lifecycle: 'configuration_action_required',
+    });
+
+    expect(ready.tooltip.endsWith('(click for options)')).toBe(true);
+    expect(actionRequired.tooltip.endsWith('(click for options)')).toBe(true);
+  });
+
   test('retains workspace indexing telemetry without changing semantic ownership', () => {
     const presentation = presentWorkspaceExperience(
       { lifecycle: 'indexing_workspace' },
