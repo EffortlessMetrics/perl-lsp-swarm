@@ -476,6 +476,11 @@ impl LspServer {
         symbol: &str,
         new_name_bare: &str,
     ) -> Option<Result<(Value, usize), RenamePackagePilotIneligibleReason>> {
+        // Sample after the rename readiness wait and before semantic queries; do
+        // not call while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
+        if self.workspace_index_stale_for_document(uri) {
+            return None;
+        }
         let byte_offset = u32::try_from(byte_offset).ok()?;
         workspace_index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
@@ -2571,6 +2576,69 @@ mod tests {
         assert!(
             edits.len() >= 2,
             "stale workspace index should fall back to same-file edits: {rename_result}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): generation N+1 open document must not drive
+    /// `package_rename_live_pilot_workspace_edit` from an indexed generation N
+    /// workspace snapshot.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_rename_live_pilot_skips_generation_stale_workspace_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Pilot/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/Pilot/Caller.pm";
+        let request_source = "package Pilot::Pkg;\nsub target { 1 }\n1;\n";
+        let caller_source = "package Pilot::Caller;\nsub run { Pilot::Pkg::target(); }\n1;\n";
+        let request_source_v2 = "package Pilot::Pkg;\nsub target { 1 }\n# stale\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+        server.test_apply_did_open(caller_uri, caller_source, 1)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace index coordinator")?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(request_uri)?, request_source.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(caller_uri)?, caller_source.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator.transition_to_ready(
+            coordinator.index().file_count(),
+            coordinator.index().symbol_count(),
+        );
+
+        server
+            .test_replace_document_without_index(request_uri, request_source_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_document(request_uri),
+            "test setup must leave the request document newer than the workspace index"
+        );
+
+        let (line, character) = position_of(request_source_v2, "target {")?;
+        let rename_result = server
+            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))?
+            .ok_or("missing generation-stale package rename result")?;
+
+        let changes = rename_result
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing generation-stale workspace edit changes")?;
+        assert!(
+            !changes.contains_key(caller_uri),
+            "stale workspace index must not drive cross-file package pilot edits: {rename_result}"
+        );
+        let request_edits = changes
+            .get(request_uri)
+            .and_then(Value::as_array)
+            .ok_or("missing generation-stale same-file edits")?;
+        assert!(
+            !request_edits.is_empty(),
+            "generation-stale package rename should still fall back to same-file edits: {rename_result}"
         );
 
         Ok(())
