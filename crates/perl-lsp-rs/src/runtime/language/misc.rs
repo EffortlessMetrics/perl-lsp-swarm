@@ -427,17 +427,16 @@ impl LspServer {
                 None
             };
 
-            #[cfg(feature = "workspace")]
-            let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
-            #[cfg(not(feature = "workspace"))]
-            let workspace_index_stale = false;
-
-            let documents = self.documents_guard();
-            let doc = self.get_document(&documents, uri).ok_or_else(|| JsonRpcError {
-                code: INVALID_REQUEST,
-                message: format!("Document not open: {}", uri),
-                data: None,
-            })?;
+            // Clone the current document snapshot and release the mutex before
+            // parameter-hint resolution can query the workspace index.
+            let doc = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned().ok_or_else(|| JsonRpcError {
+                    code: INVALID_REQUEST,
+                    message: format!("Document not open: {}", uri),
+                    data: None,
+                })?
+            };
             let parsed = doc.current_parsed();
             if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                 let mut hints = Vec::new();
@@ -453,7 +452,7 @@ impl LspServer {
                     // unreachable under `--lib` coverage (same class as #1301 false-low, #1282).
                     #[cfg(feature = "workspace")]
                     let ws_resolver = |method: &str| -> Option<Vec<String>> {
-                        let sig = self.resolve_method_in_workspace(method, workspace_index_stale)?;
+                        let sig = self.resolve_method_in_workspace(method)?;
                         let params = sig.get("parameters")?.as_array()?;
                         let names: Vec<String> = params
                             .iter()
@@ -471,7 +470,7 @@ impl LspServer {
 
                     hints.extend(crate::inlay_hints::parameter_hints_with_resolver(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                         Some(&ws_resolver),
                     ));
@@ -479,7 +478,7 @@ impl LspServer {
                 if type_hints {
                     hints.extend(crate::inlay_hints::trivial_type_hints(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                     ));
                 }
