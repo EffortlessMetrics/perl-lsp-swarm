@@ -63,6 +63,17 @@ fn unless_block_lowers_to_one_branch_node() {
 }
 
 #[test]
+fn ternary_lowers_to_unknown_context_on_flat_path() {
+    // The flat HIR path receives the same BranchShell as if/unless, but a
+    // ternary is a value-producing rvalue. Its enclosing Scalar/List context
+    // is not modeled here, so it must stay Unknown rather than Void.
+    let graph = lower("my $x = $c ? 1 : 2;");
+    let branch = first_branch_node(&graph);
+
+    assert_eq!(branch.context, PirContext::Unknown);
+}
+
+#[test]
 fn if_elsif_else_lowers_to_one_branch_node() {
     // `if ($a) {} elsif ($b) {} else {}` lowers to a single BranchShell HIR
     // item. PIR v0 emits one Branch node from that single shell.
