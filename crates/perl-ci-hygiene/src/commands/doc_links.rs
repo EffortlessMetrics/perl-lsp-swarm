@@ -135,7 +135,7 @@ fn display_path(repo_root: &Path, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::check_doc_links;
+    use super::{check_doc_links, check_file};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -179,6 +179,44 @@ mod tests {
         let exit_code = check_doc_links(&root, None)?;
         if exit_code != 0 {
             return Err(format!("expected clean-link result, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_skips_non_markdown_files_and_directories() -> TestResult {
+        let root = unique_temp_dir("skipped-entries")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(docs.join("ignored.md"))?;
+        fs::write(docs.join("notes.txt"), "[missing](missing-from-non-markdown-file.md)\n")?;
+        fs::write(docs.join("source.md"), "[target](target.md)\n")?;
+        fs::write(docs.join("target.md"), "target\n")?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(format!("expected skipped entries to be ignored, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_file_reports_documentation_read_errors_with_path_context() -> TestResult {
+        let root = unique_temp_dir("read-error")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        let source = docs.join("invalid.md");
+        fs::write(&source, [0xff, 0xfe])?;
+
+        let error = match check_file(&root, &source) {
+            Ok(_) => return Err("invalid UTF-8 should fail to read".into()),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        if !message.contains("failed to read documentation file") || !message.contains("invalid.md")
+        {
+            return Err(format!("unexpected documentation read error: {message}").into());
         }
         fs::remove_dir_all(root)?;
         Ok(())
