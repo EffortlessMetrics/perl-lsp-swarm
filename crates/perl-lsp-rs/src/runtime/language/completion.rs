@@ -448,7 +448,7 @@ impl LspServer {
         if !(budget.should_continue)() {
             return None;
         }
-        if self.workspace_index_stale_for_document(uri) {
+        if self.workspace_index_stale_for_any_open_document() {
             return None;
         }
         let index = coordinator.index();
@@ -1248,7 +1248,7 @@ impl LspServer {
 
             // Use routing to determine workspace index access mode
             let mut workspace_mode = route_index_access(self.coordinator());
-            if self.workspace_index_stale_for_document(uri) {
+            if self.workspace_index_stale_for_any_open_document() {
                 workspace_mode = IndexAccessMode::None;
             }
 
@@ -1581,7 +1581,7 @@ impl LspServer {
 
             // Use routing to determine workspace index access mode
             let mut workspace_mode = route_index_access(self.coordinator());
-            if self.workspace_index_stale_for_document(uri) {
+            if self.workspace_index_stale_for_any_open_document() {
                 workspace_mode = IndexAccessMode::None;
             }
 
@@ -3053,6 +3053,72 @@ mod tests {
             receipt.get("workspace_index_state").and_then(Value::as_str),
             Some("none"),
             "stale current-document index must downgrade cancellable completion index access"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): cross-file completion must not use the
+    /// workspace index tier while an unrelated open document is ahead of the
+    /// indexed snapshot.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn completion_skips_workspace_index_when_unrelated_open_document_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/completion_source.pl";
+        let unrelated_uri = "file:///workspace/completion_unrelated.pl";
+        let source_text = "package CompletionSource;\nmy $ready = 1;\n$re\n";
+        let unrelated_v1 = "package CompletionUnrelated;\nsub helper {}\n";
+        let unrelated_v2 = "package CompletionUnrelated;\nsub renamed {}\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": source_uri, "version": 1 },
+            "position": { "line": 2, "character": 3 }
+        })))?;
+        let fresh = explain_provider_decision(&server, "completion")?;
+        let fresh_receipt = fresh
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing fresh completion request receipt")?;
+        assert_eq!(
+            fresh_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("full"),
+            "fresh completion request should observe the full index: {fresh:?}"
+        );
+
+        server
+            .test_replace_document_without_index(unrelated_uri, unrelated_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": source_uri, "version": 1 },
+            "position": { "line": 2, "character": 3 }
+        })))?;
+        let stale = explain_provider_decision(&server, "completion")?;
+        let stale_receipt = stale
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing stale completion request receipt")?;
+        assert_eq!(
+            stale_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "unrelated stale open document must disable cross-file completion index access: {stale:?}"
+        );
+        assert!(
+            stale_receipt.get("semantic_shadow_receipt").is_none(),
+            "stale workspace index must not run completion visibility shadow queries"
         );
 
         Ok(())
