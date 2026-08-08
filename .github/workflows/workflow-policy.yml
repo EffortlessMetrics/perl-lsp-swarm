@@ -48,15 +48,17 @@ jobs:
       contents: read
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.TESTED_SHA }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Generate exact candidate baseline
+      - name: Generate exact final-candidate baseline
         run: |
           rm -f .github/workflows/agent-build-security-6041.yml .github/workflows/agent-run-security-6041.yml .agent-trigger-6041
+          git show "$BASE_SHA:.github/workflows/workflow-policy.yml" > .github/workflows/workflow-policy.yml
           python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
           python3 scripts/ci/workflow_security_ratchet.py baseline \
             --root . \
@@ -83,3 +85,73 @@ jobs:
             scripts/ci/test_workflow_security_ratchet.py
           if-no-files-found: error
           retention-days: 3
+
+  agent-write-baseline-6041:
+    needs: agent-export-6041
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/security-workflow-ratchet-6041'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download read-only generated product
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: security-6041-product-${{ github.run_id }}
+          path: product
+      - name: Validate product and stage only the baseline
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('product')
+          expected = {
+              '.github/workflows/workflow-security-ratchet.yml',
+              '.ci/workflow-security-baseline.json',
+              'scripts/ci/workflow_security_ratchet.py',
+              'scripts/ci/test_workflow_security_ratchet.py',
+          }
+          actual = {
+              path.relative_to(root).as_posix()
+              for path in root.rglob('*')
+              if path.is_file()
+          }
+          if actual != expected:
+              raise SystemExit(f'unexpected product files: {sorted(actual ^ expected)}')
+          for relative in expected - {'.ci/workflow-security-baseline.json'}:
+              if Path(relative).read_bytes() != (root / relative).read_bytes():
+                  raise SystemExit(f'product source mismatch: {relative}')
+          payload = json.loads((root / '.ci/workflow-security-baseline.json').read_text(encoding='utf-8'))
+          if payload.get('schema_version') != 1 or not isinstance(payload.get('findings'), list):
+              raise SystemExit('invalid generated baseline envelope')
+          Path('.ci').mkdir(parents=True, exist_ok=True)
+          Path('.ci/workflow-security-baseline.json').write_bytes(
+              (root / '.ci/workflow-security-baseline.json').read_bytes()
+          )
+          PY
+          git add .ci/workflow-security-baseline.json
+          test "$(git diff --cached --name-only)" = ".ci/workflow-security-baseline.json"
+      - name: Commit verified baseline to the feature branch
+        if: hashFiles('.ci/workflow-security-baseline.json') != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if git diff --cached --quiet; then
+            echo "Baseline already current"
+            exit 0
+          fi
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "security(ci): record workflow security debt baseline"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git"
+          git push origin HEAD:agent/security-workflow-ratchet-6041
