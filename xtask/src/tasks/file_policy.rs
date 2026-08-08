@@ -370,23 +370,36 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Check the committed Markdown inventory against a fresh tracked-file scan.
+/// Check the tracked-file classification against the allowlist.
 ///
-/// This mode is read-only: it does not rewrite the generated inventory or the
-/// target receipts. Use `cargo xtask non-rust inventory` to refresh them.
+/// The committed Markdown inventory is generated documentation, so it may be
+/// behind a concurrent merge. Classification is the blocking contract; stale
+/// generated documentation is reported as a warning and can be refreshed by
+/// `cargo xtask non-rust inventory`.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     let records = build_inventory(root)?;
+    let unclassified: Vec<&FileRecord> =
+        records.iter().filter(|record| record.category == "unclassified").collect();
+    if !unclassified.is_empty() {
+        let paths = unclassified.iter().map(|record| record.path.as_str()).collect::<Vec<_>>();
+        bail!(
+            "non-Rust inventory has {} unclassified tracked file(s): {}; add matching entries to policy/non-rust-allowlist.toml",
+            unclassified.len(),
+            paths.join(", ")
+        );
+    }
+
     let expected = render_markdown(&records);
     let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
     let actual = fs::read_to_string(&docs_path)
         .with_context(|| format!("reading committed inventory {}", docs_path.display()))?;
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
-        bail!(
-            "non-Rust inventory is stale at {}; run `cargo xtask non-rust inventory` to regenerate it",
+        eprintln!(
+            "warning: non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory` to regenerate it",
             docs_path.display()
         );
     }
-    println!("Non-Rust inventory is current: {}", docs_path.display());
+    println!("Non-Rust inventory classification is current: {}", docs_path.display());
     Ok(())
 }
 
@@ -2322,7 +2335,7 @@ mod tests {
     }
 
     #[test]
-    fn non_rust_inventory_check_accepts_current_and_rejects_stale_docs() -> Result<()> {
+    fn non_rust_inventory_check_accepts_current_and_stale_docs() -> Result<()> {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
@@ -2336,10 +2349,25 @@ mod tests {
         non_rust_inventory_check(temp.path())?;
 
         fs::write(&docs_path, "stale\n")?;
+        non_rust_inventory_check(temp.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_rejects_unclassified_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(
+            temp.path(),
+            &[("README.md", "# Fixture\n"), ("scripts/tool.py", "print('fixture')\n")],
+        )?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        non_rust_inventory(temp.path())?;
+
         let error = non_rust_inventory_check(temp.path())
             .err()
-            .ok_or_else(|| eyre!("expected stale inventory failure"))?;
-        assert!(error.to_string().contains("inventory is stale"));
+            .ok_or_else(|| eyre!("expected unclassified inventory failure"))?;
+        assert!(error.to_string().contains("scripts/tool.py"));
+        assert!(error.to_string().contains("unclassified tracked file"));
         Ok(())
     }
 

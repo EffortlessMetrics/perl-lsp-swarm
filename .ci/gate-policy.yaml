@@ -1065,7 +1065,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Verify the tracked non-Rust inventory document matches the current tree"
+    description: "Verify every tracked non-Rust file has a current allowlist classification"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300
