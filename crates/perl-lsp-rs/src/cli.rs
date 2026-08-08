@@ -344,6 +344,12 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
             "perl_lsp=info,perl_lsp_rs_core=info,info",
             "warn",
         ));
+    } else {
+        // Initialize a conservative default subscriber even when logging was
+        // not explicitly requested. This ensures warnings and errors are
+        // captured to stderr for troubleshooting, instead of silently
+        // discarded (#5013).
+        init_logging("warn,perl_lsp=info");
     }
     startup_timer.checkpoint("logging_init");
 
