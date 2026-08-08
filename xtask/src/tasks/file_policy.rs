@@ -374,9 +374,25 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
 ///
 /// The committed Markdown inventory is generated documentation, so it may be
 /// behind a concurrent merge. The scan and classification must still complete;
-/// stale generated documentation and existing unclassified backlog are reported
-/// as warnings and can be refreshed with `cargo xtask non-rust inventory`.
+/// stale generated documentation and the existing unclassified backlog are
+/// reported as warnings. A newly added unclassified file is a blocking error.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
+    let baseline = resolve_inventory_baseline(root);
+    non_rust_inventory_check_with_baseline(root, baseline.as_deref())
+}
+
+fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -> Result<()> {
+    let mut policy_errors = Vec::new();
+    validate_policy_table(
+        &root.join("policy/non-rust-allowlist.toml"),
+        "allow",
+        true,
+        &mut policy_errors,
+    );
+    if !policy_errors.is_empty() {
+        bail!("non-Rust allowlist validation failed: {}", policy_errors.join("; "));
+    }
+
     let records = build_inventory(root)?;
     let unclassified: Vec<&FileRecord> =
         records.iter().filter(|record| record.category == "unclassified").collect();
@@ -384,6 +400,29 @@ pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
         eprintln!(
             "warning: non-Rust inventory has {} unclassified tracked file(s); inspect policy/non-rust-allowlist.toml",
             unclassified.len()
+        );
+    }
+
+    if let Some(baseline) = baseline {
+        let added_paths = added_paths_since(root, baseline)?;
+        let newly_unclassified: Vec<&FileRecord> = unclassified
+            .iter()
+            .copied()
+            .filter(|record| added_paths.iter().any(|path| path == &record.path))
+            .collect();
+        if !newly_unclassified.is_empty() {
+            let paths = newly_unclassified
+                .iter()
+                .map(|record| record.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "newly added tracked non-Rust file(s) are unclassified: {paths}; add allowlist entries before merging"
+            );
+        }
+    } else {
+        eprintln!(
+            "warning: cannot resolve a merge baseline; newly added unclassified files were not checked"
         );
     }
 
@@ -399,6 +438,52 @@ pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     }
     println!("Non-Rust inventory scan completed: {}", docs_path.display());
     Ok(())
+}
+
+fn resolve_inventory_baseline(root: &Path) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Ok(scope_base) = std::env::var("CI_SCOPE_BASE") {
+        candidates.push(scope_base);
+    }
+    if let Ok(base_ref) = std::env::var("GITHUB_BASE_REF") {
+        candidates.push(format!("origin/{base_ref}"));
+        candidates.push(base_ref);
+    }
+    candidates.extend(["origin/main".to_string(), "HEAD^".to_string()]);
+
+    candidates.into_iter().find(|candidate| {
+        Command::new("git")
+            .args(["rev-parse", "--verify", candidate])
+            .current_dir(root)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
+}
+
+fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
+    let range = format!("{baseline}..HEAD");
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=A", "-z", baseline, "HEAD"])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("running `git diff --name-only --diff-filter=A -z {range}`"))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "`git diff --name-only --diff-filter=A -z {range}` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            let path = String::from_utf8(path.to_vec())
+                .with_context(|| "git diff produced a non-UTF-8 path")?;
+            Ok(path.replace('\\', "/"))
+        })
+        .collect()
 }
 
 fn normalize_line_endings(value: &str) -> String {
@@ -2362,6 +2447,63 @@ mod tests {
         non_rust_inventory(temp.path())?;
 
         non_rust_inventory_check(temp.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_rejects_new_unclassified_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(
+            temp.path(),
+            &[("README.md", "# Fixture\n"), ("scripts/existing.py", "print('fixture')\n")],
+        )?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        non_rust_inventory(temp.path())?;
+        run_git(temp.path(), &["add", "."])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "baseline",
+            ],
+        )?;
+
+        write_fixture(temp.path(), "scripts/new.py", "print('new')\n")?;
+        run_git(temp.path(), &["add", "scripts/new.py"])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "candidate",
+            ],
+        )?;
+
+        assert!(non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD^")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_rejects_invalid_allowlist_classification() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        write_fixture(
+            temp.path(),
+            "policy/non-rust-allowlist.toml",
+            &readme_allowlist_toml()?
+                .replace("classification = \"documentation\"", "classification = \"toolng\""),
+        )?;
+
+        assert!(non_rust_inventory_check(temp.path()).is_err());
         Ok(())
     }
 
