@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10164 |
+| Total tracked files | 10166 |
 | Rust-family files | 3079 |
-| Non-Rust files | 7085 |
-| Allowlisted | 4768 |
+| Non-Rust files | 7087 |
+| Allowlisted | 4770 |
 | Unclassified | 2317 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 236 |
+| config | 238 |
 | documentation | 2248 |
 | generated | 1 |
 | production | 211 |
 | test | 1753 |
-| tooling | 319 |
+| tooling | 320 |
 | unclassified | 2317 |
 
 ## Unclassified files
@@ -2587,6 +2587,7 @@
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/installer-bootstrap-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/methodology-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-core-harness.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -5509,6 +5510,7 @@
 | `scripts/tests/test-generate-badges-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ignored-test-count-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-install-bootstrap-identity.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-githooks-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-target-selection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-termux-detection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
