@@ -979,12 +979,19 @@ impl HeadLineExtents {
                     present.insert(normalize_repo_relative_path(new_path), lines);
                 }
             }
-            if let Some(old_path) = entry.old_path.as_deref() {
-                removed.insert(normalize_repo_relative_path(old_path));
+            // Removal is read from the status code, never inferred from "has an old
+            // path but no extent". `M` and `T` carry `old_path == new_path`, so
+            // inferring would turn a failed `git show` on a *modified* file into a
+            // phantom deletion and silently drop its findings — fail-open, the one
+            // direction this filter must never take. `C` leaves its source in place;
+            // only `D` and `R` remove one.
+            if entry.status.starts_with(['D', 'R']) {
+                if let Some(old_path) = entry.old_path.as_deref() {
+                    removed.insert(normalize_repo_relative_path(old_path));
+                }
             }
         }
-        // A rename's old path is removed, but a path that is also some entry's new
-        // path still exists at head and must keep its extent.
+        // A path some other entry adds back still exists at head and keeps its extent.
         removed.retain(|path| !present.contains_key(path));
         Self { present, removed }
     }
@@ -3596,6 +3603,77 @@ paths = ["archive/["]
         // Suffix matching respects path boundaries rather than raw string ends.
         assert_eq!(extents.resolve("vendored_check_version_sync.rs"), HeadPathState::Unknown);
         assert_eq!(extents.resolve("some/other/file.rs"), HeadPathState::Unknown);
+    }
+
+    fn diff_receipt(head_sha: &str, entries: Vec<CommittedDiffEntry>) -> CommittedDiffReceipt {
+        CommittedDiffReceipt {
+            schema_version: "ripr_committed_diff.v1".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            base_sha: "base-sha".to_string(),
+            head_sha: head_sha.to_string(),
+            diff_digest: "digest".to_string(),
+            changed_paths: Vec::new(),
+            entries,
+        }
+    }
+
+    /// `git diff --name-status` gives `M` and `T` entries the same value for `old_path`
+    /// and `new_path`. Treating "has an old path, has no extent" as removal therefore
+    /// turns any failed `git show` on a *modified* file into a phantom deletion, which
+    /// would drop every real finding on it — fail-open, the one direction this filter
+    /// must never take. Removal is read from the status code instead, so a modified file
+    /// whose blob cannot be read resolves `Unknown` and keeps its findings counted.
+    #[test]
+    fn a_modified_file_with_an_unreadable_blob_is_unknown_not_removed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let head = run_git(repo, &["rev-parse", "HEAD"])?;
+        // `absent.rs` is not in this revision, so the extent lookup fails the same way an
+        // unreadable blob would.
+        let diff = diff_receipt(
+            &head,
+            vec![CommittedDiffEntry {
+                status: "M".to_string(),
+                old_path: Some("absent.rs".to_string()),
+                new_path: Some("absent.rs".to_string()),
+            }],
+        );
+
+        let extents = HeadLineExtents::from_committed_diff(repo, &diff);
+
+        assert_eq!(extents.resolve("absent.rs"), HeadPathState::Unknown);
+        assert!(!extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "absent.rs", "line": 4 }
+        })));
+        Ok(())
+    }
+
+    /// A copy leaves its source in place, so `C` must not remove the source path.
+    #[test]
+    fn a_copy_source_is_not_treated_as_removed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let head = run_git(repo, &["rev-parse", "HEAD"])?;
+        let diff = diff_receipt(
+            &head,
+            vec![CommittedDiffEntry {
+                status: "C100".to_string(),
+                old_path: Some("tracked.txt".to_string()),
+                new_path: Some("copy.txt".to_string()),
+            }],
+        );
+
+        let extents = HeadLineExtents::from_committed_diff(repo, &diff);
+
+        // `tracked.txt` still exists at head; `copy.txt` does not exist in this fixture,
+        // so it stays `Unknown` rather than becoming a phantom deletion.
+        assert_eq!(extents.resolve("tracked.txt"), HeadPathState::Present(1));
+        assert_eq!(extents.resolve("copy.txt"), HeadPathState::Unknown);
+        Ok(())
     }
 
     /// Wiring proof: the extents actually come from the change's committed diff, so the
