@@ -6,7 +6,8 @@ user-invocable: false
 
 # Address review comments
 
-Read the current PR head, controlling issue, governing contract, proof, submitted reviews, inline threads, and relevant CI findings.
+Read the current PR head, controlling issue, governing contract, proof, submitted
+reviews, inline threads, and relevant CI findings.
 
 For each substantive finding choose one supported lowercase class:
 
@@ -17,6 +18,45 @@ superseded
 follow-up
 ```
 
+## Orchestration affordances
+
+### Lane-root decisions
+
+The lane root retains whether a finding is valid, stale, refuted, superseded, or a
+bounded follow-up; whether it changes claim/owner/proof/risk; the accepted repair; and
+which proof/review dimensions become stale.
+
+### Useful subagent work
+
+Use focused subagents, context forks, or an Agent Team only where useful for:
+
+- complete thread/review/finding inventory;
+- source and external-authority verification;
+- high-output CI log/artifact classification;
+- reproduction and production-path tracing;
+- proof/oracle challenge;
+- detecting a test, ratchet, support, or policy weakening disguised as a fix.
+
+Children return finding identity, direct/contradictory evidence, searched scope,
+classification, suggested disposition, uncertainty, and affected dimensions. They do
+not resolve threads or authorize repair.
+
+### Mutation owner and join
+
+One candidate writer integrates accepted repairs. The lane root joins duplicate or
+conflicting findings, verifies dispositions against current evidence, and decides which
+findings are repaired, refuted, superseded, followed up, blocked, or not proven.
+
+The join is complete only when every substantive finding has one supported visible
+disposition, accepted mutations have current affected proof, and material claim/owner
+changes have returned to the proper earlier route.
+
+### Return packet
+
+Return candidate/head identity, complete substantive finding set, classifications and
+dispositions, evidence, commits/issues used by the helper, affected proof/review
+results, unresolved contradictions, limitations, and typed result.
+
 ## Procedure
 
 1. Verify the finding against current source and authority; do not patch comments literally.
@@ -26,9 +66,19 @@ follow-up
 5. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
 6. If a reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.
 
-Do not use raw thread-resolution APIs, resolve performatively, or use pr-responded or reviewer-persona labels as evidence.
+Do not use raw thread-resolution APIs, resolve performatively, or use pr-responded or
+reviewer-persona labels as evidence.
 
-Finding verification and CI classification may fan out; the main thread joins dispositions and integrates accepted repairs.
+## GitHub boundary
+
+Localized findings and dispositions belong in their inline threads. Cross-cutting
+finding classes, material premise changes, or bounded follow-up decisions may update the
+PR/issue synthesis. Preserve the human-readable `Disposition:` / `Evidence:` reply and
+helper marker before resolution.
+
+Keep subagent/Team topology, raw logs, duplicate findings, temporary reproduction
+output, retries, and routine progress runtime-local. Do not post one subagent summary
+per finding or resolve merely to make the thread count green.
 
 ## Routes
 
