@@ -27,7 +27,7 @@ const PRINT_OFFSET: usize = 10;
 fn diagnostics(source: &str) -> Vec<Diagnostic> {
     let output = Parser::new(source).parse_with_recovery();
     let ast = Arc::new(output.ast);
-    let provider = DiagnosticsProvider::new(&ast);
+    let provider = DiagnosticsProvider::new();
     provider.get_diagnostics(&ast, &output.diagnostics, source, None)
 }
 

@@ -120,9 +120,7 @@ pub use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
 ///
 /// Analyzes Perl source code and generates diagnostic messages for
 /// parse errors, scope issues, and lint warnings.
-pub struct DiagnosticsProvider {
-    _ast: std::sync::Arc<Node>,
-}
+pub struct DiagnosticsProvider;
 
 impl DiagnosticsProvider {
     /// Create a new diagnostics provider.
@@ -130,8 +128,8 @@ impl DiagnosticsProvider {
     /// Source text is supplied per call to [`Self::get_diagnostics`] and related
     /// methods; it is not stored on the provider to avoid an extra full-document
     /// allocation on every diagnostic publish (#5053).
-    pub fn new(ast: &std::sync::Arc<Node>) -> Self {
-        Self { _ast: ast.clone() }
+    pub fn new() -> Self {
+        Self
     }
 
     /// Generate diagnostics for the given AST

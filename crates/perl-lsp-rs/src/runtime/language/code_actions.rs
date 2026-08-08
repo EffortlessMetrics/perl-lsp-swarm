@@ -537,7 +537,7 @@ impl LspServer {
                 std::sync::Arc::from([]);
             let parse_errors =
                 parsed.as_ref().map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
-            let diag_provider = DiagnosticsProvider::new(ast);
+            let diag_provider = DiagnosticsProvider::new();
             let mut diagnostics =
                 diag_provider.get_diagnostics(ast, &parse_errors, &doc.text, None);
             diagnostics.extend(self.context_diagnostics_for_code_actions(&params, doc));
