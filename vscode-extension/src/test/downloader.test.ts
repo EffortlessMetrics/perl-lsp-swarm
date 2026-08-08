@@ -352,6 +352,42 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   });
 });
 
+describe('BinaryDownloader internal ARM64 mirror compatibility', () => {
+  test('synthesizes both ARM64 and x64 candidates for internal mirrors', async () => {
+    const downloader = new BinaryDownloader(makeContext(), makeOutputChannel()) as unknown as {
+      getInternalRelease: (
+        baseUrl: string,
+        version: string,
+      ) => Promise<{
+        internal?: boolean;
+        assets: Array<{ name: string }>;
+      }>;
+    };
+
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true });
+    try {
+      const release = await downloader.getInternalRelease(
+        'https://mirror.example/perl-lsp',
+        'v0.17.0',
+      );
+      const names = release.assets.map((asset) => asset.name);
+      expect(release.internal).toBe(true);
+      expect(names).toContain(`perllsp-0.17.0-${WINDOWS_ARM64_TARGET}.zip`);
+      expect(names).toContain(`perllsp-0.17.0-${WINDOWS_X64_TARGET}.zip`);
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Local binary path construction
 // ---------------------------------------------------------------------------

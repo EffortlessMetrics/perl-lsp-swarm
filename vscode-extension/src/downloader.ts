@@ -20,6 +20,8 @@ interface ReleaseAsset {
 interface Release {
   tag_name: string;
   prerelease?: boolean;
+  /** Synthetic metadata produced for an internal download mirror. */
+  internal?: boolean;
   assets: ReleaseAsset[];
 }
 
@@ -526,7 +528,13 @@ export class BinaryDownloader {
         // release actually carries: prefer the native build, fall back to x64
         // emulation when it is absent. Resolved here because this is the first
         // point with the release's asset list in hand.
-        if (process.platform === 'win32' && process.arch === 'arm64') {
+        if (release.internal && process.platform === 'win32' && process.arch === 'arm64') {
+          // Internal mirrors historically served the x64 archive for ARM64.
+          // Synthetic metadata cannot establish which mirror files really
+          // exist, so do not let the native preference turn a working mirror
+          // into an unverified ARM64 URL.
+          target = WINDOWS_X64_TARGET;
+        } else if (process.platform === 'win32' && process.arch === 'arm64') {
           const selection = selectWindowsArm64Target(release.assets, release.tag_name, ext);
           this.outputChannel.appendLine(`Windows ARM64: ${selection.reason}`);
           if (selection.error) {
@@ -841,12 +849,15 @@ export class BinaryDownloader {
     // For internal hosting, create a synthetic release object
     // This assumes the internal server hosts files directly without GitHub API
     const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-    const target = this.getPlatformTarget();
     const ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
+    const isWindowsArm64 = process.platform === 'win32' && process.arch === 'arm64';
+    const targets = isWindowsArm64
+      ? [WINDOWS_ARM64_TARGET, WINDOWS_X64_TARGET]
+      : [this.getPlatformTarget()];
 
     // Try multiple naming patterns that might be used internally
     const possibleFilenames = [
-      ...buildBinaryAssetCandidateNames(version, target, ext),
+      ...targets.flatMap((target) => buildBinaryAssetCandidateNames(version, target, ext)),
       `perllsp${ext}`,
       `perl-lsp${ext}`,
     ];
@@ -865,6 +876,7 @@ export class BinaryDownloader {
 
     return {
       tag_name: version,
+      internal: true,
       assets,
     };
   }

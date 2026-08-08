@@ -123,18 +123,36 @@ if ($Version -eq "latest") {
 $VersionNum = $Tag.TrimStart("v")
 $ReleaseBaseUrl = "https://github.com/$Repo/releases/download/$Tag"
 
-# Probe for an asset without downloading it. Any non-success outcome -- 404,
-# a network error, a proxy that rejects HEAD -- is reported as "absent" so the
-# caller falls back rather than failing. Preferring the native build must never
-# be able to break an install that the fallback would have completed.
+# Probe for an asset without downloading it. A definitive 404 means the
+# release does not carry the native asset; transport/proxy failures are kept
+# distinct because they do not establish absence.
 function Test-ReleaseAsset {
     param([string]$AssetName)
 
     try {
         $Response = Invoke-WebRequest -Uri "$ReleaseBaseUrl/$AssetName" -Method Head -UseBasicParsing -ErrorAction Stop
-        return [int]$Response.StatusCode -lt 400
+        $StatusCode = [int]$Response.StatusCode
+        if ($StatusCode -eq 404) {
+            return [pscustomobject]@{ State = "absent" }
+        }
+        if ($StatusCode -ge 200 -and $StatusCode -lt 400) {
+            return [pscustomobject]@{ State = "present" }
+        }
+        return [pscustomobject]@{ State = "unknown"; StatusCode = $StatusCode }
     } catch {
-        return $false
+        $StatusCode = $null
+        if ($_.Exception.Response) {
+            try {
+                $StatusCode = [int]$_.Exception.Response.StatusCode
+            } catch {
+                # The response may not expose a numeric status code for a
+                # transport or proxy failure; retain the unknown state.
+            }
+        }
+        if ($StatusCode -eq 404) {
+            return [pscustomobject]@{ State = "absent" }
+        }
+        return [pscustomobject]@{ State = "unknown"; StatusCode = $StatusCode }
     }
 }
 
@@ -150,11 +168,12 @@ if ($IsArm64Host) {
 
     $NativeTarget = "aarch64-pc-windows-msvc"
     $NativeAsset = "$Name-$VersionNum-$NativeTarget.zip"
+    $AssetProbe = Test-ReleaseAsset $NativeAsset
 
-    if (Test-ReleaseAsset $NativeAsset) {
+    if ($AssetProbe.State -eq "present") {
         $Target = $NativeTarget
         Write-Info "Using the native ARM64 build for $Target"
-    } else {
+    } elseif ($AssetProbe.State -eq "absent") {
         # Emulation fallback only. The build floor belongs here and nowhere
         # else: it is a property of running x64 code on ARM64, so it must not
         # gate the native path above.
@@ -166,6 +185,18 @@ if ($IsArm64Host) {
 
         $Target = "x86_64-pc-windows-msvc"
         Write-Warn "$Tag ships no native ARM64 Windows build; using the x86_64 build, which runs under the x64 emulation in Windows 11 on ARM."
+    } else {
+        # An unknown probe result is not evidence that the native asset is
+        # absent. Windows 10 cannot safely use the x64 fallback, so fail with
+        # a retryable diagnosis instead of claiming that the release lacks the
+        # native asset. Windows 11 can still use the safe x64 fallback.
+        $WindowsBuild = Get-WindowsBuildNumber
+        if ($WindowsBuild -lt 22000) {
+            Write-Error "Could not determine whether $Tag carries the native ARM64 Windows build because the asset probe failed. Windows 10 ARM64 cannot safely fall back to x64 emulation; retry when the release can be checked, or build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
+        }
+
+        $Target = "x86_64-pc-windows-msvc"
+        Write-Warn "Could not verify the native ARM64 asset for $Tag; using the x86_64 build under Windows 11 x64 emulation."
     }
 } else {
     $Target = "x86_64-pc-windows-msvc"

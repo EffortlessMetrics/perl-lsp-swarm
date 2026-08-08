@@ -311,13 +311,14 @@ assert_windows_arm64_native_preference() {
     # the previous version of this assertion killed the run with no diagnostic
     # at all the moment the installer stopped matching it -- a gate that fails
     # closed but silently, which is nearly as unhelpful as failing open.
-    local native_line probe_line floor_line error_line fallback_line download_line
+    local native_line native_assignment_line probe_line floor_line error_line fallback_line download_line
 
     # The native target must be named as a whole literal, for the same reason
     # the triples are: this file cannot be executed on the Linux CI host, so
     # the contract is checked by reading the source.
     native_line="$(grep -nE '^[[:space:]]*\$NativeTarget[[:space:]]*=[[:space:]]*"aarch64-pc-windows-msvc"' "$file" | head -n1 | cut -d: -f1 || true)"
-    probe_line="$(grep -nE '^[[:space:]]*if \(Test-ReleaseAsset ' "$file" | head -n1 | cut -d: -f1 || true)"
+    probe_line="$(grep -nE '^[[:space:]]*\$AssetProbe[[:space:]]*=[[:space:]]*Test-ReleaseAsset ' "$file" | head -n1 | cut -d: -f1 || true)"
+    native_assignment_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=[[:space:]]*\$NativeTarget' "$file" | head -n1 | cut -d: -f1 || true)"
     floor_line="$(grep -nE '^[[:space:]]*if \(\$WindowsBuild -lt 22000\) \{' "$file" | head -n1 | cut -d: -f1 || true)"
     error_line="$(grep -nE 'Write-Error "[^"]*emulation requires Windows 11' "$file" | head -n1 | cut -d: -f1 || true)"
     fallback_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=[[:space:]]*"x86_64-pc-windows-msvc"' "$file" | head -n1 | cut -d: -f1 || true)"
@@ -330,6 +331,11 @@ assert_windows_arm64_native_preference() {
 
     if [[ -z "$probe_line" ]]; then
         fail "$label" "does not probe whether the release carries the native asset; preferring it unconditionally would 404 on every release predating that target"
+        return
+    fi
+
+    if [[ -z "$native_assignment_line" ]]; then
+        fail "$label" "does not assign the native target after probing it"
         return
     fi
 
@@ -349,6 +355,11 @@ assert_windows_arm64_native_preference() {
 
     if (( native_line >= probe_line )); then
         fail "$label" "the native target must be named before it is probed"
+        return
+    fi
+
+    if (( probe_line >= native_assignment_line )); then
+        fail "$label" "the native target must be assigned only after the asset probe succeeds"
         return
     fi
 
