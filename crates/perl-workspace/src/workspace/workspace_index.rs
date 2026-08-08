@@ -9221,10 +9221,7 @@ Utils::process_data();
         // find_references includes the definition site; count_usages excludes it.
         // Both read from the same global_references store, so they must agree on
         // the total reference count modulo the definition filter.
-        assert!(
-            !all_refs.is_empty(),
-            "find_references should return at least the definition site"
-        );
+        assert!(!all_refs.is_empty(), "find_references should return at least the definition site");
         assert_eq!(
             usages, 2,
             "count_usages should return the two call sites (not the definition), got {usages}"
