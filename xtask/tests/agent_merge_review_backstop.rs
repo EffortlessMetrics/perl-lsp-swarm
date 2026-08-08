@@ -61,14 +61,11 @@ fn merge_reconcile_requires_review_and_integration_for_both_providers(
     assert_review_backstop(&claude, "Claude");
 
     assert!(
-        codex.contains("`REVIEW_REQUIRED` → `$finish-pr` / `$review-pr`")
-            || codex.contains("`REVIEW_REQUIRED` → `$finish-pr` / `$final-challenge`")
-            || codex.contains("`REVIEW_REQUIRED` → `$finish-pr` / `$review-pr`"),
+        codex.contains("`REVIEW_REQUIRED` → `$finish-pr` / `$final-challenge`"),
         "Codex direct merge invocation must route backward through provider-native PR convergence"
     );
     assert!(
-        claude.contains("`REVIEW_REQUIRED` → `finish-pr` / `review-pr`")
-            || claude.contains("`REVIEW_REQUIRED` → `finish-pr` / `final-challenge`"),
+        claude.contains("`REVIEW_REQUIRED` → `finish-pr` / `final-challenge`"),
         "Claude direct merge invocation must route backward through provider-native PR convergence"
     );
 
