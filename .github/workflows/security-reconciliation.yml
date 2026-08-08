@@ -5,16 +5,22 @@ on:
     branches: [main, master]
     paths:
       - '.ci/security/may-2026-findings.json'
+      - '.ci/security/may-2026-findings/**'
       - 'docs/security/may-2026-findings.md'
       - 'scripts/ci/check_security_reconciliation.py'
+      - 'scripts/ci/security_reconciliation_model.py'
+      - 'scripts/ci/security_reconciliation_io.py'
       - 'scripts/ci/test_check_security_reconciliation.py'
       - '.github/workflows/security-reconciliation.yml'
   push:
     branches: [main, master]
     paths:
       - '.ci/security/may-2026-findings.json'
+      - '.ci/security/may-2026-findings/**'
       - 'docs/security/may-2026-findings.md'
       - 'scripts/ci/check_security_reconciliation.py'
+      - 'scripts/ci/security_reconciliation_model.py'
+      - 'scripts/ci/security_reconciliation_io.py'
       - 'scripts/ci/test_check_security_reconciliation.py'
       - '.github/workflows/security-reconciliation.yml'
   workflow_dispatch:
