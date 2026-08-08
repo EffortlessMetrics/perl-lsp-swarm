@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# scripts/reviews/threads — READ-ONLY enumeration of one PR's review threads (#6178).
+#
+# `scripts/reviews/disposition` is the only sanctioned resolve path and it
+# REQUIRES `--thread <threadId>`. Nothing told an agent where that ID comes
+# from: `scripts/reviews/state` returns an aggregate classification with no
+# per-thread identity, and the one `reviewThreads` query in the repo lives
+# inside `scripts/ci/check-pr-review-convergence-core`, which is a verdict gate
+# and never emits IDs. So every agent hand-rolled its own GraphQL, or skipped
+# dispositioning and left the PR parked at FINDINGS_OPEN.
+#
+# This script is that missing input. Its output feeds `disposition --thread`
+# unchanged.
+#
+# It is strictly read-only: one paged GraphQL query, no mutation of any kind.
+# Resolution stays exclusively in `scripts/reviews/disposition` (#3693 R1
+# FILE 3) — this script deliberately contains no resolve mutation.
+#
+# ── Usage ────────────────────────────────────────────────────────────────────
+#   scripts/reviews/threads <pr-number> [owner/repo] [--unresolved-only] [--json]
+#
+#   --unresolved-only  emit only threads with isResolved == false (the set that
+#                      actually blocks the merge — GitHub's conversation-
+#                      resolution rule ignores isOutdated, see #3679)
+#   --json             machine-readable object on stdout instead of the
+#                      human-readable listing
+#
+# If [owner/repo] is omitted it is resolved from the current checkout via
+# `gh repo view`.
+#
+# ── Output (--json) ──────────────────────────────────────────────────────────
+#   {
+#     "pr": 1234, "repo": "owner/name",
+#     "thread_count": N,          # after --unresolved-only filtering
+#     "unresolved_count": N, "unresolved_active": N, "unresolved_outdated": N,
+#     "threads": [ { "id", "isResolved", "isOutdated", "path",
+#                    "line", "line_is_original", "originalLine", "startLine",
+#                    "diffSide", "author", "url", "excerpt" } ]
+#   }
+#
+# `id` is the GraphQL node ID that `disposition --thread` accepts. `line` is
+# the current diff line, falling back to `originalLine` for an outdated thread
+# whose hunk no longer exists at HEAD (`line_is_original` records which).
+#
+# ── Exit codes ───────────────────────────────────────────────────────────────
+#   0 enumeration succeeded (including the zero-thread case)
+#   2 usage error, missing gh/jq, or GraphQL fetch failure
+set -euo pipefail
+
+die_usage() { echo "ERROR: $1" >&2; exit 2; }
+
+PR="" REPO_ARG="" UNRESOLVED_ONLY=0 AS_JSON=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --unresolved-only) UNRESOLVED_ONLY=1; shift ;;
+        --json)            AS_JSON=1; shift ;;
+        -h|--help)         sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -*)                die_usage "unknown argument: $1" ;;
+        *)
+            if [[ -z "$PR" ]]; then PR="$1"
+            elif [[ -z "$REPO_ARG" ]]; then REPO_ARG="$1"
+            else die_usage "unexpected positional argument: $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+[[ -n "$PR" ]] || die_usage "usage: $0 <pr-number> [owner/repo] [--unresolved-only] [--json]"
+[[ "$PR" =~ ^[0-9]+$ ]] || die_usage "<pr-number> must be a positive integer (got '$PR')"
+command -v jq >/dev/null 2>&1 || die_usage "jq not found on PATH"
+command -v gh >/dev/null 2>&1 || die_usage "gh not found on PATH"
+
+REPO="$REPO_ARG"
+if [[ -z "$REPO" ]]; then
+    REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+        || die_usage "could not resolve owner/repo from the current checkout; pass it explicitly"
+fi
+[[ "$REPO" == */* ]] || die_usage "[owner/repo] must look like owner/name (got '$REPO')"
+OWNER="${REPO%%/*}"
+NAME="${REPO##*/}"
+
+PAGE_SIZE="${REVIEW_THREADS_PAGE_SIZE:-50}"
+
+# ── Paged fetch ─────────────────────────────────────────────────────────────
+# PRs in this repo routinely exceed one page of review threads. Reading only
+# the first page would hand the agent a truncated list, it would disposition a
+# subset, and the PR would stay BLOCKED on threads it never saw.
+ALL_NODES="[]"
+CURSOR="null"
+HAS_NEXT="true"
+while [[ "$HAS_NEXT" == "true" ]]; do
+    AFTER_ARG=""
+    [[ "$CURSOR" == "null" ]] || AFTER_ARG=", after: \"$CURSOR\""
+
+    QUERY=$(cat <<EOF
+query {
+  repository(owner: "$OWNER", name: "$NAME") {
+    pullRequest(number: $PR) {
+      reviewThreads(first: $PAGE_SIZE$AFTER_ARG) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          originalLine
+          startLine
+          originalStartLine
+          diffSide
+          comments(first: 1) {
+            nodes { author { login } body url }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+EOF
+)
+    if ! PAGE="$(gh api graphql -f query="$QUERY" 2>&1)"; then
+        echo "ERROR: GraphQL fetch failed for reviewThreads on $REPO#$PR: $PAGE" >&2
+        exit 2
+    fi
+    if ! PAGE_NODES="$(jq -e '.data.repository.pullRequest.reviewThreads.nodes' <<<"$PAGE" 2>/dev/null)"; then
+        echo "ERROR: unexpected GraphQL response for $REPO#$PR: $PAGE" >&2
+        exit 2
+    fi
+    ALL_NODES="$(jq -n --argjson a "$ALL_NODES" --argjson b "$PAGE_NODES" '$a + $b')"
+
+    HAS_NEXT="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$PAGE")"
+    CURSOR="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // "null"' <<<"$PAGE")"
+    [[ "$CURSOR" != "null" ]] || HAS_NEXT="false"
+done
+
+# ── Projection ──────────────────────────────────────────────────────────────
+PROJECTED="$(jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" '
+    def excerpt:
+        (. // "")
+        | gsub("\r"; "")
+        | gsub("<!--(.|\n)*?-->"; "")
+        | split("\n")
+        | map(select(test("[^[:space:]]")))
+        | (.[0] // "")
+        | sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; "")
+        | if length > 120 then .[0:117] + "..." else . end;
+    map({
+        id: .id,
+        isResolved: (.isResolved // false),
+        isOutdated: (.isOutdated // false),
+        path: (.path // null),
+        line: (.line // .originalLine),
+        line_is_original: (.line == null and .originalLine != null),
+        originalLine: .originalLine,
+        startLine: (.startLine // .originalStartLine),
+        diffSide: (.diffSide // "RIGHT"),
+        author: (.comments.nodes[0].author.login // "unknown"),
+        url: (.comments.nodes[0].url // null),
+        excerpt: (.comments.nodes[0].body | excerpt)
+    })
+    | if $unresolved_only == 1 then map(select(.isResolved == false)) else . end
+' <<<"$ALL_NODES")"
+
+SUMMARY="$(jq -n --argjson t "$PROJECTED" --arg pr "$PR" --arg repo "$REPO" '{
+    pr: ($pr | tonumber),
+    repo: $repo,
+    thread_count: ($t | length),
+    unresolved_count: ([$t[] | select(.isResolved == false)] | length),
+    unresolved_active: ([$t[] | select(.isResolved == false and .isOutdated == false)] | length),
+    unresolved_outdated: ([$t[] | select(.isResolved == false and .isOutdated == true)] | length),
+    threads: $t
+}')"
+
+if [[ "$AS_JSON" -eq 1 ]]; then
+    printf '%s\n' "$SUMMARY" | jq .
+    exit 0
+fi
+
+# ── Human-readable listing ──────────────────────────────────────────────────
+jq -r --arg repo "$REPO" --arg pr "$PR" --argjson filtered "$UNRESOLVED_ONLY" '
+    "\($repo)#\($pr) — \(.thread_count) review thread(s)"
+      + (if $filtered == 1 then " (unresolved only)" else "" end)
+      + ": \(.unresolved_count) unresolved (\(.unresolved_active) active, \(.unresolved_outdated) outdated), "
+      + "\(.thread_count - .unresolved_count) resolved",
+    "",
+    (.threads[]
+      | "  \(.id)",
+        "      \(if .isResolved then "RESOLVED  " else "UNRESOLVED" end) "
+          + "\(if .isOutdated then "outdated" else "active  " end)  "
+          + "\(.path // "(no file)"):\(.line // "?")"
+          + (if .line_is_original then " (originalLine)" else "" end)
+          + "  @\(.author)",
+        "      \(.excerpt)",
+        ""
+    )
+' <<<"$SUMMARY"
+
+UNRESOLVED="$(jq -r '.unresolved_count' <<<"$SUMMARY")"
+if [[ "$UNRESOLVED" -gt 0 ]]; then
+    cat <<EOF
+Resolve each unresolved thread through the sanctioned path (reply-with-evidence,
+then resolve — never a raw resolve API):
+
+  scripts/reviews/disposition --pr $PR --repo $REPO --thread <id> \\
+      --class fixed --commit <sha> --reply 'Disposition: fixed
+Evidence: <claim-bounded evidence>'
+
+Classes: fixed (--commit) | refuted (--argument) | superseded (--superseded-by) | follow-up (--issue)
+EOF
+fi
+exit 0
