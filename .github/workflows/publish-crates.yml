@@ -409,14 +409,23 @@ jobs:
           import re
           import sys
 
-          path = pathlib.Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8")
-          new_text = re.sub(
-              r"^\[dev-dependencies\].*?(?=^\[|\Z)",
-              "",
-              text,
+          # Match every dev-dependency table form TOML allows, not just the bare
+          # header: `[dev-dependencies]`, the dotted per-crate form
+          # `[dev-dependencies.foo]`, and the target-scoped forms
+          # `[target.'cfg(unix)'.dev-dependencies]` and its dotted variant.
+          # The bare-header-only pattern left dotted tables behind, which would
+          # reach cargo as unresolvable dev-dep edges during packaging.
+          DEV_DEP_TABLE = re.compile(
+              r"^\[(?:"
+              r"dev-dependencies(?:\.[^\]\r\n]+)?"
+              r"|target\.[^\]\r\n]+\.dev-dependencies(?:\.[^\]\r\n]+)?"
+              r")\].*?(?=^\[|\Z)",
               flags=re.MULTILINE | re.DOTALL,
           )
+
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          new_text = DEV_DEP_TABLE.sub("", text)
           path.write_text(new_text, encoding="utf-8")
           STRIP_SCRIPT_EOF
 
@@ -479,12 +488,16 @@ jobs:
 
             printf 'Stripping [dev-dependencies] from %s before publish\n' "$MANIFEST_REL"
             python3 "$STRIP_SCRIPT" "$MANIFEST_PATH"
-            assert_only_manifest_dirty "$MANIFEST_REL" "after preparing $CRATE@$VERSION"
-
-            # `--allow-dirty` is now bounded by the checks above: zero changes or
-            # exactly the selected manifest edit, with no staged/untracked files.
+            # `--allow-dirty` is bounded by re-validating immediately before every
+            # publish attempt: zero changes or exactly the selected manifest edit,
+            # with no staged/untracked files. Validating once before the loop was
+            # not sufficient — `cargo publish` runs without `--locked`, and the
+            # dev-dependency strip changes the resolved graph, so a failed attempt
+            # can rewrite the tracked root `Cargo.lock` and leave a second,
+            # unvalidated dirty file for attempts 2 and 3 to publish.
             PUBLISHED=false
             for attempt in 1 2 3; do
+              assert_only_manifest_dirty "$MANIFEST_REL" "before publish attempt $attempt/3 for $CRATE@$VERSION"
               printf 'Attempt %s/3: cargo publish -p %s --no-verify --allow-dirty\n' "$attempt" "$CRATE"
               PUBLISH_LOG="$(mktemp)"
               PUBLISH_EXIT=0
