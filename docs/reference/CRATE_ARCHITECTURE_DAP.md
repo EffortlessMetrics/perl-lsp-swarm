@@ -737,7 +737,7 @@ impl VariableRenderer {
         if value.len() > 1024 {
             let truncated = &value[..1024];
 
-            // UTF-16 safe truncation (PR #153 infrastructure)
+            // UTF-16 safe truncation
             let safe_truncate = ensure_utf16_boundary(truncated, rope);
             format!("{}…", safe_truncate)
         } else {
@@ -785,7 +785,7 @@ impl VariableRenderer {
 
 // Helper for UTF-16 safe truncation
 fn ensure_utf16_boundary(s: &str, _rope: &Rope) -> String {
-    // Reuse perl-parser UTF-16 boundary validation (PR #153)
+    // Reuse perl-parser UTF-16 boundary validation
     // This is a simplified example; actual implementation would use
     // perl_lsp::textdoc::ensure_utf16_boundary
 

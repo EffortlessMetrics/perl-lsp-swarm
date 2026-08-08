@@ -776,17 +776,35 @@ impl LspServer {
         }
         let workspace_identity_guard_accepts =
             workspace_identity_guard_evaluated && live_identity_blockers.is_empty();
+        #[cfg(feature = "workspace")]
+        let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+        #[cfg(not(feature = "workspace"))]
+        let workspace_index_stale = false;
+        let mut workspace_index_stale = workspace_index_stale;
         let workspace_reference_count = if live_edit_guards_ready
             && !current_source_blocks
             && !source_guard_blocks
             && workspace_identity_guard_accepts
+            && !workspace_index_stale
         {
-            source_guard_context
-                .as_ref()
-                .and_then(|(uri, line, character, symbol, _byte_offset)| {
+            let reference_count = source_guard_context.as_ref().and_then(
+                |(uri, line, character, symbol, _byte_offset)| {
                     self.safe_delete_workspace_reference_count(uri, *line, *character, symbol)
-                })
-                .unwrap_or(0)
+                },
+            );
+            // The helper rechecks freshness immediately before consulting the
+            // index. Propagate that result instead of treating `None` as an
+            // authoritative zero-usage count if an edit raced this request.
+            #[cfg(feature = "workspace")]
+            let became_stale = self.workspace_index_stale_for_any_open_document();
+            #[cfg(not(feature = "workspace"))]
+            let became_stale = false;
+            if became_stale {
+                workspace_index_stale = true;
+                0
+            } else {
+                reference_count.unwrap_or(0)
+            }
         } else {
             0
         };
@@ -797,11 +815,20 @@ impl LspServer {
         if workspace_reference_blocks {
             mark_safe_delete_workspace_reference_blocker(&mut receipt, workspace_reference_count);
         }
+        if workspace_index_stale
+            && live_edit_guards_ready
+            && !current_source_blocks
+            && !source_guard_blocks
+            && workspace_identity_guard_accepts
+        {
+            mark_safe_delete_workspace_index_stale_blocker(&mut receipt);
+        }
         let can_return_edit = live_edit_guards_ready
             && !current_source_blocks
             && !source_guard_blocks
             && !workspace_reference_blocks
-            && workspace_identity_guard_accepts;
+            && workspace_identity_guard_accepts
+            && !workspace_index_stale;
         let workspace_edit = if can_return_edit {
             rollback_proof
                 .get("planned_delete_workspace_edit")
@@ -898,6 +925,7 @@ impl LspServer {
             );
             object
                 .insert("workspace_reference_count".to_string(), json!(workspace_reference_count));
+            object.insert("workspace_index_stale".to_string(), json!(workspace_index_stale));
             object.insert("workspace_edit".to_string(), workspace_edit);
             if let Some(request) = apply_edit_metadata_request {
                 object.insert("apply_edit_requested".to_string(), json!(true));
@@ -1081,6 +1109,10 @@ impl LspServer {
         character: u32,
         symbol: &str,
     ) -> Option<usize> {
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
+
         let workspace_symbol_key = {
             let documents = self.documents_guard();
             self.get_document(&documents, uri)
@@ -1954,6 +1986,38 @@ fn mark_safe_delete_current_source_reference_blocker(receipt: &mut Value, refere
         json!({
             "requires_confirmation": true,
             "blocker_count": 1,
+            "blocker_messages": [message]
+        }),
+    );
+}
+
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+fn mark_safe_delete_workspace_index_stale_blocker(receipt: &mut Value) {
+    let symbol = receipt.get("symbol").and_then(Value::as_str).unwrap_or("symbol");
+    let message = format!(
+        "Symbol '{symbol}' cannot be safe-deleted while the workspace index is stale relative to open documents."
+    );
+
+    let Some(object) = receipt.as_object_mut() else {
+        return;
+    };
+    object.insert("decision".to_string(), json!("fallback"));
+    object.insert("reason".to_string(), json!("workspace_index_stale"));
+    object.insert("fact_source".to_string(), json!("workspace_index"));
+    object.insert("confidence".to_string(), json!("low"));
+    object.insert("freshness".to_string(), json!("stale"));
+    object.insert("fallback_state".to_string(), json!("refresh_workspace_facts"));
+    object.insert("blocker_count".to_string(), json!(1));
+    object.insert("blocker_reasons".to_string(), json!(["WorkspaceIndexStale"]));
+    object.insert("dynamic_boundary".to_string(), json!(false));
+    object
+        .insert("workspace_reference_guard".to_string(), json!("blocked_by_workspace_index_stale"));
+    object.insert(
+        "live_blocker_ux".to_string(),
+        json!({
+            "requires_confirmation": false,
+            "blocker_count": 1,
+            "blocker_reasons": ["WorkspaceIndexStale"],
             "blocker_messages": [message]
         }),
     );
