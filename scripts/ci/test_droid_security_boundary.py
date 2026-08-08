@@ -42,7 +42,7 @@ def _top_level_mapping(text: str, parent: str) -> list[str]:
         if indent == 0:
             break
         if indent == 2:
-            match = re.match(r"([A-Za-z0-9_-]+):(?:\\s|$)", line)
+            match = re.match(r"([A-Za-z0-9_-]+):", line)
             if match:
                 keys.append(match.group(1))
     return keys
