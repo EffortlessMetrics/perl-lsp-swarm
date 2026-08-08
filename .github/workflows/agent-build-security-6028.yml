@@ -1,0 +1,199 @@
+name: Build security 6028 candidate
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/security-nightly-current-6028'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: agent/security-nightly-current-6028
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Apply bounded current-main transformation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('.github/workflows/ci-nightly.yml')
+          lines = path.read_text(encoding='utf-8').splitlines()
+
+          # Remove workflow-wide repository mutation authority. This workflow
+          # retains artifacts, summaries, and native job conclusions only.
+          lines = [
+              line
+              for line in lines
+              if line.strip() not in {'issues: write', 'pull-requests: write'}
+          ]
+
+          # Remove the sole PR comment publisher from the candidate-executing
+          # benchmark job. Its report, alert, summary, and artifacts remain.
+          comment_name = '- name: Comment on PR (performance alerts)'
+          upload_name = '- name: Upload benchmark artifacts'
+          try:
+              start = next(i for i, line in enumerate(lines) if line.strip() == comment_name)
+              stop = next(
+                  i for i in range(start + 1, len(lines))
+                  if lines[i].strip() == upload_name
+              )
+          except StopIteration as error:
+              raise SystemExit('benchmark comment block boundary was not found') from error
+          del lines[start:stop]
+
+          # Every candidate checkout must suppress the persisted workflow token.
+          transformed: list[str] = []
+          checkout_count = 0
+          inserted_count = 0
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              if 'uses: actions/checkout@' not in line:
+                  transformed.append(line)
+                  index += 1
+                  continue
+
+              checkout_count += 1
+              transformed.append(line)
+              uses_indent = len(line) - len(line.lstrip())
+              list_form = line.lstrip().startswith('- uses:')
+              with_indent = uses_indent + 2 if list_form else uses_indent
+
+              if index + 1 < len(lines):
+                  next_line = lines[index + 1]
+                  next_indent = len(next_line) - len(next_line.lstrip())
+              else:
+                  next_line = ''
+                  next_indent = -1
+
+              if next_line.strip() == 'with:' and next_indent == with_indent:
+                  transformed.append(next_line)
+                  block_end = index + 2
+                  while block_end < len(lines):
+                      candidate = lines[block_end]
+                      if candidate.strip():
+                          candidate_indent = len(candidate) - len(candidate.lstrip())
+                          if candidate_indent <= with_indent:
+                              break
+                      block_end += 1
+                  has_persist = any(
+                      lines[position].strip().startswith('persist-credentials:')
+                      for position in range(index + 2, block_end)
+                  )
+                  if not has_persist:
+                      transformed.append(' ' * (with_indent + 2) + 'persist-credentials: false')
+                      inserted_count += 1
+                  transformed.extend(lines[index + 2:block_end])
+                  index = block_end
+              else:
+                  transformed.append(' ' * with_indent + 'with:')
+                  transformed.append(' ' * (with_indent + 2) + 'persist-credentials: false')
+                  inserted_count += 1
+                  index += 1
+
+          if checkout_count < 10:
+              raise SystemExit(f'expected at least 10 checkout steps, found {checkout_count}')
+
+          output = '\n'.join(transformed) + '\n'
+          if 'issues: write' in output or 'pull-requests: write' in output:
+              raise SystemExit('repository write authority remains')
+          if 'actions/github-script@' in output or 'issues.createComment' in output:
+              raise SystemExit('repository comment publisher remains')
+
+          # Structural source check: every checkout step has a local
+          # persist-credentials=false entry before the next step begins.
+          output_lines = output.splitlines()
+          verified = 0
+          for position, checkout in enumerate(output_lines):
+              if 'uses: actions/checkout@' not in checkout:
+                  continue
+              uses_indent = len(checkout) - len(checkout.lstrip())
+              list_form = checkout.lstrip().startswith('- uses:')
+              step_indent = uses_indent if list_form else max(0, uses_indent - 2)
+              end = position + 1
+              while end < len(output_lines):
+                  candidate = output_lines[end]
+                  if candidate.strip():
+                      candidate_indent = len(candidate) - len(candidate.lstrip())
+                      if candidate_indent <= step_indent and candidate.lstrip().startswith('- '):
+                          break
+                  end += 1
+              block = '\n'.join(output_lines[position:end])
+              if 'persist-credentials: false' not in block:
+                  raise SystemExit(f'checkout at output line {position + 1} persists credentials')
+              verified += 1
+
+          if verified != checkout_count:
+              raise SystemExit(
+                  f'checkout verification mismatch: found={checkout_count} verified={verified}'
+              )
+
+          # All non-local actions must remain immutable full-SHA references.
+          mutable: list[str] = []
+          for number, candidate in enumerate(output_lines, start=1):
+              stripped = candidate.strip()
+              if not (stripped.startswith('uses:') or stripped.startswith('- uses:')):
+                  continue
+              reference = stripped.split('uses:', 1)[1].strip().split()[0]
+              if reference.startswith('./'):
+                  continue
+              if '@' not in reference or not re.fullmatch(
+                  r'[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+@[0-9a-f]{40}', reference
+              ):
+                  mutable.append(f'{number}:{reference}')
+          if mutable:
+              raise SystemExit('mutable action references remain: ' + ', '.join(mutable))
+
+          path.write_text(output, encoding='utf-8')
+          print(
+              f'checkouts={checkout_count}; inserted={inserted_count}; '
+              'write permissions removed; comment publisher removed'
+          )
+          PY
+
+          ruby -e 'require "yaml"; YAML.parse_file(ARGV.fetch(0))' \
+            .github/workflows/ci-nightly.yml
+          git diff --check
+
+          test "$(git diff --name-only -- .github/workflows/ci-nightly.yml | wc -l)" -eq 1
+          ! grep -qE '^\s+(issues|pull-requests): write$' .github/workflows/ci-nightly.yml
+          ! grep -q 'actions/github-script@' .github/workflows/ci-nightly.yml
+          ! grep -q 'issues.createComment' .github/workflows/ci-nightly.yml
+
+      - name: Commit final candidate and remove builder
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/agent-build-security-6028.yml
+          git add .github/workflows/ci-nightly.yml
+          git diff --cached --check
+
+          changed="$(git diff --cached --name-only | sort)"
+          expected=".github/workflows/agent-build-security-6028.yml
+          .github/workflows/ci-nightly.yml"
+          if [ "$changed" != "$expected" ]; then
+            printf '::error::Unexpected staged paths:\n%s\n' "$changed"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "security(ci): make nightly PR execution read-only (#6028)"
+          git remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:agent/security-nightly-current-6028
