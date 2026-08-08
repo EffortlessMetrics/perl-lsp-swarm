@@ -192,6 +192,7 @@ lifecycle, or lease authority.
 
 ```text
 lane root
+├── claim-vs-code: each property the PR body asserts, verified against the diff
 ├── `review-tests` for proof discrimination/evidence integrity
 ├── `review-candidate` for implementation, ownership, reachability, complexity,
 │   compatibility, risk, and rollback
@@ -209,6 +210,10 @@ join evidence
 Do not use a subagent verdict as approval. Different identity without a different
 source, oracle, method, threat model, or attention surface is not meaningful
 independence.
+
+Brief each lens to falsify a named claim rather than assess it, and give lenses that
+share a surface genuinely different directions. Each returns the angles it attempted
+with outcomes, refuted ones included, so the join can tell coverage from agreement.
 
 ## Procedure
 

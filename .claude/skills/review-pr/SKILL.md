@@ -44,6 +44,12 @@ was entered separately.
 When a lens is absent, stale, contradictory, or materially changed, invoke
 `orchestrate-work` only for missing dimensions:
 
+- **claim-vs-code** — extract each property the PR title and body assert, then verify
+  each one against the diff. Run this first on irreversible or security-boundary
+  changes: it is cheap, needs no build, and catches the case where the body asserts a
+  property the diff does not deliver. A pin that names a version but resolves to a
+  different commit, a guard described as covering a set that it only partly covers, and
+  a claim of a clean tree that means a clean *tracked* tree are all this shape;
 - `review-tests` for proof discrimination, historical-defect controls,
   schema/validator agreement, and false-green tests;
 - `review-candidate` for implementation correctness, semantic ownership, production
@@ -56,9 +62,27 @@ When a lens is absent, stale, contradictory, or materially changed, invoke
 
 A useful child brief names the exact PR/candidate, claim, settled facts, authorities,
 one read-only question, named skill, falsifiers, required evidence, uncertainty, and
-non-goals. Use ordinary subagents/context forks for independent returns; use an Agent
-Team only when lateral communication changes the result. Do not ask vague agents to
-repeat the same review.
+non-goals.
+
+**Brief the child to break the claim, not to confirm it.** State the asserted property
+as something to falsify and supply concrete attack hypotheses — the specific way it
+would fail if it were wrong. "Check whether the guard is correct" returns agreement;
+"can a failed first attempt leave the tree dirty for later attempts?" returns a defect
+or a reasoned refutation, and both are useful. Decompose a chained claim into
+individually checkable propositions, because a chain fails if any single link does.
+When the lane root already holds a positive read, send *that read* out to be falsified
+rather than asserting it on its own authority.
+
+**Differing directions beat additional reviewers.** When two lenses examine the same
+surface, give them different sources, oracles, methods, or threat models — two agents
+briefed the same way share the same blind spot and their agreement is not
+corroboration. An external oracle, a production-path trace, and a proof-discrimination
+pass over one seam are three directions; three subagents asked "is this correct?" are
+one.
+
+Use ordinary subagents/context forks for independent returns; use an Agent Team only
+when lateral communication changes the result. Do not ask vague agents to repeat the
+same review.
 
 ### Mutation owner and join
 
@@ -77,6 +101,11 @@ Return candidate/head and claim identity, cumulative seams/live consumers, lense
 searched scope, authorities/falsifiers, proof/production-route conclusions, findings
 with severity/evidence/disposition, contradictions, prior dispositions, limitations/
 `NOT_PROVEN`, GitHub-fact snapshot, substantive result, and next route.
+
+Each lens returns its attempted angles with outcomes, including the ones that came back
+refuted. A child that reports only what it found hides where it looked, and the lane
+root cannot then tell whether two lenses covered one surface from the same direction or
+from different ones.
 
 ## Required review procedure
 
@@ -147,6 +176,12 @@ certification cannot create `REVIEW_CURRENT`.
 ```markdown
 ## Review scope
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
+
+## Lenses run
+- Each lens or attack angle attempted, and its outcome: finding | refuted | NOT_PROVEN
+- Refuted angles are part of the record, not omissions — they say what was attacked
+  and survived, and they are what makes a later reviewer's differing conclusion
+  visible instead of invisible
 
 ## Evidence and falsifiers
 - Commands, tests, fixtures, sources, or authorities used

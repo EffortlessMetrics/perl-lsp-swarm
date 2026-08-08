@@ -47,6 +47,12 @@ passes merely because this skill was entered separately.
 When an applicable lens is absent, stale, contradictory, or materially changed, invoke
 `$orchestrate-work` only for missing dimensions:
 
+- **claim-vs-code** — extract each property the PR title and body assert, then verify
+  each against the diff. Run this first on irreversible or security-boundary changes:
+  it is cheap, requires no build, and catches the case where the body asserts a
+  property the diff does not deliver. A pin naming a version but resolving to a
+  different commit, a guard described as covering a set it only partly covers, and a
+  claim of a clean tree that means a clean *tracked* tree are all this shape;
 - `$review-tests` for proof discrimination, historical-defect controls,
   schema/validator agreement, and false-green tests;
 - `$review-candidate` for cumulative implementation correctness, semantic ownership,
@@ -59,8 +65,24 @@ When an applicable lens is absent, stale, contradictory, or materially changed, 
 
 A useful worker brief names the exact PR/candidate, controlling claim, established
 facts, authorities, one read-only question, named `$skill`, realistic falsifiers,
-required evidence, uncertainty, and non-goals. Do not ask vague workers to repeat the
-same review.
+required evidence, uncertainty, and non-goals.
+
+**Brief the worker to break the claim, not to confirm it.** State the asserted property
+as something to falsify and supply concrete attack hypotheses — the specific way it
+would fail if it were wrong. "Check whether the guard is correct" returns agreement;
+"can a failed first attempt leave the tree dirty for later attempts?" returns a defect
+or a reasoned refutation, and both are useful. Decompose a chained claim into
+individually checkable propositions, since a chain fails if any single link does. When
+the integrating reviewer already holds a positive read, submit that read for
+falsification rather than asserting it on its own authority.
+
+**Differing directions beat additional workers.** When two lenses examine one surface,
+give them different sources, oracles, methods, or threat models. Workers briefed the
+same way share a blind spot, and their agreement is not corroboration. An external
+oracle, a production-path trace, and a proof-discrimination pass over one seam are
+three directions; three workers asked "is this correct?" are one.
+
+Do not ask vague workers to repeat the same review.
 
 ### Mutation owner and join
 
@@ -80,6 +102,11 @@ and searched scope, authorities/falsifiers, proof/production-route conclusions,
 findings with severity/evidence/disposition, contradictions, prior dispositions,
 limitations/`NOT_PROVEN`, GitHub-fact snapshot, substantive review result, and next
 route.
+
+Each lens returns its attempted angles with outcomes, including those that came back
+refuted. A worker reporting only what it found hides where it looked, leaving the
+integrating reviewer unable to tell whether two lenses covered one surface from the
+same direction or from different ones.
 
 ## Required review procedure
 
@@ -149,6 +176,11 @@ certification cannot create `REVIEW_CURRENT`.
 ```markdown
 ## Review scope
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
+
+## Lenses run
+- Each lens or attack angle attempted, and its outcome: finding | refuted | NOT_PROVEN
+- Refuted angles belong in the record rather than being dropped — they state what was
+  attacked and survived, and they make a later reviewer's differing conclusion visible
 
 ## Evidence and falsifiers
 - Commands, tests, fixtures, sources, or authorities used
