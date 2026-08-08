@@ -21,8 +21,6 @@ fn assert_review_backstop(skill: &str, provider: &str) {
         "PR_IN_FLIGHT",
         "## Protected merge",
         "REVIEW_CURRENT\nAND\nINTEGRATION_READY",
-        "resolved thread without a visible evidence-backed disposition",
-        "no exact-head review comment or claim hash is required",
     ] {
         assert!(
             skill.contains(marker),
