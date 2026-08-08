@@ -24,8 +24,9 @@ use perl_lsp_rs_core::tooling::perl_critic::{
     CriticConfig, CriticContext, CriticFinding, NativeCriticProfile, NativeCriticRegistry, Severity,
 };
 use perl_module::resolution::use_lib::{
-    extract_use_lib_operations_with_offsets, no_lib_cancelled_paths_from_operations_at_offset,
-    resolve_use_lib_paths_from_operations_at_offset, UseLibOperation,
+    UseLibOperation, extract_use_lib_operations_with_offsets,
+    no_lib_cancelled_paths_from_operations_at_offset,
+    resolve_use_lib_paths_from_operations_at_offset,
 };
 use perl_parser::Parser;
 use perl_parser::error::ParseError;
