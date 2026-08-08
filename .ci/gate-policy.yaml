@@ -1379,10 +1379,13 @@ gates:
     description: "All version strings agree across features.toml, Cargo.toml, package.json, build.rs"
     required: true
     command: bash scripts/check-version-sync.sh
-    timeout_seconds: 30
+    # The prior 30-second watchdog timed out twice at 30,152 ms on PR #6142
+    # without producing a version verdict. Keep the release check bounded while
+    # allowing cold Cargo startup; see issue #6147 for the retained evidence.
+    timeout_seconds: 180
     retry_count: 0
     budgets:
-      max_duration_ms: 10000
+      max_duration_ms: 60000
     quarantine: false
     tags:
       - release
