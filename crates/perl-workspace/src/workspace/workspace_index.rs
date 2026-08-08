@@ -9453,19 +9453,19 @@ Utils::process_data();
     /// for the same symbol, where definition_count is the number of locations that
     /// coincide with the definition site.
     #[test]
-    fn test_count_usages_parity_with_find_references() {
+    fn test_count_usages_parity_with_find_references() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let lib_uri = "file:///parity/lib/Parity.pm";
         let caller_uri = "file:///parity/bin/main.pl";
 
-        must(index.index_file(
-            must(url::Url::parse(lib_uri)),
+        index.index_file(
+            url::Url::parse(lib_uri)?,
             "package Parity;\nsub greet { return 1; }\n1;\n".to_string(),
-        ));
-        must(index.index_file(
-            must(url::Url::parse(caller_uri)),
+        )?;
+        index.index_file(
+            url::Url::parse(caller_uri)?,
             "use Parity;\nParity::greet();\nParity::greet();\n".to_string(),
-        ));
+        )?;
 
         let usages = index.count_usages("Parity::greet");
         let all_refs = index.find_references("Parity::greet");
@@ -9473,32 +9473,42 @@ Utils::process_data();
         // find_references includes the definition site; count_usages excludes it.
         // Both read from the same global_references store, so they must agree on
         // the total reference count modulo the definition filter.
-        assert!(!all_refs.is_empty(), "find_references should return at least the definition site");
-        assert_eq!(
-            usages, 2,
-            "count_usages should return the two call sites (not the definition), got {usages}"
-        );
+        if all_refs.is_empty() {
+            return Err("find_references should return at least the definition site".into());
+        }
+        if usages != 2 {
+            return Err(format!(
+                "count_usages should return the two call sites (not the definition), got {usages}"
+            )
+            .into());
+        }
         // The total references reported by find_references must be at least usages
         // (it includes definitions too).
-        assert!(
-            all_refs.len() >= usages,
-            "find_references ({}) must be >= count_usages ({usages})",
-            all_refs.len()
-        );
+        if all_refs.len() < usages {
+            return Err(format!(
+                "find_references ({}) must be >= count_usages ({usages})",
+                all_refs.len()
+            )
+            .into());
+        }
         // Both methods now read the same data store, so their combined view must
         // be self-consistent: usages + definition_entries == all_refs.len().
         // We verify this by counting definition-site locations in find_references.
-        let def_locs = index.find_definition("Parity::greet");
-        if let Some(def_loc) = def_locs {
-            let def_count = all_refs.iter().filter(|loc| **loc == def_loc).count();
-            assert_eq!(
-                usages + def_count,
-                all_refs.len(),
-                "count_usages ({usages}) + definition entries ({def_count}) \
-                 must equal find_references total ({})",
-                all_refs.len()
+        let def_loc = index
+            .find_definition("Parity::greet")
+            .ok_or("find_definition should return the Parity::greet definition")?;
+        let def_count = all_refs.iter().filter(|loc| **loc == def_loc).count();
+        if usages + def_count != all_refs.len() {
+            return Err(
+                format!(
+                    "count_usages ({usages}) + definition entries ({def_count}) must equal find_references total ({})",
+                    all_refs.len()
+                )
+                .into(),
             );
         }
+
+        Ok(())
     }
 
     #[test]
