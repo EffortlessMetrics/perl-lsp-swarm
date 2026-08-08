@@ -117,6 +117,45 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertIn("pr_write_permission", self.rules())
 
+    def test_pr_trigger_survives_block_sequence_before_pull_request(self) -> None:
+        # `branches:` as a block sequence puts a non-key line inside `on:`
+        # before `pull_request:`. Treating that as the end of the mapping
+        # silently disabled both PR-only rules for the whole file.
+        self.write(
+            ".github/workflows/pr.yml",
+            "name: pr\non:\n  push:\n    branches:\n      - main\n  pull_request:\n    branches:\n      - main\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - env:\n          TOKEN: ${{ secrets.SPECIAL_TOKEN }}\n        run: echo safe\n",
+        )
+        self.assertIn("pr_secret_reference", self.rules())
+
+    def test_pr_trigger_survives_comment_inside_on_block(self) -> None:
+        self.write(
+            ".github/workflows/pr.yml",
+            "name: pr\non:\n  # only on pull requests\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - env:\n          TOKEN: ${{ secrets.SPECIAL_TOKEN }}\n        run: echo safe\n",
+        )
+        self.assertIn("pr_secret_reference", self.rules())
+
+    def test_non_pr_workflow_is_still_not_treated_as_pr_triggered(self) -> None:
+        self.write(
+            ".github/workflows/push.yml",
+            "name: push\non:\n  push:\n    branches:\n      - main\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - env:\n          TOKEN: ${{ secrets.SPECIAL_TOKEN }}\n        run: echo safe\n",
+        )
+        self.assertNotIn("pr_secret_reference", self.rules())
+
+    def test_checkout_finding_is_not_cleared_by_a_later_job(self) -> None:
+        # `job_a` never sets persist-credentials: false. `job_b` does, and is
+        # indented more deeply, so its step list items never hit the
+        # same-or-shallower list-item boundary. The scan for `job_a` must not
+        # run on into `job_b` and clear `job_a`'s finding.
+        self.write(
+            ".github/workflows/write.yml",
+            "name: write\non: [workflow_dispatch]\npermissions:\n  contents: write\njobs:\n  job_a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
+            + "a" * 40
+            + "\n  job_b:\n    runs-on: ubuntu-latest\n    steps:\n          - uses: actions/checkout@"
+            + "a" * 40
+            + "\n            with:\n              persist-credentials: false\n",
+        )
+        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
+
     def test_detects_persisted_checkout_credentials_on_write_surface(self) -> None:
         self.write(
             ".github/workflows/write.yml",

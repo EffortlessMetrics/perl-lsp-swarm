@@ -158,16 +158,25 @@ def _has_pr_trigger(lines: Sequence[str]) -> bool:
             continue
         if "pull_request" in _strip_scalar(parsed.value):
             return True
+        # Only a non-blank, non-comment line at column 0 ends the `on:` mapping.
+        # Blank lines, comments, and block-sequence items ("- main" under
+        # branches:) are not key lines, and treating them as terminators made
+        # detection fail open on the common push-then-pull_request ordering.
+        child_indent: int | None = None
         for candidate in lines[index + 1 :]:
-            candidate_parsed = _parse_key_line(candidate)
-            if candidate.strip() and (
-                candidate_parsed is None or candidate_parsed.indent == 0
-            ):
+            stripped = candidate.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if len(candidate) - len(candidate.lstrip()) == 0:
                 break
-            if candidate_parsed and candidate_parsed.key in {
-                "pull_request",
-                "pull_request_target",
-            }:
+            candidate_parsed = _parse_key_line(candidate)
+            if candidate_parsed is None or candidate_parsed.list_item:
+                continue
+            if child_indent is None:
+                child_indent = candidate_parsed.indent
+            if candidate_parsed.indent != child_indent:
+                continue
+            if candidate_parsed.key in {"pull_request", "pull_request_target"}:
                 return True
         return False
     return False
@@ -202,7 +211,13 @@ def _checkout_persists(lines: Sequence[str], use_index: int, use_indent: int) ->
     while cursor < len(lines):
         candidate = lines[cursor]
         parsed = _parse_key_line(candidate)
-        if parsed and parsed.list_item and parsed.indent <= use_indent:
+        # Stop at the next step in this list, and also at any dedent out of the
+        # steps list (a sibling job or a new top-level block). Without the
+        # dedent case the scan runs on into later jobs, and a persist-credentials
+        # setting found there would clear this step's finding.
+        if parsed and parsed.indent <= use_indent and (
+            parsed.list_item or parsed.indent < use_indent
+        ):
             break
         if (
             parsed
