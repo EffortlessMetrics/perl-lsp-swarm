@@ -196,7 +196,7 @@ review_after = "2027-01-01"
 /// not implement brace alternation.
 #[test]
 fn blocking_strict_accepts_explicit_agent_directory_globs() -> Result<()> {
-    let agent_dirs = ["aider", "roo", "kiro", "hermes", "jules"];
+    let agent_dirs = ["roo", "kiro", "hermes", "jules"];
     let mut entries = String::new();
     let mut files = Vec::new();
     for directory in agent_dirs {

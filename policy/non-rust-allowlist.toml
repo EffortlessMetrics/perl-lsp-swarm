@@ -711,22 +711,6 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
-id = "non-rust-aider"
-glob = ".aider/**"
-kind = "agent_config"
-language = "mixed"
-surface = "tooling"
-classification = "tooling"
-owner = "developer-experience"
-reason = "Aider configuration directory used by the swarm orchestration."
-covered_by = [
-  "cargo xtask check-file-policy",
-]
-broad_glob_reason = "Aider configuration is a directory tree of agent prompts and runtime settings."
-created = "2026-08-08"
-review_after = "2026-11-08"
-
-[[allow]]
 id = "non-rust-roo"
 glob = ".roo/**"
 kind = "agent_config"
