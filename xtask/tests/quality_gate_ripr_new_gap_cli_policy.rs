@@ -461,7 +461,7 @@ fn quality_gate_cli_passes_nonproduction_only_new_ripr_scope() -> TestResult {
     assert_eq!(payload.pointer("/ripr_pr/new_unresolved").and_then(Value::as_u64), Some(126));
     assert_eq!(
         payload.pointer("/review_guidance/production_files_considered").and_then(Value::as_u64),
-        Some(0)
+        Some(9)
     );
     assert_eq!(payload.get("next_actions").and_then(Value::as_array).map(Vec::len), Some(0));
 
@@ -1385,7 +1385,8 @@ fn write_nonproduction_only_review_guidance_receipt(path: &Path, head: &str) -> 
             "analysis_scope": {
                 "scope": "diff_scoped_changed_files",
                 "run_status": "limited_diff_scope",
-                "production_files_considered": 0,
+                "production_files_considered": 9,
+                "changed_production_files": [],
                 "scoped_production_files": [],
                 "limitation": "review_comments_diff_scope_only"
             },
