@@ -21,6 +21,25 @@ impl LspServer {
     ) -> RoutedResponse {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
+
+        // LSP spec: after shutdown, the server must reject all requests except
+        // `exit` with -32600 InvalidRequest (#6103).
+        if method != "exit"
+            && method != "shutdown"
+            && self.shutdown_received.load(Ordering::Acquire)
+        {
+            return RoutedResponse::Handler {
+                id,
+                method: method.clone(),
+                should_respond,
+                result: Err(JsonRpcError {
+                    code: -32600, // InvalidRequest per JSON-RPC 2.0 spec
+                    message: "Server has been shutdown".to_string(),
+                    data: None,
+                }),
+            };
+        }
+
         let result = match method.as_str() {
             "initialize" => self.handle_initialize_dispatch(request.params),
             "initialized" => self.handle_initialized_dispatch(),
