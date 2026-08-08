@@ -67,7 +67,8 @@ describe('registerServerCommandGroup', () => {
 
     const result = await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
 
-    expect(dependencies.currentServerPath).toHaveBeenCalledTimes(1);
+    expect(dependencies.resolveServerPath).toHaveBeenCalledTimes(1);
+    expect(dependencies.currentServerPath).not.toHaveBeenCalled();
     expect(dependencies.runHealthCheck).toHaveBeenCalledWith('/configured/perllsp');
     expect(result).toEqual({
       ok: true,
