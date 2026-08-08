@@ -302,13 +302,16 @@ fn rollback_is_valid(receipt: &Receipt) -> bool {
 }
 
 fn computed_status(receipt: &Receipt) -> ReceiptStatus {
-    if receipt.transition.outcome == TransitionOutcome::NotProven {
-        return ReceiptStatus::NotProven;
-    }
-    if receipt.transition.outcome == TransitionOutcome::Failed
-        || has_safety_violation(&receipt.transition)
+    // A concrete safety violation is stronger evidence than an incomplete
+    // receipt: it must remain a hard block instead of being downgraded to
+    // `not_proven` by the declared outcome.
+    if has_safety_violation(&receipt.transition)
+        || receipt.transition.outcome == TransitionOutcome::Failed
     {
         return ReceiptStatus::Blocked;
+    }
+    if receipt.transition.outcome == TransitionOutcome::NotProven {
+        return ReceiptStatus::NotProven;
     }
 
     let disposition_valid = match receipt.transition.intended_disposition {
@@ -497,6 +500,18 @@ mod tests {
         ))?;
         receipt.transition.mixed_version_reported_ready = true;
         assert_rejected_because(&receipt, "disagrees with computed status blocked");
+        Ok(())
+    }
+
+    #[test]
+    fn safety_violation_cannot_be_downgraded_to_not_proven() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/normal_upgrade.json"
+        ))?;
+        receipt.status = ReceiptStatus::Blocked;
+        receipt.transition.outcome = super::TransitionOutcome::NotProven;
+        receipt.transition.candidate_process_left_running = true;
+        assert_eq!(validate(&receipt)?, ReceiptStatus::Blocked);
         Ok(())
     }
 
