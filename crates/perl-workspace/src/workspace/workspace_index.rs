@@ -1409,11 +1409,10 @@ impl WorkspaceIndex {
     /// Incrementally remove one file's symbols from the global cache,
     /// re-inserting shadowed symbols from remaining files.
     fn incremental_remove_symbols(
-        files: &HashMap<String, FileIndex>,
+        _files: &HashMap<String, FileIndex>,
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
         old_file_index: &FileIndex,
     ) {
-        let mut affected_names: Vec<String> = Vec::new();
         for sym in &old_file_index.symbols {
             if let Some(ref qname) = sym.qualified_name {
                 let mut remove_key = false;
@@ -1423,7 +1422,6 @@ impl WorkspaceIndex {
                 }
                 if remove_key {
                     symbols.remove(qname);
-                    affected_names.push(qname.clone());
                 }
             }
             let mut remove_key = false;
@@ -1433,34 +1431,6 @@ impl WorkspaceIndex {
             }
             if remove_key {
                 symbols.remove(&sym.name);
-                affected_names.push(sym.name.clone());
-            }
-        }
-        if !affected_names.is_empty() {
-            symbols.clear();
-            for file_index in files
-                .values()
-                .filter(|file_index| file_index.source_uri != old_file_index.source_uri)
-            {
-                for symbol in &file_index.symbols {
-                    if let Some(ref qname) = symbol.qualified_name {
-                        symbols.entry(qname.clone()).or_default().push(DefinitionCandidate {
-                            location: Location { uri: symbol.uri.clone(), range: symbol.range },
-                            kind: symbol.kind,
-                        });
-                    }
-                    symbols.entry(symbol.name.clone()).or_default().push(DefinitionCandidate {
-                        location: Location { uri: symbol.uri.clone(), range: symbol.range },
-                        kind: symbol.kind,
-                    });
-                }
-            }
-            for entries in symbols.values_mut() {
-                entries.sort_by(|left, right| {
-                    Self::definition_candidate_sort_key(left)
-                        .cmp(&Self::definition_candidate_sort_key(right))
-                });
-                entries.dedup();
             }
         }
     }
@@ -1527,18 +1497,15 @@ impl WorkspaceIndex {
         }
     }
 
-    /// Incrementally remove one file's symbols from the search index,
-    /// re-inserting shadowed symbols from remaining files on collision.
+    /// Incrementally remove one file's symbols from the search index.
     ///
-    /// Mirrors [`Self::incremental_remove_symbols`]: when any key becomes empty
-    /// after removing this file's entries, the entire search index is cleared and
-    /// rebuilt from the remaining files so it cannot drift from `symbols`.
+    /// Mirrors [`Self::incremental_remove_symbols`]: per-key retain surgery only;
+    /// empty buckets are dropped without an O(workspace) full rebuild.
     fn incremental_remove_search(
-        files: &HashMap<String, FileIndex>,
+        _files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
         old_file_index: &FileIndex,
     ) {
-        let mut affected_names: Vec<String> = Vec::new();
         for sym in &old_file_index.symbols {
             if let Some(ref qname) = sym.qualified_name {
                 let mut remove_key = false;
@@ -1548,7 +1515,6 @@ impl WorkspaceIndex {
                 }
                 if remove_key {
                     search_index.remove(qname);
-                    affected_names.push(qname.clone());
                 }
             }
             let mut remove_key = false;
@@ -1558,16 +1524,6 @@ impl WorkspaceIndex {
             }
             if remove_key {
                 search_index.remove(&sym.name);
-                affected_names.push(sym.name.clone());
-            }
-        }
-        if !affected_names.is_empty() {
-            search_index.clear();
-            for file_index in files
-                .values()
-                .filter(|file_index| file_index.source_uri != old_file_index.source_uri)
-            {
-                Self::incremental_add_search(search_index, file_index);
             }
         }
     }
@@ -10004,10 +9960,8 @@ helper_one();
     }
 
     /// Verify that `incremental_remove_symbols` correctly retains candidates owned by
-    /// other files when the removed file had BOTH exclusively-owned names (triggering the
-    /// full-rebuild path) AND shared names. Before this fix, the full-rebuild path cleared
-    /// all candidates and relied on the subsequent rebuild to re-add shared ones — correct
-    /// in effect, but the test documents the expected observable behavior.
+    /// other files when the removed file had BOTH exclusively-owned names (emptying a
+    /// key bucket) AND shared names.
     #[test]
     fn test_definition_candidates_shared_symbol_survives_removal_of_sole_owner_of_other_symbol() {
         let index = WorkspaceIndex::new();
@@ -10045,9 +9999,8 @@ helper_one();
         );
     }
 
-    /// #5016 item 3: when `incremental_remove_symbols` triggers its collision
-    /// full-rebuild path, `search_index` must take the same path so
-    /// `search_source_symbols` and `find_definition` cannot diverge.
+    /// #5016 item 3: per-name retain on removal must keep `symbols` and `search_index`
+    /// aligned without an O(workspace) full rebuild.
     #[test]
     fn test_search_index_parity_after_collision_rebuild_on_remove() {
         let index = WorkspaceIndex::new();
@@ -10097,6 +10050,59 @@ helper_one();
             "search_index must match symbols after re-index collision rebuild; got: {:?}",
             shared_after_reindex.iter().map(|s| &s.uri).collect::<Vec<_>>()
         );
+    }
+
+    /// #5016 post-#6169: case-distinct packages must survive per-name retain when the
+    /// removed file empties a key bucket. A full-index clear would still pass many
+    /// assertions; this discriminates retain surgery on case-sensitive keys.
+    #[test]
+    fn incremental_remove_retains_case_distinct_package_after_collision() {
+        let index = WorkspaceIndex::new();
+        let upper_uri = must(url::Url::parse("file:///lib/Foo/Bar.pm"));
+        let lower_uri = must(url::Url::parse("file:///lib/foo/bar.pm"));
+
+        must(index.index_file(
+            upper_uri.clone(),
+            "package Foo::Bar;\nsub upper_only { 1 }\nsub shared_bare { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            lower_uri.clone(),
+            "package foo::bar;\nsub lower_only { 2 }\nsub shared_bare { 2 }\n1;\n".to_string(),
+        ));
+
+        // Removing the upper package empties Foo::Bar keys but must not disturb foo::bar.
+        index.remove_file(upper_uri.as_str());
+
+        assert!(
+            index.definition_candidates("Foo::Bar::upper_only").is_empty(),
+            "removed package symbols must disappear from symbols cache"
+        );
+        assert!(
+            index.definition_candidates("foo::bar::lower_only").len() == 1,
+            "case-distinct package must survive removal of the other; got: {:?}",
+            index.definition_candidates("foo::bar::lower_only")
+        );
+
+        let lower_search = index.search_source_symbols("foo::bar::lower", None);
+        assert!(
+            lower_search.iter().any(|s| s.name == "lower_only"),
+            "search_index must retain foo::bar after Foo::Bar removal; got: {:?}",
+            lower_search.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let upper_search = index.search_source_symbols("Foo::Bar::upper", None);
+        assert!(
+            !upper_search.iter().any(|s| s.name == "upper_only"),
+            "search_index must not retain removed Foo::Bar symbols; got: {:?}",
+            upper_search.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        // Shared bare name: both packages had `shared_bare`; lower's copy must remain.
+        assert_eq!(
+            index.definition_candidates("shared_bare").len(),
+            1,
+            "retain must keep the surviving file's bare-name candidate"
+        );
+        assert_eq!(index.definition_candidates("shared_bare")[0].uri, lower_uri.as_str());
     }
 
     #[test]

@@ -1948,6 +1948,10 @@ impl LspServer {
         ) {
             return None;
         }
+        let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
         let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
             return None;
         };
@@ -1965,7 +1969,7 @@ impl LspServer {
             goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
                 .receipt
         })?;
-        if !snapshot_is_current() {
+        if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
             return None;
         }
         serde_json::to_value(receipt).ok()
@@ -2019,10 +2023,14 @@ impl LspServer {
                 })));
             };
 
-            let compiler_receipt = match route_index_access(self.coordinator()) {
-                IndexAccessMode::Full(coordinator) => {
-                    let index = coordinator.index();
-                    index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let compiler_receipt = if self.workspace_index_stale_for_any_open_document() {
+                None
+            } else {
+                match route_index_access(self.coordinator()) {
+                    IndexAccessMode::Full(coordinator) => {
+                        let index = coordinator.index();
+                        index.with_semantic_queries_for_uri(uri, |file_id, queries| {
                         let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                         let mut receipt = goto_definition_live_exact_or_imported(
                             index.as_ref(),
@@ -2038,9 +2046,11 @@ impl LspServer {
                         ));
                         receipt
                     })
+                    }
+                    IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
-                IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
             };
+            let live_cutover = compiler_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
@@ -2048,8 +2058,12 @@ impl LspServer {
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
                 "compiler_receipt": compiler_receipt,
-                "no_live_behavior_change": false,
-                "live_cutover": "partial_exact_imported"
+                "no_live_behavior_change": !live_cutover,
+                "live_cutover": if live_cutover {
+                    Some("partial_exact_imported")
+                } else {
+                    None
+                }
             })))
         }
     }
@@ -2642,6 +2656,83 @@ mod tests {
             locations.is_empty(),
             "a package-prefix cursor must yield an empty answer, not a guessed target; \
              got {result:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): stale workspace index must not run definition
+    /// semantic shadow queries even when the request document's generation matches.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_semantic_shadow_skips_stale_workspace_index_tier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let main_uri = "file:///workspace/shadow-main.pl";
+        let main_text = "package Foo;\nsub bar { return 1; }\npackage main;\nFoo::bar();\n";
+        let unrelated_uri = "file:///workspace/shadow-unrelated.pl";
+        let unrelated_text = "package Unrelated;\nsub helper {}\n";
+
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_text, 1)?;
+        server
+            .test_index_file_in_building_state(main_uri, main_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_text)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 3, "character": 5 }
+        })))?;
+        assert!(
+            fresh.as_ref().and_then(Value::as_array).is_some_and(|locations| !locations.is_empty()),
+            "fresh index should resolve Foo::bar call target: {fresh:?}"
+        );
+        let fresh_explanation = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "goto_definition"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        assert!(
+            fresh_explanation
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("semantic_shadow_receipt"))
+                .is_some(),
+            "fresh index should persist definition semantic shadow receipt"
+        );
+
+        server
+            .test_replace_document_without_index(
+                unrelated_uri,
+                "package Unrelated;\nsub renamed {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "edited unrelated buffer must stale the workspace index"
+        );
+
+        let _ = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 3, "character": 5 }
+        })))?;
+        let stale_explanation = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "goto_definition"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        assert!(
+            stale_explanation
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("semantic_shadow_receipt"))
+                .is_none(),
+            "stale workspace index must not persist definition semantic shadow receipt"
         );
 
         Ok(())
