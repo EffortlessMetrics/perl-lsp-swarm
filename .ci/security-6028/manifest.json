@@ -1,0 +1,11 @@
+{
+  "candidate_bytes": 45343,
+  "candidate_sha256": "5743b985529561afaa31d7c356d70c12d2a6553292b0caea85782b1a41d84080",
+  "checkout_count": 13,
+  "comment_publisher_removed": true,
+  "inserted_persist_credentials": 12,
+  "schema_version": 1,
+  "source_sha": "956888d78c904591fa74105068b9e3cebe0a5ef5",
+  "target_path": ".github/workflows/ci-nightly.yml",
+  "write_permissions_removed": true
+}
