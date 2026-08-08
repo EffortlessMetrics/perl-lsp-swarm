@@ -26,6 +26,8 @@ import {
   diagnoseConfiguredServerPath,
   explainDiagnosticCommand,
   explainProviderDecisionCommand,
+  presentFormattingProviderError,
+  presentFormattingProviderOutcome,
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
   runPerlCriticOnActiveFile,
@@ -40,6 +42,35 @@ import {
   validateIncludePaths,
   warnAboutPerlExtensionConflicts,
 } from '../extensionWorkspaceGuidance';
+
+describe('formatting provider experience projection', () => {
+  test('distinguishes edits from an already-current document', () => {
+    expect(presentFormattingProviderOutcome(2)).toEqual({
+      providerOutcome: 'exact_current',
+      detail: 'Formatter produced 2 document edits.',
+      reasonCode: 'formatting_edits_available',
+    });
+    expect(presentFormattingProviderOutcome(0)).toEqual({
+      providerOutcome: 'legitimate_empty',
+      detail: 'Formatter reported no edits; the document is already formatted.',
+      reasonCode: 'formatting_already_current',
+    });
+  });
+
+  test('keeps range formatting and failures actionable', () => {
+    expect(presentFormattingProviderOutcome(1, true)).toEqual({
+      providerOutcome: 'exact_current',
+      detail: 'Formatter produced 1 range edit.',
+      reasonCode: 'range_formatting_edits_available',
+    });
+    expect(presentFormattingProviderError('perltidy unavailable', true)).toEqual({
+      providerOutcome: 'product_or_instrument_error',
+      detail: 'Range formatting failed: perltidy unavailable',
+      action: 'Check the formatter configuration or run the Health Check.',
+      reasonCode: 'range_formatting_error',
+    });
+  });
+});
 
 interface MockMemento {
   get: jest.Mock;

@@ -1312,7 +1312,10 @@ function createLanguageClient(serverPath: string): LanguageClient {
       },
       provideDocumentFormattingEdits: async (document, options, token, next) => {
         try {
-          return await next(document, options, token);
+          const edits = await next(document, options, token);
+          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0);
+          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+          return edits;
         } catch (err: unknown) {
           const code =
             err && typeof err === 'object' && 'code' in err
@@ -1322,13 +1325,18 @@ function createLanguageClient(serverPath: string): LanguageClient {
           if (code !== -32800) {
             const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
+            const presentation = presentFormattingProviderError(msg);
+            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           }
           return null;
         }
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
         try {
-          return await next(document, range, options, token);
+          const edits = await next(document, range, options, token);
+          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0, true);
+          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+          return edits;
         } catch (err: unknown) {
           const code =
             err && typeof err === 'object' && 'code' in err
@@ -1337,6 +1345,8 @@ function createLanguageClient(serverPath: string): LanguageClient {
           if (code !== -32800) {
             const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
+            const presentation = presentFormattingProviderError(msg, true);
+            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           }
           return null;
         }
@@ -1382,6 +1392,49 @@ export function shouldNudgeArrowCompletion(linePrefix: string): boolean {
   }
 
   return /(?:\$[\w:]+|[@%][\w:]+|[A-Z]\w*)$/.test(beforeDash);
+}
+
+/** Map an observed formatting result to the canonical provider presentation. */
+export function presentFormattingProviderOutcome(
+  editCount: number,
+  range: boolean = false,
+): {
+  providerOutcome: 'exact_current' | 'legitimate_empty';
+  detail: string;
+  reasonCode: string;
+} {
+  if (editCount > 0) {
+    return {
+      providerOutcome: 'exact_current',
+      detail: `Formatter produced ${editCount} ${range ? 'range ' : 'document '}edit${editCount === 1 ? '' : 's'}.`,
+      reasonCode: range ? 'range_formatting_edits_available' : 'formatting_edits_available',
+    };
+  }
+  return {
+    providerOutcome: 'legitimate_empty',
+    detail: range
+      ? 'Formatter reported no range edits; the selected range is already formatted.'
+      : 'Formatter reported no edits; the document is already formatted.',
+    reasonCode: range ? 'range_formatting_already_current' : 'formatting_already_current',
+  };
+}
+
+/** Map an observed formatting failure to an actionable provider presentation. */
+export function presentFormattingProviderError(
+  message: string,
+  range: boolean = false,
+): {
+  providerOutcome: 'product_or_instrument_error';
+  detail: string;
+  action: string;
+  reasonCode: string;
+} {
+  return {
+    providerOutcome: 'product_or_instrument_error',
+    detail: `${range ? 'Range formatting' : 'Formatting'} failed: ${message}`,
+    action: 'Check the formatter configuration or run the Health Check.',
+    reasonCode: range ? 'range_formatting_error' : 'formatting_error',
+  };
 }
 
 export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent): void {
