@@ -16,14 +16,37 @@ record what was spent. Together they let later PRs derive learned LEM estimates.
 `xtask`, extracts `gate_name`, `tier`, `status`, `duration_ms`, and runner, and converts
 each receipt into a per-job actuals entry with:
 
+- `lane_id` = the lane this job ran in, from `--lane-id` (see below)
 - `actual_minutes` = `duration_ms / 60000`
 - `actual_lem` = `actual_minutes × runner_multiplier`
-- `estimated_lem` = `policy/ci-lanes.toml`'s `base_lem` for the matching lane id
+- `estimated_lem` = `policy/ci-lanes.toml`'s `base_lem`, but only when the gate *is*
+  itself a whole lane (a 1:1 gate). A gate that is one of many inside a lane has no
+  floor of its own and reports `null`.
 - `delta_lem` = `actual_lem − estimated_lem`
 
-It writes `target/ci/ci-actuals.json`. The schema is intentionally tolerant: missing
-`duration_ms` results in `actual_lem: null`. Receipts without a matching lane entry get
-`estimated_lem: null`. This avoids the actuals collector becoming a brittle gate.
+`totals.estimated_lem` sums each represented lane's `base_lem` **once**. A lane floor is
+a property of the lane, not of every gate inside it, so adding it per job would multiply
+a shard lane's whole budget by its gate count.
+
+### `--lane-id` is required for a sample to be usable
+
+Gate names and lane ids are different namespaces, and gate names are **N:1** into lanes:
+`fmt`, `clippy_full`, and `unit_foundation_full` all run inside `merge_gate_shards`. The
+mapping therefore cannot be recovered from the gate name, and must not be guessed —
+`compile_all_targets`/`check_all_targets` and `docs_build`/`docs_gate` are near-miss
+pairs that a fuzzy match would bind to the wrong lane.
+
+The invoking workflow knows its lane, so it passes `--lane-id`, and the emitter stamps it
+on every job. `scripts/ci/aggregate_lane_history.py` attributes samples by `lane_id`,
+accepts a bare `gate_name` only when it is *literally* a known lane id, and drops
+anything else rather than inventing a lane for it.
+
+Omitting `--lane-id` for a multi-gate lane produces actuals whose samples the aggregator
+cannot attribute; it will fail loudly rather than record an empty history (#6217). An
+unknown `--lane-id` is refused at emit time.
+
+The schema is otherwise tolerant: missing `duration_ms` results in `actual_lem: null`.
+This avoids the actuals collector becoming a brittle gate.
 
 ---
 
@@ -76,6 +99,7 @@ without touching `.github/workflows/ci.yml` so the rollout stays low-risk.
   },
   "jobs": [
     {
+      "lane_id": "pr_smoke",
       "gate_name": "pr_smoke",
       "tier": "pr_fast",
       "status": "pass",
