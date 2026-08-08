@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "total_files": 31,
-  "total_bytes": 36448942,
+  "total_bytes": 36448975,
   "files": {
     "README.md": 24932,
     "package.nls.json": 2041,
-    "package.json": 56596,
+    "package.json": 56637,
     "LICENSE": 1069,
     "language-configuration.json": 1010,
     "icon.png": 8358,
@@ -29,7 +29,7 @@
     "media/walkthrough/debug-first-script.svg": 1778,
     "media/walkthrough/configure-settings.svg": 1935,
     "media/walkthrough/ai-completion.svg": 1624,
-    "bin/linux-x64/perllsp": 16957896,
+    "bin/linux-x64/perllsp": 16957888,
     "bin/win32-x64/perllsp.exe": 17975296,
     "assets/demo-project/main.pl": 203,
     "assets/demo-project/lib/Utils.pm": 485,
