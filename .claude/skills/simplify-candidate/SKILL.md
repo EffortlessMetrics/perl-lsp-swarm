@@ -57,6 +57,9 @@ Publish when simplification changes semantic ownership, public/support/rollback 
 removes durable compatibility/migration machinery, or materially changes the candidate
 proof/limitation summary. Localized findings may be inline.
 
+The lane root posts. Focused subagents and context forks return file/line-anchored
+findings as evidence and do not write to GitHub themselves.
+
 Keep subagent/Team topology, candidate-shaping experiments, discarded alternatives,
 raw logs, retries, and clean `ALREADY_MINIMAL` analysis runtime-local unless the
 conclusion resolves a durable existing concern.

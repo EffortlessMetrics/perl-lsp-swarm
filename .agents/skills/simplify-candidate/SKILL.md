@@ -70,6 +70,10 @@ Publish when simplification changes semantic ownership, public/support/rollback 
 removes durable compatibility or migration machinery, or materially changes the
 candidate proof/limitation summary. Localized review findings may be inline.
 
+The integrating lane owner posts. A skill run that only answers a bounded
+simplification question returns file/line-anchored findings as evidence and does not
+write to GitHub.
+
 Keep reviewer topology, candidate-shaping experiments, discarded alternatives, raw
 logs, retries, and clean `ALREADY_MINIMAL` analysis runtime-local unless the conclusion
 resolves a durable existing concern.
