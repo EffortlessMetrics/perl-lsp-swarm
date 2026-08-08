@@ -198,6 +198,10 @@ fn normalized_optional(value: Option<&str>) -> Option<String> {
     value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
+fn optional_sha_value(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |sha| json!(sha))
+}
+
 fn repo_root() -> Result<PathBuf> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -977,7 +981,7 @@ fn pr_evidence_packet_with_count(
         "base_sha": base_sha,
         "head": options.head,
         "head_sha": head_sha,
-        "pr_head_sha": options.pr_head_sha,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
         "evaluated_head": options.head,
         "evaluated_head_sha": head_sha,
         "summary": {
@@ -1056,7 +1060,7 @@ fn validate_pr_evidence_packet(
     expect_string(packet, "head_sha", expected_head_sha, &mut violations);
     match (&options.pr_head_sha, packet.get("pr_head_sha")) {
         (Some(expected), Some(value)) => {
-            expect_string(value, "pr_head_sha", expected, &mut violations)
+            expect_string_value(value, "pr_head_sha", expected, &mut violations)
         }
         (Some(_), None) => violations.push("pr_head_sha is missing".to_string()),
         (None, Some(value)) if !value.is_null() => {
@@ -1293,7 +1297,7 @@ fn validate_review_comments(
     expect_string(&packet, "head_sha", &revision_sha(repo, &options.head)?, &mut violations);
     match (&options.pr_head_sha, packet.get("pr_head_sha")) {
         (Some(expected), Some(value)) => {
-            expect_string(value, "pr_head_sha", expected, &mut violations)
+            expect_string_value(value, "pr_head_sha", expected, &mut violations)
         }
         (Some(_), None) => violations.push("pr_head_sha is missing".to_string()),
         (None, Some(value)) if !value.is_null() => {
@@ -1343,7 +1347,7 @@ fn stamp_review_comments_receipt(repo: &Path, options: &ReviewCommentsOptions) -
     };
     object.insert("base_sha".to_string(), json!(revision_sha(repo, &options.base)?));
     object.insert("head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
-    object.insert("pr_head_sha".to_string(), json!(options.pr_head_sha));
+    object.insert("pr_head_sha".to_string(), optional_sha_value(options.pr_head_sha.as_deref()));
     object.insert("evaluated_head".to_string(), json!(options.head));
     object.insert("evaluated_head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
     write_text(&path, &format_json(&packet)?)
@@ -1361,7 +1365,7 @@ fn write_clean_review_comments(
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
-        "pr_head_sha": options.pr_head_sha,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
         "evaluated_head": options.head,
         "evaluated_head_sha": revision_sha(repo, &options.head)?,
         "mode": "pr_evidence_clean",
@@ -1408,7 +1412,7 @@ fn write_error_review_comments(
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
-        "pr_head_sha": options.pr_head_sha,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
         "evaluated_head": options.head,
         "evaluated_head_sha": revision_sha(repo, &options.head)?,
         "mode": "fast",
@@ -2240,6 +2244,14 @@ fn expect_string(packet: &Value, key: &str, expected: &str, violations: &mut Vec
     }
 }
 
+fn expect_string_value(value: &Value, key: &str, expected: &str, violations: &mut Vec<String>) {
+    match value.as_str() {
+        Some(actual) if actual == expected => {}
+        Some(actual) => violations.push(format!("{key} is {actual:?}, expected {expected:?}")),
+        None => violations.push(format!("{key} is missing or not a string")),
+    }
+}
+
 fn count_field(summary: Option<&Map<String, Value>>, key: &str) -> usize {
     summary
         .and_then(|summary| summary.get(key))
@@ -2988,6 +3000,12 @@ paths = ["archive/["]
         assert_eq!(normalized_option("", DEFAULT_ROOT), DEFAULT_ROOT);
         assert_eq!(normalized_option("  ", DEFAULT_BASE), DEFAULT_BASE);
         assert_eq!(normalized_option("HEAD", DEFAULT_HEAD), "HEAD");
+    }
+
+    #[test]
+    fn optional_sha_value_preserves_string_or_null_contract() {
+        assert_eq!(optional_sha_value(Some("abc123")), json!("abc123"));
+        assert_eq!(optional_sha_value(None), Value::Null);
     }
 
     #[test]
