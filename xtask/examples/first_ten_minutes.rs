@@ -271,6 +271,10 @@ fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
     Ok(())
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn issue_identity(value: &str, field: &str) -> Result<()> {
     if !value.starts_with('#')
         || value.len() < 2
@@ -437,7 +441,7 @@ fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
 fn load(path: &Path) -> Result<(Receipt, String)> {
     let content = fs::read(path)
         .with_context(|| format!("reading first-ten-minutes receipt {}", path.display()))?;
-    let source_receipt_sha256 = format!("{:x}", Sha256::digest(&content));
+    let source_receipt_sha256 = sha256_hex(&content);
     let content = String::from_utf8(content)
         .with_context(|| format!("receipt {} is not valid UTF-8", path.display()))?;
     let raw: Value = serde_json::from_str(&content)?;
@@ -508,11 +512,10 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Receipt, ReceiptStatus, StepStatus, VerifiedChildArtifact, validate, validate_raw_shape,
-        write_verified_child_artifact,
+        Receipt, ReceiptStatus, StepStatus, VerifiedChildArtifact, load, sha256_hex, validate,
+        validate_raw_shape, write_verified_child_artifact,
     };
     use color_eyre::eyre::Result;
-    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
     fn fixture(content: &str) -> Result<Receipt> {
@@ -526,10 +529,8 @@ mod tests {
         let receipt =
             fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         let status = validate(&receipt)?;
-        let receipt_sha256 = format!(
-            "{:x}",
-            Sha256::digest(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))
-        );
+        let receipt_sha256 =
+            sha256_hex(include_bytes!("../../fixtures/experience/first_ten_minutes/valid.json"));
         let directory = tempdir()?;
         let output = directory.path().join("child.json");
         write_verified_child_artifact(&receipt, &receipt_sha256, status, &output)?;
@@ -547,10 +548,8 @@ mod tests {
         let receipt =
             fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         let status = validate(&receipt)?;
-        let receipt_sha256 = format!(
-            "{:x}",
-            Sha256::digest(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))
-        );
+        let receipt_sha256 =
+            sha256_hex(include_bytes!("../../fixtures/experience/first_ten_minutes/valid.json"));
         let directory = tempdir()?;
         let destination = directory.path().join("existing");
         std::fs::create_dir(&destination)?;
@@ -565,6 +564,18 @@ mod tests {
                 "failed publication did not preserve the existing destination"
             ));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn load_hashes_the_exact_receipt_bytes() -> Result<()> {
+        let directory = tempdir()?;
+        let input = directory.path().join("receipt.json");
+        let bytes = include_bytes!("../../fixtures/experience/first_ten_minutes/valid.json");
+        std::fs::write(&input, bytes)?;
+        let (receipt, digest) = load(&input)?;
+        assert_eq!(receipt.status, ReceiptStatus::Pass);
+        assert_eq!(digest, sha256_hex(bytes));
         Ok(())
     }
 
