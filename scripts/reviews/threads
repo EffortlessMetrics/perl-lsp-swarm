@@ -82,11 +82,22 @@ NAME="${REPO##*/}"
 
 PAGE_SIZE="${REVIEW_THREADS_PAGE_SIZE:-50}"
 
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
 # ── Paged fetch ─────────────────────────────────────────────────────────────
 # PRs in this repo routinely exceed one page of review threads. Reading only
 # the first page would hand the agent a truncated list, it would disposition a
 # subset, and the PR would stay BLOCKED on threads it never saw.
-ALL_NODES="[]"
+#
+# Pages accumulate in a FILE, never in an argv-passed variable. Bot review
+# bodies are long: a real 12-thread PR already produces enough JSON that
+# `jq --argjson accumulator "$SO_FAR"` dies with "Argument list too long",
+# which is a silent-truncation-shaped failure mode on exactly the large PRs
+# that need this script most. Every jq handoff below therefore goes through a
+# file or stdin.
+PAGES_FILE="$WORK_DIR/pages.json"
+: > "$PAGES_FILE"
 CURSOR="null"
 HAS_NEXT="true"
 while [[ "$HAS_NEXT" == "true" ]]; do
@@ -119,23 +130,27 @@ query {
 }
 EOF
 )
-    if ! PAGE="$(gh api graphql -f query="$QUERY" 2>&1)"; then
-        echo "ERROR: GraphQL fetch failed for reviewThreads on $REPO#$PR: $PAGE" >&2
+    PAGE_FILE="$WORK_DIR/page.json"
+    if ! gh api graphql -f query="$QUERY" > "$PAGE_FILE" 2>"$WORK_DIR/page.err"; then
+        echo "ERROR: GraphQL fetch failed for reviewThreads on $REPO#$PR:" >&2
+        cat "$WORK_DIR/page.err" "$PAGE_FILE" >&2 || true
         exit 2
     fi
-    if ! PAGE_NODES="$(jq -e '.data.repository.pullRequest.reviewThreads.nodes' <<<"$PAGE" 2>/dev/null)"; then
-        echo "ERROR: unexpected GraphQL response for $REPO#$PR: $PAGE" >&2
+    if ! jq -ce '.data.repository.pullRequest.reviewThreads.nodes' "$PAGE_FILE" >> "$PAGES_FILE"; then
+        echo "ERROR: unexpected GraphQL response for $REPO#$PR:" >&2
+        head -c 2000 "$PAGE_FILE" >&2
         exit 2
     fi
-    ALL_NODES="$(jq -n --argjson a "$ALL_NODES" --argjson b "$PAGE_NODES" '$a + $b')"
 
-    HAS_NEXT="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$PAGE")"
-    CURSOR="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // "null"' <<<"$PAGE")"
+    HAS_NEXT="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' "$PAGE_FILE")"
+    CURSOR="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // "null"' "$PAGE_FILE")"
     [[ "$CURSOR" != "null" ]] || HAS_NEXT="false"
 done
 
 # ── Projection ──────────────────────────────────────────────────────────────
-PROJECTED="$(jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" '
+PROJECTED_FILE="$WORK_DIR/projected.json"
+jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
+    |
     def excerpt:
         (. // "")
         | gsub("\r"; "")
@@ -160,9 +175,11 @@ PROJECTED="$(jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" '
         excerpt: (.comments.nodes[0].body | excerpt)
     })
     | if $unresolved_only == 1 then map(select(.isResolved == false)) else . end
-' <<<"$ALL_NODES")"
+' "$PAGES_FILE" > "$PROJECTED_FILE"
 
-SUMMARY="$(jq -n --argjson t "$PROJECTED" --arg pr "$PR" --arg repo "$REPO" '{
+SUMMARY_FILE="$WORK_DIR/summary.json"
+jq -n --slurpfile projected "$PROJECTED_FILE" --arg pr "$PR" --arg repo "$REPO" '
+    ($projected[0] // []) as $t | {
     pr: ($pr | tonumber),
     repo: $repo,
     thread_count: ($t | length),
@@ -170,10 +187,10 @@ SUMMARY="$(jq -n --argjson t "$PROJECTED" --arg pr "$PR" --arg repo "$REPO" '{
     unresolved_active: ([$t[] | select(.isResolved == false and .isOutdated == false)] | length),
     unresolved_outdated: ([$t[] | select(.isResolved == false and .isOutdated == true)] | length),
     threads: $t
-}')"
+}' > "$SUMMARY_FILE"
 
 if [[ "$AS_JSON" -eq 1 ]]; then
-    printf '%s\n' "$SUMMARY" | jq .
+    jq . "$SUMMARY_FILE"
     exit 0
 fi
 
@@ -194,9 +211,9 @@ jq -r --arg repo "$REPO" --arg pr "$PR" --argjson filtered "$UNRESOLVED_ONLY" '
         "      \(.excerpt)",
         ""
     )
-' <<<"$SUMMARY"
+' "$SUMMARY_FILE"
 
-UNRESOLVED="$(jq -r '.unresolved_count' <<<"$SUMMARY")"
+UNRESOLVED="$(jq -r '.unresolved_count' "$SUMMARY_FILE")"
 if [[ "$UNRESOLVED" -gt 0 ]]; then
     cat <<EOF
 Resolve each unresolved thread through the sanctioned path (reply-with-evidence,

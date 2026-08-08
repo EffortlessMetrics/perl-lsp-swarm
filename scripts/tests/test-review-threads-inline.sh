@@ -264,6 +264,52 @@ test_threads_is_read_only() {
     fi
 }
 
+# Regression: bot review bodies are long, and an accumulator passed to jq
+# through argv (`jq --argjson acc "$SO_FAR"`) dies with "Argument list too
+# long" — observed live on a real 12-thread PR before the fix, and it would hit
+# hardest on exactly the large PRs this script exists for. Serve one page whose
+# payload comfortably exceeds any argv limit and require every thread to
+# survive.
+test_threads_survives_large_payload() {
+    reset_stub
+    local big_nodes
+    big_nodes="$(jq -n '[range(0; 40) as $i | {
+        id: "PRRT_big_\($i)",
+        isResolved: false, isOutdated: false,
+        path: "crates/big/src/f\($i).rs", line: 1, originalLine: 1,
+        startLine: null, originalStartLine: null, diffSide: "RIGHT",
+        comments: { nodes: [ { author: { login: "coderabbitai" },
+                               body: "Finding \($i).\n" + ("x" * 60000),
+                               url: "https://example.invalid/\($i)" } ] }
+    }]')"
+    jq -n --argjson n "$big_nodes" '{data:{repository:{pullRequest:{reviewThreads:{
+        nodes: $n, pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
+        > "$STUB_DIR/threads_page1.json"
+
+    run_threads 9999 test-owner/test-repo --json
+    local ok=0
+    if [[ "$RUN_EXIT" -eq 0 ]] \
+        && jq -e '(.threads | length) == 40
+                  and (.threads[0].excerpt == "Finding 0.")' >/dev/null <<<"$RUN_OUT"; then
+        ok=1
+    fi
+
+    # Restore the two-page fixtures for any later case.
+    jq -n \
+        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.')" \
+        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.')" \
+        '{data:{repository:{pullRequest:{reviewThreads:{
+            nodes: [$a, $b],
+            pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
+        > "$STUB_DIR/threads_page1.json"
+
+    if [[ "$ok" -eq 1 ]]; then
+        pass "threads: a multi-megabyte thread payload survives (no argv-limit truncation)"
+    else
+        fail "threads large payload — exit=$RUN_EXIT out=$(head -c 400 <<<"$RUN_OUT")"
+    fi
+}
+
 # ═══ inline ═════════════════════════════════════════════════════════════════
 
 findings_file() { printf '%s' "$1" > "$TMP_ROOT/findings.json"; printf '%s' "$TMP_ROOT/findings.json"; }
@@ -436,6 +482,7 @@ test_threads_id_feeds_disposition
 test_threads_human_output_is_actionable
 test_threads_usage_error
 test_threads_is_read_only
+test_threads_survives_large_payload
 test_inline_posts_one_review
 test_inline_reads_stdin
 test_inline_rejects_unaddressable_line

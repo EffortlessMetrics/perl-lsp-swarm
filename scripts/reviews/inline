@@ -127,16 +127,27 @@ fi
 # and context lines. Walking each hunk header reproduces exactly that set, so a
 # bad anchor is caught here — with the finding's index — instead of arriving as
 # an anonymous 422.
-if ! FILES_JSON="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" 2>&1 | jq -s 'add // []' 2>/dev/null)"; then
+#
+# Every jq handoff below goes through a FILE, not argv: a large PR's diff and
+# addressable-line map easily exceed the argv limit, and `jq --argjson … "$BIG"`
+# then dies with "Argument list too long" on exactly the reviews that carry the
+# most findings.
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+FILES_FILE="$WORK_DIR/files.json"
+if ! gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" 2>"$WORK_DIR/files.err" \
+        | jq -s 'add // []' > "$FILES_FILE" 2>/dev/null; then
     echo "ERROR: could not fetch the file list for $REPO#$PR" >&2
+    cat "$WORK_DIR/files.err" >&2 || true
     exit 2
 fi
-if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$FILES_JSON"; then
+if ! jq -e 'type == "array"' "$FILES_FILE" >/dev/null 2>&1; then
     echo "ERROR: unexpected file-list response for $REPO#$PR" >&2
     exit 2
 fi
 
-ADDRESSABLE="$(jq -c '
+ADDRESSABLE_FILE="$WORK_DIR/addressable.json"
+jq -c '
     def hunk_lines:
         split("\n")
         | reduce .[] as $l ({old: 0, new: 0, right: [], left: []};
@@ -155,9 +166,10 @@ ADDRESSABLE="$(jq -c '
         | {RIGHT: .right, LEFT: .left};
     map(select(.patch != null) | {key: .filename, value: (.patch | hunk_lines)})
     | from_entries
-' <<<"$FILES_JSON")"
+' "$FILES_FILE" > "$ADDRESSABLE_FILE"
 
-ANCHOR_ERRORS="$(jq -r --argjson diff "$ADDRESSABLE" '
+ANCHOR_ERRORS="$(jq -r --slurpfile diff_slurp "$ADDRESSABLE_FILE" '
+    ($diff_slurp[0] // {}) as $diff |
     def side($f): (($f.side // "RIGHT") | ascii_upcase);
     def start_side($f): (($f.start_side // $f.side // "RIGHT") | ascii_upcase);
     to_entries
