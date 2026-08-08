@@ -2417,9 +2417,11 @@ impl LspServer {
 
             #[cfg(feature = "workspace")]
             {
-                // Compute before any index access; do not call while holding
-                // `documents_guard()` (#5016 / #6199 deadlock lesson).
-                let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+                // Wait for the workspace index to finish building before querying it.
+                // Without this, an implementation request while the index is in Building
+                // state routes to Partial and returns no cross-file implementors.
+                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
 
                 // Build doc_map outside the lock, pinning `uri`'s own entry
                 // to the captured generation -- mirrors
@@ -2428,11 +2430,9 @@ impl LspServer {
                 // #3396 / a95ad72).
                 let doc_map = self.pinned_doc_map_for(uri, &doc_text);
 
-                // Wait for the workspace index to finish building before querying it.
-                // Without this, an implementation request while the index is in Building
-                // state routes to Partial and returns no cross-file implementors.
-                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
-                let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                // Sample after readiness wait and doc snapshot; do not call while
+                // holding `documents_guard()` (#5016 / #6199 deadlock lesson).
+                let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
 
                 // Use routing policy - only provide workspace index in Full mode.
                 // When any open document is ahead of the index, skip the index tier

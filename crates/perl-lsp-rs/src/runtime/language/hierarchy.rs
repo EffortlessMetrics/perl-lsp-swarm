@@ -626,17 +626,17 @@ impl LspServer {
             let mut seen: std::collections::HashMap<(String, String), usize> =
                 std::collections::HashMap::new();
 
-            // Compute before `documents_guard()`; do not re-enter while holding
-            // that lock (#5016 / #6199 deadlock lesson).
-            #[cfg(feature = "workspace")]
-            let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
-
             // Wait for the workspace index to finish building before querying it.
             // Without this, an incomingCalls request while the index is in Building
             // state routes to Partial and returns no cross-file callers.
             // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
             #[cfg(feature = "workspace")]
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
+            // Sample after the readiness wait and before `documents_guard()`; do not
+            // re-enter while holding that lock (#5016 / #6199 deadlock lesson).
+            #[cfg(feature = "workspace")]
+            let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
             #[cfg(feature = "workspace")]
             if !workspace_index_stale && let Some(symbol_key) = self.workspace_symbol_key(&ch_item)
             {
