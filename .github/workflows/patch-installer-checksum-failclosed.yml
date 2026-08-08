@@ -1,0 +1,72 @@
+name: Patch installer checksum fail-closed
+
+on:
+  push:
+    branches: [agent/installer-checksum-required-6097]
+    paths: ['.github/workflows/patch-installer-checksum-failclosed.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout builder commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Apply exact fail-closed repair
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/install.sh')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              '    _sha_tool="$(select_sha256_tool)"\n': (
+                  '    if ! _sha_tool="$(select_sha256_tool)"; then\n'
+                  '        return 1\n'
+                  '    fi\n'
+              ),
+              '    _expected="$(checksum_for_asset "$_sums" "$_asset")"\n': (
+                  '    if ! _expected="$(checksum_for_asset "$_sums" "$_asset")"; then\n'
+                  '        return 1\n'
+                  '    fi\n'
+              ),
+              '    _actual="$(calculate_sha256 "$_sha_tool" "$_archive")"\n': (
+                  '    if ! _actual="$(calculate_sha256 "$_sha_tool" "$_archive")"; then\n'
+                  '        return 1\n'
+                  '    fi\n'
+              ),
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one exact occurrence, found {count}: {old!r}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Verify bounded diff and focused proof
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = "scripts/install.sh"
+          bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh
+          bash scripts/tests/test-installer-checksum-required.sh
+          git diff --check
+
+      - name: Commit validated ordinary-file repair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add scripts/install.sh
+          git commit -m 'security(install): make checksum helper failures explicit (#6097)'
+          gh auth setup-git
+          git push origin HEAD:agent/installer-checksum-required-6097
