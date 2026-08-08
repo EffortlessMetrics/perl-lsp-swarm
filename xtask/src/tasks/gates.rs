@@ -1904,6 +1904,12 @@ fn run_single_gate(
         });
     }
 
+    if command == "bash scripts/check-version-sync.sh" {
+        return run_internal_xtask_gate(gate, &log_path, command, start, || {
+            super::check_version_sync::run()
+        });
+    }
+
     if command == "just ci-publish-closure" || command == "cargo xtask publish-closure" {
         return run_internal_xtask_gate(gate, &log_path, command, start, || {
             super::publish_closure::run(None)
