@@ -86,13 +86,19 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     members = [packages[member_id] for member_id in member_ids if member_id in packages]
     publish_metadata = metadata.get("metadata", {}).get("publish", {})
     allowlist = publish_metadata.get("allow")
-    if not isinstance(allowlist, list) or not all(isinstance(name, str) for name in allowlist):
-        raise TopologyError("workspace metadata publish.allow must be an array of crate names")
+    if not isinstance(allowlist, list) or not all(
+        isinstance(name, str) for name in allowlist
+    ):
+        raise TopologyError(
+            "workspace metadata publish.allow must be an array of crate names"
+        )
     allowed = set(allowlist)
     by_name = {package["name"]: package for package in members}
     missing = sorted(allowed - set(by_name))
     if missing:
-        raise TopologyError(f"publish allowlist names missing from workspace: {missing}")
+        raise TopologyError(
+            f"publish allowlist names missing from workspace: {missing}"
+        )
     publishable = {
         package["name"]
         for package in members
@@ -125,7 +131,9 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
         ready.sort()
     if len(order) != len(allowed):
         remaining = sorted(name for name, deps in dependencies.items() if deps)
-        raise TopologyError(f"publish dependency cycle or unresolved dependency: {remaining}")
+        raise TopologyError(
+            f"publish dependency cycle or unresolved dependency: {remaining}"
+        )
     publish_order = {name: index for index, name in enumerate(order, start=1)}
 
     entries: list[dict[str, Any]] = []
@@ -189,11 +197,15 @@ def derive_targets(release_text: str, release: str) -> list[dict[str, Any]]:
         if target in seen:
             raise TopologyError(f"duplicate release target: {target}")
         seen.add(target)
-        runner_match = re.search(r"^\s*os:\s*(\S+)\s*$", match.group("body"), re.MULTILINE)
+        runner_match = re.search(
+            r"^\s*os:\s*(\S+)\s*$", match.group("body"), re.MULTILINE
+        )
         if not runner_match:
             raise TopologyError(f"release target has no runner: {target}")
         identity = target_identity(target, runner_match.group(1))
-        identity["archive_name"] = f"perllsp-{release}-{target}{identity['archive_name']}"
+        identity["archive_name"] = (
+            f"perllsp-{release}-{target}{identity['archive_name']}"
+        )
         suffix = ".exe" if identity["os"] == "windows" else ""
         identity["required_members"] = [
             f"perllsp{suffix}",
@@ -250,26 +262,40 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
         managed.update(
             target
             for target in workflow_targets
-            if target.endswith("-unknown-linux-gnu") or target.endswith("-unknown-linux-musl")
+            if target.endswith("-unknown-linux-gnu")
+            or target.endswith("-unknown-linux-musl")
         )
 
     return managed & workflow_targets
 
 
-def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_swarm_sha: str | None = None) -> dict[str, Any]:
+def build_manifest(
+    root: Path,
+    release: str,
+    frozen_product_sha: str,
+    prepared_swarm_sha: str | None = None,
+) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{40}", frozen_product_sha):
         raise TopologyError("frozen_product_sha must be a full lowercase commit SHA")
     current_sha = git_head(root)
     if current_sha != frozen_product_sha:
-        raise TopologyError("frozen_product_sha must identify the exact checkout being inventoried")
+        raise TopologyError(
+            "frozen_product_sha must identify the exact checkout being inventoried"
+        )
     if prepared_swarm_sha is not None:
         if not re.fullmatch(r"[0-9a-f]{40}", prepared_swarm_sha):
-            raise TopologyError("prepared_swarm_sha must be a full lowercase commit SHA")
+            raise TopologyError(
+                "prepared_swarm_sha must be a full lowercase commit SHA"
+            )
         if prepared_swarm_sha != current_sha:
-            raise TopologyError("prepared_swarm_sha must identify the exact prepared checkout")
+            raise TopologyError(
+                "prepared_swarm_sha must identify the exact prepared checkout"
+            )
     metadata = cargo_metadata(root)
     cargo_manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
-    workspace_version = cargo_manifest.get("workspace", {}).get("package", {}).get("version")
+    workspace_version = (
+        cargo_manifest.get("workspace", {}).get("package", {}).get("version")
+    )
     if not isinstance(workspace_version, str):
         raise TopologyError("workspace.package.version is missing from Cargo.toml")
     if workspace_version != release:
@@ -278,7 +304,9 @@ def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_s
         )
     workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
     targets = derive_targets(workflow, release)
-    downstream = json.loads((root / "docs/reference/downstream-dap-integrations.json").read_text())
+    downstream = json.loads(
+        (root / "docs/reference/downstream-dap-integrations.json").read_text()
+    )
     downstream_targets = {entry["triple"] for entry in downstream.get("targets", [])}
     workflow_targets = {entry["target"] for entry in targets}
     if downstream_targets != workflow_targets:
@@ -297,12 +325,18 @@ def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_s
             f"missing={sorted(workflow_targets - downloader_targets)}, "
             f"extra={sorted(downloader_targets - workflow_targets)}"
         )
-    package = json.loads((root / "vscode-extension/package.json").read_text(encoding="utf-8"))
+    package = json.loads(
+        (root / "vscode-extension/package.json").read_text(encoding="utf-8")
+    )
     if package.get("version") != release:
-        raise TopologyError(f"VSIX version {package.get('version')} does not match {release}")
+        raise TopologyError(
+            f"VSIX version {package.get('version')} does not match {release}"
+        )
     crates = derive_crates(metadata)
     for entry in crates:
-        entry["package_path"] = Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
+        entry["package_path"] = (
+            Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
+        )
     manifest = {
         "schema": SCHEMA,
         "release": release,
@@ -322,33 +356,48 @@ def build_manifest(root: Path, release: str, frozen_product_sha: str, prepared_s
         },
         "primary_channels": PRIMARY_CHANNELS,
         "secondary_channels": {"docker": "required", "homebrew": "deferred"},
-        "sources": {relative: {"path": relative, "sha256": digest} for relative, digest in source_hashes(root).items()},
+        "sources": {
+            relative: {"path": relative, "sha256": digest}
+            for relative, digest in source_hashes(root).items()
+        },
     }
     return manifest
 
 
-def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | None = None) -> None:
+def validate_manifest(
+    manifest: dict[str, Any], root: Path, expected_sha: str | None = None
+) -> None:
     if manifest.get("schema") != SCHEMA:
         raise TopologyError("manifest schema must be 1")
     if expected_sha is not None and manifest.get("frozen_product_sha") != expected_sha:
-        raise TopologyError("manifest frozen_product_sha differs from the reviewed candidate SHA")
+        raise TopologyError(
+            "manifest frozen_product_sha differs from the reviewed candidate SHA"
+        )
     if expected_sha is not None and git_head(root) != expected_sha:
-        raise TopologyError("reviewed candidate SHA is not the exact checkout being validated")
+        raise TopologyError(
+            "reviewed candidate SHA is not the exact checkout being validated"
+        )
     prepared_swarm_sha = manifest.get("prepared_swarm_sha")
     if prepared_swarm_sha is not None:
         if not isinstance(prepared_swarm_sha, str) or not re.fullmatch(
             r"[0-9a-f]{40}", prepared_swarm_sha
         ):
-            raise TopologyError("prepared_swarm_sha must be a full lowercase commit SHA")
+            raise TopologyError(
+                "prepared_swarm_sha must be a full lowercase commit SHA"
+            )
         if prepared_swarm_sha != git_head(root):
-            raise TopologyError("prepared_swarm_sha must identify the exact checkout being validated")
+            raise TopologyError(
+                "prepared_swarm_sha must identify the exact checkout being validated"
+            )
     release = manifest.get("release")
     if not isinstance(release, str):
         raise TopologyError("manifest release is missing")
     metadata = cargo_metadata(root)
     expected_crates = derive_crates(metadata)
     for entry in expected_crates:
-        entry["package_path"] = Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
+        entry["package_path"] = (
+            Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
+        )
     crates = manifest.get("published_crates")
     if not isinstance(crates, list) or manifest.get("crate_count") != len(crates):
         raise TopologyError("crate_count must be derived from published_crates")
@@ -360,13 +409,17 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
     names = {entry.get("name") for entry in crates}
     for entry in crates:
         if not set(entry.get("internal_dependencies", [])).issubset(names):
-            raise TopologyError(f"crate has an unlisted internal dependency: {entry.get('name')}")
+            raise TopologyError(
+                f"crate has an unlisted internal dependency: {entry.get('name')}"
+            )
         order = entry["publish_order"]
-        dependency_orders = {
-            other["name"]: other["publish_order"] for other in crates
-        }
-        if any(dependency_orders[name] >= order for name in entry["internal_dependencies"]):
-            raise TopologyError(f"crate dependencies are not publishable before {entry['name']}")
+        dependency_orders = {other["name"]: other["publish_order"] for other in crates}
+        if any(
+            dependency_orders[name] >= order for name in entry["internal_dependencies"]
+        ):
+            raise TopologyError(
+                f"crate dependencies are not publishable before {entry['name']}"
+            )
     targets = manifest.get("binary_targets")
     if not isinstance(targets, list) or manifest.get("archive_count") != len(targets):
         raise TopologyError("archive_count must be derived from binary_targets")
@@ -380,20 +433,38 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
     expected_targets = derive_targets(workflow, release)
     if targets != expected_targets:
         raise TopologyError("binary_targets does not match the release workflow")
-    downstream = json.loads((root / "docs/reference/downstream-dap-integrations.json").read_text())
-    if {entry["triple"] for entry in downstream.get("targets", [])} != set(target_names):
-        raise TopologyError("binary_targets does not match the downstream archive contract")
+    downstream = json.loads(
+        (root / "docs/reference/downstream-dap-integrations.json").read_text()
+    )
+    if {entry["triple"] for entry in downstream.get("targets", [])} != set(
+        target_names
+    ):
+        raise TopologyError(
+            "binary_targets does not match the downstream archive contract"
+        )
     downloader_targets = derive_downloader_targets(
         (root / "vscode-extension/src/downloader.ts").read_text(encoding="utf-8"),
         set(target_names),
     )
     if downloader_targets != set(target_names):
-        raise TopologyError("binary_targets does not match the managed downloader target contract")
-    package = json.loads((root / "vscode-extension/package.json").read_text(encoding="utf-8"))
-    if package.get("version") != release or manifest.get("vsix", {}).get("version") != package.get("version"):
-        raise TopologyError("VSIX version does not match the release or current extension manifest")
-    if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(downloader_targets):
-        raise TopologyError("VSIX managed targets do not match the release target matrix")
+        raise TopologyError(
+            "binary_targets does not match the managed downloader target contract"
+        )
+    package = json.loads(
+        (root / "vscode-extension/package.json").read_text(encoding="utf-8")
+    )
+    if package.get("version") != release or manifest.get("vsix", {}).get(
+        "version"
+    ) != package.get("version"):
+        raise TopologyError(
+            "VSIX version does not match the release or current extension manifest"
+        )
+    if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(
+        downloader_targets
+    ):
+        raise TopologyError(
+            "VSIX managed targets do not match the release target matrix"
+        )
     if manifest.get("primary_channels") != PRIMARY_CHANNELS:
         raise TopologyError("primary channel set is not the accepted v0.18 set")
     if manifest.get("vsix", {}).get("version") != manifest.get("release"):
@@ -413,7 +484,9 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
         if not isinstance(source, dict):
             raise TopologyError(f"source hash entry is not an object: {relative}")
         if source.get("path") != relative:
-            raise TopologyError(f"source path key disagrees with its path field: {relative}")
+            raise TopologyError(
+                f"source path key disagrees with its path field: {relative}"
+            )
         path = root / relative
         if not path.is_file() or sha256(path) != source.get("sha256"):
             raise TopologyError(f"source hash is stale: {relative}")
@@ -421,11 +494,15 @@ def validate_manifest(manifest: dict[str, Any], root: Path, expected_sha: str | 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release", required=True, help="candidate version, e.g. 0.18.0")
+    parser.add_argument(
+        "--release", required=True, help="candidate version, e.g. 0.18.0"
+    )
     parser.add_argument("--frozen-product-sha", required=True)
     parser.add_argument("--prepared-swarm-sha")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--check", action="store_true", help="validate an existing output")
+    parser.add_argument(
+        "--check", action="store_true", help="validate an existing output"
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     try:
@@ -435,10 +512,19 @@ def main() -> int:
                 raise TopologyError("manifest release differs from --release")
             validate_manifest(manifest, root, args.frozen_product_sha)
         else:
-            manifest = build_manifest(root, args.release, args.frozen_product_sha, args.prepared_swarm_sha)
+            manifest = build_manifest(
+                root, args.release, args.frozen_product_sha, args.prepared_swarm_sha
+            )
             validate_manifest(manifest, root, args.frozen_product_sha)
-            args.output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    except (OSError, json.JSONDecodeError, subprocess.CalledProcessError, TopologyError) as error:
+            args.output.write_text(
+                json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        subprocess.CalledProcessError,
+        TopologyError,
+    ) as error:
         print(f"release-topology: NOT_PROVEN: {error}", file=sys.stderr)
         return 2
     print(f"release-topology: PASS: {args.output}")

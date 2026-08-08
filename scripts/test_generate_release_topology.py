@@ -55,14 +55,18 @@ class ReleaseTopologyTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "fixture/Cargo.toml").parent.mkdir(parents=True)
-            (root / "fixture/Cargo.toml").write_text("[package]\nname = 'fixture-crate'\n", encoding="utf-8")
+            (root / "fixture/Cargo.toml").write_text(
+                "[package]\nname = 'fixture-crate'\n", encoding="utf-8"
+            )
             metadata["packages"][0]["manifest_path"] = str(root / "fixture/Cargo.toml")
             files = {
                 "Cargo.toml": "[workspace.package]\nversion = '0.18.0'\n",
                 "Cargo.lock": "# fixture lock\n",
                 ".github/workflows/release.yml": workflow,
                 "vscode-extension/package.json": json.dumps({"version": release}),
-                "docs/reference/downstream-dap-integrations.json": json.dumps(downstream),
+                "docs/reference/downstream-dap-integrations.json": json.dumps(
+                    downstream
+                ),
                 "vscode-extension/src/downloader.ts": downloader,
                 "scripts/inject-sha-assets.sh": "#!/bin/sh\n",
             }
@@ -106,9 +110,9 @@ class ReleaseTopologyTests(unittest.TestCase):
                     "sha256": MODULE.sha256(path),
                 }
 
-            with patch.object(MODULE, "cargo_metadata", return_value=metadata), patch.object(
-                MODULE, "git_head", return_value=frozen_sha
-            ):
+            with patch.object(
+                MODULE, "cargo_metadata", return_value=metadata
+            ), patch.object(MODULE, "git_head", return_value=frozen_sha):
                 yield root, manifest, frozen_sha
 
     def test_target_derivation_preserves_runner_and_archive_identity(self):
@@ -122,11 +126,16 @@ class ReleaseTopologyTests(unittest.TestCase):
         steps:
         """
         targets = MODULE.derive_targets(workflow, "0.18.0")
-        self.assertEqual([entry["target"] for entry in targets], [
-            "x86_64-unknown-linux-gnu", "aarch64-pc-windows-msvc"
-        ])
-        self.assertEqual(targets[0]["archive_name"], "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz")
-        self.assertEqual(targets[1]["required_members"][:2], ["perllsp.exe", "perl-dap.exe"])
+        self.assertEqual(
+            [entry["target"] for entry in targets],
+            ["x86_64-unknown-linux-gnu", "aarch64-pc-windows-msvc"],
+        )
+        self.assertEqual(
+            targets[0]["archive_name"], "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz"
+        )
+        self.assertEqual(
+            targets[1]["required_members"][:2], ["perllsp.exe", "perl-dap.exe"]
+        )
 
     def test_duplicate_target_is_rejected(self):
         workflow = """
@@ -146,8 +155,22 @@ class ReleaseTopologyTests(unittest.TestCase):
             "metadata": {"publish": {"allow": ["a", "b"]}},
             "workspace_members": ["a-id", "b-id"],
             "packages": [
-                {"id": "a-id", "name": "a", "version": "0.18.0", "manifest_path": "/a/Cargo.toml", "publish": None, "dependencies": [{"name": "b", "source": None}]},
-                {"id": "b-id", "name": "b", "version": "0.18.0", "manifest_path": "/b/Cargo.toml", "publish": None, "dependencies": [{"name": "a", "source": None}]},
+                {
+                    "id": "a-id",
+                    "name": "a",
+                    "version": "0.18.0",
+                    "manifest_path": "/a/Cargo.toml",
+                    "publish": None,
+                    "dependencies": [{"name": "b", "source": None}],
+                },
+                {
+                    "id": "b-id",
+                    "name": "b",
+                    "version": "0.18.0",
+                    "manifest_path": "/b/Cargo.toml",
+                    "publish": None,
+                    "dependencies": [{"name": "a", "source": None}],
+                },
             ],
         }
         with self.assertRaises(MODULE.TopologyError):
@@ -226,7 +249,9 @@ class ReleaseTopologyTests(unittest.TestCase):
             mutations["archive member"] = archive_member
 
             managed_target = deepcopy(manifest)
-            managed_target["vsix"]["managed_targets"].append("aarch64-unknown-linux-gnu")
+            managed_target["vsix"]["managed_targets"].append(
+                "aarch64-unknown-linux-gnu"
+            )
             mutations["managed target mapping"] = managed_target
 
             vsix_version = deepcopy(manifest)
