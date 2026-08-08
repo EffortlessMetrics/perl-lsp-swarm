@@ -81,7 +81,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -119,7 +119,7 @@ jobs:
 
       - name: Upload audit results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: cargo-audit-results
           path: audit-results.json
@@ -135,7 +135,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -172,7 +172,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Run Trivy vulnerability scanner (filesystem mode)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
@@ -193,7 +193,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@24c7eb380a2dc368f2d129e4c65e51d172983a1e  # v4
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'trivy-repository'
@@ -213,7 +213,7 @@ jobs:
 
       - name: Upload Trivy scan results (artifact)
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: trivy-repo-scan-results
           path: trivy-results.sarif
@@ -230,7 +230,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Build Docker image
         run: |
@@ -251,14 +251,14 @@ jobs:
 
       - name: Upload Trivy Docker results to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@24c7eb380a2dc368f2d129e4c65e51d172983a1e  # v4
         with:
           sarif_file: 'trivy-docker-results.sarif'
           category: 'trivy-docker'
 
       - name: Upload Trivy Docker results (artifact)
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: trivy-docker-scan-results
           path: trivy-docker-results.sarif

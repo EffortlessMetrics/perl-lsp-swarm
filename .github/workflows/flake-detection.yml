@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -155,7 +155,7 @@ jobs:
 
       - name: Comment on #2093 with flake report
         if: steps.retry_results.outputs.flake_count > 0
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
         with:
           script: |
             const fs = require('fs');
@@ -193,7 +193,7 @@ jobs:
 
       - name: Create issue for stable failures
         if: steps.retry_results.outputs.stable_failure_count > 0
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
         with:
           script: |
             const fs = require('fs');
@@ -225,7 +225,7 @@ jobs:
 
       - name: Upload flake detection artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: flake-detection-report-${{ github.run_number }}
           path: |
