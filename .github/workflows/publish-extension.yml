@@ -42,10 +42,13 @@ jobs:
       - name: Set version
         working-directory: vscode-extension
         id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="$INPUT_VERSION"
           if [ -z "$VERSION" ]; then
-            if [ "${{ github.ref_type }}" = "tag" ]; then
+            if [ "$REF_TYPE" = "tag" ]; then
               VERSION="${GITHUB_REF#refs/tags/v}"
             else
               echo "::error::Version input is required for workflow_dispatch"
