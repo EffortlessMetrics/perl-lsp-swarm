@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10168 |
+| Total tracked files | 10171 |
 | Rust-family files | 3080 |
-| Non-Rust files | 7088 |
-| Allowlisted | 4774 |
+| Non-Rust files | 7091 |
+| Allowlisted | 4777 |
 | Unclassified | 2314 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 236 |
+| config | 239 |
 | documentation | 2248 |
 | generated | 1 |
 | production | 211 |
@@ -2551,6 +2551,8 @@
 | `.github/PULL_REQUEST_TEMPLATE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/actions/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/actions/rust-checks/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/rust-checks/run_cargo.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/rust-checks/test_run_cargo.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-perl-lsp/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
@@ -2575,6 +2577,7 @@
 | `.github/workflows/ci-nightly.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ci-security.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ci.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/composite-action-contracts.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dependency-review.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dist-shadow.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docker-publish.yml` | config | `non-rust-github-workflows` | release/ci |
