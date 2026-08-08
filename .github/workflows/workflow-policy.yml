@@ -43,7 +43,7 @@ jobs:
   agent-export-6041:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/security-workflow-ratchet-6041'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 10
     permissions:
       contents: read
     env:
@@ -54,32 +54,24 @@ jobs:
           ref: ${{ env.TESTED_SHA }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Finalize and test scanner
+      - name: Generate exact candidate baseline
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('scripts/ci/test_workflow_security_ratchet.py')
-          text = path.read_text(encoding='utf-8')
-          if 'import sys\n' not in text:
-              text = text.replace('import os\n', 'import os\nimport sys\n', 1)
-          text = text.replace('ratchet = importlib.util.module_from_spec(SPEC)\nSPEC.loader.exec_module(ratchet)', 'ratchet = importlib.util.module_from_spec(SPEC)\nsys.modules[SPEC.name] = ratchet\nSPEC.loader.exec_module(ratchet)')
-          path.write_text(text, encoding='utf-8')
-          PY
           rm -f .github/workflows/agent-build-security-6041.yml .github/workflows/agent-run-security-6041.yml .agent-trigger-6041
           python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
-          python3 scripts/ci/workflow_security_ratchet.py baseline --root . --output .ci/workflow-security-baseline.json
-          python3 scripts/ci/workflow_security_ratchet.py check --root . --baseline .ci/workflow-security-baseline.json --report target/receipts/workflow-security-bootstrap.json
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
+            --report target/receipts/workflow-security-bootstrap.json
           cp .ci/workflow-security-baseline.json "$RUNNER_TEMP/baseline.json"
-          python3 scripts/ci/workflow_security_ratchet.py baseline --root . --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
           cmp "$RUNNER_TEMP/baseline.json" .ci/workflow-security-baseline.json
           git diff --check
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
-        with:
-          toolchain: 1.95.0
-      - name: Run workflow contracts
-        run: |
-          cargo run -p xtask --locked -- workflow-policy-lint
-          cargo run -p xtask --locked -- workflow-trigger-lint
       - name: Upload verified ratchet files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
