@@ -192,6 +192,49 @@ review_after = "2027-01-01"
     Ok(())
 }
 
+/// Each agent directory must have an explicit glob because glob 0.3.3 does
+/// not implement brace alternation.
+#[test]
+fn blocking_strict_accepts_explicit_agent_directory_globs() -> Result<()> {
+    let agent_dirs = ["roo", "kiro", "hermes", "jules"];
+    let mut entries = String::new();
+    let mut files = Vec::new();
+    for directory in agent_dirs {
+        entries.push_str(&format!(
+            r#"
+[[allow]]
+id = "agent-{directory}"
+glob = ".{directory}/**"
+kind = "agent_config"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "developer-experience"
+reason = "Agent configuration fixture."
+covered_by = ["xtask"]
+created = "2026-01-01"
+review_after = "2027-01-01"
+broad_glob_reason = "Agent configuration fixture tree."
+"#
+        ));
+        files.push((format!(".{directory}/config.toml"), "config = true".to_string()));
+    }
+
+    let file_refs: Vec<(&str, &str)> =
+        files.iter().map(|(path, contents)| (path.as_str(), contents.as_str())).collect();
+    let allowlist = minimal_allowlist(&entries);
+    let (_tmp, root) = setup_test_repo(&allowlist, &file_refs)?;
+
+    let output = run_check(&root, &["--mode", "blocking-strict"])?;
+    assert!(
+        output.status.success(),
+        "explicit agent directory globs must classify every fixture; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 /// blocking-allowlist must fail when an entry is missing `owner`.
 #[test]
 fn blocking_allowlist_fails_on_missing_owner() -> Result<()> {
