@@ -29,6 +29,9 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 MIN_SAMPLES_FOR_LEARNED = 5
+# actual_lem is minutes multiplied by the runner weight.  The current policy
+# tops out at 10x, so a one-hour job is at most 600 LEM.
+MAX_ACTUAL_LEM = 600.0
 
 
 def percentile(values: list[float], p: float) -> float:
@@ -73,13 +76,21 @@ def collect_actuals(
                 continue
             lane_id = job.get("gate_name") or job.get("lane_id")
             actual = job.get("actual_lem")
-            if not lane_id or not isinstance(actual, (int, float)):
+            if (
+                not lane_id
+                or isinstance(actual, bool)
+                or not isinstance(actual, (int, float))
+            ):
                 continue
             # Reject non-finite or extreme samples that could corrupt the
             # percentile history (inf, nan, or implausibly large values from
             # a buggy or malicious ci-actuals artifact) (#5995).
             actual_float = float(actual)
-            if not math.isfinite(actual_float) or actual_float < 0 or actual_float > 3_600_000:
+            if (
+                not math.isfinite(actual_float)
+                or actual_float < 0
+                or actual_float > MAX_ACTUAL_LEM
+            ):
                 continue
             samples.setdefault(lane_id, []).append(actual_float)
     return samples

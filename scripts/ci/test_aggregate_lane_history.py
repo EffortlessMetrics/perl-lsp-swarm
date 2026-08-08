@@ -65,6 +65,32 @@ class AggregateLaneHistoryTests(unittest.TestCase):
 
         self.assertEqual({"ripr": [42.5], "rust-small": [120.0]}, samples)
 
+    def test_collect_actuals_rejects_invalid_lem_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp) / "ci-actuals.json"
+            actuals.write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {"lane_id": "at-limit", "actual_lem": 600},
+                            {"lane_id": "over-limit", "actual_lem": 600.1},
+                            {"lane_id": "negative", "actual_lem": -1},
+                            {"lane_id": "bool", "actual_lem": True},
+                            {"lane_id": "infinity", "actual_lem": float("inf")},
+                            {"lane_id": "nan", "actual_lem": float("nan")},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            samples = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals.parent,
+                window_days=1,
+            )
+
+        self.assertEqual({"at-limit": [600.0]}, samples)
+
     def test_static_floors_reads_lane_base_lem_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             lanes = Path(tmp) / "ci-lanes.toml"
