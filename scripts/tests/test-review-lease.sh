@@ -232,7 +232,8 @@ test_disposition_provider_failure_is_inert() {
 # @side_effect: neither a review reply nor a thread-resolution mutation is permitted.
 test_disposition_malformed_marker_is_inert() {
     local malformed
-    malformed=$'Broken marker.\n\n<!-- disposition:v1 {not-json} -->'
+    malformed=$'Broken marker.\n\n<!-- disposition:v1 {not-json} -->\n\n'
+    malformed+="$existing_h1"
     run_disposition ok "$malformed" abc
     local mutations
     mutations="$(paste -sd, "$FAKE_LOG")"
