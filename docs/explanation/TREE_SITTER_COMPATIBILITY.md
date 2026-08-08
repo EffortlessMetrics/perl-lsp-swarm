@@ -9,6 +9,19 @@ describes the supported edge-case behavior without claiming an unqualified
 drop-in contract; the governing tiers and proof requirements are tracked in
 issue #4752.
 
+> **Scope — parts of this document describe an archived design, not current
+> source.** The specialized edge-case node kinds, the `.scm` queries that match
+> them, and the `EdgeCaseHandler` / `TreeSitterAdapter` API shown below exist
+> only under [`archive/crates/perl-ts-partial-ast/`](../../archive/crates/perl-ts-partial-ast/).
+> The current facade exports none of them, and no current grammar or query
+> produces those node kinds. Sections marked **(archived design)** are retained
+> as design rationale and must not be read as an available API.
+>
+> The current Tier A surface is `tree-sitter-perl-rs`, which exports `Parser`,
+> `Tree`, `Node`, `TreeCursor`, `language()`, and the `query` module; Tree-sitter
+> node/s-expression/highlight conversion lives in `perl-tree-sitter-compat`
+> (`parse_to_tree`, `to_ts_node`, `highlights`, `to_sexp`).
+
 ## Core Principles
 
 1. **AST is Source of Truth**: All parseable constructs output standard tree-sitter nodes
@@ -26,7 +39,11 @@ heredoc
 └── heredoc_delimiter
 ```
 
-### Edge Case Nodes (tree-sitter compatible)
+### Edge Case Nodes (archived design)
+
+Not produced by any current grammar or query — archived under
+`archive/crates/perl-ts-partial-ast/`.
+
 ```
 dynamic_heredoc_delimiter     // Variable delimiter like <<$foo
 phase_dependent_heredoc       // BEGIN/CHECK block heredocs
@@ -109,7 +126,11 @@ Dynamic delimiter example:
 }
 ```
 
-## Integration with Tree-sitter Tools
+## Integration with Tree-sitter Tools (archived design)
+
+The queries below match the archived edge-case node kinds and do not resolve
+against any current grammar. For current highlighting, use
+`perl_tree_sitter_compat::highlights`.
 
 ### 1. Syntax Highlighting
 
@@ -150,16 +171,24 @@ Jump-to-definition works even for partial parses:
 
 ## API Usage
 
-### Standard Parse
+### Standard Parse (current Tier A surface)
+
+The facade owns its language, so there is no `set_language` step:
 
 ```rust
-// Normal tree-sitter parsing
+use tree_sitter_perl_rs::Parser;
+
 let mut parser = Parser::new();
-parser.set_language(&tree_sitter_perl::language()).unwrap();
-let tree = parser.parse(code, None).unwrap();
+let tree = parser.parse(code); // Option<Tree>
 ```
 
-### With Edge Case Handling
+`tree_sitter_perl::language()` belongs to the legacy top-level `tree-sitter-perl/`
+crate, which is excluded from the workspace; it is not the current facade API.
+
+### With Edge Case Handling (archived design — does not compile against current crates)
+
+`EdgeCaseHandler` and `TreeSitterAdapter` are not exported by any current crate;
+they exist only under `archive/crates/perl-ts-partial-ast/`.
 
 ```rust
 // Parse with edge case detection
