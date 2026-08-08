@@ -20,6 +20,7 @@ required_paths=(
   'xtask/src/main.rs'
   'xtask/src/tasks/agent_flow.rs'
   'xtask/src/tasks/mod.rs'
+  'xtask/tests/agent_merge_review_backstop.rs'
   'scripts/tests/test-agent-flow-control-plane-trigger.sh'
   '.github/workflows/agent-flow-control-plane.yml'
 )

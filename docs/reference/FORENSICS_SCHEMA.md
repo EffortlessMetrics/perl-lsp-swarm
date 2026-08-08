@@ -490,14 +490,14 @@ Severity levels:
 ## Example Dossier (Four-Panel Structure)
 
 ```markdown
-## PR #153: Mutation Testing + UTF-16 Security Fixes
+## Historical case: Mutation Testing + UTF-16 Security Fixes
 
 ---
 
 ## Panel 1: Change Surface (Measured)
 
 ### Intent
-- **PR number**: #153
+- **UTF-16 implementation**: shared line-index and position-mapping helpers
 - **Issue/AC**: #148 (mutation testing), #150 (UTF-16 security)
 - **Stated goal**: Add mutation testing, fix UTF-16 boundary vulnerabilities
 
