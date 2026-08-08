@@ -436,6 +436,14 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --locked
 
+      # check-version-sync deliberately invokes perl-ci-hygiene through Cargo
+      # so it cannot reuse a stale helper binary. Warm that exact package in
+      # the policy shard first; otherwise its cold dependency build runs inside
+      # the 30-second version_sync gate timeout and produces no verdict.
+      - name: Warm version-sync helper
+        if: matrix.name == 'policy'
+        run: cargo build -p perl-ci-hygiene --bin perl-ci-hygiene --locked
+
       - name: Run merge-gate shard with receipts
         shell: bash
         run: |

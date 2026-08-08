@@ -52,6 +52,29 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
 }
 
 #[test]
+fn policy_shard_warms_version_sync_helper_before_running_gates() {
+    let root = repo_root();
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci.yml")));
+    let shards_start = must_some(workflow.find("merge-gate-shards:"));
+    let shards = &workflow[shards_start..];
+    let next_job = shards.find("\nmerge-gate:").unwrap_or(shards.len());
+    let shards = &shards[..next_job];
+
+    let warm_start = must_some(shards.find("- name: Warm version-sync helper"));
+    let run_start = must_some(shards.find("- name: Run merge-gate shard with receipts"));
+    let warm_step = must_some(workflow_step(shards, "Warm version-sync helper"));
+    assert!(
+        warm_start < run_start,
+        "the version-sync helper must be warm before the shard executes gates"
+    );
+    assert!(
+        warm_step.contains("if: matrix.name == 'policy'")
+            && warm_step.contains("cargo build -p perl-ci-hygiene --bin perl-ci-hygiene --locked"),
+        "only the policy shard should warm the locked version-sync helper"
+    );
+}
+
+#[test]
 fn ripr_workflow_blocks_new_gaps_and_requires_receipts() {
     let root = repo_root();
     let workflow = must(fs::read_to_string(root.join(".github/workflows/ripr.yml")));
