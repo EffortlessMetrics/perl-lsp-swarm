@@ -578,27 +578,42 @@ impl LspServer {
 
             tracing::debug!(uri, line, character, "Preparing call hierarchy");
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let provider = CallHierarchyProvider::new(doc.text.clone(), uri.to_string());
-                    if let Some(items) = provider.prepare(ast, line, character) {
-                        // Wait for the workspace index to finish building before enriching items.
-                        // enrich_call_hierarchy_item calls route_index_access; without the wait
-                        // items are returned with no workspace-enriched detail during indexing.
-                        // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
-                        #[cfg(feature = "workspace")]
-                        let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-                        #[cfg(feature = "workspace")]
-                        let items: Vec<_> = items
-                            .into_iter()
-                            .map(|item| self.enrich_call_hierarchy_item(item))
-                            .collect();
-                        let json_items: Vec<_> = items.iter().map(|item| item.to_json()).collect();
-                        return Ok(Some(json!(json_items)));
+            let prepared_items = {
+                let documents = self.documents_guard();
+                if let Some(doc) = self.get_document(&documents, uri) {
+                    let parsed = doc.current_parsed();
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                        let provider =
+                            CallHierarchyProvider::new(doc.text.clone(), uri.to_string());
+                        provider.prepare(ast, line, character)
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            };
+
+            if let Some(items) = prepared_items {
+                // Wait for the workspace index to finish building before enriching items.
+                // enrich_call_hierarchy_item calls route_index_access; without the wait
+                // items are returned with no workspace-enriched detail during indexing.
+                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                #[cfg(feature = "workspace")]
+                let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
+                // Sample after the readiness wait and before workspace enrichment; do not
+                // re-enter while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
+                #[cfg(feature = "workspace")]
+                let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+                #[cfg(feature = "workspace")]
+                let items: Vec<_> = if workspace_index_stale {
+                    items
+                } else {
+                    items.into_iter().map(|item| self.enrich_call_hierarchy_item(item)).collect()
+                };
+                let json_items: Vec<_> = items.iter().map(|item| item.to_json()).collect();
+                return Ok(Some(json!(json_items)));
             }
         }
 
@@ -632,8 +647,14 @@ impl LspServer {
             // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
             #[cfg(feature = "workspace")]
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
+            // Sample after the readiness wait and before `documents_guard()`; do not
+            // re-enter while holding that lock (#5016 / #6199 deadlock lesson).
             #[cfg(feature = "workspace")]
-            if let Some(symbol_key) = self.workspace_symbol_key(&ch_item) {
+            let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+            #[cfg(feature = "workspace")]
+            if !workspace_index_stale && let Some(symbol_key) = self.workspace_symbol_key(&ch_item)
+            {
                 let access_mode = route_index_access(self.coordinator());
                 if let IndexAccessMode::Full(coordinator) = access_mode {
                     let index = coordinator.index();
@@ -719,6 +740,18 @@ impl LspServer {
 
             tracing::debug!(target = item["name"].as_str().unwrap_or(""), "Getting outgoing calls");
 
+            // Wait for the workspace index to finish building before querying it.
+            // Without this, an outgoingCalls request while the index is in Building
+            // state routes to Partial and callees are not resolved cross-file.
+            // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+            #[cfg(feature = "workspace")]
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
+            // Sample after the readiness wait and before `documents_guard()`; do not
+            // re-enter while holding that lock (#5016 / #6199 deadlock lesson).
+            #[cfg(feature = "workspace")]
+            let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+
             // Snapshot all open documents for fallback callee resolution.
             let documents = self.documents_guard();
             let doc_snapshots: Vec<(String, String, std::sync::Arc<perl_parser::ast::Node>)> =
@@ -747,14 +780,8 @@ impl LspServer {
 
             let mut resolved_with_workspace = vec![false; calls.len()];
 
-            // Wait for the workspace index to finish building before querying it.
-            // Without this, an outgoingCalls request while the index is in Building
-            // state routes to Partial and callees are not resolved cross-file.
-            // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
             #[cfg(feature = "workspace")]
-            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            #[cfg(feature = "workspace")]
-            {
+            if !workspace_index_stale {
                 let access_mode = route_index_access(self.coordinator());
                 if let IndexAccessMode::Full(coordinator) = access_mode {
                     let workspace_symbols = coordinator.index().search_symbols("");
@@ -1006,6 +1033,155 @@ mod tests {
             "file-level caller must have SymbolKind.File=1, got: {from:?}"
         );
         assert_eq!(from["name"].as_str(), Some("script.pl"));
+    }
+
+    /// Regression (#5016): when the workspace index is stale relative to an open
+    /// document, `handle_incoming_calls` must not return callers from the
+    /// outdated index tier (open-document AST scan may still answer).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn incoming_calls_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        server.test_enable_call_hierarchy();
+
+        let target_uri = "file:///workspace/stale_incoming_target.pm";
+        let caller_uri = "file:///workspace/stale_incoming_caller.pl";
+        let target_text = "package StaleIncoming::Target;\nsub callee { return 1; }\n1;\n";
+        let caller_v1 =
+            "package main;\nuse StaleIncoming::Target;\nStaleIncoming::Target::callee();\n";
+        let caller_v2 = "package main;\nuse StaleIncoming::Target;\n# no calls\n";
+
+        server.test_apply_did_open(target_uri, target_text, 1)?;
+        server.test_apply_did_open(caller_uri, caller_v1, 1)?;
+        server
+            .test_index_file_in_building_state(target_uri, target_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let ch_item = json!({
+            "name": "callee",
+            "kind": 12,
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 30 }
+            },
+            "selectionRange": {
+                "start": { "line": 1, "character": 4 },
+                "end": { "line": 1, "character": 10 }
+            },
+            "data": {
+                "packageName": "StaleIncoming::Target",
+                "qualifiedName": "StaleIncoming::Target::callee"
+            }
+        });
+
+        let fresh = server.handle_incoming_calls(Some(json!({ "item": ch_item })))?;
+        let fresh_calls = fresh.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_calls.iter().any(|call| {
+                call.get("from")
+                    .and_then(|from| from.get("uri"))
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri.contains("stale_incoming_caller"))
+            }),
+            "fresh workspace index should report caller from caller.pl: {fresh_calls:?}"
+        );
+
+        server
+            .test_replace_document_without_index(caller_uri, caller_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_incoming_calls(Some(json!({ "item": ch_item })))?;
+        let stale_calls = stale.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_calls.iter().any(|call| {
+                call.get("from")
+                    .and_then(|from| from.get("uri"))
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri.contains("stale_incoming_caller"))
+            }),
+            "stale workspace index must not return removed caller: {stale_calls:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016): when the workspace index is stale relative to an open
+    /// document, `handle_outgoing_calls` must not resolve callees from the outdated
+    /// index tier (open-document AST scan may still answer within the caller file).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn outgoing_calls_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        server.test_enable_call_hierarchy();
+
+        let utils_uri = "file:///lib/stale_outgoing_utils.pm";
+        let caller_uri = "file:///bin/stale_outgoing_app.pl";
+        let utils_v1 =
+            "package StaleOutgoing::Utils;\nsub format_string { return uc shift; }\n1;\n";
+        let utils_v2 = "package StaleOutgoing::Utils;\n1;\n";
+        let caller_text = "use StaleOutgoing::Utils;\nsub process {\n    StaleOutgoing::Utils::format_string(\"hi\");\n}\n1;\n";
+
+        server.test_apply_did_open(utils_uri, utils_v1, 1)?;
+        server.test_apply_did_open(caller_uri, caller_text, 1)?;
+        server
+            .test_index_file_in_building_state(utils_uri, utils_v1)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_text)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let prepared = server.handle_prepare_call_hierarchy(Some(json!({
+            "textDocument": { "uri": caller_uri },
+            "position": { "line": 1, "character": 4 }
+        })))?;
+        let item = prepared
+            .and_then(|v| v.as_array().cloned())
+            .and_then(|items| items.first().cloned())
+            .expect("prepareCallHierarchy must return process item");
+
+        let fresh = server.handle_outgoing_calls(Some(json!({ "item": item })))?;
+        let fresh_calls = fresh.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_calls.iter().any(|call| {
+                call.get("to")
+                    .and_then(|to| to.get("uri"))
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri.contains("stale_outgoing_utils"))
+            }),
+            "fresh workspace index should resolve callee to utils.pm: {fresh_calls:?}"
+        );
+
+        server
+            .test_replace_document_without_index(utils_uri, utils_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_outgoing_calls(Some(json!({ "item": item })))?;
+        let stale_calls = stale.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_calls.iter().any(|call| {
+                call.get("to")
+                    .and_then(|to| to.get("uri"))
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri.contains("stale_outgoing_utils"))
+            }),
+            "stale workspace index must not resolve callee via outdated index: {stale_calls:?}"
+        );
+
+        Ok(())
     }
 
     #[test]
