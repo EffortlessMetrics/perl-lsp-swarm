@@ -494,6 +494,7 @@ jobs:
           mkdir -p target/ci
           python3 scripts/ci/emit_ci_actuals.py \
             --receipts-dir target/receipts/shards \
+            --lane-id merge_gate_shards \
             --workflow "${{ github.workflow }}" \
             --sha "${{ github.sha }}" \
             --pr "${{ github.event.pull_request.number || 0 }}" \

@@ -2,7 +2,25 @@
 
 ## Overview
 
-Our Perl parser maintains **100% tree-sitter compatibility** even when handling the most exotic edge cases. This document explains how we achieve this while providing advanced diagnostics and recovery capabilities.
+Our Perl parser provides a **tiered Tree-sitter compatibility surface**. Tier A
+Rust API behavior is substantially implemented; grammar/query compatibility and
+native-host/WASM compatibility remain partial or future work. This document
+describes the supported edge-case behavior without claiming an unqualified
+drop-in contract; the governing tiers and proof requirements are tracked in
+issue #4752.
+
+> **Scope — parts of this document describe an archived design, not current
+> source.** The specialized edge-case node kinds, the `.scm` queries that match
+> them, and the `EdgeCaseHandler` / `TreeSitterAdapter` API shown below exist
+> only under [`archive/crates/perl-ts-partial-ast/`](../../archive/crates/perl-ts-partial-ast/).
+> The current facade exports none of them, and no current grammar or query
+> produces those node kinds. Sections marked **(archived design)** are retained
+> as design rationale and must not be read as an available API.
+>
+> The current Tier A surface is `tree-sitter-perl-rs`, which exports `Parser`,
+> `Tree`, `Node`, `TreeCursor`, `language()`, and the `query` module; Tree-sitter
+> node/s-expression/highlight conversion lives in `perl-tree-sitter-compat`
+> (`parse_to_tree`, `to_ts_node`, `highlights`, `to_sexp`).
 
 ## Core Principles
 
@@ -21,7 +39,11 @@ heredoc
 └── heredoc_delimiter
 ```
 
-### Edge Case Nodes (tree-sitter compatible)
+### Edge Case Nodes (archived design)
+
+Not produced by any current grammar or query — archived under
+`archive/crates/perl-ts-partial-ast/`.
+
 ```
 dynamic_heredoc_delimiter     // Variable delimiter like <<$foo
 phase_dependent_heredoc       // BEGIN/CHECK block heredocs
@@ -104,7 +126,11 @@ Dynamic delimiter example:
 }
 ```
 
-## Integration with Tree-sitter Tools
+## Integration with Tree-sitter Tools (archived design)
+
+The queries below match the archived edge-case node kinds and do not resolve
+against any current grammar. For current highlighting, use
+`perl_tree_sitter_compat::highlights`.
 
 ### 1. Syntax Highlighting
 
@@ -145,16 +171,24 @@ Jump-to-definition works even for partial parses:
 
 ## API Usage
 
-### Standard Parse
+### Standard Parse (current Tier A surface)
+
+The facade owns its language, so there is no `set_language` step:
 
 ```rust
-// Normal tree-sitter parsing
+use tree_sitter_perl_rs::Parser;
+
 let mut parser = Parser::new();
-parser.set_language(&tree_sitter_perl::language()).unwrap();
-let tree = parser.parse(code, None).unwrap();
+let tree = parser.parse(code); // Option<Tree>
 ```
 
-### With Edge Case Handling
+`tree_sitter_perl::language()` belongs to the legacy top-level `tree-sitter-perl/`
+crate, which is excluded from the workspace; it is not the current facade API.
+
+### With Edge Case Handling (archived design — does not compile against current crates)
+
+`EdgeCaseHandler` and `TreeSitterAdapter` are not exported by any current crate;
+they exist only under `archive/crates/perl-ts-partial-ast/`.
 
 ```rust
 // Parse with edge case detection
@@ -175,7 +209,7 @@ let diagnostics = ts_output.diagnostics;
 
 ## Benefits
 
-1. **IDE Compatibility**: All tree-sitter based tools work out of the box
+1. **Tiered IDE compatibility**: supported tree-sitter-shaped tooling works within the documented adapter surface; native-host compatibility is not implied
 2. **Graceful Degradation**: Partial parses still provide useful structure
 3. **Rich Diagnostics**: Detailed explanations without polluting the AST
 4. **Progressive Enhancement**: Standard code parses normally, edge cases get extra handling
@@ -240,4 +274,6 @@ Our approach ensures that:
 - **Tools get maximum value even from problematic code**
 - **Users get actionable feedback about code issues**
 
-This makes our parser not just tree-sitter compatible, but a best-in-class implementation that enhances the tree-sitter ecosystem while maintaining full compatibility.
+This makes the parser useful to Tree-sitter-shaped consumers while keeping the
+compatibility claim bounded: native-host and distribution tiers require their
+own host and artifact proof before they can be described as supported.
