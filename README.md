@@ -20,7 +20,7 @@
   <!-- perl-lsp:vs-marketplace-installs-badge:start -->
   <a href="https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/badge/VS%20Marketplace-313%20installs-0078D4" alt="VS Marketplace installs" /></a>
   <!-- perl-lsp:vs-marketplace-installs-badge:end -->
-  <a href="https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs"><img src="https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads" alt="Open VSX downloads" /></a>
+  <a href="https://open-vsx.org/extension/EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads" alt="Open VSX downloads" /></a>
 </p>
 
 <p align="center">
@@ -72,10 +72,20 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-**macOS and Linux** — installer script; installs `perllsp` and `perl-dap`, and verifies the release archive against the published `SHA256SUMS` when that file and a checksum tool are both available ([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
+**macOS and Linux** — use a manual archive from
+[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
+the release closeout publishes an immutable installer ref and the reviewed
+SHA-256 digest of `scripts/install.sh`. The remote wrapper no longer executes
+installer logic selected from mutable `master`. Once a release packet supplies
+both values, the identity-bound bootstrap has this shape
+([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+INSTALLER_REF=<release-tag-or-full-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 ```
 
 **Homebrew** (macOS, Linux via Linuxbrew) — from the owned EffortlessMetrics tap, not Homebrew/core:
