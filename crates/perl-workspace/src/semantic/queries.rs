@@ -654,10 +654,13 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         // Collect method candidates from all packages in the chain.
         let mut candidates = Vec::new();
         for pkg in &packages_to_search {
-            candidates.extend(self.find_method_entities(pkg, method_name));
+            // Preserve package/MRO precedence across packages, while keeping
+            // duplicate definitions within one package deterministic.
+            let mut package_candidates = self.find_method_entities(pkg, method_name);
+            self.sort_candidates(&mut package_candidates);
+            candidates.extend(package_candidates);
         }
 
-        self.sort_candidates(&mut candidates);
         candidates
     }
 
@@ -2732,6 +2735,73 @@ mod tests {
         let candidates = queries.method_candidates("MyClass", "log_level");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].canonical_name, "MyBaseRole::log_level");
+        Ok(())
+    }
+
+    #[test]
+    fn method_candidates_preserves_composition_order_over_source_location()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let class_id = FileId(1);
+        let first_role_id = FileId(2);
+        let second_role_id = FileId(3);
+        let class_shard =
+            make_shard("file:///lib/MyClass.pm", class_id, vec![], vec![], vec![], vec![]);
+        let first_role_shard = method_shard(
+            "file:///z/FirstRole.pm",
+            first_role_id,
+            AnchorId(20),
+            EntityId(200),
+            "FirstRole::log_level",
+            EntityKind::Method,
+        );
+        let second_role_shard = method_shard(
+            "file:///a/SecondRole.pm",
+            second_role_id,
+            AnchorId(30),
+            EntityId(300),
+            "SecondRole::log_level",
+            EntityKind::Method,
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(class_shard.source_uri.clone(), class_shard);
+        shards.insert(first_role_shard.source_uri.clone(), first_role_shard);
+        shards.insert(second_role_shard.source_uri.clone(), second_role_shard);
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/MyClass.pm",
+            class_id,
+            vec![
+                PackageEdge::new(
+                    "MyClass".to_string(),
+                    "FirstRole".to_string(),
+                    PackageEdgeKind::ComposesRole,
+                    Some(AnchorId(1)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+                PackageEdge::new(
+                    "MyClass".to_string(),
+                    "SecondRole".to_string(),
+                    PackageEdgeKind::ComposesRole,
+                    Some(AnchorId(2)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+            ],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        let candidates = queries.method_candidates("MyClass", "log_level");
+        let names: Vec<_> =
+            candidates.iter().map(|candidate| candidate.canonical_name.as_str()).collect();
+        assert_eq!(names, ["FirstRole::log_level", "SecondRole::log_level"]);
         Ok(())
     }
 
