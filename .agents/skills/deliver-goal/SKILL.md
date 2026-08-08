@@ -149,6 +149,14 @@ was narrowed/superseded. Use `EXTERNAL_BLOCKER` only when every remaining requir
 claim shares one real external condition or accountable owner decision. Use
 `NOT_PROVEN` when the reliable goal boundary or live graph cannot be reconstructed.
 
+## What this establishes
+
+A bounded, resumable goal-level orchestration result: required claims and acceptance
+predicates are explicit; each active claim has a durable subject, current judgment, and
+wake event; interacting PR contracts and merge order are synthesized only after each
+candidate receives its own provider-native review; merged effects and every residual
+required claim are reconciled against the original goal.
+
 ## What this does not establish
 
 A repository scheduler, tracked frontier, active-goal file, portfolio queue, build-all
