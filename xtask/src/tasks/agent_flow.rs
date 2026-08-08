@@ -357,10 +357,11 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
             for target in &skill.route_targets {
                 if !known_names.contains(target) {
                     errors.push(format!(
-                        "{}: route from '{}' points to missing provider-local skill '{}'",
+                        "{}: route from '{}' points to missing provider-local skill '{}'{}",
                         skill.path.display(),
                         skill.name,
-                        target
+                        target,
+                        unresolved_route_hint(target, &known_names)
                     ));
                 }
             }
@@ -591,6 +592,88 @@ fn route_targets(text: &str) -> Vec<String> {
     targets.into_iter().collect()
 }
 
+/// Explain an unresolved route target instead of just reporting it missing (#6235).
+///
+/// `route_tokens` resolves ANY backticked all-lowercase token inside a
+/// route-bearing section as a route target, and `is_route_heading` counts
+/// `## Procedure` as route-bearing. So ordinary prose and code identifiers
+/// written in backticks — a JSON field, a CLI flag, a literal return value —
+/// are parsed as routing edges. The bare "points to missing provider-local
+/// skill 'clear'" text then sends the reader hunting for a routing defect that
+/// does not exist; that exact token shipped in #6085 and had to be repaired in
+/// `cba24946c`.
+///
+/// Two hints, in priority order:
+///   1. A near-miss against a real skill name — the token IS meant to be a
+///      route and is misspelled.
+///   2. Otherwise, if the token does not have the shape of a skill name, say so
+///      and name the actual remedy (drop the backticks).
+///
+/// Every skill name in both provider trees is hyphenated, so an unhyphenated
+/// token is prose with high confidence. This is a diagnostic only: it never
+/// changes whether the check fails, so a mis-shaped token that really is a
+/// broken route still errors.
+fn unresolved_route_hint(target: &str, known_names: &BTreeSet<String>) -> String {
+    if let Some(suggestion) = nearest_skill_name(target, known_names) {
+        return format!(" (did you mean '{suggestion}'?)");
+    }
+    if !target.contains('-') {
+        return format!(
+            " — no skill is named '{target}', and every skill name in this tree is hyphenated. \
+             If this is prose or a code identifier rather than a route target, remove the \
+             backticks; any backticked lowercase token inside a route-bearing section \
+             (Routes/Flow/Orchestration/Outcome/Procedure) is parsed as a route. See #6235."
+        );
+    }
+    String::new()
+}
+
+/// The closest known skill name within a small edit distance, if one is clearly
+/// closest. Ties produce no suggestion — guessing between two candidates is
+/// worse than staying quiet.
+fn nearest_skill_name(target: &str, known_names: &BTreeSet<String>) -> Option<String> {
+    let budget = if target.len() <= 6 { 1 } else { 2 };
+    let mut best: Option<(usize, &String)> = None;
+    let mut tied = false;
+    for name in known_names {
+        let distance = edit_distance(target, name);
+        if distance > budget {
+            continue;
+        }
+        match best {
+            Some((best_distance, _)) if distance > best_distance => {}
+            Some((best_distance, _)) if distance == best_distance => tied = true,
+            _ => {
+                best = Some((distance, name));
+                tied = false;
+            }
+        }
+    }
+    match best {
+        Some((_, name)) if !tied => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// Levenshtein distance over bytes; skill names are ASCII kebab-case.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0usize; right.len() + 1];
+    for (i, left_byte) in left.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, right_byte) in right.iter().enumerate() {
+            let substitution = previous[j] + usize::from(left_byte != right_byte);
+            let deletion = previous[j + 1] + 1;
+            let insertion = current[j] + 1;
+            current[j + 1] = substitution.min(deletion).min(insertion);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
 fn is_route_heading(heading: &str) -> bool {
     let normalized = heading.trim_start_matches('#').trim().to_ascii_lowercase();
     normalized.contains("route")
@@ -689,9 +772,86 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        SCENARIO_FIXTURES, check_scenarios, frontmatter_metadata_chars, frontmatter_value,
-        missing_markers, route_targets, route_tokens,
+        SCENARIO_FIXTURES, check_scenarios, edit_distance, frontmatter_metadata_chars,
+        frontmatter_value, missing_markers, nearest_skill_name, route_targets, route_tokens,
+        unresolved_route_hint,
     };
+
+    fn known() -> BTreeSet<String> {
+        ["deliver-pr", "finish-pr", "review-tests", "build-candidate"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // The #6085 regression: `clear` shipped as backticked prose, was parsed as a
+    // route, and the bare "missing skill" text sent the reader after a routing
+    // bug that did not exist. The hint must name the real remedy.
+    #[test]
+    fn prose_token_hint_names_the_backticks_as_the_problem() {
+        let hint = unresolved_route_hint("clear", &known());
+        assert!(hint.contains("remove the"), "hint should name the remedy: {hint}");
+        assert!(hint.contains("backticks"), "hint should name backticks: {hint}");
+        assert!(hint.contains("#6235"), "hint should cite the issue: {hint}");
+    }
+
+    // The #6091 near-miss: JSON field names documented in a Procedure section.
+    #[test]
+    fn identifier_tokens_from_the_6091_draft_get_the_prose_hint() {
+        for token in ["path", "line"] {
+            let hint = unresolved_route_hint(token, &known());
+            assert!(hint.contains("backticks"), "`{token}` should get the prose hint: {hint}");
+        }
+    }
+
+    // A misspelled REAL route must be told what it meant, not lectured about
+    // backticks — that is a routing bug and the hint must not disguise it.
+    #[test]
+    fn misspelled_route_suggests_the_intended_skill() {
+        let hint = unresolved_route_hint("deliver-pd", &known());
+        assert!(hint.contains("did you mean 'deliver-pr'?"), "{hint}");
+        assert!(!hint.contains("backticks"), "a near-miss is a routing bug, not prose: {hint}");
+    }
+
+    // A hyphenated token that resolves to nothing and resembles nothing gets no
+    // hint: it looks like a real route target, so the bare error is correct and
+    // an unfounded "maybe remove the backticks" would be actively misleading.
+    #[test]
+    fn unrecognised_hyphenated_token_gets_no_hint() {
+        assert_eq!(unresolved_route_hint("archive-corpus-nightly", &known()), "");
+    }
+
+    // Guessing between equally-close candidates is worse than staying quiet.
+    #[test]
+    fn ambiguous_near_miss_produces_no_suggestion() {
+        let candidates: BTreeSet<String> =
+            ["review-plan", "review-pran"].into_iter().map(str::to_owned).collect();
+        assert_eq!(nearest_skill_name("review-plax", &candidates), None);
+    }
+
+    // Short tokens get a tighter budget so unrelated four-letter prose is not
+    // "corrected" into a skill name.
+    #[test]
+    fn short_prose_token_is_not_matched_to_a_distant_skill() {
+        assert_eq!(nearest_skill_name("clear", &known()), None);
+        assert_eq!(nearest_skill_name("path", &known()), None);
+    }
+
+    #[test]
+    fn edit_distance_is_symmetric_and_zero_on_equality() {
+        assert_eq!(edit_distance("finish-pr", "finish-pr"), 0);
+        assert_eq!(edit_distance("finish-pr", "finish-p"), 1);
+        assert_eq!(edit_distance("finish-p", "finish-pr"), 1);
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
+
+    // The hint is advisory: it must not change which targets are considered
+    // resolved, or it would silently swallow real routing defects.
+    #[test]
+    fn hint_does_not_alter_route_parsing() {
+        let before = route_targets("## Procedure\n\nReturn `clear` when done.\n");
+        assert_eq!(before, vec!["clear".to_owned()]);
+    }
 
     #[test]
     fn parses_frontmatter_name() {
