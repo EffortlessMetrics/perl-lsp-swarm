@@ -47,12 +47,34 @@ def percentile(values: list[float], p: float) -> float:
 
 
 def collect_actuals(
-    *, actuals_dir: Path, window_days: int
-) -> dict[str, list[float]]:
-    """Walk actuals_dir for ci-actuals.json files, return per-lane LEM samples."""
+    *, actuals_dir: Path, window_days: int, known_lanes: set[str]
+) -> tuple[dict[str, list[float]], dict[str, Any]]:
+    """Walk actuals_dir for ci-actuals.json files, return per-lane LEM samples.
+
+    Only samples that attribute to a lane in ``known_lanes`` are accepted. A
+    job is attributed by its explicit ``lane_id`` (stamped by the emitter from
+    the workflow's own ``--lane-id``), or by ``gate_name`` when that name is
+    *literally* a known lane id.
+
+    A ``gate_name`` that is not a lane id is counted as unmapped and dropped.
+    It is deliberately not minted into a new lane: gate names are N:1 into
+    lanes, so doing that builds a parallel keyspace no planner can read while
+    every real lane stays empty, which is the #6217 defect.
+
+    Returns ``(samples, stats)``; ``stats`` is the validation record the caller
+    uses to decide whether the run learned anything at all.
+    """
     samples: dict[str, list[float]] = {}
+    stats: dict[str, Any] = {
+        "source_files": 0,
+        "jobs_seen": 0,
+        "jobs_with_sample": 0,
+        "accepted_samples": 0,
+        "unmapped_samples": 0,
+        "unmapped_keys": {},
+    }
     if not actuals_dir.exists():
-        return samples
+        return samples, stats
 
     cutoff = time.time() - window_days * 86400
     for path in sorted(actuals_dir.rglob("*.json")):
@@ -68,12 +90,13 @@ def collect_actuals(
             continue
         if not isinstance(doc, dict):
             continue
+        stats["source_files"] += 1
         for job in doc.get("jobs", []):
             if not isinstance(job, dict):
                 continue
-            lane_id = job.get("gate_name") or job.get("lane_id")
+            stats["jobs_seen"] += 1
             actual = job.get("actual_lem")
-            if not lane_id or not isinstance(actual, (int, float)):
+            if not isinstance(actual, (int, float)):
                 continue
             # Reject non-finite or extreme samples that could corrupt the
             # percentile history (inf, nan, or implausibly large values from
@@ -81,8 +104,25 @@ def collect_actuals(
             actual_float = float(actual)
             if not math.isfinite(actual_float) or actual_float < 0 or actual_float > 3_600_000:
                 continue
+            stats["jobs_with_sample"] += 1
+
+            # Explicit lane_id wins. A gate_name counts only on an exact match
+            # against a known lane id — never a prefix, suffix, or fuzzy match
+            # (#6217).
+            gate_name = job.get("gate_name")
+            lane_id = job.get("lane_id")
+            if lane_id not in known_lanes:
+                lane_id = gate_name if gate_name in known_lanes else None
+
+            if lane_id is None:
+                stats["unmapped_samples"] += 1
+                key = gate_name or job.get("lane_id") or "<unnamed>"
+                stats["unmapped_keys"][key] = stats["unmapped_keys"].get(key, 0) + 1
+                continue
+
+            stats["accepted_samples"] += 1
             samples.setdefault(lane_id, []).append(actual_float)
-    return samples
+    return samples, stats
 
 
 def static_floors(lanes_toml: Path) -> dict[str, float]:
@@ -98,7 +138,11 @@ def static_floors(lanes_toml: Path) -> dict[str, float]:
 
 
 def build_history(
-    *, samples: dict[str, list[float]], floors: dict[str, float], window_days: int
+    *,
+    samples: dict[str, list[float]],
+    floors: dict[str, float],
+    window_days: int,
+    stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lanes_out: dict[str, Any] = {}
     # Include every lane known to policy, even when samples are empty: planner
@@ -125,7 +169,7 @@ def build_history(
             )
         lanes_out[lane_id] = entry
 
-    return {
+    out: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "window_days": window_days,
@@ -133,6 +177,12 @@ def build_history(
         "lane_count": len(lanes_out),
         "lanes": lanes_out,
     }
+    if stats is not None:
+        # Recorded so a reader can tell "no data arrived" apart from "data
+        # arrived and none of it attributed to a lane" — the two states this
+        # file could not previously distinguish (#6217).
+        out["validation"] = dict(stats)
+    return out
 
 
 def main() -> int:
@@ -151,12 +201,17 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    samples = collect_actuals(
-        actuals_dir=args.actuals_dir, window_days=args.window_days
-    )
     floors = static_floors(args.static_lanes)
+    samples, stats = collect_actuals(
+        actuals_dir=args.actuals_dir,
+        window_days=args.window_days,
+        known_lanes=set(floors),
+    )
     history = build_history(
-        samples=samples, floors=floors, window_days=args.window_days
+        samples=samples,
+        floors=floors,
+        window_days=args.window_days,
+        stats=stats,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -171,9 +226,33 @@ def main() -> int:
                 "lanes": history["lane_count"],
                 "learned": learned,
                 "window_days": args.window_days,
+                "accepted_samples": stats["accepted_samples"],
+                "unmapped_samples": stats["unmapped_samples"],
             }
         )
     )
+
+    # Loudness. Samples arrived and none of them attributed to a known lane:
+    # the history that was just written is uniformly empty and a planner
+    # reading it will silently fall back to static floors forever. Before
+    # #6217 this exited 0, which made a totally unusable run indistinguishable
+    # from a quiet one. It is the same "reports success because nothing
+    # declared otherwise" shape as #6188 and #6193, so it fails.
+    if stats["jobs_with_sample"] > 0 and stats["accepted_samples"] == 0:
+        worst = sorted(
+            stats["unmapped_keys"].items(), key=lambda kv: -kv[1]
+        )[:10]
+        detail = ", ".join(f"{name}={count}" for name, count in worst)
+        print(
+            "::error::Lane-history aggregation attributed 0 of "
+            f"{stats['jobs_with_sample']} samples to a known lane. Every lane "
+            "in the written history is empty. Most frequent unmapped keys: "
+            f"{detail}. These are gate names, not lane ids: the emitting "
+            "workflow must pass --lane-id (#6217).",
+            file=sys.stderr,
+        )
+        return 1
+
     return 0
 
 

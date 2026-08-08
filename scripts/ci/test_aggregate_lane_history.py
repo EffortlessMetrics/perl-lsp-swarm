@@ -58,12 +58,263 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             (actuals / "invalid.json").write_text("{", encoding="utf-8")
             (actuals / "array.json").write_text("[]", encoding="utf-8")
 
-            samples = aggregate_lane_history.collect_actuals(
+            samples, _stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=1,
+                known_lanes={"ripr", "rust-small"},
             )
 
         self.assertEqual({"ripr": [42.5], "rust-small": [120.0]}, samples)
+
+    # ------------------------------------------------------------------
+    # #6217: gate names must not become lanes, and a run that maps nothing
+    # must be loud. The pre-existing tests above pass with the mapping fully
+    # broken because they only ever use invented lane keys ("rust-small",
+    # "ripr") and never assert that a sample reaches a *policy* lane id.
+    # ------------------------------------------------------------------
+
+    def test_gate_names_are_not_minted_into_lanes(self) -> None:
+        """A gate name that is not a lane id is dropped, not turned into a lane.
+
+        This is the production defect: `fmt`, `clippy_full`, and friends were
+        accumulating dozens of samples each in a parallel keyspace no planner
+        reads, while every real lane stayed at zero.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp)
+            (actuals / "ci-actuals.json").write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {"gate_name": "fmt", "actual_lem": 1.0},
+                            {"gate_name": "clippy_full", "actual_lem": 2.0},
+                            {"gate_name": "unit_foundation_full", "actual_lem": 3.0},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            samples, stats = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals,
+                window_days=14,
+                known_lanes={"merge_gate_shards", "pr_smoke"},
+            )
+
+        self.assertEqual({}, samples, "gate names must not create lanes")
+        self.assertEqual(0, stats["accepted_samples"])
+        self.assertEqual(3, stats["unmapped_samples"])
+        self.assertEqual(
+            {"fmt": 1, "clippy_full": 1, "unit_foundation_full": 1},
+            stats["unmapped_keys"],
+        )
+
+    def test_explicit_lane_id_attributes_samples_to_a_policy_lane(self) -> None:
+        """A receipt stamped with --lane-id lands on that real lane.
+
+        The positive half of the pair above: several gates inside one shard
+        lane all attribute to that lane, which is what makes a learned
+        estimate possible at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp)
+            (actuals / "ci-actuals.json").write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "lane_id": "merge_gate_shards",
+                                "gate_name": "fmt",
+                                "actual_lem": 1.0,
+                            },
+                            {
+                                "lane_id": "merge_gate_shards",
+                                "gate_name": "clippy_full",
+                                "actual_lem": 2.0,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            samples, stats = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals,
+                window_days=14,
+                known_lanes={"merge_gate_shards", "pr_smoke"},
+            )
+
+        self.assertEqual({"merge_gate_shards": [1.0, 2.0]}, samples)
+        self.assertEqual(2, stats["accepted_samples"])
+        self.assertEqual(0, stats["unmapped_samples"])
+
+    def test_near_miss_gate_name_does_not_bind_to_a_similar_lane(self) -> None:
+        """`compile_all_targets` must not be matched to lane `check_all_targets`.
+
+        The two namespaces contain several near-miss pairs
+        (`compile_all_targets`/`check_all_targets`,
+        `docs_build`/`docs_gate`). Any fuzzy or prefix match would bind a
+        sample to the wrong lane, which is worse than dropping it: it would
+        silently corrupt that lane's percentiles.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp)
+            (actuals / "ci-actuals.json").write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {"gate_name": "compile_all_targets", "actual_lem": 9.0},
+                            {"gate_name": "docs_build", "actual_lem": 4.0},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            samples, stats = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals,
+                window_days=14,
+                known_lanes={"check_all_targets", "docs_gate"},
+            )
+
+        self.assertEqual({}, samples)
+        self.assertEqual(2, stats["unmapped_samples"])
+
+    def test_gate_name_matching_a_lane_id_exactly_is_still_accepted(self) -> None:
+        """Exact equality is not a heuristic, so a 1:1 gate keeps working.
+
+        Guards the rollout: an artifact emitted before --lane-id existed is
+        still attributed when its gate name literally is a lane id.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            actuals = Path(tmp)
+            (actuals / "ci-actuals.json").write_text(
+                json.dumps({"jobs": [{"gate_name": "coverage", "actual_lem": 7.0}]}),
+                encoding="utf-8",
+            )
+
+            samples, stats = aggregate_lane_history.collect_actuals(
+                actuals_dir=actuals,
+                window_days=14,
+                known_lanes={"coverage"},
+            )
+
+        self.assertEqual({"coverage": [7.0]}, samples)
+        self.assertEqual(1, stats["accepted_samples"])
+
+    def test_main_fails_loudly_when_no_sample_maps_to_a_lane(self) -> None:
+        """Samples arrived, none attributed: exit non-zero instead of exit 0.
+
+        Before #6217 this wrote a valid-looking all-zero history and returned
+        success, which is indistinguishable from "no data" to every consumer.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            actuals = root / "actuals"
+            actuals.mkdir()
+            (actuals / "ci-actuals.json").write_text(
+                json.dumps({"jobs": [{"gate_name": "fmt", "actual_lem": 5.0}]}),
+                encoding="utf-8",
+            )
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text("[lane.merge_gate_shards]\nbase_lem = 24\n", encoding="utf-8")
+            output = root / "history.json"
+
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "aggregate_lane_history.py",
+                    "--actuals-dir", str(actuals),
+                    "--output", str(output),
+                    "--static-lanes", str(lanes),
+                ]
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = aggregate_lane_history.main()
+            finally:
+                sys.argv = old_argv
+
+            history = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(1, rc, "an all-unmapped run must not report success")
+        self.assertEqual(0, history["validation"]["accepted_samples"])
+        self.assertEqual(1, history["validation"]["unmapped_samples"])
+        # The written history must not have grown a `fmt` lane.
+        self.assertEqual(["merge_gate_shards"], sorted(history["lanes"]))
+
+    def test_main_succeeds_when_samples_attribute_to_a_lane(self) -> None:
+        """Opposite direction: the loudness must not fire on a healthy run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            actuals = root / "actuals"
+            actuals.mkdir()
+            (actuals / "ci-actuals.json").write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "lane_id": "merge_gate_shards",
+                                "gate_name": "fmt",
+                                "actual_lem": 5.0,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text("[lane.merge_gate_shards]\nbase_lem = 24\n", encoding="utf-8")
+            output = root / "history.json"
+
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "aggregate_lane_history.py",
+                    "--actuals-dir", str(actuals),
+                    "--output", str(output),
+                    "--static-lanes", str(lanes),
+                ]
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = aggregate_lane_history.main()
+            finally:
+                sys.argv = old_argv
+
+            history = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(0, rc)
+        self.assertEqual(1, history["validation"]["accepted_samples"])
+        self.assertEqual(1, history["lanes"]["merge_gate_shards"]["samples"])
+
+    def test_empty_input_stays_quiet(self) -> None:
+        """No samples at all is not an error: nothing was claimed and nothing lost.
+
+        Distinguishes the two states the old output conflated. Only
+        "data arrived and none of it mapped" is loud.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            actuals = root / "actuals"
+            actuals.mkdir()
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text("[lane.merge_gate_shards]\nbase_lem = 24\n", encoding="utf-8")
+            output = root / "history.json"
+
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "aggregate_lane_history.py",
+                    "--actuals-dir", str(actuals),
+                    "--output", str(output),
+                    "--static-lanes", str(lanes),
+                ]
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = aggregate_lane_history.main()
+            finally:
+                sys.argv = old_argv
+
+        self.assertEqual(0, rc)
 
     def test_static_floors_reads_lane_base_lem_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,7 +401,18 @@ base_lem = 2
         self.assertEqual(0, status)
         self.assertEqual(2, history["lane_count"])
         self.assertEqual(1, history["lanes"]["rust-small"]["samples"])
-        self.assertEqual({"lanes": 2, "learned": 0, "window_days": 14}, printed)
+        # The summary now also reports attribution, so an operator reading the
+        # step log can tell a healthy run from one that mapped nothing (#6217).
+        self.assertEqual(
+            {
+                "lanes": 2,
+                "learned": 0,
+                "window_days": 14,
+                "accepted_samples": 1,
+                "unmapped_samples": 0,
+            },
+            printed,
+        )
 
 
 if __name__ == "__main__":
