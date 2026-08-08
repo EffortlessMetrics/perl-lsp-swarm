@@ -444,7 +444,8 @@ impl Lowerer {
 
         // Statement branches are control-flow forks that yield no value at
         // statement level. A ternary is different: it is a value-producing
-        // rvalue, but the flat path cannot prove its enclosing Scalar/List
+        // conditional expression that may participate in an lvalue context,
+        // but the flat path cannot prove its enclosing Scalar/List/Lvalue
         // context. Keep it Unknown, matching the body path, rather than
         // claiming Void and losing the value-producing distinction.
         let context = match branch.keyword {

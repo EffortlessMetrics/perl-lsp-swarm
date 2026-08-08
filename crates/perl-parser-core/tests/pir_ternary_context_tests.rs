@@ -19,8 +19,9 @@ fn first_branch_node(graph: &PirGraph) -> &perl_parser_core::pir::PirNode {
 #[test]
 fn ternary_lowers_to_unknown_context_on_flat_path() {
     // The flat HIR path receives the same BranchShell as if/unless, but a
-    // ternary is a value-producing rvalue. Its enclosing Scalar/List context
-    // is not modeled here, so it must stay Unknown rather than Void.
+    // ternary is a value-producing conditional expression that may participate
+    // in an lvalue context. Its enclosing Scalar/List/Lvalue context is not
+    // modeled here, so it must stay Unknown rather than Void.
     let graph = lower("my $x = $c ? 1 : 2;");
     let branch = first_branch_node(&graph);
 

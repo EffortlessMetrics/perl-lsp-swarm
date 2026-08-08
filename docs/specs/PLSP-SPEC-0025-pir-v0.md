@@ -48,8 +48,9 @@ Branch lowering from HIR `BranchShell` (`if`/`unless`/ternary) is now
 implemented (PR #8196): an `if`/`unless` statement lowers to a
 `PirOperation::Branch { condition: None }` node in `PirContext::Void`, while a
 ternary lowers to the same operation in `PirContext::Unknown`. A ternary is a
-value-producing rvalue, but the flat path cannot prove its enclosing
-Scalar/List context, so `Unknown` is the fail-closed context. The condition
+value-producing conditional expression that may participate in an lvalue
+context, but the flat path cannot prove its enclosing Scalar/List/Lvalue
+context, so `Unknown` is the fail-closed context. The condition
 expression and then/else arm edges (`PirEdgeKind::Branch`) are named follow-ups;
 the node records that a branch exists and anchors it.
 
