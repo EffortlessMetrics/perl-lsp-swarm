@@ -69,10 +69,7 @@ pub fn extract_use_lib_paths(source: &str) -> Vec<UseLibPath> {
 /// Extract ordered `use lib` and `no lib` operations from source text.
 #[must_use]
 pub fn extract_use_lib_operations(source: &str) -> Vec<UseLibAction> {
-    extract_use_lib_operations_with_offsets(source)
-        .into_iter()
-        .map(|op| op.action)
-        .collect()
+    extract_use_lib_operations_with_offsets(source).into_iter().map(|op| op.action).collect()
 }
 
 /// Extract ordered `use lib` / `no lib` operations with statement end offsets.
@@ -114,7 +111,10 @@ fn statement_end_offset(source: &str, statement: &str) -> usize {
     start + statement.len()
 }
 
-fn use_lib_actions_before_offset(ops: &[UseLibOperation], offset: usize) -> impl Iterator<Item = &UseLibAction> {
+fn use_lib_actions_before_offset(
+    ops: &[UseLibOperation],
+    offset: usize,
+) -> impl Iterator<Item = &UseLibAction> {
     ops.iter().filter(move |op| op.end_offset <= offset).map(|op| &op.action)
 }
 
