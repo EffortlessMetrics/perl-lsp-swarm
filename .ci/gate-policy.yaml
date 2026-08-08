@@ -1152,10 +1152,15 @@ gates:
     description: "Ratchet: published crate count must not exceed baseline"
     required: true
     command: cargo xtask published-crate-count
-    timeout_seconds: 30
+    # Same shell-into-cargo-xtask shape as version_sync, so it carries the
+    # same rebuild cost and the same 30s trap. Quarantine currently hides
+    # that — the gate is skipped, so it has never had to run. Budgeted
+    # realistically now so lifting the quarantine restores a ratchet rather
+    # than introducing a guaranteed timeout.
+    timeout_seconds: 300
     retry_count: 0
     budgets:
-      max_duration_ms: 5000
+      max_duration_ms: 240000
     quarantine: true  # Until collapse completes (~30-31 crates)
     tags:
       - ratchet
@@ -1379,10 +1384,23 @@ gates:
     description: "All version strings agree across features.toml, Cargo.toml, package.json, build.rs"
     required: true
     command: bash scripts/check-version-sync.sh
-    timeout_seconds: 30
+    # The comparison itself costs ~13ms, but the command shells through
+    # `cargo xtask check-version-sync`, which in turn runs
+    # `cargo run -p perl-ci-hygiene` so release verification cannot reuse a
+    # stale helper binary. Both Cargo layers must be able to rebuild inside
+    # this budget: a sibling gate invalidates the shared target dir earlier
+    # in the shard, so this gate routinely pays a workspace rebuild before
+    # it can assert anything.
+    #
+    # At 30s it never once reached the comparison — 0 passes in 47 runs,
+    # always exit 124, killed mid-`Compiling`. 300s matches
+    # non_rust_inventory_check, the structural twin (same
+    # shell-into-cargo-xtask shape, observed at 111s). See #6147 for the
+    # durable fix that removes the rebuild instead of budgeting for it.
+    timeout_seconds: 300
     retry_count: 0
     budgets:
-      max_duration_ms: 10000
+      max_duration_ms: 240000
     quarantine: false
     tags:
       - release
