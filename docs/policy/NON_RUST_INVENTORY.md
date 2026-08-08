@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10173 |
+| Total tracked files | 10178 |
 | Rust-family files | 3080 |
-| Non-Rust files | 7093 |
-| Allowlisted | 4779 |
+| Non-Rust files | 7098 |
+| Allowlisted | 4784 |
 | Unclassified | 2314 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 240 |
+| config | 243 |
 | documentation | 2248 |
 | generated | 1 |
 | production | 211 |
 | test | 1753 |
-| tooling | 326 |
+| tooling | 328 |
 | unclassified | 2314 |
 
 ## Unclassified files
@@ -2484,6 +2484,7 @@
 | `.ci/scripts/measure-ci-time.sh` | config | `non-rust-ci-config` | release/ci |
 | `.ci/scripts/quarantine-flaky.sh` | config | `non-rust-ci-config` | release/ci |
 | `.ci/ux-flakes.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/workflow-security-baseline.json` | config | `non-rust-ci-config` | release/ci |
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/reference/review-convergence.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/settings.json` | tooling | `non-rust-claude-config` | developer-experience |
@@ -2617,6 +2618,8 @@
 | `.github/workflows/winget-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-contracts-advisory.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-policy.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/workflow-security-ratchet-selftest.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/workflow-security-ratchet.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-trigger-lint.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `.hermes/conveyor/work-02a1ac3f/adr.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5394,9 +5397,11 @@
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/clean-tmp-targets.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/clean-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/cleanup-completed-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
