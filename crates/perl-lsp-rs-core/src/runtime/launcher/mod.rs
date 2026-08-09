@@ -596,6 +596,24 @@ impl fmt::Display for LaunchParseError {
 
 impl Error for LaunchParseError {}
 
+impl perl_parser_core::ErrorClass for LaunchParseError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // All LaunchParseError variants represent invalid CLI input from the
+        // user — unknown options, invalid values, missing arguments. None are
+        // infrastructure, protocol, or transient failures.
+        match self {
+            Self::UnknownOption { .. }
+            | Self::ParserDiagnostic { .. }
+            | Self::MissingValue { .. }
+            | Self::InvalidFeatureProfile { .. }
+            | Self::InvalidPort { .. }
+            | Self::InvalidShell { .. }
+            | Self::InvalidRuntimeMode { .. }
+            | Self::InvalidDiagnosticMode { .. } => perl_parser_core::ErrorCategory::UserError,
+        }
+    }
+}
+
 /// Parse command line arguments for the Perl LSP launcher.
 pub fn parse_args<I>(args: I) -> Result<LaunchPlan, LaunchParseError>
 where
@@ -1262,10 +1280,32 @@ fn parse_feature_profile(raw_profile: &str) -> Result<FeatureProfile, LaunchPars
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, RuntimeMode, RuntimeTuning, TransportMode,
-        parse_args,
+        DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, LaunchParseError, RuntimeMode,
+        RuntimeTuning, TransportMode, parse_args,
     };
+    use perl_parser_core::{ErrorCategory, ErrorClass};
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn launch_parse_errors_are_user_errors_for_every_variant() {
+        let errors = [
+            LaunchParseError::UnknownOption { option: "--wat".into(), suggestion: None },
+            LaunchParseError::ParserDiagnostic { rendered: "conflict".into() },
+            LaunchParseError::MissingValue { option: "--port".into() },
+            LaunchParseError::InvalidFeatureProfile { raw_profile: "bad".into() },
+            LaunchParseError::InvalidPort {
+                raw_port: "nope".into(),
+                reason: "not a number".into(),
+            },
+            LaunchParseError::InvalidShell { raw_shell: "tcsh".into() },
+            LaunchParseError::InvalidRuntimeMode { raw_mode: "bad".into() },
+            LaunchParseError::InvalidDiagnosticMode { raw_mode: "bad".into() },
+        ];
+
+        for error in errors {
+            assert_eq!(error.error_class(), ErrorCategory::UserError);
+        }
+    }
 
     #[test]
     fn init_logging_does_not_panic_without_log_file() {

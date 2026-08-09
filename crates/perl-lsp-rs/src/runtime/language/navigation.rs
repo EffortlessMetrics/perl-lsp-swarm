@@ -1948,6 +1948,10 @@ impl LspServer {
         ) {
             return None;
         }
+        let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
         let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
             return None;
         };
@@ -1965,7 +1969,7 @@ impl LspServer {
             goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
                 .receipt
         })?;
-        if !snapshot_is_current() {
+        if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
             return None;
         }
         serde_json::to_value(receipt).ok()
@@ -2019,10 +2023,14 @@ impl LspServer {
                 })));
             };
 
-            let compiler_receipt = match route_index_access(self.coordinator()) {
-                IndexAccessMode::Full(coordinator) => {
-                    let index = coordinator.index();
-                    index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let compiler_receipt = if self.workspace_index_stale_for_any_open_document() {
+                None
+            } else {
+                match route_index_access(self.coordinator()) {
+                    IndexAccessMode::Full(coordinator) => {
+                        let index = coordinator.index();
+                        index.with_semantic_queries_for_uri(uri, |file_id, queries| {
                         let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                         let mut receipt = goto_definition_live_exact_or_imported(
                             index.as_ref(),
@@ -2038,9 +2046,11 @@ impl LspServer {
                         ));
                         receipt
                     })
+                    }
+                    IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
-                IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
             };
+            let live_cutover = compiler_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
@@ -2048,8 +2058,12 @@ impl LspServer {
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
                 "compiler_receipt": compiler_receipt,
-                "no_live_behavior_change": false,
-                "live_cutover": "partial_exact_imported"
+                "no_live_behavior_change": !live_cutover,
+                "live_cutover": if live_cutover {
+                    Some("partial_exact_imported")
+                } else {
+                    None
+                }
             })))
         }
     }
@@ -2417,6 +2431,12 @@ impl LspServer {
 
             #[cfg(feature = "workspace")]
             {
+                // Wait for the workspace index to finish building before querying it.
+                // Without this, an implementation request while the index is in Building
+                // state routes to Partial and returns no cross-file implementors.
+                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
                 // Build doc_map outside the lock, pinning `uri`'s own entry
                 // to the captured generation -- mirrors
                 // `handle_type_definition` above; see `pinned_doc_map_for`'s
@@ -2424,19 +2444,26 @@ impl LspServer {
                 // #3396 / a95ad72).
                 let doc_map = self.pinned_doc_map_for(uri, &doc_text);
 
-                // Wait for the workspace index to finish building before querying it.
-                // Without this, an implementation request while the index is in Building
-                // state routes to Partial and returns no cross-file implementors.
-                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
-                let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                // Sample after readiness wait and doc snapshot; do not call while
+                // holding `documents_guard()` (#5016 / #6199 deadlock lesson).
+                let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
 
-                // Use routing policy - only provide workspace index in Full mode
-                let access_mode = route_index_access(self.coordinator());
-                let workspace_index = if let IndexAccessMode::Full(coordinator) = access_mode {
-                    Some(coordinator.index().clone())
-                } else {
-                    // Partial/None: same-file analysis only
+                // Use routing policy - only provide workspace index in Full mode.
+                // When any open document is ahead of the index, skip the index tier
+                // and rely on the open-document AST scan only (#5016).
+                let workspace_index = if workspace_index_stale {
+                    tracing::debug!(
+                        "Implementation: skipping stale workspace index tier, using open-doc scan only"
+                    );
                     None
+                } else {
+                    let access_mode = route_index_access(self.coordinator());
+                    if let IndexAccessMode::Full(coordinator) = access_mode {
+                        Some(coordinator.index().clone())
+                    } else {
+                        // Partial/None: same-file analysis only
+                        None
+                    }
                 };
 
                 let provider = ImplementationProvider::new(workspace_index);
@@ -2634,6 +2661,83 @@ mod tests {
         Ok(())
     }
 
+    /// Regression (#5016 item 2): stale workspace index must not run definition
+    /// semantic shadow queries even when the request document's generation matches.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_semantic_shadow_skips_stale_workspace_index_tier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let main_uri = "file:///workspace/shadow-main.pl";
+        let main_text = "package Foo;\nsub bar { return 1; }\npackage main;\nFoo::bar();\n";
+        let unrelated_uri = "file:///workspace/shadow-unrelated.pl";
+        let unrelated_text = "package Unrelated;\nsub helper {}\n";
+
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_text, 1)?;
+        server
+            .test_index_file_in_building_state(main_uri, main_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_text)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 3, "character": 5 }
+        })))?;
+        assert!(
+            fresh.as_ref().and_then(Value::as_array).is_some_and(|locations| !locations.is_empty()),
+            "fresh index should resolve Foo::bar call target: {fresh:?}"
+        );
+        let fresh_explanation = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "goto_definition"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        assert!(
+            fresh_explanation
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("semantic_shadow_receipt"))
+                .is_some(),
+            "fresh index should persist definition semantic shadow receipt"
+        );
+
+        server
+            .test_replace_document_without_index(
+                unrelated_uri,
+                "package Unrelated;\nsub renamed {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "edited unrelated buffer must stale the workspace index"
+        );
+
+        let _ = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 3, "character": 5 }
+        })))?;
+        let stale_explanation = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "goto_definition"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        assert!(
+            stale_explanation
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("semantic_shadow_receipt"))
+                .is_none(),
+            "stale workspace index must not persist definition semantic shadow receipt"
+        );
+
+        Ok(())
+    }
+
     /// Serializes tests in this module that touch
     /// `NAVIGATION_SAME_DOC_FALLBACK_GAP`, mirroring `toctou_hook_lock` in
     /// `tests/navigation_same_document_toctou_regression_tests.rs`: any call
@@ -2676,6 +2780,69 @@ mod tests {
             "position": { "line": 1, "character": 4 }
         })));
         assert!(result.is_ok(), "handle_implementation must not error: {result:?}");
+    }
+
+    /// Regression (#5016): when the workspace index is stale relative to an open
+    /// document, `handle_implementation` must not return implementors from the
+    /// outdated index tier (open-document AST scan may still answer).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn implementation_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let base_uri = "file:///workspace/stale_impl_base.pm";
+        let derived_uri = "file:///workspace/stale_impl_derived.pm";
+        let base_text = "package StaleImpl::Base;\nsub new { bless {}, shift }\n1;\n";
+        let derived_v1 = "package StaleImpl::Derived;\nuse parent 'StaleImpl::Base';\n1;\n";
+        let derived_v2 = "package StaleImpl::Derived;\n1;\n";
+
+        server.test_apply_did_open(base_uri, base_text, 1)?;
+        server.test_apply_did_open(derived_uri, derived_v1, 1)?;
+        server
+            .test_index_file_in_building_state(base_uri, base_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(derived_uri, derived_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        // Cursor on the `Base` package identifier.
+        let fresh = server.handle_implementation(Some(json!({
+            "textDocument": { "uri": base_uri },
+            "position": { "line": 0, "character": 19 }
+        })))?;
+        let fresh_locations = fresh.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_locations.iter().any(|loc| {
+                loc.get("targetUri")
+                    .and_then(|u| u.as_str())
+                    .is_some_and(|uri| uri.contains("stale_impl_derived"))
+            }),
+            "fresh workspace index should return Derived implementor: {fresh_locations:?}"
+        );
+
+        server
+            .test_replace_document_without_index(derived_uri, derived_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_implementation(Some(json!({
+            "textDocument": { "uri": base_uri },
+            "position": { "line": 0, "character": 19 }
+        })))?;
+        let stale_locations = stale.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_locations.iter().any(|loc| {
+                loc.get("targetUri")
+                    .and_then(|u| u.as_str())
+                    .is_some_and(|uri| uri.contains("stale_impl_derived"))
+            }),
+            "stale workspace index must not return removed parent relationship: {stale_locations:?}"
+        );
+
+        Ok(())
     }
 
     /// Verifies `wait_at_same_doc_fallback_gap`'s poison-recovery path

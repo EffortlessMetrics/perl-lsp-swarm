@@ -405,6 +405,13 @@ impl LspServer {
             // that occurs when workspace/symbol arrives right after `initialized`.
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
 
+            if self.workspace_index_stale_for_any_open_document() {
+                tracing::debug!(
+                    "Workspace symbol: skipping stale workspace index tier, using open-doc fallback"
+                );
+                return self.search_open_documents_for_symbols(query, cap);
+            }
+
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -927,25 +934,27 @@ impl LspServer {
         #[cfg(feature = "workspace")]
         {
             let _ = self.check_index_readiness(IndexReadinessPolicy::NoWait);
-            let access_mode = route_index_access(self.coordinator());
-            if let IndexAccessMode::Full(coordinator) = access_mode {
-                let cap = workspace_symbol_cap();
-                let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
-                symbols.extend(
-                    coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
-                );
-                if !symbols.is_empty() {
-                    let lsp_symbols: Vec<Value> = symbols
-                        .iter()
-                        .map(|sym| serde_json::to_value(sym).unwrap_or_else(|_| json!({})))
-                        .collect();
-                    tracing::debug!(
-                        count = lsp_symbols.len(),
-                        "Workspace symbol: served from prebuilt index (v1 fast path)"
+            if !self.workspace_index_stale_for_any_open_document() {
+                let access_mode = route_index_access(self.coordinator());
+                if let IndexAccessMode::Full(coordinator) = access_mode {
+                    let cap = workspace_symbol_cap();
+                    let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                    symbols.extend(
+                        coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
                     );
-                    return Ok(Some(json!(lsp_symbols)));
+                    if !symbols.is_empty() {
+                        let lsp_symbols: Vec<Value> = symbols
+                            .iter()
+                            .map(|sym| serde_json::to_value(sym).unwrap_or_else(|_| json!({})))
+                            .collect();
+                        tracing::debug!(
+                            count = lsp_symbols.len(),
+                            "Workspace symbol: served from prebuilt index (v1 fast path)"
+                        );
+                        return Ok(Some(json!(lsp_symbols)));
+                    }
+                    // Index returned empty — fall through to re-index fallback.
                 }
-                // Index returned empty — fall through to re-index fallback.
             }
         }
 
@@ -4227,6 +4236,52 @@ mod tests {
         let folder_state = folders.first().ok_or("workspace folder should exist")?;
         assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["lib", "local"]);
         assert_eq!(folder_state.effective_workspace_config.resolution_timeout_ms, 123);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_symbol_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/stale_ws_symbol_source.pl";
+        let source_v1 = "package StaleWs::Source;\nsub stale_symbol { return 1; }\n1;\n";
+        let source_v2 = "package StaleWs::Source;\nsub fresh_only { return 2; }\n1;\n";
+
+        server.test_apply_did_open(source_uri, source_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh = server.handle_workspace_symbols_v2(Some(json!({"query": "stale_symbol"})))?;
+        let fresh_symbols = fresh.and_then(|value| value.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_symbols
+                .iter()
+                .any(|symbol| symbol.get("name").and_then(|name| name.as_str())
+                    == Some("stale_symbol")),
+            "fresh workspace index should return stale_symbol: {fresh_symbols:?}"
+        );
+
+        server
+            .test_replace_document_without_index(source_uri, source_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_workspace_symbols_v2(Some(json!({"query": "stale_symbol"})))?;
+        let stale_symbols = stale.and_then(|value| value.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_symbols
+                .iter()
+                .any(|symbol| symbol.get("name").and_then(|name| name.as_str())
+                    == Some("stale_symbol")),
+            "stale workspace index must not return removed symbol: {stale_symbols:?}"
+        );
+
         Ok(())
     }
 }

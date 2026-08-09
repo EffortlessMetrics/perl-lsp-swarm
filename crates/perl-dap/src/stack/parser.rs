@@ -20,6 +20,18 @@ pub enum StackParseError {
     RegexError(#[from] regex::Error),
 }
 
+impl perl_parser_core::ErrorClass for StackParseError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // Both variants are adapter/parser gaps — the engine output shape
+        // or our regex constants are outside user control.
+        match self {
+            Self::UnrecognizedFormat(_) | Self::RegexError(_) => {
+                perl_parser_core::ErrorCategory::Bug
+            }
+        }
+    }
+}
+
 // Compiled regex patterns for stack trace parsing.
 // These patterns are extracted from the perl-dap debug_adapter.rs implementation.
 // Stored as Results to avoid panics; compile failure treated as "no match".
