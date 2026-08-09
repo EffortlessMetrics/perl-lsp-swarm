@@ -93,6 +93,46 @@ exceeds cold-start, briefing, duplicate research, resource contention, join, and
 correlated-failure costs. Stop adding agents when another result cannot change a
 decision.
 
+## Capacity admission
+
+Size the runtime graph to the host, not to the work available. Saturation destroys
+evidence rather than only delaying it: once builds contend, local timings, flake rates,
+and command timeouts stop being trustworthy, and the root begins dispatching diagnostic
+agents into ambiguity it produced itself.
+
+Check before dispatching a writer:
+
+```text
+concurrent lane roots           <= 3
+concurrent build-heavy writers  <= 1
+concurrent workspace-wide build <= 1
+```
+
+- no replacement or adjacent lane until an existing lane returns its typed result;
+- read-only inspection of GitHub or source requires no worktree; allocate one only for a
+  named mutation claim, through `$worktree-manager`;
+- when admission fails, wait; declining to dispatch is a valid orchestration action;
+- a local timing or flake-rate measurement taken under saturation is `NOT_PROVEN` and
+  must be reported as such rather than as a number.
+
+## A quiet agent is not a result
+
+Only a typed return ends a lane. An idle signal, a terminated process, an exhausted
+budget, or prolonged silence says nothing about the claim.
+
+When a lane goes quiet, inspect the artifact rather than the agent — PR state, branch
+head, worktree status, live checks:
+
+```text
+typed result returned        → join it
+artifact shows the work done → reconcile, release the lane
+stated wait still current    → leave it; an unchanged remote wait is IN_FLIGHT
+no artifact and no return    → the claim is unowned; re-dispatch deliberately
+```
+
+Silence is not spare capacity, not completion, and not an unowned claim. A lane holding
+a current wait condition is not stalled, and re-tasking it discards work in flight.
+
 ## Runtime-local frontier
 
 A campaign root may keep this in memory only:
@@ -128,6 +168,20 @@ Every brief names:
 Do not ask children to rediscover settled facts or return raw transcripts/private
 reasoning.
 
+A brief carries the claim and its acceptance criteria, not the current state of the
+world. Head SHAs, check results, mergeability, and counts go stale faster than a child
+can act on them, and an instruction resting on stale state is unexecutable rather than
+merely inaccurate. Where volatile state must appear, name the revision it was observed
+at and require re-derivation before action:
+
+```text
+As of <sha>, both required checks were green — re-resolve before merging.
+If that no longer holds, report rather than proceeding.
+```
+
+Express any instruction naming a specific PR, branch, or SHA conditionally, so a child
+that finds the world changed has a defined action instead of a contradiction.
+
 ## Graph-delta returns
 
 Read-only workers return subject identity, conclusion, direct and contradictory
@@ -143,6 +197,13 @@ uncertainty, and suggested disposition.
 The root must join evidence as graph deltas rather than votes. Repeated claims from one
 source are not independent corroboration. Preserve contradictions until direct evidence
 resolves them.
+
+Every dispatched agent owes a typed return. Track what was dispatched: a lens that dies
+— exhausted budget, killed process, tooling failure — leaves its dimension `NOT_PROVEN`,
+not examined-and-clean. An unnoticed absent return is indistinguishable from a clean
+one, which is the failure the review method exists to prevent. Record the dispatch so
+the absence is visible, and carry it into the cumulative judgment rather than dropping
+it.
 
 ## Useful GitHub publication filter
 

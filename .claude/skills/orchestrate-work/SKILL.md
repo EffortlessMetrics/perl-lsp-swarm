@@ -101,6 +101,47 @@ lateral communication changes the result. Use Ultracode inside one coherent clai
 tasks become ready dynamically; it does not become repository state or a cross-claim
 scheduler.
 
+## Capacity admission
+
+Compile the graph to what the host can actually run. Saturation does not merely slow
+work down, it destroys evidence: once builds contend, local timings, flake rates, and
+command timeouts stop meaning anything, and the root starts dispatching diagnostic
+agents into ambiguity it created.
+
+Confirm before dispatching a writer:
+
+```text
+concurrent lane roots           <= 3
+concurrent build-heavy writers  <= 1
+concurrent workspace-wide build <= 1
+```
+
+- do not launch a replacement or adjacent lane until an existing lane returns its typed
+  result;
+- read-only inspection of GitHub or source needs no worktree; allocate one only for a
+  named mutation claim, through `worktree-manager`;
+- when admission fails, wait. Doing nothing is a valid orchestration move;
+- treat any local timing or flake-rate measurement taken under saturation as
+  `NOT_PROVEN`, and say so rather than reporting the number.
+
+## A quiet agent is not a result
+
+Only a typed return ends a lane. An idle notification, a stopped agent, an exhausted
+budget, or a long silence carries no information about the claim.
+
+When a lane goes quiet, inspect the artifact rather than the agent — PR state, branch
+head, worktree status, live checks — then:
+
+```text
+typed result returned        → join it
+artifact shows the work done → reconcile, release the lane
+stated wait still current    → leave it; an unchanged remote wait is IN_FLIGHT
+no artifact and no return    → the claim is unowned; re-dispatch deliberately
+```
+
+Silence is not spare capacity, not completion, and not an unowned claim. A lane holding
+a stated wait condition is not stalled, and re-tasking it discards work in flight.
+
 ## Runtime-local frontier
 
 A campaign root may keep this in memory only:
@@ -136,6 +177,20 @@ Every brief names:
 Do not ask children to rediscover settled facts or return raw transcripts/private
 reasoning.
 
+A brief carries the claim and its acceptance criteria, not the current state of the
+world. Head SHAs, check results, mergeability, and counts go stale faster than a lane
+can act on them, and an instruction built on stale state is unexecutable rather than
+merely wrong. When volatile state must appear, name the revision it was observed at and
+require the child to re-derive it before acting:
+
+```text
+As of <sha>, both required checks were green — re-resolve before merging.
+If that no longer holds, report rather than proceeding.
+```
+
+Write any instruction that names a specific PR, branch, or SHA as conditional, so a
+child that finds the world changed has a defined action instead of a contradiction.
+
 ## Graph-delta returns
 
 Read-only workers return subject identity, conclusion, direct and contradictory
@@ -151,6 +206,13 @@ uncertainty, and suggested disposition.
 The root must join evidence as graph deltas rather than votes. Repeated claims from one
 source are not independent corroboration. Preserve contradictions until direct evidence
 resolves them.
+
+Every dispatched agent owes a typed return. Track what was dispatched, because a lens
+that dies — budget exhausted, process killed, tooling failure — leaves its dimension
+`NOT_PROVEN`, not examined-and-clean. An absent return that nobody notices is
+indistinguishable from a clean one, which is the same failure the review method exists
+to prevent. Record the dispatch so the absence is visible, and carry it into the
+cumulative judgment rather than dropping it.
 
 ## Useful GitHub publication filter
 
