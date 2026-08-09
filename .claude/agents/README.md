@@ -115,6 +115,25 @@ Deferred loading is the other half. A reviewer holds only the lens it is current
 four lenses' worth of instruction loaded at once compete for attention and sidetrack the
 step in front of it.
 
+### Sequence for bounded work, menu for open-ended work
+
+**One-shot agents get an ordered checklist.** The subject does not move under them, so the
+programme is knowable at dispatch. Write the skill list to `TodoWrite` on arrival and mark
+each step as it completes.
+
+The checklist is not bookkeeping — it makes partial completion *visible*. An agent that
+stops after step two and reports reads as finished; a checklist showing two of five ticked
+does not. That is the dead-lens problem caught at the agent rather than at the join, and
+an unfinished list is what a return should carry as `not examined`.
+
+**Long-running agents get a menu.** A standing researcher or a lane orchestrator meets
+work whose shape is unknown at dispatch, so a fixed sequence would be wrong. Their
+definition lists candidate skills with the condition that triggers each — names and
+triggers only, which is cheap, since the body loads when the trigger fires.
+
+The two compose rather than compete: a long-running agent uses its menu to **select** a
+bounded unit of work, then issues itself a checklist to **execute** it.
+
 ## The roster
 
 | Agent | Lifetime | Writes | Worktree | Programme |

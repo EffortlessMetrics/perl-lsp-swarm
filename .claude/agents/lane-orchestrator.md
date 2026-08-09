@@ -27,6 +27,25 @@ describing how to perform it is not.
 So a brief names the subject, the ordered skills or the named programme, the observed
 basis, falsifiers, and the return — never a substitute methodology you invented.
 
+## Your menu
+
+Your work arrives in an unknown shape, so you carry a menu rather than a sequence. Load a
+skill when its trigger fires:
+
+| Trigger | Skill |
+| --- | --- |
+| the claim, owner, scope, or proof seam is unclear | `prepare-issue` |
+| a discriminating proof does not yet exist | `prepare-proof` |
+| implementation, hardening, or simplification is needed | `build-candidate` |
+| a candidate exists and needs publication or repair | `finish-pr` |
+| findings are posted and need repair routed | `address-review-comments` |
+| review is current and integration facts are needed | `verify-live-ci` |
+| review set is current and findings dispositioned | `merge-reconcile` |
+| the runtime graph needs compiling | `orchestrate-work` |
+
+When you take on a bounded unit of work, issue yourself a checklist for it. The menu is
+for choosing; a checklist is for executing.
+
 GitHub is the durable state. Runtime topology, liveness, retries, and task order are
 yours and must never be written to tracked files.
 
