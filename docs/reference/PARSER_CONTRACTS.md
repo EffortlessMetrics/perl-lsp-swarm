@@ -273,12 +273,13 @@ Test functions:
   one of: `Program`, `Statement`, `Expression`, `Declaration`, `Scope`,
   `Literal`, `Operator`, `CommentDoc`, `Recovery`, `Unknown`.
 
-- **`flags() -> NodeKindFlags`** — returns a struct with eight boolean flags:
-  `executable`, `introduces_scope`, `declares_symbol`, `outline_visible`,
-  `references_symbol`, `contains_children`, `recovery_artifact`,
+- **`flags() -> NodeKindFlags`** — returns a struct with seven boolean flags:
+  `executable`, `introduces_scope`, `declares_symbol`, `references_symbol`,
+  `contains_children`, `recovery_artifact`,
   `safe_for_breakpoint`.
 
-- **`outline_visible() -> bool`** — returns the AST-kind eligibility for
+- **`outline_visible() -> bool`** — returns a separate AST-kind eligibility
+  predicate for
   document-outline symbols. The set is intentionally broader than
   `declares_symbol`: labels and phase blocks are visible, while signature
   parameter nodes are not. Extractors still apply instance-level guards such

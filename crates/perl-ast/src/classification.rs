@@ -18,7 +18,7 @@
 //!   This is the **drift guard**: consumers that pattern-match `NodeKind` can
 //!   rely on classification staying current.
 //!
-//! - **`outline_visible` semantics.** This flag answers the question
+//! - **`outline_visible` semantics.** This predicate answers the question
 //!   *"can this node kind produce a document-outline symbol?"* It captures
 //!   the outline's deliberate superset of declarations: labels and phase
 //!   blocks are visible, while signature-parameter nodes are not. The
@@ -125,13 +125,6 @@ pub struct NodeKindFlags {
     /// Missing declarations lose symbols but do not crash.
     pub declares_symbol: bool,
 
-    /// Can this node kind produce a document-outline symbol?
-    ///
-    /// This is an AST-kind eligibility predicate, not a guarantee that every
-    /// instance emits a symbol. Consumers must still apply instance-level
-    /// guards such as anonymous-sub naming and source/range validity.
-    pub outline_visible: bool,
-
     /// References a name (`$x`, `foo()`, `@arr`).
     ///
     /// Triggers use-def chain lookups. Conservative default: `false`.
@@ -187,14 +180,12 @@ macro_rules! flags {
         refs=$refs:expr,
         children=$children:expr,
         recovery=$recovery:expr,
-        bp=$bp:expr,
-        outline=$outline:expr
+        bp=$bp:expr
     ) => {
         NodeKindFlags {
             executable: $exec,
             introduces_scope: $scope,
             declares_symbol: $decl,
-            outline_visible: $outline,
             references_symbol: $refs,
             contains_children: $children,
             recovery_artifact: $recovery,
@@ -217,8 +208,7 @@ macro_rules! flags {
             refs = $refs,
             children = $children,
             recovery = $recovery,
-            bp = $bp,
-            outline = false
+            bp = $bp
         )
     };
 }
@@ -354,8 +344,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             NodeKind::VariableListDeclaration { .. } => flags!(
                 exec = true,
@@ -364,8 +353,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             NodeKind::NestedVariableList { .. } => flags!(
                 exec = false,
@@ -611,8 +599,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             NodeKind::While { .. } => flags!(
                 exec = true,
@@ -702,8 +689,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             NodeKind::Prototype { .. } => flags!(
                 exec = false,
@@ -766,8 +752,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             NodeKind::Return { .. } => flags!(
                 exec = true,
@@ -866,8 +851,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             // `use Module LIST` is BEGIN { require Module; Module->import(@LIST) } —
             // compile-time pragma. Perl 5.40.1 debugger probe reports "not breakable".
@@ -900,8 +884,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             NodeKind::DataSection { .. } => flags!(
                 exec = false,
@@ -919,8 +902,7 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true,
-                outline = true
+                bp = true
             ),
             NodeKind::Format { .. } => flags!(
                 exec = false,
@@ -929,8 +911,7 @@ impl NodeKind {
                 refs = false,
                 children = false,
                 recovery = false,
-                bp = false,
-                outline = true
+                bp = false
             ),
             NodeKind::Identifier { .. } => flags!(
                 exec = false,
@@ -1033,7 +1014,18 @@ impl NodeKind {
     /// instance-level guards and source/range validation.
     #[inline]
     pub fn outline_visible(&self) -> bool {
-        self.flags().outline_visible
+        matches!(
+            self,
+            NodeKind::VariableDeclaration { .. }
+                | NodeKind::VariableListDeclaration { .. }
+                | NodeKind::Subroutine { .. }
+                | NodeKind::Package { .. }
+                | NodeKind::Class { .. }
+                | NodeKind::Method { .. }
+                | NodeKind::Format { .. }
+                | NodeKind::PhaseBlock { .. }
+                | NodeKind::LabeledStatement { .. }
+        )
     }
 
     /// Returns `true` if this node kind references a symbol.
@@ -1423,12 +1415,6 @@ mod tests {
                 kind.kind_name()
             );
             assert_eq!(
-                kind.outline_visible(),
-                flags.outline_visible,
-                "{}: outline_visible() != flags.outline_visible",
-                kind.kind_name()
-            );
-            assert_eq!(
                 kind.references_symbol(),
                 flags.references_symbol,
                 "{}: references_symbol() != flags.references_symbol",
@@ -1565,7 +1551,6 @@ mod tests {
             executable: false,
             introduces_scope: false,
             declares_symbol: false,
-            outline_visible: false,
             references_symbol: false,
             contains_children: false,
             recovery_artifact: true,
@@ -1577,7 +1562,6 @@ mod tests {
             executable: false,
             introduces_scope: false,
             declares_symbol: false,
-            outline_visible: false,
             references_symbol: false,
             contains_children: false,
             recovery_artifact: true,
