@@ -3839,6 +3839,21 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Opaque { ast_kind: "Format".to_string() }, range)
             }
 
+            // NestedVariableList (#5043): `my ($a, ($b, $c)) = ...`
+            // Lower all items so variable reads are captured.
+            NodeKind::NestedVariableList { items } => {
+                let arg_ids: Vec<HirExprId> =
+                    items.iter().map(|i| self.lower_expr(i)).collect();
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "NestedVariableList".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
                 let kind_name = node.kind.kind_name().to_string();
