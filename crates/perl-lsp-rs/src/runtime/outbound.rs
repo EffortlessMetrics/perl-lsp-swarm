@@ -96,10 +96,10 @@ impl OutboundSink for RecordingSink {
     }
 
     fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
-        self.messages.lock().unwrap().push(OutboundMessage::Notification {
-            method: method.to_string(),
-            params,
-        });
+        self.messages
+            .lock()
+            .unwrap()
+            .push(OutboundMessage::Notification { method: method.to_string(), params });
         Ok(())
     }
 
