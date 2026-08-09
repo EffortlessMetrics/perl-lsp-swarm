@@ -3,6 +3,7 @@
 //! Each method checks the relevant client capability before sending.
 
 use super::{LspServer, Ordering, ServerRequestId, Value, io, json};
+use super::outbound::OutboundSink;
 use crate::protocol::methods::WORKSPACE_APPLY_EDIT;
 
 #[allow(dead_code)]
@@ -10,7 +11,7 @@ impl LspServer {
     /// Send a server-to-client request with no parameters (for refresh requests)
     pub(crate) fn send_request(&self, method: &str, params: Value) -> io::Result<ServerRequestId> {
         let id = self.next_server_request_id();
-        self.outbound.send_request(id, method, params)?;
+        self.outbound_sink().send_request(id, method, params)?;
         Ok(id)
     }
 
