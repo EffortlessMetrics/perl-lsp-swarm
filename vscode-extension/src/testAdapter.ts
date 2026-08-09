@@ -3,6 +3,45 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, type SpawnOptions } from 'child_process';
 
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
+
+function killWindowsProcessTree(pid: number | undefined): Promise<void> {
+  if (process.platform !== 'win32' || pid === undefined) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      shell: false,
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        killer.kill();
+      } catch {
+        // taskkill may already have exited or been torn down with its parent.
+      }
+      resolve();
+    }, WINDOWS_TREE_KILL_TIMEOUT_MS);
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    killer.once('error', finish);
+    killer.once('close', finish);
+  });
+}
+
 export interface ProveExecutionLimits {
   timeoutMs: number;
   maxOutputBytes: number;
@@ -61,7 +100,9 @@ export function runBoundedProcess(
     let settled = false;
     let closed = false;
     let graceTimer: NodeJS.Timeout | undefined;
+    let treeKill: Promise<void> | undefined;
     const timeout = setTimeout(() => requestTermination('timed_out'), timeoutMs);
+    const needsTreeKill = process.platform === 'win32' && spawnOptions.shell === true;
 
     const cleanup = (): void => {
       clearTimeout(timeout);
@@ -100,14 +141,20 @@ export function runBoundedProcess(
         return;
       }
       termination = reason;
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // The process may have exited between the guard and kill(). The close
-        // event remains the single completion path.
+      if (!needsTreeKill) {
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          // The process may have exited between the guard and kill(). The close
+          // event remains the single completion path.
+        }
       }
       graceTimer = setTimeout(() => {
         if (closed) {
+          return;
+        }
+        if (needsTreeKill) {
+          treeKill = killWindowsProcessTree(proc.pid);
           return;
         }
         try {
@@ -116,6 +163,20 @@ export function runBoundedProcess(
           // The process may have exited while the grace timer was pending.
         }
       }, terminationGraceMs);
+    };
+
+    const finishAfterTreeKill = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
+      const outcome = termination;
+      if (outcome === undefined) {
+        finish('completed', exitCode, signal);
+        return;
+      }
+      const detail = {
+        timed_out: `Process exceeded the ${timeoutMs} ms deadline.`,
+        output_limit: `Process output exceeded the ${maxOutputBytes}-byte capture limit.`,
+        cancelled: 'Process execution was cancelled.',
+      }[outcome];
+      (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
     };
 
     const onAbort = (): void => requestTermination('cancelled');
@@ -165,12 +226,10 @@ export function runBoundedProcess(
         finish('completed', exitCode, signal);
         return;
       }
-      const detail = {
-        timed_out: `Process exceeded the ${timeoutMs} ms deadline.`,
-        output_limit: `Process output exceeded the ${maxOutputBytes}-byte capture limit.`,
-        cancelled: 'Process execution was cancelled.',
-      }[termination];
-      finish(termination, exitCode, signal, detail);
+      if (needsTreeKill && treeKill === undefined) {
+        treeKill = killWindowsProcessTree(proc.pid);
+      }
+      finishAfterTreeKill(exitCode, signal);
     });
   });
 }

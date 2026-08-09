@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { parseSubtestResults, parseTapOutput, runBoundedProcess } from '../testAdapter';
 
 describe('test adapter TAP parsing', () => {
@@ -136,5 +139,35 @@ describe('bounded prove process execution', () => {
     const result = await resultPromise;
     expect(result.outcome).toBe('cancelled');
     expect(result.diagnostic).toContain('cancelled');
+  }, 30_000);
+
+  test('terminates the Windows shell child, not only cmd.exe', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const marker = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.txt`);
+    const script = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.js`);
+    fs.writeFileSync(
+      script,
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1000);\n` +
+        'setTimeout(() => {}, 5000);\n',
+      'utf8',
+    );
+    try {
+      const result = await runBoundedProcess(process.execPath, [script], {
+        shell: true,
+        timeoutMs: 100,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+      });
+
+      expect(result.outcome).toBe('timed_out');
+      await new Promise((resolve) => setTimeout(resolve, 1_250));
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(script, { force: true });
+      fs.rmSync(marker, { force: true });
+    }
   }, 30_000);
 });
