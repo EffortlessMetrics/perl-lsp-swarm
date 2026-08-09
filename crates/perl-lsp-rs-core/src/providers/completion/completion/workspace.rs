@@ -2093,6 +2093,325 @@ fn semantic_file_id(uri: &str) -> FileId {
 #[cfg(test)]
 #[expect(
     clippy::items_after_test_module,
+    reason = "policy:#2064: MRO ordering tests stay beside their implementation seam"
+)]
+mod mro_ordering_tests {
+    use super::{
+        collect_all_package_members, workspace_c3_ancestor_order, workspace_dfs_ancestor_order,
+    };
+    use perl_workspace::workspace_index::WorkspaceIndex;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use url::Url;
+
+    /// Build the canonical diamond workspace for MRO tests.
+    ///
+    /// Hierarchy (parentheses = `use parent` ISA, `*` = defines method):
+    /// ```text
+    ///        D   ← defines: conflict_method, d_only
+    ///       / \
+    ///      B   C  ← C defines: conflict_method
+    ///       \ /
+    ///        A   ← inherits from B then C
+    /// ```
+    ///
+    /// DFS order from A: B, D, C  (D visited via B before C is reached)
+    ///   → `conflict_method` resolved to D (first found)
+    ///
+    /// C3 order from A: B, C, D   (monotone consistency)
+    ///   → `conflict_method` resolved to C (first found in C3 order)
+    fn build_diamond_workspace_dfs() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+        let index = Arc::new(WorkspaceIndex::new());
+        index.index_file(
+            Url::parse("file:///ws/D.pm")?,
+            "package D;\nsub conflict_method { }  # D wins in DFS\nsub d_only { }\n1;\n"
+                .to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///ws/B.pm")?,
+            "package B;\nuse parent 'D';\nsub b_only { }\n1;\n".to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///ws/C.pm")?,
+            "package C;\nuse parent 'D';\nsub conflict_method { }  # C wins in C3\nsub c_only { }\n1;\n"
+                .to_string(),
+        )?;
+        // DFS package: default MRO (no `use mro 'c3'`)
+        index.index_file(
+            Url::parse("file:///ws/A_dfs.pm")?,
+            "package A_dfs;\nuse parent 'B', 'C';\nsub a_own { }\n1;\n".to_string(),
+        )?;
+        Ok(index)
+    }
+
+    /// Same diamond but with the receiver package using C3 MRO.
+    fn build_diamond_workspace_c3() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+        let index = Arc::new(WorkspaceIndex::new());
+        index.index_file(
+            Url::parse("file:///ws/D.pm")?,
+            "package D;\nsub conflict_method { }  # D wins in DFS\nsub d_only { }\n1;\n"
+                .to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///ws/B.pm")?,
+            "package B;\nuse parent 'D';\nsub b_only { }\n1;\n".to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///ws/C.pm")?,
+            "package C;\nuse parent 'D';\nsub conflict_method { }  # C wins in C3\nsub c_only { }\n1;\n"
+                .to_string(),
+        )?;
+        // C3 package: receiver uses `use mro 'c3'`
+        index.index_file(
+            Url::parse("file:///ws/A_c3.pm")?,
+            "package A_c3;\nuse mro 'c3';\nuse parent 'B', 'C';\nsub a_own { }\n1;\n".to_string(),
+        )?;
+        Ok(index)
+    }
+
+    // ── unit tests for the algorithm helpers ──────────────────────────────────
+
+    #[test]
+    fn dfs_ancestor_order_linear_chain() {
+        // A → B → C → D: DFS should give B, C, D
+        let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+        parents.insert("A".into(), vec!["B".into()]);
+        parents.insert("B".into(), vec!["C".into()]);
+        parents.insert("C".into(), vec!["D".into()]);
+        parents.insert("D".into(), vec![]);
+
+        let order = workspace_dfs_ancestor_order("A", &parents);
+        assert_eq!(order, vec!["B", "C", "D"]);
+    }
+
+    #[test]
+    fn dfs_ancestor_order_diamond_puts_left_branch_deeper_before_right() {
+        // Diamond: A → [B, C], B → D, C → D
+        // DFS from A: B (A's first parent), D (B's parent), C (A's second parent)
+        // D is already visited when we process C's parent chain → not repeated
+        let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+        parents.insert("A".into(), vec!["B".into(), "C".into()]);
+        parents.insert("B".into(), vec!["D".into()]);
+        parents.insert("C".into(), vec!["D".into()]);
+        parents.insert("D".into(), vec![]);
+
+        let order = workspace_dfs_ancestor_order("A", &parents);
+        assert_eq!(
+            order,
+            vec!["B", "D", "C"],
+            "DFS must traverse B's entire subtree (including shared D) before reaching C"
+        );
+    }
+
+    #[test]
+    fn c3_ancestor_order_linear_chain() {
+        // A → B → C → D: C3 on a linear chain gives B, C, D (same as DFS)
+        let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+        parents.insert("A".into(), vec!["B".into()]);
+        parents.insert("B".into(), vec!["C".into()]);
+        parents.insert("C".into(), vec!["D".into()]);
+        parents.insert("D".into(), vec![]);
+
+        let order = workspace_c3_ancestor_order("A", &parents);
+        assert_eq!(order, vec!["B", "C", "D"]);
+    }
+
+    #[test]
+    fn c3_ancestor_order_diamond_differs_from_dfs() {
+        // Diamond: A → [B, C], B → D, C → D
+        // C3 order: B, C, D   (monotone: C comes before D because C also extends D)
+        // DFS order would be: B, D, C   (D visited via B before C)
+        let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+        parents.insert("A".into(), vec!["B".into(), "C".into()]);
+        parents.insert("B".into(), vec!["D".into()]);
+        parents.insert("C".into(), vec!["D".into()]);
+        parents.insert("D".into(), vec![]);
+
+        let c3_order = workspace_c3_ancestor_order("A", &parents);
+        let dfs_order = workspace_dfs_ancestor_order("A", &parents);
+
+        assert_eq!(c3_order, vec!["B", "C", "D"], "C3 must give B, C, D for a diamond hierarchy");
+        assert_ne!(
+            c3_order, dfs_order,
+            "C3 and DFS must differ for this diamond (dfs={dfs_order:?}, c3={c3_order:?})"
+        );
+    }
+
+    #[test]
+    fn c3_ancestor_order_cycle_safe() {
+        // Degenerate: A → B, B → A (circular). Must terminate without panic.
+        let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+        parents.insert("A".into(), vec!["B".into()]);
+        parents.insert("B".into(), vec!["A".into()]);
+
+        // Should not hang or panic; result content is unspecified beyond termination.
+        let _ = workspace_c3_ancestor_order("A", &parents);
+    }
+
+    #[test]
+    fn dfs_ancestor_order_cycle_safe() {
+        // Degenerate: A → B, B → A (circular). Must terminate without panic.
+        let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+        parents.insert("A".into(), vec!["B".into()]);
+        parents.insert("B".into(), vec!["A".into()]);
+
+        // Should not hang or panic; result content is unspecified beyond termination.
+        let _ = workspace_dfs_ancestor_order("A", &parents);
+    }
+
+    // ── integration tests against the full workspace-indexed helper ───────────
+
+    /// DFS package: `conflict_method` must resolve to D (found before C in DFS).
+    #[test]
+    fn collect_all_package_members_dfs_resolves_conflict_via_depth_first()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = build_diamond_workspace_dfs()?;
+        let members = collect_all_package_members(&index, "A_dfs");
+
+        let conflict = members.iter().find(|m| m.name == "conflict_method");
+        let conflict = conflict.expect("conflict_method must appear in A_dfs members");
+
+        // In DFS order the first visit to conflict_method is through B → D.
+        // D's container is "D".
+        assert_eq!(
+            conflict.container_name.as_deref(),
+            Some("D"),
+            "DFS: conflict_method must resolve to D (found via B→D before reaching C); \
+             got container={:?}",
+            conflict.container_name
+        );
+
+        // Own methods must still appear.
+        assert!(members.iter().any(|m| m.name == "a_own"), "a_own must appear");
+        assert!(members.iter().any(|m| m.name == "b_only"), "b_only must appear");
+        assert!(members.iter().any(|m| m.name == "d_only"), "d_only must appear");
+        assert!(members.iter().any(|m| m.name == "c_only"), "c_only must appear");
+
+        Ok(())
+    }
+
+    /// C3 package: `conflict_method` must resolve to C (found before D in C3 order B, C, D).
+    #[test]
+    fn collect_all_package_members_c3_resolves_conflict_via_c3_linearization()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = build_diamond_workspace_c3()?;
+        let members = collect_all_package_members(&index, "A_c3");
+
+        let conflict = members.iter().find(|m| m.name == "conflict_method");
+        let conflict = conflict.expect("conflict_method must appear in A_c3 members");
+
+        // In C3 order B, C, D — C defines conflict_method, D also defines it.
+        // C is visited before D so C's definition wins.
+        assert_eq!(
+            conflict.container_name.as_deref(),
+            Some("C"),
+            "C3: conflict_method must resolve to C (C3 order is B, C, D; C comes before D); \
+             got container={:?}",
+            conflict.container_name
+        );
+
+        // All non-conflicting methods from every package in the hierarchy must appear.
+        assert!(members.iter().any(|m| m.name == "a_own"), "a_own must appear");
+        assert!(members.iter().any(|m| m.name == "b_only"), "b_only must appear");
+        assert!(members.iter().any(|m| m.name == "d_only"), "d_only must appear");
+        assert!(members.iter().any(|m| m.name == "c_only"), "c_only must appear");
+
+        Ok(())
+    }
+
+    /// DFS and C3 must give different winners for `conflict_method`, proving the
+    /// implementation is not unconditionally applying one algorithm.
+    #[test]
+    fn collect_all_package_members_dfs_and_c3_give_different_conflict_resolution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dfs_index = build_diamond_workspace_dfs()?;
+        let c3_index = build_diamond_workspace_c3()?;
+
+        let dfs_members = collect_all_package_members(&dfs_index, "A_dfs");
+        let c3_members = collect_all_package_members(&c3_index, "A_c3");
+
+        let dfs_conflict = dfs_members
+            .iter()
+            .find(|m| m.name == "conflict_method")
+            .and_then(|m| m.container_name.as_deref())
+            .expect("conflict_method must appear for A_dfs");
+
+        let c3_conflict = c3_members
+            .iter()
+            .find(|m| m.name == "conflict_method")
+            .and_then(|m| m.container_name.as_deref())
+            .expect("conflict_method must appear for A_c3");
+
+        assert_ne!(
+            dfs_conflict, c3_conflict,
+            "DFS and C3 must resolve conflict_method to different packages \
+             (dfs→{dfs_conflict}, c3→{c3_conflict}); \
+             the implementation must not unconditionally apply one MRO"
+        );
+        assert_eq!(dfs_conflict, "D", "DFS must pick D's conflict_method");
+        assert_eq!(c3_conflict, "C", "C3 must pick C's conflict_method");
+
+        Ok(())
+    }
+
+    /// Child-defined methods must still win regardless of MRO.
+    #[test]
+    fn collect_all_package_members_child_methods_shadow_inherited()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = Arc::new(WorkspaceIndex::new());
+        index.index_file(
+            Url::parse("file:///ws/Parent.pm")?,
+            "package Parent;\nsub greet { }  # will be shadowed\nsub parent_only { }\n1;\n"
+                .to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///ws/Child.pm")?,
+            "package Child;\nuse parent 'Parent';\nsub greet { }  # shadows Parent::greet\nsub child_only { }\n1;\n"
+                .to_string(),
+        )?;
+
+        let members = collect_all_package_members(&index, "Child");
+
+        // greet must appear exactly once and its container must be Child.
+        let greet_entries: Vec<_> = members.iter().filter(|m| m.name == "greet").collect();
+        assert_eq!(greet_entries.len(), 1, "greet must appear exactly once (no duplicates)");
+        assert_eq!(
+            greet_entries[0].container_name.as_deref(),
+            Some("Child"),
+            "greet must resolve to Child (child definition shadows Parent)"
+        );
+
+        assert!(members.iter().any(|m| m.name == "parent_only"), "parent_only must appear");
+        assert!(members.iter().any(|m| m.name == "child_only"), "child_only must appear");
+
+        Ok(())
+    }
+
+    /// Missing or un-indexed packages must not cause panics and must degrade softly.
+    #[test]
+    fn collect_all_package_members_missing_parent_degrades_gracefully()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = Arc::new(WorkspaceIndex::new());
+        // Only index the child; the parent is deliberately absent.
+        index.index_file(
+            Url::parse("file:///ws/OnlyChild.pm")?,
+            "package OnlyChild;\nuse parent 'GhostParent';\nsub my_method { }\n1;\n".to_string(),
+        )?;
+
+        // Must not panic; should return at least the child's own methods.
+        let members = collect_all_package_members(&index, "OnlyChild");
+        assert!(
+            members.iter().any(|m| m.name == "my_method"),
+            "own method must still appear when parent is not indexed"
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
     reason = "policy:#2064: visible-symbol completion tests stay beside their filter seam"
 )]
 mod visible_symbol_completion_tests {
@@ -2143,96 +2462,305 @@ mod visible_symbol_completion_tests {
     }
 }
 
-/// Collect all method symbols accessible from a package, following parent/role chains.
+/// MRO and inheritance structure extracted from a package's source file.
+struct PackageMroInfo {
+    mro: perl_semantic_analyzer::class_model::MethodResolutionOrder,
+    /// Direct `@ISA` parents (from `use parent`, `@ISA` assignment, `use base`, etc.)
+    isa_parents: Vec<String>,
+    /// Roles consumed via `with 'Role'` (Moose/Moo) — not subject to `@ISA` MRO ordering.
+    roles: Vec<String>,
+}
+
+/// Maximum ancestor depth for MRO traversal — prevents stack overflow or infinite
+/// looping in pathologically deep or circular hierarchies.
+const MAX_WORKSPACE_MRO_DEPTH: usize = 64;
+
+/// Parse the MRO info for a single package from the workspace index or filesystem.
+/// Returns `None` when the package cannot be found or its source cannot be parsed.
+fn parse_package_mro_info(pkg: &str, index: &WorkspaceIndex) -> Option<PackageMroInfo> {
+    let pkg_location = index.find_definition(pkg)?;
+
+    let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
+        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+            .and_then(|path| std::fs::read_to_string(path).ok())
+    })?;
+
+    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+    let ast = parser.parse().ok()?;
+
+    let model =
+        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
+            .class_models
+            .into_iter()
+            .find(|m| m.name == pkg)?;
+
+    Some(PackageMroInfo { mro: model.mro, isa_parents: model.parents, roles: model.roles })
+}
+
+/// Discover all reachable packages from `package_name` and build maps of
+/// `package → ISA parents` and `package → roles` by parsing each package's source.
 ///
-/// Performs BFS over the inheritance graph starting at `package_name`, collecting
-/// subroutine and method symbols from each package in the resolution order.
-/// Child-defined methods shadow parent methods — the first occurrence of each name wins.
+/// BFS is used only for discovery; the returned maps are used to compute the
+/// correct MRO ordering in a separate step. The receiver package's MRO setting
+/// is returned as the third element of the tuple.
+fn discover_package_hierarchy(
+    index: &WorkspaceIndex,
+    package_name: &str,
+) -> (
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<String>>,
+    perl_semantic_analyzer::class_model::MethodResolutionOrder,
+) {
+    use perl_semantic_analyzer::class_model::MethodResolutionOrder;
+
+    let mut isa_parents_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut roles_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut receiver_mro = MethodResolutionOrder::Dfs;
+
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    queue.push_back(package_name.to_string());
+
+    while let Some(pkg) = queue.pop_front() {
+        if !visited.insert(pkg.clone()) {
+            continue;
+        }
+
+        match parse_package_mro_info(&pkg, index) {
+            Some(info) => {
+                if pkg == package_name {
+                    receiver_mro = info.mro;
+                }
+                for parent in &info.isa_parents {
+                    if !visited.contains(parent) {
+                        queue.push_back(parent.clone());
+                    }
+                }
+                for role in &info.roles {
+                    if !visited.contains(role) {
+                        queue.push_back(role.clone());
+                    }
+                }
+                isa_parents_map.insert(pkg.clone(), info.isa_parents);
+                roles_map.insert(pkg.clone(), info.roles);
+            }
+            None => {
+                // Package not found or not parseable — treat as having no parents or roles.
+                isa_parents_map.entry(pkg.clone()).or_default();
+                roles_map.entry(pkg.clone()).or_default();
+            }
+        }
+    }
+
+    (isa_parents_map, roles_map, receiver_mro)
+}
+
+/// Build the DFS (depth-first, left-to-right) ancestor order for `package`,
+/// matching Perl's default method-resolution order.
+///
+/// Returns the ancestor packages in the order they should be searched for inherited
+/// methods, excluding `package` itself (the caller collects the package's own methods
+/// first). Cycle-safe via `seen` set; depth-limited to [`MAX_WORKSPACE_MRO_DEPTH`].
+fn workspace_dfs_ancestor_order(
+    package: &str,
+    isa_parents_map: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    fn walk(
+        pkg: &str,
+        parents_map: &HashMap<String, Vec<String>>,
+        seen: &mut HashSet<String>,
+        out: &mut Vec<String>,
+        depth: usize,
+    ) {
+        if depth >= MAX_WORKSPACE_MRO_DEPTH {
+            return;
+        }
+        let parents = parents_map.get(pkg).map(Vec::as_slice).unwrap_or(&[]);
+        for parent in parents {
+            if seen.insert(parent.clone()) {
+                out.push(parent.clone());
+                walk(parent, parents_map, seen, out, depth + 1);
+            }
+        }
+    }
+
+    let mut seen = HashSet::from([package.to_string()]);
+    let mut out = Vec::new();
+    walk(package, isa_parents_map, &mut seen, &mut out, 0);
+    out
+}
+
+/// Build the C3 linearization ancestor order for `package`.
+///
+/// Implements the C3 merge algorithm as enabled by `use mro 'c3'` in Perl.
+/// Returns ancestor packages in C3 resolution order, excluding `package` itself.
+///
+/// When the hierarchy is inconsistent (a cycle or a degenerate merge that no
+/// candidate can satisfy), the function falls back gracefully by appending
+/// remaining heads in appearance order rather than returning an error.
+///
+/// Cycle-safe via `visited` set; depth-limited to [`MAX_WORKSPACE_MRO_DEPTH`].
+fn workspace_c3_ancestor_order(
+    package: &str,
+    isa_parents_map: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    fn linearize(
+        pkg: &str,
+        parents_map: &HashMap<String, Vec<String>>,
+        visited: &mut HashSet<String>,
+        depth: usize,
+    ) -> Vec<String> {
+        if depth >= MAX_WORKSPACE_MRO_DEPTH {
+            return vec![pkg.to_string()];
+        }
+        if !visited.insert(pkg.to_string()) {
+            return vec![];
+        }
+
+        let parents = parents_map.get(pkg).cloned().unwrap_or_default();
+        if parents.is_empty() {
+            return vec![pkg.to_string()];
+        }
+
+        let mut parent_mros: Vec<Vec<String>> = parents
+            .iter()
+            .map(|parent| linearize(parent, parents_map, &mut visited.clone(), depth + 1))
+            .collect();
+        parent_mros.push(parents.clone());
+
+        let mut result = vec![pkg.to_string()];
+        loop {
+            parent_mros.retain(|list| !list.is_empty());
+            if parent_mros.is_empty() {
+                break;
+            }
+
+            let chosen = parent_mros.iter().find_map(|list| {
+                let candidate = list.first()?;
+                let in_tail = parent_mros
+                    .iter()
+                    .any(|other| other.iter().skip(1).any(|name| name == candidate));
+                if in_tail { None } else { Some(candidate.clone()) }
+            });
+
+            match chosen {
+                Some(name) => {
+                    if !result.contains(&name) {
+                        result.push(name.clone());
+                    }
+                    for list in &mut parent_mros {
+                        if list.first().is_some_and(|head| head == &name) {
+                            list.remove(0);
+                        }
+                    }
+                }
+                None => {
+                    // Inconsistent C3 hierarchy — fall back gracefully by
+                    // appending remaining heads in appearance order.
+                    for list in parent_mros {
+                        if let Some(head) = list.first()
+                            && !result.contains(head)
+                        {
+                            result.push(head.clone());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        result
+    }
+
+    // linearize() returns [package, ...ancestors] — drop the package itself.
+    linearize(package, isa_parents_map, &mut HashSet::new(), 0).into_iter().skip(1).collect()
+}
+
+/// Collect subroutine and method workspace symbols for a single package into `result`.
+///
+/// Only [`WsSymbolKind::Subroutine`] and [`WsSymbolKind::Method`] symbols are
+/// included. Names already present in `seen_names` are skipped (first-wins semantics).
+fn collect_package_method_symbols(
+    index: &WorkspaceIndex,
+    pkg: &str,
+    seen_names: &mut HashSet<String>,
+    result: &mut Vec<WorkspaceSymbol>,
+) {
+    for symbol in index.get_package_members(pkg) {
+        match symbol.kind {
+            WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
+            _ => continue,
+        }
+        if seen_names.insert(symbol.name.clone()) {
+            result.push(symbol);
+        }
+    }
+}
+
+/// Collect all method symbols accessible from a package, following parent/role chains
+/// in the package's configured method-resolution order (DFS or C3).
+///
+/// Traverses the workspace inheritance graph starting at `package_name`, collecting
+/// subroutine and method symbols from each package in MRO-correct order. Child-defined
+/// methods shadow parent methods — the first occurrence of each name wins.
+///
+/// The receiver package's configured MRO (`use mro 'c3'` or the default DFS) is read
+/// from its source file. When the MRO cannot be determined (package not indexed, parse
+/// error), DFS is used as the safe fallback.
+///
+/// Role composition is kept distinct from `@ISA` MRO: roles are collected at the point
+/// of the package that consumes them and are not subject to `@ISA` linearization, so
+/// role-conflict and role-precedence semantics are preserved.
 ///
 /// Edge-case handling:
-/// - Diamond inheritance: BFS visited-set prevents duplicate traversal.
-/// - Circular `@ISA`: visited-set prevents infinite loops.
+/// - Diamond inheritance: DFS and C3 each handle diamonds via their respective
+///   algorithms. A `pkg_collected` set additionally prevents duplicate symbol collection.
+/// - Circular `@ISA`: `discover_package_hierarchy` uses a visited set for safe BFS
+///   discovery; DFS uses a depth limit; C3 uses a cycle-safe `linearize()`.
 /// - Package not indexed: `get_package_members` returns `Vec::new()` gracefully.
-/// - `use parent -norequire`: already handled by `ClassModelBuilder`; model.parents
-///   contains the parent names regardless.
-///
-/// NOTE: C3 MRO ordering is NOT honoured — this uses BFS (breadth-first), which
-/// approximates but does not exactly match C3 for complex diamond hierarchies.
-/// This is a pre-existing approximation shared with `navigation.rs`. A follow-up
-/// issue should address strict C3 ordering if it becomes important (see issue #3482).
+/// - Unavailable source (parse error, missing file): treated as having no parents/roles.
+/// - `use parent -norequire`: already handled by `ClassModelBuilder`; `model.parents`
+///   contains the parent names regardless of the `-norequire` flag.
 pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
 ) -> Vec<WorkspaceSymbol> {
-    let mut seen_names: HashSet<String> = HashSet::new();
-    let mut result: Vec<WorkspaceSymbol> = Vec::new();
+    use perl_semantic_analyzer::class_model::MethodResolutionOrder;
 
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
+    // Phase 1: Discover all reachable packages and populate MRO/parents/roles maps.
+    let (isa_parents_map, roles_map, receiver_mro) =
+        discover_package_hierarchy(index, package_name);
 
-    // Cache of package_name → list of parent/role package names, populated lazily.
-    let mut related_cache: HashMap<String, Vec<String>> = HashMap::new();
-
-    // Collect related packages (parents + roles) for a given package by parsing
-    // its source file from the workspace index or filesystem.
-    let collect_related = |pkg: &str, cache: &mut HashMap<String, Vec<String>>| -> Vec<String> {
-        cache
-            .entry(pkg.to_string())
-            .or_insert_with(|| {
-                let Some(pkg_location) = index.find_definition(pkg) else {
-                    return Vec::new();
-                };
-
-                let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                    perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                        .and_then(|path| std::fs::read_to_string(path).ok())
-                });
-
-                let Some(text) = text else {
-                    return Vec::new();
-                };
-
-                let mut parser = perl_semantic_analyzer::Parser::new(&text);
-                let Ok(ast) = parser.parse() else {
-                    return Vec::new();
-                };
-
-                perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
-                    .class_models
-                    .into_iter()
-                    .find(|model| model.name == pkg)
-                    .map(|model| {
-                        model.parents.iter().chain(model.roles.iter()).cloned().collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .clone()
+    // Phase 2: Build the ordered ancestor list using the receiver's configured MRO.
+    let ancestor_order: Vec<String> = match receiver_mro {
+        MethodResolutionOrder::Dfs => workspace_dfs_ancestor_order(package_name, &isa_parents_map),
+        MethodResolutionOrder::C3 => workspace_c3_ancestor_order(package_name, &isa_parents_map),
     };
 
-    // Start with the receiver package itself
-    queue.push_back(package_name.to_string());
-    visited.insert(package_name.to_string());
+    // Phase 3: Collect methods in MRO order (nearer/child definitions shadow ancestors).
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut result: Vec<WorkspaceSymbol> = Vec::new();
+    let mut pkg_collected: HashSet<String> = HashSet::new();
 
-    while let Some(pkg) = queue.pop_front() {
-        // Collect direct members for this package
-        let members = index.get_package_members(&pkg);
-        for symbol in members {
-            // Only include subroutines and methods
-            match symbol.kind {
-                WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
-                _ => continue,
-            }
-            // Child wins: skip if a closer ancestor already provided this name
-            if seen_names.insert(symbol.name.clone()) {
-                result.push(symbol);
-            }
+    // Process the receiver package first, then ancestors in MRO order.
+    let packages_in_order =
+        std::iter::once(package_name).chain(ancestor_order.iter().map(String::as_str));
+
+    for pkg in packages_in_order {
+        if !pkg_collected.insert(pkg.to_string()) {
+            continue;
         }
 
-        // Enqueue ancestor packages
-        let related = collect_related(&pkg, &mut related_cache);
-        for ancestor in related {
-            if visited.insert(ancestor.clone()) {
-                queue.push_back(ancestor);
+        collect_package_method_symbols(index, pkg, &mut seen_names, &mut result);
+
+        // Roles are mixed in at the point of the package that consumes them.
+        // Collected immediately after the consuming package's own methods so the
+        // consuming package's definitions still shadow role-provided methods.
+        if let Some(roles) = roles_map.get(pkg) {
+            for role in roles {
+                if pkg_collected.insert(role.clone()) {
+                    collect_package_method_symbols(index, role, &mut seen_names, &mut result);
+                }
             }
         }
     }
