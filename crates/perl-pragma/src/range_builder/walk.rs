@@ -92,11 +92,11 @@ pub(crate) fn build_ranges(
         // The parser produces FunctionCall { name: "require", args: [version] }.
         // (#5106)
         NodeKind::FunctionCall { name, args } if name == "require" => {
-            if let Some(version_str) = extract_require_version(args) {
-                if let Some(version) = parse_perl_version(&version_str) {
-                    enable_effective_version_semantics(current_state, version);
-                    ranges.push((node.location.start..node.location.end, current_state.clone()));
-                }
+            if let Some(version_str) = extract_require_version(args)
+                && let Some(version) = parse_perl_version(&version_str)
+            {
+                enable_effective_version_semantics(current_state, version);
+                ranges.push((node.location.start..node.location.end, current_state.clone()));
             }
         }
         NodeKind::ExpressionStatement { expression } => {
