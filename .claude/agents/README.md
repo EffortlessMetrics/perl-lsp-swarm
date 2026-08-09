@@ -140,7 +140,7 @@ bounded unit of work, then issues itself a checklist to **execute** it.
 | --- | --- | --- | --- | --- |
 | `researcher` | one-shot or standing | GitHub only | no | research, archaeology, external truth, issue currency |
 | `builder` | one candidate, while work is imminent | files | yes | `spec-to-test` → build → harden → simplify → proof → repair |
-| `reviewer` | one subject, one programme | GitHub only | no (reviews committed SHA in caller checkout) | an ordered review programme over a fixed artifact |
+| `reviewer` | one subject, one programme | GitHub only | no (`git show <sha>` or detached checkout; never mutates caller tree) | an ordered review programme over a fixed artifact |
 | `lane-orchestrator` | one claim, steered | none by default | no | `deliver-pr`; selects programmes, dispositions findings |
 
 The campaign orchestrator is the main session, not a file.
