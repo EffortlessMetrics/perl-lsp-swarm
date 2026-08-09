@@ -135,9 +135,16 @@ if [[ "${1:-}" == "-C" ]]; then
             list)
               cat "${MOCK_STATE}/worktree-list"
               ;;
-            remove)
-              printf 'DESTRUCTIVE git worktree remove %s\n' "$*" >> "${MOCK_STATE}/destructive.log"
-              ;;
+        remove)
+          if grep -q -- '--force' <<<"$*"; then
+            printf 'unexpected --force in worktree remove\n' >&2
+            exit 99
+          fi
+          if [[ -s "${MOCK_STATE}/remove-fails" ]]; then
+            exit 1
+          fi
+          printf 'DESTRUCTIVE git worktree remove %s\n' "$*" >> "${MOCK_STATE}/destructive.log"
+          ;;
           esac
           exit 0
           ;;
@@ -167,6 +174,13 @@ case "${1:-}" in
         exit 0
         ;;
       remove)
+        if grep -q -- '--force' <<<"$*"; then
+          printf 'unexpected --force in worktree remove\n' >&2
+          exit 99
+        fi
+        if [[ -s "${MOCK_STATE}/remove-fails" ]]; then
+          exit 1
+        fi
         printf 'DESTRUCTIVE git worktree remove %s\n' "$*" >> "${MOCK_STATE}/destructive.log"
         exit 0
         ;;
@@ -334,10 +348,64 @@ test_branch_without_remote_is_kept() {
 
   output="$(run_cleanup_dry_run "$case_dir")"
 
-  assert_contains "branch without a remote tracking ref is kept" "$output" "abandoned"
+  assert_contains "branch without a remote tracking ref is kept" "$output" "no-remote"
   assert_contains "no-remote action is KEEP" "$output" "KEEP"
   assert_not_contains "no-remote dry-run does not claim actual deletion" "$output" "git branch -D"
   assert_no_destructive_commands "dry-run does not remove no-remote worktrees" "$case_dir"
+}
+
+write_managed_owner_state() {
+  local case_dir="$1"
+  local worktree_path="$2"
+  local owner="$3"
+  local rel_path="${worktree_path#${case_dir}/repo/}"
+  mkdir -p "${case_dir}/repo/.ops-perl-lsp/worktree-manager"
+  cat > "${case_dir}/repo/.ops-perl-lsp/worktree-manager/state.json" <<EOF
+{"slots":[{"path":"${rel_path}","owner":"${owner}","status":"active"}]}
+EOF
+}
+
+test_managed_owner_keeps_pushed_worktree() {
+  local case_dir output worktree_path
+  case_dir="$(new_case managed-owner)"
+  write_worktree_list "$case_dir" "feature/owned"
+  worktree_path="${case_dir}/repo/.claude/worktrees/feature-owned"
+  printf '1\n' > "${case_dir}/remote-branch"
+  write_managed_owner_state "$case_dir" "$worktree_path" "lane-a"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "managed owner keeps pushed worktree" "$output" "owned:lane-a"
+  assert_contains "managed owner action is KEEP" "$output" "KEEP"
+  assert_no_destructive_commands "managed owner dry-run does not remove worktree" "$case_dir"
+}
+
+run_cleanup_json() {
+  local case_dir="$1"
+  PATH="${case_dir}/bin:${PATH}" \
+    MOCK_STATE="$case_dir" \
+    MOCK_REPO_ROOT="${case_dir}/repo" \
+    bash "$IMPL" --json 2>/dev/null
+}
+
+test_json_escapes_special_characters() {
+  local case_dir output
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'SKIP json output parses with quoted branch name (jq not installed)\n'
+    return 0
+  fi
+  case_dir="$(new_case json-quote)"
+  write_worktree_list "$case_dir" 'feature/wt"quote'
+  printf '1\n' > "${case_dir}/remote-branch"
+
+  output="$(run_cleanup_json "$case_dir")"
+
+  if echo "$output" | jq -e . >/dev/null 2>&1; then
+    pass "json output parses with quoted branch name"
+  else
+    fail "json output parses with quoted branch name"
+    printf 'invalid json:\n%s\n' "$output"
+  fi
 }
 
 echo "=== cleanup-completed-worktrees dry-run test suite ==="
@@ -354,6 +422,8 @@ test_merged_branch_uses_main_by_default
 test_pushed_branch_is_removed_even_with_open_pr
 test_unpushed_branch_is_kept
 test_branch_without_remote_is_kept
+test_managed_owner_keeps_pushed_worktree
+test_json_escapes_special_characters
 
 TOTAL=$((PASS + FAIL))
 echo ""

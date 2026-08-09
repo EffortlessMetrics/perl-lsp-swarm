@@ -13,6 +13,7 @@
 #   unpushed commits                 → KEEP (unique, unrecoverable)
 #   detached HEAD not in base        → KEEP (unique, unrecoverable)
 #   locked                           → KEEP (another runtime owns it)
+#   worktree-manager owner           → KEEP (another runtime owns it)
 #   everything else                  → REMOVE (reconstructible from the remote)
 #
 # An open PR is deliberately NOT a reason to keep a worktree. A fully pushed
@@ -46,11 +47,76 @@ BASE="${CLEANUP_BASE_BRANCH:-main}"
 REPO_ROOT="$(git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
 MAIN_WT="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
 CURRENT_WT="$(git rev-parse --show-toplevel)"
+STATE_FILE="$REPO_ROOT/.ops-perl-lsp/worktree-manager/state.json"
+
+# When emitting JSON, git stdout/stderr must not pollute the stream.
+git_out() {
+    if $JSON; then
+        "$@" >/dev/null 2>&1
+    else
+        "$@"
+    fi
+}
+
+# Returns non-empty owner when worktree-manager records an owner for this path.
+managed_owner() {
+    local path="$1"
+    [[ -f "$STATE_FILE" ]] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        jq -r --arg p "$path" --arg rr "$REPO_ROOT" '
+            .slots[]?
+            | select(
+                ((.path | if startswith("/") then . else ($rr + "/" + .) end) == $p)
+                and (.owner // "" | length > 0)
+              )
+            | .owner
+        ' "$STATE_FILE" 2>/dev/null | head -n1
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$STATE_FILE" "$path" "$REPO_ROOT" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+state_file, wt_path, repo_root = sys.argv[1:4]
+
+def normalize(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return os.path.normpath(path)
+
+target = normalize(wt_path)
+with open(state_file, encoding="utf-8") as handle:
+    state = json.load(handle)
+for slot in state.get("slots", []):
+    raw = slot.get("path", "")
+    resolved = raw if os.path.isabs(raw) else str(Path(repo_root) / raw)
+    owner = slot.get("owner") or ""
+    if normalize(resolved) == target and owner:
+        print(owner)
+        break
+PY
+    fi
+}
+
+# Remove without --force so concurrent use or post-check dirtiness fails closed.
+remove_worktree() {
+    local path="$1"
+    $DRY_RUN && return 0
+    git_out git -C "$REPO_ROOT" worktree remove "$path"
+}
+
+delete_branch() {
+    local branch="$1"
+    $DRY_RUN && return 0
+    git_out git -C "$REPO_ROOT" branch -D "$branch" || true
+}
 
 # Stale origin refs make "unpushed" wrong in the dangerous direction, so refresh
 # before judging. A fetch failure is not fatal, but it downgrades every verdict.
 FETCH_OK=true
-git -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null || FETCH_OK=false
+git_out git -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null || FETCH_OK=false
 BASE_REF="origin/$BASE"
 git -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REF" >/dev/null || BASE_REF="$BASE"
 
@@ -71,13 +137,15 @@ fi
 emit() {
     local name="$1" branch="$2" state="$3" action="$4"
     if $JSON; then
-        ROWS+=("{\"worktree\":\"$name\",\"branch\":\"$branch\",\"state\":\"$state\",\"action\":\"$action\"}")
+        command -v jq >/dev/null 2>&1 || { echo "jq required for --json" >&2; exit 2; }
+        ROWS+=("$(jq -cn --arg name "$name" --arg branch "$branch" --arg state "$state" --arg action "$action" \
+            '{worktree:$name, branch:$branch, state:$state, action:$action}')")
     else
         printf "%-26s %-40s %-14s %s\n" "$name" "$branch" "$state" "$action"
     fi
 }
 
-git -C "$REPO_ROOT" worktree prune
+git_out git -C "$REPO_ROOT" worktree prune
 
 # Parse porcelain output so paths containing spaces survive.
 WT_PATH=""; WT_BRANCH=""; WT_LOCKED=false; WT_DETACHED=false
@@ -96,6 +164,10 @@ process_worktree() {
     fi
     if [[ "$locked" == "true" ]]; then
         emit "$name" "${branch:-(detached)}" "locked" "KEEP"; KEPT=$((KEPT + 1)); return 0
+    fi
+    local owner; owner="$(managed_owner "$path")"
+    if [[ -n "$owner" ]]; then
+        emit "$name" "${branch:-(detached)}" "owned:$owner" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
     if [[ ! -d "$path" ]]; then
         emit "$name" "${branch:-(detached)}" "missing" "SKIP"; SKIPPED=$((SKIPPED + 1)); return 0
@@ -118,8 +190,11 @@ process_worktree() {
     if [[ "$detached" == "true" ]]; then
         if $landed; then
             emit "$name" "(detached)" "landed" "REMOVE"
-            $DRY_RUN || git -C "$REPO_ROOT" worktree remove --force "$path"
-            REMOVED=$((REMOVED + 1))
+            if remove_worktree "$path"; then
+                REMOVED=$((REMOVED + 1))
+            else
+                KEPT=$((KEPT + 1))
+            fi
         else
             emit "$name" "(detached)" "unique-commits" "KEEP"; KEPT=$((KEPT + 1))
         fi
@@ -128,11 +203,13 @@ process_worktree() {
 
     if $landed; then
         emit "$name" "$branch" "landed" "REMOVE"
-        if ! $DRY_RUN; then
-            git -C "$REPO_ROOT" worktree remove --force "$path"
-            git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+        if remove_worktree "$path"; then
+            delete_branch "$branch"
+            REMOVED=$((REMOVED + 1))
+        else
+            KEPT=$((KEPT + 1))
         fi
-        REMOVED=$((REMOVED + 1)); return 0
+        return 0
     fi
 
     # Not landed: is every commit already on the remote?
@@ -152,8 +229,11 @@ process_worktree() {
     # Fully pushed. An open PR is not a reason to keep the directory: the branch,
     # PR, and review all survive, and `git worktree add` restores it on demand.
     emit "$name" "$branch" "pushed" "REMOVE"
-    $DRY_RUN || git -C "$REPO_ROOT" worktree remove --force "$path"
-    REMOVED=$((REMOVED + 1))
+    if remove_worktree "$path"; then
+        REMOVED=$((REMOVED + 1))
+    else
+        KEPT=$((KEPT + 1))
+    fi
 }
 
 while IFS= read -r line; do
@@ -168,11 +248,18 @@ while IFS= read -r line; do
 done < <(git -C "$REPO_ROOT" worktree list --porcelain)
 process_worktree "$WT_PATH" "$WT_BRANCH" "$WT_LOCKED" "$WT_DETACHED"
 
-$DRY_RUN || git -C "$REPO_ROOT" worktree prune
+git_out git -C "$REPO_ROOT" worktree prune
 
 if $JSON; then
-    printf '{"removed":%d,"kept":%d,"skipped":%d,"total":%d,"fetch_ok":%s,"worktrees":[%s]}\n' \
-        "$REMOVED" "$KEPT" "$SKIPPED" "$TOTAL" "$FETCH_OK" "$(IFS=,; echo "${ROWS[*]:-}")"
+    WORKTREES_JSON="$(printf '%s\n' "${ROWS[@]}" | jq -s '.')"
+    jq -cn \
+        --argjson removed "$REMOVED" \
+        --argjson kept "$KEPT" \
+        --argjson skipped "$SKIPPED" \
+        --argjson total "$TOTAL" \
+        --argjson fetch_ok "$FETCH_OK" \
+        --argjson worktrees "$WORKTREES_JSON" \
+        '{removed:$removed, kept:$kept, skipped:$skipped, total:$total, fetch_ok:$fetch_ok, worktrees:$worktrees}'
 else
     echo ""
     echo "=== Summary ==="
