@@ -180,12 +180,31 @@ host_auto_libc() {
     printf '%s\n' "gnu"
 }
 
+sha256_file() {
+    local path="$1" output
+    if command -v sha256sum >/dev/null 2>&1; then
+        output="$(sha256sum "$path")"
+    elif command -v shasum >/dev/null 2>&1; then
+        output="$(shasum -a 256 "$path")"
+    else
+        return 1
+    fi
+    printf '%s\n' "${output%% *}"
+}
+
 test_root_wrapper_fetch_fallback() {
     local expected="$1"
     TMPDIR_BASE="$(mktemp -d)"
     local fakebin="$TMPDIR_BASE/bin"
     local isolated="$TMPDIR_BASE/isolated"
+    local digest ref
     mkdir -p "$fakebin" "$isolated"
+
+    digest="$(sha256_file "$CANONICAL_INSTALLER")" || {
+        fail "root install.sh identity-bound fallback" "no SHA-256 implementation available"
+        return
+    }
+    ref="0123456789abcdef0123456789abcdef01234567"
 
     cp "$ROOT_INSTALLER" "$isolated/install.sh"
     cat > "$fakebin/curl" <<'FAKE_CURL'
@@ -193,31 +212,50 @@ test_root_wrapper_fetch_fallback() {
 set -euo pipefail
 
 out=""
+url=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
-        -o)
+        --output)
             out="$2"
             shift 2
             ;;
+        --proto|--write-out)
+            shift 2
+            ;;
+        --silent|--show-error)
+            shift
+            ;;
         *)
+            url="$1"
             shift
             ;;
     esac
 done
 
 if [[ -z "$out" ]]; then
-    echo "fake curl expected -o <path>" >&2
+    echo "fake curl expected --output <path>" >&2
     exit 2
 fi
 
+expected_url="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${PERL_LSP_INSTALLER_REF}/scripts/install.sh"
+if [[ "$url" != "$expected_url" ]]; then
+    echo "unexpected URL: $url" >&2
+    exit 3
+fi
+
 cp "$PERL_LSP_TEST_CANONICAL_INSTALLER" "$out"
+printf '200'
 FAKE_CURL
     chmod +x "$fakebin/curl"
 
     assert_stdout \
-        "root install.sh fallback fetches canonical installer outside checkout" \
+        "root install.sh identity-bound fallback fetches canonical installer outside checkout" \
         "$expected" \
-        env PATH="$fakebin:$PATH" PERL_LSP_TEST_CANONICAL_INSTALLER="$CANONICAL_INSTALLER" \
+        env \
+        PATH="$fakebin:$PATH" \
+        PERL_LSP_TEST_CANONICAL_INSTALLER="$CANONICAL_INSTALLER" \
+        PERL_LSP_INSTALLER_REF="$ref" \
+        PERL_LSP_INSTALLER_SHA256="$digest" \
         bash "$isolated/install.sh" --print-target
 }
 
