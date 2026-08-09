@@ -63,8 +63,9 @@ pub fn nth_char_is<F: FnOnce(char) -> bool>(s: &str, n: usize, predicate: F) -> 
 
 /// Escape special markdown characters in plain text to prevent unintended formatting.
 ///
-/// Escapes: backtick (`), hash (#), asterisk (*), underscore (_), brackets ([, ]),
-/// and other markdown formatting characters so they render as literal text in hover cards.
+/// Escapes backtick, `#`, `*`, `_`, `[`, `]`, `\`, `|`, and `-` so they render as
+/// literal text in hover cards rather than being interpreted as markdown formatting
+/// directives.
 ///
 /// This preserves the semantic content of comments and documentation while preventing
 /// markdown special characters from being interpreted as formatting directives.
