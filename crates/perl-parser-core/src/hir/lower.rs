@@ -3521,17 +3521,19 @@ impl<'a> BodyBuilder2<'a> {
             // or replacement can execute arbitrary Perl code via (?{...}) or
             // the /e modifier. Lower the matched expression as a structured
             // child so variable reads are captured.
-            NodeKind::Regex { has_embedded_code, .. } => {
+            NodeKind::Regex { has_embedded_code: _, .. } => {
                 // A bare regex literal (qr//) has no target expression to lower.
                 // Model as Opaque but tag it so effect analysis can check for
                 // embedded code without string sniffing.
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "Regex".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Regex".to_string() }, range)
             }
 
-            NodeKind::Match { expr, has_embedded_code, negated, .. } => {
+            NodeKind::Match {
+                expr,
+                has_embedded_code,
+                negated: _,
+                ..
+            } => {
                 // Lower the matched expression so variable reads are captured.
                 // The match itself is modeled as a Call so effect analysis can
                 // see it as a potential code-execution site when
@@ -3602,11 +3604,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::Do { block } => {
                 let arg_ids = vec![self.lower_expr(block)];
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: "Do".to_string(),
-                        callee_span: None,
-                    },
+                    HirExpr::Call { args: arg_ids, ast_kind: "Do".to_string(), callee_span: None },
                     range,
                 )
             }
@@ -3634,19 +3632,14 @@ impl<'a> BodyBuilder2<'a> {
                     arg_ids.push(self.lower_expr(fin));
                 }
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: "Try".to_string(),
-                        callee_span: None,
-                    },
+                    HirExpr::Call { args: arg_ids, ast_kind: "Try".to_string(), callee_span: None },
                     range,
                 )
             }
 
             NodeKind::ChainedComparison { operands, .. } => {
                 // Lower all operands so variable reads are captured.
-                let arg_ids: Vec<HirExprId> =
-                    operands.iter().map(|o| self.lower_expr(o)).collect();
+                let arg_ids: Vec<HirExprId> = operands.iter().map(|o| self.lower_expr(o)).collect();
                 self.alloc_expr(
                     HirExpr::Call {
                         args: arg_ids,
@@ -3663,11 +3656,7 @@ impl<'a> BodyBuilder2<'a> {
                 let mut arg_ids = vec![self.lower_expr(variable), self.lower_expr(package)];
                 arg_ids.extend(args.iter().map(|a| self.lower_expr(a)));
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: "Tie".to_string(),
-                        callee_span: None,
-                    },
+                    HirExpr::Call { args: arg_ids, ast_kind: "Tie".to_string(), callee_span: None },
                     range,
                 )
             }
@@ -3725,10 +3714,7 @@ impl<'a> BodyBuilder2<'a> {
             // LoopControl (#5043): next/last/redo with optional label.
             // Modeled as Opaque since there are no child expressions to lower.
             NodeKind::LoopControl { .. } => {
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "LoopControl".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "LoopControl".to_string() }, range)
             }
 
             // Goto (#5043): lower the target expression for variable reads.
@@ -3747,18 +3733,19 @@ impl<'a> BodyBuilder2<'a> {
             // VString (#5043): version string literal (v5.38.0). No child
             // expressions to lower, but tag as Opaque for consistency.
             NodeKind::VString { .. } => {
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "VString".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "VString".to_string() }, range)
             }
 
             // Declaration constructs (#5043): lower body/children for
             // variable reads. These are the last high-value variants.
             NodeKind::Subroutine { body, prototype, signature, .. } => {
                 let mut arg_ids = Vec::new();
-                if let Some(p) = prototype { arg_ids.push(self.lower_expr(p)); }
-                if let Some(s) = signature { arg_ids.push(self.lower_expr(s)); }
+                if let Some(p) = prototype {
+                    arg_ids.push(self.lower_expr(p));
+                }
+                if let Some(s) = signature {
+                    arg_ids.push(self.lower_expr(s));
+                }
                 arg_ids.push(self.lower_expr(body));
                 self.alloc_expr(
                     HirExpr::Call {
@@ -3772,7 +3759,9 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::Method { body, signature, .. } => {
                 let mut arg_ids = Vec::new();
-                if let Some(s) = signature { arg_ids.push(self.lower_expr(s)); }
+                if let Some(s) = signature {
+                    arg_ids.push(self.lower_expr(s));
+                }
                 arg_ids.push(self.lower_expr(body));
                 self.alloc_expr(
                     HirExpr::Call {
@@ -3786,7 +3775,9 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::Package { block, .. } => {
                 let mut arg_ids = Vec::new();
-                if let Some(b) = block { arg_ids.push(self.lower_expr(b)); }
+                if let Some(b) = block {
+                    arg_ids.push(self.lower_expr(b));
+                }
                 self.alloc_expr(
                     HirExpr::Call {
                         args: arg_ids,
@@ -3797,24 +3788,19 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
-            NodeKind::Use { has_filter_risk, .. } => {
-                self.alloc_expr(
-                    HirExpr::Opaque {
-                        ast_kind: if *has_filter_risk {
-                            "UseWithFilterRisk".to_string()
-                        } else {
-                            "Use".to_string()
-                        },
+            NodeKind::Use { has_filter_risk, .. } => self.alloc_expr(
+                HirExpr::Opaque {
+                    ast_kind: if *has_filter_risk {
+                        "UseWithFilterRisk".to_string()
+                    } else {
+                        "Use".to_string()
                     },
-                    range,
-                )
-            }
+                },
+                range,
+            ),
 
             NodeKind::No { .. } => {
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "No".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "No".to_string() }, range)
             }
 
             NodeKind::PhaseBlock { block, .. } => {
@@ -3843,31 +3829,19 @@ impl<'a> BodyBuilder2<'a> {
 
             // Leaf constructs: no children to lower, tag as Opaque.
             NodeKind::Ellipsis => {
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "Ellipsis".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Ellipsis".to_string() }, range)
             }
 
             NodeKind::Typeglob { .. } => {
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "Typeglob".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Typeglob".to_string() }, range)
             }
 
             NodeKind::DataSection { .. } => {
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "DataSection".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "DataSection".to_string() }, range)
             }
 
             NodeKind::Format { .. } => {
-                self.alloc_expr(
-                    HirExpr::Opaque { ast_kind: "Format".to_string() },
-                    range,
-                )
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Format".to_string() }, range)
             }
 
             _ => {
