@@ -19,7 +19,10 @@ mod jsonrpc;
 pub mod methods;
 
 pub use error_disposition::{Disposition, disposition_for};
-pub use error_inventory::{ErrorInventoryEntry, classified_count, error_type_inventory, unclassified_count, unclassified_types};
+pub use error_inventory::{
+    ErrorInventoryEntry, classified_count, error_type_inventory, unclassified_count,
+    unclassified_types,
+};
 pub use errors::*;
 pub use jsonrpc::*;
 
