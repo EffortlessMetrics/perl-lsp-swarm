@@ -764,7 +764,7 @@ reason = "Avoid stale numeric type drift."
 name = "clippy::disallowed_fields"
 level = "deny"
 activate_when_msrv = "1.95"
-reason = "Allow architecture policy to ban direct field access across protected seams."
+reason = "DF-1 documents protected architectural seams; DF-2 through DF-4 will select, refactor, and activate one concrete field class at a time."
 
 [[planned]]
 name = "clippy::manual_checked_ops"
