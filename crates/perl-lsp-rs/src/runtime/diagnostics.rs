@@ -17,6 +17,11 @@ use crate::features::diagnostics::{
 use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_configured_profile_path(
     configured_profile: &str,
@@ -702,7 +707,7 @@ impl LspServer {
                         "message": d.message,
                     });
                     if !d.tags.is_empty() {
-                        diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+                        diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                     }
                     diag
                 })
@@ -1360,7 +1365,7 @@ impl LspServer {
         });
 
         if !d.tags.is_empty() {
-            diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+            diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
         }
 
         if !d.related_information.is_empty() {
@@ -1707,7 +1712,7 @@ impl LspServer {
                                     ),
                                 });
                                 if !d.tags.is_empty() {
-                                    diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+                                    diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                                 }
                                 if !d.related_information.is_empty() {
                                     diag["relatedInformation"] = json!(
@@ -1802,7 +1807,7 @@ impl LspServer {
                                 ),
                             });
                             if !d.tags.is_empty() {
-                                diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+                                diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                             }
                             if !d.related_information.is_empty() {
                                 diag["relatedInformation"] = json!(
