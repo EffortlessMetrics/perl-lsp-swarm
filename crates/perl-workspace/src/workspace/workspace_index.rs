@@ -1099,6 +1099,8 @@ pub struct SymbolReference {
     pub range: Range,
     /// How the symbol is being referenced (definition, usage, etc.)
     pub kind: ReferenceKind,
+    /// Package context for bare-name call/definition records (#6110).
+    pub package: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2858,9 +2860,13 @@ impl WorkspaceIndex {
 
         // If the symbol is qualified, also collect bare name references
         if let Some(idx) = symbol_name.rfind("::") {
+            let package = &symbol_name[..idx];
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
                 for sym_ref in refs {
+                    if !Self::bare_reference_matches_package(sym_ref, package) {
+                        continue;
+                    }
                     let key = (
                         sym_ref.uri.clone(),
                         sym_ref.range.start.line,
@@ -2974,9 +2980,14 @@ impl WorkspaceIndex {
         }
 
         if let Some(idx) = symbol_name.rfind("::") {
+            let package = &symbol_name[..idx];
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
-                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                for r in refs
+                    .iter()
+                    .filter(|r| r.kind != ReferenceKind::Definition)
+                    .filter(|r| Self::bare_reference_matches_package(r, package))
+                {
                     seen.insert((
                         r.uri.as_str(),
                         r.range.start.line,
@@ -3008,6 +3019,10 @@ impl WorkspaceIndex {
 
     fn is_qualified_variant_of(candidate: &str, bare_symbol: &str) -> bool {
         candidate.rsplit_once("::").is_some_and(|(_, candidate_bare)| candidate_bare == bare_symbol)
+    }
+
+    fn bare_reference_matches_package(sym_ref: &SymbolReference, package: &str) -> bool {
+        sym_ref.package.as_deref() == Some(package)
     }
 
     /// Find all definitions of a symbol, including duplicates across files.
@@ -4908,6 +4923,7 @@ impl IndexVisitor {
 
     fn project_symbol_declarations(&self, node: &Node, file_index: &mut FileIndex) {
         for decl in extract_symbol_decls(node, self.current_package.as_deref()) {
+            let definition_package = decl.container.clone();
             let (start, end) = match decl.kind {
                 SymbolKind::Variable(_) => match decl.anchor_span {
                     Some(span) => span,
@@ -4962,6 +4978,9 @@ impl IndexVisitor {
                 uri: self.uri.clone(),
                 range,
                 kind: ReferenceKind::Definition,
+                // Use the declaration's enclosing package from extract_symbol_decls,
+                // not the visitor's pre-walk current_package (still "main" here).
+                package: definition_package,
             });
         }
     }
@@ -5019,6 +5038,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range,
                     kind: ReferenceKind::Read,
+                    package: None,
                 });
             }
 
@@ -5076,6 +5096,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Read, // Default to read, would need context for write
+                    package: None,
                 });
             }
 
@@ -5100,12 +5121,14 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: location,
                         kind: ReferenceKind::Usage,
+                        package: Some(pkg.to_string()),
                     },
                 );
                 file_index.references.entry(qualified).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
                     kind: ReferenceKind::Usage,
+                    package: None,
                 });
 
                 if name == "extends" || name == "with" {
@@ -5158,6 +5181,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Import,
+                    package: None,
                 });
             }
 
@@ -5187,6 +5211,7 @@ impl IndexVisitor {
                                 uri: self.uri.clone(),
                                 range: self.node_to_range(lhs),
                                 kind: ReferenceKind::Read,
+                                package: None,
                             },
                         );
                     }
@@ -5196,6 +5221,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(lhs),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
 
@@ -5257,6 +5283,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(variable),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
                 self.visit_node(variable, file_index);
@@ -5290,6 +5317,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: location,
                             kind: ReferenceKind::Usage,
+                            package: None,
                         },
                     );
                 }
@@ -5297,6 +5325,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: location,
                     kind: ReferenceKind::Usage,
+                    package: None,
                 });
 
                 if method == "import"
@@ -5307,6 +5336,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(node),
                             kind: ReferenceKind::Import,
+                            package: None,
                         });
                     }
                     file_index.dependencies.insert(normalize_dependency_module_name(module_name));
@@ -5367,6 +5397,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(operand),
                             kind: ReferenceKind::Read,
+                            package: None,
                         },
                     );
 
@@ -5374,6 +5405,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(operand),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
             }
@@ -5665,6 +5697,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Read,
+                    package: None,
                 });
                 Self::emit_canonical_ref(node, symbol_refs);
             }
@@ -5685,6 +5718,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(node),
                         kind: ReferenceKind::Usage,
+                        package: None,
                     });
                     symbol_refs.push(symbol_ref);
                 }
@@ -5706,12 +5740,14 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: location,
                         kind: ReferenceKind::Usage,
+                        package: Some(pkg.to_string()),
                     },
                 );
                 file_index.references.entry(qualified).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
                     kind: ReferenceKind::Usage,
+                    package: None,
                 });
 
                 if name == "extends" || name == "with" {
@@ -5757,6 +5793,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Import,
+                    package: None,
                 });
                 // No canonical equivalent and no recursion into `args` --
                 // matches BOTH legacy's current behavior and
@@ -5784,6 +5821,7 @@ impl IndexVisitor {
                                 uri: self.uri.clone(),
                                 range: self.node_to_range(lhs),
                                 kind: ReferenceKind::Read,
+                                package: None,
                             },
                         );
                     }
@@ -5791,6 +5829,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(lhs),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                     // Canonical (today, via generic recursion + the
                     // `Variable` arm) classifies an assignment target as a
@@ -5862,6 +5901,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(variable),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
                 // Matches legacy's EXISTING (quirky but unchanged) behavior:
@@ -5915,6 +5955,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: location,
                             kind: ReferenceKind::Usage,
+                            package: None,
                         },
                     );
                 }
@@ -5922,6 +5963,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: location,
                     kind: ReferenceKind::Usage,
+                    package: None,
                 });
 
                 if method == "import"
@@ -5932,6 +5974,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(node),
                             kind: ReferenceKind::Import,
+                            package: None,
                         });
                     }
                     file_index.dependencies.insert(normalize_dependency_module_name(module_name));
@@ -5969,12 +6012,14 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(operand),
                             kind: ReferenceKind::Read,
+                            package: None,
                         },
                     );
                     file_index.references.entry(var_name).or_default().push(SymbolReference {
                         uri: self.uri.clone(),
                         range: self.node_to_range(operand),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                     // Mirrors the `Assignment` arm above: canonical (today,
                     // via generic recursion) classifies an increment target
@@ -6001,6 +6046,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(node),
                         kind: ReferenceKind::Usage,
+                        package: None,
                     });
                     symbol_refs.push(symbol_ref);
                 } else {
@@ -6043,6 +6089,7 @@ impl IndexVisitor {
                                         uri: self.uri.clone(),
                                         range: self.node_to_range(operand),
                                         kind: ReferenceKind::Read,
+                                        package: None,
                                     },
                                 );
                             }
@@ -6066,12 +6113,14 @@ impl IndexVisitor {
                                         uri: self.uri.clone(),
                                         range: location,
                                         kind: ReferenceKind::Usage,
+                                        package: Some(pkg.to_string()),
                                     });
                                 file_index.references.entry(qualified).or_default().push(
                                     SymbolReference {
                                         uri: self.uri.clone(),
                                         range: location,
                                         kind: ReferenceKind::Usage,
+                                        package: None,
                                     },
                                 );
                             }
@@ -7447,6 +7496,75 @@ RefDemo::helper();
         assert!(
             bare_refs.len() >= qualified_refs.len(),
             "bare-name reference lookup should include qualified calls"
+        );
+    }
+
+    #[test]
+    fn test_find_references_qualified_excludes_cross_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri_a = "file:///PkgA.pm";
+        let uri_b = "file:///PkgB.pm";
+        let code_a = r#"
+package PkgA;
+sub foo { return 1; }
+PkgA::foo();
+"#;
+        let code_b = r#"
+package PkgB;
+sub other { foo(); return 1; }
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        let refs = index.find_references("PkgA::foo");
+        assert!(
+            !refs.iter().any(|location| location.uri == uri_b),
+            "bare foo() in PkgB must not appear in PkgA::foo references"
+        );
+        assert!(refs.len() >= 1, "PkgA::foo references must include same-package sites");
+    }
+
+    #[test]
+    fn test_find_references_qualified_includes_same_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///PkgA.pm";
+        let code = r#"
+package PkgA;
+sub foo { return 1; }
+foo();
+PkgA::foo();
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let refs = index.find_references("PkgA::foo");
+        let usage_sites = refs.iter().filter(|location| location.uri == uri).count();
+        assert!(usage_sites >= 2, "same-package bare and qualified calls must both be returned");
+    }
+
+    #[test]
+    fn test_count_usages_qualified_excludes_cross_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri_a = "file:///PkgA.pm";
+        let uri_b = "file:///PkgB.pm";
+        let code_a = r#"
+package PkgA;
+sub foo { return 1; }
+PkgA::foo();
+"#;
+        let code_b = r#"
+package PkgB;
+sub other { foo(); return 1; }
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        assert_eq!(
+            index.count_usages("PkgA::foo"),
+            1,
+            "cross-package bare foo() must not inflate PkgA::foo usage count"
         );
     }
 
