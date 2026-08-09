@@ -89,10 +89,50 @@ reasoning about its artifacts, and before concluding anything about ownership. S
 | Agent | Lifetime | Writes | Worktree | Use for |
 | --- | --- | --- | --- | --- |
 | `scout` | one-shot or standing | GitHub only | no | bounded questions, research, issue currency |
-| `falsifying-reviewer` | one-shot | nothing | no | breaking one named claim |
-| `proof-runner` | one-shot | nothing | reuses | running proof and classifying the result |
+| `proof-runner` | one-shot | GitHub only | reuses | running proof and classifying the result |
 | `candidate-writer` | claim-scoped | files | yes | the single mutator for one candidate |
 | `lane-root` | long-running, steered | files | yes | owning one claim through `deliver-pr` |
+
+### Review lenses
+
+Each posts its own review and none summarizes another. Shared contract in
+`REVIEWING.md`.
+
+| Lens | Oracle | Asks |
+| --- | --- | --- |
+| `vision-reviewer` | the issue and the contracts | is this the right change |
+| `architecture-reviewer` | the tree around the diff | does it belong here |
+| `quality-reviewer` | the diff, read closely | is it correct as written |
+| `simplification-reviewer` | a constructed alternative | did it need to be written |
+| `falsifying-reviewer` | the PR's own claims | does the body match the diff |
+
+The split follows the **oracle**, not the topic. Two agents reading the same source with
+the same method are not independent however differently they are briefed, and
+`simplification` is separate from `quality` because constructing an alternative and
+auditing a diff are different operations — done in one pass you reliably get the audit.
+
+**Run the lenses by default.** Skipping one is the decision that needs a reason, not
+running one. A lens costs a read-only agent with no worktree and no build; a missed
+finding costs a rewrite, or lands. When unsure, run it.
+
+**Attach each lens at the earliest stage its oracle exists**, rather than waiting for a
+PR:
+
+| Stage | Lenses whose oracle already exists |
+| --- | --- |
+| issue / `prepare-issue` | `vision` — before anything is built |
+| spec, plan, `prepare-proof` | `vision`, `architecture` — before the shape sets |
+| candidate | `architecture`, `quality`, `simplification`, `falsifying` |
+| PR | whatever the candidate changed since |
+
+Architecture review after the code is written costs a rewrite; at the spec it costs a
+sentence. Vision review after the branch exists argues against sunk work; at the issue it
+is free. The lenses that read the diff have to wait for a diff — the other two do not, and
+running them late is the expensive default this section exists to prevent.
+
+Research the same way. Send a `scout` before building rather than after a reviewer finds
+the existing implementation. Read-only investigation is the cheapest thing in the roster
+and the most likely to be skipped.
 
 Read-only agents return evidence, not approval. A subagent verdict never constitutes
 review; independence requires a different source, oracle, method, threat model, or
