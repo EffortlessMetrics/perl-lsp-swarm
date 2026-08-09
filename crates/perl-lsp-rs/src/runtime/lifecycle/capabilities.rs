@@ -6,11 +6,6 @@ use super::super::{JsonRpcError, LspServer, Ordering};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
-/// Serialize a typed value to a serde_json::Value (#4995).
-fn to_json<T: serde::Serialize>(value: T) -> Value {
-    serde_json::to_value(value).unwrap_or(Value::Null)
-}
-
 /// The LSP protocol version this server implements.
 ///
 /// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
