@@ -50,6 +50,69 @@ pub(crate) enum OutboundMessage {
     Request { id: ServerRequestId, method: String, params: Value },
 }
 
+/// Trait abstracting the outbound message channel.
+///
+/// This trait decouples LSP handlers from the concrete `OutboundSender`,
+/// enabling unit tests to use a mock sink without constructing the full
+/// 60-field `LspServer`. Production code uses `OutboundSender`; tests
+/// use `RecordingSink` or their own implementations (#5015 PR-1).
+///
+/// The trait intentionally mirrors the three `send_*` methods on
+/// `OutboundSender` so the production impl is a zero-cost passthrough.
+pub(crate) trait OutboundSink {
+    /// Send a JSON-RPC response to the client.
+    fn send_response(&self, response: JsonRpcResponse) -> io::Result<()>;
+
+    /// Send a JSON-RPC notification to the client.
+    fn send_notification(&self, method: &str, params: Value) -> io::Result<()>;
+
+    /// Send a server→client JSON-RPC request.
+    fn send_request(&self, id: ServerRequestId, method: &str, params: Value) -> io::Result<()>;
+}
+
+/// Recording sink for tests — captures all sent messages for assertions.
+#[cfg(test)]
+pub(crate) struct RecordingSink {
+    pub messages: std::sync::Mutex<Vec<OutboundMessage>>,
+}
+
+#[cfg(test)]
+impl RecordingSink {
+    pub(crate) fn new() -> Self {
+        Self { messages: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    /// Drain and return all recorded messages.
+    pub(crate) fn drain(&self) -> Vec<OutboundMessage> {
+        std::mem::take(&mut *self.messages.lock().unwrap())
+    }
+}
+
+#[cfg(test)]
+impl OutboundSink for RecordingSink {
+    fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
+        self.messages.lock().unwrap().push(OutboundMessage::Response(response));
+        Ok(())
+    }
+
+    fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        self.messages.lock().unwrap().push(OutboundMessage::Notification {
+            method: method.to_string(),
+            params,
+        });
+        Ok(())
+    }
+
+    fn send_request(&self, id: ServerRequestId, method: &str, params: Value) -> io::Result<()> {
+        self.messages.lock().unwrap().push(OutboundMessage::Request {
+            id,
+            method: method.to_string(),
+            params,
+        });
+        Ok(())
+    }
+}
+
 /// Cloneable handle for sending outbound messages.
 ///
 /// Multiple tasks/threads can hold a clone and send concurrently;
@@ -99,6 +162,20 @@ impl OutboundSender {
         self.tx
             .try_send(OutboundMessage::Request { id, method: method.to_string(), params })
             .map_err(map_try_send_error)
+    }
+}
+
+impl OutboundSink for OutboundSender {
+    fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
+        OutboundSender::send_response(self, response)
+    }
+
+    fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        OutboundSender::send_notification(self, method, params)
+    }
+
+    fn send_request(&self, id: ServerRequestId, method: &str, params: Value) -> io::Result<()> {
+        OutboundSender::send_request(self, id, method, params)
     }
 }
 
