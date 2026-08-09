@@ -107,8 +107,18 @@ Cargo token is held, or disk/process/worktree state is `NOT_PROVEN`.
 Capacity limits are a host profile, not a repository invariant. A workstation, a laptop,
 a remote builder, and a read-only review context have different envelopes. Until #3957
 provides an admission command, apply the profile recorded in local configuration; the
-initial single-workstation profile is three lane roots, one build-heavy writer, and one
-workspace-wide build.
+initial single-workstation profile is one build-heavy writer and one workspace-wide
+build.
+
+Cap what consumes the host, which is builds — not how many agents exist. A read-only
+worker reading GitHub and source holds no worktree, no build, and no locks, so its limit
+is the attention available to steer it. Rationing cheap workers while build-heavy work
+runs unbounded caps the wrong thing.
+
+Concurrent writers are likewise not bounded by a count. Two writers on two claims is safe
+when both claims are specified and disjoint, and unsafe when they are vague, because
+vague claims overlap and overlapping writers produce rework rather than parallelism. The
+precondition for a second writer is a specification, not a slot.
 
 Count what the host carries, not what was dispatched. These quantities come apart:
 
