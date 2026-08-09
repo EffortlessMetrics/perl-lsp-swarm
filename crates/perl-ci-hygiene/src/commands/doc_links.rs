@@ -25,6 +25,9 @@ pub(crate) fn check_doc_links(repo_root: &Path, docs_dir: Option<&str>) -> Resul
     }
 
     let mut failures = Vec::new();
+    let canonical_root = fs::canonicalize(repo_root)
+        .with_context(|| format!("failed to resolve repository root {}", repo_root.display()))?;
+
     for entry in WalkDir::new(&docs_path).follow_links(false) {
         let entry = entry.with_context(|| format!("failed to walk {}", docs_path.display()))?;
         if !entry.file_type().is_file()
@@ -32,7 +35,7 @@ pub(crate) fn check_doc_links(repo_root: &Path, docs_dir: Option<&str>) -> Resul
         {
             continue;
         }
-        failures.extend(check_file(repo_root, entry.path())?);
+        failures.extend(check_file(repo_root, &canonical_root, entry.path())?);
     }
 
     if failures.is_empty() {
@@ -47,7 +50,7 @@ pub(crate) fn check_doc_links(repo_root: &Path, docs_dir: Option<&str>) -> Resul
     Ok(1)
 }
 
-fn check_file(repo_root: &Path, path: &Path) -> Result<Vec<String>> {
+fn check_file(repo_root: &Path, canonical_root: &Path, path: &Path) -> Result<Vec<String>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read documentation file {}", path.display()))?;
     let mut failures = Vec::new();
@@ -76,13 +79,10 @@ fn check_file(repo_root: &Path, path: &Path) -> Result<Vec<String>> {
                 ));
                 continue;
             }
-            let canonical_root = fs::canonicalize(repo_root).with_context(|| {
-                format!("failed to resolve repository root {}", repo_root.display())
-            })?;
             let canonical_target = fs::canonicalize(&target_path).with_context(|| {
                 format!("failed to resolve link target {}", target_path.display())
             })?;
-            if !canonical_target.starts_with(&canonical_root) {
+            if !canonical_target.starts_with(canonical_root) {
                 failures.push(format!(
                     "{}:{}: target escapes repository {}",
                     display_path(repo_root, path),
@@ -305,8 +305,9 @@ mod tests {
         fs::create_dir_all(&docs)?;
         let source = docs.join("invalid.md");
         fs::write(&source, [0xff, 0xfe])?;
+        let canonical_root = fs::canonicalize(&root)?;
 
-        let error = match check_file(&root, &source) {
+        let error = match check_file(&root, &canonical_root, &source) {
             Ok(_) => return Err("invalid UTF-8 should fail to read".into()),
             Err(error) => error,
         };
