@@ -273,13 +273,7 @@ fn is_live_link_opener(bytes: &[u8], bracket_index: usize) -> bool {
 
 fn local_target_path(repo_root: &Path, source: &Path, target: &str) -> Option<PathBuf> {
     let target = target.split('#').next()?.split('?').next()?.trim();
-    if target.is_empty()
-        || target.starts_with("http://")
-        || target.starts_with("https://")
-        || target.starts_with("mailto:")
-        || target.starts_with("file:")
-        || target.starts_with("command:")
-    {
+    if target.is_empty() || is_external_uri_target(target) {
         return None;
     }
 
@@ -288,6 +282,16 @@ fn local_target_path(repo_root: &Path, source: &Path, target: &str) -> Option<Pa
     } else {
         source.parent()?.join(target)
     })
+}
+
+/// URI schemes are case-insensitive (RFC 3986); do not treat them as repo-local paths.
+fn is_external_uri_target(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("file:")
+        || lower.starts_with("command:")
 }
 
 fn resolve_docs_path(repo_root: &Path, docs_dir: &str) -> PathBuf {
@@ -384,7 +388,14 @@ mod tests {
         let root = unique_temp_dir("reference-missing-target")?;
         let docs = root.join("docs/adr");
         fs::create_dir_all(&docs)?;
-        fs::write(docs.join("source.md"), "See [guide][ref].\n\n[ref]: missing.md\n")?;
+        let source = docs.join("source.md");
+        fs::write(&source, "See [guide][ref].\n\n[ref]: missing.md\n")?;
+        let canonical_root = fs::canonicalize(&root)?;
+
+        let failures = check_file(&root, &canonical_root, &source)?;
+        if failures.len() != 1 || !failures[0].contains("missing target missing.md") {
+            return Err(format!("expected missing target failure, got {failures:?}").into());
+        }
 
         let exit_code = check_doc_links(&root, None)?;
         if exit_code != 1 {
@@ -399,11 +410,35 @@ mod tests {
         let root = unique_temp_dir("reference-undefined")?;
         let docs = root.join("docs/adr");
         fs::create_dir_all(&docs)?;
-        fs::write(docs.join("source.md"), "See [guide][missing].\n")?;
+        let source = docs.join("source.md");
+        fs::write(&source, "See [guide][missing].\n")?;
+        let canonical_root = fs::canonicalize(&root)?;
+
+        let failures = check_file(&root, &canonical_root, &source)?;
+        if failures.len() != 1 || !failures[0].contains("undefined reference [missing]") {
+            return Err(format!("expected undefined reference failure, got {failures:?}").into());
+        }
 
         let exit_code = check_doc_links(&root, None)?;
         if exit_code != 1 {
             return Err(format!("expected undefined reference failure, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_ignores_uppercase_uri_scheme_reference_targets() -> TestResult {
+        let root = unique_temp_dir("reference-uppercase-uri")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        fs::write(docs.join("source.md"), "See [guide][ref].\n\n[ref]: HTTPS://example.com\n")?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(
+                format!("expected external URI reference to be ignored, got {exit_code}").into()
+            );
         }
         fs::remove_dir_all(root)?;
         Ok(())
