@@ -88,6 +88,28 @@ pub fn build_rename_edit(
     // 1) Get all references across the workspace
     let mut locs = idx.find_refs(key);
 
+    // Qualified reference lookup intentionally filters cross-package bare
+    // functions (#6110). Rename still has to refuse when such a call exists,
+    // rather than silently renaming only the definition.
+    if key.kind == SymKind::Sub {
+        for loc in idx.find_cross_package_bare_refs(key) {
+            if is_ambiguous_sub_reference(
+                idx,
+                key,
+                &loc.uri,
+                loc.range.start.line,
+                loc.range.start.column,
+                loc.range.end.line,
+                loc.range.end.column,
+            ) {
+                return Err(RenameRefusal::AmbiguousIdentity(format!(
+                    "unqualified `{}` reference outside package `{}`",
+                    key.name, key.pkg
+                )));
+            }
+        }
+    }
+
     // 2) Also include the definition itself
     locs.push(def);
 

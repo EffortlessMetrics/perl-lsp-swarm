@@ -4689,6 +4689,32 @@ impl WorkspaceIndex {
 
         all_refs
     }
+
+    /// Find bare function usages outside the target package that must make a
+    /// rename fail closed, without including them in normal qualified
+    /// reference results (#6110).
+    pub fn find_cross_package_bare_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        if key.sigil.is_some() {
+            return Vec::new();
+        }
+
+        let global_refs = self.global_references.read();
+        let mut locations = global_refs
+            .get(key.name.as_ref())
+            .into_iter()
+            .flat_map(|refs| refs.iter())
+            .filter(|reference| {
+                reference.kind == ReferenceKind::Usage
+                    && reference.package.as_deref() != Some(key.pkg.as_ref())
+            })
+            .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
+            .collect::<Vec<_>>();
+        drop(global_refs);
+
+        Self::sort_locations_deterministically(&mut locations);
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        locations
+    }
 }
 
 /// **`build_unified` is the production extraction path (perl-lsp-swarm#1711-B
