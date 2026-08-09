@@ -427,12 +427,16 @@ impl LspServer {
                 None
             };
 
-            let documents = self.documents_guard();
-            let doc = self.get_document(&documents, uri).ok_or_else(|| JsonRpcError {
-                code: INVALID_REQUEST,
-                message: format!("Document not open: {}", uri),
-                data: None,
-            })?;
+            // Clone the current document snapshot and release the mutex before
+            // parameter-hint resolution can query the workspace index.
+            let doc = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned().ok_or_else(|| JsonRpcError {
+                    code: INVALID_REQUEST,
+                    message: format!("Document not open: {}", uri),
+                    data: None,
+                })?
+            };
             let parsed = doc.current_parsed();
             if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                 let mut hints = Vec::new();
@@ -466,7 +470,7 @@ impl LspServer {
 
                     hints.extend(crate::inlay_hints::parameter_hints_with_resolver(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                         Some(&ws_resolver),
                     ));
@@ -474,7 +478,7 @@ impl LspServer {
                 if type_hints {
                     hints.extend(crate::inlay_hints::trivial_type_hints(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                     ));
                 }

@@ -100,6 +100,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "from_raw_staged": {"lanes": ["commit_checks"]},
 
     # release-adjacent gates
+    "adr_link_check": {"lanes": ["docs_gate"]},
     "docs_build": {"lanes": ["docs_gate"]},
     "published_crate_count": {"lanes": ["release_check"]},
     "release_build": {"lanes": ["release_check"]},
