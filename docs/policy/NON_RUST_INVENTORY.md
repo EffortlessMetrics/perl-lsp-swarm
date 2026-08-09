@@ -21,13 +21,8 @@
 | generated | 1 |
 | production | 211 |
 | test | 1753 |
-<<<<<<< HEAD
-| tooling | 323 |
-| unclassified | 2314 |
-=======
 | tooling | 328 |
 | unclassified | 2312 |
->>>>>>> origin/main
 
 ## Unclassified files
 
