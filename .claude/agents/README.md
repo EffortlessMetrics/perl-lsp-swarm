@@ -84,15 +84,52 @@ Because a running agent can be asked, silence is no longer opaque: query it befo
 reasoning about its artifacts, and before concluding anything about ownership. See
 `FAILED_NO_RETURN` in `orchestrate-work`.
 
+## The unit is a programme, not a skill
+
+An agent is dispatched once over one coherent subject and walks an **ordered list of
+skills** against it, loading each when it reaches that step.
+
+```text
+one context · one artifact set · one bounded purpose · several ordered skills · one durable result
+```
+
+Forking per skill is the mistake this replaces. A reviewer that moves from architecture
+review to proof review should not lose its loaded candidate; a builder moving from
+construction to hardening should not rebuild its understanding of the implementation.
+Atomic skills change an agent's **attention**, not its identity.
+
+Three owners, and they do not overlap:
+
+| Owner | Owns |
+| --- | --- |
+| flow skill | which default programmes a situation warrants, and the join point |
+| agent definition | authority, tools, model tier, lifetime, publication, return shape |
+| atomic skill | the just-in-time question and method for one step |
+| brief | the exact subject, the ordered skills, observed basis, falsifiers, return |
+
+An orchestrator names *which* programme, never *how* to perform it. If a brief has to
+explain the review method, that method now lives in whoever happened to be orchestrating
+— which is the drift agent definitions exist to stop.
+
+Deferred loading is the other half. A reviewer holds only the lens it is currently on;
+four lenses' worth of instruction loaded at once compete for attention and sidetrack the
+step in front of it.
+
 ## The roster
 
-| Agent | Lifetime | Writes | Worktree | Use for |
+| Agent | Lifetime | Writes | Worktree | Programme |
 | --- | --- | --- | --- | --- |
-| `scout` | one-shot or standing | GitHub only | no | bounded questions, research, issue currency |
-| `falsifying-reviewer` | one-shot | nothing | no | breaking one named claim |
-| `proof-runner` | one-shot | nothing | reuses | running proof and classifying the result |
-| `candidate-writer` | claim-scoped | files | yes | the single mutator for one candidate |
-| `lane-root` | long-running, steered | files | yes | owning one claim through `deliver-pr` |
+| `researcher` | one-shot or standing | GitHub only | no | research, archaeology, external truth, issue currency |
+| `builder` | one candidate, while work is imminent | files | yes | `spec-to-test` → build → harden → simplify → proof → repair |
+| `reviewer` | one subject, one programme | GitHub only | only to run proof | an ordered review programme over a fixed artifact |
+| `lane-orchestrator` | one claim, steered | none by default | no | `deliver-pr`; selects programmes, dispositions findings |
+
+The campaign orchestrator is the main session, not a file.
+
+Everything else is a **mode** of one of these — external oracle, CI triage, main-health
+holder, and live-policy holder are `researcher` assignments; specialist review is a
+`reviewer` programme. Add a definition only for different tools, model, or lifetime,
+never for a different subject.
 
 Read-only agents return evidence, not approval. A subagent verdict never constitutes
 review; independence requires a different source, oracle, method, threat model, or
