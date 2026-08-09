@@ -719,7 +719,7 @@ impl LspServer {
             }
 
             // Get quick-fixes from the V2 provider (diagnostic-based)
-            let provider_v2 = CodeActionsProviderV2::new(doc.text.clone());
+            let provider_v2 = CodeActionsProviderV2::new(doc.text_arc.to_string());
             let quick_fixes =
                 provider_v2.get_code_actions((start_offset, end_offset), &diagnostics);
 
@@ -798,7 +798,7 @@ impl LspServer {
             }
 
             // Get refactorings from the original provider (AST-based)
-            let provider = CodeActionsProvider::new(doc.text.clone());
+            let provider = CodeActionsProvider::new(doc.text_arc.to_string());
             let actions = provider.get_code_actions(ast, (start_offset, end_offset), &diagnostics);
 
             for action in actions {
@@ -849,7 +849,7 @@ impl LspServer {
             }
 
             // Get enhanced refactorings (extract variable, convert loops, etc.)
-            let enhanced_provider = EnhancedCodeActionsProvider::new(doc.text.clone());
+            let enhanced_provider = EnhancedCodeActionsProvider::new(doc.text_arc.to_string());
             let enhanced_actions =
                 enhanced_provider.get_enhanced_refactoring_actions(ast, (start_offset, end_offset));
 
@@ -1632,7 +1632,7 @@ mod tests {
             // just no snapshot.
             *doc = crate::state::DocumentState::from_parts(
                 doc.rope.clone(),
-                doc.text.clone(),
+                doc.text_arc.to_string(),
                 doc.version,
                 doc.generation.clone(),
             );
