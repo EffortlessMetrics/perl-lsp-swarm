@@ -108,6 +108,9 @@ if [[ "${1:-}" == "-C" ]]; then
       handle_rev_parse "$*"
       ;;
     fetch)
+      if [[ -s "${MOCK_STATE}/fetch-fail" ]]; then
+        exit 1
+      fi
       exit 0
       ;;
     merge-base)
@@ -231,6 +234,14 @@ set -euo pipefail
 printf 'gh %s\n' "$*" >> "${MOCK_STATE}/gh.log"
 
 if [[ "$*" == pr\ list* ]]; then
+  if [[ "$*" == *"--state merged"* ]]; then
+    if [[ -s "${MOCK_STATE}/merged-pr" ]]; then
+      cat "${MOCK_STATE}/merged-pr"
+    else
+      printf '[]\n'
+    fi
+    exit 0
+  fi
   if [[ -s "${MOCK_STATE}/pr-number" ]]; then
     cat "${MOCK_STATE}/pr-number"
   fi
@@ -332,11 +343,12 @@ test_unpushed_branch_is_kept() {
   local case_dir output
   case_dir="$(new_case unpushed)"
   write_worktree_list "$case_dir" "feature/unpushed"
+  printf '1\n' > "${case_dir}/remote-branch"
   printf '2\n' > "${case_dir}/ahead-count"
 
   output="$(run_cleanup_dry_run "$case_dir")"
 
-  assert_contains "unpushed branch is kept" "$output" "unpushed"
+  assert_contains "unpushed branch is kept" "$output" "unpushed:2"
   assert_contains "unpushed action is KEEP" "$output" "KEEP"
   assert_no_destructive_commands "dry-run does not remove unpushed worktrees" "$case_dir"
 }
@@ -408,6 +420,33 @@ test_json_escapes_special_characters() {
   fi
 }
 
+test_squash_merged_branch_without_remote_is_removed() {
+  local case_dir output
+  case_dir="$(new_case squash-merged)"
+  write_worktree_list "$case_dir" "feature/squash-merged"
+  printf '[{"number":99}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "squash-merged branch is marked landed" "$output" "landed"
+  assert_contains "squash-merged branch action is REMOVE" "$output" "REMOVE"
+  assert_no_destructive_commands "dry-run does not remove squash-merged worktrees" "$case_dir"
+}
+
+test_fetch_failure_keeps_ambiguous_remote_branch() {
+  local case_dir output
+  case_dir="$(new_case fetch-fail)"
+  write_worktree_list "$case_dir" "feature/fetch-fail"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf 'fetch-fail\n' > "${case_dir}/fetch-fail"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "fetch failure downgrades to not-proven" "$output" "not-proven"
+  assert_contains "not-proven action is KEEP" "$output" "KEEP"
+  assert_no_destructive_commands "fetch failure does not remove worktrees" "$case_dir"
+}
+
 echo "=== cleanup-completed-worktrees dry-run test suite ==="
 echo ""
 
@@ -424,6 +463,8 @@ test_unpushed_branch_is_kept
 test_branch_without_remote_is_kept
 test_managed_owner_keeps_pushed_worktree
 test_json_escapes_special_characters
+test_squash_merged_branch_without_remote_is_removed
+test_fetch_failure_keeps_ambiguous_remote_branch
 
 TOTAL=$((PASS + FAIL))
 echo ""

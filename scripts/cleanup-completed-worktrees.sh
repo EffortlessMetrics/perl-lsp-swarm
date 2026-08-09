@@ -113,6 +113,13 @@ delete_branch() {
     git_out git -C "$REPO_ROOT" branch -D "$branch" || true
 }
 
+branch_landed_via_pr() {
+    local branch="$1"
+    [[ -n "$branch" ]] || return 1
+    command -v gh >/dev/null 2>&1 || return 1
+    gh pr list --head "$branch" --state merged --json number 2>/dev/null | grep -q '"number"'
+}
+
 # Stale origin refs make "unpushed" wrong in the dangerous direction, so refresh
 # before judging. A fetch failure is not fatal, but it downgrades every verdict.
 FETCH_OK=true
@@ -185,6 +192,9 @@ process_worktree() {
     fi
     landed=false
     git -C "$REPO_ROOT" merge-base --is-ancestor "$head" "$BASE_REF" 2>/dev/null && landed=true
+    if ! $landed && [[ "$detached" != "true" && -n "${branch:-}" ]]; then
+        branch_landed_via_pr "$branch" && landed=true
+    fi
 
     # Detached HEAD: the old script skipped these permanently. Judge them.
     if [[ "$detached" == "true" ]]; then

@@ -138,7 +138,9 @@ After merge or evidence-backed deliberate closure:
 7. expose the next coherent claim to `deliver-goal`.
 
 Release on **every** terminal outcome — merged, superseded, deliberately closed,
-abandoned — not only the merge path. A cap bounds how many worktrees exist at once;
+or **abandoned** — not only the merge path. For an abandoned lane, return the
+typed `ABANDONED`/`EXTERNAL_BLOCKER` result to the campaign root and release the
+worktree from the allocator or campaign root on that return, same as merge closeout. A cap bounds how many worktrees exist at once;
 nothing bounds residue, and most accumulation is finished work whose content already
 lives on the remote, each copy still holding a multi-gigabyte `target/`.
 
