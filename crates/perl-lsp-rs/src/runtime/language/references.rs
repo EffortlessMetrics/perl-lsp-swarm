@@ -1524,7 +1524,7 @@ impl LspServer {
                 if receipt.scanned_bytes.saturating_add(document.text.len()) > budget.max_bytes {
                     None
                 } else {
-                    Some(document.text.clone())
+                    Some(document.text_arc.to_string())
                 }
             };
             let Some(document_text) = document_text else {

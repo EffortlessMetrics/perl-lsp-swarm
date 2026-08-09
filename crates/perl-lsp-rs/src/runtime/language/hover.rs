@@ -120,7 +120,7 @@ impl LspServer {
                         None
                     };
 
-                    (offset, doc.current_parsed(), doc.text.clone(), hover_range)
+                    (offset, doc.current_parsed(), doc.text_arc.to_string(), hover_range)
                 })
             };
             // documents guard dropped here

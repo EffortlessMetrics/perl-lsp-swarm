@@ -106,7 +106,7 @@ impl LspServer {
                     message: format!("Document not open: {}", uri),
                     data: None,
                 })?;
-                doc.text.clone()
+                doc.text_arc.to_string()
             };
             // documents lock released here
 

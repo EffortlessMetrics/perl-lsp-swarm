@@ -749,7 +749,7 @@ impl LspServer {
                 let deadline = code_lens_resolve_deadline();
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let provider = CodeLensProvider::with_source(doc.text.clone())
+                    let provider = CodeLensProvider::with_source(doc.text_arc.to_string())
                         .with_file_path(uri.to_string());
                     let mut lenses = provider.extract(ast);
 
@@ -957,7 +957,7 @@ impl LspServer {
             let text = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text.clone(),
+                    Some(doc) => doc.text_arc.to_string(),
                     None => {
                         return Ok(Some(json!({ "items": [] })));
                     }
@@ -1529,7 +1529,7 @@ impl LspServer {
             if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let runner = TestRunner::new(doc.text.clone(), uri.to_string());
+                    let runner = TestRunner::new(doc.text_arc.to_string(), uri.to_string());
                     let tests = runner.discover_tests(ast);
 
                     // Convert test items to JSON
