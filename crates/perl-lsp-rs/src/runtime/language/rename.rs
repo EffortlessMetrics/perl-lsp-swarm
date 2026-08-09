@@ -680,7 +680,7 @@ impl LspServer {
             return None;
         }
 
-        let provider = RenameProvider::new(ast, doc.text.clone());
+        let provider = RenameProvider::new(ast, doc.text_arc.to_string());
         let result = provider.scoped_rename(
             offset,
             strip_perl_sigil(normalized_name),
@@ -719,7 +719,7 @@ impl LspServer {
             return None;
         }
 
-        let provider = RenameProvider::new(ast, doc.text.clone());
+        let provider = RenameProvider::new(ast, doc.text_arc.to_string());
         let result = provider.scoped_rename(
             offset,
             strip_perl_sigil(normalized_name),

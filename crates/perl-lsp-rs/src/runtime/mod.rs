@@ -1122,7 +1122,7 @@ impl LspServer {
     #[inline]
     pub(crate) fn documents_text_snapshot(&self) -> Vec<(String, String)> {
         let docs = self.documents_guard();
-        docs.iter().map(|(k, v)| (k.clone(), v.text.clone())).collect()
+        docs.iter().map(|(k, v)| (k.clone(), v.text_arc.to_string())).collect()
     }
 
     /// Create a snapshot for scan operations that may need AST access
@@ -1142,7 +1142,7 @@ impl LspServer {
         docs.iter()
             .map(|(k, v)| DocumentScanView {
                 uri: k.clone(),
-                text: v.text.clone(),
+                text: v.text_arc.to_string(),
                 ast: v.current_parsed().and_then(|p| p.ast().cloned()),
             })
             .collect()

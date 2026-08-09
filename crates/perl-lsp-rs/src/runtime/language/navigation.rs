@@ -1010,7 +1010,7 @@ impl LspServer {
                     let parent_map = parsed.as_ref().map_or(&empty_parent_map, |p| p.parent_map());
                     let provider = crate::declaration::DeclarationProvider::new(
                         Arc::clone(ast),
-                        doc.text.clone(),
+                        doc.text_arc.to_string(),
                         uri.to_string(),
                     )
                     .with_parent_map(parent_map)
@@ -1201,7 +1201,7 @@ impl LspServer {
                     {
                         Some((
                             EarlyDefinitionTarget::XsBootstrap(module_name),
-                            doc.text.clone(),
+                            doc.text_arc.to_string(),
                             offset,
                         ))
                     } else if let Some(module_name) =
@@ -1209,7 +1209,7 @@ impl LspServer {
                     {
                         Some((
                             EarlyDefinitionTarget::UseModule(module_name),
-                            doc.text.clone(),
+                            doc.text_arc.to_string(),
                             offset,
                         ))
                     } else if let Some(module_name) =
@@ -1217,7 +1217,7 @@ impl LspServer {
                     {
                         Some((
                             EarlyDefinitionTarget::FrameworkModule(module_name),
-                            doc.text.clone(),
+                            doc.text_arc.to_string(),
                             offset,
                         ))
                     } else {
@@ -1233,7 +1233,7 @@ impl LspServer {
                                         EarlyDefinitionTarget::Module(
                                             package_match.as_str().to_string(),
                                         ),
-                                        doc.text.clone(),
+                                        doc.text_arc.to_string(),
                                         offset,
                                     ));
                                     break;
@@ -1761,7 +1761,7 @@ impl LspServer {
                     let parent_map = parsed.as_ref().map_or(&empty_parent_map, |p| p.parent_map());
                     let provider = crate::declaration::DeclarationProvider::new(
                         Arc::clone(ast),
-                        doc.text.clone(),
+                        doc.text_arc.to_string(),
                         uri.to_string(),
                     )
                     .with_parent_map(parent_map)
@@ -2288,7 +2288,7 @@ impl LspServer {
                     );
                     return Ok(Some(json!([])));
                 };
-                (ast, doc.text.clone())
+                (ast, doc.text_arc.to_string())
             };
 
             // Build doc_map outside the lock, pinning `uri`'s own entry to
@@ -2431,7 +2431,7 @@ impl LspServer {
                 let Some(ast) = doc.current_parsed().and_then(|p| p.ast().cloned()) else {
                     return Ok(Some(json!([])));
                 };
-                (ast, doc.text.clone())
+                (ast, doc.text_arc.to_string())
             };
 
             #[cfg(feature = "workspace")]

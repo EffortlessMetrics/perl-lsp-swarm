@@ -589,7 +589,7 @@ impl LspServer {
                     let parsed = doc.current_parsed();
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         let provider =
-                            CallHierarchyProvider::new(doc.text.clone(), uri.to_string());
+                            CallHierarchyProvider::new(doc.text_arc.to_string(), uri.to_string());
                         provider.prepare(ast, line, character)
                     } else {
                         None
@@ -704,7 +704,7 @@ impl LspServer {
                     .filter_map(|(doc_uri, doc)| {
                         doc.current_parsed()
                             .and_then(|p| p.ast().cloned())
-                            .map(|ast| (doc_uri.clone(), doc.text.clone(), ast))
+                            .map(|ast| (doc_uri.clone(), doc.text_arc.to_string(), ast))
                     })
                     .collect();
             drop(documents);
@@ -765,7 +765,7 @@ impl LspServer {
                     .filter_map(|(doc_uri, doc)| {
                         doc.current_parsed()
                             .and_then(|p| p.ast().cloned())
-                            .map(|ast| (doc_uri.clone(), doc.text.clone(), ast))
+                            .map(|ast| (doc_uri.clone(), doc.text_arc.to_string(), ast))
                     })
                     .collect();
 
@@ -773,7 +773,7 @@ impl LspServer {
             let mut calls = if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let provider = CallHierarchyProvider::new(doc.text.clone(), uri.to_string());
+                    let provider = CallHierarchyProvider::new(doc.text_arc.to_string(), uri.to_string());
                     provider.outgoing_calls(ast, &ch_item)
                 } else {
                     Vec::new()

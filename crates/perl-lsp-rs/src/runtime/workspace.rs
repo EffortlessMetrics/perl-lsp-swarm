@@ -600,7 +600,7 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (k.clone(), v.text_arc.to_string(), v.current_parsed().and_then(|p| p.ast().cloned()))
                 })
                 .collect()
         };
@@ -971,7 +971,7 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (k.clone(), v.text_arc.to_string(), v.current_parsed().and_then(|p| p.ast().cloned()))
                 })
                 .collect()
         };
@@ -1839,7 +1839,7 @@ impl LspServer {
                     let idx = coordinator.index();
                     let open_documents: Vec<(String, String)> = {
                         let documents = self.documents.lock();
-                        documents.iter().map(|(uri, doc)| (uri.clone(), doc.text.clone())).collect()
+                        documents.iter().map(|(uri, doc)| (uri.clone(), doc.text_arc.to_string())).collect()
                     };
                     let deleting_uris: std::collections::HashSet<String> = files
                         .iter()
@@ -2677,7 +2677,7 @@ impl LspServer {
                                 coordinator.notify_change(uri);
                                 if let Ok(url) = url::Url::parse(uri) {
                                     if let Err(e) =
-                                        coordinator.index().index_file(url, doc.text.clone())
+                                        coordinator.index().index_file(url, doc.text_arc.to_string())
                                     {
                                         tracing::warn!("Failed to re-index file {}: {}", uri, e);
                                     }
@@ -2845,7 +2845,7 @@ impl LspServer {
     fn read_workspace_text(&self, uri: &str) -> Option<String> {
         // Priority 1: actively-open document (editor is authoritative).
         if let Some(doc) = self.documents.lock().get(uri) {
-            return Some(doc.text.clone());
+            return Some(doc.text_arc.to_string());
         }
 
         // Priority 2: workspace index document store (content from the last

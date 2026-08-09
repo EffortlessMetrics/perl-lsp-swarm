@@ -556,6 +556,21 @@ impl DocumentState {
         }
     }
 
+    /// Returns the document text as `&str` from the `text_arc` field (#4999).
+    ///
+    /// Callers that need `&str` access (most providers) should use this
+    /// accessor instead of cloning `self.text` to a `String`. This avoids
+    /// a full-document heap copy on the hot path.
+    ///
+    /// Callers that need an owned `String` (e.g., passing to a function that
+    /// consumes it, or handing it to a background thread) should clone from
+    /// `text_arc` via `self.text_arc.to_string()` rather than `self.text.clone()`,
+    /// since `text_arc` is the canonical copy and `text` may eventually be
+    /// removed once all callers migrate.
+    pub fn text_str(&self) -> &str {
+        &self.text_arc
+    }
+
     /// Construct a document state from raw rope/text/version parts while
     /// preserving an existing generation counter.
     ///

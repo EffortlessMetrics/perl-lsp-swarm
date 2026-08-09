@@ -205,7 +205,7 @@ impl LspServer {
             let (text, parsed) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => (doc.text.clone(), doc.current_parsed()),
+                    Some(doc) => (doc.text_arc.to_string(), doc.current_parsed()),
                     None => return Ok(Some(json!([]))),
                 }
             };
