@@ -1654,41 +1654,9 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "5fce4896fa61ff0140e615c5af19e62355e7b18f01deac5b8af492cc81d678d3",
-      "line": 26,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/tokmd.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "git fetch --no-tags origin \"${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}\"",
-      "fingerprint": "dadf763bc8f05b25a657522c3f471df1a11b80bc76feb7fd60c3d963ea23ff60",
-      "line": 68,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/tokmd.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "--base \"origin/${{ github.base_ref }}\" \\",
-      "fingerprint": "cabe4e390a9f1c7efd47f396bf5760c70fa072d267dd843db983ce3001f005b9",
-      "line": 71,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/tokmd.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"",
-      "fingerprint": "ce3f533e1815d93451f6f14a50d53734751fa50ca5b68cc93364e16caca13060",
-      "line": 172,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/tokmd.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
       "evidence": "pull-requests: write",
       "fingerprint": "15942ee87b113a3f1a96372530bfbb47a1a84e9ae6d5f66f5cc7e66ae3416e93",
-      "line": 15,
+      "line": 266,
       "message": "PR-triggered workflow grants write authority",
       "path": ".github/workflows/tokmd.yml",
       "rule": "pr_write_permission"
