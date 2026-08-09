@@ -133,8 +133,26 @@ After merge or evidence-backed deliberate closure:
 4. update durable contracts, proof, support claims, and changelog only within the
    proven boundary;
 5. preserve partial or residual work explicitly;
-6. safely release branch/worktree residue;
+6. release the claim's worktree;
 7. expose the next coherent claim to `$deliver-goal`.
+
+Release on **every** terminal outcome — merged, superseded, deliberately closed,
+or **abandoned** — not only the merge path. For an abandoned lane, return the
+typed `ABANDONED`/`EXTERNAL_BLOCKER` result to the campaign root and release the
+worktree from the allocator or campaign root on that return, same as merge closeout. A cap bounds how many worktrees exist at once;
+nothing bounds residue, and most accumulation is finished work whose content already
+lives on the remote, each copy still holding a multi-gigabyte `target/`.
+
+Release belongs to whoever allocated the worktree, not to whoever finished the work in
+it. A writer cannot remove the directory it stands in, so a lane ending inside its own
+worktree leaves it behind by construction. The lane root or campaign root releases on the
+typed return.
+
+Keep a worktree only when it holds state existing nowhere else — uncommitted changes,
+unpushed commits, or a detached HEAD outside the base. An open PR is not such a state: a
+fully pushed branch is restored with one `git worktree add`, and the branch, PR, and
+review all survive removal. `bash scripts/cleanup-completed-worktrees.sh --dry-run`
+applies that predicate across every worktree.
 
 Post a closeout only when the landed effect, residual claim, support boundary, or next
 route is useful. Do not persist runtime topology, task state, or merge-check polling.

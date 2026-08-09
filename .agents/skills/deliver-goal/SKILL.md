@@ -163,9 +163,22 @@ reconstruct goal and runtime-local frontier
 → retain the lane as IN_FLIGHT
 → advance another independent claim
 → reconcile merged or deliberately closed claims
+→ sweep worktree residue
 → publish useful goal-level deltas
 → re-evaluate every original acceptance predicate
 ```
+
+Sweep each pass, not at wind-down. Per-claim release misses whatever ended without
+reconciling — superseded, abandoned, or a lane that died mid-flight — so residue
+accumulates even when every individual release worked. Deferring the sweep to the end of
+a campaign runs it exactly when local evidence is least trustworthy and the context that
+knew what each worktree was for is gone.
+
+Run `bash scripts/cleanup-completed-worktrees.sh --dry-run` to report disposition; it
+keeps anything holding uncommitted changes, unpushed commits, detached work outside the
+base, or a worktree-manager owner. Review the output, then run the same command without
+`--dry-run` to apply safe removals, or release owned slots via
+`worktree-manager.py release` when the allocator still holds the lease.
 
 If another PR lands and a candidate remains valid, do nothing. If an actual conflict,
 explicit stack change, or combined-tree failure appears, the affected lane repairs its
