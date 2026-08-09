@@ -27,6 +27,8 @@ mod latency;
 mod lifecycle;
 mod notebook;
 pub(crate) mod outbound;
+#[allow(unused_imports)]
+use outbound::OutboundSink;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
@@ -1078,9 +1080,21 @@ impl LspServer {
         self.workspace_folders.lock().len()
     }
 
-    /// Send a notification to the client via the outbound channel
+    /// Send a notification to the client via the outbound channel.
+    ///
+    /// Delegates through the `OutboundSink` trait so that the same code path
+    /// works with both the production `OutboundSender` and test `RecordingSink`
+    /// (#5015 PR-3).
     fn notify(&self, method: &str, params: Value) -> io::Result<()> {
-        self.outbound.send_notification(method, params)
+        self.outbound_sink().send_notification(method, params)
+    }
+
+    /// Returns a reference to the outbound sink trait object.
+    ///
+    /// This enables handlers to accept `&dyn OutboundSink` for testability
+    /// without needing access to the full `LspServer` (#5015 PR-3).
+    pub(crate) fn outbound_sink(&self) -> &dyn OutboundSink {
+        &self.outbound
     }
 
     /// Acquire a lock on the documents map
