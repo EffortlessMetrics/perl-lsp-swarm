@@ -622,6 +622,27 @@ __PACKAGE__->add_columns(qw/id name email/);
     }
 
     #[test]
+    fn dbix_class_add_columns_honors_accessor_metadata() -> Result<(), String> {
+        let code = r#"
+package MyApp::Schema::Result::Album;
+use DBIx::Class::Core;
+__PACKAGE__->add_columns(
+    albumid => { data_type => 'integer', accessor => 'album' },
+    title => { data_type => 'varchar' },
+);
+1;
+"#;
+        let members = parse_and_extract(code);
+        assert_eq!(members_named(&members, "album").len(), 1);
+        assert!(
+            members_named(&members, "albumid").is_empty(),
+            "column key must not be synthesized when accessor metadata overrides it"
+        );
+        assert_eq!(members_named(&members, "title").len(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn dbix_class_relationships_generate_accessors() -> Result<(), String> {
         let code = r#"
 package MyApp::Schema::Result::Author;

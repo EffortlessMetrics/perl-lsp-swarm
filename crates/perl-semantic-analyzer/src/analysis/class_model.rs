@@ -633,9 +633,14 @@ impl ClassModelBuilder {
                     }
                 }
 
-                self.current_parents.extend(captured_parents);
+                self.current_parents.extend(captured_parents.clone());
 
-                if has_class_accessor {
+                let inherits_dbix_class =
+                    captured_parents.iter().any(|parent| is_dbix_class_module(parent));
+
+                if inherits_dbix_class {
+                    Framework::DbixClass
+                } else if has_class_accessor {
                     Framework::ClassAccessor
                 } else if self.current_framework == Framework::None {
                     // Only promote to PlainOO if no stronger framework already detected
@@ -1146,11 +1151,24 @@ impl ClassModelBuilder {
             "add_columns" => {
                 let mut column_names = Vec::new();
                 let mut seen = HashSet::new();
-                for arg in args {
-                    for name in collect_accessor_names(arg) {
-                        if seen.insert(name.clone()) {
+                let mut arg_idx = 0;
+                while arg_idx < args.len() {
+                    if let (Some(key), Some(value)) = (args.get(arg_idx), args.get(arg_idx + 1))
+                        && dbix_column_pair_shape(key, value)
+                    {
+                        if let Some(name) = dbix_column_accessor_from_pair(key, value)
+                            && seen.insert(name.clone())
+                        {
                             column_names.push(name);
                         }
+                        arg_idx += 2;
+                    } else {
+                        for name in collect_dbix_column_accessor_names(&args[arg_idx]) {
+                            if seen.insert(name.clone()) {
+                                column_names.push(name);
+                            }
+                        }
+                        arg_idx += 1;
                     }
                 }
                 if column_names.is_empty() {
@@ -1613,6 +1631,44 @@ fn collect_accessor_names(node: &Node) -> Vec<String> {
         }
         _ => Vec::new(),
     }
+}
+
+fn collect_dbix_column_accessor_names(node: &Node) -> Vec<String> {
+    match &node.kind {
+        NodeKind::HashLiteral { pairs } => pairs
+            .iter()
+            .filter_map(|(key, value)| dbix_column_accessor_from_pair(key, value))
+            .collect(),
+        NodeKind::Binary { op, left, right } if op == "=>" => {
+            dbix_column_accessor_from_pair(left, right).into_iter().collect()
+        }
+        NodeKind::Binary { op, left, right } if op == "," => {
+            let mut names = collect_dbix_column_accessor_names(left);
+            names.extend(collect_dbix_column_accessor_names(right));
+            names
+        }
+        _ => collect_accessor_names(node),
+    }
+}
+
+fn dbix_column_accessor_from_pair(key: &Node, value: &Node) -> Option<String> {
+    let column_name = collect_single_symbol_name(key)?;
+    let column_name = normalize_attribute_name(&column_name)?;
+    let accessor = if let NodeKind::HashLiteral { pairs: option_pairs } = &value.kind {
+        extract_hash_options(option_pairs).get("accessor").cloned()
+    } else {
+        None
+    };
+    Some(accessor.unwrap_or(column_name))
+}
+
+fn dbix_column_pair_shape(key: &Node, value: &Node) -> bool {
+    matches!(key.kind, NodeKind::String { .. } | NodeKind::Identifier { .. })
+        && matches!(value.kind, NodeKind::HashLiteral { .. })
+}
+
+fn is_dbix_class_module(module: &str) -> bool {
+    matches!(module, "DBIx::Class" | "DBIx::Class::Core")
 }
 
 fn modifier_kind_from_name(name: &str) -> Option<ModifierKind> {
@@ -3226,5 +3282,51 @@ sub custom { }
         assert!(synthetic_names.contains("posts"));
         assert!(synthetic_names.contains("author"));
         assert!(!synthetic_names.contains("custom"));
+    }
+
+    #[test]
+    fn dbix_class_detected_from_base_inheritance() {
+        let models = build_models(
+            r#"
+package MyApp::Schema::Result::Album;
+use base 'DBIx::Class::Core';
+__PACKAGE__->table('album');
+__PACKAGE__->add_columns(qw/albumid title/);
+"#,
+        );
+        let model = must_some(find_model(&models, "MyApp::Schema::Result::Album"));
+        assert_eq!(model.framework, Framework::DbixClass);
+        let synthetic_names: HashSet<_> = model
+            .methods
+            .iter()
+            .filter(|method| method.synthetic)
+            .map(|method| method.name.as_str())
+            .collect();
+        assert!(synthetic_names.contains("albumid"));
+        assert!(synthetic_names.contains("title"));
+    }
+
+    #[test]
+    fn dbix_class_add_columns_honors_accessor_metadata() {
+        let models = build_models(
+            r#"
+package MyApp::Schema::Result::Album;
+use DBIx::Class::Core;
+__PACKAGE__->add_columns(
+    albumid => { data_type => 'integer', accessor => 'album' },
+    title => { data_type => 'varchar' },
+);
+"#,
+        );
+        let model = must_some(find_model(&models, "MyApp::Schema::Result::Album"));
+        let synthetic_names: HashSet<_> = model
+            .methods
+            .iter()
+            .filter(|method| method.synthetic)
+            .map(|method| method.name.as_str())
+            .collect();
+        assert!(synthetic_names.contains("album"), "accessor override must be synthesized");
+        assert!(!synthetic_names.contains("albumid"), "column key must not replace accessor name");
+        assert!(synthetic_names.contains("title"));
     }
 }
