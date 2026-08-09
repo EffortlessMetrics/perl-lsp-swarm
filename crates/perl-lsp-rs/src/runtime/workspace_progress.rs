@@ -49,9 +49,7 @@ mod tests {
     #[test]
     fn degraded_index_readiness_is_transportable_as_limited() -> Result<(), String> {
         let payload = index_readiness_payload(&IndexState::Degraded {
-            reason: DegradationReason::ResourceLimit {
-                kind: ResourceKind::MaxFiles,
-            },
+            reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
             available_symbols: 12,
             since: Instant::now(),
         });
