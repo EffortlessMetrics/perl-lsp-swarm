@@ -123,7 +123,7 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                 &format!("Open {}", import.token),
                                 "file",
                                 vec![
-                                    ("path", import.token.clone().into()),
+                                    ("path", import.token.into()),
                                     ("baseUri", uri.to_string()),
                                 ],
                             ));
