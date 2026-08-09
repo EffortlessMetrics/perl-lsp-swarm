@@ -31,6 +31,8 @@ pub enum Framework {
     RoleTiny,
     /// `use Class::Tiny;` or `use Class::Tiny::RW;`
     ClassTiny,
+    /// `use DBIx::Class` or `use DBIx::Class::Core`
+    DbixClass,
     /// No OO framework detected
     None,
 }
@@ -559,6 +561,12 @@ impl ClassModelBuilder {
                     idx += consumed;
                     continue;
                 }
+                if self.current_framework == Framework::DbixClass
+                    && let Some(consumed) = self.try_extract_dbix_class_methods(statements, idx)
+                {
+                    idx += consumed;
+                    continue;
+                }
                 // Try to extract `has` declarations
                 if let Some(consumed) = self.try_extract_has(statements, idx) {
                     idx += consumed;
@@ -595,6 +603,7 @@ impl ClassModelBuilder {
             "Role::Tiny" | "Role::Tiny::With" => Framework::RoleTiny,
             "Class::Tiny" | "Class::Tiny::RW" => Framework::ClassTiny,
             "Class::Accessor" => Framework::ClassAccessor,
+            "DBIx::Class" | "DBIx::Class::Core" => Framework::DbixClass,
             "Object::Pad" => Framework::ObjectPad,
             "base" | "parent" => {
                 // Capture parent class names, skipping -norequire flag and Class::Accessor sentinel.
@@ -1117,6 +1126,61 @@ impl ClassModelBuilder {
         Some(1)
     }
 
+    /// Extract DBIx::Class column accessors and relationship methods.
+    fn try_extract_dbix_class_methods(&mut self, statements: &[Node], idx: usize) -> Option<usize> {
+        let first = &statements[idx];
+
+        let NodeKind::ExpressionStatement { expression } = &first.kind else {
+            return None;
+        };
+
+        let NodeKind::MethodCall { object, method, args } = &expression.kind else {
+            return None;
+        };
+
+        if !self.class_accessor_target_matches_current_package(object) {
+            return None;
+        }
+
+        match method.as_str() {
+            "add_columns" => {
+                let mut column_names = Vec::new();
+                let mut seen = HashSet::new();
+                for arg in args {
+                    for name in collect_accessor_names(arg) {
+                        if seen.insert(name.clone()) {
+                            column_names.push(name);
+                        }
+                    }
+                }
+                if column_names.is_empty() {
+                    return None;
+                }
+                for name in column_names {
+                    self.current_methods.push(MethodInfo::synthetic(
+                        name,
+                        first.location,
+                        Some(ClassAccessorMode::Rw),
+                    ));
+                }
+                Some(1)
+            }
+            "has_many" | "belongs_to" | "has_one" | "might_have" => {
+                let relationship_name = args
+                    .first()
+                    .and_then(collect_single_symbol_name)
+                    .filter(|name| is_dbix_relationship_name(name))?;
+                self.current_methods.push(MethodInfo::synthetic(
+                    relationship_name,
+                    first.location,
+                    None,
+                ));
+                Some(1)
+            }
+            _ => None,
+        }
+    }
+
     /// Extract Object::Pad field declarations and `ADJUST` blocks.
     fn try_extract_object_pad_constructs(
         &mut self,
@@ -1571,6 +1635,15 @@ fn normalize_attribute_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     let without_override_prefix = trimmed.strip_prefix('+').unwrap_or(trimmed);
     normalize_symbol_name(without_override_prefix)
+}
+
+fn is_dbix_relationship_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn expand_symbol_list(raw: &str) -> Vec<String> {
@@ -3111,5 +3184,47 @@ use Class::Tiny qw(x y);
         );
         let model = must_some(find_model(&models, "MyApp::Tiny"));
         assert!(model.has_framework(), "Class::Tiny is a framework");
+    }
+
+    #[test]
+    fn dbix_class_detected_from_core_import() {
+        let models = build_models(
+            r#"
+package MyApp::Schema::Result::Author;
+use DBIx::Class::Core;
+__PACKAGE__->table('author');
+"#,
+        );
+        let model = must_some(find_model(&models, "MyApp::Schema::Result::Author"));
+        assert_eq!(model.framework, Framework::DbixClass);
+    }
+
+    #[test]
+    fn dbix_class_add_columns_and_relationships_generate_synthetic_methods() {
+        let models = build_models(
+            r#"
+package MyApp::Schema::Result::Book;
+use DBIx::Class;
+__PACKAGE__->add_columns(qw/id title author_id/);
+__PACKAGE__->has_many('posts', 'MyApp::Schema::Result::Post', 'book_id');
+__PACKAGE__->belongs_to('author', 'MyApp::Schema::Result::Author', 'author_id');
+sub custom { }
+"#,
+        );
+        let model = must_some(find_model(&models, "MyApp::Schema::Result::Book"));
+        assert_eq!(model.framework, Framework::DbixClass);
+
+        let synthetic_names: HashSet<_> = model
+            .methods
+            .iter()
+            .filter(|method| method.synthetic)
+            .map(|method| method.name.as_str())
+            .collect();
+        assert!(synthetic_names.contains("id"));
+        assert!(synthetic_names.contains("title"));
+        assert!(synthetic_names.contains("author_id"));
+        assert!(synthetic_names.contains("posts"));
+        assert!(synthetic_names.contains("author"));
+        assert!(!synthetic_names.contains("custom"));
     }
 }
