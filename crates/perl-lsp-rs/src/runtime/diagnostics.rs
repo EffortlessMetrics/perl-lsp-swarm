@@ -22,6 +22,32 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 
+/// Build a typed LSP Diagnostic JSON value (#4995).
+///
+/// Replaces repeated inline `json!({...})` constructions with a single
+/// typed constructor so the Diagnostic shape is defined in one place.
+fn diagnostic_json(
+    start_line: u32,
+    start_char: u32,
+    end_line: u32,
+    end_char: u32,
+    severity: u32,
+    code: &str,
+    source: &str,
+    message: String,
+) -> Value {
+    json!({
+        "range": {
+            "start": {"line": start_line, "character": start_char},
+            "end": {"line": end_line, "character": end_char},
+        },
+        "severity": severity,
+        "code": code,
+        "source": source,
+        "message": message,
+    })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_configured_profile_path(
     configured_profile: &str,
@@ -748,16 +774,13 @@ impl LspServer {
                     // Convert byte offset to line/column
                     let (line, character) = pos16(location);
 
-                    json!({
-                        "range": {
-                            "start": {"line": line, "character": character},
-                            "end": {"line": line, "character": character + 1},
-                        },
-                        "severity": if e.blocks_clean_parse() { 1 } else { 2 },
-                        "code": DiagnosticCode::ParseError.as_str(),
-                        "source": "perl-lsp",
-                        "message": message,
-                    })
+                    diagnostic_json(
+                        line, character, line, character + 1,
+                        if e.blocks_clean_parse() { 1 } else { 2 },
+                        DiagnosticCode::ParseError.as_str(),
+                        "perl-lsp",
+                        message,
+                    )
                 })
                 .collect()
         };
@@ -1014,16 +1037,13 @@ impl LspServer {
                             None => base_message,
                         };
                     let (line, character) = pos16(location);
-                    json!({
-                        "range": {
-                            "start": {"line": line, "character": character},
-                            "end": {"line": line, "character": character + 1},
-                        },
-                        "severity": if e.blocks_clean_parse() { 1 } else { 2 },
-                        "code": DiagnosticCode::ParseError.as_str(),
-                        "source": "perl-lsp",
-                        "message": message,
-                    })
+                    diagnostic_json(
+                        line, character, line, character + 1,
+                        if e.blocks_clean_parse() { 1 } else { 2 },
+                        DiagnosticCode::ParseError.as_str(),
+                        "perl-lsp",
+                        message,
+                    )
                 })
                 .collect();
 
