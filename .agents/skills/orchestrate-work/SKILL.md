@@ -100,17 +100,36 @@ evidence rather than only delaying it: once builds contend, local timings, flake
 and command timeouts stop being trustworthy, and the root begins dispatching diagnostic
 agents into ambiguity it produced itself.
 
-Check before dispatching a writer:
+Consume the current local admission result before dispatching a writer. Do not dispatch
+when writer capacity is exhausted, heavy-build capacity is exhausted, the workspace-wide
+Cargo token is held, or disk/process/worktree state is `NOT_PROVEN`.
+
+Capacity limits are a host profile, not a repository invariant. A workstation, a laptop,
+a remote builder, and a read-only review context have different envelopes. Until #3957
+provides an admission command, apply the profile recorded in local configuration; the
+initial single-workstation profile is three lane roots, one build-heavy writer, and one
+workspace-wide build.
+
+Count what the host carries, not what was dispatched. These quantities come apart:
 
 ```text
-concurrent lane roots           <= 3
-concurrent build-heavy writers  <= 1
-concurrent workspace-wide build <= 1
+logical WIP    active campaign and lane contexts
+mutation WIP   active writers and candidate worktrees
+compute WIP    live build/test process groups and workspace-wide Cargo tokens
+storage WIP    disk floor, target/cache footprint, safe reclaim state
 ```
 
-- no replacement or adjacent lane until an existing lane returns its typed result;
+A lane that has returned while its process group still drains is `STOPPING`. Its build
+token is not released until the process tree exits and its locks are gone. A claim
+waiting on GitHub may hold no local resource at all.
+
+- never launch a replacement for the same claim from silence. An independent claim may
+  proceed when the campaign phase permits it, no equivalent candidate owns it, admission
+  returns `ADMIT`, and the waiting lane has released the resources the new lane needs;
 - read-only inspection of GitHub or source requires no worktree; allocate one only for a
-  named mutation claim, through `$worktree-manager`;
+  named mutation claim. Ordinary `git worktree` and an optional `$worktree-manager` slot
+  are both valid routes consuming the same admission result; the helper is a cleanup
+  lease, not the capacity authority;
 - when admission fails, wait; declining to dispatch is a valid orchestration action;
 - a local timing or flake-rate measurement taken under saturation is `NOT_PROVEN` and
   must be reported as such rather than as a number.
@@ -125,13 +144,22 @@ head, worktree status, live checks:
 
 ```text
 typed result returned        → join it
-artifact shows the work done → reconcile, release the lane
+artifact shows the work done → synthesize the typed result from the artifact, record it
+                               as synthesized, then release the lane
 stated wait still current    → leave it; an unchanged remote wait is IN_FLIGHT
-no artifact and no return    → the claim is unowned; re-dispatch deliberately
+no artifact and no return    → FAILED_NO_RETURN; claim state is NOT_PROVEN
 ```
 
-Silence is not spare capacity, not completion, and not an unowned claim. A lane holding
-a current wait condition is not stalled, and re-tasking it discards work in flight.
+`FAILED_NO_RETURN` is not a finding of abandonment. Silence establishes nothing about
+whether the worker is dead, the process group has stopped, the worktree is clean, a
+remote head moved, or uncommitted work exists. Read the task handle, process group,
+branch, worktree, remote head, and durable subject, then choose salvage, wait, stop, or
+explicit reassignment. Reassignment follows those checks and is never the default
+consequence of silence; treating quiet as an unowned claim is what puts two writers on
+one candidate.
+
+Silence is also not spare capacity and not completion. A lane holding a current wait
+condition is not stalled, and re-tasking it discards work in flight.
 
 ## Runtime-local frontier
 
@@ -168,16 +196,25 @@ Every brief names:
 Do not ask children to rediscover settled facts or return raw transcripts/private
 reasoning.
 
-A brief carries the claim and its acceptance criteria, not the current state of the
-world. Head SHAs, check results, mergeability, and counts go stale faster than a child
-can act on them, and an instruction resting on stale state is unexecutable rather than
-merely inaccurate. Where volatile state must appear, name the revision it was observed
-at and require re-derivation before action:
+Separate the brief's stable part from its observed part. Claim, acceptance, non-goals,
+and authorities are stable. Head SHAs, check results, mergeability, and counts go stale
+faster than a child can act on them, and an instruction resting on stale state is
+unexecutable rather than merely inaccurate.
+
+Do not delete the volatile state — the child needs it to see which premise moved. Carry
+it as an observation basis with an entry condition:
 
 ```text
-As of <sha>, both required checks were green — re-resolve before merging.
-If that no longer holds, report rather than proceeding.
+Observed as of <sha>: <pr state, head, the then-discovered required-policy set and its
+results>.
+Re-derive live protection, rulesets, contexts, and results before mutating.
+If materially different, return PREMISE_CHANGED, CANDIDATE_MOVED, or SUPERSEDED instead
+of proceeding.
 ```
+
+Discover a required-policy set rather than naming a remembered one. Classic branch
+protection and rulesets are independent and additive, so a brief asserting a fixed count
+of required checks states exactly the kind of premise this section exists to prevent.
 
 Express any instruction naming a specific PR, branch, or SHA conditionally, so a child
 that finds the world changed has a defined action instead of a contradiction.
@@ -201,9 +238,22 @@ resolves them.
 Every dispatched agent owes a typed return. Track what was dispatched: a lens that dies
 — exhausted budget, killed process, tooling failure — leaves its dimension `NOT_PROVEN`,
 not examined-and-clean. An unnoticed absent return is indistinguishable from a clean
-one, which is the failure the review method exists to prevent. Record the dispatch so
-the absence is visible, and carry it into the cumulative judgment rather than dropping
-it.
+one, which is the failure the review method exists to prevent.
+
+Remembering a dead lens does not by itself make merge refusal reliable. Carry the
+dispatch list into the review join as an explicit dimension ledger, so the cumulative
+result rests on enumerated dimensions rather than on whichever reviews returned:
+
+```text
+claim-vs-code     REVIEWED
+proof             REVIEWED
+shutdown safety   NOT_PROVEN   (lens dispatched, no return)
+external oracle   NOT_APPLICABLE
+```
+
+Wiring that ledger into the convergence predicate governing merge is tracked separately
+under #3693. This skill requires only that the dispatch be recorded and the absence be
+visible to the join.
 
 ## Useful GitHub publication filter
 
