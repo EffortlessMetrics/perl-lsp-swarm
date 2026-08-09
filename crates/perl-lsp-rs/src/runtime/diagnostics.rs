@@ -717,21 +717,20 @@ impl LspServer {
                     let (start_line, start_char) = pos16(d.range.0);
                     let (end_line, end_char) = pos16(d.range.1);
 
-                    let mut diag = json!({
-                        "range": {
-                            "start": {"line": start_line, "character": start_char},
-                            "end": {"line": end_line, "character": end_char},
-                        },
-                        "severity": match d.severity {
-                            InternalDiagnosticSeverity::Error => 1,
-                            InternalDiagnosticSeverity::Warning => 2,
-                            InternalDiagnosticSeverity::Information => 3,
-                            InternalDiagnosticSeverity::Hint => 4,
-                        },
-                        "code": d.code.clone(),
-                        "source": push_diagnostic_source(d.code.as_deref()),
-                        "message": d.message,
-                    });
+                    let severity = match d.severity {
+                        InternalDiagnosticSeverity::Error => 1,
+                        InternalDiagnosticSeverity::Warning => 2,
+                        InternalDiagnosticSeverity::Information => 3,
+                        InternalDiagnosticSeverity::Hint => 4,
+                    };
+                    let code_str = d.code.as_deref().unwrap_or("");
+                    let mut diag = diagnostic_json(
+                        start_line, start_char, end_line, end_char,
+                        severity,
+                        code_str,
+                        &push_diagnostic_source(d.code.as_deref()),
+                        d.message.clone(),
+                    );
                     if !d.tags.is_empty() {
                         diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                     }
