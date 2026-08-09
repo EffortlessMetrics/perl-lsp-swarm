@@ -2870,7 +2870,7 @@ impl WorkspaceIndex {
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
                 for sym_ref in refs {
-                    if !Self::bare_reference_matches_package(sym_ref, package) {
+                    if !self.bare_reference_matches_package(sym_ref, package) {
                         continue;
                     }
                     let key = (
@@ -2992,7 +2992,7 @@ impl WorkspaceIndex {
                 for r in refs
                     .iter()
                     .filter(|r| r.kind != ReferenceKind::Definition)
-                    .filter(|r| Self::bare_reference_matches_package(r, package))
+                    .filter(|r| self.bare_reference_matches_package(r, package))
                 {
                     seen.insert((
                         r.uri.as_str(),
@@ -3027,12 +3027,38 @@ impl WorkspaceIndex {
         candidate.rsplit_once("::").is_some_and(|(_, candidate_bare)| candidate_bare == bare_symbol)
     }
 
-    fn bare_reference_matches_package(sym_ref: &SymbolReference, package: &str) -> bool {
+    fn bare_reference_matches_package(&self, sym_ref: &SymbolReference, package: &str) -> bool {
         // Bare function references carry their defining package and must stay
         // filtered (#6110). Method dispatch is different: an instance receiver
         // can resolve through inheritance, so the rename layer must retain the
-        // method reference and apply its receiver/inheritance checks.
-        sym_ref.package.as_deref() == Some(package) || sym_ref.kind == ReferenceKind::MethodCall
+        // method reference and apply its receiver/inheritance checks. Retain
+        // only conventional object receivers here; an arbitrary `$other` in
+        // the defining package is not evidence that it dispatches to this
+        // package's method.
+        sym_ref.package.as_deref() == Some(package)
+            || (sym_ref.kind == ReferenceKind::MethodCall
+                && self.method_reference_has_self_receiver(sym_ref))
+    }
+
+    fn method_reference_has_self_receiver(&self, sym_ref: &SymbolReference) -> bool {
+        let Some(doc) = self.document_store().get(&sym_ref.uri) else {
+            return false;
+        };
+        let Some(start) =
+            doc.line_index.position_to_offset(sym_ref.range.start.line, sym_ref.range.start.column)
+        else {
+            return false;
+        };
+        let Some(end) =
+            doc.line_index.position_to_offset(sym_ref.range.end.line, sym_ref.range.end.column)
+        else {
+            return false;
+        };
+        let Some(expression) = doc.text().get(start..end) else {
+            return false;
+        };
+
+        matches!(expression.split_once("->"), Some((receiver, _)) if matches!(receiver.trim(), "$self" | "$this"))
     }
 
     /// Find all definitions of a symbol, including duplicates across files.
@@ -7540,6 +7566,7 @@ sub other { foo(); return 1; }
         let index = WorkspaceIndex::new();
         let base_uri = "file:///Base.pm";
         let child_uri = "file:///Child.pm";
+        let unrelated_uri = "file:///UnrelatedReceiver.pm";
         let base = r#"
 package Base;
 sub shared { return 1; }
@@ -7552,9 +7579,19 @@ sub run {
     return $self->shared;
 }
 "#;
+        let unrelated_receiver = r#"
+package Base;
+sub call_on_other {
+    my ($other) = @_;
+    return $other->shared;
+}
+"#;
 
         must(index.index_file(must(url::Url::parse(base_uri)), base.to_string()));
         must(index.index_file(must(url::Url::parse(child_uri)), child.to_string()));
+        must(
+            index.index_file(must(url::Url::parse(unrelated_uri)), unrelated_receiver.to_string()),
+        );
 
         let key = SymbolKey {
             pkg: Arc::from("Base"),
@@ -7567,6 +7604,10 @@ sub run {
         assert!(
             refs.iter().any(|location| location.uri == child_uri),
             "qualified method lookup must retain inherited arrow dispatch; got {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|location| location.uri == unrelated_uri),
+            "qualified method lookup must not retain an arbitrary receiver; got {refs:?}"
         );
     }
 

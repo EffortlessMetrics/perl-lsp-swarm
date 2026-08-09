@@ -834,6 +834,38 @@ $var;
         Ok(())
     }
 
+    /// A same-package call through an arbitrary receiver must not be attributed
+    /// to the package's method definition.  The workspace index retains the
+    /// conventional `$self`/`$this` dispatch forms needed for inheritance, but
+    /// fails closed for receivers whose class cannot be established.
+    #[test]
+    fn rename_arrow_method_call_with_unrelated_receiver_is_not_rewritten()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let base_text = "package Base;\nsub shared { return 'shared'; }\n1;\n";
+        let caller_text =
+            "package Base;\nsub run {\n    my ($other) = @_;\n    return $other->shared;\n}\n1;\n";
+
+        index_text(&idx, "file:///Base.pm", base_text)?;
+        index_text(&idx, "file:///OtherReceiver.pm", caller_text)?;
+
+        let key = SymbolKey {
+            pkg: Arc::from("Base"),
+            name: Arc::from("shared"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "shared_renamed")?;
+        assert!(
+            edits.iter().all(|edit| !edit.uri.contains("OtherReceiver.pm")),
+            "rename must not rewrite an arbitrary receiver; got {edits:?}"
+        );
+
+        Ok(())
+    }
+
     /// Dynamic arrow receiver chains (`$self->app->dispatcher->method`) must fail
     /// closed unless the caller package explicitly inherits from the target package.
     #[test]
