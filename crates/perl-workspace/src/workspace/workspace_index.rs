@@ -1110,6 +1110,12 @@ pub enum ReferenceKind {
     Definition,
     /// General usage of the symbol (function call, method call)
     Usage,
+    /// Dynamic or static method dispatch stored under its bare method name.
+    ///
+    /// Method dispatch is kept distinct from a bare function usage because a
+    /// qualified lookup may need to retain it for the rename layer's
+    /// inheritance-aware resolution.
+    MethodCall,
     /// Import via use statement
     Import,
     /// Variable read access
@@ -2864,7 +2870,7 @@ impl WorkspaceIndex {
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
                 for sym_ref in refs {
-                    if !Self::bare_reference_matches_package(sym_ref, package) {
+                    if !self.bare_reference_matches_package(sym_ref, package) {
                         continue;
                     }
                     let key = (
@@ -2986,7 +2992,7 @@ impl WorkspaceIndex {
                 for r in refs
                     .iter()
                     .filter(|r| r.kind != ReferenceKind::Definition)
-                    .filter(|r| Self::bare_reference_matches_package(r, package))
+                    .filter(|r| self.bare_reference_matches_package(r, package))
                 {
                     seen.insert((
                         r.uri.as_str(),
@@ -3021,8 +3027,38 @@ impl WorkspaceIndex {
         candidate.rsplit_once("::").is_some_and(|(_, candidate_bare)| candidate_bare == bare_symbol)
     }
 
-    fn bare_reference_matches_package(sym_ref: &SymbolReference, package: &str) -> bool {
+    fn bare_reference_matches_package(&self, sym_ref: &SymbolReference, package: &str) -> bool {
+        // Bare function references carry their defining package and must stay
+        // filtered (#6110). Method dispatch is different: an instance receiver
+        // can resolve through inheritance, so the rename layer must retain the
+        // method reference and apply its receiver/inheritance checks. Retain
+        // only conventional object receivers here; an arbitrary `$other` in
+        // the defining package is not evidence that it dispatches to this
+        // package's method.
         sym_ref.package.as_deref() == Some(package)
+            || (sym_ref.kind == ReferenceKind::MethodCall
+                && self.method_reference_has_self_receiver(sym_ref))
+    }
+
+    fn method_reference_has_self_receiver(&self, sym_ref: &SymbolReference) -> bool {
+        let Some(doc) = self.document_store().get(&sym_ref.uri) else {
+            return false;
+        };
+        let Some(start) =
+            doc.line_index.position_to_offset(sym_ref.range.start.line, sym_ref.range.start.column)
+        else {
+            return false;
+        };
+        let Some(end) =
+            doc.line_index.position_to_offset(sym_ref.range.end.line, sym_ref.range.end.column)
+        else {
+            return false;
+        };
+        let Some(expression) = doc.text().get(start..end) else {
+            return false;
+        };
+
+        matches!(expression.split_once("->"), Some((receiver, _)) if matches!(receiver.trim(), "$self" | "$this"))
     }
 
     /// Find all definitions of a symbol, including duplicates across files.
@@ -4653,6 +4689,32 @@ impl WorkspaceIndex {
 
         all_refs
     }
+
+    /// Find bare function usages outside the target package that must make a
+    /// rename fail closed, without including them in normal qualified
+    /// reference results (#6110).
+    pub fn find_cross_package_bare_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        if key.sigil.is_some() {
+            return Vec::new();
+        }
+
+        let global_refs = self.global_references.read();
+        let mut locations = global_refs
+            .get(key.name.as_ref())
+            .into_iter()
+            .flat_map(|refs| refs.iter())
+            .filter(|reference| {
+                reference.kind == ReferenceKind::Usage
+                    && reference.package.as_deref() != Some(key.pkg.as_ref())
+            })
+            .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
+            .collect::<Vec<_>>();
+        drop(global_refs);
+
+        Self::sort_locations_deterministically(&mut locations);
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        locations
+    }
 }
 
 /// **`build_unified` is the production extraction path (perl-lsp-swarm#1711-B
@@ -4675,7 +4737,7 @@ impl WorkspaceIndex {
 /// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
 /// |---|---|---|
 /// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by `IndexVisitor::project_symbol_declarations`, which calls `extract_symbol_decls(ast, Some("main"))` | [`EntityFact`] + [`AnchorFact`] via `extract_symbol_decls(ast, None)` -> `symbol_decls_to_semantic_facts` |
-/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
+/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,MethodCall,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
 /// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
@@ -5324,7 +5386,7 @@ impl IndexVisitor {
                 file_index.references.entry(method.clone()).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
-                    kind: ReferenceKind::Usage,
+                    kind: ReferenceKind::MethodCall,
                     package: None,
                 });
 
@@ -5962,7 +6024,7 @@ impl IndexVisitor {
                 file_index.references.entry(method.clone()).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
-                    kind: ReferenceKind::Usage,
+                    kind: ReferenceKind::MethodCall,
                     package: None,
                 });
 
@@ -7523,6 +7585,56 @@ sub other { foo(); return 1; }
             "bare foo() in PkgB must not appear in PkgA::foo references"
         );
         assert!(refs.len() >= 1, "PkgA::foo references must include same-package sites");
+    }
+
+    #[test]
+    fn test_find_refs_qualified_retains_inherited_method_dispatch() {
+        let index = WorkspaceIndex::new();
+        let base_uri = "file:///Base.pm";
+        let child_uri = "file:///Child.pm";
+        let unrelated_uri = "file:///UnrelatedReceiver.pm";
+        let base = r#"
+package Base;
+sub shared { return 1; }
+"#;
+        let child = r#"
+package Child;
+use parent 'Base';
+sub run {
+    my ($self) = @_;
+    return $self->shared;
+}
+"#;
+        let unrelated_receiver = r#"
+package Base;
+sub call_on_other {
+    my ($other) = @_;
+    return $other->shared;
+}
+"#;
+
+        must(index.index_file(must(url::Url::parse(base_uri)), base.to_string()));
+        must(index.index_file(must(url::Url::parse(child_uri)), child.to_string()));
+        must(
+            index.index_file(must(url::Url::parse(unrelated_uri)), unrelated_receiver.to_string()),
+        );
+
+        let key = SymbolKey {
+            pkg: Arc::from("Base"),
+            name: Arc::from("shared"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+        let refs = index.find_refs(&key);
+
+        assert!(
+            refs.iter().any(|location| location.uri == child_uri),
+            "qualified method lookup must retain inherited arrow dispatch; got {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|location| location.uri == unrelated_uri),
+            "qualified method lookup must not retain an arbitrary receiver; got {refs:?}"
+        );
     }
 
     #[test]
