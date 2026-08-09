@@ -82,6 +82,10 @@ while [ "$#" -gt 0 ]; do
         --silent|--show-error)
             shift
             ;;
+        -L|--location)
+            echo "fake curl: redirect-following flags are not supported in bootstrap tests" >&2
+            exit 1
+            ;;
         *)
             url="$1"
             shift
@@ -212,6 +216,21 @@ if [ "$LAST_STATUS" -ne 0 ] \
     pass "redirect is rejected as a different installer source"
 else
     fail_case "redirect is rejected as a different installer source" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+set +e
+LAST_OUTPUT="$(
+    FAKE_CURL_LOG="$CURL_LOG" \
+    FAKE_INSTALLER_PAYLOAD="$PAYLOAD" \
+    "$FAKE_BIN/curl" --location https://example.com --output "$TMP/fake-out" 2>&1
+)"
+LAST_STATUS=$?
+set -e
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"redirect-following flags are not supported"* ]]; then
+    pass "fake curl rejects --location before any installer bytes are copied"
+else
+    fail_case "fake curl rejects --location before any installer bytes are copied" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
 NO_SHA_BIN="$TMP/no-sha-bin"
