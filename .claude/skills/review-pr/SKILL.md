@@ -84,11 +84,11 @@ surface, give them different sources, oracles, methods, or threat models. Two re
 once examined the same flag on the same line and reached opposite verdicts: one cleared
 `git ls-files --exclude-standard` while reasoning about build artifacts, the other found
 that a gitignored file matched by a crate's packaging-include pattern still gets
-packaged. Same
-evidence, different threat model, different answer — and the second was right. Agents
-briefed the same way share a blind spot, so their agreement is not corroboration. An
-external oracle, a production-path trace, and a proof-discrimination pass over one seam
-are three directions; three subagents asked "is this correct?" are one.
+packaged. Same evidence, different threat model, different answer — and the second was
+right. Agents briefed the same way share a blind spot, so their agreement is not
+corroboration. An external oracle, a production-path trace, and a proof-discrimination
+pass over one seam are three directions; three subagents asked "is this correct?" are
+one.
 
 Use ordinary subagents/context forks for independent returns; use an Agent Team only
 when lateral communication changes the result. Do not ask vague agents to repeat the
@@ -188,8 +188,12 @@ certification cannot create `REVIEW_CURRENT`.
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
 
 ## Propositions checked
-- Each proposition the claim decomposes into, with its outcome:
-  confirmed | refuted | NOT_PROVEN, and the source or authority that settled it
+<!-- Include when the claim decomposes into more than one substantive proposition;
+     omit for mechanical changes such as a typo, a rename, or a lockfile bump. -->
+- One entry per proposition, naming the hypothesis attacked, its outcome —
+  confirmed | refuted | NOT_PROVEN — and the source or command that settled it. A lens
+  name plus a bare verdict is not an entry: it says no more than an angle nobody
+  attempted.
 - Refuted propositions belong here, not omitted — they record what was attacked and
   survived. Two reviewers who both report only findings look like agreement; two who
   report their propositions reveal whether they checked the same one

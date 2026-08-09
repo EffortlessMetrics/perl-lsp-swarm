@@ -87,11 +87,11 @@ give them different sources, oracles, methods, or threat models. Two reviewers o
 examined the same flag on the same line and reached opposite verdicts: one cleared
 `git ls-files --exclude-standard` while reasoning about build artifacts, the other found
 that a gitignored file matched by a crate's packaging-include pattern still gets
-packaged. Same
-evidence, different threat model, different answer — and the second was right. Workers
-briefed the same way share a blind spot, so their agreement is not corroboration. An
-external oracle, a production-path trace, and a proof-discrimination pass over one seam
-are three directions; three workers asked "is this correct?" are one.
+packaged. Same evidence, different threat model, different answer — and the second was
+right. Workers briefed the same way share a blind spot, so their agreement is not
+corroboration. An external oracle, a production-path trace, and a proof-discrimination
+pass over one seam are three directions; three workers asked "is this correct?" are
+one.
 
 Do not ask vague workers to repeat the same review.
 
@@ -189,8 +189,12 @@ certification cannot create `REVIEW_CURRENT`.
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
 
 ## Propositions checked
-- Each proposition the claim decomposes into, with its outcome:
-  confirmed | refuted | NOT_PROVEN, and the source or authority that settled it
+<!-- Present when the claim decomposes into more than one substantive proposition;
+     omitted for mechanical changes such as a typo, a rename, or a lockfile bump. -->
+- One entry per proposition, each naming the hypothesis attacked, its outcome —
+  confirmed | refuted | NOT_PROVEN — and the source or command that settled it. A lens
+  name with a bare verdict is not an entry: it carries no more information than an
+  angle that was never attempted.
 - Refuted propositions belong here rather than being dropped — they record what was
   attacked and survived. Two reviewers reporting only findings look like agreement;
   two reporting their propositions reveal whether they checked the same one

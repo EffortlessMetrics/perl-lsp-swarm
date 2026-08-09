@@ -203,9 +203,9 @@ Do not use a subagent verdict as approval. Different identity without a differen
 source, oracle, method, threat model, or attention surface is not meaningful
 independence.
 
-Brief each lens to falsify a named claim rather than assess it, and give lenses sharing
-a surface genuinely different directions. Each returns the angles it attempted with
-outcomes, refuted ones included, so the join can distinguish coverage from agreement.
+Brief each lens to falsify a named claim rather than assess it. Each returns the angles
+it attempted with outcomes, refuted ones included, so the join can distinguish coverage
+from agreement.
 
 ## Procedure
 
