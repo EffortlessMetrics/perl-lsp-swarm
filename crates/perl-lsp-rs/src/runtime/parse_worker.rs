@@ -1287,9 +1287,22 @@ mod tests {
     /// captured output once the test completes.
     ///
     /// Deliberately does NOT call `release()`: that omission IS the scenario.
-    /// A watchdog thread aborts the process rather than letting a regression
-    /// hang the suite again -- a reintroduced deadlock must fail loudly here,
-    /// not reproduce the very symptom this test exists to prevent.
+    ///
+    /// The drop runs on a helper thread and the test thread waits on a
+    /// bounded channel, so a reintroduced deadlock wedges only the helper and
+    /// surfaces as an ordinary assertion failure on a live test thread. The
+    /// obvious alternative -- drop on the test thread with a watchdog that
+    /// `abort()`s -- is wrong twice over: the test thread must still run one
+    /// more instruction after `drop` returns to signal success, so a
+    /// deschedule in that window aborts the whole libtest process on a
+    /// *passing* run, destroying every other test's result; and abort
+    /// produces no libtest output, which is the same "reports nothing"
+    /// failure shape this test exists to eliminate.
+    ///
+    /// The ceiling matches `wait_until_paused`'s: this file already
+    /// establishes one minute as the margin that survives CPU starvation from
+    /// concurrent builds on a loaded machine. The happy path returns in
+    /// milliseconds, so a generous ceiling costs a passing run nothing.
     #[test]
     fn dropping_a_worker_parked_at_an_armed_barrier_does_not_deadlock() {
         let uri = "file:///drop_while_parked.pl";
@@ -1309,32 +1322,29 @@ mod tests {
         );
         barrier.wait_until_paused();
 
-        let finished = Arc::new(AtomicBool::new(false));
-        let watchdog_flag = Arc::clone(&finished);
-        let watchdog = thread::spawn(move || {
-            let deadline = std::time::Instant::now() + TEST_TIMEOUT;
-            while !watchdog_flag.load(Ordering::SeqCst) {
-                if std::time::Instant::now() >= deadline {
-                    // Cannot `panic!` usefully from here -- the main thread is
-                    // wedged inside `Drop`, so unwinding this thread alone
-                    // would leave the suite hanging exactly as before.
-                    eprintln!(
-                        "#6209 REGRESSION: dropping a ParseWorker parked at an armed test \
-                         barrier deadlocked in Drop::join -- shutdown must force_release() \
-                         the barriers before joining"
-                    );
-                    std::process::abort();
-                }
-                thread::yield_now();
-            }
+        // Deadlock ceiling for the drop below. Deliberately the same one
+        // minute `wait_until_paused` uses, and for the same reason.
+        const DROP_CEILING: Duration = Duration::from_mins(1);
+
+        // The load-bearing call: with the barrier still armed and never
+        // released, `drop` must return rather than block in `handle.join()`.
+        // It runs here, off the test thread, so that a regression parks this
+        // helper forever while the test thread stays live to report it.
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let dropper = thread::spawn(move || {
+            drop(worker);
+            // Send failure means the test thread already gave up and failed;
+            // nothing useful left to do on this thread.
+            let _ = done_tx.send(());
         });
 
-        // The load-bearing line: with the barrier still armed and never
-        // released, this must return rather than block in `handle.join()`.
-        drop(worker);
-
-        finished.store(true, Ordering::SeqCst);
-        assert!(watchdog.join().is_ok(), "watchdog thread panicked");
+        assert!(
+            done_rx.recv_timeout(DROP_CEILING).is_ok(),
+            "#6209 REGRESSION: dropping a ParseWorker parked at an armed test barrier did \
+             not return within {DROP_CEILING:?} -- it is deadlocked in Drop's handle.join(), \
+             because shutdown failed to force_release() the barriers before joining"
+        );
+        assert!(dropper.join().is_ok(), "drop thread panicked");
     }
 
     // ---- Invariant 1: didChange returns before parse completes ----------
