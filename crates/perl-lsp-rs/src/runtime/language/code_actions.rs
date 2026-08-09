@@ -9,6 +9,11 @@ use super::super::{
     InternalCodeActionKindV2, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
     TestGenerator, Value, json,
 };
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
 use super::misc::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
@@ -953,7 +958,7 @@ impl LspServer {
 
             self.enforce_code_action_tag_capabilities(&mut code_actions);
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
-            Ok(Some(json!(code_actions)))
+            Ok(Some(to_json_array(&code_actions)))
         } else {
             // No AST (parse error), but we can still offer some actions
             let mut code_actions: Vec<Value> = Vec::new();
@@ -1038,7 +1043,7 @@ impl LspServer {
 
             self.enforce_code_action_tag_capabilities(&mut code_actions);
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
-            Ok(Some(json!(code_actions)))
+            Ok(Some(to_json_array(&code_actions)))
         }
     }
 
@@ -1093,7 +1098,7 @@ impl LspServer {
                     for action in &mut actions {
                         self.fill_pragma_action_edit(action, doc);
                     }
-                    return Ok(Some(json!(actions)));
+                    return Ok(Some(to_json_array(&actions)));
                 }
             }
         }
