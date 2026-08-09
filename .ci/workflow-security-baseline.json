@@ -182,70 +182,6 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "$assetCount = gh release view \"${{ steps.tag.outputs.tag }}\" --json assets -q '.assets | length'",
-      "fingerprint": "efe9858f78efb773496acf77702bd18029f6ab199412a9bb04324980f148a190",
-      "line": 54,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$tag = \"${{ steps.tag.outputs.tag }}\"",
-      "fingerprint": "9a422f364d73b9cf809a7685716b27b1524cf4fc2beaa8a8b934f0660a665e33",
-      "line": 67,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$version = \"${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "9afa73a6ed0baa6a58df40d3785ad9878feba51c8e6aa33bc8d4491a1d5dc718",
-      "line": 68,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$version = \"${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "c5376252236d810c2ee82453888f4a636642e69a574a3c04447641d34e464ea4",
-      "line": 83,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "-Version \"${{ steps.tag.outputs.version }}\" `",
-      "fingerprint": "1f866f3f702d76a6ec73dc017719654c45afa69676409458a99e204e74ca7bbc",
-      "line": 95,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "-ReleaseSha256 \"${{ steps.checksum.outputs.sha256 }}\" `",
-      "fingerprint": "cc914ba442fa72522582688e5f3e1144a8b8d8793c3806ac1d7f72cf93c0472b",
-      "line": 96,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "Add-Content $env:GITHUB_STEP_SUMMARY \"- **Version**: ${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "4a274627af98b7d6e5e7518bf800a21062964177d0de214b984ac15bf3458642",
-      "line": 129,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "Add-Content $env:GITHUB_STEP_SUMMARY \"- **SHA256**: ${{ steps.checksum.outputs.sha256 }}\"",
-      "fingerprint": "0146eed8cafbec04259964c9e7126284949bb1e42c7d6285c929a2c37a322279",
-      "line": 130,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/chocolatey-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "aee7fad4ccdea8f94f49c0401a88561494480138895885be2237173b1e654c85",
       "line": 89,
@@ -1590,73 +1526,9 @@
       "rule": "pr_secret_reference"
     },
     {
-      "evidence": "$assetCount = gh release view \"${{ steps.tag.outputs.tag }}\" --json assets -q '.assets | length'",
-      "fingerprint": "20ccee2534dcbcb27352a5725a70875d1f98435b49d8713265fcfc4bf6a5da7f",
-      "line": 54,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$tag = \"${{ steps.tag.outputs.tag }}\"",
-      "fingerprint": "304c74b2b66788d65fb77739843b79bba5ba2c1336120d8cfdb94a8d2d63efd3",
-      "line": 67,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$version = \"${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "5c4df434397485075ce784cdad0124c5917abe534eeaf8e1fa9cf33f2e41e5b2",
-      "line": 68,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$version = \"${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "3506f3362ca2c82cedad1f3b7d114d7ff8c6e15308a58de00af6dedf9a1afe47",
-      "line": 83,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "-Version \"${{ steps.tag.outputs.version }}\" `",
-      "fingerprint": "3bb514bf05ab4bd748dad6392cde19667e9dfae878717c2fc5312a242f95f738",
-      "line": 95,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "-ReleaseSha256 \"${{ steps.sha.outputs.sha256 }}\" `",
-      "fingerprint": "f6cf42cc8bf6c7e39b02e17f5f713047de8cd8e6556f4cbe75bc2c4911643a1e",
-      "line": 96,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "Add-Content $env:GITHUB_STEP_SUMMARY \"- **Version**: ${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "f0935819bc59e2f858497f25e8fdbe2322abb89e6128debc5cb537faa983454f",
-      "line": 128,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "Add-Content $env:GITHUB_STEP_SUMMARY \"- **SHA256**: ${{ steps.sha.outputs.sha256 }}\"",
-      "fingerprint": "3cb939f7dc1bd798a1396ecb75e4d393aabb554537e4cbe084cd8d1d269907ca",
-      "line": 129,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/scoop-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
       "evidence": "pull-requests: write",
       "fingerprint": "15942ee87b113a3f1a96372530bfbb47a1a84e9ae6d5f66f5cc7e66ae3416e93",
-      "line": 266,
+      "line": 267,
       "message": "PR-triggered workflow grants write authority",
       "path": ".github/workflows/tokmd.yml",
       "rule": "pr_write_permission"
@@ -1675,78 +1547,6 @@
       "line": 22,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/triage-issues.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "58dd8d6baf4f7bcb4a0354d206731dd647e1b9e9a28ebd49994ec055f9e6aa55",
-      "line": 30,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "$assetCount = gh release view \"${{ steps.tag.outputs.tag }}\" --json assets -q '.assets | length'",
-      "fingerprint": "655f00aee262612caa30a8ca6321fec197b41dd03347e2f8358f60a956301a78",
-      "line": 55,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$tag = \"${{ steps.tag.outputs.tag }}\"",
-      "fingerprint": "88fe1ae5864ea7e801745d1a1010a3f286c786a655b8c142b90ec878565847bf",
-      "line": 68,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$version = \"${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "1dcedc7f7584c80b9714e026ea48175a4d80745f5f702811a29a4e4f39edf70c",
-      "line": 69,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "$version = \"${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "010c37b937db083e1c96e22609cc44eccb86147d642e6b1dc4d75fd481b81952",
-      "line": 84,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "-Version \"${{ steps.tag.outputs.version }}\" `",
-      "fingerprint": "904ac2b09e35a1f8dc7163745d5ff0bffc830048a5818d8e37def6eb00fda3b5",
-      "line": 96,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "-ReleaseSha256 \"${{ steps.checksum.outputs.sha256 }}\" `",
-      "fingerprint": "e3394c0545f6ba6efaed7e86b0d5274a90ca9092b85f479555f1a33b7d6fdb25",
-      "line": 97,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "Add-Content $env:GITHUB_STEP_SUMMARY \"- **Version**: ${{ steps.tag.outputs.version }}\"",
-      "fingerprint": "3326dbc029fae0d923602cf977d8fa364eecd976ceae2dda2ed0168e0c568836",
-      "line": 124,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "Add-Content $env:GITHUB_STEP_SUMMARY \"- **SHA256**: ${{ steps.checksum.outputs.sha256 }}\"",
-      "fingerprint": "313f03529a27d4a69e0fac0cabfa705c0b46b28279e54f0401efa0a9b796dc0a",
-      "line": 125,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/winget-bump.yml",
       "rule": "expression_in_run_source"
     },
     {
