@@ -2336,7 +2336,8 @@ enum NonRustCommand {
     /// and emit `target/policy/non-rust-inventory.{md,json}` plus
     /// `docs/policy/NON_RUST_INVENTORY.md`.
     Inventory {
-        /// Check the committed Markdown inventory without rewriting outputs.
+        /// Check classification and newly added files without rewriting outputs.
+        /// The generated Markdown snapshot may be stale during concurrent merges.
         #[arg(long)]
         check: bool,
     },
