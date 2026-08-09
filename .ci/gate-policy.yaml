@@ -39,7 +39,7 @@ global:
   # Toolchain requirements
   toolchain:
     # MSRV for the project (per rust-toolchain.toml)
-    msrv: "1.92.0"
+    msrv: "1.95.0"
     # Required components
     components:
       - rustfmt
@@ -1092,6 +1092,32 @@ gates:
       - docs
       - generated
 
+  # Guards the MSRV declared by Cargo.toml, rust-toolchain.toml, this file's
+  # global.toolchain.msrv, and the pinned matrix legs below. #6106 exists
+  # because those authorities drifted apart with nothing running to notice;
+  # this gate is what makes the comparison load-bearing rather than a command
+  # a contributor has to remember to type. Runs in the `policy` shard.
+  - name: msrv_authority_sync
+    tier: merge_gate
+    description: "Run the gate-policy validator: every MSRV authority (Cargo.toml, rust-toolchain.toml, gate-policy global + matrix legs) agrees, plus PR-profile and registry invariants"
+    required: true
+    command: cargo xtask gate-policy check
+    # 300s to match non_rust_inventory_check, the sibling `cargo xtask ...`
+    # gate in this shard. The validator itself is near-instant; the cost is
+    # the cargo invocation, which took >60s on a cold shard even after the
+    # "Warm xtask" step and timed out at exit 124 on the first CI run that
+    # reached this gate. Sizing it off a prebuilt-binary measurement was the
+    # error — the gate pays cargo's price, not the binary's.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - version
+      - hygiene
+
   - name: v2_parity
     tier: merge_gate
     description: "Verify in-crate v2 and perl-parser-pest v2 produce identical corpus output"
@@ -1264,7 +1290,7 @@ gates:
         - macos-latest
       toolchain:
         - stable
-        - "1.92.0"  # MSRV
+        - "1.95.0"  # MSRV
         - beta
     tags:
       - matrix

@@ -117,10 +117,15 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                         Some(RequireForm::FilePath) => {
                             // Quoted file path that is NOT a .pm (e.g. .pl, extensionless) → file link
                             out.push(document_link(
-                                i as u32, col_start, col_end,
+                                i as u32,
+                                col_start,
+                                col_end,
                                 &format!("Open {}", import.token),
                                 "file",
-                                vec![("path", import.token.clone().into()), ("baseUri", uri.to_string())],
+                                vec![
+                                    ("path", import.token.clone().into()),
+                                    ("baseUri", uri.to_string()),
+                                ],
                             ));
                         }
                         Some(RequireForm::ModuleName) | None => {
@@ -583,7 +588,9 @@ fn make_deferred_module_link(
     }
 
     Some(document_link(
-        line, col_start, col_end,
+        line,
+        col_start,
+        col_end,
         &format!("Open {}", module),
         "module",
         vec![("module", module.to_string()), ("baseUri", uri.to_string())],
@@ -602,7 +609,9 @@ fn make_deferred_pod_section_link(
     }
 
     Some(document_link(
-        line, col_start, col_end,
+        line,
+        col_start,
+        col_end,
         &format!("Open POD section {}", section),
         "pod_section",
         vec![("section", section.to_string()), ("baseUri", uri.to_string())],
@@ -831,11 +840,7 @@ fn make_link(_src: &str, line: u32, line_text: &str, pkg: &str, target: String) 
     if let Some(idx) = line_text.find(pkg) {
         let start = idx as u32;
         let end = (idx + pkg.len()) as u32;
-        Some(document_link_target(
-            line, start, end,
-            &target,
-            &format!("Open {}", pkg),
-        ))
+        Some(document_link_target(line, start, end, &target, &format!("Open {}", pkg)))
     } else {
         None
     }
