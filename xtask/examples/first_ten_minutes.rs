@@ -11,6 +11,7 @@ use clap::Parser;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -208,6 +209,7 @@ struct VerifiedChildArtifact<'a> {
     candidate_id: &'a str,
     frozen_product_sha: &'a str,
     artifact_set_id: &'a str,
+    source_receipt_sha256: &'a str,
     status: ReceiptStatus,
     claim_boundary: &'a str,
     limitation: Option<String>,
@@ -267,6 +269,10 @@ fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
         bail!("{field} must be exactly {} hexadecimal characters", bytes * 2);
     }
     Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn issue_identity(value: &str, field: &str) -> Result<()> {
@@ -432,18 +438,24 @@ fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
     Ok(computed)
 }
 
-fn load(path: &Path) -> Result<Receipt> {
-    let content = fs::read_to_string(path)?;
+fn load(path: &Path) -> Result<(Receipt, String)> {
+    let content = fs::read(path)
+        .with_context(|| format!("reading first-ten-minutes receipt {}", path.display()))?;
+    let source_receipt_sha256 = sha256_hex(&content);
+    let content = String::from_utf8(content)
+        .with_context(|| format!("receipt {} is not valid UTF-8", path.display()))?;
     let raw: Value = serde_json::from_str(&content)?;
     validate_raw_shape(&raw)?;
-    Ok(serde_json::from_value(raw)?)
+    Ok((serde_json::from_value(raw)?, source_receipt_sha256))
 }
 
 fn write_verified_child_artifact(
     receipt: &Receipt,
+    receipt_sha256: &str,
     status: ReceiptStatus,
     path: &Path,
 ) -> Result<()> {
+    exact_hex(receipt_sha256, 32, "source_receipt_sha256")?;
     let artifact = VerifiedChildArtifact {
         owner_issue: OWNER_ISSUE,
         schema_version: VERIFIED_CHILD_SCHEMA_VERSION,
@@ -451,6 +463,7 @@ fn write_verified_child_artifact(
         candidate_id: &receipt.candidate.candidate_id,
         frozen_product_sha: &receipt.candidate.repository_sha,
         artifact_set_id: &receipt.candidate.artifact_set_id,
+        source_receipt_sha256: receipt_sha256,
         status,
         claim_boundary: &receipt.claim_boundary,
         limitation: receipt.limitations.first().cloned(),
@@ -477,10 +490,10 @@ fn write_verified_child_artifact(
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    let receipt = load(&args.receipt)?;
+    let (receipt, receipt_sha256) = load(&args.receipt)?;
     let status = validate(&receipt)?;
     if let Some(path) = &args.verified_output {
-        write_verified_child_artifact(&receipt, status, path)?;
+        write_verified_child_artifact(&receipt, &receipt_sha256, status, path)?;
     }
     println!(
         "first-ten-minutes: status={} pass={:?} project={} trust_breakers={} findings={}",
@@ -499,8 +512,8 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Receipt, ReceiptStatus, StepStatus, VerifiedChildArtifact, validate, validate_raw_shape,
-        write_verified_child_artifact,
+        Receipt, ReceiptStatus, StepStatus, VerifiedChildArtifact, load, sha256_hex, validate,
+        validate_raw_shape, write_verified_child_artifact,
     };
     use color_eyre::eyre::Result;
     use tempfile::tempdir;
@@ -516,13 +529,16 @@ mod tests {
         let receipt =
             fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         let status = validate(&receipt)?;
+        let receipt_sha256 =
+            sha256_hex(include_bytes!("../../fixtures/experience/first_ten_minutes/valid.json"));
         let directory = tempdir()?;
         let output = directory.path().join("child.json");
-        write_verified_child_artifact(&receipt, status, &output)?;
+        write_verified_child_artifact(&receipt, &receipt_sha256, status, &output)?;
         let artifact: VerifiedChildArtifact<'_> = serde_json::from_slice(&std::fs::read(output)?)?;
         assert_eq!(artifact.schema_version, "verified_child_receipt.v1");
         assert_eq!(artifact.receipt_schema_version, "first_ten_minutes.v1");
         assert_eq!(artifact.candidate_id, "v0.18.0-pre-freeze");
+        assert_eq!(artifact.source_receipt_sha256, receipt_sha256);
         assert_eq!(artifact.status, ReceiptStatus::Pass);
         Ok(())
     }
@@ -532,10 +548,12 @@ mod tests {
         let receipt =
             fixture(include_str!("../../fixtures/experience/first_ten_minutes/valid.json"))?;
         let status = validate(&receipt)?;
+        let receipt_sha256 =
+            sha256_hex(include_bytes!("../../fixtures/experience/first_ten_minutes/valid.json"));
         let directory = tempdir()?;
         let destination = directory.path().join("existing");
         std::fs::create_dir(&destination)?;
-        let result = write_verified_child_artifact(&receipt, status, &destination);
+        let result = write_verified_child_artifact(&receipt, &receipt_sha256, status, &destination);
         if result.is_ok() {
             return Err(color_eyre::eyre::eyre!(
                 "publishing over a directory unexpectedly succeeded"
@@ -546,6 +564,18 @@ mod tests {
                 "failed publication did not preserve the existing destination"
             ));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn load_hashes_the_exact_receipt_bytes() -> Result<()> {
+        let directory = tempdir()?;
+        let input = directory.path().join("receipt.json");
+        let bytes = include_bytes!("../../fixtures/experience/first_ten_minutes/valid.json");
+        std::fs::write(&input, bytes)?;
+        let (receipt, digest) = load(&input)?;
+        assert_eq!(receipt.status, ReceiptStatus::Pass);
+        assert_eq!(digest, sha256_hex(bytes));
         Ok(())
     }
 
