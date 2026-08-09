@@ -40,6 +40,17 @@
       "type": "string",
       "minLength": 1
     },
+    "source_receipt_sha256": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "status": {
       "enum": ["pass", "limited", "blocked", "not_proven"]
     },
