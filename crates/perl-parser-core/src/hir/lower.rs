@@ -3753,6 +3753,123 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
+            // Declaration constructs (#5043): lower body/children for
+            // variable reads. These are the last high-value variants.
+            NodeKind::Subroutine { body, prototype, signature, .. } => {
+                let mut arg_ids = Vec::new();
+                if let Some(p) = prototype { arg_ids.push(self.lower_expr(p)); }
+                if let Some(s) = signature { arg_ids.push(self.lower_expr(s)); }
+                arg_ids.push(self.lower_expr(body));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Subroutine".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Method { body, signature, .. } => {
+                let mut arg_ids = Vec::new();
+                if let Some(s) = signature { arg_ids.push(self.lower_expr(s)); }
+                arg_ids.push(self.lower_expr(body));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Method".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Package { block, .. } => {
+                let mut arg_ids = Vec::new();
+                if let Some(b) = block { arg_ids.push(self.lower_expr(b)); }
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Package".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Use { has_filter_risk, .. } => {
+                self.alloc_expr(
+                    HirExpr::Opaque {
+                        ast_kind: if *has_filter_risk {
+                            "UseWithFilterRisk".to_string()
+                        } else {
+                            "Use".to_string()
+                        },
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::No { .. } => {
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "No".to_string() },
+                    range,
+                )
+            }
+
+            NodeKind::PhaseBlock { block, .. } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "PhaseBlock".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Class { body, .. } => {
+                let arg_ids = vec![self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Class".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // Leaf constructs: no children to lower, tag as Opaque.
+            NodeKind::Ellipsis => {
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "Ellipsis".to_string() },
+                    range,
+                )
+            }
+
+            NodeKind::Typeglob { .. } => {
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "Typeglob".to_string() },
+                    range,
+                )
+            }
+
+            NodeKind::DataSection { .. } => {
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "DataSection".to_string() },
+                    range,
+                )
+            }
+
+            NodeKind::Format { .. } => {
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "Format".to_string() },
+                    range,
+                )
+            }
+
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
                 let kind_name = node.kind.kind_name().to_string();
