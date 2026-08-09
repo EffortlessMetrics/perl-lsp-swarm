@@ -4,8 +4,8 @@
 //! and their canonical dispositions, so CI/lint tooling can detect gaps
 //! when new error types are added without classification.
 
-use perl_parser_core::ErrorCategory;
 use crate::protocol::error_disposition::{Disposition, disposition_for};
+use perl_parser_core::ErrorCategory;
 
 /// A single entry in the error classification inventory.
 #[derive(Debug, Clone)]
@@ -170,11 +170,7 @@ pub fn unclassified_count() -> usize {
 /// Returns the names of unclassified error types.
 #[must_use]
 pub fn unclassified_types() -> Vec<&'static str> {
-    error_type_inventory()
-        .iter()
-        .filter(|e| !e.has_error_class)
-        .map(|e| e.type_name)
-        .collect()
+    error_type_inventory().iter().filter(|e| !e.has_error_class).map(|e| e.type_name).collect()
 }
 
 #[cfg(test)]
