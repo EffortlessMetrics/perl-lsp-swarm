@@ -43,10 +43,43 @@ liveness, or mirror it through labels/comments.
 Revisit an in-flight lane only when its wake event occurs. Unchanged checks, reviews,
 queue state, or base movement do not justify polling or route churn.
 
+## Phase eligibility
+
+Admission asks whether the host can run a claim. Phase eligibility asks whether this
+campaign should run it now. These are different questions and a campaign can fail on
+either.
+
+Name the goal's current phase and what it admits. The failure this prevents is not poor
+claim selection — it is that every valuable adjacent finding becomes runnable while the
+phase predicate remains unsatisfied, so the campaign accumulates good PRs without
+converging on its own acceptance criterion:
+
+```text
+phase: honest-main
+
+eligible
+  classify current main failures
+  repair current main failures
+  repair the instruments needed to classify them
+  bounded read-only evidence supporting those decisions
+
+defer
+  ordinary backlog
+  unrelated hardening
+  product opportunities
+  release work the phase does not require
+```
+
+Deferring is not discarding. Record a deferred finding as a durable issue and continue;
+the cost of losing it is what makes adjacent work feel urgent.
+
+A discovery may change the phase, but change it deliberately and state why. Widening the
+phase to accommodate work already begun is how the predicate quietly stops governing.
+
 ## Select and run a claim route
 
-Choose one distinct claim that remains required, actionable, not already represented by
-an equivalent current PR, and independently reviewable.
+Choose one distinct claim that is phase-eligible, still required, actionable, not
+already represented by an equivalent current PR, and independently reviewable.
 
 For substantial work, delegate the whole claim as a lane-root route:
 
