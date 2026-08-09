@@ -7,6 +7,11 @@ use super::super::{
     CallHierarchyProvider, JsonRpcError, LspServer, TypeHierarchyProvider, Value, json,
 };
 use crate::protocol::{req_position, req_uri};
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
 #[cfg(feature = "workspace")]
@@ -281,7 +286,7 @@ impl LspServer {
                             })
                             .collect();
 
-                        return Ok(Some(json!(lsp_items)));
+                        return Ok(Some(to_json_array(&lsp_items)));
                     }
                 }
 
@@ -453,7 +458,7 @@ impl LspServer {
                             })
                             .collect();
 
-                        return Ok(Some(json!(lsp_items)));
+                        return Ok(Some(to_json_array(&lsp_items)));
                     }
                 }
             }
@@ -553,7 +558,7 @@ impl LspServer {
                             })
                             .collect();
 
-                        return Ok(Some(json!(lsp_items)));
+                        return Ok(Some(to_json_array(&lsp_items)));
                     }
                 }
             }
@@ -613,7 +618,7 @@ impl LspServer {
                     items.into_iter().map(|item| self.enrich_call_hierarchy_item(item)).collect()
                 };
                 let json_items: Vec<_> = items.iter().map(|item| item.to_json()).collect();
-                return Ok(Some(json!(json_items)));
+                return Ok(Some(to_json_array(&json_items)));
             }
         }
 
