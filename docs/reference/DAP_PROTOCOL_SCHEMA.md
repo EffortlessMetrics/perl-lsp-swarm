@@ -1024,7 +1024,7 @@ Content-Length: 123\r\n
 - Coderefs: B::Deparse representation
 
 **Unicode Safety** (AC16):
-- UTF-16 boundary validation (PR #153 infrastructure)
+- UTF-16 boundary validation through the shared position-mapping helpers
 - Emoji and multi-byte character support
 
 ### 13.3 Breakpoint Validation (AC7)

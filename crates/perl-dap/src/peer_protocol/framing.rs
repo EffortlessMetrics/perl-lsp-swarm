@@ -17,6 +17,15 @@ pub enum PeerFrameError {
     Json(String),
 }
 
+impl perl_parser_core::ErrorClass for PeerFrameError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // Both variants are wire-contract violations from the peer side.
+        match self {
+            Self::Framing(_) | Self::Json(_) => perl_parser_core::ErrorCategory::Protocol,
+        }
+    }
+}
+
 /// Encode a peer message into a Content-Length framed byte buffer ready to write
 /// to the transport.
 ///

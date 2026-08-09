@@ -157,4 +157,4 @@ Validated across thousands of real-world Perl files:
 ## References
 
 - [SCOPE_ANALYZER_REFERENCE.md](../reference/SCOPE_ANALYZER_REFERENCE.md) - Complete API reference
-- [perl-parser/src/scope_analyzer.rs](../../crates/perl-parser/src/scope_analyzer.rs) - Implementation
+- [perl-semantic-analyzer/src/analysis/scope_analyzer/mod.rs](../../crates/perl-semantic-analyzer/src/analysis/scope_analyzer/mod.rs) - Implementation

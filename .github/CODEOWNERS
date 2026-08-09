@@ -13,6 +13,12 @@ CLAUDE.md                    @EffortlessMetrics
 scripts/control-plane-lock.sh   @EffortlessMetrics
 .ops-perl-lsp/                   @EffortlessMetrics
 
-# CI workflows
+# CI workflows and reusable actions
 .github/workflows/**         @EffortlessMetrics
+.github/actions/**           @EffortlessMetrics
 .github/CODEOWNERS           @EffortlessMetrics
+
+# Trusted-base workflow-security controls
+.ci/workflow-security-baseline.json             @EffortlessMetrics
+scripts/ci/workflow_security_ratchet.py          @EffortlessMetrics
+scripts/ci/test_workflow_security_ratchet.py     @EffortlessMetrics

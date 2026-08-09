@@ -16,6 +16,8 @@ import type {
 export interface ServerCommandContext {
   readonly outputChannel: vscode.LogOutputChannel;
   readonly currentServerPath: () => string | null;
+  /** Resolve the managed path when startup is still in progress. */
+  readonly resolveServerPath: () => Promise<string | null>;
   readonly reinstallServerBinary: () => Promise<ReinstallCommandResult>;
   readonly restartServer: () => Promise<void>;
   readonly runHealthCheck: (serverPath: string | null) => Promise<HealthCheckResult[]>;
@@ -59,7 +61,8 @@ export function registerServerCommandGroup(
   const runHealthCheckCommand = vscode.commands.registerCommand(
     'perl-lsp.runHealthCheck',
     async (serverPath?: string | null) => {
-      const resolvedPath = serverPath !== undefined ? serverPath : dependencies.currentServerPath();
+      const resolvedPath =
+        serverPath !== undefined ? serverPath : await dependencies.resolveServerPath();
       const results = await dependencies.runHealthCheck(resolvedPath);
       const commandResult = toHealthCheckCommandResult(results);
 

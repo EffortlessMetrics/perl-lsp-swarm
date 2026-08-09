@@ -15,6 +15,13 @@ pub struct DapSocketBindError {
     pub port: u16,
 }
 
+impl perl_parser_core::ErrorClass for DapSocketBindError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // OS-level socket bind failure — external resource/port unavailable.
+        perl_parser_core::ErrorCategory::Infra
+    }
+}
+
 /// DAP server
 ///
 /// Supports two operating modes:
