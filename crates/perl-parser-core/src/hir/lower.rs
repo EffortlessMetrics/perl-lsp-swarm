@@ -3479,6 +3479,25 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
+            NodeKind::IndirectCall { method: _, object, args } => {
+                // Lower indirect object call (e.g. `new Class @args`) with
+                // structured children so variable reads in object/arg
+                // positions produce correct PIR facts. Without this arm,
+                // IndirectCall fell through to HirExpr::Opaque, hiding the
+                // call site from effect analysis and dropping argument
+                // variable reads (#5043).
+                let mut arg_ids = vec![self.lower_expr(object)];
+                arg_ids.extend(args.iter().map(|a| self.lower_expr(a)));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "IndirectCall".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
             // String/IO value shells. The payloads are built by the shared
             // constructors in `hir::body` so this lowerer and
             // `hir::body::lower_expr` cannot drift apart — they already did once,
