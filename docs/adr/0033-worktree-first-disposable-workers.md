@@ -199,5 +199,5 @@ kept only in prompt prose.
 
 ## Related Files
 
-- [`docs/reference/SKILL_AND_AGENT_DESIGN.md`](../reference/SKILL_AND_AGENT_DESIGN.md)
+- [`.agents/skills/worktree-manager/SKILL.md`](../../.agents/skills/worktree-manager/SKILL.md)
 - [`docs/reference/SKILL_AND_AGENT_DESIGN.md`](../reference/SKILL_AND_AGENT_DESIGN.md)
