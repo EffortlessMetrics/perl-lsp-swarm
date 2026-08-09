@@ -61,6 +61,23 @@ impl FormattingError {
     }
 }
 
+impl perl_parser_core::ErrorClass for FormattingError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // External tool missing or IO failure — infrastructure issue.
+            Self::PerltidyNotFound(_) | Self::IoError(_) => {
+                perl_parser_core::ErrorCategory::Infra
+            }
+            // Perltidy reported a problem — usually the user's Perl has a
+            // syntax error that perltidy cannot format.
+            Self::PerltidyError(_) => perl_parser_core::ErrorCategory::UserError,
+            // Perltidy returned non-UTF-8 output — should not happen with
+            // proper encoding handling, so this is our bug.
+            Self::InvalidOutputEncoding => perl_parser_core::ErrorCategory::Bug,
+        }
+    }
+}
+
 /// Code formatter using native formatting with an external perltidy adapter.
 pub struct FormattingProvider<R> {
     /// Subprocess runtime for executing perltidy.
