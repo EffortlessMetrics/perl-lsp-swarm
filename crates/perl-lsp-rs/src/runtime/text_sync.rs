@@ -590,6 +590,7 @@ impl LspServer {
 
                 let t_rope_start = std::time::Instant::now();
                 let text = doc.rope.to_string();
+                let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
@@ -725,7 +726,7 @@ impl LspServer {
                         // meantime -- see `state::DocumentState` module
                         // docs and the #3589 pending-parse provider
                         // policies.
-                        doc_state.replace_text_state(doc.rope.clone(), text.clone(), version);
+                        doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
                         #[cfg(feature = "incremental")]
                         {
                             doc_state.incremental_doc = None;
@@ -775,7 +776,7 @@ impl LspServer {
                             normalized_uri,
                             next_gen,
                             generation_handle,
-                            Arc::from(text.as_str()),
+                            Arc::clone(&text_arc),
                         );
 
                         return Ok(());
@@ -996,7 +997,7 @@ impl LspServer {
                 // pre-edit snapshot until the `publish_parsed_if_current`
                 // call below lands the new one -- see
                 // `state::DocumentState::replace_text_state`.
-                doc_state.replace_text_state(doc.rope.clone(), text.to_string(), version);
+                doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
                 #[cfg(feature = "incremental")]
                 {
                     doc_state.incremental_doc = incremental_doc;
