@@ -153,10 +153,10 @@ impl LspServer {
 
         if let Some(obj) = params.as_object_mut() {
             if options.external {
-                obj.insert("external".to_string(), json!(true));
+                obj.insert("external".to_string(), Value::Bool(true));
             }
             if options.take_focus {
-                obj.insert("takeFocus".to_string(), json!(true));
+                obj.insert("takeFocus".to_string(), Value::Bool(true));
             }
             if let Some(range) = options.selection {
                 obj.insert("selection".to_string(), json!(range));

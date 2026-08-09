@@ -746,7 +746,7 @@ mod tests {
             return Err(anyhow!("workspace run state was not reset while preserving targets"));
         }
         let summary = receipt.summary_json();
-        if summary["first_correct_answers"] != json!({})
+        if summary["first_correct_answers"] != Value::Object(serde_json::Map::new())
             || summary["active_document_ready_us"].is_number()
             || summary["whole_workspace_ready_us"].is_number()
         {
