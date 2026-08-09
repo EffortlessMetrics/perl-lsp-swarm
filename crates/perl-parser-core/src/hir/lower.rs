@@ -3657,6 +3657,102 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
+            // Tie/Untie (#5043): these bind variables to objects, so
+            // variable reads in the variable/package/args must be captured.
+            NodeKind::Tie { variable, package, args } => {
+                let mut arg_ids = vec![self.lower_expr(variable), self.lower_expr(package)];
+                arg_ids.extend(args.iter().map(|a| self.lower_expr(a)));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Tie".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Untie { variable } => {
+                let arg_ids = vec![self.lower_expr(variable)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Untie".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // Given/When/Default (#5043): switch-like constructs. Lower
+            // the condition and body expressions for variable reads.
+            NodeKind::Given { expr, body } => {
+                let arg_ids = vec![self.lower_expr(expr), self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Given".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::When { condition, body } => {
+                let arg_ids = vec![self.lower_expr(condition), self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "When".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Default { body } => {
+                let arg_ids = vec![self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Default".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // LoopControl (#5043): next/last/redo with optional label.
+            // Modeled as Opaque since there are no child expressions to lower.
+            NodeKind::LoopControl { .. } => {
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "LoopControl".to_string() },
+                    range,
+                )
+            }
+
+            // Goto (#5043): lower the target expression for variable reads.
+            NodeKind::Goto { target, .. } => {
+                let arg_ids = vec![self.lower_expr(target)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Goto".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // VString (#5043): version string literal (v5.38.0). No child
+            // expressions to lower, but tag as Opaque for consistency.
+            NodeKind::VString { .. } => {
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "VString".to_string() },
+                    range,
+                )
+            }
+
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
                 let kind_name = node.kind.kind_name().to_string();
