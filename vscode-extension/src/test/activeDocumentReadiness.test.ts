@@ -29,6 +29,18 @@ describe('ActiveDocumentReadiness', () => {
     await expect(pending).resolves.toBeUndefined();
   });
 
+  test('preserves limited workspace readiness without treating it as fully ready', async () => {
+    const readiness = new ActiveDocumentReadiness();
+    readiness.beginGeneration();
+    const pending = readiness.waitFor('file:///workspace/probe.pl', 100);
+
+    readiness.markIndexReady(undefined, 'ready_limited', 'resource limit');
+
+    expect(readiness.currentIndexState()).toBe('ready_limited');
+    expect(readiness.currentIndexReason()).toBe('resource limit');
+    await expect(pending).rejects.toThrow('was not ready after 100ms');
+  });
+
   test('rejects pending waiters when a restart begins a new generation', async () => {
     const readiness = new ActiveDocumentReadiness();
     readiness.beginGeneration();

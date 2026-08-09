@@ -1368,11 +1368,19 @@ function createLanguageClient(serverPath: string): LanguageClient {
       activeDocumentReadiness.markReady(params.uri, generation);
     }
   });
-  lc.onNotification('perl-lsp/index-ready', (params: { ready?: boolean }) => {
-    if (params?.ready === true) {
-      activeDocumentReadiness.markIndexReady(generation);
-    }
-  });
+  lc.onNotification(
+    'perl-lsp/index-ready',
+    (params: {
+      ready?: boolean;
+      state?: 'building' | 'ready' | 'ready_limited';
+      reason?: string | null;
+    }) => {
+      const state = params?.state ?? (params?.ready === true ? 'ready' : undefined);
+      if (state !== undefined) {
+        activeDocumentReadiness.markIndexReady(generation, state, params.reason ?? undefined);
+      }
+    },
+  );
   void lc.setTrace(getTraceLevel());
   return lc;
 }
