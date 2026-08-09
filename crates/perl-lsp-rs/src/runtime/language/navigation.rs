@@ -15,6 +15,11 @@ use perl_parser_core::source_file::is_binary_content;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
@@ -1831,7 +1836,7 @@ impl LspServer {
                                         .collect();
                                     if !lsp_locations.is_empty() {
                                         if workspace_index_is_fresh() {
-                                            return Ok(Some(json!(lsp_locations)));
+                                            return Ok(Some(to_json_array(&lsp_locations)));
                                         }
                                     }
                                 }
@@ -2301,7 +2306,7 @@ impl LspServer {
                         locations.len(),
                         TypeDefinitionFallbackTrace::default(),
                     );
-                    return Ok(Some(json!(locations)));
+                    return Ok(Some(to_json_array(&locations)));
                 }
 
                 self.record_type_definition_ambiguous_identity_trace(
@@ -2469,7 +2474,7 @@ impl LspServer {
                 let provider = ImplementationProvider::new(workspace_index);
                 let locations =
                     provider.find_implementations(ast.as_ref(), line, character, uri, &doc_map);
-                return Ok(Some(json!(locations)));
+                return Ok(Some(to_json_array(&locations)));
             }
 
             #[cfg(not(feature = "workspace"))]
