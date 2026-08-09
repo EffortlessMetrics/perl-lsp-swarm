@@ -116,6 +116,22 @@ test/oracle defect, instrument failure, environment/capacity, pending, or
 `NOT_PROVEN`. Do not widen the PR to absorb unrelated baseline failures, and do not
 ignore current evidence that contradicts the reviewed claim.
 
+Prefer a cheap discriminator over a rebuild. Two settle most inherited reds without
+running anything:
+
+- **merge-base ancestry.** A candidate inherits what was broken at its merge base, not
+  what `main` looks like now. Ask whether the repair is an ancestor of this candidate's
+  merge base — `git merge-base --is-ancestor <repair> <pr-merge-base>` — rather than
+  whether `main` is currently green. A red predating the merge base is base-owned, and
+  a branch refresh is the repair rather than further proof;
+- **by construction.** A gate derived from a property the candidate cannot affect is not
+  candidate-owned. A check keyed on the tracked path set is unreachable by a candidate
+  that adds and deletes no files, which the changed-file list settles without a build.
+
+Name the discriminator used. An unclassified red is `NOT_PROVEN` rather than someone
+else's problem: "this also fails on main" describes the wrong tree unless the merge base
+was compared.
+
 ## GitHub and wake boundary
 
 Read live state when the skill is entered or a named wake event occurs. When GitHub owns
