@@ -62,9 +62,7 @@ export function registerServerCommandGroup(
     'perl-lsp.runHealthCheck',
     async (serverPath?: string | null) => {
       const resolvedPath =
-        serverPath !== undefined
-          ? serverPath
-          : await dependencies.resolveServerPath();
+        serverPath !== undefined ? serverPath : await dependencies.resolveServerPath();
       const results = await dependencies.runHealthCheck(resolvedPath);
       const commandResult = toHealthCheckCommandResult(results);
 
