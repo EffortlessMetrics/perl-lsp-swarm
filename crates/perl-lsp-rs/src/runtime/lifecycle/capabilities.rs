@@ -45,7 +45,8 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
             tracing::warn!("Failed to merge experimental capability into non-object capabilities");
             return;
         };
-        capabilities_object.insert("experimental".to_string(), Value::Object(serde_json::Map::new()));
+        capabilities_object
+            .insert("experimental".to_string(), Value::Object(serde_json::Map::new()));
     }
 
     let Some(experimental) = capabilities.get_mut("experimental").and_then(Value::as_object_mut)
@@ -654,7 +655,10 @@ impl LspServer {
             }
             (true, false) => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
-                    capabilities.insert("inlineCompletionProvider".to_string(), Value::Object(serde_json::Map::new()));
+                    capabilities.insert(
+                        "inlineCompletionProvider".to_string(),
+                        Value::Object(serde_json::Map::new()),
+                    );
                 }
             }
             (false, _) => {

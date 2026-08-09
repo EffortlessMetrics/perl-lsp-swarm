@@ -773,7 +773,8 @@ impl LspServer {
             let mut calls = if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let provider = CallHierarchyProvider::new(doc.text_arc.to_string(), uri.to_string());
+                    let provider =
+                        CallHierarchyProvider::new(doc.text_arc.to_string(), uri.to_string());
                     provider.outgoing_calls(ast, &ch_item)
                 } else {
                     Vec::new()
