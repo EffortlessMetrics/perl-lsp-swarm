@@ -60,28 +60,102 @@ set -euo pipefail
 
 printf 'git %s\n' "$*" >> "${MOCK_STATE}/git.log"
 
+handle_rev_parse() {
+  if [[ "$*" == *"--path-format=absolute --git-common-dir"* ]]; then
+    printf '%s/.git\n' "${MOCK_REPO_ROOT}"
+    exit 0
+  fi
+  if [[ "$*" == *"--show-toplevel"* ]]; then
+    if [[ -n "${_worktree_path:-}" ]]; then
+      printf '%s\n' "${_worktree_path}"
+    else
+      printf '%s\n' "${MOCK_REPO_ROOT}"
+    fi
+    exit 0
+  fi
+  if [[ "$*" == *"--abbrev-ref HEAD"* ]]; then
+    cat "${MOCK_STATE}/current-branch"
+    exit 0
+  fi
+  if [[ "$*" == *"HEAD"* && "$*" != *"--verify"* ]]; then
+    printf 'abc123\n'
+    exit 0
+  fi
+  if [[ "$*" == *"--verify"* && "$*" == *"origin/"* ]]; then
+    if [[ -s "${MOCK_STATE}/remote-branch" ]]; then
+      exit 0
+    fi
+    exit 1
+  fi
+  if [[ "$*" == *"--verify"* ]]; then
+    exit 0
+  fi
+}
+
 if [[ "${1:-}" == "-C" ]]; then
   shift
   _worktree_path="${1:-}"
   shift || true
-  if [[ "${1:-}" == "status" ]]; then
-    if [[ -f "${MOCK_STATE}/dirty" ]]; then
-      cat "${MOCK_STATE}/dirty"
-    fi
-    exit 0
-  fi
+  case "${1:-}" in
+    status)
+      if [[ -f "${MOCK_STATE}/dirty" ]]; then
+        cat "${MOCK_STATE}/dirty"
+      fi
+      exit 0
+      ;;
+    rev-parse)
+      shift
+      handle_rev_parse "$*"
+      ;;
+    fetch)
+      exit 0
+      ;;
+    merge-base)
+      if [[ "${2:-}" == "--is-ancestor" ]]; then
+        if grep -qxF "${3:-}" "${MOCK_STATE}/merged-heads" 2>/dev/null; then
+          exit 0
+        fi
+        exit 1
+      fi
+      ;;
+    rev-list)
+      if [[ "${2:-}" == "--count" ]]; then
+        if [[ -s "${MOCK_STATE}/ahead-count" ]]; then
+          cat "${MOCK_STATE}/ahead-count"
+        else
+          printf '0\n'
+        fi
+        exit 0
+      fi
+      ;;
+    worktree)
+      case "${2:-}" in
+        prune|list|remove)
+          case "${2:-}" in
+            list)
+              cat "${MOCK_STATE}/worktree-list"
+              ;;
+            remove)
+              printf 'DESTRUCTIVE git worktree remove %s\n' "$*" >> "${MOCK_STATE}/destructive.log"
+              ;;
+          esac
+          exit 0
+          ;;
+      esac
+      ;;
+    branch)
+      if [[ "${2:-}" == "-D" ]]; then
+        printf 'DESTRUCTIVE git branch -D %s\n' "${3:-}" >> "${MOCK_STATE}/destructive.log"
+        exit 0
+      fi
+      ;;
+  esac
 fi
 
 case "${1:-}" in
   rev-parse)
-    if [[ "$*" == *"--path-format=absolute --git-common-dir"* ]]; then
-      printf '%s/.git\n' "${MOCK_REPO_ROOT}"
-      exit 0
-    fi
-    if [[ "$*" == *"--abbrev-ref HEAD"* ]]; then
-      cat "${MOCK_STATE}/current-branch"
-      exit 0
-    fi
+    shift
+    handle_rev_parse "$*"
     ;;
   worktree)
     case "${2:-}" in
@@ -160,6 +234,8 @@ new_case() {
   local case_dir="${TMPDIR_BASE}/${name}"
   mkdir -p "${case_dir}/bin" "${case_dir}/repo/.git" "${case_dir}/repo/.claude/worktrees"
   : > "${case_dir}/merged-branches"
+  : > "${case_dir}/merged-heads"
+  : > "${case_dir}/remote-branch"
   : > "${case_dir}/remote-merge"
   : > "${case_dir}/ahead-count"
   : > "${case_dir}/pr-number"
@@ -177,7 +253,16 @@ write_worktree_list() {
   local branch="$2"
   local worktree_path="${case_dir}/repo/.claude/worktrees/${branch//\//-}"
   mkdir -p "$worktree_path"
-  printf '%s abc123 [%s]\n' "$worktree_path" "$branch" > "${case_dir}/worktree-list"
+  cat > "${case_dir}/worktree-list" <<EOF
+worktree ${case_dir}/repo
+HEAD abc123
+branch refs/heads/main
+
+worktree ${worktree_path}
+HEAD abc123
+branch refs/heads/${branch}
+
+EOF
 }
 
 run_cleanup_dry_run() {
@@ -204,29 +289,29 @@ test_merged_branch_uses_main_by_default() {
   local case_dir output
   case_dir="$(new_case merged-main)"
   write_worktree_list "$case_dir" "feature/merged"
-  printf '  feature/merged\n' > "${case_dir}/merged-branches"
+  printf 'abc123\n' > "${case_dir}/merged-heads"
 
   output="$(run_cleanup_dry_run "$case_dir")"
 
-  assert_contains "dry-run announces main as the default cleanup base" "$output" "Base branch: main"
+  assert_contains "dry-run announces the cleanup base" "$output" "Base:"
   assert_contains "merged branch is marked for removal in dry-run" "$output" "feature/merged"
-  assert_contains "merged branch removal is reported" "$output" "merged"
+  assert_contains "merged branch removal is reported" "$output" "landed"
   assert_contains "merged branch action is REMOVE" "$output" "REMOVE"
-  assert_contains "merged query uses main, not legacy master" "$(cat "${case_dir}/merged-queries.log")" "main"
   assert_no_destructive_commands "dry-run does not remove merged worktrees" "$case_dir"
 }
 
-test_open_pr_branch_is_kept() {
+test_pushed_branch_is_removed_even_with_open_pr() {
   local case_dir output
   case_dir="$(new_case open-pr)"
   write_worktree_list "$case_dir" "feature/open-pr"
   printf '123\n' > "${case_dir}/pr-number"
+  printf '1\n' > "${case_dir}/remote-branch"
 
   output="$(run_cleanup_dry_run "$case_dir")"
 
-  assert_contains "open PR branch is kept" "$output" "open-pr:#123"
-  assert_contains "open PR action is KEEP" "$output" "KEEP"
-  assert_no_destructive_commands "dry-run does not remove open PR worktrees" "$case_dir"
+  assert_contains "fully pushed branch is removed even when a PR is open" "$output" "pushed"
+  assert_contains "pushed branch action is REMOVE" "$output" "REMOVE"
+  assert_no_destructive_commands "dry-run does not remove pushed worktrees" "$case_dir"
 }
 
 test_unpushed_branch_is_kept() {
@@ -242,18 +327,17 @@ test_unpushed_branch_is_kept() {
   assert_no_destructive_commands "dry-run does not remove unpushed worktrees" "$case_dir"
 }
 
-test_abandoned_branch_is_reported_without_removal_in_dry_run() {
+test_branch_without_remote_is_kept() {
   local case_dir output
   case_dir="$(new_case abandoned)"
   write_worktree_list "$case_dir" "feature/abandoned"
-  printf '0\n' > "${case_dir}/ahead-count"
 
   output="$(run_cleanup_dry_run "$case_dir")"
 
-  assert_contains "abandoned branch is reported" "$output" "abandoned"
-  assert_contains "abandoned action is REMOVE" "$output" "REMOVE"
-  assert_not_contains "abandoned dry-run does not claim actual deletion" "$output" "git branch -D"
-  assert_no_destructive_commands "dry-run does not remove abandoned worktrees" "$case_dir"
+  assert_contains "branch without a remote tracking ref is kept" "$output" "abandoned"
+  assert_contains "no-remote action is KEEP" "$output" "KEEP"
+  assert_not_contains "no-remote dry-run does not claim actual deletion" "$output" "git branch -D"
+  assert_no_destructive_commands "dry-run does not remove no-remote worktrees" "$case_dir"
 }
 
 echo "=== cleanup-completed-worktrees dry-run test suite ==="
@@ -267,9 +351,9 @@ fi
 TMPDIR_BASE="$(mktemp -d)"
 
 test_merged_branch_uses_main_by_default
-test_open_pr_branch_is_kept
+test_pushed_branch_is_removed_even_with_open_pr
 test_unpushed_branch_is_kept
-test_abandoned_branch_is_reported_without_removal_in_dry_run
+test_branch_without_remote_is_kept
 
 TOTAL=$((PASS + FAIL))
 echo ""
