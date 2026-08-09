@@ -56,8 +56,8 @@ select installer logic from mutable `master`, `main`, `HEAD`, another branch,
 or an arbitrary ref. Before it executes any downloaded installer logic, it
 requires:
 
-1. `PERL_LSP_INSTALLER_REF`: a full lowercase 40-character commit SHA or a
-   release tag matching `vX.Y.Z` with an optional prerelease suffix; and
+1. `PERL_LSP_INSTALLER_REF`: a full lowercase 40-character commit SHA for both
+   the piped wrapper URL and the canonical `scripts/install.sh` fetch; and
 2. `PERL_LSP_INSTALLER_SHA256`: the reviewed 64-character lowercase SHA-256
    digest of that exact ref's `scripts/install.sh`.
 
@@ -68,7 +68,7 @@ installer only after the content digest matches.
 Once a release closeout publishes both values, use this command shape:
 
 ```bash
-INSTALLER_REF=<release-tag-or-full-commit-sha>
+INSTALLER_REF=<full-40-char-commit-sha>
 INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
 
 curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \

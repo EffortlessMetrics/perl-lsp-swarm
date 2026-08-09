@@ -170,7 +170,7 @@ If you prefer to manage the binary yourself:
 brew install effortlessmetrics/tap/perllsp
 
 # Identity-bound remote bootstrap once release closeout publishes ref+digest
-INSTALLER_REF=<release-tag-or-full-commit-sha>
+INSTALLER_REF=<full-40-char-commit-sha>
 INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
 curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
   | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \

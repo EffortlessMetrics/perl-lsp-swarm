@@ -146,12 +146,12 @@ else
     fail_case "missing ref fails before network or execution" "curl or installer was reached"
 fi
 
-for bad_ref in main master HEAD refs/heads/main 'feature/test' '$(touch boom)' $'v0.18.0\nnext'; do
+for bad_ref in main master HEAD refs/heads/main 'feature/test' '$(touch boom)' $'v0.18.0\nnext' "$TAG_REF" v1.2.3; do
     run_remote "$FAKE_BIN:$PATH" \
         "PERL_LSP_INSTALLER_REF=$bad_ref" \
         "PERL_LSP_INSTALLER_SHA256=$DIGEST"
     if [ "$LAST_STATUS" -ne 0 ] \
-        && [[ "$LAST_OUTPUT" == *"must be a full lowercase commit SHA or vX.Y.Z release tag"* ]] \
+        && [[ "$LAST_OUTPUT" == *"must be a full lowercase commit SHA"* ]] \
         && [ ! -e "$CURL_LOG" ] \
         && [ ! -e "$SENTINEL" ]; then
         pass "rejects mutable or shell-shaped ref: ${bad_ref//$'\n'/\\n}"
@@ -179,16 +179,6 @@ if [ "$LAST_STATUS" -eq 0 ] \
     pass "verified commit-bound installer executes with preserved arguments"
 else
     fail_case "verified commit-bound installer executes with preserved arguments" "status=$LAST_STATUS output=$LAST_OUTPUT"
-fi
-
-run_remote "$FAKE_BIN:$PATH" \
-    "PERL_LSP_INSTALLER_REF=$TAG_REF" \
-    "PERL_LSP_INSTALLER_SHA256=$DIGEST"
-EXPECTED_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$TAG_REF/scripts/install.sh"
-if [ "$LAST_STATUS" -eq 0 ] && [ -f "$SENTINEL" ] && grep -qx "$EXPECTED_URL" "$CURL_LOG"; then
-    pass "digest-bound release tag is accepted"
-else
-    fail_case "digest-bound release tag is accepted" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
 BAD_DIGEST="${DIGEST%?}0"

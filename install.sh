@@ -3,12 +3,14 @@
 #
 # Clone-local use executes the sibling scripts/install.sh directly.
 # Remote/piped use is a non-authoritative convenience bootstrap: it requires an
-# immutable commit or release-tag identity plus the reviewed SHA-256 digest of
-# that exact scripts/install.sh before any installer logic is executed.
+# immutable commit identity plus the reviewed SHA-256 digest of that exact
+# scripts/install.sh before any installer logic is executed. The wrapper itself
+# must be fetched from the same commit SHA — release tags are not accepted
+# because the piped wrapper bytes execute before any digest check can run.
 #
 # Example shape (replace placeholders with release-closeout values):
-#   curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/<ref>/install.sh \
-#     | PERL_LSP_INSTALLER_REF=<ref> \
+#   curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/<commit>/install.sh \
+#     | PERL_LSP_INSTALLER_REF=<commit> \
 #       PERL_LSP_INSTALLER_SHA256=<sha256> bash
 
 set -euo pipefail
@@ -60,25 +62,23 @@ INSTALLER_REF="${PERL_LSP_INSTALLER_REF:-}"
 EXPECTED_SHA256="${PERL_LSP_INSTALLER_SHA256:-}"
 
 if [ -z "$INSTALLER_REF" ]; then
-    fail "remote bootstrap requires PERL_LSP_INSTALLER_REF (a full commit SHA or release tag)"
+    fail "remote bootstrap requires PERL_LSP_INSTALLER_REF (a full lowercase commit SHA)"
 fi
 
-# A full commit SHA is immutable. A release tag is accepted only together with
-# the required content digest below, so a moved tag cannot change executed
-# bytes silently. Branch names, HEAD, slashes, whitespace, and shell-shaped
-# values are rejected rather than interpreted as raw GitHub refs.
+# Only a full commit SHA is immutable for both the piped wrapper and the
+# canonical installer fetch. Branch names, release tags, HEAD, slashes,
+# whitespace, and shell-shaped values are rejected rather than interpreted as
+# raw GitHub refs.
 valid_ref=false
 if [ "${#INSTALLER_REF}" -eq 40 ]; then
     case "$INSTALLER_REF" in
         *[!0-9a-f]*) ;;
         *) valid_ref=true ;;
     esac
-elif [[ "$INSTALLER_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-    valid_ref=true
 fi
 
 if [ "$valid_ref" != "true" ]; then
-    fail "PERL_LSP_INSTALLER_REF must be a full lowercase commit SHA or vX.Y.Z release tag"
+    fail "PERL_LSP_INSTALLER_REF must be a full lowercase commit SHA"
 fi
 
 if [ "${#EXPECTED_SHA256}" -ne 64 ]; then

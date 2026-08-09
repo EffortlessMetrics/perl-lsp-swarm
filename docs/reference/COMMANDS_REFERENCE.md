@@ -45,7 +45,7 @@ code --install-extension EffortlessMetrics.perl-lsp-rs
 # Download from https://github.com/EffortlessMetrics/perl-lsp/releases
 
 # Installer script (Linux/macOS) — identity-bound remote bootstrap once closeout publishes ref+digest
-INSTALLER_REF=<release-tag-or-full-commit-sha>
+INSTALLER_REF=<full-40-char-commit-sha>
 INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
 curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
   | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
