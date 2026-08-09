@@ -229,14 +229,26 @@ def _checkout_persists(lines: Sequence[str], use_index: int, use_indent: int) ->
     return True
 
 
+def _cargo_install_pin_surface(args: str) -> str:
+    """Keep pin checks on the cargo install argv, not later shell or comments."""
+    without_comment = args.split("#", 1)[0]
+    surface = without_comment
+    for separator in ("&&", "||", ";", "|"):
+        index = surface.find(separator)
+        if index != -1:
+            surface = surface[:index]
+    return surface.strip()
+
+
 def _cargo_install_is_pinned(command: str) -> bool:
+    pin_surface = _cargo_install_pin_surface(command)
     return bool(
-        re.search(r"(?:^|\s)--version(?:=|\s)\S+", command)
+        re.search(r"(?:^|\s)--version(?:=|\s)\S+", pin_surface)
         or (
-            re.search(r"(?:^|\s)--git(?:=|\s)\S+", command)
-            and re.search(r"(?:^|\s)--rev(?:=|\s)\S+", command)
+            re.search(r"(?:^|\s)--git(?:=|\s)\S+", pin_surface)
+            and re.search(r"(?:^|\s)--rev(?:=|\s)\S+", pin_surface)
         )
-        or re.search(r"(?:^|\s)--path(?:=|\s)\S+", command)
+        or re.search(r"(?:^|\s)--path(?:=|\s)\S+", pin_surface)
     )
 
 
