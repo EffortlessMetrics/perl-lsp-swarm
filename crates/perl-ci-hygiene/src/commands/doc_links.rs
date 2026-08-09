@@ -1,5 +1,6 @@
 use color_eyre::eyre::{Context, Result, eyre};
 use regex::Regex;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -8,6 +9,24 @@ use walkdir::WalkDir;
 /// Inline link body and destination after a live `[`.
 static LINK_BODY_RE: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"\[[^\]]*\]\(\s*<?([^\s)>]+)>?"));
+
+/// Reference link `[text][label]` or collapsed `[label][]`.
+static REFERENCE_LINK_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(
+        r"(?x)
+        \[
+            (?P<text>[^\]]*)
+        \]
+        \[
+            (?P<label>[^\]]*)
+        \]
+    ",
+    )
+});
+
+/// Reference definition at line start: `[label]: target`.
+static REFERENCE_DEF_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^\s{0,3}\[(?P<label>[^\]]+)\]:\s+<?(?P<target>[^>\s]+)>?"));
 
 /// An inline code span. ADR prose demonstrates Markdown syntax inside
 /// backticks; that text does not render as a link, so it must not be resolved
@@ -52,10 +71,12 @@ pub(crate) fn check_doc_links(repo_root: &Path, docs_dir: Option<&str>) -> Resul
 fn check_file(repo_root: &Path, canonical_root: &Path, path: &Path) -> Result<Vec<String>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read documentation file {}", path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let definitions = collect_reference_definitions(&lines)?;
     let mut failures = Vec::new();
     let mut fenced = false;
 
-    for (line_index, line) in content.lines().enumerate() {
+    for (line_index, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             fenced = !fenced;
@@ -65,46 +86,108 @@ fn check_file(repo_root: &Path, canonical_root: &Path, path: &Path) -> Result<Ve
             continue;
         }
 
-        for target in markdown_link_targets(line)? {
-            let Some(target_path) = local_target_path(repo_root, path, &target) else {
+        for target in markdown_inline_link_targets(line)? {
+            failures.extend(validate_local_target(
+                repo_root,
+                canonical_root,
+                path,
+                line_index,
+                &target,
+                None,
+            )?);
+        }
+
+        for reference_label in markdown_reference_link_labels(line)? {
+            let normalized = normalize_reference_label(&reference_label);
+            let Some(target) = definitions.get(&normalized) else {
+                failures.push(format!(
+                    "{}:{}: undefined reference [{}]",
+                    display_path(repo_root, path),
+                    line_index + 1,
+                    reference_label
+                ));
                 continue;
             };
-            if !target_path.exists() {
-                failures.push(format!(
-                    "{}:{}: missing target {}",
-                    display_path(repo_root, path),
-                    line_index + 1,
-                    target
-                ));
-                continue;
-            }
-            let canonical_target = fs::canonicalize(&target_path).with_context(|| {
-                format!("failed to resolve link target {}", target_path.display())
-            })?;
-            if !canonical_target.starts_with(canonical_root) {
-                failures.push(format!(
-                    "{}:{}: target escapes repository {}",
-                    display_path(repo_root, path),
-                    line_index + 1,
-                    target
-                ));
-            }
+            failures.extend(validate_local_target(
+                repo_root,
+                canonical_root,
+                path,
+                line_index,
+                target,
+                Some(&reference_label),
+            )?);
         }
     }
 
     Ok(failures)
 }
 
-fn markdown_link_targets(line: &str) -> Result<Vec<String>> {
-    let inline_code = INLINE_CODE_RE
+fn collect_reference_definitions(lines: &[&str]) -> Result<HashMap<String, String>> {
+    let reference_def = REFERENCE_DEF_RE
         .as_ref()
-        .map_err(|err| eyre!("failed to compile inline code matcher: {err}"))?;
+        .map_err(|err| eyre!("failed to compile reference definition matcher: {err}"))?;
+    let mut definitions = HashMap::new();
+    let mut fenced = false;
+
+    for line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+
+        let masked = mask_inline_code(line)?;
+        let Some(capture) = reference_def.captures(&masked) else {
+            continue;
+        };
+        let label = capture.name("label").map(|m| m.as_str()).unwrap_or_default();
+        let target = capture.name("target").map(|m| m.as_str()).unwrap_or_default();
+        if label.is_empty() || target.is_empty() {
+            continue;
+        }
+        definitions.entry(normalize_reference_label(label)).or_insert_with(|| target.to_owned());
+    }
+
+    Ok(definitions)
+}
+
+fn validate_local_target(
+    repo_root: &Path,
+    canonical_root: &Path,
+    path: &Path,
+    line_index: usize,
+    target: &str,
+    via_reference: Option<&str>,
+) -> Result<Vec<String>> {
+    let Some(target_path) = local_target_path(repo_root, path, target) else {
+        return Ok(Vec::new());
+    };
+
+    let display = display_path(repo_root, path);
+    let line = line_index + 1;
+    let via = via_reference.map(|label| format!(" (via reference [{label}])")).unwrap_or_default();
+
+    if !target_path.exists() {
+        return Ok(vec![format!("{display}:{line}: missing target {target}{via}")]);
+    }
+
+    let canonical_target = fs::canonicalize(&target_path)
+        .with_context(|| format!("failed to resolve link target {}", target_path.display()))?;
+    if canonical_target.starts_with(canonical_root) {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![format!("{display}:{line}: target escapes repository {target}{via}")])
+}
+
+fn markdown_inline_link_targets(line: &str) -> Result<Vec<String>> {
     let link_body = LINK_BODY_RE
         .as_ref()
         .map_err(|err| eyre!("failed to compile Markdown link matcher: {err}"))?;
-    // Blank out code spans rather than dropping them, so neighbouring text
-    // cannot be spliced together into a link that was never written.
-    let line = inline_code.replace_all(line, " ");
+    let line = mask_inline_code(line)?;
     let bytes = line.as_bytes();
     let mut targets = Vec::new();
     let mut i = 0;
@@ -127,6 +210,55 @@ fn markdown_link_targets(line: &str) -> Result<Vec<String>> {
     Ok(targets)
 }
 
+fn markdown_reference_link_labels(line: &str) -> Result<Vec<String>> {
+    let reference_link = REFERENCE_LINK_RE
+        .as_ref()
+        .map_err(|err| eyre!("failed to compile reference link matcher: {err}"))?;
+    let line = mask_inline_code(line)?;
+    let bytes = line.as_bytes();
+    let mut labels = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' && is_live_link_opener(bytes, i) {
+            if let Some(rest) = line.get(i..) {
+                if let Some(capture) = reference_link.captures(rest) {
+                    if capture.get(0).is_some_and(|full| full.start() == 0) {
+                        let text = capture.name("text").map(|m| m.as_str()).unwrap_or_default();
+                        let label = capture.name("label").map(|m| m.as_str()).unwrap_or_default();
+                        if label.is_empty() {
+                            if !text.is_empty() {
+                                labels.push(text.to_owned());
+                            }
+                        } else {
+                            labels.push(label.to_owned());
+                        }
+                        if let Some(full) = capture.get(0) {
+                            i += full.end();
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(labels)
+}
+
+fn mask_inline_code(line: &str) -> Result<String> {
+    let inline_code = INLINE_CODE_RE
+        .as_ref()
+        .map_err(|err| eyre!("failed to compile inline code matcher: {err}"))?;
+    // Blank out code spans rather than dropping them, so neighbouring text
+    // cannot be spliced together into a link that was never written.
+    Ok(inline_code.replace_all(line, " ").into_owned())
+}
+
+/// CommonMark reference labels are matched case-insensitively with collapsed whitespace.
+fn normalize_reference_label(label: &str) -> String {
+    label.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
+}
+
 /// A `[` starts a live link when it is preceded by an even number of backslashes.
 /// `\[escaped](x)` is literal text; `\\[live](x)` is a literal backslash plus link.
 fn is_live_link_opener(bytes: &[u8], bracket_index: usize) -> bool {
@@ -136,18 +268,12 @@ fn is_live_link_opener(bytes: &[u8], bracket_index: usize) -> bool {
         backslashes += 1;
         j -= 1;
     }
-    backslashes % 2 == 0
+    backslashes.is_multiple_of(2)
 }
 
 fn local_target_path(repo_root: &Path, source: &Path, target: &str) -> Option<PathBuf> {
     let target = target.split('#').next()?.split('?').next()?.trim();
-    if target.is_empty()
-        || target.starts_with("http://")
-        || target.starts_with("https://")
-        || target.starts_with("mailto:")
-        || target.starts_with("file:")
-        || target.starts_with("command:")
-    {
+    if target.is_empty() || is_external_uri_target(target) {
         return None;
     }
 
@@ -156,6 +282,16 @@ fn local_target_path(repo_root: &Path, source: &Path, target: &str) -> Option<Pa
     } else {
         source.parent()?.join(target)
     })
+}
+
+/// URI schemes are case-insensitive (RFC 3986); do not treat them as repo-local paths.
+fn is_external_uri_target(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("file:")
+        || lower.starts_with("command:")
 }
 
 fn resolve_docs_path(repo_root: &Path, docs_dir: &str) -> PathBuf {
@@ -176,7 +312,10 @@ fn display_path(repo_root: &Path, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_doc_links, check_file, markdown_link_targets};
+    use super::{
+        check_doc_links, check_file, collect_reference_definitions, markdown_inline_link_targets,
+        markdown_reference_link_labels,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -220,6 +359,105 @@ mod tests {
         let exit_code = check_doc_links(&root, None)?;
         if exit_code != 0 {
             return Err(format!("expected clean-link result, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_accepts_resolvable_reference_links() -> TestResult {
+        let root = unique_temp_dir("reference-clean")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        fs::write(docs.join("target.md"), "target\n")?;
+        fs::write(
+            docs.join("source.md"),
+            "See [guide][ref] and [target][].\n\n[ref]: target.md\n[target]: target.md\n",
+        )?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(format!("expected clean reference links, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_rejects_reference_link_to_missing_file() -> TestResult {
+        let root = unique_temp_dir("reference-missing-target")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        let source = docs.join("source.md");
+        fs::write(&source, "See [guide][ref].\n\n[ref]: missing.md\n")?;
+        let canonical_root = fs::canonicalize(&root)?;
+
+        let failures = check_file(&root, &canonical_root, &source)?;
+        if failures.len() != 1 || !failures[0].contains("missing target missing.md") {
+            return Err(format!("expected missing target failure, got {failures:?}").into());
+        }
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 1 {
+            return Err(format!("expected broken reference target, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_rejects_undefined_reference_label() -> TestResult {
+        let root = unique_temp_dir("reference-undefined")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        let source = docs.join("source.md");
+        fs::write(&source, "See [guide][missing].\n")?;
+        let canonical_root = fs::canonicalize(&root)?;
+
+        let failures = check_file(&root, &canonical_root, &source)?;
+        if failures.len() != 1 || !failures[0].contains("undefined reference [missing]") {
+            return Err(format!("expected undefined reference failure, got {failures:?}").into());
+        }
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 1 {
+            return Err(format!("expected undefined reference failure, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_ignores_uppercase_uri_scheme_reference_targets() -> TestResult {
+        let root = unique_temp_dir("reference-uppercase-uri")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        fs::write(docs.join("source.md"), "See [guide][ref].\n\n[ref]: HTTPS://example.com\n")?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(
+                format!("expected external URI reference to be ignored, got {exit_code}").into()
+            );
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_ignores_reference_definitions_in_fenced_blocks_and_inline_code() -> TestResult
+    {
+        let root = unique_temp_dir("reference-ignored-defs")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        fs::write(
+            docs.join("source.md"),
+            "See [guide][ref].\n\n```\n[ref]: missing.md\n```\n\nWrite `[ref]: missing.md` in prose.\n",
+        )?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 1 {
+            return Err(format!("expected undefined reference failure, got {exit_code}").into());
         }
         fs::remove_dir_all(root)?;
         Ok(())
@@ -335,34 +573,107 @@ mod tests {
     fn markdown_link_targets_ignores_inline_code_and_escaped_links() -> TestResult {
         // ADRs that document Markdown syntax must not be rejected: neither
         // form renders as a link, so neither is a resolvable target.
-        let live = markdown_link_targets("see [guide](../reference/GUIDE.md) for detail")?;
+        let live = markdown_inline_link_targets("see [guide](../reference/GUIDE.md) for detail")?;
         if live != vec!["../reference/GUIDE.md".to_string()] {
             return Err(format!("expected the live link target, got {live:?}").into());
         }
 
-        let in_code = markdown_link_targets("write it as `[literal](missing.md)` in prose")?;
+        let in_code = markdown_inline_link_targets("write it as `[literal](missing.md)` in prose")?;
         if !in_code.is_empty() {
             return Err(format!("inline code must yield no targets, got {in_code:?}").into());
         }
 
-        let escaped = markdown_link_targets(r"escape it as \[literal](missing.md) instead")?;
+        let escaped = markdown_inline_link_targets(r"escape it as \[literal](missing.md) instead")?;
         if !escaped.is_empty() {
             return Err(format!("an escaped link must yield no targets, got {escaped:?}").into());
         }
 
         let doubled =
-            markdown_link_targets(r"write \\[live](missing.md) after a literal backslash")?;
+            markdown_inline_link_targets(r"write \\[live](missing.md) after a literal backslash")?;
         if doubled != vec!["missing.md".to_string()] {
             return Err(format!("a doubled-backslash link must stay live, got {doubled:?}").into());
         }
 
         // A code span inside a link *label* still leaves a real link, so the
         // target must remain checked -- masking must not swallow the link.
-        let labelled = markdown_link_targets("[the `Foo` type](../reference/FOO.md)")?;
+        let labelled = markdown_inline_link_targets("[the `Foo` type](../reference/FOO.md)")?;
         if labelled != vec!["../reference/FOO.md".to_string()] {
             return Err(
                 format!("code in a link label must keep the target, got {labelled:?}").into()
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_reference_link_labels_resolve_explicit_and_collapsed_forms() -> TestResult {
+        let explicit = markdown_reference_link_labels("see [guide][ref] for detail")?;
+        if explicit != vec!["ref".to_string()] {
+            return Err(format!("expected explicit reference label, got {explicit:?}").into());
+        }
+
+        let collapsed = markdown_reference_link_labels("see [target][] for detail")?;
+        if collapsed != vec!["target".to_string()] {
+            return Err(format!("expected collapsed reference label, got {collapsed:?}").into());
+        }
+
+        let in_code = markdown_reference_link_labels("write `[guide][ref]` in prose")?;
+        if !in_code.is_empty() {
+            return Err(
+                format!("inline code must yield no reference labels, got {in_code:?}").into()
+            );
+        }
+
+        let escaped = markdown_reference_link_labels(r"escape it as \[guide][ref] instead")?;
+        if !escaped.is_empty() {
+            return Err(
+                format!("an escaped reference link must yield no labels, got {escaped:?}").into()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn collect_reference_definitions_preserves_first_duplicate_label() -> TestResult {
+        let lines = vec!["[ref]: existing.md", "[ref]: missing.md"];
+        let defs = collect_reference_definitions(&lines)?;
+        if defs.get("ref") != Some(&"existing.md".to_string()) {
+            return Err(format!("expected first duplicate definition to win, got {defs:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_normalizes_reference_label_whitespace() -> TestResult {
+        let root = unique_temp_dir("reference-label-whitespace")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        fs::write(docs.join("target.md"), "target\n")?;
+        fs::write(docs.join("source.md"), "See [guide][foo   bar].\n\n[foo bar]: target.md\n")?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(
+                format!("expected normalized reference label to resolve, got {exit_code}").into()
+            );
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn collect_reference_definitions_ignores_fenced_blocks_and_inline_code() -> TestResult {
+        let lines = vec![
+            "[live]: target.md",
+            "```",
+            "[fenced]: missing.md",
+            "```",
+            "prose `[inline]: missing.md` here",
+        ];
+        let defs = collect_reference_definitions(&lines)?;
+        if defs.len() != 1 || defs.get("live") != Some(&"target.md".to_string()) {
+            return Err(format!("expected only the live definition, got {defs:?}").into());
         }
         Ok(())
     }
