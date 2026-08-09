@@ -37,7 +37,7 @@ impl LspServer {
                     if let Some(response) = self.handle_request(request) {
                         // Log and send response via outbound channel
                         log_response(&response);
-                        self.outbound.send_response(response)?;
+                        self.outbound_sink().send_response(response)?;
                     }
                 }
                 None => {
