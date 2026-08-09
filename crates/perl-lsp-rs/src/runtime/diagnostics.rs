@@ -1367,21 +1367,22 @@ impl LspServer {
         let start_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.0);
         let end_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.1);
 
-        let mut diag = json!({
-            "range": {
-                "start": { "line": start_pos.0, "character": start_pos.1 },
-                "end": { "line": end_pos.0, "character": end_pos.1 },
-            },
-            "severity": match d.severity {
-                InternalDiagnosticSeverity::Error => 1,
-                InternalDiagnosticSeverity::Warning => 2,
-                InternalDiagnosticSeverity::Information => 3,
-                InternalDiagnosticSeverity::Hint => 4,
-            },
-            "code": d.code,
-            "source": diagnostic_source(d.code.as_deref()),
-            "message": Self::diagnostic_message_value(&d.message, None, markup_message_support),
-        });
+        let severity = match d.severity {
+            InternalDiagnosticSeverity::Error => 1,
+            InternalDiagnosticSeverity::Warning => 2,
+            InternalDiagnosticSeverity::Information => 3,
+            InternalDiagnosticSeverity::Hint => 4,
+        };
+        let code_str = d.code.as_deref().unwrap_or("");
+        let message_val = Self::diagnostic_message_value(&d.message, None, markup_message_support);
+
+        let mut diag = diagnostic_json(
+            start_pos.0, start_pos.1, end_pos.0, end_pos.1,
+            severity,
+            code_str,
+            &diagnostic_source(d.code.as_deref()),
+            message_val.as_str().unwrap_or("").to_string(),
+        );
 
         if !d.tags.is_empty() {
             diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
