@@ -74,6 +74,14 @@ impl fmt::Display for VariableReferenceError {
 
 impl std::error::Error for VariableReferenceError {}
 
+impl perl_parser_core::ErrorClass for VariableReferenceError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // Fires only from ScopeKind::try_from with an invalid discriminant —
+        // an internal contract violation, not user input.
+        perl_parser_core::ErrorCategory::Bug
+    }
+}
+
 /// The kind of scope a `Scope` variable reference points to within a stack frame.
 ///
 /// Wire values: Locals=1, Package=2, Globals=3, Arguments=4.

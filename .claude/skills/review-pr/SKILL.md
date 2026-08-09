@@ -44,6 +44,12 @@ was entered separately.
 When a lens is absent, stale, contradictory, or materially changed, invoke
 `orchestrate-work` only for missing dimensions:
 
+- **claim-vs-code** — extract each property the PR title and body assert, then verify
+  each one against the diff. Run this first on irreversible or security-boundary
+  changes: it is cheap, needs no build, and catches the case where the body asserts a
+  property the diff does not deliver. A pin that names a version but resolves to a
+  different commit, a guard described as covering a set that it only partly covers, and
+  a claim of a clean tree that means a clean *tracked* tree are all this shape;
 - `review-tests` for proof discrimination, historical-defect controls,
   schema/validator agreement, and false-green tests;
 - `review-candidate` for implementation correctness, semantic ownership, production
@@ -56,9 +62,37 @@ When a lens is absent, stale, contradictory, or materially changed, invoke
 
 A useful child brief names the exact PR/candidate, claim, settled facts, authorities,
 one read-only question, named skill, falsifiers, required evidence, uncertainty, and
-non-goals. Use ordinary subagents/context forks for independent returns; use an Agent
-Team only when lateral communication changes the result. Do not ask vague agents to
-repeat the same review.
+non-goals.
+
+**Decompose the claim into individually checkable propositions and check each one.**
+A claim like "the guard binds publishing to a clean tree" is a chain, and a chain fails
+if any single link does. Split it — the guard runs before every publish attempt; the
+guard's notion of dirty covers the set that gets packaged; the packaged set has no
+member the guard cannot see — then check each proposition separately against source.
+Report each as confirmed, refuted, or `NOT_PROVEN`. This is the difference between a
+reviewer who agrees and a reviewer who found the one link that does not hold.
+
+Give the child concrete attack hypotheses, phrased as the specific way the claim would
+fail if it were wrong. "Check whether the guard is correct" returns agreement; "can a
+failed first attempt leave the tree dirty for attempts 2 and 3?" returns a defect or a
+reasoned refutation, and both are useful. When the lane root already holds a positive
+read, send *that read* out to be falsified rather than asserting it on its own
+authority.
+
+**Differing directions beat additional reviewers.** When two lenses examine the same
+surface, give them different sources, oracles, methods, or threat models. Two reviewers
+once examined the same flag on the same line and reached opposite verdicts: one cleared
+`git ls-files --exclude-standard` while reasoning about build artifacts, the other found
+that a gitignored file matched by a crate's packaging-include pattern still gets
+packaged. Same evidence, different threat model, different answer — and the second was
+right. Agents briefed the same way share a blind spot, so their agreement is not
+corroboration. An external oracle, a production-path trace, and a proof-discrimination
+pass over one seam are three directions; three subagents asked "is this correct?" are
+one.
+
+Use ordinary subagents/context forks for independent returns; use an Agent Team only
+when lateral communication changes the result. Do not ask vague agents to repeat the
+same review.
 
 ### Mutation owner and join
 
@@ -77,6 +111,11 @@ Return candidate/head and claim identity, cumulative seams/live consumers, lense
 searched scope, authorities/falsifiers, proof/production-route conclusions, findings
 with severity/evidence/disposition, contradictions, prior dispositions, limitations/
 `NOT_PROVEN`, GitHub-fact snapshot, substantive result, and next route.
+
+Each lens returns its attempted angles with outcomes, including the ones that came back
+refuted. A child that reports only what it found hides where it looked, and the lane
+root cannot then tell whether two lenses covered one surface from the same direction or
+from different ones.
 
 ## Required review procedure
 
@@ -147,6 +186,17 @@ certification cannot create `REVIEW_CURRENT`.
 ```markdown
 ## Review scope
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
+
+## Propositions checked
+<!-- Include when the claim decomposes into more than one substantive proposition;
+     omit for mechanical changes such as a typo, a rename, or a lockfile bump. -->
+- One entry per proposition, naming the hypothesis attacked, its outcome —
+  confirmed | refuted | NOT_PROVEN — and the source or command that settled it. A lens
+  name plus a bare verdict is not an entry: it says no more than an angle nobody
+  attempted.
+- Refuted propositions belong here, not omitted — they record what was attacked and
+  survived. Two reviewers who both report only findings look like agreement; two who
+  report their propositions reveal whether they checked the same one
 
 ## Evidence and falsifiers
 - Commands, tests, fixtures, sources, or authorities used

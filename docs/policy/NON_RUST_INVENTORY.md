@@ -7,10 +7,10 @@
 | Metric | Count |
 |---|---|
 | Total tracked files | 10178 |
-| Rust-family files | 3080 |
-| Non-Rust files | 7098 |
+| Rust-family files | 3082 |
+| Non-Rust files | 7096 |
 | Allowlisted | 4784 |
-| Unclassified | 2314 |
+| Unclassified | 2312 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 211 |
 | test | 1753 |
 | tooling | 328 |
-| unclassified | 2314 |
+| unclassified | 2312 |
 
 ## Unclassified files
 
@@ -285,8 +285,6 @@
 | `crates/perl-parser/tests/data/features_minimal.toml` | `toml` |
 | `crates/perl-parser/tests/fixtures/.perltidyrc` | `` |
 | `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | `disabled` |
-| `crates/perl-parser/tests/snapshots/ga_lock_capabilities.json` | `json` |
-| `crates/perl-parser/tests/snapshots/production_capabilities.json` | `json` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |

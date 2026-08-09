@@ -37,6 +37,7 @@ pub(crate) struct GeneratedMemberFact {
 struct WalkCtx {
     current_package: Option<String>,
     accessor_framework_active: bool,
+    dbix_class_active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,11 +68,13 @@ fn walk(node: &Node, file_id: FileId, ctx: &mut WalkCtx, out: &mut Vec<Generated
                 let saved = ctx.clone();
                 ctx.current_package = Some(name.clone());
                 ctx.accessor_framework_active = false;
+                ctx.dbix_class_active = false;
                 walk(block, file_id, ctx, out);
                 *ctx = saved;
             } else {
                 ctx.current_package = Some(name.clone());
                 ctx.accessor_framework_active = false;
+                ctx.dbix_class_active = false;
             }
         }
         NodeKind::Use { module, args, .. } if is_accessor_framework_module(module) => {
@@ -83,9 +86,23 @@ fn walk(node: &Node, file_id: FileId, ctx: &mut WalkCtx, out: &mut Vec<Generated
         NodeKind::No { module, .. } if is_accessor_framework_module(module) => {
             ctx.accessor_framework_active = false;
         }
+        NodeKind::Use { module, .. } if is_dbix_class_module(module) => {
+            ctx.dbix_class_active = true;
+        }
+        NodeKind::Use { module, args, .. }
+            if (module == "base" || module == "parent") && use_args_include_dbix_class(args) =>
+        {
+            ctx.dbix_class_active = true;
+        }
+        NodeKind::No { module, .. } if is_dbix_class_module(module) => {
+            ctx.dbix_class_active = false;
+        }
         NodeKind::ExpressionStatement { expression } => {
             if ctx.accessor_framework_active {
                 extract_has_call(expression, file_id, ctx, out);
+            }
+            if ctx.dbix_class_active {
+                extract_dbix_class_call(expression, file_id, ctx, out);
             }
         }
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
@@ -150,6 +167,52 @@ fn extract_has_call(
         return;
     };
     emit_members_for_names(&args[..options_idx], pairs, file_id, ctx, out);
+}
+
+fn extract_dbix_class_call(
+    expression: &Node,
+    file_id: FileId,
+    ctx: &WalkCtx,
+    out: &mut Vec<GeneratedMemberFact>,
+) {
+    let NodeKind::MethodCall { object, method, args } = &expression.kind else {
+        return;
+    };
+    if !package_target_matches_current_package(object, ctx) {
+        return;
+    }
+
+    let package = ctx.current_package.as_deref().unwrap_or("main");
+    match method.as_str() {
+        "add_columns" => {
+            let mut arg_idx = 0;
+            while arg_idx < args.len() {
+                if let (Some(key), Some(value)) = (args.get(arg_idx), args.get(arg_idx + 1))
+                    && dbix_column_pair_shape(key, value)
+                {
+                    if let Some(candidate) = dbix_column_accessor_candidate_from_pair(key, value) {
+                        push_member(package, &candidate.name, &candidate, file_id, out);
+                    }
+                    arg_idx += 2;
+                } else {
+                    for candidate in collect_dbix_column_accessor_candidates(&args[arg_idx]) {
+                        push_member(package, &candidate.name, &candidate, file_id, out);
+                    }
+                    arg_idx += 1;
+                }
+            }
+        }
+        "has_many" | "belongs_to" | "has_one" | "might_have" => {
+            if let Some(first_arg) = args.first() {
+                for candidate in collect_name_candidates(first_arg) {
+                    if is_dbix_relationship_name(&candidate.name) {
+                        push_member(package, &candidate.name, &candidate, file_id, out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn emit_members_for_names(
@@ -322,6 +385,51 @@ fn collect_name_candidates(node: &Node) -> Vec<NameCandidate> {
         }
         _ => Vec::new(),
     }
+}
+
+fn collect_dbix_column_accessor_candidates(node: &Node) -> Vec<NameCandidate> {
+    match &node.kind {
+        NodeKind::HashLiteral { pairs } => pairs
+            .iter()
+            .filter_map(|(key, value)| dbix_column_accessor_candidate_from_pair(key, value))
+            .collect(),
+        NodeKind::Binary { op, left, right } if op == "=>" => {
+            dbix_column_accessor_candidate_from_pair(left, right).into_iter().collect()
+        }
+        NodeKind::Binary { op, left, right } if op == "," => {
+            let mut names = collect_dbix_column_accessor_candidates(left);
+            names.extend(collect_dbix_column_accessor_candidates(right));
+            names
+        }
+        _ => collect_name_candidates(node),
+    }
+}
+
+fn dbix_column_accessor_candidate_from_pair(key: &Node, value: &Node) -> Option<NameCandidate> {
+    let key_candidate = collect_name_candidates(key).into_iter().next()?;
+    let column_name = normalize_attribute_name(&key_candidate.name)?;
+    let accessor = if let NodeKind::HashLiteral { pairs: option_pairs } = &value.kind {
+        extract_hash_options(option_pairs).get("accessor").cloned()
+    } else {
+        None
+    };
+    let name = accessor.unwrap_or(column_name);
+    Some(NameCandidate {
+        name,
+        span_start: key_candidate.span_start,
+        span_end: key_candidate.span_end,
+    })
+}
+
+fn dbix_column_pair_shape(key: &Node, value: &Node) -> bool {
+    matches!(key.kind, NodeKind::String { .. } | NodeKind::Identifier { .. })
+        && matches!(value.kind, NodeKind::HashLiteral { .. })
+}
+
+fn use_args_include_dbix_class(args: &[String]) -> bool {
+    args.iter()
+        .flat_map(|arg| expand_symbol_list(arg.trim()))
+        .any(|name| is_dbix_class_module(&name))
 }
 
 fn class_tiny_default_hash_pairs(statement: &Node) -> Option<&[(Node, Node)]> {
@@ -523,6 +631,31 @@ fn is_accessor_framework_module(module: &str) -> bool {
     )
 }
 
+fn is_dbix_class_module(module: &str) -> bool {
+    matches!(module, "DBIx::Class" | "DBIx::Class::Core")
+}
+
+fn is_dbix_relationship_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn package_target_matches_current_package(object: &Node, ctx: &WalkCtx) -> bool {
+    let current_package = ctx.current_package.as_deref().unwrap_or("main");
+    match &object.kind {
+        NodeKind::Identifier { name } => name == "__PACKAGE__" || name == current_package,
+        NodeKind::String { value, .. } => {
+            normalize_symbol_name(value).is_some_and(|name| name == current_package)
+        }
+        NodeKind::Variable { sigil, name } if sigil == "$" => name == current_package,
+        _ => false,
+    }
+}
+
 fn is_class_tiny_module(module: &str) -> bool {
     matches!(module, "Class::Tiny" | "Class::Tiny::RW")
 }
@@ -652,6 +785,148 @@ has 'color';
 
         let names = canonical_names(&facts);
         assert!(names.contains(&"Shape::color"));
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_add_columns_emit_generated_member_facts() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let facts = extract_from_source(
+            r#"
+package MyApp::Schema::Result::User;
+use DBIx::Class;
+__PACKAGE__->add_columns(qw/id name email/);
+1;
+"#,
+        );
+
+        let names = canonical_names(&facts);
+        assert!(
+            names.contains(&"MyApp::Schema::Result::User::id"),
+            "expected generated member for column id"
+        );
+        assert!(
+            names.contains(&"MyApp::Schema::Result::User::name"),
+            "expected generated member for column name"
+        );
+        assert!(
+            names.contains(&"MyApp::Schema::Result::User::email"),
+            "expected generated member for column email"
+        );
+
+        let fact = generated_fact(&facts, "MyApp::Schema::Result::User::id")?;
+        assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
+        assert_eq!(fact.entity.provenance, Provenance::FrameworkSynthesis);
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_has_many_emits_generated_member_fact() -> Result<(), Box<dyn std::error::Error>> {
+        let facts = extract_from_source(
+            r#"
+package MyApp::Schema::Result::Author;
+use DBIx::Class::Core;
+__PACKAGE__->has_many('posts', 'MyApp::Schema::Result::Post', 'author_id');
+1;
+"#,
+        );
+
+        let names = canonical_names(&facts);
+        assert!(
+            names.contains(&"MyApp::Schema::Result::Author::posts"),
+            "expected generated member for relationship posts"
+        );
+        let fact = generated_fact(&facts, "MyApp::Schema::Result::Author::posts")?;
+        assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_detected_from_base_inheritance_emits_generated_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = extract_from_source(
+            r#"
+package MyApp::Schema::Result::Album;
+use base 'DBIx::Class::Core';
+__PACKAGE__->add_columns(qw/albumid title/);
+1;
+"#,
+        );
+
+        let names = canonical_names(&facts);
+        assert!(
+            names.contains(&"MyApp::Schema::Result::Album::albumid"),
+            "base inheritance must activate DBIx synthesis for albumid"
+        );
+        assert!(
+            names.contains(&"MyApp::Schema::Result::Album::title"),
+            "base inheritance must activate DBIx synthesis for title"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_add_columns_honors_accessor_metadata_in_workspace_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = extract_from_source(
+            r#"
+package MyApp::Schema::Result::Album;
+use DBIx::Class::Core;
+__PACKAGE__->add_columns(
+    albumid => { data_type => 'integer', accessor => 'album' },
+);
+1;
+"#,
+        );
+
+        let names = canonical_names(&facts);
+        assert!(
+            names.contains(&"MyApp::Schema::Result::Album::album"),
+            "accessor metadata must be synthesized"
+        );
+        assert!(
+            !names.contains(&"MyApp::Schema::Result::Album::albumid"),
+            "column key must not be synthesized when accessor metadata overrides it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_not_emitted_for_moo_package_with_add_columns()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = extract_from_source(
+            r#"
+package MyApp::User;
+use Moo;
+has 'name' => (is => 'ro');
+__PACKAGE__->add_columns(qw/id/);
+1;
+"#,
+        );
+
+        let names = canonical_names(&facts);
+        assert!(
+            !names.iter().any(|name| name.ends_with("::id")),
+            "Moo packages must not synthesize DBIx column accessors"
+        );
+        assert!(names.contains(&"MyApp::User::name"));
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_not_emitted_without_framework_import() -> Result<(), Box<dyn std::error::Error>> {
+        let facts = extract_from_source(
+            r#"
+package Plain::Package;
+__PACKAGE__->add_columns(qw/id/);
+1;
+"#,
+        );
+
+        assert!(
+            facts.is_empty(),
+            "add_columns without DBIx::Class must not synthesize generated members"
+        );
         Ok(())
     }
 }
