@@ -600,7 +600,11 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text_arc.to_string(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (
+                        k.clone(),
+                        v.text_arc.to_string(),
+                        v.current_parsed().and_then(|p| p.ast().cloned()),
+                    )
                 })
                 .collect()
         };
@@ -971,7 +975,11 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text_arc.to_string(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (
+                        k.clone(),
+                        v.text_arc.to_string(),
+                        v.current_parsed().and_then(|p| p.ast().cloned()),
+                    )
                 })
                 .collect()
         };
@@ -1839,7 +1847,10 @@ impl LspServer {
                     let idx = coordinator.index();
                     let open_documents: Vec<(String, String)> = {
                         let documents = self.documents.lock();
-                        documents.iter().map(|(uri, doc)| (uri.clone(), doc.text_arc.to_string())).collect()
+                        documents
+                            .iter()
+                            .map(|(uri, doc)| (uri.clone(), doc.text_arc.to_string()))
+                            .collect()
                     };
                     let deleting_uris: std::collections::HashSet<String> = files
                         .iter()
@@ -2676,8 +2687,9 @@ impl LspServer {
                             if let Some(coordinator) = self.coordinator() {
                                 coordinator.notify_change(uri);
                                 if let Ok(url) = url::Url::parse(uri) {
-                                    if let Err(e) =
-                                        coordinator.index().index_file(url, doc.text_arc.to_string())
+                                    if let Err(e) = coordinator
+                                        .index()
+                                        .index_file(url, doc.text_arc.to_string())
                                     {
                                         tracing::warn!("Failed to re-index file {}: {}", uri, e);
                                     }

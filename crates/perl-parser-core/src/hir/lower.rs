@@ -3528,12 +3528,7 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Opaque { ast_kind: "Regex".to_string() }, range)
             }
 
-            NodeKind::Match {
-                expr,
-                has_embedded_code,
-                negated: _,
-                ..
-            } => {
+            NodeKind::Match { expr, has_embedded_code, negated: _, .. } => {
                 // Lower the matched expression so variable reads are captured.
                 // The match itself is modeled as a Call so effect analysis can
                 // see it as a potential code-execution site when
