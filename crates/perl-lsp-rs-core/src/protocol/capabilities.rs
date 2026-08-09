@@ -523,8 +523,8 @@ mod tests {
             other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
         };
 
-        // Every one of these kinds must be advertised.
-        let required: &[&str] = &[
+        // Duplicate the full ordered list from sections.rs::code_action_kinds().
+        let expected: &[&str] = &[
             "quickfix",
             "source.organizeImports",
             "refactor",
@@ -533,19 +533,11 @@ mod tests {
             "source.fixAll",
             "source.modernize",
         ];
-        for expected in required {
-            assert!(
-                kinds.iter().any(|k| k == expected),
-                "codeActionKinds must contain \"{expected}\""
-            );
-        }
-
-        // `refactor.inline` must NOT be advertised — no action is implemented.
-        assert!(
-            !kinds.iter().any(|k| k == "refactor.inline"),
-            "codeActionKinds must NOT contain \"refactor.inline\" \
-             (no inline action is implemented; advertising it causes clients \
-             to send executeCommand requests the server cannot handle)"
+        assert_eq!(
+            kinds.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected,
+            "codeActionKinds must match the exact ordered list — extra kinds (e.g. \
+             refactor.inline) or omissions (e.g. source.modernize) break client filtering"
         );
     }
 
@@ -717,10 +709,19 @@ mod tests {
         let flags = BuildFlags { document_symbol: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        assert!(
-            caps.document_symbol_provider.is_some(),
-            "documentSymbolProvider must be advertised when document_symbol is enabled"
-        );
+        match caps.document_symbol_provider.as_ref() {
+            Some(OneOf::Left(true)) => {}
+            Some(OneOf::Left(false)) => {
+                panic!(
+                    "documentSymbolProvider must be true when document_symbol is enabled, \
+                     not false"
+                );
+            }
+            other => panic!(
+                "documentSymbolProvider must be Some(true) when document_symbol is enabled, \
+                 got {other:?}"
+            ),
+        }
     }
 
     /// Assert `documentSymbolProvider` is absent when the flag is disabled.
