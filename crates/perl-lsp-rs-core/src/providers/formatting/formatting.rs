@@ -65,9 +65,7 @@ impl perl_parser_core::ErrorClass for FormattingError {
     fn error_class(&self) -> perl_parser_core::ErrorCategory {
         match self {
             // External tool missing or IO failure — infrastructure issue.
-            Self::PerltidyNotFound(_) | Self::IoError(_) => {
-                perl_parser_core::ErrorCategory::Infra
-            }
+            Self::PerltidyNotFound(_) | Self::IoError(_) => perl_parser_core::ErrorCategory::Infra,
             // Perltidy reported a problem — usually the user's Perl has a
             // syntax error that perltidy cannot format.
             Self::PerltidyError(_) => perl_parser_core::ErrorCategory::UserError,
