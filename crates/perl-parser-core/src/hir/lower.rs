@@ -3521,14 +3521,19 @@ impl<'a> BodyBuilder2<'a> {
             // or replacement can execute arbitrary Perl code via (?{...}) or
             // the /e modifier. Lower the matched expression as a structured
             // child so variable reads are captured.
-            NodeKind::Regex { has_embedded_code, .. } => {
+            NodeKind::Regex { has_embedded_code: _, .. } => {
                 // A bare regex literal (qr//) has no target expression to lower.
                 // Model as Opaque but tag it so effect analysis can check for
                 // embedded code without string sniffing.
                 self.alloc_expr(HirExpr::Opaque { ast_kind: "Regex".to_string() }, range)
             }
 
-            NodeKind::Match { expr, has_embedded_code, negated, .. } => {
+            NodeKind::Match {
+                expr,
+                has_embedded_code,
+                negated: _,
+                ..
+            } => {
                 // Lower the matched expression so variable reads are captured.
                 // The match itself is modeled as a Call so effect analysis can
                 // see it as a potential code-execution site when
