@@ -506,4 +506,46 @@ mod tests {
             "OUTBOUND_CAPACITY should match the inbound scheduler QUEUE_CAPACITY (64)"
         );
     }
+
+    /// Verify that a handler using &dyn OutboundSink can send a notification
+    /// and a RecordingSink captures it (#5015 PR-2).
+    ///
+    /// This test demonstrates the migration pattern: a handler function
+    /// accepts `&dyn OutboundSink` instead of `&LspServer`, enabling
+    /// unit testing without constructing the full server.
+    #[test]
+    fn outbound_sink_trait_works_with_recording_sink() {
+        fn send_diagnostics_notification(sink: &dyn OutboundSink, uri: &str) -> io::Result<()> {
+            sink.send_notification(
+                "textDocument/publishDiagnostics",
+                json!({ "uri": uri, "diagnostics": [] }),
+            )
+        }
+
+        let sink = RecordingSink::new();
+        send_diagnostics_notification(&sink, "file:///test.pl").unwrap();
+
+        let messages = sink.drain();
+        assert_eq!(messages.len(), 1, "exactly one message should be recorded");
+        match &messages[0] {
+            OutboundMessage::Notification { method, params } => {
+                assert_eq!(method, "textDocument/publishDiagnostics");
+                assert_eq!(params["uri"], "file:///test.pl");
+            }
+            _ => panic!("expected Notification, got something else"),
+        }
+    }
+
+    /// Verify that OutboundSender also satisfies the OutboundSink trait,
+    /// so production code and test code share the same interface (#5015 PR-2).
+    #[test]
+    fn outbound_sender_satisfies_sink_trait() {
+        fn accept_sink(sink: &dyn OutboundSink) -> io::Result<()> {
+            sink.send_notification("test/method", json!({}))
+        }
+
+        let (sender, _handle) = spawn_writer(Box::new(std::io::sink()));
+        // This compiles only if OutboundSender implements OutboundSink.
+        accept_sink(&sender).unwrap();
+    }
 }
