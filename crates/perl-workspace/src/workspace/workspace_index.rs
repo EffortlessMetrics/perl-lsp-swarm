@@ -1110,6 +1110,12 @@ pub enum ReferenceKind {
     Definition,
     /// General usage of the symbol (function call, method call)
     Usage,
+    /// Dynamic or static method dispatch stored under its bare method name.
+    ///
+    /// Method dispatch is kept distinct from a bare function usage because a
+    /// qualified lookup may need to retain it for the rename layer's
+    /// inheritance-aware resolution.
+    MethodCall,
     /// Import via use statement
     Import,
     /// Variable read access
@@ -3022,7 +3028,11 @@ impl WorkspaceIndex {
     }
 
     fn bare_reference_matches_package(sym_ref: &SymbolReference, package: &str) -> bool {
-        sym_ref.package.as_deref() == Some(package)
+        // Bare function references carry their defining package and must stay
+        // filtered (#6110). Method dispatch is different: an instance receiver
+        // can resolve through inheritance, so the rename layer must retain the
+        // method reference and apply its receiver/inheritance checks.
+        sym_ref.package.as_deref() == Some(package) || sym_ref.kind == ReferenceKind::MethodCall
     }
 
     /// Find all definitions of a symbol, including duplicates across files.
@@ -4675,7 +4685,7 @@ impl WorkspaceIndex {
 /// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
 /// |---|---|---|
 /// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by `IndexVisitor::project_symbol_declarations`, which calls `extract_symbol_decls(ast, Some("main"))` | [`EntityFact`] + [`AnchorFact`] via `extract_symbol_decls(ast, None)` -> `symbol_decls_to_semantic_facts` |
-/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
+/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,MethodCall,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
 /// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
@@ -5324,7 +5334,7 @@ impl IndexVisitor {
                 file_index.references.entry(method.clone()).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
-                    kind: ReferenceKind::Usage,
+                    kind: ReferenceKind::MethodCall,
                     package: None,
                 });
 
@@ -5962,7 +5972,7 @@ impl IndexVisitor {
                 file_index.references.entry(method.clone()).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
-                    kind: ReferenceKind::Usage,
+                    kind: ReferenceKind::MethodCall,
                     package: None,
                 });
 
@@ -7523,6 +7533,41 @@ sub other { foo(); return 1; }
             "bare foo() in PkgB must not appear in PkgA::foo references"
         );
         assert!(refs.len() >= 1, "PkgA::foo references must include same-package sites");
+    }
+
+    #[test]
+    fn test_find_refs_qualified_retains_inherited_method_dispatch() {
+        let index = WorkspaceIndex::new();
+        let base_uri = "file:///Base.pm";
+        let child_uri = "file:///Child.pm";
+        let base = r#"
+package Base;
+sub shared { return 1; }
+"#;
+        let child = r#"
+package Child;
+use parent 'Base';
+sub run {
+    my ($self) = @_;
+    return $self->shared;
+}
+"#;
+
+        must(index.index_file(must(url::Url::parse(base_uri)), base.to_string()));
+        must(index.index_file(must(url::Url::parse(child_uri)), child.to_string()));
+
+        let key = SymbolKey {
+            pkg: Arc::from("Base"),
+            name: Arc::from("shared"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+        let refs = index.find_refs(&key);
+
+        assert!(
+            refs.iter().any(|location| location.uri == child_uri),
+            "qualified method lookup must retain inherited arrow dispatch; got {refs:?}"
+        );
     }
 
     #[test]
