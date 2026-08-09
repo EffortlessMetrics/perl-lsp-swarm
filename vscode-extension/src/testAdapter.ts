@@ -176,7 +176,7 @@ export function runBoundedProcess(
         output_limit: `Process output exceeded the ${maxOutputBytes}-byte capture limit.`,
         cancelled: 'Process execution was cancelled.',
       }[outcome];
-      (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
+      void (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
     };
 
     const onAbort = (): void => requestTermination('cancelled');
