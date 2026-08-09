@@ -5,15 +5,70 @@ use super::outbound::OutboundSink;
 #[cfg(feature = "workspace")]
 use super::types::ServerRequestId;
 #[cfg(feature = "workspace")]
+use perl_parser::workspace_index::IndexState;
+#[cfg(feature = "workspace")]
 use serde_json::json;
 
 #[cfg(feature = "workspace")]
 pub(crate) const WORKSPACE_INDEX_PROGRESS_TOKEN: &str = "workspace-index";
 
 #[cfg(feature = "workspace")]
-pub(super) fn send_index_ready_notification(outbound: &dyn OutboundSink, ready: bool) {
-    if let Err(e) = outbound.send_notification("perl-lsp/index-ready", json!({ "ready": ready })) {
+pub(super) fn send_index_ready_notification(outbound: &dyn OutboundSink, state: &IndexState) {
+    let payload = index_readiness_payload(state);
+    if let Err(e) = outbound.send_notification("perl-lsp/index-ready", payload) {
         tracing::warn!(error = %e, "Failed to send index-ready notification");
+    }
+}
+
+#[cfg(feature = "workspace")]
+fn index_readiness_payload(state: &IndexState) -> serde_json::Value {
+    let (ready, state_name, reason) = match state {
+        IndexState::Building { .. } => (false, "building", None),
+        IndexState::Ready { .. } => (true, "ready", None),
+        IndexState::Degraded { reason, .. } => {
+            (false, "ready_limited", Some(format!("{reason:?}")))
+        }
+    };
+
+    let mut payload = json!({
+        "ready": ready,
+        "state": state_name,
+    });
+    if let Some(reason) = reason {
+        payload["reason"] = json!(reason);
+    }
+    payload
+}
+
+#[cfg(all(test, feature = "workspace"))]
+mod tests {
+    use super::index_readiness_payload;
+    use perl_parser::workspace_index::{DegradationReason, IndexState, ResourceKind};
+    use std::time::Instant;
+
+    #[test]
+    fn degraded_index_readiness_is_transportable_as_limited() -> Result<(), String> {
+        let payload = index_readiness_payload(&IndexState::Degraded {
+            reason: DegradationReason::ResourceLimit {
+                kind: ResourceKind::MaxFiles,
+            },
+            available_symbols: 12,
+            since: Instant::now(),
+        });
+
+        if payload.get("ready").and_then(|value| value.as_bool()) != Some(false) {
+            return Err(format!("unexpected ready flag: {payload}"));
+        }
+        if payload.get("state").and_then(|value| value.as_str()) != Some("ready_limited") {
+            return Err(format!("unexpected readiness state: {payload}"));
+        }
+        if payload.get("reason").and_then(|value| value.as_str())
+            != Some("ResourceLimit { kind: MaxFiles }")
+        {
+            return Err(format!("unexpected readiness reason: {payload}"));
+        }
+
+        Ok(())
     }
 }
 
