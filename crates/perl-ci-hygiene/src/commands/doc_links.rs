@@ -276,6 +276,43 @@ mod tests {
     }
 
     #[test]
+    fn check_doc_links_exact_error_variant() -> TestResult {
+        let root = unique_temp_dir("exact-error-variant")?;
+        let err = check_doc_links(&root, Some("docs/does-not-exist"))
+            .expect_err("expected docs directory missing error");
+        let message = err.to_string();
+        if !message.contains("Docs directory not found") || !message.contains("does-not-exist") {
+            return Err(format!("unexpected missing-directory error: {message}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_boundary_discriminator() -> TestResult {
+        let root = unique_temp_dir("boundary-discriminator")?;
+        let docs = root.join("docs/adr");
+        // Directory whose name ends in `.md` exercises the `!is_file()` disjunct.
+        fs::create_dir_all(docs.join("ignored.md"))?;
+        // Real file with a non-markdown extension exercises the extension disjunct.
+        fs::write(docs.join("notes.txt"), "[missing](missing.md)\n")?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(format!("skip-only tree should pass, got {exit_code}").into());
+        }
+
+        // Positive control: the same broken-link text in a real `.md` file must fail.
+        fs::write(docs.join("live.md"), "[missing](missing.md)\n")?;
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 1 {
+            return Err(format!("live .md broken link must fail, got {exit_code}").into());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn check_doc_links_errors_when_docs_directory_is_missing() -> TestResult {
         // A mistyped or moved docs directory must fail loudly. Returning Ok(0)
         // here would report "no broken links" for a tree that was never read.
