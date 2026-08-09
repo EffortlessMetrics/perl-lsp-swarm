@@ -14,6 +14,7 @@ use perl_module::path::module_name_to_path;
 use perl_parser_core::SourceLocation;
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
+    class_model::{ClassModel, MethodResolutionOrder},
     receiver_facts::{
         ReceiverFact, ReceiverFactContext, ReceiverFactFreshness, ReceiverFallbackState,
         ReceiverKind, receiver_fact_for_method_call,
@@ -2143,23 +2144,181 @@ mod visible_symbol_completion_tests {
     }
 }
 
-/// Collect all method symbols accessible from a package, following parent/role chains.
+/// Maximum depth for cross-file workspace MRO traversal. Prevents runaway
+/// traversal on pathologically deep or circular `@ISA` chains in the workspace.
+const MAX_MRO_WORKSPACE_TRAVERSAL_DEPTH: usize = 32;
+
+/// Retrieve and cache a package's [`ClassModel`] from the workspace index.
 ///
-/// Performs BFS over the inheritance graph starting at `package_name`, collecting
-/// subroutine and method symbols from each package in the resolution order.
-/// Child-defined methods shadow parent methods — the first occurrence of each name wins.
+/// Parses the package's source file on first access and stores the result in
+/// `cache`. Returns `None` — and caches the failure — when the package is not
+/// indexed, the source is unavailable, parsing fails, or no `ClassModel` with
+/// `name == pkg` exists in the analysed file.
+fn cached_class_model(
+    index: &WorkspaceIndex,
+    pkg: &str,
+    cache: &mut HashMap<String, Option<ClassModel>>,
+) -> Option<ClassModel> {
+    cache
+        .entry(pkg.to_string())
+        .or_insert_with(|| {
+            let pkg_location = index.find_definition(pkg)?;
+            let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
+                perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+                    .and_then(|path| std::fs::read_to_string(path).ok())
+            })?;
+            let mut parser = perl_semantic_analyzer::Parser::new(&text);
+            let ast = parser.parse().ok()?;
+            perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
+                .class_models
+                .into_iter()
+                .find(|model| model.name == pkg)
+        })
+        .clone()
+}
+
+/// Compute the cross-file depth-first (`@ISA`) ancestor order for `package`.
+///
+/// Returns the package list beginning with `package` itself, followed by each
+/// `@ISA` parent and that parent's own ancestors in depth-first order — matching
+/// Perl's default method-resolution behaviour. Role entries are excluded; callers
+/// append them separately so role-composition semantics remain distinct from
+/// `@ISA` MRO.
+fn mro_dfs_order(
+    package: &str,
+    index: &WorkspaceIndex,
+    cache: &mut HashMap<String, Option<ClassModel>>,
+) -> Vec<String> {
+    fn walk(
+        pkg: &str,
+        index: &WorkspaceIndex,
+        cache: &mut HashMap<String, Option<ClassModel>>,
+        seen: &mut HashSet<String>,
+        result: &mut Vec<String>,
+        depth: usize,
+    ) {
+        if depth >= MAX_MRO_WORKSPACE_TRAVERSAL_DEPTH || !seen.insert(pkg.to_string()) {
+            return;
+        }
+        result.push(pkg.to_string());
+        let parents = cached_class_model(index, pkg, cache).map(|m| m.parents).unwrap_or_default();
+        for parent in parents {
+            walk(&parent, index, cache, seen, result, depth + 1);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    walk(package, index, cache, &mut seen, &mut result, 0);
+    result
+}
+
+/// Compute the cross-file C3 linearization for `package`.
+///
+/// Returns the C3-ordered package list beginning with `package` itself, following
+/// only `@ISA` parent chains (not role composition). On cycles or inconsistent
+/// hierarchies the algorithm degrades to a best-effort ordering rather than
+/// panicking, preserving the fail-soft contract of the workspace completion path.
+///
+/// The algorithm mirrors [`SemanticAnalyzer::c3_ancestor_order`] applied to a
+/// lazily-parsed cross-file class-model map, avoiding a second independent C3
+/// implementation.
+fn mro_c3_order(
+    package: &str,
+    index: &WorkspaceIndex,
+    cache: &mut HashMap<String, Option<ClassModel>>,
+) -> Vec<String> {
+    fn linearize(
+        pkg: &str,
+        index: &WorkspaceIndex,
+        cache: &mut HashMap<String, Option<ClassModel>>,
+        visiting: &mut HashSet<String>,
+        depth: usize,
+    ) -> Vec<String> {
+        if depth >= MAX_MRO_WORKSPACE_TRAVERSAL_DEPTH || !visiting.insert(pkg.to_string()) {
+            return vec![pkg.to_string()];
+        }
+        let parents = cached_class_model(index, pkg, cache).map(|m| m.parents).unwrap_or_default();
+        if parents.is_empty() {
+            visiting.remove(pkg);
+            return vec![pkg.to_string()];
+        }
+        // Build per-parent linearizations with an independent visiting clone per
+        // sibling branch, mirroring SemanticAnalyzer::c3_ancestor_order so that
+        // the same algorithm drives both same-file and cross-file resolution.
+        let mut parent_mros: Vec<Vec<String>> = parents
+            .iter()
+            .map(|p| linearize(p, index, cache, &mut visiting.clone(), depth + 1))
+            .collect();
+        parent_mros.push(parents.clone());
+
+        let mut result = vec![pkg.to_string()];
+        loop {
+            parent_mros.retain(|list| !list.is_empty());
+            if parent_mros.is_empty() {
+                break;
+            }
+            // Pick the first candidate head that does not appear in the tail
+            // of any other linearization list (the core C3 merge step).
+            let chosen = parent_mros.iter().find_map(|list| {
+                let head = list.first()?;
+                let in_tail =
+                    parent_mros.iter().any(|other| other.iter().skip(1).any(|name| name == head));
+                if in_tail { None } else { Some(head.clone()) }
+            });
+            match chosen {
+                Some(name) => {
+                    if !result.contains(&name) {
+                        result.push(name.clone());
+                    }
+                    for list in &mut parent_mros {
+                        if list.first().is_some_and(|h| h == &name) {
+                            list.remove(0);
+                        }
+                    }
+                }
+                None => {
+                    // Inconsistent or cyclic hierarchy — take remaining heads in
+                    // declaration order as a fail-soft fallback.
+                    for list in parent_mros {
+                        if let Some(head) = list.first()
+                            && !result.contains(head)
+                        {
+                            result.push(head.clone());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        visiting.remove(pkg);
+        result
+    }
+
+    linearize(package, index, cache, &mut HashSet::new(), 0)
+}
+
+/// Collect all method symbols accessible from a package, following parent/role chains
+/// in the package's configured method-resolution order.
+///
+/// Traverses the inheritance graph beginning at `package_name` and collects
+/// subroutine and method symbols from each package in the correct resolution order:
+///
+/// - Packages declaring `use mro 'c3'` are traversed using C3 linearization.
+/// - All other packages use Perl's default depth-first (`@ISA`) traversal.
+///
+/// Child-defined methods shadow parent methods — the first occurrence of each name
+/// wins. Role-consumed methods are appended immediately after the consuming package
+/// in visit order, keeping role-composition semantics distinct from `@ISA` MRO.
 ///
 /// Edge-case handling:
-/// - Diamond inheritance: BFS visited-set prevents duplicate traversal.
-/// - Circular `@ISA`: visited-set prevents infinite loops.
+/// - Diamond inheritance: depth-bounded visited-set prevents duplicate traversal.
+/// - Circular `@ISA`: depth guard and visited-set prevent infinite loops.
 /// - Package not indexed: `get_package_members` returns `Vec::new()` gracefully.
 /// - `use parent -norequire`: already handled by `ClassModelBuilder`; model.parents
 ///   contains the parent names regardless.
-///
-/// NOTE: C3 MRO ordering is NOT honoured — this uses BFS (breadth-first), which
-/// approximates but does not exactly match C3 for complex diamond hierarchies.
-/// This is a pre-existing approximation shared with `navigation.rs`. A follow-up
-/// issue should address strict C3 ordering if it becomes important (see issue #3482).
+/// - Missing or unparseable source: `cached_class_model` returns `None`, falling
+///   back to DFS and skipping roles for that package.
 pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
@@ -2167,72 +2326,53 @@ pub(super) fn collect_all_package_members(
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
 
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
+    // Class-model cache: avoids re-parsing the same source file for each ancestor.
+    let mut model_cache: HashMap<String, Option<ClassModel>> = HashMap::new();
 
-    // Cache of package_name → list of parent/role package names, populated lazily.
-    let mut related_cache: HashMap<String, Vec<String>> = HashMap::new();
+    // Determine the MRO configured for the receiver package. Defaults to DFS when
+    // the package is not indexed or carries no OO class declaration, matching
+    // Perl's built-in default behaviour.
+    let receiver_mro = cached_class_model(index, package_name, &mut model_cache)
+        .map(|m| m.mro)
+        .unwrap_or_default();
 
-    // Collect related packages (parents + roles) for a given package by parsing
-    // its source file from the workspace index or filesystem.
-    let collect_related = |pkg: &str, cache: &mut HashMap<String, Vec<String>>| -> Vec<String> {
-        cache
-            .entry(pkg.to_string())
-            .or_insert_with(|| {
-                let Some(pkg_location) = index.find_definition(pkg) else {
-                    return Vec::new();
-                };
-
-                let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                    perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                        .and_then(|path| std::fs::read_to_string(path).ok())
-                });
-
-                let Some(text) = text else {
-                    return Vec::new();
-                };
-
-                let mut parser = perl_semantic_analyzer::Parser::new(&text);
-                let Ok(ast) = parser.parse() else {
-                    return Vec::new();
-                };
-
-                perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
-                    .class_models
-                    .into_iter()
-                    .find(|model| model.name == pkg)
-                    .map(|model| {
-                        model.parents.iter().chain(model.roles.iter()).cloned().collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .clone()
+    // Build the MRO-ordered ancestor list following only @ISA parents.
+    // Role composition is handled separately below to preserve its distinct semantics.
+    let isa_order: Vec<String> = match receiver_mro {
+        MethodResolutionOrder::Dfs => mro_dfs_order(package_name, index, &mut model_cache),
+        MethodResolutionOrder::C3 => mro_c3_order(package_name, index, &mut model_cache),
     };
 
-    // Start with the receiver package itself
-    queue.push_back(package_name.to_string());
-    visited.insert(package_name.to_string());
+    // Expand each @ISA ancestor with its consumed roles (roles are appended
+    // immediately after the package that consumes them). This surfaces role
+    // methods at the same "level" as the consuming package without applying
+    // @ISA MRO semantics to the role graph itself.
+    let mut visit_order: Vec<String> = Vec::new();
+    let mut visited_in_expansion: HashSet<String> = HashSet::new();
+    for pkg in &isa_order {
+        if visited_in_expansion.insert(pkg.clone()) {
+            visit_order.push(pkg.clone());
+        }
+        if let Some(model) = cached_class_model(index, pkg, &mut model_cache) {
+            for role in &model.roles {
+                if visited_in_expansion.insert(role.clone()) {
+                    visit_order.push(role.clone());
+                }
+            }
+        }
+    }
 
-    while let Some(pkg) = queue.pop_front() {
-        // Collect direct members for this package
-        let members = index.get_package_members(&pkg);
+    // Collect members in resolved visit order. First occurrence of each name wins
+    // (child/nearer ancestor definition shadows parent/role definitions).
+    for pkg in &visit_order {
+        let members = index.get_package_members(pkg);
         for symbol in members {
-            // Only include subroutines and methods
             match symbol.kind {
                 WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
                 _ => continue,
             }
-            // Child wins: skip if a closer ancestor already provided this name
             if seen_names.insert(symbol.name.clone()) {
                 result.push(symbol);
-            }
-        }
-
-        // Enqueue ancestor packages
-        let related = collect_related(&pkg, &mut related_cache);
-        for ancestor in related {
-            if visited.insert(ancestor.clone()) {
-                queue.push_back(ancestor);
             }
         }
     }
@@ -2261,4 +2401,158 @@ fn find_assignment_eq(line: &str) -> Option<usize> {
         return Some(i);
     }
     None
+}
+
+#[cfg(test)]
+mod mro_ordering_tests {
+    //! Discriminating proof for issue #6326: `collect_all_package_members` must honour
+    //! the receiver package's configured method-resolution order when deciding which
+    //! ancestor definition wins a name collision.
+    //!
+    //! The fixture uses a cross-file diamond hierarchy where the DFS and C3 orderings
+    //! disagree on which ancestor provides `shared_method`:
+    //!
+    //! ```text
+    //!       A  ← defines shared_method (base version)
+    //!      / \
+    //!     B   C  ← C overrides shared_method
+    //!      \ /
+    //!       D  ← @ISA = ('B', 'C'); MRO determines winner
+    //! ```
+    //!
+    //! DFS traversal of D: D → B → A → C  (A visited before C; A wins)
+    //! C3 linearization of D: D → B → C → A  (C visited before A; C wins)
+    //! BFS (the previous implementation): D → B → C → A  (same as C3; was wrong for DFS)
+
+    use super::{WorkspaceIndex, collect_all_package_members};
+    use std::sync::Arc;
+    use url::Url;
+
+    /// Build a cross-file diamond inheritance workspace.
+    ///
+    /// - `A`: defines `shared_method` (base) and `a_only_method`
+    /// - `B`: inherits A, defines `b_only_method`
+    /// - `C`: inherits A, overrides `shared_method`, defines `c_only_method`
+    /// - `DFSChild`: @ISA = ('B', 'C'), default DFS MRO
+    /// - `C3Child`: @ISA = ('B', 'C'), `use mro 'c3'`
+    fn build_diamond_workspace() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+        let index = Arc::new(WorkspaceIndex::new());
+        index.index_file(
+            Url::parse("file:///diamond/A.pm")?,
+            "package A;\nsub shared_method { 'A' }\nsub a_only_method { 'A' }\n1;\n".to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///diamond/B.pm")?,
+            "package B;\nuse parent 'A';\nsub b_only_method { 'B' }\n1;\n".to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///diamond/C.pm")?,
+            "package C;\nuse parent 'A';\nsub shared_method { 'C' }\nsub c_only_method { 'C' }\n1;\n".to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///diamond/DFSChild.pm")?,
+            "package DFSChild;\nuse parent 'B', 'C';\n1;\n".to_string(),
+        )?;
+        index.index_file(
+            Url::parse("file:///diamond/C3Child.pm")?,
+            "package C3Child;\nuse parent 'B', 'C';\nuse mro 'c3';\n1;\n".to_string(),
+        )?;
+        Ok(index)
+    }
+
+    /// DFS traversal order for `DFSChild` is D → B → A → C, so A's `shared_method`
+    /// must win over C's because A is encountered before C in depth-first order.
+    ///
+    /// The prior BFS implementation incorrectly returned C's definition (BFS visits B
+    /// and C at the same depth before descending into A, giving D→B→C→A).
+    #[test]
+    fn dfs_mro_credits_depth_first_winner() -> Result<(), Box<dyn std::error::Error>> {
+        let index = build_diamond_workspace()?;
+        let members = collect_all_package_members(&index, "DFSChild");
+
+        let shared = members
+            .iter()
+            .find(|s| s.name == "shared_method")
+            .expect("shared_method must appear in DFSChild's member set");
+        assert_eq!(
+            shared.container_name.as_deref(),
+            Some("A"),
+            "DFS order (DFSChild→B→A→C) must credit A as the provider of shared_method, \
+             not C; container was {:?}",
+            shared.container_name
+        );
+        Ok(())
+    }
+
+    /// C3 linearization order for `C3Child` is D → B → C → A, so C's `shared_method`
+    /// must win over A's because C3 places C before A (local-precedence rule).
+    #[test]
+    fn c3_mro_credits_c3_linearization_winner() -> Result<(), Box<dyn std::error::Error>> {
+        let index = build_diamond_workspace()?;
+        let members = collect_all_package_members(&index, "C3Child");
+
+        let shared = members
+            .iter()
+            .find(|s| s.name == "shared_method")
+            .expect("shared_method must appear in C3Child's member set");
+        assert_eq!(
+            shared.container_name.as_deref(),
+            Some("C"),
+            "C3 order (C3Child→B→C→A) must credit C as the provider of shared_method, \
+             not A; container was {:?}",
+            shared.container_name
+        );
+        Ok(())
+    }
+
+    /// Every unique method across the diamond must still be reachable regardless of MRO.
+    /// Ordering changes only which ancestor wins the shadowed name, not reachability.
+    #[test]
+    fn both_mros_surface_all_unique_methods() -> Result<(), Box<dyn std::error::Error>> {
+        let index = build_diamond_workspace()?;
+
+        for pkg in &["DFSChild", "C3Child"] {
+            let members = collect_all_package_members(&index, pkg);
+            let names: Vec<&str> = members.iter().map(|s| s.name.as_str()).collect();
+            for expected in &["shared_method", "a_only_method", "b_only_method", "c_only_method"] {
+                assert!(
+                    names.contains(expected),
+                    "{expected} must be reachable from {pkg}; got {names:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// `shared_method` appears exactly once in the result set — the child-wins rule
+    /// must deduplicate conflicting definitions from ancestor packages.
+    #[test]
+    fn mro_deduplicates_shadowed_name() -> Result<(), Box<dyn std::error::Error>> {
+        let index = build_diamond_workspace()?;
+
+        for pkg in &["DFSChild", "C3Child"] {
+            let members = collect_all_package_members(&index, pkg);
+            let count = members.iter().filter(|s| s.name == "shared_method").count();
+            assert_eq!(
+                count, 1,
+                "{pkg}: shared_method must appear exactly once (shadowing), found {count}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A package with no `@ISA` and no class declaration still works: the function
+    /// returns its own members without panicking when the model cache returns `None`.
+    #[test]
+    fn missing_class_model_degrades_to_direct_members() -> Result<(), Box<dyn std::error::Error>> {
+        let index = build_diamond_workspace()?;
+        // `A` is a plain package with no `use parent` — no full ClassModel may be
+        // returned if its only declaration is `package A;` without OO framework use.
+        // The function must not panic and must return at least A's own methods.
+        let members = collect_all_package_members(&index, "A");
+        let names: Vec<&str> = members.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"shared_method"), "A's own shared_method must be returned");
+        assert!(names.contains(&"a_only_method"), "A's own a_only_method must be returned");
+        Ok(())
+    }
 }
