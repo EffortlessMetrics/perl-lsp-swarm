@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Executes an ordered review programme over one fixed artifact, loading each lens skill just in time, and posts its own durable review. Cannot edit.
+model: sonnet
 tools: Read, Grep, Glob, Bash, TodoWrite, WebSearch, WebFetch, Skill
 color: red
 ---
@@ -51,9 +52,10 @@ Review a **committed** SHA, never a dirty tree. A finding citing `file:line` has
 verifiable after the commit is pushed and the PR opens, and citations into uncommitted
 work cannot be checked later — which makes the review row unfalsifiable.
 
-State the SHA you examined. You may be reviewing a local worktree before anything is
-pushed; that is normal and costs no CI, and the object becomes durable when that same
-commit is pushed.
+State the SHA you examined. Pin reads and proof to that object: `git rev-parse HEAD`
+must equal the reviewed SHA (or check out that commit in a detached head / dedicated
+worktree) before file reads or proof commands. When the tree is not yet pushed, review
+the local commit object itself; citations become durable when that same commit is pushed.
 
 ## Publishing
 

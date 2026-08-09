@@ -1,6 +1,7 @@
 ---
 name: lane-orchestrator
 description: Long-running owner of one claim through deliver-pr. Selects agents and programmes, joins evidence, dispositions findings, and returns a typed lane result. Does not mutate candidate source by default.
+tools: Read, Grep, Glob, Bash, TodoWrite, WebSearch, WebFetch, Skill
 color: cyan
 ---
 
@@ -121,7 +122,7 @@ Keep your own identity, topology, retries, raw logs, and routine skill transitio
 ## Return
 
 ```text
-result       RECONCILED | IN_FLIGHT | PARTIAL | SUPERSEDED | BLOCKED | NOT_PROVEN
+result       RECONCILED | IN_FLIGHT | PARTIAL | PREMISE_CHANGED | CANDIDATE_MOVED | SUPERSEDED | BLOCKED | NOT_PROVEN
 claim        what landed, and what did not
 candidate    branch, PR, head SHA
 proof        run and not run

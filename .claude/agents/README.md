@@ -55,16 +55,16 @@ is a *re-warmed* one. With a five-minute subagent window, that has sharp consequ
 - **keep a subagent alive only if its next task is under five minutes away.** Past that
   the cache is gone, and a respawn costs the same as re-warming without paying for the
   idle. "Long-running" has to mean *continuously busy*, not merely long-lived;
-- when an agent reports finishing, use it immediately or stop it. Waiting ten minutes and
+- **when an agent reports finishing, use it immediately or stop it.** Waiting ten minutes and
   then re-tasking the same agent is the worst available option — you pay the idle and the
   re-warm and gain nothing over a fresh spawn;
 - **batch the queue.** Five tasks sent at once stay inside one warm window; five tasks
   sent over an hour pay five cold starts;
-- a long local build inside a subagent will outlive its own cache. A cold workspace
+- **a long local build inside a subagent will outlive its own cache.** A cold workspace
   compile here runs about twelve minutes, so a proof agent that triggers one returns
   cold. Reuse a warm `target/`, or run the long build from the main thread where the
   one-hour window covers it;
-- the orchestrator's hour is the only durable warm context in the system. Keep synthesis,
+- **the orchestrator's hour is the only durable warm context in the system.** Keep synthesis,
   claim state, and cross-lane judgment there, and spend subagents in bursts.
 
 The state to avoid is **alive and unattended**. A steered lane is cheap; a lane idling
@@ -77,8 +77,8 @@ Agents can message each other and be messaged mid-flight. Use it for facts that
 not for status.
 
 This removes the orchestrator-as-message-bus bottleneck. Where a fact would otherwise be
-rediscovered independently by several lanes, prefer one long-running holder the others
-query over each deriving it separately and disagreeing.
+rediscovered independently by several lanes, prefer one long-running holder that the others
+query, rather than each deriving it separately and disagreeing.
 
 Because a running agent can be asked, silence is no longer opaque: query it before
 reasoning about its artifacts, and before concluding anything about ownership. See
@@ -140,7 +140,7 @@ bounded unit of work, then issues itself a checklist to **execute** it.
 | --- | --- | --- | --- | --- |
 | `researcher` | one-shot or standing | GitHub only | no | research, archaeology, external truth, issue currency |
 | `builder` | one candidate, while work is imminent | files | yes | `spec-to-test` → build → harden → simplify → proof → repair |
-| `reviewer` | one subject, one programme | GitHub only | only to run proof | an ordered review programme over a fixed artifact |
+| `reviewer` | one subject, one programme | GitHub only | no (reviews committed SHA in caller checkout) | an ordered review programme over a fixed artifact |
 | `lane-orchestrator` | one claim, steered | none by default | no | `deliver-pr`; selects programmes, dispositions findings |
 
 The campaign orchestrator is the main session, not a file.
