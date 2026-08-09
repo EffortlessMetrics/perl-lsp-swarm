@@ -299,6 +299,27 @@
         "sha256": {
           "$ref": "#/$defs/sha256"
         },
+        "source_artifact_path": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "candidate_id": {
           "type": "string",
           "minLength": 1
@@ -326,6 +347,10 @@
             }
           ]
         }
+      },
+      "dependentRequired": {
+        "source_artifact_path": ["source_sha256"],
+        "source_sha256": ["source_artifact_path"]
       }
     },
     "child_receipts": {

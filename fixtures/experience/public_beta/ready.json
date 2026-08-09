@@ -1,7 +1,7 @@
 {
   "check": "public-beta-experience",
   "schema_version": "public_beta_experience.v1",
-  "status": "ready",
+  "status": "not_proven",
   "claim_boundary": "Candidate-bound conjunction of the v0.18 VS Code public-beta experience; other editors retain ordinary LSP claims without equivalent UI proof.",
   "candidate": {
     "release": "0.18.0",

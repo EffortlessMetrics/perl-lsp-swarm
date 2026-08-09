@@ -8,7 +8,7 @@
 #![allow(clippy::print_stdout)]
 
 use clap::Parser;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -52,8 +52,7 @@ const REQUIRED_PROJECT_FAMILIES: [&str; 5] = [
 const EXPECTED_EDITOR: &str = "VS Code is the first-class installed experience.";
 const EXPECTED_OTHER_EDITORS: &str =
     "Standard LSP compatibility only; no equivalent UI-polish claim.";
-const EXPECTED_DYNAMIC_PERL: &str =
-    "Bounded fallback, degraded answer, or refusal with an intelligible reason; never manufactured certainty.";
+const EXPECTED_DYNAMIC_PERL: &str = "Bounded fallback, degraded answer, or refusal with an intelligible reason; never manufactured certainty.";
 
 #[derive(Debug, Parser)]
 #[command(name = "public-beta-experience")]
@@ -128,6 +127,17 @@ enum InputStatus {
     NotProven,
 }
 
+impl InputStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Limited => "limited",
+            Self::Blocked => "blocked",
+            Self::NotProven => "not_proven",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CandidateIdentity {
@@ -193,6 +203,8 @@ struct ReceiptRef {
     artifact_path: String,
     schema_version: String,
     sha256: String,
+    source_artifact_path: Option<String>,
+    source_sha256: Option<String>,
     candidate_id: String,
     status: InputStatus,
     claim_boundary: String,
@@ -221,6 +233,7 @@ struct VerifiedChildArtifact {
     candidate_id: String,
     frozen_product_sha: String,
     artifact_set_id: String,
+    source_receipt_sha256: Option<String>,
     status: InputStatus,
     claim_boundary: String,
     limitation: Option<String>,
@@ -268,6 +281,10 @@ fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
         bail!("{field} must be exactly {} hexadecimal characters", bytes * 2);
     }
     Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn issue_identity(value: &str, field: &str) -> Result<()> {
@@ -360,6 +377,22 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
             bail!("child_receipts.{name} must use schema {expected_schema}");
         }
         exact_hex(&child.sha256, 32, &format!("child_receipts.{name}.sha256"))?;
+        match (&child.source_artifact_path, &child.source_sha256) {
+            (Some(path), Some(digest)) => {
+                non_empty(path, &format!("child_receipts.{name}.source_artifact_path"))?;
+                exact_hex(digest, 32, &format!("child_receipts.{name}.source_sha256"))?;
+                let source_path = Path::new(path);
+                if source_path.is_absolute()
+                    || source_path.components().any(|component| component == Component::ParentDir)
+                {
+                    bail!(
+                        "child_receipts.{name}.source_artifact_path must stay below the receipt directory"
+                    );
+                }
+            }
+            (None, None) => {}
+            _ => bail!("child_receipts.{name} source path and digest must be provided together"),
+        }
         non_empty(&child.claim_boundary, &format!("child_receipts.{name}.claim_boundary"))?;
         if child.owner_issue != expected_owner {
             bail!("child_receipts.{name} must be owned by {expected_owner}");
@@ -383,9 +416,6 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
         }
     }
 
-    if receipt.child_receipts.release_topology.sha256 != receipt.candidate.release_topology_sha256 {
-        bail!("release_topology child digest differs from candidate topology digest");
-    }
     Ok(())
 }
 
@@ -398,7 +428,7 @@ fn load_verified_child_artifact(
     let path = artifact_root.join(&child.artifact_path);
     let bytes = fs::read(&path)
         .with_context(|| format!("reading child receipt artifact {name}: {}", path.display()))?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let digest = sha256_hex(&bytes);
     if digest != child.sha256 {
         bail!("child_receipts.{name} digest does not match artifact bytes");
     }
@@ -422,6 +452,9 @@ fn load_verified_child_artifact(
     if artifact.artifact_set_id != receipt.candidate.artifact_set_id {
         bail!("child_receipts.{name} artifact belongs to a different artifact set");
     }
+    if artifact.source_receipt_sha256 != child.source_sha256 {
+        bail!("child_receipts.{name} source digest differs from the verified artifact");
+    }
     if artifact.status != child.status || artifact.claim_boundary != child.claim_boundary {
         bail!("child_receipts.{name} metadata differs from the verified artifact");
     }
@@ -431,10 +464,170 @@ fn load_verified_child_artifact(
     Ok(())
 }
 
+fn validate_source_receipt(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    artifact_root: &Path,
+) -> Result<()> {
+    let (Some(source_path), Some(source_sha256)) =
+        (&child.source_artifact_path, &child.source_sha256)
+    else {
+        return Ok(());
+    };
+    let path = artifact_root.join(source_path);
+    let bytes = fs::read(&path)
+        .with_context(|| format!("reading source receipt {name}: {}", path.display()))?;
+    let digest = sha256_hex(&bytes);
+    if digest != *source_sha256 {
+        bail!("child_receipts.{name} source digest does not match artifact bytes");
+    }
+    let source: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing source receipt {name}: {}", path.display()))?;
+    match child.schema_version.as_str() {
+        "installed_acceptance.v1" => {
+            validate_installed_acceptance_source(name, child, receipt, &source)?;
+        }
+        "release_topology.v1" => {
+            validate_release_topology_source(name, child, receipt, &source)?;
+        }
+        _ => validate_canonical_source_receipt(name, child, receipt, &source)?,
+    }
+    Ok(())
+}
+
+fn validate_canonical_source_receipt(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    source: &serde_json::Value,
+) -> Result<()> {
+    if source.get("schema_version").and_then(serde_json::Value::as_str)
+        != Some(child.schema_version.as_str())
+    {
+        bail!("child_receipts.{name} source schema differs from the declared schema");
+    }
+    if source.get("status").and_then(serde_json::Value::as_str) != Some(child.status.as_str()) {
+        bail!("child_receipts.{name} source status differs from the declared status");
+    }
+    let source_candidate = source
+        .get("candidate")
+        .and_then(|candidate| candidate.get("candidate_id"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("child_receipts.{name} source lacks candidate identity")
+        })?;
+    if source_candidate != receipt.candidate.candidate_id {
+        bail!("child_receipts.{name} source belongs to a different candidate");
+    }
+    Ok(())
+}
+
+fn validate_installed_acceptance_source(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    source: &serde_json::Value,
+) -> Result<()> {
+    let schema_version = source.get("schema_version").ok_or_else(|| {
+        color_eyre::eyre::eyre!("child_receipts.{name} installed-acceptance source lacks schema_version")
+    })?;
+    if schema_version.as_i64() != Some(1) {
+        bail!("child_receipts.{name} installed-acceptance source must use schema_version 1");
+    }
+    let outcome = source
+        .get("outcome")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("child_receipts.{name} installed-acceptance source lacks outcome")
+        })?;
+    let known_limitations = source
+        .get("known_limitations")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    let derived_status = match outcome {
+        "failed" => InputStatus::Blocked,
+        "completed" if known_limitations > 0 => InputStatus::Limited,
+        "completed" => InputStatus::Pass,
+        _ => bail!("child_receipts.{name} installed-acceptance source has unknown outcome"),
+    };
+    if derived_status != child.status {
+        bail!("child_receipts.{name} installed-acceptance source status differs from the declared status");
+    }
+    let repository_sha = source
+        .get("repository_sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} installed-acceptance source lacks repository_sha"
+            )
+        })?;
+    if repository_sha != receipt.candidate.frozen_product_sha {
+        bail!("child_receipts.{name} installed-acceptance source belongs to a different frozen product");
+    }
+    Ok(())
+}
+
+fn validate_release_topology_source(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    source: &serde_json::Value,
+) -> Result<()> {
+    if source.get("schema").and_then(serde_json::Value::as_i64) != Some(1) {
+        bail!("child_receipts.{name} release-topology source must use schema 1");
+    }
+    let frozen_product_sha = source
+        .get("frozen_product_sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("child_receipts.{name} release-topology source lacks frozen_product_sha")
+        })?;
+    if frozen_product_sha != receipt.candidate.frozen_product_sha {
+        bail!("child_receipts.{name} release-topology source belongs to a different frozen product");
+    }
+    if child.status != InputStatus::Pass {
+        bail!("child_receipts.{name} release-topology source status differs from the declared status");
+    }
+    Ok(())
+}
+
+fn validate_topology_source_binding(receipt: &Receipt) -> Result<()> {
+    let all_have_source = receipt
+        .child_receipts
+        .iter()
+        .into_iter()
+        .all(|(_, child)| child.source_sha256.is_some());
+    if !all_have_source {
+        return Ok(());
+    }
+    let topology_source = receipt
+        .child_receipts
+        .release_topology
+        .source_sha256
+        .as_deref()
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("release_topology source digest is required once all child receipts carry source provenance")
+        })?;
+    if topology_source != receipt.candidate.release_topology_sha256 {
+        bail!("candidate.release_topology_sha256 must match release_topology source receipt digest");
+    }
+    Ok(())
+}
+
 fn validate_child_artifacts(receipt: &Receipt, artifact_root: &Path) -> Result<()> {
     for (name, child) in receipt.child_receipts.iter() {
         load_verified_child_artifact(name, child, receipt, artifact_root)?;
+        validate_source_receipt(name, child, receipt, artifact_root)?;
     }
+    validate_topology_source_binding(receipt)?;
     Ok(())
 }
 
@@ -457,7 +650,12 @@ fn computed_status(receipt: &Receipt) -> OverallStatus {
         .iter()
         .into_iter()
         .any(|(_, child)| child.status == InputStatus::NotProven);
-    if unproven_cell || unproven_child {
+    let missing_source_provenance = receipt
+        .child_receipts
+        .iter()
+        .into_iter()
+        .any(|(_, child)| child.source_artifact_path.is_none());
+    if unproven_cell || unproven_child || missing_source_provenance {
         return OverallStatus::NotProven;
     }
 
@@ -523,25 +721,84 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate, validate_child_artifacts, CellDisposition, OverallStatus, Receipt};
+    use super::{CellDisposition, OverallStatus, Receipt, validate, validate_child_artifacts};
     use color_eyre::eyre::Result;
+    use std::fs;
     use std::path::Path;
+    use tempfile::tempdir;
 
     fn fixture(content: &str) -> Result<Receipt> {
         Ok(serde_json::from_str(content)?)
     }
 
     #[test]
-    fn ready_fixture_passes() -> Result<()> {
+    fn ready_fixture_is_not_proven_without_source_receipts() -> Result<()> {
         let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
-        assert_eq!(validate(&receipt)?, OverallStatus::Ready);
+        assert_eq!(validate(&receipt)?, OverallStatus::NotProven);
         Ok(())
     }
 
     #[test]
     fn ready_fixture_consumes_hashed_child_artifacts() -> Result<()> {
         let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
-        validate_child_artifacts(&receipt, Path::new("fixtures/experience/public_beta"))?;
+        let artifact_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        validate_child_artifacts(&receipt, &artifact_root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_receipt_provenance_binds_raw_bytes_and_envelope() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let source = br#"{"schema_version":"install_transition.v1","status":"pass","candidate":{"candidate_id":"v0.18.0-rc1"}}"#;
+        let source_digest = super::sha256_hex(source);
+        let install = &mut receipt.child_receipts.install_transition;
+        install.source_artifact_path = Some("sources/install_transition.json".to_string());
+        install.source_sha256 = Some(source_digest.clone());
+
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        let directory = tempdir()?;
+        let mut install_artifact_digest = None;
+        for (_, child) in receipt.child_receipts.iter() {
+            let source_path = fixture_root.join(&child.artifact_path);
+            let target_path = directory.path().join(&child.artifact_path);
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let original = fs::read(source_path)?;
+            let mut artifact_bytes = original.clone();
+            if child.owner_issue == "#5903" {
+                let mut artifact: serde_json::Value = serde_json::from_slice(&original)?;
+                artifact["source_receipt_sha256"] =
+                    serde_json::Value::String(source_digest.clone());
+                artifact_bytes = serde_json::to_vec_pretty(&artifact)?;
+                install_artifact_digest = Some(super::sha256_hex(&artifact_bytes));
+            }
+            fs::write(target_path, artifact_bytes)?;
+        }
+        receipt.child_receipts.install_transition.sha256 = install_artifact_digest
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing install artifact"))?;
+        let source_path = directory.path().join("sources/install_transition.json");
+        let source_parent = source_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("source path has no parent"))?;
+        fs::create_dir_all(source_parent)?;
+        fs::write(&source_path, source)?;
+
+        validate_child_artifacts(&receipt, directory.path())?;
+        fs::write(&source_path, b"tampered")?;
+        assert!(validate_child_artifacts(&receipt, directory.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_source_provenance_cannot_claim_ready() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.status = OverallStatus::Ready;
+        assert!(validate(&receipt).is_err());
         Ok(())
     }
 
@@ -550,8 +807,9 @@ mod tests {
         let mut receipt =
             fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         receipt.child_receipts.install_transition.sha256 = "0".repeat(64);
-        assert!(validate_child_artifacts(&receipt, Path::new("fixtures/experience/public_beta"))
-            .is_err());
+        let artifact_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        assert!(validate_child_artifacts(&receipt, &artifact_root).is_err());
         Ok(())
     }
 
@@ -581,11 +839,46 @@ mod tests {
     }
 
     #[test]
-    fn release_topology_digest_must_match_candidate() -> Result<()> {
+    fn release_topology_source_digest_binds_candidate_topology_sha() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let digest = "a".repeat(64);
+        receipt.child_receipts.user_state_presentation.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.first_ten_minutes.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.install_transition.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.installed_acceptance.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.first_useful_answer.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.representative_workload.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.release_topology.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.release_integrity.source_sha256 = Some(digest.clone());
+        receipt.candidate.release_topology_sha256 = digest;
+        super::validate_topology_source_binding(&receipt)?;
+        receipt.candidate.release_topology_sha256 = "b".repeat(64);
+        assert!(super::validate_topology_source_binding(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_source_uses_runtime_receipt_shape() -> Result<()> {
+        let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let source: serde_json::Value = serde_json::from_slice(br#"{"schema_version":1,"outcome":"completed","repository_sha":"0123456789abcdef0123456789abcdef01234567","known_limitations":[]}"#)?;
+        super::validate_installed_acceptance_source(
+            "installed_acceptance",
+            &receipt.child_receipts.installed_acceptance,
+            &receipt,
+            &source,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn release_topology_envelope_digest_is_not_the_subject_digest() -> Result<()> {
         let mut receipt =
             fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         receipt.child_receipts.release_topology.sha256 = "9".repeat(64);
-        assert!(validate(&receipt).is_err());
+        let artifact_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        assert!(validate_child_artifacts(&receipt, &artifact_root).is_err());
         Ok(())
     }
 
