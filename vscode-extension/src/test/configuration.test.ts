@@ -397,6 +397,7 @@ describe('package.json contributes', () => {
       expect(commandIds).toContain('perl-lsp.organizeImports');
       expect(commandIds).toContain('perl-lsp.runTests');
       expect(commandIds).toContain('perl-lsp.showStatusMenu');
+      expect(commandIds).toContain('perl-lsp.showWorkspaceStatus');
       expect(commandIds).toContain('perl-lsp.createDebugConfig');
     });
 
