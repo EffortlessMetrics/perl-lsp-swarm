@@ -407,10 +407,10 @@ impl<'a> PerlLexer<'a> {
 
             // Only try v-string when NOT immediately after `sub` keyword —
             // `sub v5 { }` should parse `v5` as an identifier, not a v-string (#2189)
-            if !self.after_sub {
-                if let Some(token) = self.try_vstring() {
-                    return Some(token);
-                }
+            if !self.after_sub
+                && let Some(token) = self.try_vstring()
+            {
+                return Some(token);
             }
 
             if let Some(token) = self.try_identifier_or_keyword() {
