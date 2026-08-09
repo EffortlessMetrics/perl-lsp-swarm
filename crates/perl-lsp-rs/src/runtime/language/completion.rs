@@ -33,6 +33,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 use super::super::LspServer;
 
 /// Sentinel request ID used for the notification-path token in
@@ -1191,7 +1196,7 @@ impl LspServer {
                     })
                 })
                 .collect();
-            item["additionalTextEdits"] = json!(edits);
+            item["additionalTextEdits"] = to_json_array(&edits);
         }
 
         // LSP 3.17 §3.16.1: when `textEdit` is present it takes precedence over
