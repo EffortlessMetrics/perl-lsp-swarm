@@ -15,7 +15,7 @@ export interface WorkspaceStatusSnapshot {
   readonly mode: WorkspaceStatusMode;
   readonly version?: string;
   readonly fileCount?: number;
-  readonly errorCount: number;
+  readonly errorCount?: number;
 }
 
 /** Invoke VS Code's organize-imports command. */
@@ -78,13 +78,16 @@ export async function showWorkspaceStatusCommand(dependencies: {
     stopped: 'stopped',
   }[status.mode];
   const lines = [`Perl LSP workspace status`, `Server: ${modeLabel}`];
-  if (status.version) {
+  const hasLiveServer = status.mode === 'running' || status.mode === 'indexing';
+  if (hasLiveServer && status.version) {
     lines.push(`Version: ${status.version}`);
   }
   if (status.fileCount !== undefined) {
     lines.push(`Workspace files: ${status.fileCount}`);
   }
-  lines.push(`Diagnostics: ${status.errorCount} error${status.errorCount === 1 ? '' : 's'}`);
+  if (status.errorCount !== undefined) {
+    lines.push(`Diagnostics: ${status.errorCount} error${status.errorCount === 1 ? '' : 's'}`);
+  }
 
   const actions =
     status.mode === 'stopped'

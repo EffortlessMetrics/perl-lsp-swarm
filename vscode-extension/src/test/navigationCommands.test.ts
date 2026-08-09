@@ -98,11 +98,14 @@ describe('navigation command implementations', () => {
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Restart Server');
 
     await showWorkspaceStatusCommand({
-      getWorkspaceStatus: () => ({ mode: 'stopped', errorCount: 0 }),
+      getWorkspaceStatus: () => ({
+        mode: 'stopped',
+        version: 'perllsp 0.16.0',
+      }),
     });
 
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: stopped\nDiagnostics: 0 errors',
+      'Perl LSP workspace status\nServer: stopped',
       'Restart Server',
       'Run Health Check',
       'Show Output',

@@ -605,11 +605,13 @@ export async function activate(context: vscode.ExtensionContext) {
       showWorkspaceStatusCommand({
         getWorkspaceStatus: () => {
           const widget = healthWidget;
+          const mode = widget?.mode ?? 'starting';
+          const hasLiveServer = mode === 'running' || mode === 'indexing';
           return {
-            mode: widget?.mode ?? 'starting',
-            ...(widget?.version === undefined ? {} : { version: widget.version }),
+            mode,
+            ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
             ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
-            errorCount: widget?.errorCount ?? 0,
+            ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
           };
         },
       }),
