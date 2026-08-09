@@ -613,8 +613,8 @@ impl DocumentState {
     /// clearing `parsed` on every edit would violate it.
     pub fn update_content(&mut self, content: &str, version: i32) {
         self.rope = ropey::Rope::from_str(content);
-        self.text = content.to_string();
         self.text_arc = std::sync::Arc::from(content);
+        self.text = self.text_arc.to_string();
         self.version = version;
         self.line_starts = LineStartsCache::new(content);
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -655,8 +655,12 @@ impl DocumentState {
     pub(crate) fn replace_text_state(&mut self, rope: ropey::Rope, text: String, version: i32) {
         self.line_starts = LineStartsCache::new_rope(&rope);
         self.rope = rope;
-        self.text = text.clone();
+        // Create the Arc first (consuming `text`) then clone from Arc for the
+        // owned String field. This is one allocation (Arc::from) + one refcount
+        // bump + one string copy, vs the previous two full copies
+        // (text.clone() + Arc::from(text)) (#5005).
         self.text_arc = std::sync::Arc::from(text);
+        self.text = self.text_arc.to_string();
         self.version = version;
     }
 
@@ -759,8 +763,10 @@ impl DocumentState {
 
         // Update cached string and caches. `parsed` is deliberately
         // preserved -- see the doc comment on `update_content`.
-        self.text = self.rope.to_string();
-        self.text_arc = std::sync::Arc::from(self.text.as_str());
+        // Create Arc first, then derive String from Arc to avoid the
+        // double-store pattern (#5005).
+        self.text_arc = std::sync::Arc::<str>::from(self.rope.to_string().as_str());
+        self.text = self.text_arc.to_string();
         self.version = version;
         self.line_starts = LineStartsCache::new(&self.text);
         self.generation.fetch_add(1, Ordering::SeqCst);
