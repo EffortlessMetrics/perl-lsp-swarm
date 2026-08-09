@@ -94,8 +94,8 @@ fn parser_corpus_pr_policy_is_unambiguous() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn release_history_pr_gates_have_realistic_timeout_headroom()
--> Result<(), Box<dyn std::error::Error>> {
+fn release_history_pr_gates_have_realistic_timeout_headroom(
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let policy_path = root.join(".ci/gate-policy.yaml");
     let content = fs::read_to_string(policy_path)?;
@@ -224,7 +224,8 @@ fn parser_stack_gate_stays_required_merge_gate() -> Result<(), Box<dyn std::erro
 /// Contract guard for issue #6107: the bounded parser integration proof stays
 /// required, manifest-driven, and above its initial denominator.
 #[test]
-fn parser_integration_gate_is_required_and_manifest_driven() -> Result<(), Box<dyn std::error::Error>> {
+fn parser_integration_gate_is_required_and_manifest_driven(
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let policy_path = root.join(".ci/gate-policy.yaml");
     let content = fs::read_to_string(policy_path)?;
