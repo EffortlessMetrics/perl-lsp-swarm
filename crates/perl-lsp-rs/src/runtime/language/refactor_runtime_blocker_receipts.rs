@@ -327,8 +327,8 @@ impl LspServer {
         if let Some(object) = receipt.as_object_mut() {
             object.insert("provider_action".to_string(), json!("perl.previewPackageRename"));
             object.insert("ux_surface".to_string(), json!("scoped_package_rename_preview"));
-            object.insert("edits_applied".to_string(), json!(false));
-            object.insert("live_package_rename_enabled".to_string(), json!(false));
+            object.insert("edits_applied".to_string(), Value::Bool(false));
+            object.insert("live_package_rename_enabled".to_string(), Value::Bool(false));
             object.insert(
                 "planned_live_provider_edit_count".to_string(),
                 json!(planned_live_provider_edit_count),
@@ -678,8 +678,8 @@ impl LspServer {
         if let Some(object) = receipt.as_object_mut() {
             object.insert("provider_action".to_string(), json!("perl.previewSafeDelete"));
             object.insert("ux_surface".to_string(), json!("scoped_live_symbol_delete_preview"));
-            object.insert("edits_applied".to_string(), json!(false));
-            object.insert("live_symbol_delete_enabled".to_string(), json!(false));
+            object.insert("edits_applied".to_string(), Value::Bool(false));
+            object.insert("live_symbol_delete_enabled".to_string(), Value::Bool(false));
             object.insert("workspace_edit".to_string(), json!({"changes": {}}));
             object.insert("user_message".to_string(), json!(user_message));
             object.insert(
@@ -705,7 +705,7 @@ impl LspServer {
         let source_guard_request = params.clone();
         let params = params.map(|mut value| {
             if let Some(object) = value.as_object_mut() {
-                object.insert("includeEditRollbackProof".to_string(), json!(true));
+                object.insert("includeEditRollbackProof".to_string(), Value::Bool(true));
             }
             value
         });
@@ -896,7 +896,7 @@ impl LspServer {
                 "ux_surface".to_string(),
                 json!("narrow_source_backed_symbol_delete_live_pilot"),
             );
-            object.insert("edits_applied".to_string(), json!(false));
+            object.insert("edits_applied".to_string(), Value::Bool(false));
             object.insert("live_symbol_delete_enabled".to_string(), json!(can_return_edit));
             object.insert(
                 "live_pilot_source_guard".to_string(),
@@ -945,7 +945,7 @@ impl LspServer {
             object.insert("workspace_index_stale".to_string(), json!(workspace_index_stale));
             object.insert("workspace_edit".to_string(), workspace_edit);
             if let Some(request) = apply_edit_metadata_request {
-                object.insert("apply_edit_requested".to_string(), json!(true));
+                object.insert("apply_edit_requested".to_string(), Value::Bool(true));
                 object.insert("apply_edit_request".to_string(), request);
             }
             object.insert("user_message".to_string(), json!(user_message));
@@ -959,7 +959,7 @@ impl LspServer {
                 .insert("trace_only_no_live_behavior_change".to_string(), json!(!can_return_edit));
             object.insert("no_live_behavior_change".to_string(), json!(!can_return_edit));
             if can_return_edit {
-                object.insert("source_backed".to_string(), json!(true));
+                object.insert("source_backed".to_string(), Value::Bool(true));
                 object.insert(
                     "source_backed_state".to_string(),
                     json!("source_backed_subroutine_range"),
@@ -1601,13 +1601,13 @@ fn enrich_safe_delete_decision_trace(
     object.insert("fact_source".to_string(), json!(fact_source));
     object.insert("confidence".to_string(), json!(confidence));
     object.insert("freshness".to_string(), json!(freshness));
-    object.insert("source_backed".to_string(), json!(false));
+    object.insert("source_backed".to_string(), Value::Bool(false));
     object.insert("source_backed_state".to_string(), json!("not_proven_by_safe_delete_trace"));
     object.insert("dynamic_boundary".to_string(), json!(dynamic_boundary));
     object.insert("fallback_state".to_string(), json!(fallback_state));
     object.insert("blocker_count".to_string(), json!(blocker_reasons.len()));
     object.insert("blocker_reasons".to_string(), json!(blocker_reasons));
-    object.insert("trace_only_no_live_behavior_change".to_string(), json!(true));
+    object.insert("trace_only_no_live_behavior_change".to_string(), Value::Bool(true));
     object.insert(
         "claim_boundary".to_string(),
         json!(
@@ -1866,7 +1866,7 @@ fn enrich_package_rename_preview_decision_trace(object: &mut serde_json::Map<Str
     object.insert("fact_source".to_string(), json!(fact_source));
     object.insert("confidence".to_string(), json!(confidence));
     object.insert("freshness".to_string(), json!(freshness));
-    object.insert("source_backed".to_string(), json!(false));
+    object.insert("source_backed".to_string(), Value::Bool(false));
     object.insert(
         "source_backed_state".to_string(),
         json!("not_authorized_by_package_rename_preview"),
@@ -1875,7 +1875,7 @@ fn enrich_package_rename_preview_decision_trace(object: &mut serde_json::Map<Str
     object.insert("fallback_state".to_string(), json!(fallback_state));
     object.insert("blocker_count".to_string(), json!(blocker_count));
     object.insert("blocker_reasons".to_string(), Value::Array(blocker_reasons));
-    object.insert("trace_only_no_live_behavior_change".to_string(), json!(true));
+    object.insert("trace_only_no_live_behavior_change".to_string(), Value::Bool(true));
 }
 
 fn package_rename_preview_message(receipt: &Value) -> String {
@@ -1997,7 +1997,7 @@ fn mark_safe_delete_current_source_reference_blocker(receipt: &mut Value, refere
     object.insert("fallback_state".to_string(), json!("no_edit"));
     object.insert("blocker_count".to_string(), json!(1));
     object.insert("blocker_reasons".to_string(), json!(["ReferencesExist"]));
-    object.insert("dynamic_boundary".to_string(), json!(false));
+    object.insert("dynamic_boundary".to_string(), Value::Bool(false));
     object.insert(
         "current_source_delete_guard".to_string(),
         json!("blocked_by_current_source_reference"),
@@ -2030,7 +2030,7 @@ fn mark_safe_delete_workspace_index_stale_blocker(receipt: &mut Value) {
     object.insert("fallback_state".to_string(), json!("refresh_workspace_facts"));
     object.insert("blocker_count".to_string(), json!(1));
     object.insert("blocker_reasons".to_string(), json!(["WorkspaceIndexStale"]));
-    object.insert("dynamic_boundary".to_string(), json!(false));
+    object.insert("dynamic_boundary".to_string(), Value::Bool(false));
     object
         .insert("workspace_reference_guard".to_string(), json!("blocked_by_workspace_index_stale"));
     object.insert(
@@ -2061,7 +2061,7 @@ fn mark_safe_delete_workspace_reference_blocker(receipt: &mut Value, reference_c
     object.insert("fallback_state".to_string(), json!("no_edit"));
     object.insert("blocker_count".to_string(), json!(1));
     object.insert("blocker_reasons".to_string(), json!(["ReferencesExist"]));
-    object.insert("dynamic_boundary".to_string(), json!(false));
+    object.insert("dynamic_boundary".to_string(), Value::Bool(false));
     object.insert("workspace_reference_guard".to_string(), json!("blocked_by_workspace_reference"));
     object.insert(
         "live_blocker_ux".to_string(),
@@ -2091,7 +2091,7 @@ fn mark_safe_delete_source_guard_blocker(receipt: &mut Value) {
     object.insert("blocker_count".to_string(), json!(1));
     object
         .insert("blocker_reasons".to_string(), json!(["NotSourceBackedExactSubroutineDefinition"]));
-    object.insert("dynamic_boundary".to_string(), json!(false));
+    object.insert("dynamic_boundary".to_string(), Value::Bool(false));
     object.insert(
         "current_source_delete_guard".to_string(),
         json!("not_source_backed_exact_subroutine_definition"),
