@@ -213,14 +213,14 @@ reason = "Line iteration must not hide repeated IO errors."
 [[lint]]
 name = "clippy::await_holding_lock"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "async"
 reason = "Do not hold locks across await points."
 
 [[lint]]
 name = "clippy::await_holding_refcell_ref"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "async"
 reason = "Do not hold RefCell borrows across await points."
 
