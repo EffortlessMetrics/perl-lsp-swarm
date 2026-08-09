@@ -3584,6 +3584,79 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
+            // Code execution constructs (#5043): these involve dynamic
+            // evaluation and must be visible to effect analysis as call-like
+            // sites. Lower the block/expr children for variable reads.
+            NodeKind::Eval { block } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Eval".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Do { block } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Do".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Defer { block } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Defer".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                // Lower all blocks so variable reads in try/catch/finally
+                // are captured for effect analysis.
+                let mut arg_ids = vec![self.lower_expr(body)];
+                for (_, handler) in catch_blocks {
+                    arg_ids.push(self.lower_expr(handler));
+                }
+                if let Some(fin) = finally_block {
+                    arg_ids.push(self.lower_expr(fin));
+                }
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Try".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::ChainedComparison { operands, .. } => {
+                // Lower all operands so variable reads are captured.
+                let arg_ids: Vec<HirExprId> =
+                    operands.iter().map(|o| self.lower_expr(o)).collect();
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "ChainedComparison".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
                 let kind_name = node.kind.kind_name().to_string();
