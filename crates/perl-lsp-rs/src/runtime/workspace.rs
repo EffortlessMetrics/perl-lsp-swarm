@@ -42,6 +42,11 @@ use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
 use std::collections::{HashMap, HashSet};
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
 #[cfg(feature = "workspace")]
 use std::path::Path;
 use std::sync::Arc;
@@ -458,7 +463,7 @@ impl LspServer {
                             WorkspaceSymbolsTraceKind::SourceBackedReadyIndex,
                             generated_pilot_count,
                         );
-                        return Ok(Some(json!(lsp_symbols)));
+                        return Ok(Some(to_json_array(&lsp_symbols)));
                     }
                     // If index is empty, fall through to open-doc search
                 }
@@ -490,7 +495,7 @@ impl LspServer {
                                 WorkspaceSymbolsTraceKind::PartialIndexFallback,
                                 0,
                             );
-                            return Ok(Some(json!(lsp_symbols)));
+                            return Ok(Some(to_json_array(&lsp_symbols)));
                         }
                     }
                     tracing::debug!(
@@ -651,7 +656,7 @@ impl LspServer {
             WorkspaceSymbolsTraceKind::OpenDocumentFallback,
             0,
         );
-        Ok(Some(json!(all_symbols)))
+        Ok(Some(to_json_array(&all_symbols)))
     }
 
     /// Workspace symbol runtime quality receipt for staged trust proof.
@@ -951,7 +956,7 @@ impl LspServer {
                             count = lsp_symbols.len(),
                             "Workspace symbol: served from prebuilt index (v1 fast path)"
                         );
-                        return Ok(Some(json!(lsp_symbols)));
+                        return Ok(Some(to_json_array(&lsp_symbols)));
                     }
                     // Index returned empty — fall through to re-index fallback.
                 }
