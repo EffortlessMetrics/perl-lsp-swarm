@@ -184,6 +184,34 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertNotIn("floating_cargo_install", self.rules())
 
+    def test_accepts_immutable_cargo_install_with_shell_continuations(self) -> None:
+        self.write(
+            ".github/workflows/install.yml",
+            "name: install\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cargo install cargo-example \\\n            --locked \\\n            --git https://example.invalid/repo \\\n            --rev deadbeef\n",
+        )
+        self.assertNotIn("floating_cargo_install", self.rules())
+
+    def test_rejects_unpinned_cargo_install_with_shell_continuations(self) -> None:
+        self.write(
+            ".github/workflows/install.yml",
+            "name: install\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cargo install cargo-example \\\n            --locked \\\n            --git https://example.invalid/repo\n",
+        )
+        self.assertIn("floating_cargo_install", self.rules())
+
+    def test_rejects_unpinned_cargo_install_with_pin_like_comment(self) -> None:
+        self.write(
+            ".github/workflows/install.yml",
+            "name: install\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cargo install cargo-example \\\n            --locked # --version 1.2.3\n",
+        )
+        self.assertIn("floating_cargo_install", self.rules())
+
+    def test_rejects_unpinned_cargo_install_with_pin_like_follow_on_shell(self) -> None:
+        self.write(
+            ".github/workflows/install.yml",
+            "name: install\non: [workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cargo install cargo-example \\\n            --locked && echo --version 1.2.3\n",
+        )
+        self.assertIn("floating_cargo_install", self.rules())
+
     def test_security_sensitive_alias_is_not_silently_accepted(self) -> None:
         self.write(
             ".github/workflows/alias.yml",
