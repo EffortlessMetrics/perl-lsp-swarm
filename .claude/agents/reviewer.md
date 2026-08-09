@@ -52,10 +52,11 @@ Review a **committed** SHA, never a dirty tree. A finding citing `file:line` has
 verifiable after the commit is pushed and the PR opens, and citations into uncommitted
 work cannot be checked later — which makes the review row unfalsifiable.
 
-State the SHA you examined. Pin reads and proof to that object: `git rev-parse HEAD`
-must equal the reviewed SHA (or check out that commit in a detached head / dedicated
-worktree) before file reads or proof commands. When the tree is not yet pushed, review
-the local commit object itself; citations become durable when that same commit is pushed.
+State the SHA you examined. Pin every read and proof command to that object via
+`git show <sha>:<path>` (or `git show <sha>` for object inspection). Never check out,
+detach, or allocate a worktree in the caller checkout — that keeps the caller tree
+immutable. When the commit is not yet pushed, review the local commit object the same
+way; citations become durable when that same commit is pushed.
 
 ## Publishing
 
