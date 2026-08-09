@@ -447,6 +447,19 @@ impl std::fmt::Display for CancellationError {
 
 impl std::error::Error for CancellationError {}
 
+impl perl_parser_core::ErrorClass for CancellationError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Internal lock or routing failures — our bug.
+            Self::LockError(_) | Self::ProviderNotFound(_) => perl_parser_core::ErrorCategory::Bug,
+            // Malformed request from the client.
+            Self::InvalidRequest(_) => perl_parser_core::ErrorCategory::Protocol,
+            // Operation may succeed if retried.
+            Self::Timeout(_) => perl_parser_core::ErrorCategory::Transient,
+        }
+    }
+}
+
 /// Trait for cancellable LSP providers
 pub trait CancellableProvider {
     /// Check cancellation status during operation
