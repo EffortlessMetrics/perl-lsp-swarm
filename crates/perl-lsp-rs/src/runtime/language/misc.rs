@@ -31,6 +31,11 @@ use perl_parser_core::source_file::is_perl_source_uri;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 mod debug_launch;
 mod inline_values;
 mod live_provider_trace;
@@ -1579,7 +1584,7 @@ impl LspServer {
 
                     tracing::debug!(count = test_items.len(), "Found test items");
 
-                    return Ok(Some(json!(test_items)));
+                    return Ok(Some(to_json_array(&test_items)));
                 }
             }
         }
