@@ -30,7 +30,7 @@ interface DownloaderPrivateSurface {
   isTermuxEnvironment(): boolean;
   isAndroidEnvironment(): boolean;
   detectMusl(): boolean;
-  getPlatformTarget(release?: string): string;
+  getPlatformTarget(): string;
   getLocalBinaryPath(): string;
   buildVersionedInstallDirName(versionTag: string): string;
   commitVersionedInstall(installDirName: string): void;
@@ -108,8 +108,8 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     jest.restoreAllMocks();
   });
 
-  function getPlatformTarget(dl: TestDownloader, release?: string): string {
-    return dl.getPlatformTarget(release);
+  function getPlatformTarget(dl: TestDownloader): string {
+    return dl.getPlatformTarget();
   }
 
   function mockConfig(overrides: Record<string, unknown>): void {
@@ -206,16 +206,16 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   }
 
   test('Windows on ARM64 resolves to the published native ARM64 build', () => {
-    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.22631'))).toBe(
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
       'aarch64-pc-windows-msvc',
     );
   });
 
   test('native Windows ARM64 selection is independent of Windows build number', () => {
-    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader, '10.0.19045'))).toBe(
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
       'aarch64-pc-windows-msvc',
     );
-    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader, 'unknown'))).toBe(
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
       'aarch64-pc-windows-msvc',
     );
   });
@@ -239,9 +239,7 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   test('every Windows arch resolves to its published Windows target', () => {
     for (const arch of ['arm64', 'x64', 'ia32', 'ppc64']) {
       const expected = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
-      expect(withProcess('win32', arch, () => getPlatformTarget(downloader, '10.0.22631'))).toBe(
-        expected,
-      );
+      expect(withProcess('win32', arch, () => getPlatformTarget(downloader))).toBe(expected);
     }
   });
 });

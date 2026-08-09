@@ -888,7 +888,7 @@ export class BinaryDownloader {
     });
   }
 
-  private getPlatformTarget(release = os.release()): string {
+  private getPlatformTarget(): string {
     const platform = process.platform;
     const arch = process.arch;
 
