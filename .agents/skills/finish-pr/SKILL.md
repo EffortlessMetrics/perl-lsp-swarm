@@ -18,6 +18,53 @@ mergeability, or the author reading the diff does not establish substantive revi
 Codex's operational path is this skill together with `$orchestrate-work`,
 `$final-challenge`, `$review-pr`, and `$verify-live-ci`.
 
+## Orchestration affordances
+
+### Lane-root decisions
+
+The lane root retains:
+
+- the earliest still-useful entry point in the PR route;
+- whether a finding is valid, stale, refuted, superseded, or a bounded follow-up;
+- which repairs materially change proof or review dimensions;
+- substantive review sufficiency and cumulative candidate judgment;
+- candidate/base/integration failure ownership;
+- whether a remote state is in flight, blocked, or not proven;
+- the protected merge and current-main reconciliation decision.
+
+### Delegable read-only work
+
+Use focused workers where useful for:
+
+- complete review-thread and submitted-review inventory;
+- source-backed verification of human/bot findings;
+- high-output CI log and artifact classification;
+- live required-check/ruleset discovery;
+- production-path, external-oracle, proof, candidate, security, package, migration,
+  persistence, support, or release review;
+- merged-effect and residual-claim verification after integration.
+
+Each worker receives the exact PR/candidate, accepted claim, current GitHub snapshot,
+named `$skill` where applicable, one bounded question, falsifiers, sufficient evidence,
+uncertainty, and non-goals. Workers return graph deltas, not merge verdicts.
+
+### Mutation owner and join
+
+One writer integrates accepted candidate repairs. Read-only reviewers and CI evidence
+workers do not mutate the candidate.
+
+The lane root joins current findings/dispositions, affected proof, cumulative review,
+live integration facts, contradictions, and limitations into one typed route result.
+Repeated bot findings or several workers reading one artifact are not independent
+evidence.
+
+### Return packet
+
+Return PR/candidate identity, claim and non-goals, current finding dispositions,
+proof/review dimensions current or stale, substantive review result, integration
+posture, exact remote wait and wake event, limitations/`NOT_PROVEN`, merge/closeout
+result, and next route.
+
 ## Procedure
 
 Enter at the earliest useful point:
@@ -101,9 +148,20 @@ review, CI classification, and oracle work may assist.
 - only affected proof and review are refreshed.
 
 When GitHub owns the next transition—pending checks, requested review, merge queue, or
-armed auto-merge—record the exact pending fact once and return `PR_IN_FLIGHT`. Do not
-poll unchanged state or call the wider goal blocked. A remote integration wait does
-not make a still-current substantive review stale.
+armed auto-merge—record the exact pending fact and wake event once when useful and
+return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
+remote integration wait does not make a still-current substantive review stale.
+
+## Useful GitHub boundary
+
+Publish candidate-wide route/proof/limitation changes in the PR body or a compact PR
+comment; localized findings inline; finding dispositions in replies before resolution;
+one cumulative submitted review; one material remote wait/wake update when another
+context needs it; and landed-effect/residual-claim closeout on the issue.
+
+Keep worker topology, task progress, raw bot/CI logs, repeated check snapshots, retries,
+unchanged polls, and routine route transitions runtime-local. Link stable artifacts
+rather than copying them.
 
 ## Routes
 

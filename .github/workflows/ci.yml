@@ -394,7 +394,7 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            gates: docs_build non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
+            gates: docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -408,6 +408,15 @@ jobs:
           # Release-history verification compares every fetched release tag.
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Reject unsupported PR attributions in reference docs
+        if: matrix.name == 'meta'
+        run: |
+          if git grep -n -E 'PR #153|pull/153|PR #753|pull/753' -- docs/reference ':(exclude)docs/reference/archive/**'; then
+            echo "Reference documentation contains an unsupported numbered PR attribution."
+            echo "Use a source-backed implementation reference, or remove the PR attribution when the source is historical."
+            exit 1
+          fi
 
       - name: Fetch release tags from canonical repo
         run: |
@@ -485,6 +494,7 @@ jobs:
           mkdir -p target/ci
           python3 scripts/ci/emit_ci_actuals.py \
             --receipts-dir target/receipts/shards \
+            --lane-id merge_gate_shards \
             --workflow "${{ github.workflow }}" \
             --sha "${{ github.sha }}" \
             --pr "${{ github.event.pull_request.number || 0 }}" \
