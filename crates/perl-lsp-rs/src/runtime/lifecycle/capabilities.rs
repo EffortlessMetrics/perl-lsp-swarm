@@ -6,6 +6,11 @@ use super::super::{JsonRpcError, LspServer, Ordering};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
+/// Serialize a typed value to a serde_json::Value (#4995).
+fn to_json<T: serde::Serialize>(value: T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
 /// The LSP protocol version this server implements.
 ///
 /// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
@@ -40,7 +45,7 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
             tracing::warn!("Failed to merge experimental capability into non-object capabilities");
             return;
         };
-        capabilities_object.insert("experimental".to_string(), json!({}));
+        capabilities_object.insert("experimental".to_string(), Value::Object(serde_json::Map::new()));
     }
 
     let Some(experimental) = capabilities.get_mut("experimental").and_then(Value::as_object_mut)
@@ -649,7 +654,7 @@ impl LspServer {
             }
             (true, false) => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
-                    capabilities.insert("inlineCompletionProvider".to_string(), json!({}));
+                    capabilities.insert("inlineCompletionProvider".to_string(), Value::Object(serde_json::Map::new()));
                 }
             }
             (false, _) => {
@@ -672,9 +677,9 @@ impl LspServer {
         // providers. Advertising anything else here would silently corrupt
         // document sync and every position-bearing response for non-ASCII
         // content on a client that prefers a different encoding.
-        capabilities["positionEncoding"] = json!("utf-16");
+        capabilities["positionEncoding"] = Value::String("utf-16".to_string());
         if features.declaration {
-            capabilities["declarationProvider"] = json!(true);
+            capabilities["declarationProvider"] = Value::Bool(true);
         }
         let code_action_documentation_support =
             self.client_capabilities.lock().code_action_documentation_support;
@@ -754,7 +759,7 @@ impl LspServer {
             merge_experimental_capability(
                 &mut capabilities,
                 "perlInlineCompletionStream",
-                json!(true),
+                Value::Bool(true),
             );
         }
 
@@ -1654,7 +1659,7 @@ mod tests {
         }
         let non_jetbrains = json!({ "clientInfo": { "name": "vscode" } });
         assert!(!is_jetbrains_client(&non_jetbrains));
-        assert!(!is_jetbrains_client(&json!({})));
+        assert!(!is_jetbrains_client(&Value::Object(serde_json::Map::new())));
     }
 
     #[test]
