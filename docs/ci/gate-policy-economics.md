@@ -59,7 +59,7 @@ which is the authority for these counts. Last refreshed 2026-08-03 (#5709):
 | `check_all_targets` | `compile_all_targets` |
 | `conflict_markers` | `check_conflict_markers` |
 | `ux_tests` | `lsp_smoke`, `lsp_tier_a` |
-| `docs_gate` | `docs_build` |
+| `docs_gate` | `adr_link_check`, `docs_build` |
 | `release_check` | `published_crate_count`, `release_build`, `version_sync`, `sbom_verify`, `determinism_check`, `inline_completion_binary_smoke` |
 | `security_audit` | `security_audit` |
 | `mutation` | `mutation`, `corpus_validation`, `corpus_sweep` |
