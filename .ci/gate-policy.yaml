@@ -1049,6 +1049,20 @@ gates:
       - docs
       - advisory
 
+  - name: adr_link_check
+    tier: merge_gate
+    description: "Inline relative Markdown links under docs/adr resolve to files inside the repository"
+    required: true
+    command: cargo xtask ci-hygiene check-doc-links docs/adr
+    timeout_seconds: 180
+    retry_count: 0
+    budgets:
+      max_duration_ms: 150000
+    quarantine: false
+    tags:
+      - docs
+      - policy
+
   - name: docs_build
     tier: merge_gate
     description: "Verify documentation builds without errors"
@@ -1065,7 +1079,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Verify the tracked non-Rust inventory document matches the current tree"
+    description: "Scan and classify tracked non-Rust files without requiring a race-prone snapshot match"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300

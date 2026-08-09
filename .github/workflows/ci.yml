@@ -394,7 +394,7 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            gates: docs_build non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
+            gates: docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -494,6 +494,7 @@ jobs:
           mkdir -p target/ci
           python3 scripts/ci/emit_ci_actuals.py \
             --receipts-dir target/receipts/shards \
+            --lane-id merge_gate_shards \
             --workflow "${{ github.workflow }}" \
             --sha "${{ github.sha }}" \
             --pr "${{ github.event.pull_request.number || 0 }}" \

@@ -522,7 +522,25 @@ mod tests {
         MAX_HEADER_BYTES, log_response, read_message, write_message, write_notification,
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
+    use perl_parser_core::{ErrorCategory, ErrorClass};
     use std::io::{self, BufReader, Cursor};
+
+    #[test]
+    fn framing_errors_have_stable_operational_categories() {
+        for error in [
+            FramingError::InvalidHeader,
+            FramingError::InvalidHeaderUtf8,
+            FramingError::MissingContentLength,
+            FramingError::InvalidContentLength,
+        ] {
+            assert_eq!(error.error_class(), ErrorCategory::Protocol);
+        }
+
+        assert_eq!(
+            FramingError::FrameTooLarge { len: MAX_FRAME_SIZE + 1 }.error_class(),
+            ErrorCategory::ResourceLimit
+        );
+    }
 
     fn framed_request(id: u64, method: &str) -> Vec<u8> {
         let body = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{}}}}"#);

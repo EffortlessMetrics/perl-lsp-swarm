@@ -1,24 +1,47 @@
 //! Extract path arguments from `use lib` and `no lib` pragma arguments.
 
-use super::UseLibPath;
+use super::{UseLibPath, byte_offset_within};
 
-pub(super) fn extract_paths_from_args(args: &str, out: &mut Vec<UseLibPath>) {
-    let args = args.trim_end_matches(';').trim();
+/// Extract path arguments from a pragma argument slice.
+///
+/// Returns the number of bytes of `args` consumed by the recognized argument
+/// list — i.e. the offset just past the last path token that was pushed to
+/// `out`. Returns `0` when no path was extracted.
+///
+/// The count lets a caller inspect what follows the argument list. That is how
+/// [`super::UseLibOperation`] tells a properly terminated pragma from one whose
+/// semicolon has not been typed yet, whose statement slice runs past unrelated
+/// later code.
+pub(super) fn extract_paths_from_args(args: &str, out: &mut Vec<UseLibPath>) -> usize {
+    let body = args.trim_end_matches(';').trim();
 
-    if let Some(rest) = args.strip_prefix("qw") {
-        extract_qw_paths(rest.trim_start(), out);
-        return;
+    if let Some(rest) = body.strip_prefix("qw") {
+        let rest = rest.trim_start();
+        let consumed = extract_qw_paths(rest, out);
+        return consumed_end(args, rest, consumed);
     }
 
-    if let Some(inner) = strip_parens(args) {
-        extract_quoted_list(inner, out);
-        return;
+    if let Some(inner) = strip_parens(body) {
+        let consumed = extract_quoted_list(inner, out);
+        if consumed == 0 {
+            return 0;
+        }
+        // Consume through the closing parenthesis, which sits immediately after
+        // `inner` by construction in `strip_parens`.
+        return consumed_end(args, inner, inner.len() + ')'.len_utf8());
     }
 
-    extract_quoted_list(args, out);
+    let consumed = extract_quoted_list(body, out);
+    consumed_end(args, body, consumed)
 }
 
-fn extract_qw_paths(rest: &str, out: &mut Vec<UseLibPath>) {
+fn consumed_end(args: &str, inner: &str, consumed: usize) -> usize {
+    if consumed == 0 { 0 } else { byte_offset_within(args, inner) + consumed }
+}
+
+/// Returns the number of bytes of `rest` consumed by the `qw` list, or `0`
+/// when `rest` does not open a recognized delimiter.
+fn extract_qw_paths(rest: &str, out: &mut Vec<UseLibPath>) -> usize {
     let (open, close) = match rest.chars().next() {
         Some('(') => ('(', ')'),
         Some('/') => ('/', '/'),
@@ -26,16 +49,21 @@ fn extract_qw_paths(rest: &str, out: &mut Vec<UseLibPath>) {
         Some('[') => ('[', ']'),
         Some('<') => ('<', '>'),
         Some('!') => ('!', '!'),
-        _ => return,
+        _ => return 0,
     };
 
     let inner = &rest[open.len_utf8()..];
-    let end = inner.find(close).unwrap_or(inner.len());
+    let (end, consumed) = match inner.find(close) {
+        Some(end) => (end, open.len_utf8() + end + close.len_utf8()),
+        None => (inner.len(), rest.len()),
+    };
     let content = &inner[..end];
 
     for word in content.split_whitespace() {
         out.push(UseLibPath { path: word.to_string(), from_findbin: false });
     }
+
+    consumed
 }
 
 fn strip_parens(s: &str) -> Option<&str> {
@@ -45,8 +73,11 @@ fn strip_parens(s: &str) -> Option<&str> {
     Some(inner)
 }
 
-fn extract_quoted_list(s: &str, out: &mut Vec<UseLibPath>) {
+/// Returns the number of bytes of `s` consumed up to and including the last
+/// quoted path pushed to `out`, or `0` when no path was extracted.
+fn extract_quoted_list(s: &str, out: &mut Vec<UseLibPath>) -> usize {
     let mut remaining = s.trim();
+    let mut consumed = 0;
 
     while !remaining.is_empty() {
         remaining = remaining.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
@@ -65,11 +96,14 @@ fn extract_quoted_list(s: &str, out: &mut Vec<UseLibPath>) {
 
         if let Some((path, from_findbin, rest)) = extract_one_quoted(remaining) {
             out.push(UseLibPath { path, from_findbin });
+            consumed = byte_offset_within(s, rest);
             remaining = rest.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
         } else {
             break;
         }
     }
+
+    consumed
 }
 
 fn extract_one_quoted(s: &str) -> Option<(String, bool, &str)> {
