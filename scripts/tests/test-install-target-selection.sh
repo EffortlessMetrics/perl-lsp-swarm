@@ -88,9 +88,11 @@ assert_bad_override_fails() {
 #
 # The release matrix is the only authority for which target triples exist as
 # published assets. An install surface naming a Windows target outside it
-# builds a download URL that always 404s. PowerShell cannot be executed on the
-# Linux CI host, so this asserts the contract statically against the release
-# matrix rather than hardcoding the expected triples.
+# builds a download URL that always 404s — which is exactly how ARM64 Windows
+# users were routed to an asset that is never produced, and told only "Failed
+# to download". PowerShell cannot be executed on the Linux CI host, so this
+# asserts the contract statically against the release matrix rather than
+# hardcoding the expected triple, which would go stale the day ARM64 ships.
 #
 # Comment lines are stripped so the surfaces can still name the unbuilt target
 # when explaining why they do not request it.
@@ -258,19 +260,82 @@ assert_only_built_windows_targets \
     "extension downloader requests only built Windows targets" \
     "$ROOT/vscode-extension/src/downloader.ts"
 
-assert_no_stale_windows_arm64_fallback() {
+assert_windows_arm64_native_preference() {
     local label="$1" file="$2"
-    if grep -Eqi 'Windows ARM64 x64 emulation requires|No native ARM64 Windows build|no native ARM64 Windows binary' "$file"; then
-        fail "$label" "contains the removed Windows ARM64 x64-emulation fallback"
+
+    if [[ ! -f "$file" ]]; then
+        fail "$label" "missing $file"
         return
     fi
+
+    # Every capture below is `|| true`-guarded. Under `set -euo pipefail` an
+    # unmatched grep inside a command substitution aborts the whole script, so
+    # the previous version of this assertion killed the run with no diagnostic
+    # at all the moment the installer stopped matching it -- a gate that fails
+    # closed but silently, which is nearly as unhelpful as failing open.
+    local native_line native_assignment_line probe_line floor_line error_line fallback_line download_line
+
+    # The native target must be named as a whole literal, for the same reason
+    # the triples are: this file cannot be executed on the Linux CI host, so
+    # the contract is checked by reading the source.
+    native_line="$(grep -nE '^[[:space:]]*\$NativeTarget[[:space:]]*=[[:space:]]*"aarch64-pc-windows-msvc"' "$file" | head -n1 | cut -d: -f1 || true)"
+    probe_line="$(grep -nE '^[[:space:]]*\$AssetProbe[[:space:]]*=[[:space:]]*Test-ReleaseAsset ' "$file" | head -n1 | cut -d: -f1 || true)"
+    native_assignment_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=[[:space:]]*\$NativeTarget' "$file" | head -n1 | cut -d: -f1 || true)"
+    floor_line="$(grep -nE '^[[:space:]]*if \(\$WindowsBuild -lt 22000\) \{' "$file" | head -n1 | cut -d: -f1 || true)"
+    error_line="$(grep -nE 'Write-Error "[^"]*emulation requires Windows 11' "$file" | head -n1 | cut -d: -f1 || true)"
+    fallback_line="$(grep -nE '^[[:space:]]*\$Target[[:space:]]*=[[:space:]]*"x86_64-pc-windows-msvc"' "$file" | head -n1 | cut -d: -f1 || true)"
+    download_line="$(grep -nE '^[[:space:]]*Invoke-WebRequest -Uri \$Url' "$file" | head -n1 | cut -d: -f1 || true)"
+
+    if [[ -z "$native_line" ]]; then
+        fail "$label" "does not name aarch64-pc-windows-msvc as a preferred target literal"
+        return
+    fi
+
+    if [[ -z "$probe_line" ]]; then
+        fail "$label" "does not probe whether the release carries the native asset; preferring it unconditionally would 404 on every release predating that target"
+        return
+    fi
+
+    if [[ -z "$native_assignment_line" ]]; then
+        fail "$label" "does not assign the native target after probing it"
+        return
+    fi
+
+    if [[ -z "$floor_line" || -z "$error_line" || -z "$fallback_line" || -z "$download_line" ]]; then
+        fail "$label" "must keep an executable Windows 11 build floor, an emulation-specific error, an x64 fallback assignment, and a download call"
+        return
+    fi
+
+    # The whole point of #6196: the build-22000 floor is a property of x64
+    # emulation, not of ARM64. It must sit *after* the native-asset probe, so a
+    # release carrying the native build installs on Windows 10 ARM64 instead of
+    # being refused.
+    if (( probe_line >= floor_line )); then
+        fail "$label" "the Windows 11 build floor must come after the native-asset probe, or it will refuse Windows 10 ARM64 installs that a native build would satisfy"
+        return
+    fi
+
+    if (( native_line >= probe_line )); then
+        fail "$label" "the native target must be named before it is probed"
+        return
+    fi
+
+    if (( probe_line >= native_assignment_line )); then
+        fail "$label" "the native target must be assigned only after the asset probe succeeds"
+        return
+    fi
+
+    if (( floor_line >= download_line || fallback_line >= download_line )); then
+        fail "$label" "target selection must complete before the download"
+        return
+    fi
+
     pass "$label"
 }
 
-assert_no_stale_windows_arm64_fallback \
-    "PowerShell installer uses native Windows ARM64" "$ROOT/install.ps1"
-assert_no_stale_windows_arm64_fallback \
-    "extension downloader uses native Windows ARM64" "$ROOT/vscode-extension/src/downloader.ts"
+assert_windows_arm64_native_preference \
+    "PowerShell installer prefers the native ARM64 build and gates emulation only" \
+    "$ROOT/install.ps1"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     skip "Linux target-selection checks (host is $(uname -s))"

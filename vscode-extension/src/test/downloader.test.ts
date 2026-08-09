@@ -17,7 +17,12 @@ import {
   buildBinaryAssetCandidateNames,
   compareVersions,
   copyManagedFileWithRetry,
+  classifyWindowsArm64Support,
+  getUnsupportedWindowsArm64Message,
   findReleaseAssetName,
+  selectWindowsArm64Target,
+  WINDOWS_ARM64_TARGET,
+  WINDOWS_X64_TARGET,
   isTransientManagedInstallError,
   parseLocalVersion,
   __resetManagedInstallSingleflightForTesting,
@@ -205,19 +210,41 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     }
   }
 
-  test('Windows on ARM64 resolves to the published native ARM64 build', () => {
+  test('Windows on ARM64 prefers the native ARM64 target', () => {
     expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
-      'aarch64-pc-windows-msvc',
+      WINDOWS_ARM64_TARGET,
     );
   });
 
-  test('native Windows ARM64 selection is independent of Windows build number', () => {
+  // getPlatformTarget has no asset list, so it can no longer reject anything:
+  // whether emulation is even needed depends on the specific release. It must
+  // return the preferred target for every Windows build, including the ones
+  // that cannot emulate x64. The rejection is asserted against
+  // selectWindowsArm64Target below, which is where it now lives.
+  test('Windows 10 ARM64 no longer rejects before the release is known', () => {
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.19045')).toBe(
+      'windows-10-or-earlier',
+    );
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.21999')).toBe(
+      'windows-10-or-earlier',
+    );
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.0.22000')).toBe('windows-11-or-newer');
+    expect(classifyWindowsArm64Support('win32', 'arm64', 'unknown')).toBe('unknown');
+    expect(getUnsupportedWindowsArm64Message('win32', 'arm64', '10.0.19045')).toMatch(
+      /Windows ARM64 x64 emulation requires Windows 11.*Windows 10 ARM64 cannot run/,
+    );
+
     expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
-      'aarch64-pc-windows-msvc',
+      WINDOWS_ARM64_TARGET,
     );
     expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
-      'aarch64-pc-windows-msvc',
+      WINDOWS_ARM64_TARGET,
     );
+  });
+
+  test('future Windows version formats remain supported on ARM64', () => {
+    expect(classifyWindowsArm64Support('win32', 'arm64', '10.1.0')).toBe('windows-11-or-newer');
+    expect(classifyWindowsArm64Support('win32', 'arm64', '11.0.0')).toBe('windows-11-or-newer');
   });
 
   test('Windows on x64 is unaffected', () => {
@@ -226,20 +253,137 @@ describe('BinaryDownloader.getPlatformTarget', () => {
     );
   });
 
-  // Assert exact published targets rather than the absence of a bad substring.
-  // `not.toContain('aarch64')` would let an unbuilt triple through, while
-  // `arm64-pc-windows-msvc` would use Node's arch name rather than Rust's.
+  // Assert the exact published target rather than the absence of the one
+  // historical bad substring. `not.toContain('aarch64')` would let any other
+  // unbuilt triple through — i686-pc-windows-msvc from a new fallback branch,
+  // or arm64-pc-windows-msvc spelled with Node's arch name.
   //
   // The release matrix is the authority for which targets exist, and it is read
   // directly by assert_only_built_windows_targets in
   // scripts/tests/test-install-target-selection.sh. This unit test cannot read
   // that matrix without coupling the extension suite to a repository path, so it
-  // pins the two values the matrix currently yields; the shell gate is what
-  // fails if the matrix and these constants ever diverge.
-  test('every Windows arch resolves to its published Windows target', () => {
+  // pins the single value the matrix currently yields; the shell gate is what
+  // fails if the matrix and this constant ever diverge.
+  test('every Windows arch resolves to a target the release matrix builds', () => {
+    const built = new Set([WINDOWS_X64_TARGET, WINDOWS_ARM64_TARGET]);
     for (const arch of ['arm64', 'x64', 'ia32', 'ppc64']) {
-      const expected = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
-      expect(withProcess('win32', arch, () => getPlatformTarget(downloader))).toBe(expected);
+      const target = withProcess('win32', arch, () => getPlatformTarget(downloader));
+      expect(built.has(target)).toBe(true);
+    }
+    // arm64 must map to the native target specifically, not merely to some
+    // built target -- a containment-only assertion would pass on the old
+    // always-x64 mapping this change replaces.
+    expect(withProcess('win32', 'arm64', () => getPlatformTarget(downloader))).toBe(
+      WINDOWS_ARM64_TARGET,
+    );
+    expect(withProcess('win32', 'x64', () => getPlatformTarget(downloader))).toBe(
+      WINDOWS_X64_TARGET,
+    );
+  });
+
+  // --- selectWindowsArm64Target: the per-release decision -------------------
+  //
+  // Every case here fails against the previous always-x64 mapping: that code
+  // had no notion of a native asset, and rejected Windows 10 ARM64 before any
+  // release was consulted.
+
+  const arm64Asset = { name: `perllsp-0.18.0-${WINDOWS_ARM64_TARGET}.zip` };
+  const x64Asset = { name: `perllsp-0.18.0-${WINDOWS_X64_TARGET}.zip` };
+
+  test('prefers the native ARM64 asset when the release carries it', () => {
+    const selection = selectWindowsArm64Target(
+      [arm64Asset, x64Asset],
+      '0.18.0',
+      '.zip',
+      '10.0.22631',
+    );
+    expect(selection.target).toBe(WINDOWS_ARM64_TARGET);
+    expect(selection.emulated).toBe(false);
+    expect(selection.error).toBeUndefined();
+  });
+
+  // The regression that motivated this change. Windows 10 ARM64 runs a native
+  // ARM64 binary perfectly well; the build floor is a property of x64
+  // emulation. The old code refused this install outright.
+  test('Windows 10 ARM64 installs the native asset instead of being refused', () => {
+    const selection = selectWindowsArm64Target(
+      [arm64Asset, x64Asset],
+      '0.18.0',
+      '.zip',
+      '10.0.19045',
+    );
+    expect(selection.target).toBe(WINDOWS_ARM64_TARGET);
+    expect(selection.emulated).toBe(false);
+    expect(selection.error).toBeUndefined();
+  });
+
+  test('an undetectable Windows build still gets the native asset', () => {
+    const selection = selectWindowsArm64Target([arm64Asset], '0.18.0', '.zip', 'unknown');
+    expect(selection.target).toBe(WINDOWS_ARM64_TARGET);
+    expect(selection.error).toBeUndefined();
+  });
+
+  // Degrading gracefully is mandatory: the ARM64 target was added to the
+  // release matrix after the most recent release, so no published tag carries
+  // that asset. Requiring it would break installing every existing version.
+  test('falls back to x64 emulation when the release has no native asset', () => {
+    const selection = selectWindowsArm64Target([x64Asset], '0.17.0', '.zip', '10.0.22631');
+    expect(selection.target).toBe(WINDOWS_X64_TARGET);
+    expect(selection.emulated).toBe(true);
+    expect(selection.error).toBeUndefined();
+    expect(selection.reason).toMatch(/no native ARM64/i);
+  });
+
+  test('errors only when the native asset is absent AND x64 cannot be emulated', () => {
+    const selection = selectWindowsArm64Target([x64Asset], '0.17.0', '.zip', '10.0.19045');
+    expect(selection.error).toMatch(/no native ARM64 Windows build/);
+    expect(selection.error).toMatch(/Windows ARM64 x64 emulation requires Windows 11/);
+    expect(selection.emulated).toBe(true);
+  });
+
+  test('the selection reason is reportable for every outcome', () => {
+    for (const release of ['10.0.22631', '10.0.19045', 'unknown']) {
+      for (const assets of [[arm64Asset, x64Asset], [x64Asset]]) {
+        const selection = selectWindowsArm64Target(assets, '0.18.0', '.zip', release);
+        expect(typeof selection.reason).toBe('string');
+        expect(selection.reason.length).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe('BinaryDownloader internal ARM64 mirror compatibility', () => {
+  test('synthesizes both ARM64 and x64 candidates for internal mirrors', async () => {
+    const downloader = new BinaryDownloader(makeContext(), makeOutputChannel()) as unknown as {
+      getInternalRelease: (
+        baseUrl: string,
+        version: string,
+      ) => Promise<{
+        internal?: boolean;
+        assets: Array<{ name: string }>;
+      }>;
+    };
+
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true });
+    try {
+      const release = await downloader.getInternalRelease(
+        'https://mirror.example/perl-lsp',
+        'v0.17.0',
+      );
+      const names = release.assets.map((asset) => asset.name);
+      expect(release.internal).toBe(true);
+      expect(names).toContain(`perllsp-0.17.0-${WINDOWS_ARM64_TARGET}.zip`);
+      expect(names).toContain(`perllsp-0.17.0-${WINDOWS_X64_TARGET}.zip`);
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
     }
   });
 });
