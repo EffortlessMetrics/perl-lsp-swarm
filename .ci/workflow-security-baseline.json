@@ -1,8 +1,8 @@
 {
   "control_files": {
     ".github/workflows/workflow-security-ratchet.yml": "sha256:55901fbf8b6c87901950e3f5f518d1f2b34db793077925b43d77fbf33ac04603",
-    "scripts/ci/test_workflow_security_ratchet.py": "sha256:cd8f711a705a54860fd7dc65c6e110343216ce828b935bd5fb67b1c2550f5575",
-    "scripts/ci/workflow_security_ratchet.py": "sha256:81661e48ffb6777309d9513917e12941c64f9d0aa20ac8f701421917d6257dec"
+    "scripts/ci/test_workflow_security_ratchet.py": "sha256:959ce9b79674aaca1e2342b2e7acd42bade31dede97ac510ec9f5aec64ab5390",
+    "scripts/ci/workflow_security_ratchet.py": "sha256:eb31e21317819b17011ccb2a3bc79963a682223343d04e9ab3cfce0f33bf3a4c"
   },
   "findings": [
     {
@@ -1564,86 +1564,6 @@
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/release-orchestration.yml",
       "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "8e506e44d2cabd41fcc5c6b37660d0ed421e62136e1ddc21dc2d46d65d3d9e01",
-      "line": 128,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/release.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "0da3bc37f7cba6c6e8da885cf28388a095826ca0993da056400370af3bc56837",
-      "line": 227,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/release.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "TARGET=\"${{ matrix.target }}\"",
-      "fingerprint": "f0a5bf00c3e2c79e230b6ad165b4f94384d233d273421a8cf6d7fd3799580e1b",
-      "line": 164,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/release.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "VERSION=\"${{ needs.release-metadata.outputs.version }}\"",
-      "fingerprint": "030bf3de1045a2238b4762f2a57b498950073dfce76df745f06f38eefeca7476",
-      "line": 165,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/release.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "if [[ \"$TARGET\" != *\"windows\"* ]] && [[ \"${{ matrix.use_cross }}\" != \"true\" ]]; then",
-      "fingerprint": "a1ab0237c8b302f36e31ff2ef1d2f106716566b04614006b81522b04c37f5366",
-      "line": 183,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/release.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "--version \"${{ needs.release-metadata.outputs.version }}\"",
-      "fingerprint": "18a26145bada98369a51b577a4fce594be3f299d0b1f3da62a6090aecc974afa",
-      "line": 265,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/release.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "TAG=\"${{ needs.release-metadata.outputs.tag }}\"",
-      "fingerprint": "29e33d4ca69f09c868fa67c49e5f30c989678c58474901b4ddfff975ea507871",
-      "line": 270,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/release.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "TAG=\"${{ needs.release-metadata.outputs.tag }}\"",
-      "fingerprint": "928ea1db3ec03d28198b6273212b0665eb475d120b75e996823d197c46f33908",
-      "line": 282,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/release.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "run: cargo install cross --locked --git https://github.com/cross-rs/cross --tag v0.2.5",
-      "fingerprint": "591d6152043607c39b66fc8300a1ce73fbefe60925f36302b5689025ef9bfcbf",
-      "line": 138,
-      "message": "cargo install must use --version, --path, or --git with --rev",
-      "path": ".github/workflows/release.yml",
-      "rule": "floating_cargo_install"
-    },
-    {
-      "evidence": "run: cargo install cargo-release --locked",
-      "fingerprint": "0b3db88a9b634826f2e4c11392009c22efb70814e4c25f58166643ec22bec903",
-      "line": 235,
-      "message": "cargo install must use --version, --path, or --git with --rev",
-      "path": ".github/workflows/release.yml",
-      "rule": "floating_cargo_install"
     },
     {
       "evidence": "echo \"::warning::Primary runner (${{ needs.route-ripr.outputs.target }}) failed \u2014 falling back to GitHub-hosted for ripr. Reclaim runner disk before next run.\"",

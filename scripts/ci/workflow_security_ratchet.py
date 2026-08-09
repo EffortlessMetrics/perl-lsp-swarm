@@ -229,15 +229,42 @@ def _checkout_persists(lines: Sequence[str], use_index: int, use_indent: int) ->
     return True
 
 
+def _cargo_install_pin_surface(args: str) -> str:
+    """Keep pin checks on the cargo install argv, not later shell or comments."""
+    without_comment = args.split("#", 1)[0]
+    surface = without_comment
+    for separator in ("&&", "||", ";", "|"):
+        index = surface.find(separator)
+        if index != -1:
+            surface = surface[:index]
+    return surface.strip()
+
+
 def _cargo_install_is_pinned(command: str) -> bool:
+    pin_surface = _cargo_install_pin_surface(command)
     return bool(
-        re.search(r"(?:^|\s)--version(?:=|\s)\S+", command)
+        re.search(r"(?:^|\s)--version(?:=|\s)\S+", pin_surface)
         or (
-            re.search(r"(?:^|\s)--git(?:=|\s)\S+", command)
-            and re.search(r"(?:^|\s)--rev(?:=|\s)\S+", command)
+            re.search(r"(?:^|\s)--git(?:=|\s)\S+", pin_surface)
+            and re.search(r"(?:^|\s)--rev(?:=|\s)\S+", pin_surface)
         )
-        or re.search(r"(?:^|\s)--path(?:=|\s)\S+", command)
+        or re.search(r"(?:^|\s)--path(?:=|\s)\S+", pin_surface)
     )
+
+
+def _run_line_with_continuations(
+    lines: Sequence[str], index: int, run_lines: set[int]
+) -> str:
+    """Return one shell command with backslash continuations folded together."""
+    command = lines[index]
+    cursor = index
+    while command.rstrip().endswith("\\"):
+        next_index = cursor + 1
+        if next_index not in run_lines:
+            break
+        command = command.rstrip()[:-1] + " " + lines[next_index].lstrip()
+        cursor = next_index
+    return command
 
 
 def _security_sensitive_indirection(line: str) -> bool:
@@ -446,7 +473,9 @@ def scan(
                 )
 
             if index in run_lines:
-                install = CARGO_INSTALL_RE.search(line)
+                install = CARGO_INSTALL_RE.search(
+                    _run_line_with_continuations(lines, index, run_lines)
+                )
                 if install and not _cargo_install_is_pinned(install.group(1)):
                     raw.append(
                         RawFinding(
