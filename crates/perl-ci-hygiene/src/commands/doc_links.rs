@@ -291,7 +291,9 @@ mod tests {
         // target must remain checked -- masking must not swallow the link.
         let labelled = markdown_link_targets("[the `Foo` type](../reference/FOO.md)")?;
         if labelled != vec!["../reference/FOO.md".to_string()] {
-            return Err(format!("code in a link label must keep the target, got {labelled:?}").into());
+            return Err(
+                format!("code in a link label must keep the target, got {labelled:?}").into()
+            );
         }
         Ok(())
     }
