@@ -429,7 +429,6 @@ If critical issues are discovered post-release:
 ### Related Documentation
 
 - **[Heredoc implementation reference](../reference/HEREDOC_IMPLEMENTATION.md)**: Current three-phase architecture
-- **[HEREDOC_IMPLEMENTATION.md](../reference/HEREDOC_IMPLEMENTATION.md)**: Existing three-phase architecture
 - **[ERROR_HANDLING_STRATEGY.md](../explanation/ERROR_HANDLING_STRATEGY.md)**: Error handling principles
 - **[MUTATION_TESTING_METHODOLOGY.md](../reference/MUTATION_TESTING_METHODOLOGY.md)**: Test quality standards
 - **[ADR-001: Agent Architecture](ADR_001_AGENT_ARCHITECTURE.md)**: Workflow coordination patterns

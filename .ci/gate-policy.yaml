@@ -1051,7 +1051,7 @@ gates:
 
   - name: adr_link_check
     tier: merge_gate
-    description: "ADR Markdown relative links resolve to files inside the repository"
+    description: "Inline relative Markdown links under docs/adr resolve to files inside the repository"
     required: true
     command: cargo xtask ci-hygiene check-doc-links docs/adr
     timeout_seconds: 180

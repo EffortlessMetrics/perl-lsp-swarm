@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use walkdir::WalkDir;
 
-/// A live inline link. The leading `(^|[^\\])` group rejects `\[escaped](x)`,
-/// which renders as literal text rather than a link; the target is capture 2.
-static MARKDOWN_LINK_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r#"(^|[^\\])\[[^\]]*\]\(\s*<?([^\s)>]+)>?"#));
+/// Inline link body and destination after a live `[`.
+static LINK_BODY_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"\[[^\]]*\]\(\s*<?([^\s)>]+)>?"));
 
 /// An inline code span. ADR prose demonstrates Markdown syntax inside
 /// backticks; that text does not render as a link, so it must not be resolved
@@ -97,24 +96,51 @@ fn check_file(repo_root: &Path, canonical_root: &Path, path: &Path) -> Result<Ve
 }
 
 fn markdown_link_targets(line: &str) -> Result<Vec<String>> {
-    let regex = MARKDOWN_LINK_RE
-        .as_ref()
-        .map_err(|err| eyre!("failed to compile Markdown link matcher: {err}"))?;
     let inline_code = INLINE_CODE_RE
         .as_ref()
         .map_err(|err| eyre!("failed to compile inline code matcher: {err}"))?;
+    let link_body = LINK_BODY_RE
+        .as_ref()
+        .map_err(|err| eyre!("failed to compile Markdown link matcher: {err}"))?;
     // Blank out code spans rather than dropping them, so neighbouring text
     // cannot be spliced together into a link that was never written.
     let line = inline_code.replace_all(line, " ");
-    Ok(regex
-        .captures_iter(&line)
-        .filter_map(|capture| capture.get(2))
-        .map(|target| target.as_str().to_owned())
-        .collect())
+    let bytes = line.as_bytes();
+    let mut targets = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' && is_live_link_opener(bytes, i) {
+            if let Some(rest) = line.get(i..) {
+                if let Some(capture) = link_body.captures(rest) {
+                    if let Some(target) = capture.get(1) {
+                        targets.push(target.as_str().to_owned());
+                    }
+                    if let Some(full) = capture.get(0) {
+                        i += full.end();
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(targets)
+}
+
+/// A `[` starts a live link when it is preceded by an even number of backslashes.
+/// `\[escaped](x)` is literal text; `\\[live](x)` is a literal backslash plus link.
+fn is_live_link_opener(bytes: &[u8], bracket_index: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut j = bracket_index;
+    while j > 0 && bytes[j - 1] == b'\\' {
+        backslashes += 1;
+        j -= 1;
+    }
+    backslashes % 2 == 0
 }
 
 fn local_target_path(repo_root: &Path, source: &Path, target: &str) -> Option<PathBuf> {
-    let target = target.split('#').next()?.trim();
+    let target = target.split('#').next()?.split('?').next()?.trim();
     if target.is_empty()
         || target.starts_with("http://")
         || target.starts_with("https://")
@@ -285,6 +311,12 @@ mod tests {
         let escaped = markdown_link_targets(r"escape it as \[literal](missing.md) instead")?;
         if !escaped.is_empty() {
             return Err(format!("an escaped link must yield no targets, got {escaped:?}").into());
+        }
+
+        let doubled =
+            markdown_link_targets(r"write \\[live](missing.md) after a literal backslash")?;
+        if doubled != vec!["missing.md".to_string()] {
+            return Err(format!("a doubled-backslash link must stay live, got {doubled:?}").into());
         }
 
         // A code span inside a link *label* still leaves a real link, so the
