@@ -285,6 +285,9 @@ jobs:
       - name: Check perl-lsp-rs-core packaged build inputs
         run: python3 scripts/ci/check_perl_lsp_rs_core_package.py
 
+      - name: Test publish package guard
+        run: python3 scripts/ci/test_check_publish_package_contents.py
+
       - name: Publish all crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -442,9 +445,19 @@ jobs:
             echo ""
             printf '===> %s@%s\n' "$CRATE" "$VERSION"
 
+            # Locate the manifest for this crate (package name may differ from
+            # directory name, so we look it up from cargo metadata).
+            MANIFEST_PATH="$(grep "^${CRATE} " "$MANIFEST_MAP" | awk '{print $2}')"
+            if [ -z "$MANIFEST_PATH" ]; then
+              echo "::error::Could not find manifest path for $CRATE in cargo metadata"
+              exit 1
+            fi
+
             if [ "$DRY_RUN" = "true" ]; then
               TARGET_DIR="${RUNNER_TEMP}/cargo-package-${CRATE//\//-}"
               rm -rf "$TARGET_DIR"
+              python3 scripts/ci/check_publish_package_contents.py \
+                --crate "$CRATE" --manifest "$MANIFEST_PATH"
               printf 'Dry run: scripts/cargo-package-workspace-dry-run.sh %s (CARGO_TARGET_DIR=%s)\n' "$CRATE" "$TARGET_DIR"
               CARGO_TARGET_DIR="$TARGET_DIR" CARGO_PACKAGE_NO_VERIFY=1 bash scripts/cargo-package-workspace-dry-run.sh "$CRATE"
               continue
@@ -459,12 +472,6 @@ jobs:
               printf '::notice::%s@%s already present in sparse index, skipping\n' "$CRATE" "$VERSION"
               PUBLISHED_COUNT=$((PUBLISHED_COUNT + 1))
               continue
-            fi
-
-            MANIFEST_PATH="$(grep "^${CRATE} " "$MANIFEST_MAP" | awk '{print $2}')"
-            if [ -z "$MANIFEST_PATH" ]; then
-              printf '::error::Could not find manifest path for %s in cargo metadata\n' "$CRATE"
-              exit 1
             fi
 
             MANIFEST_REL="$(python3 - "$MANIFEST_PATH" "$GITHUB_WORKSPACE" <<'PY'
@@ -482,6 +489,8 @@ jobs:
             )"
             git ls-files --error-unmatch "$MANIFEST_REL" >/dev/null
 
+            # Back up the manifest and register a trap to restore it on any
+            # unexpected exit so [dev-dependencies] is always reinstated.
             MANIFEST_BACKUP="$(mktemp)"
             cp "$MANIFEST_PATH" "$MANIFEST_BACKUP"
             trap 'cp "$MANIFEST_BACKUP" "$MANIFEST_PATH"; rm -f "$MANIFEST_BACKUP"' EXIT
@@ -497,6 +506,11 @@ jobs:
             # unvalidated dirty file for attempts 2 and 3 to publish.
             PUBLISHED=false
             for attempt in 1 2 3; do
+              # Re-check immediately before every publish attempt. A failed
+              # cargo invocation or a future pre-publish step must not create a
+              # new packaged file between the first check and a retry.
+              python3 scripts/ci/check_publish_package_contents.py \
+                --crate "$CRATE" --manifest "$MANIFEST_PATH"
               assert_only_manifest_dirty "$MANIFEST_REL" "before publish attempt $attempt/3 for $CRATE@$VERSION"
               printf 'Attempt %s/3: cargo publish -p %s --no-verify --allow-dirty\n' "$attempt" "$CRATE"
               PUBLISH_LOG="$(mktemp)"
