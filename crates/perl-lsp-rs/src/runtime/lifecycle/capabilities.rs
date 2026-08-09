@@ -6,11 +6,6 @@ use super::super::{JsonRpcError, LspServer, Ordering};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
-/// Serialize a typed value to a serde_json::Value (#4995).
-fn to_json<T: serde::Serialize>(value: T) -> Value {
-    serde_json::to_value(value).unwrap_or(Value::Null)
-}
-
 /// The LSP protocol version this server implements.
 ///
 /// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
@@ -45,7 +40,8 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
             tracing::warn!("Failed to merge experimental capability into non-object capabilities");
             return;
         };
-        capabilities_object.insert("experimental".to_string(), Value::Object(serde_json::Map::new()));
+        capabilities_object
+            .insert("experimental".to_string(), Value::Object(serde_json::Map::new()));
     }
 
     let Some(experimental) = capabilities.get_mut("experimental").and_then(Value::as_object_mut)
@@ -654,7 +650,10 @@ impl LspServer {
             }
             (true, false) => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
-                    capabilities.insert("inlineCompletionProvider".to_string(), Value::Object(serde_json::Map::new()));
+                    capabilities.insert(
+                        "inlineCompletionProvider".to_string(),
+                        Value::Object(serde_json::Map::new()),
+                    );
                 }
             }
             (false, _) => {

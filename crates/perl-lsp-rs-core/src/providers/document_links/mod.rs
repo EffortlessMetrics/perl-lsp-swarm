@@ -122,10 +122,7 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                 col_end,
                                 &format!("Open {}", import.token),
                                 "file",
-                                vec![
-                                    ("path", import.token.clone().into()),
-                                    ("baseUri", uri.to_string()),
-                                ],
+                                vec![("path", import.token.into()), ("baseUri", uri.to_string())],
                             ));
                         }
                         Some(RequireForm::ModuleName) | None => {

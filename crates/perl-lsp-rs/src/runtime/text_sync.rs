@@ -726,7 +726,11 @@ impl LspServer {
                         // meantime -- see `state::DocumentState` module
                         // docs and the #3589 pending-parse provider
                         // policies.
-                        doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
+                        doc_state.replace_text_state(
+                            doc.rope.clone(),
+                            text_arc.to_string(),
+                            version,
+                        );
                         #[cfg(feature = "incremental")]
                         {
                             doc_state.incremental_doc = None;

@@ -17,14 +17,6 @@ use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-/// Serialize a typed value to a serde_json::Value (#4995).
-///
-/// Replaces `json!(value)` for values that already implement Serialize,
-/// which is clearer and avoids the macro overhead.
-fn to_json<T: serde::Serialize>(value: T) -> Value {
-    serde_json::to_value(value).unwrap_or(Value::Null)
-}
-
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))

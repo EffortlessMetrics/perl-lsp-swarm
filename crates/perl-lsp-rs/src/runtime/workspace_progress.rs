@@ -1,7 +1,7 @@
 //! Workspace indexing progress and readiness notifications.
 
 #[cfg(feature = "workspace")]
-use super::outbound::{OutboundSender, OutboundSink};
+use super::outbound::OutboundSink;
 #[cfg(feature = "workspace")]
 use super::types::ServerRequestId;
 #[cfg(feature = "workspace")]
