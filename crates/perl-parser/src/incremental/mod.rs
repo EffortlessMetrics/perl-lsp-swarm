@@ -89,6 +89,10 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
 /// After `apply_single_edit` updates `state.source` and `state.tokens`, this
 /// function re-parses the full source to produce a fresh AST, so consumers
 /// reading `state.ast` after `apply_edits` get the post-edit tree.
+#[expect(
+    deprecated,
+    reason = "AST write-back is the legacy field's supported refresh boundary (#5036)"
+)]
 fn reparse_ast(state: &mut IncrementalState) {
     let mut parser = Parser::new(&state.source);
     state.ast = match parser.parse() {

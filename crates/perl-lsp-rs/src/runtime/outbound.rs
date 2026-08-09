@@ -59,6 +59,7 @@ pub(crate) enum OutboundMessage {
 ///
 /// The trait intentionally mirrors the three `send_*` methods on
 /// `OutboundSender` so the production impl is a zero-cost passthrough.
+#[cfg(test)]
 pub(crate) trait OutboundSink {
     /// Send a JSON-RPC response to the client.
     fn send_response(&self, response: JsonRpcResponse) -> io::Result<()>;
@@ -96,10 +97,10 @@ impl OutboundSink for RecordingSink {
     }
 
     fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
-        self.messages.lock().unwrap().push(OutboundMessage::Notification {
-            method: method.to_string(),
-            params,
-        });
+        self.messages
+            .lock()
+            .unwrap()
+            .push(OutboundMessage::Notification { method: method.to_string(), params });
         Ok(())
     }
 
@@ -165,6 +166,7 @@ impl OutboundSender {
     }
 }
 
+#[cfg(test)]
 impl OutboundSink for OutboundSender {
     fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
         OutboundSender::send_response(self, response)
