@@ -3516,6 +3516,74 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::Glob { pattern } => self.alloc_expr(glob_expr(pattern), range),
 
+            // Regex/Match/Substitution lowering (#5043): these are important
+            // for effect analysis because has_embedded_code means the pattern
+            // or replacement can execute arbitrary Perl code via (?{...}) or
+            // the /e modifier. Lower the matched expression as a structured
+            // child so variable reads are captured.
+            NodeKind::Regex { has_embedded_code, .. } => {
+                // A bare regex literal (qr//) has no target expression to lower.
+                // Model as Opaque but tag it so effect analysis can check for
+                // embedded code without string sniffing.
+                self.alloc_expr(
+                    HirExpr::Opaque { ast_kind: "Regex".to_string() },
+                    range,
+                )
+            }
+
+            NodeKind::Match { expr, has_embedded_code, negated, .. } => {
+                // Lower the matched expression so variable reads are captured.
+                // The match itself is modeled as a Call so effect analysis can
+                // see it as a potential code-execution site when
+                // has_embedded_code is true.
+                let arg_ids = vec![self.lower_expr(expr)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: if *has_embedded_code {
+                            "MatchWithEmbeddedCode".to_string()
+                        } else {
+                            "Match".to_string()
+                        },
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Substitution { expr, has_embedded_code, .. } => {
+                // Lower the target expression. Substitution with /e modifier
+                // evaluates the replacement as Perl code — model as Call so
+                // effect analysis can see the code-execution site.
+                let arg_ids = vec![self.lower_expr(expr)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: if *has_embedded_code {
+                            "SubstitutionWithEmbeddedCode".to_string()
+                        } else {
+                            "Substitution".to_string()
+                        },
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Transliteration { expr, .. } => {
+                // tr/// has no code execution risk but the target expression
+                // should still be lowered for variable reads.
+                let arg_ids = vec![self.lower_expr(expr)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Transliteration".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.
                 let kind_name = node.kind.kind_name().to_string();
