@@ -17,6 +17,19 @@ use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+/// Serialize a typed value to a serde_json::Value (#4995).
+///
+/// Replaces `json!(value)` for values that already implement Serialize,
+/// which is clearer and avoids the macro overhead.
+fn to_json<T: serde::Serialize>(value: T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
@@ -822,7 +835,7 @@ impl LspServer {
                                                 );
                                                 let result_count = live_locations.len();
                                                 return Ok((
-                                                    Some(json!(live_locations)),
+                                                    Some(to_json_array(&live_locations)),
                                                     ReferencesAnsweringTier::SemanticSourceBacked,
                                                     index_state,
                                                     result_count,
@@ -876,7 +889,7 @@ impl LspServer {
                                         let index_count = workspace_locations.len();
                                         workspace_locations.truncate(cap);
                                         return Ok((
-                                            Some(json!(workspace_locations)),
+                                            Some(to_json_array(&workspace_locations)),
                                             ReferencesAnsweringTier::WorkspaceExact,
                                             index_state,
                                             index_count,
@@ -1006,7 +1019,7 @@ impl LspServer {
                                             "Found total references via combined search"
                                         );
                                         return Ok((
-                                            Some(json!(all_combined_locations)),
+                                            Some(to_json_array(&all_combined_locations)),
                                             classify_combined_tier(index_count, text_count),
                                             index_state,
                                             index_count,
@@ -1045,7 +1058,7 @@ impl LspServer {
                                         if !lsp_locations.is_empty() {
                                             let result_count = lsp_locations.len();
                                             return Ok((
-                                                Some(json!(lsp_locations)),
+                                                Some(to_json_array(&lsp_locations)),
                                                 ReferencesAnsweringTier::WorkspaceExact,
                                                 index_state,
                                                 result_count,
@@ -1134,7 +1147,7 @@ impl LspServer {
                                                         if !lsp_locations.is_empty() {
                                                             let result_count = lsp_locations.len();
                                                             return Ok((
-                                                                Some(json!(lsp_locations)),
+                                                                Some(to_json_array(&lsp_locations)),
                                                                 ReferencesAnsweringTier::WorkspaceExact,
                                                                 index_state,
                                                                 result_count,
@@ -1239,7 +1252,7 @@ impl LspServer {
                                                         // Truncate to cap
                                                         all_locations.truncate(cap);
                                                         return Ok((
-                                                            Some(json!(all_locations)),
+                                                            Some(to_json_array(&all_locations)),
                                                             ReferencesAnsweringTier::WorkspaceText,
                                                             index_state,
                                                             0,
@@ -1286,7 +1299,7 @@ impl LspServer {
                                             );
                                             let result_count = lsp_locations.len();
                                             return Ok((
-                                                Some(json!(lsp_locations)),
+                                                Some(to_json_array(&lsp_locations)),
                                                 ReferencesAnsweringTier::PartialIndex,
                                                 index_state,
                                                 result_count,
@@ -1333,7 +1346,7 @@ impl LspServer {
                                         );
                                         let result_count = open_doc_locations.len();
                                         return Ok((
-                                            Some(json!(open_doc_locations)),
+                                            Some(to_json_array(&open_doc_locations)),
                                             ReferencesAnsweringTier::OpenDocumentText,
                                             index_state,
                                             0,
@@ -1390,7 +1403,7 @@ impl LspServer {
                             "References: returned same-file results"
                         );
                         return Ok((
-                            Some(json!(locations)),
+                            Some(to_json_array(&locations)),
                             ReferencesAnsweringTier::SemanticAnalyzer,
                             index_state,
                             0,
