@@ -18,6 +18,13 @@
 //!   This is the **drift guard**: consumers that pattern-match `NodeKind` can
 //!   rely on classification staying current.
 //!
+//! - **`outline_visible` semantics.** This flag answers the question
+//!   *"can this node kind produce a document-outline symbol?"* It captures
+//!   the outline's deliberate superset of declarations: labels and phase
+//!   blocks are visible, while signature-parameter nodes are not. The
+//!   extractor still applies instance-level guards such as anonymous-sub
+//!   naming and synthesized framework symbols remain a separate path.
+//!
 //! - **`safe_for_breakpoint` semantics.** This flag answers the question
 //!   *"can a breakpoint ever be set on this kind of node?"* at the variant
 //!   level. A `true` value must be AND-ed by the DAP/LSP consumer with
@@ -118,6 +125,13 @@ pub struct NodeKindFlags {
     /// Missing declarations lose symbols but do not crash.
     pub declares_symbol: bool,
 
+    /// Can this node kind produce a document-outline symbol?
+    ///
+    /// This is an AST-kind eligibility predicate, not a guarantee that every
+    /// instance emits a symbol. Consumers must still apply instance-level
+    /// guards such as anonymous-sub naming and source/range validity.
+    pub outline_visible: bool,
+
     /// References a name (`$x`, `foo()`, `@arr`).
     ///
     /// Triggers use-def chain lookups. Conservative default: `false`.
@@ -173,17 +187,39 @@ macro_rules! flags {
         refs=$refs:expr,
         children=$children:expr,
         recovery=$recovery:expr,
-        bp=$bp:expr
+        bp=$bp:expr,
+        outline=$outline:expr
     ) => {
         NodeKindFlags {
             executable: $exec,
             introduces_scope: $scope,
             declares_symbol: $decl,
+            outline_visible: $outline,
             references_symbol: $refs,
             contains_children: $children,
             recovery_artifact: $recovery,
             safe_for_breakpoint: $bp,
         }
+    };
+    (
+        exec=$exec:expr,
+        scope=$scope:expr,
+        decl=$decl:expr,
+        refs=$refs:expr,
+        children=$children:expr,
+        recovery=$recovery:expr,
+        bp=$bp:expr
+    ) => {
+        flags!(
+            exec = $exec,
+            scope = $scope,
+            decl = $decl,
+            refs = $refs,
+            children = $children,
+            recovery = $recovery,
+            bp = $bp,
+            outline = false
+        )
     };
 }
 
@@ -318,7 +354,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             NodeKind::VariableListDeclaration { .. } => flags!(
                 exec = true,
@@ -327,7 +364,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             NodeKind::NestedVariableList { .. } => flags!(
                 exec = false,
@@ -573,7 +611,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             NodeKind::While { .. } => flags!(
                 exec = true,
@@ -663,7 +702,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             NodeKind::Prototype { .. } => flags!(
                 exec = false,
@@ -726,7 +766,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             NodeKind::Return { .. } => flags!(
                 exec = true,
@@ -825,7 +866,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             // `use Module LIST` is BEGIN { require Module; Module->import(@LIST) } —
             // compile-time pragma. Perl 5.40.1 debugger probe reports "not breakable".
@@ -858,7 +900,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             NodeKind::DataSection { .. } => flags!(
                 exec = false,
@@ -876,7 +919,8 @@ impl NodeKind {
                 refs = false,
                 children = true,
                 recovery = false,
-                bp = true
+                bp = true,
+                outline = true
             ),
             NodeKind::Format { .. } => flags!(
                 exec = false,
@@ -885,7 +929,8 @@ impl NodeKind {
                 refs = false,
                 children = false,
                 recovery = false,
-                bp = false
+                bp = false,
+                outline = true
             ),
             NodeKind::Identifier { .. } => flags!(
                 exec = false,
@@ -982,6 +1027,15 @@ impl NodeKind {
         self.flags().declares_symbol
     }
 
+    /// Returns `true` if this node kind can produce a document-outline symbol.
+    ///
+    /// This is a kind-level eligibility predicate. Consumers must still apply
+    /// instance-level guards and source/range validation.
+    #[inline]
+    pub fn outline_visible(&self) -> bool {
+        self.flags().outline_visible
+    }
+
     /// Returns `true` if this node kind references a symbol.
     ///
     /// See [`NodeKindFlags::references_symbol`].
@@ -1044,6 +1098,7 @@ mod tests {
     use super::NodeKindFlags;
     use crate::ast::{GotoTargetForm, Node, NodeKind};
     use perl_position_tracking::SourceLocation;
+    use std::collections::BTreeSet;
 
     fn loc() -> SourceLocation {
         SourceLocation::new(0, 1)
@@ -1368,6 +1423,12 @@ mod tests {
                 kind.kind_name()
             );
             assert_eq!(
+                kind.outline_visible(),
+                flags.outline_visible,
+                "{}: outline_visible() != flags.outline_visible",
+                kind.kind_name()
+            );
+            assert_eq!(
                 kind.references_symbol(),
                 flags.references_symbol,
                 "{}: references_symbol() != flags.references_symbol",
@@ -1405,6 +1466,7 @@ mod tests {
         assert!(fc.safe_for_breakpoint());
         assert!(!fc.introduces_scope());
         assert!(!fc.declares_symbol());
+        assert!(!fc.outline_visible());
         assert!(!fc.is_recovery());
 
         // VariableDeclaration: executable, introduces scope, declares symbol
@@ -1417,6 +1479,7 @@ mod tests {
         assert!(vd.is_executable());
         assert!(vd.introduces_scope());
         assert!(vd.declares_symbol());
+        assert!(vd.outline_visible());
         assert!(vd.safe_for_breakpoint());
 
         // Number literal: none of the executable/scope/decl/refs/bp flags set
@@ -1424,6 +1487,7 @@ mod tests {
         assert!(!num.is_executable());
         assert!(!num.introduces_scope());
         assert!(!num.declares_symbol());
+        assert!(!num.outline_visible());
         assert!(!num.references_symbol());
         assert!(!num.safe_for_breakpoint());
         assert!(!num.is_recovery());
@@ -1463,6 +1527,34 @@ mod tests {
         assert!(blk.introduces_scope());
         assert!(blk.is_executable());
         assert!(blk.safe_for_breakpoint());
+        assert!(!blk.outline_visible());
+    }
+
+    #[test]
+    fn outline_visible_matches_document_symbol_node_kinds() {
+        let expected: BTreeSet<&str> = [
+            "Subroutine",
+            "Package",
+            "Class",
+            "Method",
+            "Format",
+            "PhaseBlock",
+            "LabeledStatement",
+            "VariableDeclaration",
+            "VariableListDeclaration",
+        ]
+        .into_iter()
+        .collect();
+        let actual: BTreeSet<&str> = all_variants()
+            .iter()
+            .filter(|kind| kind.outline_visible())
+            .map(NodeKind::kind_name)
+            .collect();
+
+        assert_eq!(
+            actual, expected,
+            "outline eligibility drifted from SymbolExtractor's document-symbol node set"
+        );
     }
 
     // ── Test 6: NodeKindFlags::validate() accepts valid, rejects invalid ───────
@@ -1473,6 +1565,7 @@ mod tests {
             executable: false,
             introduces_scope: false,
             declares_symbol: false,
+            outline_visible: false,
             references_symbol: false,
             contains_children: false,
             recovery_artifact: true,
@@ -1484,6 +1577,7 @@ mod tests {
             executable: false,
             introduces_scope: false,
             declares_symbol: false,
+            outline_visible: false,
             references_symbol: false,
             contains_children: false,
             recovery_artifact: true,

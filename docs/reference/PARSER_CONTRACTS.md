@@ -266,20 +266,27 @@ Test functions:
 ### Contract
 
 `crates/perl-ast/src/classification.rs` provides a static, variant-level
-classification API for all 69 `NodeKind` variants. Two methods are exposed on
+ classification API for all 69 `NodeKind` variants. Three methods are exposed on
 `NodeKind`:
 
 - **`category() -> NodeKindCategory`** — classifies each variant into exactly
   one of: `Program`, `Statement`, `Expression`, `Declaration`, `Scope`,
   `Literal`, `Operator`, `CommentDoc`, `Recovery`, `Unknown`.
 
-- **`flags() -> NodeKindFlags`** — returns a struct with seven boolean flags:
-  `executable`, `introduces_scope`, `declares_symbol`, `references_symbol`,
-  `contains_children`, `recovery_artifact`, `safe_for_breakpoint`.
+- **`flags() -> NodeKindFlags`** — returns a struct with eight boolean flags:
+  `executable`, `introduces_scope`, `declares_symbol`, `outline_visible`,
+  `references_symbol`, `contains_children`, `recovery_artifact`,
+  `safe_for_breakpoint`.
 
-Both methods use **exhaustive `match self { ... }` expressions with no wildcard
-arm.** Adding a new `NodeKind` variant is a compile-time error until both
-matches are extended. This is the drift guard.
+- **`outline_visible() -> bool`** — returns the AST-kind eligibility for
+  document-outline symbols. The set is intentionally broader than
+  `declares_symbol`: labels and phase blocks are visible, while signature
+  parameter nodes are not. Extractors still apply instance-level guards such
+  as anonymous-sub naming, and synthesized framework symbols remain separate.
+
+The classification table uses an **exhaustive `match self { ... }` expression
+with no wildcard arm.** Adding a new `NodeKind` variant is a compile-time error
+until the table is extended. This is the drift guard.
 
 **Invariant (enforced by `NodeKindFlags::validate()`):**
 `recovery_artifact == true` implies `safe_for_breakpoint == false`.

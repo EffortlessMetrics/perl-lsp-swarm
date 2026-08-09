@@ -541,14 +541,16 @@ impl SymbolExtractor {
             }
 
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                let doc = self.extract_leading_comment(node.location.start);
-                self.handle_variable_declaration(
-                    declarator,
-                    variable,
-                    attributes,
-                    variable.location,
-                    doc,
-                );
+                if node.kind.outline_visible() {
+                    let doc = self.extract_leading_comment(node.location.start);
+                    self.handle_variable_declaration(
+                        declarator,
+                        variable,
+                        attributes,
+                        variable.location,
+                        doc,
+                    );
+                }
                 if let Some(init) = initializer {
                     self.visit_node(init);
                 }
@@ -560,15 +562,17 @@ impl SymbolExtractor {
                 attributes,
                 initializer,
             } => {
-                let doc = self.extract_leading_comment(node.location.start);
-                for var in variables {
-                    self.handle_variable_declaration(
-                        declarator,
-                        var,
-                        attributes,
-                        var.location,
-                        doc.clone(),
-                    );
+                if node.kind.outline_visible() {
+                    let doc = self.extract_leading_comment(node.location.start);
+                    for var in variables {
+                        self.handle_variable_declaration(
+                            declarator,
+                            var,
+                            attributes,
+                            var.location,
+                            doc.clone(),
+                        );
+                    }
                 }
                 if let Some(init) = initializer {
                     self.visit_node(init);
@@ -606,7 +610,7 @@ impl SymbolExtractor {
                 let sub_name =
                     name.as_ref().map(|n| n.to_string()).unwrap_or_else(|| "<anon>".to_string());
 
-                if name.is_some() {
+                if node.kind.outline_visible() && name.is_some() {
                     let documentation = self.extract_leading_comment(node.location.start);
                     let mut symbol_attributes = attributes.clone();
                     let documentation = if self.current_package_is_catalyst_controller()
@@ -874,18 +878,20 @@ impl SymbolExtractor {
             }
 
             NodeKind::LabeledStatement { label, statement } => {
-                let symbol = Symbol {
-                    name: label.clone(),
-                    qualified_name: label.clone(),
-                    kind: SymbolKind::Label,
-                    location: node.location,
-                    scope_id: self.table.current_scope(),
-                    declaration: None,
-                    documentation: None,
-                    attributes: vec![],
-                };
+                if node.kind.outline_visible() {
+                    let symbol = Symbol {
+                        name: label.clone(),
+                        qualified_name: label.clone(),
+                        kind: SymbolKind::Label,
+                        location: node.location,
+                        scope_id: self.table.current_scope(),
+                        declaration: None,
+                        documentation: None,
+                        attributes: vec![],
+                    };
 
-                self.table.add_symbol(symbol);
+                    self.table.add_symbol(symbol);
+                }
 
                 {
                     self.visit_node(statement);
@@ -932,19 +938,21 @@ impl SymbolExtractor {
             }
 
             NodeKind::PhaseBlock { phase, phase_span: _, block } => {
-                // BEGIN, END, CHECK, INIT, UNITCHECK blocks — expose as named symbols
-                // so they appear in document outline / Outline View (#3464).
-                let symbol = Symbol {
-                    name: phase.clone(),
-                    qualified_name: format!("{}::{}", self.table.current_package, phase),
-                    kind: SymbolKind::Subroutine,
-                    location: node.location,
-                    scope_id: self.table.current_scope(),
-                    declaration: None,
-                    documentation: None,
-                    attributes: vec![],
-                };
-                self.table.add_symbol(symbol);
+                if node.kind.outline_visible() {
+                    // BEGIN, END, CHECK, INIT, UNITCHECK blocks — expose as named symbols
+                    // so they appear in document outline / Outline View (#3464).
+                    let symbol = Symbol {
+                        name: phase.clone(),
+                        qualified_name: format!("{}::{}", self.table.current_package, phase),
+                        kind: SymbolKind::Subroutine,
+                        location: node.location,
+                        scope_id: self.table.current_scope(),
+                        declaration: None,
+                        documentation: None,
+                        attributes: vec![],
+                    };
+                    self.table.add_symbol(symbol);
+                }
 
                 self.table.push_scope(ScopeKind::Block, node.location);
                 self.visit_node(block);
@@ -990,23 +998,25 @@ impl SymbolExtractor {
             }
 
             NodeKind::Class { name, name_span: _, parents, body } => {
-                let documentation = self.extract_leading_comment(node.location.start);
-                if Self::is_catalyst_controller_package_name(name)
-                    || parents.iter().any(|parent| parent == "Catalyst::Controller")
-                {
-                    self.mark_catalyst_controller_package(name);
+                if node.kind.outline_visible() {
+                    let documentation = self.extract_leading_comment(node.location.start);
+                    if Self::is_catalyst_controller_package_name(name)
+                        || parents.iter().any(|parent| parent == "Catalyst::Controller")
+                    {
+                        self.mark_catalyst_controller_package(name);
+                    }
+                    let symbol = Symbol {
+                        name: name.clone(),
+                        qualified_name: name.clone(),
+                        kind: SymbolKind::Package, // Classes are like packages
+                        location: node.location,
+                        scope_id: self.table.current_scope(),
+                        declaration: None,
+                        documentation,
+                        attributes: vec![],
+                    };
+                    self.table.add_symbol(symbol);
                 }
-                let symbol = Symbol {
-                    name: name.clone(),
-                    qualified_name: name.clone(),
-                    kind: SymbolKind::Package, // Classes are like packages
-                    location: node.location,
-                    scope_id: self.table.current_scope(),
-                    declaration: None,
-                    documentation,
-                    attributes: vec![],
-                };
-                self.table.add_symbol(symbol);
 
                 self.table.push_scope(ScopeKind::Package, node.location);
                 self.visit_node(body);
@@ -1014,21 +1024,23 @@ impl SymbolExtractor {
             }
 
             NodeKind::Method { name, name_span: _, signature, attributes, body } => {
-                let documentation = self.extract_leading_comment(node.location.start);
-                let mut symbol_attributes = Vec::with_capacity(attributes.len() + 1);
-                symbol_attributes.push("method".to_string());
-                symbol_attributes.extend(attributes.iter().cloned());
-                let symbol = Symbol {
-                    name: name.clone(),
-                    qualified_name: format!("{}::{}", self.table.current_package, name),
-                    kind: SymbolKind::Method,
-                    location: node.location,
-                    scope_id: self.table.current_scope(),
-                    declaration: None,
-                    documentation,
-                    attributes: symbol_attributes,
-                };
-                self.table.add_symbol(symbol);
+                if node.kind.outline_visible() {
+                    let documentation = self.extract_leading_comment(node.location.start);
+                    let mut symbol_attributes = Vec::with_capacity(attributes.len() + 1);
+                    symbol_attributes.push("method".to_string());
+                    symbol_attributes.extend(attributes.iter().cloned());
+                    let symbol = Symbol {
+                        name: name.clone(),
+                        qualified_name: format!("{}::{}", self.table.current_package, name),
+                        kind: SymbolKind::Method,
+                        location: node.location,
+                        scope_id: self.table.current_scope(),
+                        declaration: None,
+                        documentation,
+                        attributes: symbol_attributes,
+                    };
+                    self.table.add_symbol(symbol);
+                }
 
                 self.table.push_scope(ScopeKind::Subroutine, node.location);
 
@@ -1042,17 +1054,19 @@ impl SymbolExtractor {
             }
 
             NodeKind::Format { name, body: _, .. } => {
-                let symbol = Symbol {
-                    name: name.clone(),
-                    qualified_name: format!("{}::{}", self.table.current_package, name),
-                    kind: SymbolKind::Format,
-                    location: node.location,
-                    scope_id: self.table.current_scope(),
-                    declaration: None,
-                    documentation: None,
-                    attributes: vec![],
-                };
-                self.table.add_symbol(symbol);
+                if node.kind.outline_visible() {
+                    let symbol = Symbol {
+                        name: name.clone(),
+                        qualified_name: format!("{}::{}", self.table.current_package, name),
+                        kind: SymbolKind::Format,
+                        location: node.location,
+                        scope_id: self.table.current_scope(),
+                        declaration: None,
+                        documentation: None,
+                        attributes: vec![],
+                    };
+                    self.table.add_symbol(symbol);
+                }
             }
 
             NodeKind::Return { value } => {
