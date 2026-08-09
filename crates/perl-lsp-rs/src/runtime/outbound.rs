@@ -61,10 +61,6 @@ pub(crate) enum OutboundMessage {
 /// `OutboundSender` so the production impl is a zero-cost passthrough.
 pub(crate) trait OutboundSink {
     /// Send a JSON-RPC response to the client.
-    #[expect(
-        dead_code,
-        reason = "trait surface for RecordingSink; production uses OutboundSender directly"
-    )]
     fn send_response(&self, response: JsonRpcResponse) -> io::Result<()>;
 
     /// Send a JSON-RPC notification to the client.
