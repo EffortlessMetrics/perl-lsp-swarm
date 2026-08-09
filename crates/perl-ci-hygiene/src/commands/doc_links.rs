@@ -148,7 +148,7 @@ fn collect_reference_definitions(lines: &[&str]) -> Result<HashMap<String, Strin
         if label.is_empty() || target.is_empty() {
             continue;
         }
-        definitions.insert(normalize_reference_label(label), target.to_owned());
+        definitions.entry(normalize_reference_label(label)).or_insert_with(|| target.to_owned());
     }
 
     Ok(definitions)
@@ -215,18 +215,32 @@ fn markdown_reference_link_labels(line: &str) -> Result<Vec<String>> {
         .as_ref()
         .map_err(|err| eyre!("failed to compile reference link matcher: {err}"))?;
     let line = mask_inline_code(line)?;
+    let bytes = line.as_bytes();
     let mut labels = Vec::new();
-    for capture in reference_link.captures_iter(&line) {
-        let text = capture.name("text").map(|m| m.as_str()).unwrap_or_default();
-        let label = capture.name("label").map(|m| m.as_str()).unwrap_or_default();
-        if label.is_empty() {
-            if text.is_empty() {
-                continue;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' && is_live_link_opener(bytes, i) {
+            if let Some(rest) = line.get(i..) {
+                if let Some(capture) = reference_link.captures(rest) {
+                    if capture.get(0).is_some_and(|full| full.start() == 0) {
+                        let text = capture.name("text").map(|m| m.as_str()).unwrap_or_default();
+                        let label = capture.name("label").map(|m| m.as_str()).unwrap_or_default();
+                        if label.is_empty() {
+                            if !text.is_empty() {
+                                labels.push(text.to_owned());
+                            }
+                        } else {
+                            labels.push(label.to_owned());
+                        }
+                        if let Some(full) = capture.get(0) {
+                            i += full.end();
+                            continue;
+                        }
+                    }
+                }
             }
-            labels.push(text.to_owned());
-        } else {
-            labels.push(label.to_owned());
         }
+        i += 1;
     }
     Ok(labels)
 }
@@ -240,9 +254,9 @@ fn mask_inline_code(line: &str) -> Result<String> {
     Ok(inline_code.replace_all(line, " ").into_owned())
 }
 
-/// CommonMark reference labels are matched case-insensitively.
+/// CommonMark reference labels are matched case-insensitively with collapsed whitespace.
 fn normalize_reference_label(label: &str) -> String {
-    label.to_ascii_lowercase()
+    label.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
 }
 
 /// A `[` starts a live link when it is preceded by an even number of backslashes.
@@ -575,6 +589,41 @@ mod tests {
             );
         }
 
+        let escaped = markdown_reference_link_labels(r"escape it as \[guide][ref] instead")?;
+        if !escaped.is_empty() {
+            return Err(
+                format!("an escaped reference link must yield no labels, got {escaped:?}").into()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn collect_reference_definitions_preserves_first_duplicate_label() -> TestResult {
+        let lines = vec!["[ref]: existing.md", "[ref]: missing.md"];
+        let defs = collect_reference_definitions(&lines)?;
+        if defs.get("ref") != Some(&"existing.md".to_string()) {
+            return Err(format!("expected first duplicate definition to win, got {defs:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn check_doc_links_normalizes_reference_label_whitespace() -> TestResult {
+        let root = unique_temp_dir("reference-label-whitespace")?;
+        let docs = root.join("docs/adr");
+        fs::create_dir_all(&docs)?;
+        fs::write(docs.join("target.md"), "target\n")?;
+        fs::write(docs.join("source.md"), "See [guide][foo   bar].\n\n[foo bar]: target.md\n")?;
+
+        let exit_code = check_doc_links(&root, None)?;
+        if exit_code != 0 {
+            return Err(
+                format!("expected normalized reference label to resolve, got {exit_code}").into()
+            );
+        }
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
