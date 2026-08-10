@@ -161,6 +161,41 @@ jobs:
         assert report is not None
         self.assertEqual([], report["required_unreachable_gates"])
 
+    def test_strict_finds_tier_gate_inside_block_scalar_run_step(self) -> None:
+        status, output, report = self.run_validator(
+            """
+gates:
+  - name: fmt
+    tier: pr_fast
+    required: true
+  - name: docs_build
+    tier: merge_gate
+    required: true
+""",
+            """
+[lane.pr_smoke]
+[lane.docs_gate]
+""",
+            strict=True,
+            json_out=True,
+            workflow_text="""
+jobs:
+  test:
+    steps:
+      - name: Run PR-fast
+        run: |
+          set +e
+          cargo xtask gates --tier pr-fast --base origin/main
+""",
+        )
+
+        self.assertEqual(1, status)
+        self.assertIn("Required unreachable gates: 1", output)
+        self.assertIn("  - docs_build", output)
+        self.assertNotIn("  - fmt", output)
+        assert report is not None
+        self.assertEqual(["docs_build"], report["required_unreachable_gates"])
+
     def test_strict_ignores_gate_like_strings_in_workflow_metadata(self) -> None:
         status, output, report = self.run_validator(
             """

@@ -171,6 +171,10 @@ def read_yaml_gate_names(gate_policy_path: Path) -> list[str]:
     return list(read_yaml_gate_specs(gate_policy_path))
 
 
+def _workflow_line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
 def _workflow_line_is_metadata(line: str) -> bool:
     """Return True when a workflow line cannot execute gate commands.
 
@@ -184,6 +188,33 @@ def _workflow_line_is_metadata(line: str) -> bool:
     if "run:" in line or stripped.startswith("run "):
         return False
     return True
+
+
+def _record_workflow_gate_matches(
+    line: str,
+    *,
+    known: set[str],
+    gate_specs: dict[str, dict[str, Any]],
+    reachable: set[str],
+) -> None:
+    tier_match = re.search(r"\bgates\s+--tier\s+([a-z0-9_-]+)\b", line)
+    if tier_match:
+        tier = tier_match.group(1).replace("-", "_")
+        reachable.update(
+            name for name, spec in gate_specs.items() if spec.get("tier") == tier
+        )
+
+    matrix_match = re.match(r"^\s*(?:-\s*)?gates:\s*(.*)$", line)
+    if matrix_match:
+        reachable.update(
+            token
+            for token in re.findall(r"[a-z][a-z0-9_]*", matrix_match.group(1))
+            if token in known
+        )
+
+    direct_match = re.search(r"\bgates\s+--gate\s+([a-z][a-z0-9_]*)\b", line)
+    if direct_match and direct_match.group(1) in known:
+        reachable.add(direct_match.group(1))
 
 
 def read_workflow_reachable_gates(
@@ -200,31 +231,55 @@ def read_workflow_reachable_gates(
     reachable: set[str] = set()
     for workflow_path in workflow_paths:
         text = workflow_path.read_text(encoding="utf-8")
+        in_run_block = False
+        run_block_indent = -1
         for raw_line in text.splitlines():
             line = raw_line.split("#", 1)[0]
+            if not line.strip():
+                continue
+
+            indent = _workflow_line_indent(line)
+            if in_run_block and indent <= run_block_indent:
+                in_run_block = False
+
+            stripped = line.lstrip()
+            block_run = re.match(r"run:\s*[|>][-+]?\s*$", stripped)
+            inline_run = (
+                re.match(r"run:\s*(.+)$", stripped) if block_run is None else None
+            )
+
+            if block_run is not None:
+                in_run_block = True
+                run_block_indent = indent
+                continue
+
+            if inline_run is not None:
+                _record_workflow_gate_matches(
+                    inline_run.group(1),
+                    known=known,
+                    gate_specs=gate_specs,
+                    reachable=reachable,
+                )
+                continue
+
+            if in_run_block and indent > run_block_indent:
+                _record_workflow_gate_matches(
+                    stripped,
+                    known=known,
+                    gate_specs=gate_specs,
+                    reachable=reachable,
+                )
+                continue
+
             if _workflow_line_is_metadata(line):
                 continue
 
-            tier_match = re.search(r"\bgates\s+--tier\s+([a-z0-9_-]+)\b", line)
-            if tier_match:
-                tier = tier_match.group(1).replace("-", "_")
-                reachable.update(
-                    name
-                    for name, spec in gate_specs.items()
-                    if spec.get("tier") == tier
-                )
-
-            matrix_match = re.match(r"^\s*(?:-\s*)?gates:\s*(.*)$", line)
-            if matrix_match:
-                reachable.update(
-                    token
-                    for token in re.findall(r"[a-z][a-z0-9_]*", matrix_match.group(1))
-                    if token in known
-                )
-
-            direct_match = re.search(r"\bgates\s+--gate\s+([a-z][a-z0-9_]*)\b", line)
-            if direct_match and direct_match.group(1) in known:
-                reachable.add(direct_match.group(1))
+            _record_workflow_gate_matches(
+                stripped,
+                known=known,
+                gate_specs=gate_specs,
+                reachable=reachable,
+            )
     return reachable
 
 
