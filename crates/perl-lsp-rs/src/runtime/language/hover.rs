@@ -118,7 +118,7 @@ impl LspServer {
         // plaintext (#1724). This is a single post-processing pass rather than
         // threading the capability through all 22 hover construction sites.
         if !self.client_capabilities.lock().markdown_support {
-            Ok(result.map(|v| Self::convert_hover_to_plaintext(v)))
+            Ok(result.map(Self::convert_hover_to_plaintext))
         } else {
             Ok(result)
         }
@@ -127,18 +127,15 @@ impl LspServer {
     /// Convert a hover response's MarkupContent from markdown to plaintext
     /// when the client does not advertise markdown support (#1724).
     fn convert_hover_to_plaintext(mut value: Value) -> Value {
-        if let Some(obj) = value.as_object_mut() {
-            if let Some(content) = obj.get_mut("contents") {
-                if let Some(content_obj) = content.as_object_mut() {
-                    if content_obj.get("kind").and_then(|k| k.as_str()) == Some("markdown") {
-                        if let Some(msg) = content_obj.get("value").and_then(|v| v.as_str()) {
-                            let plain = Self::markdown_to_plaintext(msg);
-                            content_obj["kind"] = Value::String("plaintext".to_string());
-                            content_obj["value"] = Value::String(plain);
-                        }
-                    }
-                }
-            }
+        if let Some(obj) = value.as_object_mut()
+            && let Some(content) = obj.get_mut("contents")
+            && let Some(content_obj) = content.as_object_mut()
+            && content_obj.get("kind").and_then(|k| k.as_str()) == Some("markdown")
+            && let Some(msg) = content_obj.get("value").and_then(|v| v.as_str())
+        {
+            let plain = Self::markdown_to_plaintext(msg);
+            content_obj["kind"] = Value::String("plaintext".to_string());
+            content_obj["value"] = Value::String(plain);
         }
         value
     }
@@ -152,12 +149,11 @@ impl LspServer {
                 let line = line.trim_start_matches('#').trim_start();
                 // Strip bold/italic markers
                 let line = line.replace("**", "").replace("__", "");
-                let line = line.replace('*', "").replace('_', "");
+                let line = line.replace(['*', '_'], "");
                 // Strip inline code backticks
                 let line = line.replace('`', "");
                 // Strip link syntax: [text](url) -> text
-                let line = regex_lite_strip_links(&line);
-                line
+                regex_lite_strip_links(&line)
             })
             .collect::<Vec<_>>()
             .join("\n")
