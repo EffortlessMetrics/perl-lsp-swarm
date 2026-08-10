@@ -55,6 +55,37 @@ pub(crate) fn take_hover_trace_source_region_kind() -> Option<String> {
     HOVER_TRACE_SOURCE_REGION_KIND.with(|slot| slot.borrow_mut().take())
 }
 
+/// Strip markdown link syntax `[text](url)` → `text` without pulling in a
+/// regex dependency. Handles simple inline links only (#1724).
+fn regex_lite_strip_links(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' {
+            // Find closing ]
+            if let Some(close_bracket) = chars[i + 1..].iter().position(|&c| c == ']') {
+                let text_end = i + 1 + close_bracket;
+                // Check if followed by (
+                if text_end + 1 < chars.len() && chars[text_end + 1] == '(' {
+                    // Extract the link text
+                    let link_text: String = chars[i + 1..text_end].iter().collect();
+                    // Skip to the closing )
+                    if let Some(close_paren) = chars[text_end + 2..].iter().position(|&c| c == ')')
+                    {
+                        result.push_str(&link_text);
+                        i = text_end + 2 + close_paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
 impl LspServer {
     /// Handle textDocument/hover request for symbol information display
     ///
@@ -81,7 +112,55 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         // Range injection happens inside handle_hover_core using the same
         // locked snapshot, eliminating the TOCTOU race. (#5085)
-        self.handle_hover_core(params)
+        let result = self.handle_hover_core(params)?;
+
+        // If the client does not support markdown, convert MarkupContent to
+        // plaintext (#1724). This is a single post-processing pass rather than
+        // threading the capability through all 22 hover construction sites.
+        if !self.client_capabilities.lock().markdown_support {
+            Ok(result.map(|v| Self::convert_hover_to_plaintext(v)))
+        } else {
+            Ok(result)
+        }
+    }
+
+    /// Convert a hover response's MarkupContent from markdown to plaintext
+    /// when the client does not advertise markdown support (#1724).
+    fn convert_hover_to_plaintext(mut value: Value) -> Value {
+        if let Some(obj) = value.as_object_mut() {
+            if let Some(content) = obj.get_mut("contents") {
+                if let Some(content_obj) = content.as_object_mut() {
+                    if content_obj.get("kind").and_then(|k| k.as_str()) == Some("markdown") {
+                        if let Some(msg) = content_obj.get("value").and_then(|v| v.as_str()) {
+                            let plain = Self::markdown_to_plaintext(msg);
+                            content_obj["kind"] = Value::String("plaintext".to_string());
+                            content_obj["value"] = Value::String(plain);
+                        }
+                    }
+                }
+            }
+        }
+        value
+    }
+
+    /// Minimal markdown-to-plaintext conversion for clients without markdown
+    /// support. Strips common markdown formatting while preserving readability.
+    fn markdown_to_plaintext(md: &str) -> String {
+        md.lines()
+            .map(|line| {
+                // Strip markdown headers (# ... ######)
+                let line = line.trim_start_matches('#').trim_start();
+                // Strip bold/italic markers
+                let line = line.replace("**", "").replace("__", "");
+                let line = line.replace('*', "").replace('_', "");
+                // Strip inline code backticks
+                let line = line.replace('`', "");
+                // Strip link syntax: [text](url) -> text
+                let line = regex_lite_strip_links(&line);
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn handle_hover_core(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
