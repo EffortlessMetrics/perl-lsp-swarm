@@ -152,7 +152,7 @@ reachable_windows_targets() {
         case "$file" in
             *.ps1)
                 strip_comments "$file" \
-                    | grep -E '^[[:space:]]*\$[A-Za-z][A-Za-z0-9_]*[Tt]arget[[:space:]]*=' \
+                    | grep -E '^[[:space:]]*\$(NativeTarget|Target)[[:space:]]*=' \
                     | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' || true
                 ;;
             *.ts)
