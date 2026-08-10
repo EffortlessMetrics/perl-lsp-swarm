@@ -17,6 +17,59 @@ use crate::features::diagnostics::{
 use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
+/// Build a typed LSP Diagnostic JSON value (#4995).
+///
+/// Replaces repeated inline `json!({...})` constructions with a single
+/// typed constructor so the Diagnostic shape is defined in one place.
+fn diagnostic_json(
+    start_line: u32,
+    start_char: u32,
+    end_line: u32,
+    end_char: u32,
+    severity: u32,
+    code: &str,
+    source: &str,
+    message: String,
+) -> Value {
+    json!({
+        "range": {
+            "start": {"line": start_line, "character": start_char},
+            "end": {"line": end_line, "character": end_char},
+        },
+        "severity": severity,
+        "code": code,
+        "source": source,
+        "message": message,
+    })
+}
+
+/// Build the typed `data` field for a diagnostic with explanation metadata (#4995).
+fn diagnostic_data(code: &str, category: &str, fixable: bool, tags: &[String]) -> Value {
+    json!({
+        "code": code,
+        "category": category,
+        "fixable": fixable,
+        "tags": tags,
+    })
+}
+
+/// Build a publishDiagnostics notification params value (#4995).
+fn publish_diagnostics_params(uri: &str, version: Option<i32>, diagnostics: &[Value]) -> Value {
+    let mut params = json!({
+        "uri": uri,
+        "diagnostics": diagnostics,
+    });
+    if let Some(v) = version {
+        params["version"] = json!(v);
+    }
+    params
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_configured_profile_path(
     configured_profile: &str,
@@ -163,7 +216,9 @@ impl PullDiagnosticsOrchestrator {
         // (#5016 item 2).
         #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
         let workspace_index = {
-            let _ = server.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+            let _ = server.check_index_readiness(
+                crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
+            );
             if server.workspace_index_stale_for_document(uri) {
                 None
             } else {
@@ -567,7 +622,9 @@ impl LspServer {
             // before any documents_guard re-entry (#6199 deadlock lesson).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             let workspace_index_tier_enabled = {
-                let _ = self.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+                let _ = self.check_index_readiness(
+                    crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
+                );
                 !self.workspace_index_stale_for_document(uri)
             };
 
@@ -587,44 +644,47 @@ impl LspServer {
                     .then(|| self.workspace_index())
                     .flatten()
                     .and_then(|workspace_index| {
-                    use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
-                        build_role_scoped_package_graph, consumed_role_names,
-                    };
-                    let role_names = consumed_role_names(ast);
-                    if role_names.is_empty() {
-                        workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-                            provider.get_diagnostics_with_search_context_and_semantics(
-                                ast,
-                                &parse_errors,
-                                &text,
-                                Some(&resolver),
-                                &search_context,
-                                source_path.as_deref(),
-                                file_id,
-                                &queries,
+                        use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
+                            build_role_scoped_package_graph, consumed_role_names,
+                        };
+                        let role_names = consumed_role_names(ast);
+                        if role_names.is_empty() {
+                            workspace_index.with_semantic_queries_for_uri(
+                                uri,
+                                |file_id, queries| {
+                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                        ast,
+                                        &parse_errors,
+                                        &text,
+                                        Some(&resolver),
+                                        &search_context,
+                                        source_path.as_deref(),
+                                        file_id,
+                                        &queries,
+                                    )
+                                },
                             )
-                        })
-                    } else {
-                        let scoped_graph =
-                            build_role_scoped_package_graph(&workspace_index, &role_names);
-                        workspace_index.with_semantic_queries_for_uri_and_graph(
-                            uri,
-                            &scoped_graph,
-                            |file_id, queries| {
-                                provider.get_diagnostics_with_search_context_and_semantics(
-                                    ast,
-                                    &parse_errors,
-                                    &text,
-                                    Some(&resolver),
-                                    &search_context,
-                                    source_path.as_deref(),
-                                    file_id,
-                                    &queries,
-                                )
-                            },
-                        )
-                    }
-                });
+                        } else {
+                            let scoped_graph =
+                                build_role_scoped_package_graph(&workspace_index, &role_names);
+                            workspace_index.with_semantic_queries_for_uri_and_graph(
+                                uri,
+                                &scoped_graph,
+                                |file_id, queries| {
+                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                        ast,
+                                        &parse_errors,
+                                        &text,
+                                        Some(&resolver),
+                                        &search_context,
+                                        source_path.as_deref(),
+                                        file_id,
+                                        &queries,
+                                    )
+                                },
+                            )
+                        }
+                    });
                 semantic_diags.unwrap_or_else(|| {
                     provider.get_diagnostics_with_search_context(
                         ast,
@@ -679,24 +739,78 @@ impl LspServer {
                     let (start_line, start_char) = pos16(d.range.0);
                     let (end_line, end_char) = pos16(d.range.1);
 
-                    let mut diag = json!({
-                        "range": {
-                            "start": {"line": start_line, "character": start_char},
-                            "end": {"line": end_line, "character": end_char},
-                        },
-                        "severity": match d.severity {
-                            InternalDiagnosticSeverity::Error => 1,
-                            InternalDiagnosticSeverity::Warning => 2,
-                            InternalDiagnosticSeverity::Information => 3,
-                            InternalDiagnosticSeverity::Hint => 4,
-                        },
-                        "code": d.code.clone(),
-                        "source": push_diagnostic_source(d.code.as_deref()),
-                        "message": d.message,
-                    });
+                    let severity = match d.severity {
+                        InternalDiagnosticSeverity::Error => 1,
+                        InternalDiagnosticSeverity::Warning => 2,
+                        InternalDiagnosticSeverity::Information => 3,
+                        InternalDiagnosticSeverity::Hint => 4,
+                    };
+                    let code_str = d.code.as_deref().unwrap_or("");
+                    let mut diag = diagnostic_json(
+                        start_line,
+                        start_char,
+                        end_line,
+                        end_char,
+                        severity,
+                        code_str,
+                        push_diagnostic_source(d.code.as_deref()),
+                        d.message.clone(),
+                    );
                     if !d.tags.is_empty() {
-                        diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+                        diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                     }
+
+                    // Enrichment fields for push/pull parity (#1773):
+                    // codeDescription, relatedInformation, and data.
+                    if let Some(ref code_str) = d.code {
+                        // codeDescription: link to documentation URL
+                        if let Some(url) = DiagnosticCode::parse_code(code_str)
+                            .and_then(|dc| dc.documentation_url())
+                        {
+                            diag["codeDescription"] = json!({ "href": url });
+                        }
+                    }
+
+                    // relatedInformation: additional context locations
+                    if !d.related_information.is_empty() {
+                        diag["relatedInformation"] = json!(
+                            d.related_information
+                                .iter()
+                                .map(|ri| {
+                                    let (ri_sl, ri_sc) = pos16(ri.location.0);
+                                    let (ri_el, ri_ec) = pos16(ri.location.1);
+                                    json!({
+                                        "location": {
+                                            "uri": uri,
+                                            "range": {
+                                                "start": {"line": ri_sl, "character": ri_sc},
+                                                "end":   {"line": ri_el, "character": ri_ec},
+                                            }
+                                        },
+                                        "message": ri.message
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        );
+                    }
+
+                    // data: structured metadata (category, fixability, tags)
+                    if let Some(ref code_str) = d.code {
+                        let category = DiagnosticCode::parse_code(code_str)
+                            .map(|dc| format!("{:?}", dc.category()))
+                            .unwrap_or_else(|| "Other".to_string());
+                        let fixable = is_fixable_diagnostic(code_str);
+                        let tag_strings: Vec<String> = d
+                            .tags
+                            .iter()
+                            .map(|t| match t {
+                                InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
+                                InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                            })
+                            .collect();
+                        diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
+                    }
+
                     diag
                 })
                 .collect()
@@ -736,16 +850,16 @@ impl LspServer {
                     // Convert byte offset to line/column
                     let (line, character) = pos16(location);
 
-                    json!({
-                        "range": {
-                            "start": {"line": line, "character": character},
-                            "end": {"line": line, "character": character + 1},
-                        },
-                        "severity": if e.blocks_clean_parse() { 1 } else { 2 },
-                        "code": DiagnosticCode::ParseError.as_str(),
-                        "source": "perl-lsp",
-                        "message": message,
-                    })
+                    diagnostic_json(
+                        line,
+                        character,
+                        line,
+                        character + 1,
+                        if e.blocks_clean_parse() { 1 } else { 2 },
+                        DiagnosticCode::ParseError.as_str(),
+                        "perl-lsp",
+                        message,
+                    )
                 })
                 .collect()
         };
@@ -775,11 +889,7 @@ impl LspServer {
         // This ensures diagnostics are cleared when all errors are fixed.
         if let Err(e) = self.notify(
             "textDocument/publishDiagnostics",
-            json!({
-                "uri": uri,
-                "version": version,
-                "diagnostics": lsp_diagnostics
-            }),
+            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
         ) {
             tracing::error!(uri, error = %e, "Failed to publish diagnostics");
         }
@@ -836,20 +946,18 @@ impl LspServer {
                         None => base_message,
                     };
                 let (line, character) = pos16(location);
-                json!({
-                    "range": {
-                        "start": {"line": line, "character": character},
-                        "end": {"line": line, "character": character + 1},
-                    },
-                    "severity": if e.blocks_clean_parse() { 1 } else { 2 },
-                    "code": DiagnosticCode::ParseError.as_str(),
-                    "source": "perl-lsp",
-                    "message": Self::diagnostic_message_value(
-                        &message,
-                        None,
-                        markup_message_support,
-                    ),
-                })
+                let msg_val = Self::diagnostic_message_value(
+                    &message,
+                    None,
+                    markup_message_support,
+                );
+                diagnostic_json(
+                    line, character, line, character + 1,
+                    if e.blocks_clean_parse() { 1 } else { 2 },
+                    DiagnosticCode::ParseError.as_str(),
+                    "perl-lsp",
+                    msg_val.as_str().unwrap_or("").to_string(),
+                )
             })
             .collect()
     }
@@ -908,11 +1016,7 @@ impl LspServer {
 
         if let Err(e) = self.notify(
             "textDocument/publishDiagnostics",
-            json!({
-                "uri": uri,
-                "version": version,
-                "diagnostics": lsp_diagnostics
-            }),
+            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
         ) {
             tracing::error!(uri, error = %e, "Failed to publish syntax-only diagnostics");
         }
@@ -1002,16 +1106,16 @@ impl LspServer {
                             None => base_message,
                         };
                     let (line, character) = pos16(location);
-                    json!({
-                        "range": {
-                            "start": {"line": line, "character": character},
-                            "end": {"line": line, "character": character + 1},
-                        },
-                        "severity": if e.blocks_clean_parse() { 1 } else { 2 },
-                        "code": DiagnosticCode::ParseError.as_str(),
-                        "source": "perl-lsp",
-                        "message": message,
-                    })
+                    diagnostic_json(
+                        line,
+                        character,
+                        line,
+                        character + 1,
+                        if e.blocks_clean_parse() { 1 } else { 2 },
+                        DiagnosticCode::ParseError.as_str(),
+                        "perl-lsp",
+                        message,
+                    )
                 })
                 .collect();
 
@@ -1225,10 +1329,10 @@ impl LspServer {
             return json!(message);
         }
 
-        if let Some(markup) = message_data.and_then(|data| data.get("messageMarkup")) {
-            if Self::is_markup_content_value(markup) {
-                return markup.clone();
-            }
+        if let Some(markup) = message_data.and_then(|data| data.get("messageMarkup"))
+            && Self::is_markup_content_value(markup)
+        {
+            return markup.clone();
         }
 
         json!({
@@ -1336,24 +1440,28 @@ impl LspServer {
         let start_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.0);
         let end_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.1);
 
-        let mut diag = json!({
-            "range": {
-                "start": { "line": start_pos.0, "character": start_pos.1 },
-                "end": { "line": end_pos.0, "character": end_pos.1 },
-            },
-            "severity": match d.severity {
-                InternalDiagnosticSeverity::Error => 1,
-                InternalDiagnosticSeverity::Warning => 2,
-                InternalDiagnosticSeverity::Information => 3,
-                InternalDiagnosticSeverity::Hint => 4,
-            },
-            "code": d.code,
-            "source": diagnostic_source(d.code.as_deref()),
-            "message": Self::diagnostic_message_value(&d.message, None, markup_message_support),
-        });
+        let severity = match d.severity {
+            InternalDiagnosticSeverity::Error => 1,
+            InternalDiagnosticSeverity::Warning => 2,
+            InternalDiagnosticSeverity::Information => 3,
+            InternalDiagnosticSeverity::Hint => 4,
+        };
+        let code_str = d.code.as_deref().unwrap_or("");
+        let message_val = Self::diagnostic_message_value(&d.message, None, markup_message_support);
+
+        let mut diag = diagnostic_json(
+            start_pos.0,
+            start_pos.1,
+            end_pos.0,
+            end_pos.1,
+            severity,
+            code_str,
+            diagnostic_source(d.code.as_deref()),
+            message_val.as_str().unwrap_or("").to_string(),
+        );
 
         if !d.tags.is_empty() {
-            diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+            diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
         }
 
         if !d.related_information.is_empty() {
@@ -1393,12 +1501,7 @@ impl LspServer {
                     InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
                 })
                 .collect();
-            diag["data"] = json!({
-                "code": code_str,
-                "category": category,
-                "fixable": fixable,
-                "tags": tag_strings,
-            });
+            diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
         }
 
         diag
@@ -1483,7 +1586,8 @@ impl LspServer {
         // Wait for index build before sampling per-document staleness for the
         // workspace semantic tier (#5016 item 2).
         #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-        let _ = self.check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
+        let _ = self
+            .check_index_readiness(crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly);
 
         // Coarse workDoneProgress for the workspace diagnostic path, which
         // iterates over every open document and invokes perlcritic per
@@ -1528,7 +1632,8 @@ impl LspServer {
                 let source_path = source_path_from_uri(uri_str);
 
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                let workspace_index_tier_enabled = !self.workspace_index_stale_for_document(uri_str);
+                let workspace_index_tier_enabled =
+                    !self.workspace_index_stale_for_document(uri_str);
 
                 // Wire semantic queries when workspace data is available for this URI.
                 // When the file consumes roles via `with 'Role'`, build a bounded
@@ -1542,47 +1647,47 @@ impl LspServer {
                         .then(|| self.workspace_index())
                         .flatten()
                         .and_then(|workspace_index| {
-                        use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
-                            build_role_scoped_package_graph, consumed_role_names,
-                        };
-                        let role_names = consumed_role_names(ast);
-                        if role_names.is_empty() {
-                            workspace_index.with_semantic_queries_for_uri(
-                                uri_str,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
-                                        ast,
-                                        parse_errors,
-                                        &doc.text,
-                                        Some(&resolver),
-                                        &search_context,
-                                        source_path.as_deref(),
-                                        file_id,
-                                        &queries,
-                                    )
-                                },
-                            )
-                        } else {
-                            let scoped_graph =
-                                build_role_scoped_package_graph(&workspace_index, &role_names);
-                            workspace_index.with_semantic_queries_for_uri_and_graph(
-                                uri_str,
-                                &scoped_graph,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
-                                        ast,
-                                        parse_errors,
-                                        &doc.text,
-                                        Some(&resolver),
-                                        &search_context,
-                                        source_path.as_deref(),
-                                        file_id,
-                                        &queries,
-                                    )
-                                },
-                            )
-                        }
-                    });
+                            use perl_lsp_rs_core::providers::diagnostics::role_graph_scope::{
+                                build_role_scoped_package_graph, consumed_role_names,
+                            };
+                            let role_names = consumed_role_names(ast);
+                            if role_names.is_empty() {
+                                workspace_index.with_semantic_queries_for_uri(
+                                    uri_str,
+                                    |file_id, queries| {
+                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                            ast,
+                                            parse_errors,
+                                            &doc.text,
+                                            Some(&resolver),
+                                            &search_context,
+                                            source_path.as_deref(),
+                                            file_id,
+                                            &queries,
+                                        )
+                                    },
+                                )
+                            } else {
+                                let scoped_graph =
+                                    build_role_scoped_package_graph(&workspace_index, &role_names);
+                                workspace_index.with_semantic_queries_for_uri_and_graph(
+                                    uri_str,
+                                    &scoped_graph,
+                                    |file_id, queries| {
+                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                            ast,
+                                            parse_errors,
+                                            &doc.text,
+                                            Some(&resolver),
+                                            &search_context,
+                                            source_path.as_deref(),
+                                            file_id,
+                                            &queries,
+                                        )
+                                    },
+                                )
+                            }
+                        });
                     semantic_diags.unwrap_or_else(|| {
                         provider.get_diagnostics_with_search_context(
                             ast,
@@ -1612,7 +1717,9 @@ impl LspServer {
 
                 // Add dead code diagnostics from workspace-wide symbol analysis
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+                if workspace_index_tier_enabled
+                    && let Some(workspace_index) = self.workspace_index()
+                {
                     let dead_code_diags =
                         perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
                             &workspace_index,
@@ -1696,7 +1803,7 @@ impl LspServer {
                                     ),
                                 });
                                 if !d.tags.is_empty() {
-                                    diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+                                    diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                                 }
                                 if !d.related_information.is_empty() {
                                     diag["relatedInformation"] = json!(
@@ -1726,12 +1833,12 @@ impl LspServer {
                                             InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                             InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
                                         }).collect();
-                                    diag["data"] = json!({
-                                        "code": code_str,
-                                        "category": category,
-                                        "fixable": fixable,
-                                        "tags": tag_strings,
-                                    });
+                                    diag["data"] = diagnostic_data(
+                                        code_str,
+                                        &category,
+                                        fixable,
+                                        &tag_strings,
+                                    );
                                 }
                                 diag
                             })
@@ -1791,7 +1898,7 @@ impl LspServer {
                                 ),
                             });
                             if !d.tags.is_empty() {
-                                diag["tags"] = json!(Self::diagnostic_tags_to_lsp(&d.tags));
+                                diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                             }
                             if !d.related_information.is_empty() {
                                 diag["relatedInformation"] = json!(
@@ -1821,12 +1928,12 @@ impl LspServer {
                                         InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                         InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
                                     }).collect();
-                                diag["data"] = json!({
-                                    "code": code_str,
-                                    "category": category,
-                                    "fixable": fixable,
-                                    "tags": tag_strings,
-                                });
+                                diag["data"] = diagnostic_data(
+                                    code_str,
+                                    &category,
+                                    fixable,
+                                    &tag_strings,
+                                );
                             }
                             diag
                         })
@@ -2326,6 +2433,17 @@ mod tests {
         (server, buf)
     }
 
+    fn drain_pending_index_tasks(server: &LspServer) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while server.pending_index_tasks() > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "background index tasks did not drain before diagnostic assertion"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn make_server_with_capture_and_tuning(
         runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning,
     ) -> (LspServer, StdArc<parking_lot::Mutex<Vec<u8>>>) {
@@ -2441,6 +2559,52 @@ mod tests {
             text.contains("publishDiagnostics"),
             "stable generation must produce a publishDiagnostics notification; got: {text:?}"
         );
+    }
+
+    /// #1773: push diagnostics must include enrichment fields (codeDescription,
+    /// data) for parity with the pull-based path. A code like PL103 (undefined
+    /// variable) should produce both a `codeDescription.href` link and a `data`
+    /// object with category/fixable metadata.
+    #[test]
+    fn push_diagnostics_include_enrichment_fields() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///push_enrichment_test.pl";
+        // Code that produces an UndefinedVariable (PL103) diagnostic under strict
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nprint $undeclared_var;\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+
+        // The push path must include codeDescription with an href link
+        assert!(
+            text.contains("codeDescription"),
+            "push diagnostics must include codeDescription (#1773); got: {text:?}"
+        );
+        assert!(
+            text.contains("href"),
+            "codeDescription must include href URL (#1773); got: {text:?}"
+        );
+
+        // The push path must include data with structured metadata
+        assert!(
+            text.contains("\"data\""),
+            "push diagnostics must include data field (#1773); got: {text:?}"
+        );
+        assert!(text.contains("category"), "data must include category (#1773); got: {text:?}");
+        assert!(text.contains("fixable"), "data must include fixable flag (#1773); got: {text:?}");
     }
 
     /// Pending-parse gap (#3396 PR4): bumping the generation counter WITHOUT
@@ -3155,11 +3319,16 @@ mod tests {
             })))
             .unwrap();
 
+        // didOpen may enqueue active-document readiness asynchronously; drain it
+        // and let the outbound writer thread flush before isolating fast-path behavior.
+        drain_pending_index_tasks(&server);
+        std::thread::sleep(Duration::from_millis(50));
+
         // Record buffer length before the fast-path call.
         let len_before = buf.lock().len();
         server.publish_parse_errors_fast(uri);
-        drop(server);
         let len_after = buf.lock().len();
+        drop(server);
 
         assert_eq!(
             len_before,
@@ -3889,8 +4058,8 @@ print \"unreachable\\n\";\n";
     /// `detect_dead_code` on the pull diagnostic path.
     #[cfg(feature = "workspace")]
     #[test]
-    fn pull_diagnostic_skips_stale_workspace_dead_code_tier() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn pull_diagnostic_skips_stale_workspace_dead_code_tier()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
         let uri = "file:///workspace/stale_dead_code_pull.pl";
         make_document_index_stale_for_diagnostics(
@@ -3924,9 +4093,7 @@ print \"unreachable\\n\";\n";
         let uri = "file:///workspace/fresh_dead_code_publish.pl";
         let source = stale_dead_code_indexed_source();
         server.test_apply_did_open(uri, source, 1)?;
-        server
-            .test_index_file_in_building_state(uri, source)
-            .map_err(std::io::Error::other)?;
+        server.test_index_file_in_building_state(uri, source).map_err(std::io::Error::other)?;
         server.test_simulate_indexing_complete();
 
         buf.lock().clear();

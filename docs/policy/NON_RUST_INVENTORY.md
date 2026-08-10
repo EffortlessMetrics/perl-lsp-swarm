@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10173 |
-| Rust-family files | 3080 |
-| Non-Rust files | 7093 |
-| Allowlisted | 4779 |
-| Unclassified | 2314 |
+| Total tracked files | 10178 |
+| Rust-family files | 3082 |
+| Non-Rust files | 7096 |
+| Allowlisted | 4784 |
+| Unclassified | 2312 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 240 |
+| config | 243 |
 | documentation | 2248 |
 | generated | 1 |
 | production | 211 |
 | test | 1753 |
-| tooling | 326 |
-| unclassified | 2314 |
+| tooling | 328 |
+| unclassified | 2312 |
 
 ## Unclassified files
 
@@ -285,8 +285,6 @@
 | `crates/perl-parser/tests/data/features_minimal.toml` | `toml` |
 | `crates/perl-parser/tests/fixtures/.perltidyrc` | `` |
 | `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | `disabled` |
-| `crates/perl-parser/tests/snapshots/ga_lock_capabilities.json` | `json` |
-| `crates/perl-parser/tests/snapshots/production_capabilities.json` | `json` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
@@ -2484,6 +2482,7 @@
 | `.ci/scripts/measure-ci-time.sh` | config | `non-rust-ci-config` | release/ci |
 | `.ci/scripts/quarantine-flaky.sh` | config | `non-rust-ci-config` | release/ci |
 | `.ci/ux-flakes.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/workflow-security-baseline.json` | config | `non-rust-ci-config` | release/ci |
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/reference/review-convergence.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/settings.json` | tooling | `non-rust-claude-config` | developer-experience |
@@ -2588,6 +2587,7 @@
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/installer-bootstrap-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/methodology-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-core-harness.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -2617,6 +2617,8 @@
 | `.github/workflows/winget-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-contracts-advisory.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-policy.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/workflow-security-ratchet-selftest.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/workflow-security-ratchet.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-trigger-lint.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `.hermes/conveyor/work-02a1ac3f/adr.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5394,9 +5396,11 @@
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/clean-tmp-targets.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/clean-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/cleanup-completed-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -5516,6 +5520,7 @@
 | `scripts/tests/test-generate-badges-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ignored-test-count-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-install-bootstrap-identity.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-githooks-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-target-selection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-termux-detection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

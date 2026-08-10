@@ -12,3 +12,7 @@ too-many-lines-threshold = 500
 
 # No method-level exceptions are configured.
 disallowed-methods = []
+
+# No field-level exceptions are configured (#6114).
+# When fields are added to the denylist, they go here.
+disallowed-fields = []

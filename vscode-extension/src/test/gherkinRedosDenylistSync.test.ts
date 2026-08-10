@@ -12,9 +12,12 @@ describe('gherkin ReDoS guard (#6154)', () => {
     expect(isPotentiallyExpensiveRegex(pattern)).toBe(true);
   });
 
-  test.each(['"([^"]+)"', '([0-9]+)', '(\\w+)'])('accepts linear patterns %s', (pattern) => {
-    expect(isPotentiallyExpensiveRegex(pattern)).toBe(false);
-  });
+  test.each(['"([^"]+)"', '([0-9]+)', '(\\w+)', '^(cat|dog)+$'])(
+    'accepts linear patterns %s',
+    (pattern) => {
+      expect(isPotentiallyExpensiveRegex(pattern)).toBe(false);
+    },
+  );
 
   test.each(['^(foo\\|bar)+$', '^(foo[|]bar)+$'])(
     'accepts quantified literal pipes %s',

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
   organizeImportsCommand,
   showStatusMenuCommand,
+  showWorkspaceStatusCommand,
   showVersionCommand,
 } from '../navigationCommands';
 
@@ -74,6 +75,62 @@ describe('navigation command implementations', () => {
     expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('perllsp 0.17.0');
   });
 
+  test('shows a healthy workspace status with explicit recovery actions', async () => {
+    const getWorkspaceStatus = jest.fn(() => ({
+      mode: 'running' as const,
+      version: 'perllsp 0.17.0',
+      fileCount: 12,
+      errorCount: 2,
+    }));
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Show Output');
+
+    await showWorkspaceStatusCommand({ getWorkspaceStatus });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nServer: running\nVersion: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors',
+      'Run Health Check',
+      'Show Output',
+    );
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.showOutput');
+  });
+
+  test('shows limited readiness as a live server state', async () => {
+    const getWorkspaceStatus = jest.fn(() => ({
+      mode: 'ready_limited' as const,
+      version: 'perllsp 0.17.0',
+      fileCount: 500,
+      errorCount: 1,
+    }));
+
+    await showWorkspaceStatusCommand({ getWorkspaceStatus });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nServer: ready (limited)\nVersion: perllsp 0.17.0\nWorkspace files: 500\nDiagnostics: 1 error',
+      'Run Health Check',
+      'Show Output',
+    );
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  test('offers restart for a stopped workspace', async () => {
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Restart Server');
+
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'stopped',
+        version: 'perllsp 0.16.0',
+      }),
+    });
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nServer: stopped',
+      'Restart Server',
+      'Run Health Check',
+      'Show Output',
+    );
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.restart');
+  });
+
   test('offers reinstall when the version probe fails', async () => {
     const deps = dependencies({
       getServerVersion: jest.fn(async () => {
@@ -105,6 +162,9 @@ describe('navigation command implementations', () => {
     }>;
     expect(items.find((item) => item.command === 'perl-lsp.organizeImports')?.disabled).toBe(false);
     expect(items.find((item) => item.command === 'perl-lsp.runTests')?.disabled).toBe(false);
+    expect(items.find((item) => item.command === 'perl-lsp.showWorkspaceStatus')?.disabled).toBe(
+      undefined,
+    );
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.organizeImports');
   });
 });

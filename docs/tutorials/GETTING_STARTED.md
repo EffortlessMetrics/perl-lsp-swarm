@@ -42,8 +42,17 @@ The extension downloads the matching server binary for your platform.
 
 ### Option 2: Installer script, macOS and Linux (Recommended for other editors)
 
+Prefer a [release archive](https://github.com/EffortlessMetrics/perl-lsp/releases) until
+release closeout publishes an immutable installer ref and the reviewed SHA-256 digest
+of `scripts/install.sh`. From a clone, run `bash install.sh --help`. Once those
+values exist, the identity-bound remote bootstrap has this shape:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 ```
 
 This is the project's own installer ([`scripts/install.sh`](../../scripts/install.sh)).

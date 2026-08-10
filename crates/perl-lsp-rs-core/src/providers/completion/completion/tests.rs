@@ -1893,6 +1893,62 @@ $self->"#;
 }
 
 #[test]
+fn test_method_completion_traverses_empty_intermediary_role()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/BaseRole.pm")?,
+        r#"package BaseRole;
+sub base_role_method { }
+1;
+"#
+        .to_string(),
+    )?;
+    index.index_file(
+        Url::parse("file:///workspace/IntermediateRole.pm")?,
+        r#"package IntermediateRole;
+use Moose;
+with 'BaseRole';
+1;
+"#
+        .to_string(),
+    )?;
+    index.index_file(
+        Url::parse("file:///workspace/Consumer.pm")?,
+        r#"package Consumer;
+use Moose;
+with 'IntermediateRole';
+1;
+"#
+        .to_string(),
+    )?;
+
+    let code = r#"package Consumer;
+sub run {
+my $self = shift;
+$self->"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let method = completions.iter().find(|item| item.label == "base_role_method");
+    assert!(
+        method.is_some(),
+        "completion must traverse an empty intermediary role; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let method = method.ok_or("base role method completion missing")?;
+    assert_eq!(
+        method.detail.as_deref(),
+        Some("inherited method from BaseRole — receiver: self/this"),
+        "completion must traverse an empty intermediary role to its base role"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_self_arrow_in_main_package_does_not_resolve() -> Result<(), Box<dyn std::error::Error>> {
     // Edge case: $self-> in the main package should NOT resolve to any package methods.
     // The guard condition `context.current_package != "main"` prevents incorrect

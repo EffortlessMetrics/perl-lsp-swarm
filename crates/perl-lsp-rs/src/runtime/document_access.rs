@@ -82,10 +82,10 @@ impl LspServer {
     ) -> Result<(), JsonRpcError> {
         if let Some(v) = req_version {
             let documents = self.documents.lock();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                if v < doc.version {
-                    return Err(Self::content_modified());
-                }
+            if let Some(doc) = self.get_document(&documents, uri)
+                && v < doc.version
+            {
+                return Err(Self::content_modified());
             }
         }
         Ok(())
@@ -279,7 +279,7 @@ impl LspServer {
     pub(crate) fn buffer_text(&self, uri: &str) -> Option<String> {
         let docs = self.documents.lock();
         let normalized = self.normalize_uri_key(uri);
-        docs.get(&normalized).map(|d| d.text.clone())
+        docs.get(&normalized).map(|d| d.text_arc.to_string())
     }
 
     /// Current document generation counter for `uri`, if the document is open.
@@ -328,7 +328,7 @@ impl LspServer {
     /// Iterate over all open buffers (for reference search)
     pub(crate) fn iter_open_buffers(&self) -> Vec<(String, String)> {
         let docs = self.documents.lock();
-        docs.iter().map(|(uri, doc)| (uri.clone(), doc.text.clone())).collect()
+        docs.iter().map(|(uri, doc)| (uri.clone(), doc.text_arc.to_string())).collect()
     }
 }
 

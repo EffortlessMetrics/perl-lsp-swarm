@@ -57,6 +57,7 @@ import { registerNavigationCommandGroup } from './navigationCommandGroup';
 import {
   organizeImportsCommand,
   showStatusMenuCommand,
+  showWorkspaceStatusCommand,
   showVersionCommand,
 } from './navigationCommands';
 import { registerDiagnosticCommandGroup } from './diagnosticCommandGroup';
@@ -600,6 +601,20 @@ export async function activate(context: vscode.ExtensionContext) {
           }),
       }),
     showStatusMenu: showStatusMenuCommand,
+    showWorkspaceStatus: () =>
+      showWorkspaceStatusCommand({
+        getWorkspaceStatus: () => {
+          const widget = healthWidget;
+          const mode = widget?.mode ?? 'starting';
+          const hasLiveServer = mode === 'running' || mode === 'indexing';
+          return {
+            mode,
+            ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
+            ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
+            ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
+          };
+        },
+      }),
   });
 
   const documentCommandDisposables = registerDocumentCommandGroup({
@@ -1280,6 +1295,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
 function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
+  healthWidget?.onIndexReadinessState('building');
   const serverOptions: ServerOptions = {
     run: {
       command: serverPath,
@@ -1368,11 +1384,20 @@ function createLanguageClient(serverPath: string): LanguageClient {
       activeDocumentReadiness.markReady(params.uri, generation);
     }
   });
-  lc.onNotification('perl-lsp/index-ready', (params: { ready?: boolean }) => {
-    if (params?.ready === true) {
-      activeDocumentReadiness.markIndexReady(generation);
-    }
-  });
+  lc.onNotification(
+    'perl-lsp/index-ready',
+    (params: {
+      ready?: boolean;
+      state?: 'building' | 'ready' | 'ready_limited';
+      reason?: string | null;
+    }) => {
+      const state = params?.state ?? (params?.ready === true ? 'ready' : undefined);
+      if (state !== undefined) {
+        activeDocumentReadiness.markIndexReady(generation, state, params.reason ?? undefined);
+        healthWidget?.onIndexReadinessState(state, params.reason ?? undefined);
+      }
+    },
+  );
   void lc.setTrace(getTraceLevel());
   return lc;
 }

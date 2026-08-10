@@ -249,11 +249,11 @@ impl CancellationRegistry {
         request_id: &JsonRpcId,
     ) -> Result<Option<ProviderCleanupContext>, CancellationError> {
         // Mark token as cancelled
-        if let Ok(tokens) = self.tokens.read() {
-            if let Some(token) = tokens.get(request_id) {
-                token.cancel();
-                self.metrics.increment_cancelled();
-            }
+        if let Ok(tokens) = self.tokens.read()
+            && let Some(token) = tokens.get(request_id)
+        {
+            token.cancel();
+            self.metrics.increment_cancelled();
         }
 
         // Execute and return cleanup context
@@ -272,10 +272,10 @@ impl CancellationRegistry {
     /// Get cancellation token for request with smart caching
     pub fn get_token(&self, request_id: &JsonRpcId) -> Option<PerlLspCancellationToken> {
         // Fast path: Check cache first
-        if let Ok(cache) = self.token_cache.read() {
-            if let Some(token) = cache.get(request_id) {
-                return Some(token.clone());
-            }
+        if let Ok(cache) = self.token_cache.read()
+            && let Some(token) = cache.get(request_id)
+        {
+            return Some(token.clone());
         }
 
         // Slow path: Get from main storage and cache it
@@ -304,10 +304,10 @@ impl CancellationRegistry {
     #[inline]
     pub fn is_cancelled(&self, request_id: &JsonRpcId) -> bool {
         // Fast path: Check cache first with relaxed atomic read
-        if let Ok(cache) = self.token_cache.try_read() {
-            if let Some(token) = cache.get(request_id) {
-                return token.is_cancelled_relaxed();
-            }
+        if let Ok(cache) = self.token_cache.try_read()
+            && let Some(token) = cache.get(request_id)
+        {
+            return token.is_cancelled_relaxed();
         }
 
         // Fallback: Check main storage
@@ -446,6 +446,19 @@ impl std::fmt::Display for CancellationError {
 }
 
 impl std::error::Error for CancellationError {}
+
+impl perl_parser_core::ErrorClass for CancellationError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Internal lock or routing failures — our bug.
+            Self::LockError(_) | Self::ProviderNotFound(_) => perl_parser_core::ErrorCategory::Bug,
+            // Malformed request from the client.
+            Self::InvalidRequest(_) => perl_parser_core::ErrorCategory::Protocol,
+            // Operation may succeed if retried.
+            Self::Timeout(_) => perl_parser_core::ErrorCategory::Transient,
+        }
+    }
+}
 
 /// Trait for cancellable LSP providers
 pub trait CancellableProvider {

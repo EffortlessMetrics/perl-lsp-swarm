@@ -27,6 +27,12 @@ Branch protection, required deterministic checks, unresolved findings, and the
 accountable integration judgment remain authoritative. No external AI reviewer
 is a substitute for that process.
 
+The RIPR boundary follows the same split: the `ripr` sensor is advisory, but the
+`ripr+ New Gap Gate` required check owns deterministic receipt integrity and
+blocks named new gaps in changed production files. A merge-test ref is recorded
+as `evaluated_head_sha`; pull-request runs separately record and validate
+`pr_head_sha`. Missing or stale identity-bearing receipts are not clean results.
+
 ## Opportunistic external reviewers
 
 CodeRabbit and Gemini are welcome extra evidence when they produce useful

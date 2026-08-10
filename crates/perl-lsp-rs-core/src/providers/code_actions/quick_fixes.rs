@@ -2551,11 +2551,11 @@ fn collect_printf_format_arity_metadata(node: &Node, metadata: &mut PrintfFormat
         _ => None,
     };
 
-    if let Some((call_name, args)) = call {
-        if let Some(value) = printf_format_arity_metadata_for_call(call_name, args) {
-            let range = (node.location.start, node.location.end);
-            metadata.by_range.insert(range, value);
-        }
+    if let Some((call_name, args)) = call
+        && let Some(value) = printf_format_arity_metadata_for_call(call_name, args)
+    {
+        let range = (node.location.start, node.location.end);
+        metadata.by_range.insert(range, value);
     }
 
     for child in node.children() {

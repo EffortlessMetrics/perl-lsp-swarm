@@ -256,10 +256,10 @@ fn collect_user_sub_signatures(ast: &Node) -> HashMap<String, Vec<String>> {
             NodeKind::Subroutine { name: Some(sub_name), signature: None, body, .. } => {
                 // No formal signature — try to extract params from @_ unpacking. (#5078)
                 // Pattern: my ($a, $b) = @_ or my $self = shift
-                if !map.contains_key(sub_name) {
-                    if let Some(params) = extract_params_from_at_underscore(body) {
-                        map.insert(sub_name.clone(), params);
-                    }
+                if !map.contains_key(sub_name)
+                    && let Some(params) = extract_params_from_at_underscore(body)
+                {
+                    map.insert(sub_name.clone(), params);
                 }
             }
             NodeKind::Method { name: method_name, signature: Some(sig), .. } => {
@@ -267,10 +267,10 @@ fn collect_user_sub_signatures(ast: &Node) -> HashMap<String, Vec<String>> {
                     .or_insert_with(|| param_names_from_signature_node(sig));
             }
             NodeKind::Method { name: method_name, signature: None, body, .. } => {
-                if !map.contains_key(method_name) {
-                    if let Some(params) = extract_params_from_at_underscore(body) {
-                        map.insert(method_name.clone(), params);
-                    }
+                if !map.contains_key(method_name)
+                    && let Some(params) = extract_params_from_at_underscore(body)
+                {
+                    map.insert(method_name.clone(), params);
                 }
             }
             _ => {}
@@ -287,82 +287,72 @@ fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
     let first = statements.first()?;
 
     // Check for: my ($x, $y, ...) = @_
-    if let NodeKind::VariableListDeclaration { variables, initializer, .. } = &first.kind {
-        if let Some(init) = initializer {
-            // Check if initializer is @_ (Variable { sigil: "@", name: "_" })
-            if let NodeKind::Variable { sigil, name } = &init.kind {
-                if sigil == "@" && name == "_" {
-                    let params: Vec<String> = variables
-                        .iter()
-                        .filter_map(|v| {
-                            if let NodeKind::Variable { name, .. } = &v.kind {
-                                // Skip undef slots
-                                if name.is_empty() {
-                                    return None;
-                                }
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    if !params.is_empty() {
-                        return Some(params);
+    if let NodeKind::VariableListDeclaration { variables, initializer, .. } = &first.kind
+        && let Some(init) = initializer
+    {
+        // Check if initializer is @_ (Variable { sigil: "@", name: "_" })
+        if let NodeKind::Variable { sigil, name } = &init.kind
+            && sigil == "@"
+            && name == "_"
+        {
+            let params: Vec<String> = variables
+                .iter()
+                .filter_map(|v| {
+                    if let NodeKind::Variable { name, .. } = &v.kind {
+                        // Skip undef slots
+                        if name.is_empty() {
+                            return None;
+                        }
+                        Some(name.clone())
+                    } else {
+                        None
                     }
-                }
+                })
+                .collect();
+            if !params.is_empty() {
+                return Some(params);
             }
         }
     }
 
     // Check for: my $self = shift (method invocant)
-    if let NodeKind::VariableDeclaration { variable, initializer, .. } = &first.kind {
-        if let Some(init) = initializer {
-            // Check if initializer is a call to `shift` (the most common Perl
-            // OO unpacking idiom: `my $self = shift;`).
-            // Previously this used `format!("{}", init.kind).contains("shift")`
-            // which never matched because Display for NodeKind returns the
-            // kind name ("FunctionCall"), not the function name.
-            let is_shift = match &init.kind {
-                NodeKind::FunctionCall { name, .. } => name == "shift",
-                _ => false,
-            };
-            if is_shift {
-                if let NodeKind::Variable { name: invocant_name, .. } = &variable.kind {
-                    // This is likely a method — self is the invocant.
-                    // Check next statement for more @_ unpacking.
-                    if statements.len() > 1 {
-                        if let NodeKind::VariableListDeclaration {
-                            variables,
-                            initializer: list_init,
-                            ..
-                        } = &statements[1].kind
-                        {
-                            if let Some(init2) = list_init {
-                                if let NodeKind::Variable { sigil, name } = &init2.kind {
-                                    if sigil == "@" && name == "_" {
-                                        // Use the invocant name (e.g. "self"),
-                                        // not "_" which is the name of @_.
-                                        let mut params = vec![invocant_name.clone()];
-                                        params.extend(variables.iter().filter_map(|v| {
-                                            if let NodeKind::Variable { name, .. } = &v.kind {
-                                                if name.is_empty() {
-                                                    None
-                                                } else {
-                                                    Some(name.clone())
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        }));
-                                        return Some(params);
-                                    }
-                                }
-                            }
-                        }
+    if let NodeKind::VariableDeclaration { variable, initializer, .. } = &first.kind
+        && let Some(init) = initializer
+    {
+        // Check if initializer is a call to `shift` (the most common Perl
+        // OO unpacking idiom: `my $self = shift;`).
+        // Previously this used `format!("{}", init.kind).contains("shift")`
+        // which never matched because Display for NodeKind returns the
+        // kind name ("FunctionCall"), not the function name.
+        let is_shift = match &init.kind {
+            NodeKind::FunctionCall { name, .. } => name == "shift",
+            _ => false,
+        };
+        if is_shift && let NodeKind::Variable { name: invocant_name, .. } = &variable.kind {
+            // This is likely a method — self is the invocant.
+            // Check next statement for more @_ unpacking.
+            if statements.len() > 1
+                && let NodeKind::VariableListDeclaration {
+                    variables, initializer: list_init, ..
+                } = &statements[1].kind
+                && let Some(init2) = list_init
+                && let NodeKind::Variable { sigil, name } = &init2.kind
+                && sigil == "@"
+                && name == "_"
+            {
+                // Use the invocant name (e.g. "self"),
+                // not "_" which is the name of @_.
+                let mut params = vec![invocant_name.clone()];
+                params.extend(variables.iter().filter_map(|v| {
+                    if let NodeKind::Variable { name, .. } = &v.kind {
+                        if name.is_empty() { None } else { Some(name.clone()) }
+                    } else {
+                        None
                     }
-                    return Some(vec![invocant_name.clone()]);
-                }
+                }));
+                return Some(params);
             }
+            return Some(vec![invocant_name.clone()]);
         }
     }
 
@@ -492,10 +482,10 @@ pub fn parameter_hints_with_resolver(
                     });
 
                     // For builtins: embed perldoc summary for tooltip resolution.
-                    if is_builtin {
-                        if let Some(doc) = builtin_doc_summary(name.as_str(), &param_names[i], i) {
-                            hint["data"]["docSummary"] = json!(doc);
-                        }
+                    if is_builtin
+                        && let Some(doc) = builtin_doc_summary(name.as_str(), &param_names[i], i)
+                    {
+                        hint["data"]["docSummary"] = json!(doc);
                     }
 
                     out.push(hint);

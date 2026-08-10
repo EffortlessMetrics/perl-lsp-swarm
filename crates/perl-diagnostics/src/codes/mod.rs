@@ -94,6 +94,8 @@ pub enum DiagnosticCode {
     RoleConflict,
     /// Exported subroutine lacks POD documentation
     MissingPodCoverage,
+    /// Package-qualified call to a sub not defined in the target (in-file) package (#3014)
+    UnresolvedQualifiedCall,
 
     // Best practices (PL400-PL499)
     /// Bareword filehandle usage

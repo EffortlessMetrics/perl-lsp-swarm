@@ -40,7 +40,7 @@ Do not use a silent `#[allow]`. If a lint needs repo-wide temporary treatment, a
 
 The ledger tracks planned Rust 1.94 and 1.95 flips before the workspace MSRV moves. `cargo xtask check-lint-policy` verifies that planned lints are present in the ledger and not activated ahead of the MSRV bump.
 
-The Rust 1.95 / 0.14.0 rollout is mapped in [`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md). The current workspace remains on the MSRV recorded in `Cargo.toml`, `clippy.toml`, and `policy/clippy-lints.toml` until the dedicated MSRV/toolchain PR lands. The compatibility spike comes first; it must not also activate lint floors, remove test carveouts, reset no-panic baselines, or bump the release version.
+The Rust 1.95 / 0.14.0 rollout is mapped in [`docs/development/RUST_1_95_ROLLOUT.md`](development/RUST_1_95_ROLLOUT.md). The current workspace remains on the MSRV recorded in `Cargo.toml`, `clippy.toml`, and `policy/clippy-lints.toml` until the dedicated MSRV/toolchain PR lands. The compatibility spike comes first; it must not also activate lint floors, remove test carveouts, reset no-panic baselines, or bump the release version.
 
 The legacy `allow-unwrap-in-tests = true` setting in `clippy.toml` is a known mismatch with the target panic-free test posture. It stays visible as policy debt until the dedicated no-test-carveout PR removes it and adds fallible helper paths for later test-suite burndown work.
 
@@ -53,3 +53,11 @@ cargo xtask check-lint-policy
 ```
 
 The gate checks lint inheritance, active Cargo lint levels, tracked lint metadata, planned upgrade ledger entries, and required debt metadata.
+
+## Protected-field planning
+
+The `clippy::disallowed_fields` rail is **activated** (#6114) with an empty
+denylist in `clippy.toml` (`disallowed-fields = []`). The design anchor lives in
+[`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md). Concrete field
+selectors and accessors will be added incrementally via the DF-2 through DF-4
+slices in the Rust 1.95 rollout.

@@ -113,10 +113,11 @@ pub fn build_project_model(
         // Distribution-metadata facts: metadata files are not "parsed" as Perl,
         // but when DIST is requested their content is read for name/version/
         // license/prereqs.
-        if role == FileRole::DistMetadata && request.fact_classes.contains(FactClasses::DIST) {
-            if let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content) {
-                model.dist_metadata.push(facts);
-            }
+        if role == FileRole::DistMetadata
+            && request.fact_classes.contains(FactClasses::DIST)
+            && let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content)
+        {
+            model.dist_metadata.push(facts);
         }
 
         // POD facts are read from raw source (independent of code parsing), so a
@@ -247,10 +248,11 @@ fn extract_facts(
     };
 
     // Test facts: for test-role files, detect the framework + assertion counts.
-    if fact_classes.contains(FactClasses::TESTS) && role == FileRole::Test {
-        if let Some(facts) = crate::test::extract_test_facts(&ast, file_id, &line_index) {
-            model.tests.push(facts);
-        }
+    if fact_classes.contains(FactClasses::TESTS)
+        && role == FileRole::Test
+        && let Some(facts) = crate::test::extract_test_facts(&ast, file_id, &line_index)
+    {
+        model.tests.push(facts);
     }
 
     // Symbol/package facts are only assembled when requested; a SYNTAX-only
@@ -339,10 +341,11 @@ fn collect_perl_files(root: &Path) -> Vec<String> {
                     continue;
                 }
                 stack.push(path);
-            } else if file_type.is_file() && is_indexable(&path) {
-                if let Ok(relative) = path.strip_prefix(root) {
-                    out.push(relative.to_string_lossy().replace('\\', "/"));
-                }
+            } else if file_type.is_file()
+                && is_indexable(&path)
+                && let Ok(relative) = path.strip_prefix(root)
+            {
+                out.push(relative.to_string_lossy().replace('\\', "/"));
             }
         }
     }

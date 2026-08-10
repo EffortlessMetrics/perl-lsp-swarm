@@ -36,7 +36,7 @@ pub use perl_oracle_env::PerlOracleEnv;
 pub use toolchain_profile::PerlToolchainProfile;
 
 /// Critic diagnostic engine used for LSP policy diagnostics.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CriticEngine {
     /// Existing built-in/external Perl::Critic-compatible path.
     Legacy,
@@ -53,7 +53,7 @@ pub enum CriticEngine {
 ///
 /// Runtime configuration for the LSP server features including inlay hints
 /// and test runner integration. Updated dynamically via `didChangeConfiguration`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     /// Whether inlay hints are globally enabled.
     pub inlay_hints_enabled: bool,
@@ -195,7 +195,7 @@ pub struct ServerConfig {
 /// Disabled by default. Enabling this only opens the runtime boundary; no
 /// editor-visible next-edit provider is registered yet.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NextEditConfig {
     /// Whether the future next-edit runtime boundary is explicitly enabled.
     pub enabled: bool,
@@ -206,7 +206,7 @@ pub struct NextEditConfig {
 /// Disabled by default. When enabled, the server calls an external AI provider
 /// for inline completion suggestions, falling back to deterministic rules on
 /// timeout, error, or when AI is disabled.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiCompletionConfig {
     /// Whether the user explicitly enabled AI completions via the LSP client
     /// configuration channel. Default: false.
@@ -288,7 +288,7 @@ fn is_http_header_name_byte(byte: u8) -> bool {
 }
 
 /// Streaming sub-configuration for AI completions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiStreamingConfig {
     /// Whether the user enabled streaming via the LSP client configuration channel.
     /// Default: true (streaming is on when AI completions are enabled).
@@ -702,20 +702,18 @@ impl ServerConfig {
             }
         }
 
-        if let Some(formatting) = settings.get("formatting") {
-            if let Some(engine) = formatting.get("engine") {
-                let invalid_engine = engine
-                    .as_str()
-                    .map(|value| parse_formatter_mode(value).is_none())
-                    .unwrap_or(true);
-                if invalid_engine {
-                    invalid.push(InvalidClientSetting {
-                        setting: "formatting.engine",
-                        value: client_setting_display_value(engine),
-                        value_type: client_setting_value_type(engine),
-                        valid_options: FORMATTER_MODE_VALID_OPTIONS,
-                    });
-                }
+        if let Some(formatting) = settings.get("formatting")
+            && let Some(engine) = formatting.get("engine")
+        {
+            let invalid_engine =
+                engine.as_str().map(|value| parse_formatter_mode(value).is_none()).unwrap_or(true);
+            if invalid_engine {
+                invalid.push(InvalidClientSetting {
+                    setting: "formatting.engine",
+                    value: client_setting_display_value(engine),
+                    value_type: client_setting_value_type(engine),
+                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                });
             }
         }
 
@@ -1463,14 +1461,13 @@ impl WorkspaceConfig {
                 }
                 self.include_paths = valid;
             }
-            if context.apply_external_include_paths {
-                if let Some(paths) =
+            if context.apply_external_include_paths
+                && let Some(paths) =
                     workspace.get("externalIncludePaths").and_then(|v| v.as_array())
-                {
-                    let (accepted, external_rejected) = parse_external_include_paths(paths);
-                    self.external_include_paths = accepted;
-                    rejected.extend(external_rejected);
-                }
+            {
+                let (accepted, external_rejected) = parse_external_include_paths(paths);
+                self.external_include_paths = accepted;
+                rejected.extend(external_rejected);
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -1980,10 +1977,10 @@ fn discover_perltidy_profile_from(
         }
     }
 
-    if let Some(env_profile) = env_profile {
-        if env_profile.is_file() {
-            return env_profile.to_str().map(ToOwned::to_owned);
-        }
+    if let Some(env_profile) = env_profile
+        && env_profile.is_file()
+    {
+        return env_profile.to_str().map(ToOwned::to_owned);
     }
 
     if let Some(home) = home {

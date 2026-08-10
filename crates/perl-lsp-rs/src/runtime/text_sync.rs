@@ -307,78 +307,75 @@ impl LspServer {
                 // immediately without blocking on file I/O or symbol extraction.
                 // `notify_parse_complete` is called inside the background task.
                 #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator() {
-                    if let Ok(url) = url::Url::parse(uri) {
-                        let workspace_index = Arc::clone(coordinator.index());
-                        let coordinator_clone = Arc::clone(coordinator);
-                        let text_owned = text.to_string();
-                        let uri_owned = uri.to_string();
-                        let generation = Arc::clone(&generation);
-                        let active_document_readiness = self.runtime_tuning().runtime_mode
-                            == perl_lsp_rs_core::runtime::tuning::RuntimeMode::E2e;
-                        let outbound = self.outbound.clone();
-                        let task_counter = Arc::clone(&self.pending_index_task_count);
-                        task_counter.fetch_add(1, Ordering::SeqCst);
+                if let Some(coordinator) = self.coordinator()
+                    && let Ok(url) = url::Url::parse(uri)
+                {
+                    let workspace_index = Arc::clone(coordinator.index());
+                    let coordinator_clone = Arc::clone(coordinator);
+                    let text_owned = text.to_string();
+                    let uri_owned = uri.to_string();
+                    let generation = Arc::clone(&generation);
+                    let outbound = self.outbound.clone();
+                    let task_counter = Arc::clone(&self.pending_index_task_count);
+                    task_counter.fetch_add(1, Ordering::SeqCst);
 
-                        let task = move || {
-                            if generation.load(Ordering::Acquire) != 0 {
-                                tracing::debug!(
-                                    uri = %uri_owned,
-                                    "Skipping stale background index task after document close/change"
-                                );
-                                coordinator_clone.notify_parse_complete(&uri_owned);
-                                task_counter.fetch_sub(1, Ordering::SeqCst);
-                                return;
-                            }
-                            match workspace_index.index_file_with_generation(url, text_owned, 0) {
-                                Ok(()) => {
-                                    if active_document_readiness {
-                                        workspace_progress::send_active_document_ready_notification(
-                                            &outbound, &uri_owned, 0,
-                                        );
-                                    }
-                                    if matches!(
-                                        coordinator_clone.state(),
-                                        IndexState::Building { phase: IndexPhase::Idle, .. }
-                                    ) {
-                                        let symbol_count = workspace_index.symbol_count();
-                                        let file_count = workspace_index.file_count();
-                                        coordinator_clone
-                                            .transition_to_ready(file_count, symbol_count);
-                                        tracing::info!(
-                                            "Index transitioned to Ready after first file \
-                                             (symbols: {})",
-                                            symbol_count
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to index file {}: {}", uri_owned, e);
-                                }
-                            }
+                    let task = move || {
+                        if generation.load(Ordering::Acquire) != 0 {
+                            tracing::debug!(
+                                uri = %uri_owned,
+                                "Skipping stale background index task after document close/change"
+                            );
                             coordinator_clone.notify_parse_complete(&uri_owned);
                             task_counter.fetch_sub(1, Ordering::SeqCst);
-                        };
-
-                        // Spawn on the tokio blocking pool when a runtime is available
-                        // (production path via Scheduler).  Fall back to synchronous
-                        // execution in unit tests that construct LspServer directly.
-                        match tokio::runtime::Handle::try_current() {
-                            Ok(handle) => {
-                                handle.spawn_blocking(task);
-                                // Diagnostics are published below; coordinator completion
-                                // happens asynchronously in the background task.
+                            return;
+                        }
+                        match workspace_index.index_file_with_generation(url, text_owned, 0) {
+                            Ok(()) => {
+                                if generation.load(Ordering::Acquire) == 0 {
+                                    workspace_progress::send_active_document_ready_notification(
+                                        &outbound, &uri_owned, 0,
+                                    );
+                                }
+                                if matches!(
+                                    coordinator_clone.state(),
+                                    IndexState::Building { phase: IndexPhase::Idle, .. }
+                                ) {
+                                    let symbol_count = workspace_index.symbol_count();
+                                    let file_count = workspace_index.file_count();
+                                    coordinator_clone.transition_to_ready(file_count, symbol_count);
+                                    tracing::info!(
+                                        "Index transitioned to Ready after first file \
+                                             (symbols: {})",
+                                        symbol_count
+                                    );
+                                }
                             }
-                            Err(_) => {
-                                task();
+                            Err(e) => {
+                                tracing::warn!("Failed to index file {}: {}", uri_owned, e);
                             }
                         }
-                        // Skip the synchronous notify_parse_complete below — it was
-                        // moved into the background task (or run inline on fallback).
-                        self.publish_parse_errors_fast(uri);
-                        self.publish_diagnostics_debounced(uri);
-                        return Ok(());
+                        coordinator_clone.notify_parse_complete(&uri_owned);
+                        task_counter.fetch_sub(1, Ordering::SeqCst);
+                    };
+
+                    // Spawn on the tokio blocking pool when a runtime is available
+                    // (production path via Scheduler).  Fall back to synchronous
+                    // execution in unit tests that construct LspServer directly.
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => {
+                            handle.spawn_blocking(task);
+                            // Diagnostics are published below; coordinator completion
+                            // happens asynchronously in the background task.
+                        }
+                        Err(_) => {
+                            task();
+                        }
                     }
+                    // Skip the synchronous notify_parse_complete below — it was
+                    // moved into the background task (or run inline on fallback).
+                    self.publish_parse_errors_fast(uri);
+                    self.publish_diagnostics_debounced(uri);
+                    return Ok(());
                 }
             } else {
                 self.clear_document_symbols(uri);
@@ -521,18 +518,17 @@ impl LspServer {
                 // Ignore stale didChange notifications that arrive out of order.
                 // We only gate on explicit client-provided versions; if a client omits
                 // the version field we preserve legacy behavior and treat the change as new.
-                if let Some(version) = incoming_version {
-                    if version < doc_state.version
-                        || (!allow_same_version && version == doc_state.version)
-                    {
-                        tracing::debug!(
-                            "Ignoring stale didChange for {} (incoming version {} <= current {})",
-                            uri,
-                            version,
-                            doc_state.version
-                        );
-                        return Ok(());
-                    }
+                if let Some(version) = incoming_version
+                    && (version < doc_state.version
+                        || (!allow_same_version && version == doc_state.version))
+                {
+                    tracing::debug!(
+                        "Ignoring stale didChange for {} (incoming version {} <= current {})",
+                        uri,
+                        version,
+                        doc_state.version
+                    );
+                    return Ok(());
                 }
 
                 // didChange version is required by LSP, but keep a fallback for tolerant
@@ -590,6 +586,7 @@ impl LspServer {
 
                 let t_rope_start = std::time::Instant::now();
                 let text = doc.rope.to_string();
+                let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
@@ -713,73 +710,66 @@ impl LspServer {
                 // hundreds of existing unit tests that assert
                 // `current_parsed()` is available immediately after
                 // `handle_did_change` returns) is unaffected.
-                if !self.incremental_eager_enabled() {
-                    if let Some(worker) = self.parse_worker() {
-                        // Commit the text-only mutation now; the parse +
-                        // parent-map + publish happen off this lock, in the
-                        // worker. `current_parsed()` reports `None` for
-                        // this document until the worker publishes for
-                        // `next_gen` (or forever, if a newer edit
-                        // supersedes it first); `latest_parsed()` keeps
-                        // answering with the pre-edit snapshot in the
-                        // meantime -- see `state::DocumentState` module
-                        // docs and the #3589 pending-parse provider
-                        // policies.
-                        doc_state.replace_text_state(doc.rope.clone(), text.clone(), version);
-                        #[cfg(feature = "incremental")]
-                        {
-                            doc_state.incremental_doc = None;
-                            doc_state.incremental_state = None;
-                        }
-                        let generation_handle = doc_state.generation.clone();
-                        documents.insert(normalized_uri.clone(), doc_state);
-                        drop(documents);
-
-                        if timing_on {
-                            use crate::runtime::timing::{TimingSpan, elapsed_ms, emit};
-                            let tail = uri_tail(uri);
-                            let bytes = text.len();
-                            let edits = changes.len();
-                            let ver = i64::from(version);
-                            let total_ms = elapsed_ms(t_did_change_start);
-                            for (name, ms) in [
-                                ("didChange.total", total_ms),
-                                ("didChange.lock_wait", lock_wait_ms),
-                                ("didChange.apply_changes", apply_changes_ms),
-                                ("didChange.rope_to_string", rope_to_string_ms),
-                            ] {
-                                emit(TimingSpan::document(
-                                    name,
-                                    ms,
-                                    tail.clone(),
-                                    ver,
-                                    bytes,
-                                    edits,
-                                ));
-                            }
-                        }
-
-                        // Coordinator notification for a NEW pending-parse
-                        // lifecycle (tracks parse storm) is fired from
-                        // INSIDE `enqueue` itself (`Coordinator::on_activated`,
-                        // wired in `install_default_parse_worker`), not from
-                        // here after `enqueue` returns -- calling it from
-                        // this caller left a window where an unusually fast
-                        // worker could dequeue, process, and settle (its
-                        // decrement) before this call ever ran, permanently
-                        // stranding the pending-parse counter (#3618 settle-
-                        // before-increment race). `enqueue`'s return value
-                        // is no longer needed by this caller.
-                        worker.enqueue(
-                            uri.to_string(),
-                            normalized_uri,
-                            next_gen,
-                            generation_handle,
-                            Arc::from(text.as_str()),
-                        );
-
-                        return Ok(());
+                if !self.incremental_eager_enabled()
+                    && let Some(worker) = self.parse_worker()
+                {
+                    // Commit the text-only mutation now; the parse +
+                    // parent-map + publish happen off this lock, in the
+                    // worker. `current_parsed()` reports `None` for
+                    // this document until the worker publishes for
+                    // `next_gen` (or forever, if a newer edit
+                    // supersedes it first); `latest_parsed()` keeps
+                    // answering with the pre-edit snapshot in the
+                    // meantime -- see `state::DocumentState` module
+                    // docs and the #3589 pending-parse provider
+                    // policies.
+                    doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
+                    #[cfg(feature = "incremental")]
+                    {
+                        doc_state.incremental_doc = None;
+                        doc_state.incremental_state = None;
                     }
+                    let generation_handle = doc_state.generation.clone();
+                    documents.insert(normalized_uri.clone(), doc_state);
+                    drop(documents);
+
+                    if timing_on {
+                        use crate::runtime::timing::{TimingSpan, elapsed_ms, emit};
+                        let tail = uri_tail(uri);
+                        let bytes = text.len();
+                        let edits = changes.len();
+                        let ver = i64::from(version);
+                        let total_ms = elapsed_ms(t_did_change_start);
+                        for (name, ms) in [
+                            ("didChange.total", total_ms),
+                            ("didChange.lock_wait", lock_wait_ms),
+                            ("didChange.apply_changes", apply_changes_ms),
+                            ("didChange.rope_to_string", rope_to_string_ms),
+                        ] {
+                            emit(TimingSpan::document(name, ms, tail.clone(), ver, bytes, edits));
+                        }
+                    }
+
+                    // Coordinator notification for a NEW pending-parse
+                    // lifecycle (tracks parse storm) is fired from
+                    // INSIDE `enqueue` itself (`Coordinator::on_activated`,
+                    // wired in `install_default_parse_worker`), not from
+                    // here after `enqueue` returns -- calling it from
+                    // this caller left a window where an unusually fast
+                    // worker could dequeue, process, and settle (its
+                    // decrement) before this call ever ran, permanently
+                    // stranding the pending-parse counter (#3618 settle-
+                    // before-increment race). `enqueue`'s return value
+                    // is no longer needed by this caller.
+                    worker.enqueue(
+                        uri.to_string(),
+                        normalized_uri,
+                        next_gen,
+                        generation_handle,
+                        Arc::clone(&text_arc),
+                    );
+
+                    return Ok(());
                 }
 
                 // ---- Synchronous fallback path (unchanged behavior) ----
@@ -996,7 +986,7 @@ impl LspServer {
                 // pre-edit snapshot until the `publish_parsed_if_current`
                 // call below lands the new one -- see
                 // `state::DocumentState::replace_text_state`.
-                doc_state.replace_text_state(doc.rope.clone(), text.to_string(), version);
+                doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
                 #[cfg(feature = "incremental")]
                 {
                     doc_state.incremental_doc = incremental_doc;
@@ -1012,25 +1002,24 @@ impl LspServer {
                 doc_state.publish_parsed_if_current(next_gen, Arc::clone(&snapshot));
 
                 // Check if a newer change arrived while we were parsing
-                if let Some(existing_doc) = self.get_document(&documents, uri) {
-                    if existing_doc.generation.load(Ordering::SeqCst) != next_gen
-                        || existing_doc.version > target_version
-                    {
-                        tracing::debug!(
-                            "Discarding stale parse result for {} (gen {} != {} or version {} > {})",
-                            uri,
-                            next_gen,
-                            existing_doc.generation.load(Ordering::SeqCst),
-                            existing_doc.version,
-                            target_version
-                        );
-                        // Still notify completion even if discarding, to keep coordinator state consistent
-                        #[cfg(feature = "workspace")]
-                        if let Some(coordinator) = self.coordinator() {
-                            coordinator.notify_parse_complete(uri);
-                        }
-                        return Ok(());
+                if let Some(existing_doc) = self.get_document(&documents, uri)
+                    && (existing_doc.generation.load(Ordering::SeqCst) != next_gen
+                        || existing_doc.version > target_version)
+                {
+                    tracing::debug!(
+                        "Discarding stale parse result for {} (gen {} != {} or version {} > {})",
+                        uri,
+                        next_gen,
+                        existing_doc.generation.load(Ordering::SeqCst),
+                        existing_doc.version,
+                        target_version
+                    );
+                    // Still notify completion even if discarding, to keep coordinator state consistent
+                    #[cfg(feature = "workspace")]
+                    if let Some(coordinator) = self.coordinator() {
+                        coordinator.notify_parse_complete(uri);
                     }
+                    return Ok(());
                 }
 
                 let generation_for_index_task = doc_state.generation.clone();
@@ -1166,77 +1155,77 @@ impl LspServer {
         // not defense-in-depth.
         if ast_arc.is_some() {
             #[cfg(feature = "workspace")]
-            if let Some(coordinator) = self.coordinator() {
-                if let Ok(url) = url::Url::parse(&ticket.uri) {
-                    let workspace_index = Arc::clone(coordinator.index());
-                    let coordinator_clone = Arc::clone(coordinator);
-                    let doc_content = ticket.text.to_string();
-                    let uri_owned = ticket.uri.clone();
-                    let normalized_uri_owned = self.normalize_uri_key(&ticket.uri);
-                    let documents_for_task =
-                        crate::runtime::parse_worker::DocumentsHandle(Arc::clone(&self.documents));
-                    let expected_generation = ticket.generation;
-                    let document_instance = Arc::clone(&ticket.document_instance);
-                    let task_counter = Arc::clone(&self.pending_index_task_count);
-                    let settle_notified_by_worker = ticket.settle_notified_by_worker;
-                    task_counter.fetch_add(1, Ordering::SeqCst);
+            if let Some(coordinator) = self.coordinator()
+                && let Ok(url) = url::Url::parse(&ticket.uri)
+            {
+                let workspace_index = Arc::clone(coordinator.index());
+                let coordinator_clone = Arc::clone(coordinator);
+                let doc_content = ticket.text.to_string();
+                let uri_owned = ticket.uri.clone();
+                let normalized_uri_owned = self.normalize_uri_key(&ticket.uri);
+                let documents_for_task =
+                    crate::runtime::parse_worker::DocumentsHandle(Arc::clone(&self.documents));
+                let expected_generation = ticket.generation;
+                let document_instance = Arc::clone(&ticket.document_instance);
+                let task_counter = Arc::clone(&self.pending_index_task_count);
+                let settle_notified_by_worker = ticket.settle_notified_by_worker;
+                task_counter.fetch_add(1, Ordering::SeqCst);
 
-                    let task = move || {
-                        // The SAME sanctioned oracle, called at THIS task's
-                        // own (much later) commit boundary -- see
-                        // `commit_parse_effect_if_current`.
-                        let indexed = commit_parse_effect_if_current(
-                            &documents_for_task,
-                            &normalized_uri_owned,
-                            expected_generation,
-                            &document_instance,
-                            || {
-                                if let Err(e) = workspace_index.index_file_with_generation(
-                                    url,
-                                    doc_content,
-                                    expected_generation,
-                                ) {
-                                    tracing::warn!("Failed to index file {}: {}", uri_owned, e);
-                                }
-                            },
-                        );
-                        if indexed.is_none() {
-                            tracing::debug!(
-                                uri = %uri_owned,
+                let task = move || {
+                    // The SAME sanctioned oracle, called at THIS task's
+                    // own (much later) commit boundary -- see
+                    // `commit_parse_effect_if_current`.
+                    let indexed = commit_parse_effect_if_current(
+                        &documents_for_task,
+                        &normalized_uri_owned,
+                        expected_generation,
+                        &document_instance,
+                        || {
+                            if let Err(e) = workspace_index.index_file_with_generation(
+                                url,
+                                doc_content,
                                 expected_generation,
-                                "Skipping stale background index task after document close/change"
-                            );
-                        }
-                        // See `PublishedParseTicket` and #3660: the async
-                        // worker's settle hook already owns this
-                        // lifecycle's decrement when `true`.
-                        if !settle_notified_by_worker {
-                            coordinator_clone.notify_parse_complete(&uri_owned);
-                        }
-                        task_counter.fetch_sub(1, Ordering::SeqCst);
-                    };
-
-                    match tokio::runtime::Handle::try_current() {
-                        Ok(handle) => {
-                            handle.spawn_blocking(task);
-                        }
-                        Err(_) => {
-                            task();
-                        }
+                            ) {
+                                tracing::warn!("Failed to index file {}: {}", uri_owned, e);
+                            }
+                        },
+                    );
+                    if indexed.is_none() {
+                        tracing::debug!(
+                            uri = %uri_owned,
+                            expected_generation,
+                            "Skipping stale background index task after document close/change"
+                        );
                     }
+                    // See `PublishedParseTicket` and #3660: the async
+                    // worker's settle hook already owns this
+                    // lifecycle's decrement when `true`.
+                    if !settle_notified_by_worker {
+                        coordinator_clone.notify_parse_complete(&uri_owned);
+                    }
+                    task_counter.fetch_sub(1, Ordering::SeqCst);
+                };
 
-                    // Fast path: immediately publish parse-error diagnostics so
-                    // syntax errors appear before the slow debounce fires.
-                    // The debounced full publish replaces this notification.
-                    self.commit_parse_effect_if_current(&ticket, || {
-                        self.publish_parse_errors_fast(&ticket.uri);
-                    });
-                    // Send full diagnostics (debounced); coordinator completion is async.
-                    self.commit_parse_effect_if_current(&ticket, || {
-                        self.publish_diagnostics_debounced(&ticket.uri);
-                    });
-                    return;
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        handle.spawn_blocking(task);
+                    }
+                    Err(_) => {
+                        task();
+                    }
                 }
+
+                // Fast path: immediately publish parse-error diagnostics so
+                // syntax errors appear before the slow debounce fires.
+                // The debounced full publish replaces this notification.
+                self.commit_parse_effect_if_current(&ticket, || {
+                    self.publish_parse_errors_fast(&ticket.uri);
+                });
+                // Send full diagnostics (debounced); coordinator completion is async.
+                self.commit_parse_effect_if_current(&ticket, || {
+                    self.publish_diagnostics_debounced(&ticket.uri);
+                });
+                return;
             }
         }
 

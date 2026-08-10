@@ -6,9 +6,30 @@
 const POTENTIALLY_EXPENSIVE_REGEX_RE =
   /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 
-function hasQuantifiedAlternation(source: string): boolean {
-  const groups: boolean[] = [];
-  let inCharacterClass = false;
+type BranchFirst = string | 'unknown' | null;
+
+interface GroupFrame {
+  branchFirst: BranchFirst;
+  branchFirsts: BranchFirst[];
+  hasAlternation: boolean;
+  nestedOverlap: boolean;
+  prefixPending: boolean;
+  prefixMode: boolean | 'angle';
+}
+
+function branchesOverlap(branchFirsts: BranchFirst[]): boolean {
+  const firstChars = new Set<string>();
+  for (const first of branchFirsts) {
+    if (first === null || first === 'unknown' || firstChars.has(first)) {
+      return true;
+    }
+    firstChars.add(first);
+  }
+  return false;
+}
+
+function hasOverlappingQuantifiedAlternation(source: string): boolean {
+  const groups: GroupFrame[] = [];
 
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
@@ -16,53 +37,103 @@ function hasQuantifiedAlternation(source: string): boolean {
       continue;
     }
 
-    if (character === '\\') {
-      index += 1;
+    const currentGroup = groups.at(-1);
+    if (currentGroup?.prefixPending) {
+      currentGroup.prefixPending = false;
+      if (character === '?') {
+        currentGroup.prefixMode = true;
+        continue;
+      }
+    }
+
+    if (currentGroup?.prefixMode) {
+      if (currentGroup.prefixMode === 'angle') {
+        if (character === '>') {
+          currentGroup.prefixMode = false;
+        }
+        continue;
+      }
+      if (character === '<') {
+        currentGroup.prefixMode = 'angle';
+      } else if (character === ':' || character === '=' || character === '!') {
+        currentGroup.prefixMode = false;
+      }
       continue;
     }
 
-    if (inCharacterClass) {
-      if (character === ']') {
-        inCharacterClass = false;
+    if (character === '\\') {
+      index += 1;
+      if (currentGroup?.branchFirst === null) {
+        currentGroup.branchFirst = 'unknown';
       }
       continue;
     }
 
     if (character === '[') {
-      inCharacterClass = true;
-      continue;
-    }
-
-    if (character === '(') {
-      groups.push(false);
-      continue;
-    }
-
-    if (character === '|') {
-      const groupIndex = groups.length - 1;
-      if (groupIndex >= 0) {
-        groups[groupIndex] = true;
+      if (currentGroup?.branchFirst === null) {
+        currentGroup.branchFirst = 'unknown';
+      }
+      for (index += 1; index < source.length; index += 1) {
+        const classCharacter = source[index];
+        if (classCharacter === '\\') {
+          index += 1;
+        } else if (classCharacter === ']') {
+          break;
+        }
       }
       continue;
     }
 
-    if (character !== ')') {
+    if (character === '(') {
+      if (currentGroup?.branchFirst === null) {
+        currentGroup.branchFirst = 'unknown';
+      }
+      groups.push({
+        branchFirst: null,
+        branchFirsts: [],
+        hasAlternation: false,
+        nestedOverlap: false,
+        prefixPending: true,
+        prefixMode: false,
+      });
       continue;
     }
 
-    const containsAlternation = groups.pop();
-    if (containsAlternation === undefined) {
+    if (character === '|') {
+      if (currentGroup) {
+        currentGroup.branchFirsts.push(currentGroup.branchFirst);
+        currentGroup.branchFirst = null;
+        currentGroup.hasAlternation = true;
+      }
       continue;
     }
 
-    const next = source[index + 1];
-    if (containsAlternation && (next === '+' || next === '*' || next === '{')) {
-      return true;
+    if (character === ')') {
+      const group = groups.pop();
+      if (group === undefined) {
+        continue;
+      }
+
+      const quantified =
+        source[index + 1] === '+' || source[index + 1] === '*' || source[index + 1] === '{';
+      if (group.hasAlternation) {
+        group.branchFirsts.push(group.branchFirst);
+        const overlap = branchesOverlap(group.branchFirsts);
+        group.nestedOverlap ||= overlap;
+      }
+      if (quantified && group.nestedOverlap) {
+        return true;
+      }
+
+      const parentGroup = groups.at(-1);
+      if (parentGroup) {
+        parentGroup.nestedOverlap ||= group.nestedOverlap;
+      }
+      continue;
     }
 
-    const parentIndex = groups.length - 1;
-    if (containsAlternation && parentIndex >= 0) {
-      groups[parentIndex] = true;
+    if (currentGroup?.branchFirst === null && character !== '^' && character !== '$') {
+      currentGroup.branchFirst = character === '.' ? 'unknown' : character;
     }
   }
 
@@ -70,5 +141,5 @@ function hasQuantifiedAlternation(source: string): boolean {
 }
 
 export function isPotentiallyExpensiveRegex(source: string): boolean {
-  return POTENTIALLY_EXPENSIVE_REGEX_RE.test(source) || hasQuantifiedAlternation(source);
+  return POTENTIALLY_EXPENSIVE_REGEX_RE.test(source) || hasOverlappingQuantifiedAlternation(source);
 }

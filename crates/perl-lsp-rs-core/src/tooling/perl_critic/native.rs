@@ -2447,10 +2447,10 @@ fn collect_leading_zeros_findings(
     node: &Node,
     out: &mut Vec<CriticFinding>,
 ) {
-    if let NodeKind::Number { value } = &node.kind {
-        if is_octal_leading_zero(value) {
-            out.push(leading_zeros_finding(rule, source, node, value));
-        }
+    if let NodeKind::Number { value } = &node.kind
+        && is_octal_leading_zero(value)
+    {
+        out.push(leading_zeros_finding(rule, source, node, value));
     }
 
     for child in node.children() {

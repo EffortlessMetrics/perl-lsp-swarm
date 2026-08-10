@@ -59,7 +59,9 @@ export interface ProgressEndPayload {
 export type ProgressPayload = ProgressBeginPayload | ProgressReportPayload | ProgressEndPayload;
 
 /** Internal display state of the widget. */
-export type WidgetMode = 'starting' | 'indexing' | 'running' | 'stopped';
+export type IndexReadinessState = 'building' | 'ready' | 'ready_limited';
+
+export type WidgetMode = 'starting' | 'indexing' | 'running' | 'ready_limited' | 'stopped';
 
 export class HealthWidget {
   private _mode: WidgetMode = 'starting';
@@ -69,6 +71,8 @@ export class HealthWidget {
   private _indexingPercentage: number | undefined = undefined;
   private _activeTokens = new Set<ProgressToken>();
   private _version: string | undefined = undefined;
+  private _readinessState: IndexReadinessState = 'ready';
+  private _readinessReason: string | undefined = undefined;
 
   constructor(private readonly item: vscode.StatusBarItem) {
     this._render();
@@ -87,7 +91,7 @@ export class HealthWidget {
       case ClientState.Running:
         // Only move to 'running' if no active indexing progress tokens.
         if (this._activeTokens.size === 0) {
-          this._setMode('running');
+          this._setMode(this._modeForReadiness());
         }
         break;
       case ClientState.Stopped:
@@ -137,8 +141,17 @@ export class HealthWidget {
       if (this._activeTokens.size === 0) {
         this._indexingMessage = undefined;
         this._indexingPercentage = undefined;
-        this._setMode('running');
+        this._setMode(this._modeForReadiness());
       }
+    }
+  }
+
+  /** Consume canonical server readiness without inferring it from progress. */
+  onIndexReadinessState(state: IndexReadinessState, reason?: string): void {
+    this._readinessState = state;
+    this._readinessReason = reason;
+    if (this._activeTokens.size === 0 && this._mode !== 'stopped') {
+      this._setMode(this._modeForReadiness());
     }
   }
 
@@ -180,6 +193,11 @@ export class HealthWidget {
     return this._version;
   }
 
+  /** Current canonical index state. */
+  get readinessState(): IndexReadinessState {
+    return this._readinessState;
+  }
+
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
@@ -187,6 +205,14 @@ export class HealthWidget {
   private _setMode(mode: WidgetMode): void {
     this._mode = mode;
     this._render();
+  }
+
+  private _modeForReadiness(): WidgetMode {
+    return this._readinessState === 'building'
+      ? 'indexing'
+      : this._readinessState === 'ready_limited'
+        ? 'ready_limited'
+        : 'running';
   }
 
   private _render(): void {
@@ -225,6 +251,15 @@ export class HealthWidget {
         this.item.text = `$(check) ${label}${detail}`;
         const versionNote = this._version ? ` v${this._version}` : '';
         this.item.tooltip = `Perl Language Server${versionNote} is running (click for options)`;
+        this.item.backgroundColor = undefined;
+        break;
+      }
+
+      case 'ready_limited': {
+        const label = this._version ? `perl-lsp v${this._version}` : 'perl-lsp';
+        this.item.text = `$(check) ${label} (limited)`;
+        const reason = this._readinessReason ? `: ${this._readinessReason}` : '';
+        this.item.tooltip = `Perl Language Server is ready with limited workspace coverage${reason} (click for options)`;
         this.item.backgroundColor = undefined;
         break;
       }

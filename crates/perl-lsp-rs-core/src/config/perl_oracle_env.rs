@@ -166,15 +166,15 @@ impl PerlOracleEnv {
         }
 
         // 3. Conditionally allowlisted Perl env vars.
-        if self.allow_perl5lib {
-            if let Some(val) = std::env::var_os("PERL5LIB") {
-                cmd.env("PERL5LIB", val);
-            }
+        if self.allow_perl5lib
+            && let Some(val) = std::env::var_os("PERL5LIB")
+        {
+            cmd.env("PERL5LIB", val);
         }
-        if self.allow_perl5opt {
-            if let Some(val) = std::env::var_os("PERL5OPT") {
-                cmd.env("PERL5OPT", val);
-            }
+        if self.allow_perl5opt
+            && let Some(val) = std::env::var_os("PERL5OPT")
+        {
+            cmd.env("PERL5OPT", val);
         }
         if self.allow_local_lib {
             if let Some(val) = std::env::var_os("PERL_LOCAL_LIB_ROOT") {

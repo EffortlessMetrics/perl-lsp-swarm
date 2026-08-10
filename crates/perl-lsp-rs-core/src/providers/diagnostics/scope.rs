@@ -32,7 +32,8 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             IssueKind::UndeclaredVariable
             | IssueKind::VariableRedeclaration
             | IssueKind::DuplicateParameter
-            | IssueKind::UnquotedBareword => DiagnosticSeverity::Error,
+            | IssueKind::UnquotedBareword
+            | IssueKind::UnresolvedQualifiedCall => DiagnosticSeverity::Error,
             IssueKind::VariableShadowing
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
@@ -60,6 +61,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             // the bareword" action is offered — unlike `UnquotedBareword`), and it
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
+            IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -222,7 +224,8 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             IssueKind::UndeclaredVariable
             | IssueKind::VariableRedeclaration
             | IssueKind::DuplicateParameter
-            | IssueKind::UnquotedBareword => DiagnosticSeverity::Error,
+            | IssueKind::UnquotedBareword
+            | IssueKind::UnresolvedQualifiedCall => DiagnosticSeverity::Error,
             IssueKind::VariableShadowing
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
@@ -250,6 +253,7 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             // the bareword" action is offered — unlike `UnquotedBareword`), and it
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
+            IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
         };
 
         let mut related_info = build_scope_related_info(&issue);
@@ -467,6 +471,12 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 },
             ]
         }
+        IssueKind::UnresolvedQualifiedCall => vec![
+            RelatedInformation {
+                location: issue.range,
+                message: format!("💡 Define sub '{}' in its package or correct the call", issue.variable_name),
+            },
+        ],
     }
 }
 

@@ -299,17 +299,17 @@ pub fn build_ripr_facts_packet(
     // dangling `oracle_extraction`/`test_discovery` id when only one of
     // tests/oracles is requested (same referential class as the relation→test_id
     // fix).
-    if has_test_facts || has_oracle_facts {
-        if let Some(provenance) = packet["provenance"].as_array_mut() {
-            for entry in test_provenance {
-                let keep = match entry["source"].as_str() {
-                    Some("test_discovery") => has_test_facts,
-                    Some("oracle_extraction") => has_oracle_facts,
-                    _ => true,
-                };
-                if keep {
-                    provenance.push(entry);
-                }
+    if (has_test_facts || has_oracle_facts)
+        && let Some(provenance) = packet["provenance"].as_array_mut()
+    {
+        for entry in test_provenance {
+            let keep = match entry["source"].as_str() {
+                Some("test_discovery") => has_test_facts,
+                Some("oracle_extraction") => has_oracle_facts,
+                _ => true,
+            };
+            if keep {
+                provenance.push(entry);
             }
         }
     }

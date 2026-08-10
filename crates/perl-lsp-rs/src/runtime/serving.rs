@@ -37,7 +37,7 @@ impl LspServer {
                     if let Some(response) = self.handle_request(request) {
                         // Log and send response via outbound channel
                         log_response(&response);
-                        self.outbound.send_response(response)?;
+                        self.outbound_sink().send_response(response)?;
                     }
                 }
                 None => {
@@ -106,11 +106,11 @@ impl LspServer {
     pub fn handle_message<R: Read>(&self, reader: &mut R) -> io::Result<()> {
         let mut buf_reader = BufReader::new(reader);
         let mut message_reader = ContentLengthMessageReader::new();
-        if let Some(request) = message_reader.read_next(&mut buf_reader)? {
-            if let Some(response) = self.handle_request(request) {
-                // Send response via outbound channel
-                self.outbound.send_response(response)?;
-            }
+        if let Some(request) = message_reader.read_next(&mut buf_reader)?
+            && let Some(response) = self.handle_request(request)
+        {
+            // Send response via outbound channel
+            self.outbound.send_response(response)?;
         }
         Ok(())
     }

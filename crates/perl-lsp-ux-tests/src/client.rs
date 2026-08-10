@@ -439,10 +439,10 @@ impl Drop for UxClient {
         }
         // Wait briefly for graceful exit then force-kill.
         for _ in 0..50 {
-            if let Ok(mut child) = self.child.lock() {
-                if child.try_wait().ok().flatten().is_some() {
-                    return;
-                }
+            if let Ok(mut child) = self.child.lock()
+                && child.try_wait().ok().flatten().is_some()
+            {
+                return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }

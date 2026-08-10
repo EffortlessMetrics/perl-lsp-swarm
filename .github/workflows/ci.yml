@@ -394,7 +394,13 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            gates: docs_build non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
+            # msrv_authority_sync runs first: it is the cheapest gate here (~1s
+            # against a warm xtask) and the shard aborts on first failure, so
+            # ordering it behind the 137s non_rust_inventory_check would leave
+            # it unexecuted whenever that gate is red — which is chronic while
+            # #6229 stands, since the committed inventory count is invalidated
+            # by every merge that adds or removes a file.
+            gates: msrv_authority_sync docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -494,6 +500,7 @@ jobs:
           mkdir -p target/ci
           python3 scripts/ci/emit_ci_actuals.py \
             --receipts-dir target/receipts/shards \
+            --lane-id merge_gate_shards \
             --workflow "${{ github.workflow }}" \
             --sha "${{ github.sha }}" \
             --pr "${{ github.event.pull_request.number || 0 }}" \
