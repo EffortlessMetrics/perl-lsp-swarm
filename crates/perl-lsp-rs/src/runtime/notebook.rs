@@ -352,7 +352,7 @@ impl LspServer {
             // Open cell as a text document using existing didOpen logic
             let lang_id = cell_doc.get("languageId").and_then(|v| v.as_str()).unwrap_or("perl");
             let did_open_params =
-                did_open_params(&cell_uri, lang_id, cell_version, text.to_string());
+                did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
             // Use existing didOpen handler for the cell
             self.handle_did_open(Some(did_open_params))?;
@@ -473,7 +473,7 @@ impl LspServer {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("perl");
                             let did_open_params =
-                                did_open_params(&cell_uri, lang_id, cell_version, text.to_string());
+                                did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
                             self.handle_did_open(Some(did_open_params))?;
                             tracing::debug!(cell_uri, "New cell opened");
