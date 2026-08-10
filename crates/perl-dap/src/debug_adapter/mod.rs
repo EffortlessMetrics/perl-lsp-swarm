@@ -307,8 +307,8 @@ impl DebugAdapter {
                 // an elevated warning.  We cannot hard-reject because no workspace
                 // boundary is known and temp files / explicit user paths are
                 // legitimate pre-launch use cases.
-                if p.is_absolute() {
-                    if let Ok(cwd) = std::env::current_dir() {
+                if p.is_absolute()
+                    && let Ok(cwd) = std::env::current_dir() {
                         let canonical_p =
                             std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
                         let canonical_cwd =
@@ -323,7 +323,6 @@ impl DebugAdapter {
                             return Ok(PathBuf::from(path));
                         }
                     }
-                }
 
                 tracing::warn!(
                     target = "debug_adapter.security",

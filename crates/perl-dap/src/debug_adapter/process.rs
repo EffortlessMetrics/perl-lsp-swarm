@@ -960,11 +960,10 @@ impl DebugAdapter {
                                 break_on_warn && is_warning_line && !is_exception_line;
 
                             // Store exception message for exceptionInfo request
-                            if exception_match || warning_match {
-                                if let Ok(mut guard) = last_exception_message.lock() {
+                            if (exception_match || warning_match)
+                                && let Ok(mut guard) = last_exception_message.lock() {
                                     *guard = Some(analysis_text.clone());
                                 }
-                            }
 
                             let mut should_emit_stopped = false;
                             let mut should_auto_continue = false;

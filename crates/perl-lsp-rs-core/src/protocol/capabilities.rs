@@ -96,15 +96,13 @@ pub fn capabilities_json(build: BuildFlags) -> Value {
     // We advertise PlainText (1) and Snippet (2) modes, which we already support.
     // Clients can use this to determine if they should rely on server-provided
     // insertReplaceEdit and insertTextFormat/insertTextMode negotiation.
-    if build.completion {
-        if let Some(comp_provider) = json["completionProvider"].as_object_mut() {
-            if let Some(comp_item) =
+    if build.completion
+        && let Some(comp_provider) = json["completionProvider"].as_object_mut()
+            && let Some(comp_item) =
                 comp_provider.get_mut("completionItem").and_then(Value::as_object_mut)
             {
                 comp_item.insert("insertTextModes".to_string(), serde_json::json!([1, 2]));
             }
-        }
-    }
 
     json
 }

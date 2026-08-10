@@ -702,8 +702,8 @@ impl ServerConfig {
             }
         }
 
-        if let Some(formatting) = settings.get("formatting") {
-            if let Some(engine) = formatting.get("engine") {
+        if let Some(formatting) = settings.get("formatting")
+            && let Some(engine) = formatting.get("engine") {
                 let invalid_engine = engine
                     .as_str()
                     .map(|value| parse_formatter_mode(value).is_none())
@@ -717,7 +717,6 @@ impl ServerConfig {
                     });
                 }
             }
-        }
 
         invalid
     }
@@ -1463,15 +1462,14 @@ impl WorkspaceConfig {
                 }
                 self.include_paths = valid;
             }
-            if context.apply_external_include_paths {
-                if let Some(paths) =
+            if context.apply_external_include_paths
+                && let Some(paths) =
                     workspace.get("externalIncludePaths").and_then(|v| v.as_array())
                 {
                     let (accepted, external_rejected) = parse_external_include_paths(paths);
                     self.external_include_paths = accepted;
                     rejected.extend(external_rejected);
                 }
-            }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
             }
@@ -1980,11 +1978,10 @@ fn discover_perltidy_profile_from(
         }
     }
 
-    if let Some(env_profile) = env_profile {
-        if env_profile.is_file() {
+    if let Some(env_profile) = env_profile
+        && env_profile.is_file() {
             return env_profile.to_str().map(ToOwned::to_owned);
         }
-    }
 
     if let Some(home) = home {
         let candidate = home.join(".perltidyrc");

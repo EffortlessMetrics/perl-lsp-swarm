@@ -102,8 +102,8 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                         Some(RequireForm::FilePath) if import.token.ends_with(".pm") => {
                             // Quoted .pm require → treat as a module link (Foo/Bar.pm → Foo::Bar)
                             let module_name = import.token_as_module_name();
-                            if !is_pragma(&module_name) {
-                                if let Some(link) = make_deferred_module_link(
+                            if !is_pragma(&module_name)
+                                && let Some(link) = make_deferred_module_link(
                                     uri,
                                     i as u32,
                                     &module_name,
@@ -112,7 +112,6 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                 ) {
                                     out.push(link);
                                 }
-                            }
                         }
                         Some(RequireForm::FilePath) => {
                             // Quoted file path that is NOT a .pm (e.g. .pl, extensionless) → file link

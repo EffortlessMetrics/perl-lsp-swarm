@@ -579,8 +579,8 @@ impl DebugAdapter {
 
         if let Some((source_path, frame_line)) = frame_info {
             // Defense-in-depth: validate even internal session paths
-            if let Ok(validated_path) = self.validate_source_path(&source_path) {
-                if let Ok(content) = std::fs::read_to_string(&validated_path) {
+            if let Ok(validated_path) = self.validate_source_path(&source_path)
+                && let Ok(content) = std::fs::read_to_string(&validated_path) {
                     let line_idx = frame_line.max(0) as usize;
                     if let Some(source_line) = content.lines().nth(line_idx.saturating_sub(1)) {
                         // Find function call patterns
@@ -596,7 +596,6 @@ impl DebugAdapter {
                         }
                     }
                 }
-            }
         }
 
         let body = StepInTargetsResponseBody { targets };
