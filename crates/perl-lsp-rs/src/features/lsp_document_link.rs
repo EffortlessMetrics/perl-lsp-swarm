@@ -116,8 +116,8 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
             if let Some(idx) = line.find(kw) {
                 let rest = &line[idx + kw.len()..];
                 let quote = rest.chars().next().unwrap_or(' ');
-                if quote == '\'' || quote == '"' {
-                    if let Some(endq) = rest[1..].find(quote) {
+                if (quote == '\'' || quote == '"')
+                    && let Some(endq) = rest[1..].find(quote) {
                         let path = &rest[1..1 + endq];
                         let s = line_start + idx + kw.len() + 1;
                         let e = s + path.len();
@@ -163,7 +163,6 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
                             });
                         }
                     }
-                }
             }
         }
     }

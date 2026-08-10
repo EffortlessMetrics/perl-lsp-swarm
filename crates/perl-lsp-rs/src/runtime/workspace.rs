@@ -132,11 +132,10 @@ impl Drop for IndexingGuard {
             &self.indexing_rescan_pending,
             &self.indexing_transition_lock,
         );
-        if should_restart {
-            if let Some(restart) = self.restart.take() {
+        if should_restart
+            && let Some(restart) = self.restart.take() {
                 restart();
             }
-        }
     }
 }
 
@@ -187,11 +186,9 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
         if next_request_id
             .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
-        {
-            if let Some(id) = ServerRequestId::new(current.max(1)) {
+            && let Some(id) = ServerRequestId::new(current.max(1)) {
                 return id;
             }
-        }
     }
 }
 
@@ -573,11 +570,10 @@ impl LspServer {
                     .and_then(|u| u.as_str())
                     .unwrap_or("")
                     .to_string();
-                if !file_uri.is_empty() {
-                    if let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
+                if !file_uri.is_empty()
+                    && let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
                         obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
                     }
-                }
             }
         }
     }
@@ -1269,11 +1265,10 @@ impl LspServer {
 /// Accepts both the standard wrapped form `{"perl": {...}}` and the unwrapped form `{...}` used
 /// by clients such as Sublime Text's LSP package that omit the outer `"perl"` key.
 pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
-    if let Some(perl) = settings.get("perl") {
-        if perl.is_object() {
+    if let Some(perl) = settings.get("perl")
+        && perl.is_object() {
             return Some(perl);
         }
-    }
     // Unwrapped: the settings object itself contains perl config keys directly.
     if settings.is_object() { Some(settings) } else { None }
 }
@@ -1316,8 +1311,8 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
-        if let Some(params) = params {
-            if let Some(settings) = params.get("settings") {
+        if let Some(params) = params
+            && let Some(settings) = params.get("settings") {
                 tracing::debug!("Configuration changed, updating server settings");
 
                 // Read perl settings once and update both configs.
@@ -1476,7 +1471,6 @@ impl LspServer {
                     }
                 }
             }
-        }
 
         // Invalidate client-provided workspace/configuration values and re-fetch.
         self.pending_workspace_configuration_requests.lock().clear();
@@ -1575,15 +1569,15 @@ impl LspServer {
 
         // Re-index the file if it is a Perl source file.
         #[cfg(feature = "workspace")]
-        if let Some(coordinator) = self.coordinator() {
-            if is_perl_source_uri(uri) {
+        if let Some(coordinator) = self.coordinator()
+            && is_perl_source_uri(uri) {
                 if loaded_content.is_none() {
                     loaded_content = read_watched_file_content(uri, "re-indexing");
                 }
 
                 let workspace_index = coordinator.index();
-                if let Ok(url) = url::Url::parse(uri) {
-                    if let Some(content) = loaded_content.as_ref() {
+                if let Ok(url) = url::Url::parse(uri)
+                    && let Some(content) = loaded_content.as_ref() {
                         // Clear old index data before re-indexing
                         workspace_index.clear_file(uri);
                         match workspace_index.index_file(url, content.clone()) {
@@ -1593,9 +1587,7 @@ impl LspServer {
                             }
                         }
                     }
-                }
             }
-        }
 
         // For open documents, do NOT overwrite doc.text or bump doc.version.
         // The document map is authoritative for open files — the editor's
@@ -1634,8 +1626,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 let mut workspace_edit = json!({
                     "changes": {}
                 });
@@ -1659,12 +1651,11 @@ impl LspServer {
                     let new_module = path_to_module_name(new_uri);
 
                     if !old_module.is_empty() && !new_module.is_empty() {
-                        if !planned_workspace_texts.contains_key(old_uri) {
-                            if let Some(text) = self.read_workspace_text(old_uri) {
+                        if !planned_workspace_texts.contains_key(old_uri)
+                            && let Some(text) = self.read_workspace_text(old_uri) {
                                 planned_workspace_texts
                                     .insert(old_uri.to_string(), (text.clone(), text));
                             }
-                        }
                         if let Some((_, current_text)) = planned_workspace_texts.get_mut(old_uri) {
                             let planned =
                                 plan_module_rename_edits(current_text, &old_module, &new_module);
@@ -1718,10 +1709,10 @@ impl LspServer {
                         coordinator.notify_change(new_uri);
                         let workspace_index = coordinator.index();
                         workspace_index.remove_file(old_uri);
-                        if let Some(path) = uri_to_fs_path(new_uri) {
-                            if let Ok(content) = read_text_file_with_encoding(&path) {
-                                if let Ok(url) = url::Url::parse(new_uri) {
-                                    if let Err(e) = workspace_index.index_file(url, content.clone())
+                        if let Some(path) = uri_to_fs_path(new_uri)
+                            && let Ok(content) = read_text_file_with_encoding(&path)
+                                && let Ok(url) = url::Url::parse(new_uri)
+                                    && let Err(e) = workspace_index.index_file(url, content.clone())
                                     {
                                         tracing::warn!(
                                             "Failed to index renamed file {}: {}",
@@ -1729,9 +1720,6 @@ impl LspServer {
                                             e
                                         );
                                     }
-                                }
-                            }
-                        }
                         coordinator.notify_parse_complete(old_uri);
                         coordinator.notify_parse_complete(new_uri);
                     }
@@ -1793,7 +1781,6 @@ impl LspServer {
 
                 return Ok(Some(workspace_edit));
             }
-        }
 
         // Return empty edit if no changes needed
         Ok(Some(json!({"changes": {}})))
@@ -1804,8 +1791,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(uri) = file["uri"].as_str() else {
                         continue;
@@ -1829,7 +1816,6 @@ impl LspServer {
                     tracing::warn!(error = %e, "Failed to refresh client after file deletions");
                 }
             }
-        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -1840,8 +1826,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
                     let idx = coordinator.index();
@@ -1921,7 +1907,6 @@ impl LspServer {
                     }
                 }
             }
-        }
 
         // Return empty edit - no cleanup edits needed for now
         Ok(Some(json!({"changes": {}})))
@@ -1932,8 +1917,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(uri) = file["uri"].as_str() else {
                         continue;
@@ -1942,7 +1927,6 @@ impl LspServer {
                     tracing::debug!("File will be created: {}", uri);
                 }
             }
-        }
 
         // Return empty edit - no setup edits needed for now
         Ok(Some(json!({"changes": {}})))
@@ -1953,8 +1937,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(uri) = file["uri"].as_str() else {
                         continue;
@@ -1965,9 +1949,9 @@ impl LspServer {
                     // Index the new file if it's a Perl file
                     // Note: Mutation operation - use coordinator with lifecycle tracking
                     #[cfg(feature = "workspace")]
-                    if let Some(coordinator) = self.coordinator() {
-                        if is_perl_source_uri(uri) {
-                            if let Some(path) = uri_to_fs_path(uri) {
+                    if let Some(coordinator) = self.coordinator()
+                        && is_perl_source_uri(uri)
+                            && let Some(path) = uri_to_fs_path(uri) {
                                 match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         coordinator.notify_change(uri);
@@ -1996,8 +1980,6 @@ impl LspServer {
                                     }
                                 }
                             }
-                        }
-                    }
                 }
 
                 // Trigger client refresh after file creations
@@ -2005,7 +1987,6 @@ impl LspServer {
                     tracing::warn!("Failed to refresh client after file creations: {}", e);
                 }
             }
-        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -2016,8 +1997,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(old_uri) = file["oldUri"].as_str() else {
                         continue;
@@ -2046,8 +2027,8 @@ impl LspServer {
                         coordinator.index().remove_file(&old_uri);
 
                         // Index new file if it's a Perl file
-                        if is_perl_source_uri(&new_uri) {
-                            if let Some(path) = uri_to_fs_path(&new_uri) {
+                        if is_perl_source_uri(&new_uri)
+                            && let Some(path) = uri_to_fs_path(&new_uri) {
                                 match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         if let Ok(url) = url::Url::parse(&new_uri) {
@@ -2075,7 +2056,6 @@ impl LspServer {
                                     }
                                 }
                             }
-                        }
 
                         coordinator.notify_parse_complete(&old_uri);
                         coordinator.notify_parse_complete(&new_uri);
@@ -2095,7 +2075,6 @@ impl LspServer {
                     tracing::warn!(error = %e, "Failed to refresh client after file renames");
                 }
             }
-        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -2106,8 +2085,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(event) = params.get("event") {
+        if let Some(params) = params
+            && let Some(event) = params.get("event") {
                 let change = extract_workspace_folder_change(event);
                 if change.added.is_empty() && change.removed.is_empty() {
                     tracing::debug!("Ignoring empty workspace folder change notification");
@@ -2178,7 +2157,6 @@ impl LspServer {
                 #[cfg(feature = "workspace")]
                 self.start_workspace_indexing();
             }
-        }
 
         Ok(())
     }
@@ -2686,14 +2664,13 @@ impl LspServer {
                             #[cfg(feature = "workspace")]
                             if let Some(coordinator) = self.coordinator() {
                                 coordinator.notify_change(uri);
-                                if let Ok(url) = url::Url::parse(uri) {
-                                    if let Err(e) = coordinator
+                                if let Ok(url) = url::Url::parse(uri)
+                                    && let Err(e) = coordinator
                                         .index()
                                         .index_file(url, doc.text_arc.to_string())
                                     {
                                         tracing::warn!("Failed to re-index file {}: {}", uri, e);
                                     }
-                                }
                                 coordinator.notify_parse_complete(uri);
                             }
 
@@ -2863,11 +2840,10 @@ impl LspServer {
         // Priority 2: workspace index document store (content from the last
         // time the file was indexed; avoids a synchronous disk read for files
         // that were open and then closed within the session).
-        if let Some(coordinator) = self.coordinator() {
-            if let Some(doc) = coordinator.index().document_store().get(uri) {
+        if let Some(coordinator) = self.coordinator()
+            && let Some(doc) = coordinator.index().document_store().get(uri) {
                 return Some(doc.text().to_string());
             }
-        }
 
         // Priority 3: read from disk.  `workspace/willRenameFiles` is a
         // workspace-wide refactoring operation; returning edits for files not
@@ -2928,15 +2904,14 @@ fn collect_delete_target_module_names(
     }
 
     for symbol in index.file_symbols(uri) {
-        if matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role) {
-            if let Some(module_name) = symbol
+        if matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role)
+            && let Some(module_name) = symbol
                 .qualified_name
                 .clone()
                 .or_else(|| (!symbol.name.is_empty()).then_some(symbol.name.clone()))
             {
                 module_names.insert(module_name);
             }
-        }
     }
 
     module_names
@@ -3003,11 +2978,10 @@ fn collect_symbol_reference_delete_dependents(
         if !symbol.name.is_empty() {
             names.insert(symbol.name.clone());
         }
-        if let Some(qualified_name) = symbol.qualified_name {
-            if !qualified_name.is_empty() {
+        if let Some(qualified_name) = symbol.qualified_name
+            && !qualified_name.is_empty() {
                 names.insert(qualified_name);
             }
-        }
 
         for symbol_name in names {
             for reference in index.find_references(&symbol_name) {

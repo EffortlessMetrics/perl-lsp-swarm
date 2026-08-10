@@ -428,11 +428,10 @@ impl CallHierarchyProvider {
 
     /// Find a function by name
     fn find_function_by_name<'a>(&self, node: &'a Node, target_name: &str) -> Option<&'a Node> {
-        if let NodeKind::Subroutine { name, .. } = &node.kind {
-            if name.as_ref() == Some(&target_name.to_string()) {
+        if let NodeKind::Subroutine { name, .. } = &node.kind
+            && name.as_ref() == Some(&target_name.to_string()) {
                 return Some(node);
             }
-        }
 
         self.visit_children(node, |child| self.find_function_by_name(child, target_name))
     }
@@ -477,11 +476,10 @@ impl CallHierarchyProvider {
                         return Some(result);
                     }
                 }
-                if let Some(else_b) = else_branch {
-                    if let Some(result) = f(else_b) {
+                if let Some(else_b) = else_branch
+                    && let Some(result) = f(else_b) {
                         return Some(result);
                     }
-                }
             }
             NodeKind::While { condition, body, .. } => {
                 if let Some(result) = f(condition) {
@@ -492,21 +490,18 @@ impl CallHierarchyProvider {
                 }
             }
             NodeKind::For { init, condition, update, body, .. } => {
-                if let Some(init_node) = init {
-                    if let Some(result) = f(init_node) {
+                if let Some(init_node) = init
+                    && let Some(result) = f(init_node) {
                         return Some(result);
                     }
-                }
-                if let Some(cond) = condition {
-                    if let Some(result) = f(cond) {
+                if let Some(cond) = condition
+                    && let Some(result) = f(cond) {
                         return Some(result);
                     }
-                }
-                if let Some(upd) = update {
-                    if let Some(result) = f(upd) {
+                if let Some(upd) = update
+                    && let Some(result) = f(upd) {
                         return Some(result);
                     }
-                }
                 if let Some(result) = f(body) {
                     return Some(result);
                 }
@@ -523,15 +518,14 @@ impl CallHierarchyProvider {
                 }
             }
             NodeKind::Subroutine { signature, body, .. } => {
-                if let Some(sig) = signature {
-                    if let NodeKind::Signature { parameters } = &sig.kind {
+                if let Some(sig) = signature
+                    && let NodeKind::Signature { parameters } = &sig.kind {
                         for param in parameters {
                             if let Some(result) = f(param) {
                                 return Some(result);
                             }
                         }
                     }
-                }
                 if let Some(result) = f(body) {
                     return Some(result);
                 }
@@ -592,21 +586,19 @@ impl CallHierarchyProvider {
                 }
             }
             NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    if let Some(result) = f(val) {
+                if let Some(val) = value
+                    && let Some(result) = f(val) {
                         return Some(result);
                     }
-                }
             }
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
                 if let Some(result) = f(variable) {
                     return Some(result);
                 }
-                if let Some(val) = initializer {
-                    if let Some(result) = f(val) {
+                if let Some(val) = initializer
+                    && let Some(result) = f(val) {
                         return Some(result);
                     }
-                }
             }
             _ => {
                 // Visit children for any node kind not explicitly handled above.

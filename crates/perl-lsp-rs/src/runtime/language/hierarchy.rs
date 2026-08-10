@@ -301,13 +301,12 @@ impl LspServer {
                 // Find all subs and packages with their positions
                 let mut exact_sub: Option<(String, usize, usize)> = None;
                 for cap in sub_regex.captures_iter(&doc.text) {
-                    if let (Some(m), Some(name)) = (cap.get(0), cap.get(1)) {
-                        if offset >= m.start() && offset <= m.end() {
+                    if let (Some(m), Some(name)) = (cap.get(0), cap.get(1))
+                        && offset >= m.start() && offset <= m.end() {
                             // Exact match - cursor is on this sub
                             exact_sub = Some((name.as_str().to_string(), m.start(), m.end()));
                             break;
                         }
-                    }
                 }
 
                 if let Some((name, start, end)) = exact_sub {
@@ -333,13 +332,12 @@ impl LspServer {
                 // Check packages
                 let mut exact_pkg: Option<(String, usize, usize)> = None;
                 for cap in package_regex.captures_iter(&doc.text) {
-                    if let (Some(m), Some(name)) = (cap.get(0), cap.get(1)) {
-                        if offset >= m.start() && offset <= m.end() {
+                    if let (Some(m), Some(name)) = (cap.get(0), cap.get(1))
+                        && offset >= m.start() && offset <= m.end() {
                             // Exact match - cursor is on this package
                             exact_pkg = Some((name.as_str().to_string(), m.start(), m.end()));
                             break;
                         }
-                    }
                 }
 
                 if let Some((name, start, end)) = exact_pkg {
@@ -372,8 +370,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(item) = params.get("item") {
+        if let Some(params) = params
+            && let Some(item) = params.get("item") {
                 let uri = item["data"]["uri"].as_str().unwrap_or("");
                 let name = item["data"]["name"].as_str().unwrap_or("");
 
@@ -462,7 +460,6 @@ impl LspServer {
                     }
                 }
             }
-        }
 
         Ok(Some(json!([])))
     }
@@ -472,8 +469,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(item) = params.get("item") {
+        if let Some(params) = params
+            && let Some(item) = params.get("item") {
                 let uri = item["data"]["uri"].as_str().unwrap_or("");
                 let name = item["data"]["name"].as_str().unwrap_or("");
 
@@ -562,7 +559,6 @@ impl LspServer {
                     }
                 }
             }
-        }
 
         Ok(Some(json!([])))
     }

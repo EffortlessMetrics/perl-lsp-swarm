@@ -1023,8 +1023,8 @@ impl LspServer {
             let (line, character) = req_position(&params)?;
 
             let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                if doc.current_parsed().is_some_and(|p| p.ast().is_some()) {
+            if let Some(doc) = self.get_document(&documents, uri)
+                && doc.current_parsed().is_some_and(|p| p.ast().is_some()) {
                     let offset = self.pos16_to_offset(doc, line, character);
                     if Self::rename_blocked_at(doc, offset) {
                         return Ok(Some(json!(null)));
@@ -1075,7 +1075,6 @@ impl LspServer {
                         })));
                     }
                 }
-            }
         }
 
         // Return null if rename is not possible at this position
@@ -1317,8 +1316,8 @@ impl LspServer {
         params: Option<Value>,
         package_local_live_pilot_enabled: bool,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(p) = params {
-            if let (Some(uri), Some(line), Some(ch), Some(new_name)) = (
+        if let Some(p) = params
+            && let (Some(uri), Some(line), Some(ch), Some(new_name)) = (
                 p.get("textDocument").and_then(|t| t.get("uri")).and_then(|s| s.as_str()),
                 p.get("position").and_then(|p| p.get("line")).and_then(|n| n.as_u64()),
                 p.get("position").and_then(|p| p.get("character")).and_then(|n| n.as_u64()),
@@ -1515,8 +1514,8 @@ impl LspServer {
                                         .is_some_and(|indexed| indexed.text() == doc.text)
                                 })
                             };
-                            if package_local_live_pilot_enabled {
-                                if let (Some(offset), Some(symbol)) =
+                            if package_local_live_pilot_enabled
+                                && let (Some(offset), Some(symbol)) =
                                     (rename_byte_offset, current_symbol.as_deref())
                                     && !symbol.is_empty()
                                     && symbol.chars().next().is_some_and(|c| !is_perl_sigil(c))
@@ -1655,7 +1654,6 @@ impl LspServer {
                                         None => {}
                                     }
                                 }
-                            }
 
                             if let Some(key) = workspace_symbol_key.as_ref() {
                                 if package_local_live_pilot_enabled
@@ -1863,7 +1861,6 @@ impl LspServer {
                     }
                 }
             }
-        }
         // Explicit blocker paths return empty edits above. If no safe edit path
         // resolved, return null so clients can treat this as unavailable rather
         // than as an empty successful refactor.

@@ -450,14 +450,13 @@ impl PullDiagnosticsProvider {
         }
 
         // Check relative to source file
-        if let Some(source) = source_path {
-            if let Some(parent) = source.parent() {
+        if let Some(source) = source_path
+            && let Some(parent) = source.parent() {
                 let relative_path = parent.join(&module_path);
                 if relative_path.exists() {
                     return true;
                 }
             }
-        }
 
         false
     }
@@ -888,13 +887,12 @@ impl PullDiagnosticsProvider {
         if let Some(code_str) = code.as_ref().and_then(|c| match c {
             NumberOrString::String(s) => Some(s.as_str()),
             _ => None,
-        }) {
-            if let Some(dc) = DiagnosticCode::parse_code(code_str)
+        })
+            && let Some(dc) = DiagnosticCode::parse_code(code_str)
                 && let Some(hint) = dc.context_hint()
             {
                 message = format!("{message}\n\n💡 {hint}");
             }
-        }
         if let Some(ref suggestion) = diagnostic.suggestion {
             message = format!("{message}\nSuggestion: {suggestion}");
         }

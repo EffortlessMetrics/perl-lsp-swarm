@@ -1277,11 +1277,10 @@ impl LspServer {
             return json!(message);
         }
 
-        if let Some(markup) = message_data.and_then(|data| data.get("messageMarkup")) {
-            if Self::is_markup_content_value(markup) {
+        if let Some(markup) = message_data.and_then(|data| data.get("messageMarkup"))
+            && Self::is_markup_content_value(markup) {
                 return markup.clone();
             }
-        }
 
         json!({
             "kind": "markdown",

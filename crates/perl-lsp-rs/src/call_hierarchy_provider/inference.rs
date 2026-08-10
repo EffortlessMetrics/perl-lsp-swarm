@@ -91,13 +91,12 @@ impl CallHierarchyProvider {
         current_package: Option<&str>,
         receiver_packages: &mut HashMap<String, String>,
     ) {
-        if let Some(variable_name) = Self::node_variable_name(lhs) {
-            if let Some(package_name) =
+        if let Some(variable_name) = Self::node_variable_name(lhs)
+            && let Some(package_name) =
                 self.infer_constructor_package(rhs, current_package, receiver_packages)
             {
                 receiver_packages.insert(variable_name.to_string(), package_name);
             }
-        }
     }
 
     pub(super) fn outgoing_call_key(item: &CallHierarchyItem) -> &str {

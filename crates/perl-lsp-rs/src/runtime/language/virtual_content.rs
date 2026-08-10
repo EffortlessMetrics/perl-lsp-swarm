@@ -216,11 +216,9 @@ fn collect_simple_pod_module_links(line: &str, current_module: &str, uris: &mut 
         let target = after_open[..end].trim();
         if let Some(link_target) =
             PerlDocumentationTarget::from_workspace_pod_link_target(target, current_module)
-        {
-            if link_target.name() != current_module || link_target.section().is_some() {
+            && (link_target.name() != current_module || link_target.section().is_some()) {
                 uris.insert(link_target.perldoc_uri());
             }
-        }
         rest = &after_open[end + 1..];
     }
 }

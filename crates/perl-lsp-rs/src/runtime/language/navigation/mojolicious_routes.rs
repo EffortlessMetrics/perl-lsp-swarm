@@ -134,13 +134,11 @@ pub(super) fn resolve_mojolicious_route_definition(
             continue;
         };
 
-        if (cursor_in_text >= controller_match.start() && cursor_in_text < controller_match.end())
-            || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end())
-        {
-            if let Some(location) = try_route(controller_match.as_str(), action_match.as_str()) {
+        if ((cursor_in_text >= controller_match.start() && cursor_in_text < controller_match.end())
+            || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end()))
+            && let Some(location) = try_route(controller_match.as_str(), action_match.as_str()) {
                 return Some(location);
             }
-        }
     }
 
     for kv_re in [get_mojo_kv_route_regex().ok()?, get_mojo_kv_route_regex_action_first().ok()?] {
@@ -159,15 +157,13 @@ pub(super) fn resolve_mojolicious_route_definition(
                 continue;
             };
 
-            if (cursor_in_text >= controller_match.start()
+            if ((cursor_in_text >= controller_match.start()
                 && cursor_in_text < controller_match.end())
-                || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end())
-            {
-                if let Some(location) = try_route(controller_match.as_str(), action_match.as_str())
+                || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end()))
+                && let Some(location) = try_route(controller_match.as_str(), action_match.as_str())
                 {
                     return Some(location);
                 }
-            }
         }
     }
 

@@ -99,25 +99,22 @@ pub fn escape_markdown_text(text: &str) -> String {
 ///   truncating the trailing byte)
 /// - Latin-1 byte-preserving fallback for non-UTF8 legacy files
 pub fn decode_text_bytes(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        if let Ok(utf8) = std::str::from_utf8(&bytes[3..]) {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+        && let Ok(utf8) = std::str::from_utf8(&bytes[3..]) {
             return utf8.to_string();
         }
-    }
 
-    if bytes.starts_with(&[0xFF, 0xFE]) {
-        if let Some(decoded) = decode_utf16_lossy(&bytes[2..], true) {
+    if bytes.starts_with(&[0xFF, 0xFE])
+        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], true) {
             return decoded;
         }
         // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
-    }
 
-    if bytes.starts_with(&[0xFE, 0xFF]) {
-        if let Some(decoded) = decode_utf16_lossy(&bytes[2..], false) {
+    if bytes.starts_with(&[0xFE, 0xFF])
+        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], false) {
             return decoded;
         }
         // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
-    }
 
     match std::str::from_utf8(bytes) {
         Ok(utf8) => utf8.to_string(),
