@@ -233,13 +233,14 @@ pub fn folding_ranges_from_text(src: &str, limit: usize) -> Vec<serde_json::Valu
             pod_start = Some(i);
         } else if line_ends_pod(trimmed)
             && let Some(start) = pod_start.take()
-                && i > start {
-                    out.push(serde_json::json!({
-                        "startLine": start as u32,
-                        "endLine": i as u32,
-                        "kind": "comment"
-                    }));
-                }
+            && i > start
+        {
+            out.push(serde_json::json!({
+                "startLine": start as u32,
+                "endLine": i as u32,
+                "kind": "comment"
+            }));
+        }
 
         // Count braces in this line (outside of strings/comments - best effort)
         let (opens, closes) = count_braces_in_line(trimmed);
