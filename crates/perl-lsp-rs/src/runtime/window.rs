@@ -231,11 +231,10 @@ impl LspServer {
             "title": title,
         });
 
-        if let Some(msg) = message {
-            if let Some(obj) = value.as_object_mut() {
+        if let Some(msg) = message
+            && let Some(obj) = value.as_object_mut() {
                 obj.insert("message".to_string(), json!(msg));
             }
-        }
 
         let params = json!({
             "token": token,
@@ -292,11 +291,10 @@ impl LspServer {
             "kind": "end",
         });
 
-        if let Some(msg) = message {
-            if let Some(obj) = value.as_object_mut() {
+        if let Some(msg) = message
+            && let Some(obj) = value.as_object_mut() {
                 obj.insert("message".to_string(), json!(msg));
             }
-        }
 
         let params = json!({
             "token": token,
@@ -363,8 +361,8 @@ impl LspServer {
     /// # Arguments
     /// * `params` - Notification params containing the token
     pub(super) fn handle_progress_cancel(&self, params: Option<Value>) {
-        if let Some(params) = params {
-            if let Some(token) = params.get("token").and_then(|v| v.as_str()) {
+        if let Some(params) = params
+            && let Some(token) = params.get("token").and_then(|v| v.as_str()) {
                 // Remove from active tokens
                 let removed = self.progress_tokens.lock().remove(token);
 
@@ -384,7 +382,6 @@ impl LspServer {
                     tracing::debug!(token, "Progress cancel for unknown token");
                 }
             }
-        }
     }
 
     /// Send a request to the client (internal helper)

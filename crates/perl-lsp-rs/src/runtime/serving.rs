@@ -106,12 +106,11 @@ impl LspServer {
     pub fn handle_message<R: Read>(&self, reader: &mut R) -> io::Result<()> {
         let mut buf_reader = BufReader::new(reader);
         let mut message_reader = ContentLengthMessageReader::new();
-        if let Some(request) = message_reader.read_next(&mut buf_reader)? {
-            if let Some(response) = self.handle_request(request) {
+        if let Some(request) = message_reader.read_next(&mut buf_reader)?
+            && let Some(response) = self.handle_request(request) {
                 // Send response via outbound channel
                 self.outbound.send_response(response)?;
             }
-        }
         Ok(())
     }
 

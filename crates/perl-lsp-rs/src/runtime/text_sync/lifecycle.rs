@@ -122,8 +122,8 @@ impl LspServer {
                     && let Some(coordinator) = self.coordinator()
                 {
                     let index = coordinator.index();
-                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val) {
-                        if let Ok(url) = url::Url::parse(&normalized_uri) {
+                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val)
+                        && let Ok(url) = url::Url::parse(&normalized_uri) {
                             tracing::debug!(
                                 "Reconciling stale index for {} (doc gen {} > indexed gen)",
                                 normalized_uri,
@@ -131,7 +131,6 @@ impl LspServer {
                             );
                             let _ = index.index_file(url, text);
                         }
-                    }
                 }
             }
 

@@ -407,11 +407,10 @@ fn build_source_fix_all(code_actions: &[Value], uri: &str) -> Option<Value> {
         },
     });
 
-    if !merged_diagnostics.is_empty() {
-        if let Some(object) = action.as_object_mut() {
+    if !merged_diagnostics.is_empty()
+        && let Some(object) = action.as_object_mut() {
             object.insert("diagnostics".to_string(), Value::Array(merged_diagnostics));
         }
-    }
 
     Some(action)
 }
@@ -785,14 +784,13 @@ impl LspServer {
                     },
                 });
 
-                if let Some(action_object) = action_json.as_object_mut() {
-                    if !associated_diagnostics.is_empty() {
+                if let Some(action_object) = action_json.as_object_mut()
+                    && !associated_diagnostics.is_empty() {
                         action_object.insert(
                             "diagnostics".to_string(),
                             Value::Array(associated_diagnostics),
                         );
                     }
-                }
 
                 code_actions.push(action_json);
             }
@@ -1087,8 +1085,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(p) = params {
-            if let Some(uri) = p["textDocument"]["uri"].as_str() {
+        if let Some(p) = params
+            && let Some(uri) = p["textDocument"]["uri"].as_str() {
                 let documents = self.documents_guard();
                 if let Some(doc) = documents.get(uri) {
                     let mut actions =
@@ -1101,7 +1099,6 @@ impl LspServer {
                     return Ok(Some(to_json_array(&actions)));
                 }
             }
-        }
         Ok(Some(json!([])))
     }
 
@@ -1114,11 +1111,11 @@ impl LspServer {
             // The action should already have minimal information
             // We now need to compute the actual edits
 
-            if let Some(kind) = action.get("kind").and_then(|k| k.as_str()) {
-                if kind == "quickfix" {
+            if let Some(kind) = action.get("kind").and_then(|k| k.as_str())
+                && kind == "quickfix" {
                     // For quickfix actions, compute the workspace edit now
-                    if let Some(data) = action.get("data") {
-                        if let Some(uri) = data.get("uri").and_then(|u| u.as_str()) {
+                    if let Some(data) = action.get("data")
+                        && let Some(uri) = data.get("uri").and_then(|u| u.as_str()) {
                             let documents = self.documents_guard();
                             if self.get_document(&documents, uri).is_some() {
                                 // Example: Add "use strict;" at the beginning
@@ -1142,9 +1139,7 @@ impl LspServer {
                                 }
                             }
                         }
-                    }
                 }
-            }
 
             self.enforce_code_action_tag_capabilities(std::slice::from_mut(&mut action));
             Ok(Some(action))
@@ -1170,8 +1165,8 @@ impl LspServer {
                 .map(std::borrow::ToOwned::to_owned),
         );
 
-        if let (Some(uri), Some(offset), Some(text)) = data_info {
-            if let Some(obj) = action.as_object_mut() {
+        if let (Some(uri), Some(offset), Some(text)) = data_info
+            && let Some(obj) = action.as_object_mut() {
                 let edit_range = if offset as usize >= doc.text.len() {
                     let end = self.get_document_end_position(&doc.text);
                     json!({"start": end.clone(), "end": end })
@@ -1196,7 +1191,6 @@ impl LspServer {
                 );
                 obj.remove("data");
             }
-        }
     }
 
     fn add_explain_diagnostic_code_actions(

@@ -175,18 +175,15 @@ pub fn build_rename_edit(
                 // For subroutines, preserve any existing package qualifier
                 let mut replacement = new_name_bare.to_string();
 
-                if !narrowed_sub_name && let Some(doc) = idx.document_store().get(&loc.uri) {
-                    if let (Some(start_off), Some(end_off)) = (
+                if !narrowed_sub_name && let Some(doc) = idx.document_store().get(&loc.uri)
+                    && let (Some(start_off), Some(end_off)) = (
                         doc.line_index.position_to_offset(start_line, start_char),
                         doc.line_index.position_to_offset(end_line, end_char),
-                    ) {
-                        if let Some(original) = doc.text().get(start_off..end_off) {
-                            if let Some((qual, _)) = original.rsplit_once("::") {
+                    )
+                        && let Some(original) = doc.text().get(start_off..end_off)
+                            && let Some((qual, _)) = original.rsplit_once("::") {
                                 replacement = format!("{}::{}", qual, new_name_bare);
                             }
-                        }
-                    }
-                }
 
                 replacement
             }
@@ -444,12 +441,11 @@ fn is_non_target_package_declaration(
                 .and_then(|end_off| doc.text().get(start_off..end_off))
         });
 
-    if let Some(original) = maybe_original {
-        if let Some((qualifier, _)) = original.rsplit_once("::") {
+    if let Some(original) = maybe_original
+        && let Some((qualifier, _)) = original.rsplit_once("::") {
             return qualifier != key.pkg.as_ref();
         }
         // Unqualified bare name — rely on package context below.
-    }
 
     let package_at_line = package_name_for_line(doc.text(), start_line);
     if package_at_line == key.pkg.as_ref() {
