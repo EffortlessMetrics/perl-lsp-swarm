@@ -753,7 +753,7 @@ impl LspServer {
                         end_char,
                         severity,
                         code_str,
-                        &push_diagnostic_source(d.code.as_deref()),
+                        push_diagnostic_source(d.code.as_deref()),
                         d.message.clone(),
                     );
                     if !d.tags.is_empty() {
@@ -1403,7 +1403,7 @@ impl LspServer {
             end_pos.1,
             severity,
             code_str,
-            &diagnostic_source(d.code.as_deref()),
+            diagnostic_source(d.code.as_deref()),
             message_val.as_str().unwrap_or("").to_string(),
         );
 

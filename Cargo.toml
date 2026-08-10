@@ -391,7 +391,6 @@ lto = "thin"
 
 # Workspace lints
 [workspace.lints.clippy]
-collapsible_if = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
