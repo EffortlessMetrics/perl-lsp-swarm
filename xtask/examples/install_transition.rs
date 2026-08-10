@@ -626,6 +626,7 @@ mod tests {
             }],
             "vsix": {
                 "version": receipt.candidate.extension_version,
+                "asset_name": format!("perl-lsp-rs-{}.vsix", receipt.candidate.extension_version),
                 "package_path": "vscode-extension"
             }
         })
@@ -664,6 +665,30 @@ mod tests {
             Ok(()) => bail!("topology digest mismatch unexpectedly passed"),
             Err(error) => {
                 assert!(format!("{error:#}").contains("digest mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vsix_asset_identity_mismatch_is_rejected() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        receipt.transition.path = super::InstallPath::Vsix;
+        receipt.transition.topology_path_id = "vscode-windows-x86_64".to_string();
+        receipt.transition.expected_asset = "perl-lsp-rs-0.18.0.vsix".to_string();
+        let mut topology = topology_for(&receipt);
+        topology["vsix"]["asset_name"] = serde_json::Value::String("wrong.vsix".to_string());
+        let directory = tempdir()?;
+        let bytes = serde_json::to_vec(&topology)?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &bytes)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("VSIX asset identity mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("VS Code package or asset"));
             }
         }
         Ok(())
