@@ -145,6 +145,88 @@ assert_only_built_windows_targets() {
     pass "$label"
 }
 
+reachable_windows_targets() {
+    local file
+
+    for file in "$@"; do
+        case "$file" in
+            *.ps1)
+                strip_comments "$file" \
+                    | grep -E '^[[:space:]]*\$[A-Za-z][A-Za-z0-9_]*[Tt]arget[[:space:]]*=' \
+                    | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' || true
+                ;;
+            *.ts)
+                strip_comments "$file" \
+                    | grep -E '^[[:space:]]*(export[[:space:]]+)?const[[:space:]]+[A-Z0-9_]*TARGET[[:space:]]*=' \
+                    | grep -Eo '(x86_64|aarch64|arm64|i686|armv7)-pc-windows-[a-z]+' || true
+                ;;
+            *)
+                fail "Windows target reachability" "unsupported install surface type: $file"
+                return
+                ;;
+        esac
+    done
+}
+
+# The other half of the contract (#6196).
+#
+# assert_only_built_windows_targets checks containment: surfaces must not
+# request a target the matrix does not build. That direction alone cannot see
+# a surface that IGNORES a target the matrix does build, because requesting
+# fewer targets than are built satisfies a subset check trivially.
+#
+# That is not hypothetical. aarch64-pc-windows-msvc was added to the matrix on
+# 2026-08-03 (#5208). Both install surfaces went on mapping ARM64 Windows to
+# the x64 build for five days, telling users no native ARM64 build was
+# published and refusing Windows 10 ARM64 outright — and every gate stayed
+# green the whole time, because ignoring a built target is invisible to
+# containment. Together the two directions make the mapping a bijection: every
+# built Windows target is reachable from some surface, and no surface requests
+# one that is not built.
+#
+# Scoped to Windows because that is where the matrix and the surfaces are both
+# enumerable statically; the POSIX targets are selected by uname at runtime.
+assert_every_built_windows_target_is_reachable() {
+    local label="$1"
+    shift
+
+    local built reachable missing file
+    built="$(built_windows_targets)"
+
+    if [[ -z "$built" ]]; then
+        fail "$label" "release.yml names no Windows target; cannot derive the contract"
+        return
+    fi
+
+    for file in "$@"; do
+        if [[ ! -f "$file" ]]; then
+            fail "$label" "missing $file"
+            return
+        fi
+    done
+
+    # Count only target-bearing assignments/constants. A target string in a
+    # diagnostic or explanatory comment is not a requestable release asset and
+    # must not make the reverse-direction contract pass.
+    reachable="$(reachable_windows_targets "$@" | sort -u || true)"
+
+    reachable="$(printf '%s' "$reachable" | grep -E '\S' | sort -u || true)"
+
+    if [[ -z "$reachable" ]]; then
+        fail "$label" "no surface names any Windows target literally; the contract cannot be checked"
+        return
+    fi
+
+    missing="$(comm -23 <(printf '%s\n' "$built") <(printf '%s\n' "$reachable"))"
+
+    if [[ -n "$missing" ]]; then
+        fail "$label" "the release matrix builds Windows target(s) no install surface can ever request: $(printf '%s' "$missing" | tr '\n' ' ') -- either wire them into a surface or stop building them"
+        return
+    fi
+
+    pass "$label"
+}
+
 host_arch() {
     case "$(uname -m)" in
         x86_64|amd64|x64) printf '%s\n' "x86_64" ;;
@@ -296,6 +378,11 @@ assert_only_built_windows_targets \
     "install.ps1 requests only built Windows targets" "$ROOT/install.ps1"
 assert_only_built_windows_targets \
     "extension downloader requests only built Windows targets" \
+    "$ROOT/vscode-extension/src/downloader.ts"
+
+assert_every_built_windows_target_is_reachable \
+    "every built Windows target is reachable from an install surface" \
+    "$ROOT/install.ps1" \
     "$ROOT/vscode-extension/src/downloader.ts"
 
 assert_windows_arm64_native_preference() {
