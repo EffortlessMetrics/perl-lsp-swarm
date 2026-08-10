@@ -104,4 +104,32 @@ describe('HealthWidget workspace experience adapter', () => {
     expect(widget.lifecycleState).toBe('starting');
     expect(widget.providerOutcome).toBeUndefined();
   });
+
+  test('running projection must not clobber active workspace indexing', () => {
+    const { item, widget } = makeWidget();
+    widget.onProgress('token-1', { kind: 'begin', title: 'Indexing workspace' });
+    widget.onStateChange(ClientState.Running);
+
+    expect(widget.mode).toBe('indexing');
+    expect(item.text).toContain('Indexing');
+
+    // Regression guard: extension wiring must not unconditionally project `ready`
+    // after onStateChange when progress tokens remain active.
+    widget.setWorkspaceLifecycleState('ready');
+    expect(widget.mode).toBe('running');
+    expect(item.text).not.toContain('Indexing');
+  });
+
+  test('stopped detail must not be wiped by a bare lifecycle projection', () => {
+    const { item, widget } = makeWidget();
+    widget.onStateChange(ClientState.Stopped);
+
+    expect(item.tooltip).toContain('client_stopped');
+    expect(item.tooltip).toContain('reconnect');
+
+    // Regression guard: extension wiring must not project starting/ready after
+    // onStateChange(Stopped) without carrying the WorkspaceExperienceUpdate.
+    widget.setWorkspaceLifecycleState('starting');
+    expect(item.tooltip).not.toContain('client_stopped');
+  });
 });
