@@ -423,7 +423,7 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
   let match: RegExpExecArray | null;
   while ((match = groupQuantifierRe.exec(source)) !== null) {
     const groupContent = match[1];
-    if (!groupContent.includes('|')) {
+    if (groupContent === undefined || !groupContent.includes('|')) {
       continue;
     }
     // Split into alternation branches (top-level | only — naive but effective)
@@ -442,8 +442,17 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
       // Skip character classes, groups, anchors, backreferences —
       // only compare literal first characters
       const firstChar = trimmed[0];
-      if (firstChar === '\\' || firstChar === '[' || firstChar === '(' ||
-          firstChar === '^' || firstChar === '$' || firstChar === '.') {
+      if (firstChar === undefined) {
+        continue;
+      }
+      if (
+        firstChar === '\\' ||
+        firstChar === '[' ||
+        firstChar === '(' ||
+        firstChar === '^' ||
+        firstChar === '$' ||
+        firstChar === '.'
+      ) {
         // Wildcard or complex — conservatively assume overlap
         return true;
       }

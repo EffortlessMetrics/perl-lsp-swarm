@@ -66,7 +66,6 @@ export async function showVersionCommand(
   }
 }
 
-/** Show the current workspace state and offer only relevant recovery actions. */
 export async function showWorkspaceStatusCommand(dependencies: {
   readonly getWorkspaceStatus: () => WorkspaceStatusSnapshot;
 }): Promise<void> {
@@ -174,8 +173,13 @@ export async function showStatusMenuCommand(): Promise<void> {
     { label: 'Information', kind: vscode.QuickPickItemKind.Separator },
     {
       label: '$(pulse) Show Workspace Status',
-      detail: 'View the current server, workspace, and diagnostic state',
-      command: 'perl-lsp.showWorkspaceStatus',
+      detail: 'Explain workspace, environment, index, and trust state',
+      command: 'perl-lsp.showWorkspaceTrustReport',
+    },
+    {
+      label: '$(question) Explain Provider Result',
+      detail: 'Explain an exact answer, fallback, empty result, or refusal',
+      command: 'perl-lsp.explainProviderDecision',
     },
     {
       label: '$(output) Show Output',

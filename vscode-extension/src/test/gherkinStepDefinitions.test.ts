@@ -134,25 +134,21 @@ describe('gherkin step definition support', () => {
     // `(cat|dog)+` has disjoint first characters — each position can match
     // at most one branch, so there is no ambiguity to backtrack through.
     // The ReDoS guard previously flagged ANY quantified group with |.
-    const step = parseGherkinStepLine('I see catdog', 1);
+    const step = parseGherkinStepLine('Then I see catdog', 1);
     expect(step).not.toBeNull();
     expect(
-      classifyStepDefinitionStatus(step!, [
-        'Then qr/^I see (?:cat|dog)+$/, sub { return; };',
-      ]),
+      classifyStepDefinitionStatus(step!, ['Then qr/^I see (?:cat|dog)+$/, sub { return; };']),
     ).toBe('defined');
   });
 
   test('overlapping quantified alternation is still flagged as expensive (#6167)', () => {
     // `(a|aa)+` has overlapping branches (both start with 'a') — this IS
     // catastrophic backtracking and should still be flagged.
-    const step = parseGherkinStepLine('aaaaaaaaaaaaaaaaaaaa!', 1);
+    const step = parseGherkinStepLine('Then aaaaaaaaaaaaaaaaaaaa!', 1);
     expect(step).not.toBeNull();
-    expect(
-      classifyStepDefinitionStatus(step!, [
-        'Then qr/^(a|aa)+$/, sub { return; };',
-      ]),
-    ).toBe('ambiguous');
+    expect(classifyStepDefinitionStatus(step!, ['Then qr/^(a|aa)+$/, sub { return; };'])).toBe(
+      'ambiguous',
+    );
   });
 
   test('treats bounded inner quantifiers in quantified groups as expensive (#953)', () => {
