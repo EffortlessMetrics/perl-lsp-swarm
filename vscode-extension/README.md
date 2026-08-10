@@ -244,7 +244,7 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 ## Commands
 
 Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
-"Perl". All 35 commands the extension contributes:
+"Perl". All 36 commands the extension contributes:
 
 ### Server and setup
 
@@ -260,6 +260,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show What's New**              | Show release notes for the installed version               |
 | **Perl: Show Output Channel**          | Open the extension output log                              |
 | **Perl: Show Status Menu**             | Quick-access menu for all actions                          |
+| **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
 
 ### Editing and refactoring

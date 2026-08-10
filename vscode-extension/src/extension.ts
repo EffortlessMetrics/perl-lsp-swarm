@@ -57,6 +57,7 @@ import { registerNavigationCommandGroup } from './navigationCommandGroup';
 import {
   organizeImportsCommand,
   showStatusMenuCommand,
+  showWorkspaceStatusCommand,
   showVersionCommand,
 } from './navigationCommands';
 import { registerDiagnosticCommandGroup } from './diagnosticCommandGroup';
@@ -600,6 +601,20 @@ export async function activate(context: vscode.ExtensionContext) {
           }),
       }),
     showStatusMenu: showStatusMenuCommand,
+    showWorkspaceStatus: () =>
+      showWorkspaceStatusCommand({
+        getWorkspaceStatus: () => {
+          const widget = healthWidget;
+          const mode = widget?.mode ?? 'starting';
+          const hasLiveServer = mode === 'running' || mode === 'indexing';
+          return {
+            mode,
+            ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
+            ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
+            ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
+          };
+        },
+      }),
   });
 
   const documentCommandDisposables = registerDocumentCommandGroup({

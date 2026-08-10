@@ -884,6 +884,12 @@
         "icon": "$(menu)"
       },
       {
+        "command": "perl-lsp.showWorkspaceStatus",
+        "title": "%command.showWorkspaceStatus.title%",
+        "category": "Perl",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "perl-lsp.reinstall",
         "title": "%command.reinstall.title%",
         "category": "Perl",
