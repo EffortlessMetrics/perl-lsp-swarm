@@ -87,7 +87,7 @@
 //! ## Comprehensive Error Context
 //!
 //! ```
-//! use perl_error::ParseError;
+//! use perl_parser_core::syntax::error::ParseError;
 //!
 //! fn create_detailed_error() -> ParseError {
 //!     ParseError::UnexpectedToken {
@@ -189,7 +189,7 @@ pub enum RecoveryKind {
 /// # Usage
 ///
 /// ```
-/// use perl_error::ParseBudget;
+/// use perl_parser_core::syntax::error::ParseBudget;
 ///
 /// // Use defaults for normal parsing
 /// let budget = ParseBudget::default();
