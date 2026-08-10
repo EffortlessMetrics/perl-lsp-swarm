@@ -38,6 +38,34 @@ impl TextDocumentSyncOptions {
     }
 }
 
+/// Build the workspace capabilities with file operation filters for Perl
+/// extensions (#4995).
+fn workspace_capabilities(workspace_folders_support: bool) -> Value {
+    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
+    let filters: Vec<Value> = perl_globs
+        .iter()
+        .map(|glob| json!({ "pattern": { "glob": glob } }))
+        .collect();
+
+    json!({
+        "workspaceFolders": {
+            "supported": workspace_folders_support,
+            "changeNotifications": true
+        },
+        "fileOperations": {
+            "willCreate": { "filters": filters.clone() },
+            "didCreate": { "filters": filters.clone() },
+            "willRename": { "filters": filters.clone() },
+            "didRename": { "filters": filters.clone() },
+            "willDelete": { "filters": filters.clone() },
+            "didDelete": { "filters": filters }
+        },
+        "textDocumentContent": {
+            "schemes": ["perldoc"]
+        }
+    })
+}
+
 /// The LSP protocol version this server implements.
 ///
 /// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
@@ -728,55 +756,9 @@ impl LspServer {
         capabilities["textDocumentSync"] = serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
             .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
 
-        // Workspace capabilities: folders, file operations, and content schemes
+        // Workspace capabilities: typed helper for file operations (#4995)
         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
-        capabilities["workspace"] = json!({
-            "workspaceFolders": {
-                "supported": workspace_folders_support,
-                "changeNotifications": true
-            },
-            "fileOperations": {
-                "willCreate": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "didCreate": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "willRename": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "didRename": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "willDelete": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "didDelete": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]}
-            },
-            "textDocumentContent": {
-                "schemes": ["perldoc"]
-            }
-        });
+        capabilities["workspace"] = workspace_capabilities(workspace_folders_support);
 
         // Advertise experimental custom requests
         if features.inline_completion {
