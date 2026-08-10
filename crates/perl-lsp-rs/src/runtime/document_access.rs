@@ -83,9 +83,10 @@ impl LspServer {
         if let Some(v) = req_version {
             let documents = self.documents.lock();
             if let Some(doc) = self.get_document(&documents, uri)
-                && v < doc.version {
-                    return Err(Self::content_modified());
-                }
+                && v < doc.version
+            {
+                return Err(Self::content_modified());
+            }
         }
         Ok(())
     }
