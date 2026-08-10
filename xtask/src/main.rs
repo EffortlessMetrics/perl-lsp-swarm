@@ -483,6 +483,9 @@ enum Commands {
         /// Head revision for the PR diff.
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// Original PR head SHA when the evaluated revision is a merge ref.
+        #[arg(long)]
+        pr_head: Option<String>,
         /// Validate existing target/ripr/pr artifacts instead of regenerating.
         #[arg(long)]
         check: bool,
@@ -515,6 +518,9 @@ enum Commands {
         /// Head revision for the PR diff.
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// Original PR head SHA when the evaluated revision is a merge ref.
+        #[arg(long)]
+        pr_head: Option<String>,
         /// Bound RIPR review guidance generation; timeout writes an advisory error artifact.
         #[arg(long)]
         timeout_seconds: Option<u64>,
@@ -4089,14 +4095,21 @@ fn run_cli(cli: Cli) -> Result<()> {
             summary,
             check,
         }),
-        Commands::RiprPr { root, base, head, check } => {
-            ripr_evidence::ripr_pr(&root, &base, &head, check)
+        Commands::RiprPr { root, base, head, pr_head, check } => {
+            ripr_evidence::ripr_pr(&root, &base, &head, pr_head.as_deref(), check)
         }
         Commands::RiprPlus { root, receipt, suppressions, check } => {
             ripr_evidence::ripr_plus(&root, &receipt, &suppressions, check)
         }
-        Commands::RiprReviewComments { root, base, head, timeout_seconds, check } => {
-            ripr_evidence::ripr_review_comments(&root, &base, &head, timeout_seconds, check)
+        Commands::RiprReviewComments { root, base, head, pr_head, timeout_seconds, check } => {
+            ripr_evidence::ripr_review_comments(
+                &root,
+                &base,
+                &head,
+                pr_head.as_deref(),
+                timeout_seconds,
+                check,
+            )
         }
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
         Commands::RiprAnnotations { comments, out, check } => {
