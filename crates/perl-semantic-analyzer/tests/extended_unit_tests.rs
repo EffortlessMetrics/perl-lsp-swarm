@@ -779,15 +779,12 @@ greet();
     let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
     // Find refs including declaration
     let table = analyzer.symbol_table();
-    if let Some(syms) = table.symbols.get("greet") {
-        if let Some(sym) = syms.first() {
-            let refs_incl = analyzer.find_all_references(sym.location.start, true);
-            let refs_excl = analyzer.find_all_references(sym.location.start, false);
-            assert!(
-                refs_incl.len() >= refs_excl.len(),
-                "include_declaration should return >= refs"
-            );
-        }
+    if let Some(syms) = table.symbols.get("greet")
+        && let Some(sym) = syms.first()
+    {
+        let refs_incl = analyzer.find_all_references(sym.location.start, true);
+        let refs_excl = analyzer.find_all_references(sym.location.start, false);
+        assert!(refs_incl.len() >= refs_excl.len(), "include_declaration should return >= refs");
     }
     Ok(())
 }
@@ -835,12 +832,12 @@ sub greet {
     let ast = parser.parse()?;
     let model = SemanticModel::build(&ast, code);
     let table = model.symbol_table();
-    if let Some(syms) = table.symbols.get("greet") {
-        if let Some(sym) = syms.first() {
-            let hover = model.hover_info_at(sym.location);
-            // May or may not have hover depending on analysis
-            let _ = hover;
-        }
+    if let Some(syms) = table.symbols.get("greet")
+        && let Some(sym) = syms.first()
+    {
+        let hover = model.hover_info_at(sym.location);
+        // May or may not have hover depending on analysis
+        let _ = hover;
     }
     Ok(())
 }
@@ -995,12 +992,12 @@ greet();
 greet();
 "#;
     let table = parse_and_extract(code);
-    if let Some(syms) = table.symbols.get("greet") {
-        if let Some(sym) = syms.first() {
-            let refs = table.find_references(sym);
-            // Should have at least the call references
-            let _ = refs;
-        }
+    if let Some(syms) = table.symbols.get("greet")
+        && let Some(sym) = syms.first()
+    {
+        let refs = table.find_references(sym);
+        // Should have at least the call references
+        let _ = refs;
     }
     Ok(())
 }
