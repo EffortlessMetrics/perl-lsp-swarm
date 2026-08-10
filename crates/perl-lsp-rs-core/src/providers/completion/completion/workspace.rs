@@ -2057,11 +2057,11 @@ fn build_completion_package_graph(
     let max_files = source_uris.len().saturating_add(MAX_DISCOVERED_ROLE_FILES);
 
     while let Some(uri) = pending_uris.pop_front() {
+        if visited_uris.len() >= max_files {
+            break;
+        }
         if !visited_uris.insert(uri.clone()) {
             continue;
-        }
-        if visited_uris.len() > max_files {
-            break;
         }
         let Some(text) = workspace_text_for_uri(index, &uri) else {
             continue;
