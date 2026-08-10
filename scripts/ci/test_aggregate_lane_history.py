@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import importlib.util
 import io
 import json
@@ -15,72 +16,317 @@ from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
 
-
 SCRIPT_PATH = Path(__file__).with_name("aggregate_lane_history.py")
 SPEC = importlib.util.spec_from_file_location("aggregate_lane_history", SCRIPT_PATH)
-assert SPEC is not None
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"could not load {SCRIPT_PATH}")
 aggregate_lane_history = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
+sys.modules[SPEC.name] = aggregate_lane_history
 SPEC.loader.exec_module(aggregate_lane_history)
+
+REPOSITORY = "EffortlessMetrics/perl-lsp-swarm"
+DEFAULT_BRANCH = "main"
+HEAD_SHA = "a" * 40
+
+
+def current_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_run(
+    root: Path,
+    *,
+    run_id: int = 123,
+    event: str = "push",
+    branch: str = DEFAULT_BRANCH,
+    repository: str = REPOSITORY,
+    conclusion: str = "success",
+    created_at: str | None = None,
+    marker_run_id: int | None = None,
+    marker_sha: str = HEAD_SHA,
+    receipt_sha: str = HEAD_SHA,
+    receipt_repo: str = "perl-lsp",
+    receipt_pr: int | None = 0,
+    receipt_workflow: str = "CI",
+    receipt_schema: int = 1,
+    jobs: list[object] | None = None,
+    write_marker: bool = True,
+    nested_marker: dict[str, object] | None = None,
+) -> Path:
+    run_dir = root / f"run-{run_id}"
+    artifact_dir = run_dir / "artifacts" / "ci-actuals-meta"
+    artifact_dir.mkdir(parents=True)
+    if write_marker:
+        (run_dir / aggregate_lane_history.TRUSTED_MARKER).write_text(
+            json.dumps(
+                {
+                    "run_id": marker_run_id if marker_run_id is not None else run_id,
+                    "repository": repository,
+                    "event": event,
+                    "head_branch": branch,
+                    "head_sha": marker_sha,
+                    "conclusion": conclusion,
+                    "created_at": created_at or current_timestamp(),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    if nested_marker is not None:
+        (artifact_dir / aggregate_lane_history.TRUSTED_MARKER).write_text(
+            json.dumps(nested_marker) + "\n", encoding="utf-8"
+        )
+    receipt = artifact_dir / "ci-actuals-meta.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": receipt_schema,
+                "repo": receipt_repo,
+                "sha": receipt_sha,
+                "pr": receipt_pr,
+                "workflow": receipt_workflow,
+                "jobs": jobs or [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return receipt
+
+
+def collect(root: Path) -> tuple[dict[str, list[float]], dict[str, object]]:
+    samples, raw_stats = aggregate_lane_history.collect_actuals(
+        actuals_dir=root,
+        window_days=14,
+        allowed_lanes={"meta"},
+        require_trusted_markers=True,
+        repository=REPOSITORY,
+        default_branch=DEFAULT_BRANCH,
+    )
+    return samples, aggregate_lane_history.serializable_stats(raw_stats)
 
 
 class AggregateLaneHistoryTests(unittest.TestCase):
     def test_percentile_uses_linear_interpolation(self) -> None:
         self.assertEqual(0.0, aggregate_lane_history.percentile([], 95))
         self.assertEqual(42.0, aggregate_lane_history.percentile([42.0], 50))
-        self.assertEqual(25.0, aggregate_lane_history.percentile([10.0, 20.0, 30.0, 40.0], 50))
-        self.assertEqual(37.0, aggregate_lane_history.percentile([10.0, 20.0, 30.0, 40.0], 90))
+        self.assertEqual(
+            25.0,
+            aggregate_lane_history.percentile([10.0, 20.0, 30.0, 40.0], 50),
+        )
+        self.assertEqual(
+            37.0,
+            aggregate_lane_history.percentile([10.0, 20.0, 30.0, 40.0], 90),
+        )
 
-    def test_collect_actuals_filters_old_invalid_and_incomplete_receipts(self) -> None:
+    def test_static_floors_fails_closed_on_missing_or_invalid_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            actuals = Path(tmp)
-            fresh = actuals / "fresh" / "ci-actuals.json"
-            fresh.parent.mkdir()
-            fresh.write_text(
-                json.dumps(
+            root = Path(tmp)
+            valid = root / "valid.toml"
+            valid.write_text(
+                "[lane.meta]\nbase_lem = 2.5\n[lane.docs]\nbase_lem = 3\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                {"docs": 3.0, "meta": 2.5},
+                aggregate_lane_history.static_floors(valid),
+            )
+
+            empty = root / "empty.toml"
+            empty.write_text("", encoding="utf-8")
+            invalid = root / "invalid.toml"
+            invalid.write_text('[lane.meta]\nbase_lem = "large"\n', encoding="utf-8")
+            non_finite = root / "non-finite.toml"
+            non_finite.write_text("[lane.meta]\nbase_lem = nan\n", encoding="utf-8")
+
+            for path in (root / "missing.toml", empty, invalid, non_finite):
+                with self.subTest(path=path.name):
+                    with self.assertRaises(ValueError):
+                        aggregate_lane_history.static_floors(path)
+
+    def test_trusted_default_branch_push_and_merge_group_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_run(
+                root,
+                run_id=1,
+                marker_sha="a" * 40,
+                receipt_sha="a" * 40,
+                jobs=[{"gate_name": "meta", "actual_lem": 4.5}],
+            )
+            write_run(
+                root,
+                run_id=2,
+                marker_sha="b" * 40,
+                receipt_sha="b" * 40,
+                event="merge_group",
+                branch="gh-readonly-queue/main/pr-1-deadbeef",
+                jobs=[{"lane_id": "meta", "actual_lem": 7}],
+            )
+            samples, stats = collect(root)
+
+        self.assertEqual({"meta": [4.5, 7.0]}, samples)
+        self.assertEqual([1, 2], stats["source_run_ids"])
+        self.assertEqual(2, stats["accepted_samples"])
+
+    def test_exact_run_marker_cannot_be_forged_inside_downloaded_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            forged = {
+                "run_id": 3,
+                "repository": REPOSITORY,
+                "event": "push",
+                "head_branch": DEFAULT_BRANCH,
+                "head_sha": HEAD_SHA,
+                "conclusion": "success",
+                "created_at": current_timestamp(),
+            }
+            write_run(
+                root,
+                run_id=3,
+                repository="attacker/fork",
+                nested_marker=forged,
+                jobs=[{"lane_id": "meta", "actual_lem": 3}],
+            )
+            samples, stats = collect(root)
+
+        self.assertEqual({}, samples)
+        self.assertEqual(1, stats["rejected"].get("foreign_repository"))
+
+    def test_untrusted_provenance_classes_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_run(
+                root,
+                run_id=3,
+                repository="attacker/fork",
+                jobs=[{"lane_id": "meta", "actual_lem": 3}],
+            )
+            write_run(
+                root,
+                run_id=4,
+                conclusion="failure",
+                jobs=[{"lane_id": "meta", "actual_lem": 4}],
+            )
+            write_run(
+                root,
+                run_id=5,
+                branch="feature",
+                jobs=[{"lane_id": "meta", "actual_lem": 5}],
+            )
+            write_run(
+                root,
+                run_id=6,
+                event="pull_request",
+                branch="feature",
+                jobs=[{"lane_id": "meta", "actual_lem": 6}],
+            )
+            write_run(
+                root,
+                run_id=7,
+                marker_run_id=999,
+                jobs=[{"lane_id": "meta", "actual_lem": 7}],
+            )
+            write_run(
+                root,
+                run_id=8,
+                jobs=[{"lane_id": "meta", "actual_lem": 8}],
+                write_marker=False,
+            )
+            samples, stats = collect(root)
+
+        self.assertEqual({}, samples)
+        rejected = stats["rejected"]
+        self.assertEqual(1, rejected.get("foreign_repository"))
+        self.assertEqual(1, rejected.get("unsuccessful_run"))
+        self.assertEqual(1, rejected.get("untrusted_branch"))
+        self.assertEqual(1, rejected.get("untrusted_event"))
+        self.assertEqual(1, rejected.get("run_id_mismatch"))
+        self.assertEqual(1, rejected.get("missing_marker"))
+
+    def test_marker_timestamp_not_extraction_mtime_controls_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipt = write_run(
+                root,
+                created_at="2000-01-01T00:00:00Z",
+                jobs=[{"lane_id": "meta", "actual_lem": 6}],
+            )
+            now = time.time()
+            os.utime(receipt, (now, now))
+            samples, stats = collect(root)
+
+        self.assertEqual({}, samples)
+        self.assertEqual(1, stats["rejected"].get("outside_window"))
+
+    def test_receipt_identity_is_bound_to_trusted_run(self) -> None:
+        cases = [
+            ({"receipt_schema": 2}, "unsupported_receipt_schema"),
+            ({"receipt_repo": "attacker"}, "receipt_repo_mismatch"),
+            ({"receipt_pr": 12}, "pull_request_receipt"),
+            ({"receipt_workflow": ""}, "missing_workflow_identity"),
+            ({"receipt_sha": "not-a-sha"}, "invalid_receipt_sha"),
+            ({"receipt_sha": "b" * 40}, "receipt_sha_mismatch"),
+        ]
+        for kwargs, expected_reason in cases:
+            with self.subTest(reason=expected_reason), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_run(
+                    root,
+                    jobs=[{"lane_id": "meta", "actual_lem": 1}],
+                    **kwargs,
+                )
+                samples, stats = collect(root)
+                self.assertEqual({}, samples)
+                self.assertEqual(1, stats["rejected"].get(expected_reason))
+
+    def test_unknown_and_invalid_samples_cannot_enter_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_run(
+                root,
+                jobs=[
+                    {"lane_id": "unknown", "actual_lem": 1},
+                    {"lane_id": "meta", "actual_lem": True},
+                    {"lane_id": "meta", "actual_lem": "1"},
+                    {"lane_id": "meta", "actual_lem": float("nan")},
+                    {"lane_id": "meta", "actual_lem": -1},
                     {
-                        "jobs": [
-                            {"gate_name": "rust-small", "actual_lem": 120},
-                            {"lane_id": "ripr", "actual_lem": 42.5},
-                            {"lane_id": "missing-actual"},
-                            {"lane_id": "bad-actual", "actual_lem": "slow"},
-                        ]
-                    }
-                ),
-                encoding="utf-8",
+                        "lane_id": "meta",
+                        "actual_lem": aggregate_lane_history.MAX_ACTUAL_LEM + 1,
+                    },
+                    {"lane_id": "meta", "actual_lem": 3},
+                ],
             )
-            old = actuals / "old.json"
-            old.write_text(
-                json.dumps({"jobs": [{"lane_id": "old", "actual_lem": 1}]}),
-                encoding="utf-8",
+            samples, stats = collect(root)
+
+        self.assertEqual({"meta": [3.0]}, samples)
+        rejected = stats["rejected"]
+        self.assertEqual(1, stats["unmapped_samples"])
+        self.assertEqual(2, rejected.get("invalid_actual"))
+        self.assertEqual(1, rejected.get("non_finite_actual"))
+        self.assertEqual(2, rejected.get("out_of_range_actual"))
+
+    def test_receipt_byte_and_job_limits_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            oversized = write_run(root, run_id=1, jobs=[])
+            oversized.write_bytes(b" " * (aggregate_lane_history.MAX_RECEIPT_BYTES + 1))
+            write_run(
+                root,
+                run_id=2,
+                jobs=[
+                    {"lane_id": "meta", "actual_lem": index}
+                    for index in range(aggregate_lane_history.MAX_JOBS_PER_RECEIPT + 1)
+                ],
             )
-            old_time = time.time() - 3 * 86400
-            os.utime(old, (old_time, old_time))
-            (actuals / "invalid.json").write_text("{", encoding="utf-8")
-            (actuals / "array.json").write_text("[]", encoding="utf-8")
+            samples, stats = collect(root)
 
-            samples, _stats = aggregate_lane_history.collect_actuals(
-                actuals_dir=actuals,
-                window_days=1,
-                known_lanes={"ripr", "rust-small"},
-            )
-
-        self.assertEqual({"ripr": [42.5], "rust-small": [120.0]}, samples)
-
-    # ------------------------------------------------------------------
-    # #6217: gate names must not become lanes, and a run that maps nothing
-    # must be loud. The pre-existing tests above pass with the mapping fully
-    # broken because they only ever use invented lane keys ("rust-small",
-    # "ripr") and never assert that a sample reaches a *policy* lane id.
-    # ------------------------------------------------------------------
+        self.assertEqual({}, samples)
+        self.assertEqual(2, stats["rejected"].get("oversized_receipt"))
 
     def test_gate_names_are_not_minted_into_lanes(self) -> None:
-        """A gate name that is not a lane id is dropped, not turned into a lane.
-
-        This is the production defect: `fmt`, `clippy_full`, and friends were
-        accumulating dozens of samples each in a parallel keyspace no planner
-        reads, while every real lane stayed at zero.
-        """
+        """A gate name that is not a lane id is dropped, not turned into a lane."""
         with tempfile.TemporaryDirectory() as tmp:
             actuals = Path(tmp)
             (actuals / "ci-actuals.json").write_text(
@@ -99,7 +345,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             samples, stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=14,
-                known_lanes={"merge_gate_shards", "pr_smoke"},
+                allowed_lanes={"merge_gate_shards", "pr_smoke"},
             )
 
         self.assertEqual({}, samples, "gate names must not create lanes")
@@ -144,7 +390,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             samples, stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=14,
-                known_lanes={"merge_gate_shards", "pr_smoke"},
+                allowed_lanes={"merge_gate_shards", "pr_smoke"},
             )
 
         self.assertEqual({"merge_gate_shards": [3.0]}, samples)
@@ -187,7 +433,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             samples, stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=14,
-                known_lanes={"merge_gate_shards"},
+                allowed_lanes={"merge_gate_shards"},
             )
 
         # 5 + 6 + 7 across two shard artifacts of the same run = one 18.0 sample.
@@ -227,7 +473,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             samples, stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=14,
-                known_lanes={"merge_gate_shards"},
+                allowed_lanes={"merge_gate_shards"},
             )
 
         self.assertEqual([10.0, 20.0], sorted(samples["merge_gate_shards"]))
@@ -267,7 +513,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             samples, _stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=14,
-                known_lanes={"merge_gate_shards"},
+                allowed_lanes={"merge_gate_shards"},
             )
             history = aggregate_lane_history.build_history(
                 samples=samples,
@@ -308,7 +554,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             samples, stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=14,
-                known_lanes={"check_all_targets", "docs_gate"},
+                allowed_lanes={"check_all_targets", "docs_gate"},
             )
 
         self.assertEqual({}, samples)
@@ -330,7 +576,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             samples, stats = aggregate_lane_history.collect_actuals(
                 actuals_dir=actuals,
                 window_days=14,
-                known_lanes={"coverage"},
+                allowed_lanes={"coverage"},
             )
 
         self.assertEqual({"coverage": [7.0]}, samples)
@@ -523,6 +769,7 @@ class AggregateLaneHistoryTests(unittest.TestCase):
             "jobs_with_sample": 3,
             "jobs_with_lane_id": 0,
             "accepted_samples": 0,
+            "lane_executions": 0,
             "unmapped_samples": 3,
             "unmapped_keys": {"fmt": 2, "clippy_full": 1},
         }
@@ -539,7 +786,12 @@ class AggregateLaneHistoryTests(unittest.TestCase):
 
     def test_verdict_is_quiet_when_samples_attributed(self) -> None:
         code, msg = aggregate_lane_history.attribution_verdict(
-            self._stats(accepted_samples=3, unmapped_samples=0, unmapped_keys={}),
+            self._stats(
+                accepted_samples=3,
+                lane_executions=1,
+                unmapped_samples=0,
+                unmapped_keys={},
+            ),
             today=date(2026, 8, 10),
         )
         self.assertEqual(0, code)
@@ -603,9 +855,6 @@ base_lem = 20
 
 [lane.docs]
 base_lem = 2.5
-
-[lane.no-floor]
-label = "No floor"
 """,
                 encoding="utf-8",
             )
@@ -614,11 +863,34 @@ label = "No floor"
 
         self.assertEqual({"docs": 2.5, "rust-small": 20.0}, floors)
 
+    def test_lane_sample_cap_discards_only_excess_samples(self) -> None:
+        original_cap = aggregate_lane_history.MAX_SAMPLES_PER_LANE
+        aggregate_lane_history.MAX_SAMPLES_PER_LANE = 2
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for index, lem in enumerate((1, 2, 3), start=1):
+                    receipt_sha = f"{index:040x}"
+                    write_run(
+                        root,
+                        run_id=index,
+                        marker_sha=receipt_sha,
+                        receipt_sha=receipt_sha,
+                        jobs=[{"lane_id": "meta", "actual_lem": lem}],
+                    )
+                samples, stats = collect(root)
+        finally:
+            aggregate_lane_history.MAX_SAMPLES_PER_LANE = original_cap
+
+        self.assertEqual({"meta": [1.0, 2.0]}, samples)
+        self.assertEqual(1, stats["rejected"].get("lane_sample_cap"))
+
     def test_build_history_includes_policy_lanes_without_samples(self) -> None:
         history = aggregate_lane_history.build_history(
             samples={"rust-small": [10, 20, 30, 40, 50]},
             floors={"docs": 3, "rust-small": 15},
             window_days=14,
+            validation={"accepted_samples": 5},
         )
 
         self.assertEqual(1, history["schema_version"])
@@ -630,25 +902,20 @@ label = "No floor"
         self.assertEqual(46, history["lanes"]["rust-small"]["p90"])
         self.assertEqual(48, history["lanes"]["rust-small"]["p95"])
         self.assertEqual(30, history["lanes"]["rust-small"]["mean"])
+        self.assertEqual({"accepted_samples": 5}, history["validation"])
 
-    def test_main_writes_history_and_summary_json(self) -> None:
+    def test_main_writes_validation_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             actuals = root / "actuals"
             actuals.mkdir()
-            (actuals / "ci-actuals.json").write_text(
-                json.dumps({"jobs": [{"lane_id": "rust-small", "actual_lem": 12}]}),
-                encoding="utf-8",
+            write_run(
+                actuals,
+                jobs=[{"lane_id": "rust-small", "actual_lem": 12}],
             )
             lanes = root / "ci-lanes.toml"
             lanes.write_text(
-                """
-[lane.rust-small]
-base_lem = 10
-
-[lane.docs]
-base_lem = 2
-""",
+                "[lane.rust-small]\nbase_lem = 10\n[lane.docs]\nbase_lem = 2\n",
                 encoding="utf-8",
             )
             output = root / "history.json"
@@ -665,6 +932,11 @@ base_lem = 2
                     str(output),
                     "--static-lanes",
                     str(lanes),
+                    "--require-trusted-markers",
+                    "--repository",
+                    REPOSITORY,
+                    "--default-branch",
+                    DEFAULT_BRANCH,
                 ]
                 stdout = io.StringIO()
                 with redirect_stdout(stdout):
@@ -678,14 +950,15 @@ base_lem = 2
         self.assertEqual(0, status)
         self.assertEqual(2, history["lane_count"])
         self.assertEqual(1, history["lanes"]["rust-small"]["samples"])
-        # The summary now also reports attribution, so an operator reading the
-        # step log can tell a healthy run from one that mapped nothing (#6217).
+        self.assertEqual(1, history["validation"]["accepted_samples"])
         self.assertEqual(
             {
                 "lanes": 2,
                 "learned": 0,
                 "window_days": 14,
                 "accepted_samples": 1,
+                "rejected_samples": 0,
+                "source_runs": 1,
                 "unmapped_samples": 0,
             },
             printed,
