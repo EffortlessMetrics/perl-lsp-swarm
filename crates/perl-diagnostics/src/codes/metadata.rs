@@ -76,6 +76,7 @@ impl DiagnosticCode {
             Self::InvalidPrototype => "PL302",
             Self::RoleConflict => "PL303",
             Self::MissingPodCoverage => "PL304",
+            Self::UnresolvedQualifiedCall => "PL305",
             Self::BarewordFilehandle => "PL400",
             Self::TwoArgOpen => "PL401",
             Self::ImplicitReturn => "PL402",
@@ -140,6 +141,7 @@ impl DiagnosticCode {
             "PL302" => "https://docs.perl-lsp.org/errors/PL302",
             "PL303" => "https://docs.perl-lsp.org/errors/PL303",
             "PL304" => "https://docs.perl-lsp.org/errors/PL304",
+            "PL305" => "https://docs.perl-lsp.org/errors/PL305",
             "PL400" => "https://docs.perl-lsp.org/errors/PL400",
             "PL401" => "https://docs.perl-lsp.org/errors/PL401",
             "PL402" => "https://docs.perl-lsp.org/errors/PL402",
@@ -187,7 +189,8 @@ impl DiagnosticCode {
             | Self::UndefinedVariable
             | Self::VariableRedeclaration
             | Self::DuplicateParameter
-            | Self::UnquotedBareword => DiagnosticSeverity::Error,
+            | Self::UnquotedBareword
+            | Self::UnresolvedQualifiedCall => DiagnosticSeverity::Error,
 
             // Warnings
             Self::MissingStrict
@@ -491,6 +494,11 @@ impl DiagnosticCode {
                 `use vN.NN`, others need an explicit `use feature 'name';`. \
                 In Perl 5.42+, given/when/default and smartmatch are feature-gated \
                 (not removed) — add `use feature 'switch';` or `use feature 'smartmatch';`.",
+            ),
+            Self::UnresolvedQualifiedCall => Some(
+                "Under `use strict`, package-qualified calls to undefined subroutines \
+                in an in-file package are flagged. Define the sub, correct the call, \
+                or load the package via `use`/`require` if it is external.",
             ),
         }
     }
