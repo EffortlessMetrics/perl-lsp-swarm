@@ -74,6 +74,7 @@ impl LspServer {
     /// # Returns
     ///
     /// Hover information with markdown content or null if no information available
+    #[tracing::instrument(skip(self, params), name = "textDocument/hover")]
     pub(crate) fn handle_hover(
         &self,
         params: Option<Value>,

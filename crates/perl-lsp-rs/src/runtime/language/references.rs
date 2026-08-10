@@ -586,6 +586,7 @@ impl LspServer {
     ///
     /// Includes deadline enforcement to prevent blocking on large workspaces.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    #[tracing::instrument(skip(self, params), name = "textDocument/references")]
     pub(crate) fn handle_references(
         &self,
         params: Option<Value>,
