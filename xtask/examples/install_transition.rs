@@ -320,8 +320,10 @@ fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
     if receipt.transition.path == InstallPath::Vsix {
         if topology["vsix"]["version"] != receipt.candidate.extension_version
             || topology["vsix"]["package_path"] != "vscode-extension"
+            || topology["vsix"]["asset_name"]
+                != format!("perl-lsp-rs-{}.vsix", receipt.candidate.extension_version)
         {
-            bail!("release topology VS Code package does not match candidate");
+            bail!("release topology VS Code package or asset does not match candidate");
         }
         return Ok(());
     }
