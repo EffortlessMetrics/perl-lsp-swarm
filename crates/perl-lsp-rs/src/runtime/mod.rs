@@ -721,11 +721,12 @@ impl LspServer {
         push_unique(&mut uri_keys, self.normalize_uri_key(uri));
 
         if let Some(path) = source_path_from_uri(uri)
-            && let Ok(file_url) = url::Url::from_file_path(&path) {
-                let file_uri = file_url.to_string();
-                push_unique(&mut uri_keys, file_uri.clone());
-                push_unique(&mut uri_keys, self.normalize_uri_key(&file_uri));
-            }
+            && let Ok(file_url) = url::Url::from_file_path(&path)
+        {
+            let file_uri = file_url.to_string();
+            push_unique(&mut uri_keys, file_uri.clone());
+            push_unique(&mut uri_keys, self.normalize_uri_key(&file_uri));
+        }
 
         for key in uri_keys.clone() {
             push_windows_drive_case_variant(&mut uri_keys, &key);

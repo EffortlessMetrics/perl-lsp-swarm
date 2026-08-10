@@ -621,21 +621,22 @@ impl LspServer {
         // and subsequent workspace/configuration responses override both.
         if let Some(params) = params.as_ref()
             && let Some(init_options) = params.get("initializationOptions")
-                && let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
-                    tracing::debug!("Applying initializationOptions.perl.* as base config layer");
-                    {
-                        let mut config = self.config.lock();
-                        config.update_from_value(perl);
-                    }
-                    {
-                        let mut workspace_config = self.workspace_config.lock();
-                        workspace_config.update_from_value(perl);
-                    }
-                    if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
-                        limits.update_from_value(perl);
-                    }
-                    *self.initialization_options_perl_settings.lock() = Some(perl.clone());
-                }
+            && let Some(perl) = super::super::workspace::extract_perl_settings(init_options)
+        {
+            tracing::debug!("Applying initializationOptions.perl.* as base config layer");
+            {
+                let mut config = self.config.lock();
+                config.update_from_value(perl);
+            }
+            {
+                let mut workspace_config = self.workspace_config.lock();
+                workspace_config.update_from_value(perl);
+            }
+            if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                limits.update_from_value(perl);
+            }
+            *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+        }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
         self.load_and_apply_project_config();
