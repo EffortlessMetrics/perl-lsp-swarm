@@ -316,11 +316,10 @@ fn find_die_in_module(source: &str) -> Vec<CodeAction> {
         }
 
         // Skip multi-line `or die` / `|| die` where `or` or `||` is at end of previous line
-        if line_idx > 0 {
-            if line_ends_with_or_operator(lines[line_idx - 1]) {
+        if line_idx > 0
+            && line_ends_with_or_operator(lines[line_idx - 1]) {
                 continue;
             }
-        }
 
         let line_start = line_offsets[line_idx];
         let indent_len = line.len() - trimmed.len();
@@ -439,8 +438,8 @@ fn contains_or_die_idiom(line: &str) -> bool {
         }
 
         // `or die` with token boundaries
-        if i + 2 <= bytes.len() && &bytes[i..i + 2] == b"or" {
-            if (i == 0 || !is_identifier_char(bytes[i - 1]))
+        if i + 2 <= bytes.len() && &bytes[i..i + 2] == b"or"
+            && (i == 0 || !is_identifier_char(bytes[i - 1]))
                 && (i + 2 == bytes.len() || !is_identifier_char(bytes[i + 2]))
             {
                 let mut j = i + 2;
@@ -451,7 +450,6 @@ fn contains_or_die_idiom(line: &str) -> bool {
                     return true;
                 }
             }
-        }
 
         i += 1;
     }

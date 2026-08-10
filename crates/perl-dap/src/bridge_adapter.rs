@@ -290,8 +290,8 @@ impl BridgeAdapter {
     /// This method tries a graceful termination first and falls back to kill.
     /// It should be used for cleanup in async contexts.
     pub async fn shutdown(&mut self) -> Result<()> {
-        if let Some(mut child) = self.child_process.take() {
-            if !Self::wait_for_child_exit(&mut child, Duration::from_millis(0)).await {
+        if let Some(mut child) = self.child_process.take()
+            && !Self::wait_for_child_exit(&mut child, Duration::from_millis(0)).await {
                 #[cfg(unix)]
                 {
                     if let Some(pid) = child.id() {
@@ -318,7 +318,6 @@ impl BridgeAdapter {
                     let _ = child.wait().await?;
                 }
             }
-        }
         Ok(())
     }
 

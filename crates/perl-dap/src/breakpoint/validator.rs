@@ -279,11 +279,10 @@ impl AstBreakpointValidator {
     #[allow(clippy::only_used_in_recursion)]
     fn is_inside_heredoc_interior_node(&self, node: &Node, byte_offset: usize) -> bool {
         // Check if this is a heredoc with a body span containing the offset
-        if let NodeKind::Heredoc { body_span: Some(span), .. } = &node.kind {
-            if byte_offset >= span.start && byte_offset < span.end {
+        if let NodeKind::Heredoc { body_span: Some(span), .. } = &node.kind
+            && byte_offset >= span.start && byte_offset < span.end {
                 return true;
             }
-        }
 
         // Recursively check all children
         let mut found = false;
