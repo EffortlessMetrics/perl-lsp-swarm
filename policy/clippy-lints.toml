@@ -760,11 +760,9 @@ status = "active"
 class = "numeric"
 reason = "Avoid stale numeric type drift."
 
-[[planned]]
-name = "clippy::disallowed_fields"
-level = "deny"
-activate_when_msrv = "1.95"
-reason = "DF-1 documents protected architectural seams; DF-2 through DF-4 will select, refactor, and activate one concrete field class at a time."
+# disallowed_fields activated (#6114): architectural seam protection.
+# The empty denylist in clippy.toml (`disallowed-fields = []`) is the hook;
+# concrete field classes will be added incrementally via DF-2 through DF-4.
 
 [[planned]]
 name = "clippy::manual_checked_ops"
