@@ -2172,36 +2172,70 @@ pub(super) fn collect_all_package_members(
     let mut visited: HashSet<String> = HashSet::new();
 
     // Cache of package_name → (parents, roles, mro), populated lazily.
-    let mut model_cache: HashMap<String, (Vec<String>, Vec<String>, perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder)> = HashMap::new();
+    let mut model_cache: HashMap<
+        String,
+        (
+            Vec<String>,
+            Vec<String>,
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+        ),
+    > = HashMap::new();
 
     // Parse a package's source and extract its ClassModel data.
-    let load_model = |pkg: &str, cache: &mut HashMap<String, (Vec<String>, Vec<String>, perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder)>| {
-        cache.entry(pkg.to_string()).or_insert_with(|| {
-            let Some(pkg_location) = index.find_definition(pkg) else {
-                return (Vec::new(), Vec::new(), perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs);
-            };
+    let load_model = |pkg: &str,
+                      cache: &mut HashMap<
+        String,
+        (
+            Vec<String>,
+            Vec<String>,
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+        ),
+    >| {
+        cache
+            .entry(pkg.to_string())
+            .or_insert_with(|| {
+                let Some(pkg_location) = index.find_definition(pkg) else {
+                    return (
+                        Vec::new(),
+                        Vec::new(),
+                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
+                    );
+                };
 
-            let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                    .and_then(|path| std::fs::read_to_string(path).ok())
-            });
+                let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
+                    perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                });
 
-            let Some(text) = text else {
-                return (Vec::new(), Vec::new(), perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs);
-            };
+                let Some(text) = text else {
+                    return (
+                        Vec::new(),
+                        Vec::new(),
+                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
+                    );
+                };
 
-            let mut parser = perl_semantic_analyzer::Parser::new(&text);
-            let Ok(ast) = parser.parse() else {
-                return (Vec::new(), Vec::new(), perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs);
-            };
+                let mut parser = perl_semantic_analyzer::Parser::new(&text);
+                let Ok(ast) = parser.parse() else {
+                    return (
+                        Vec::new(),
+                        Vec::new(),
+                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
+                    );
+                };
 
-            perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
-                .class_models
-                .into_iter()
-                .find(|model| model.name == pkg)
-                .map(|model| (model.parents.clone(), model.roles.clone(), model.mro))
-                .unwrap_or((Vec::new(), Vec::new(), perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs))
-        }).clone()
+                perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
+                    .class_models
+                    .into_iter()
+                    .find(|model| model.name == pkg)
+                    .map(|model| (model.parents.clone(), model.roles.clone(), model.mro))
+                    .unwrap_or((
+                        Vec::new(),
+                        Vec::new(),
+                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
+                    ))
+            })
+            .clone()
     };
 
     // DFS traversal honoring MRO: visit receiver first, then @ISA ancestors
@@ -2209,8 +2243,29 @@ pub(super) fn collect_all_package_members(
     fn visit_mro(
         pkg: &str,
         index: &WorkspaceIndex,
-        load_model: &impl Fn(&str, &mut HashMap<String, (Vec<String>, Vec<String>, perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder)>) -> (Vec<String>, Vec<String>, perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder),
-        model_cache: &mut HashMap<String, (Vec<String>, Vec<String>, perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder)>,
+        load_model: &impl Fn(
+            &str,
+            &mut HashMap<
+                String,
+                (
+                    Vec<String>,
+                    Vec<String>,
+                    perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+                ),
+            >,
+        ) -> (
+            Vec<String>,
+            Vec<String>,
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+        ),
+        model_cache: &mut HashMap<
+            String,
+            (
+                Vec<String>,
+                Vec<String>,
+                perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+            ),
+        >,
         visited: &mut HashSet<String>,
         seen_names: &mut HashSet<String>,
         result: &mut Vec<WorkspaceSymbol>,
@@ -2241,7 +2296,16 @@ pub(super) fn collect_all_package_members(
             perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs => {
                 // DFS: leftmost-depth-first (Perl default)
                 for parent in &parents {
-                    visit_mro(parent, index, load_model, model_cache, visited, seen_names, result, depth + 1);
+                    visit_mro(
+                        parent,
+                        index,
+                        load_model,
+                        model_cache,
+                        visited,
+                        seen_names,
+                        result,
+                        depth + 1,
+                    );
                 }
             }
             perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::C3 => {
@@ -2252,7 +2316,16 @@ pub(super) fn collect_all_package_members(
                 // is the standard fallback when C3 linearization cannot be
                 // fully computed (e.g. incomplete workspace) (#6326).
                 for parent in &parents {
-                    visit_mro(parent, index, load_model, model_cache, visited, seen_names, result, depth + 1);
+                    visit_mro(
+                        parent,
+                        index,
+                        load_model,
+                        model_cache,
+                        visited,
+                        seen_names,
+                        result,
+                        depth + 1,
+                    );
                 }
             }
         }

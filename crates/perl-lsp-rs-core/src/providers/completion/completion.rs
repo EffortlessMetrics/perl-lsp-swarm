@@ -1291,10 +1291,12 @@ impl CompletionProvider {
                 .find(|c: char| !c.is_alphanumeric() && c != '_')
                 .unwrap_or(after_brace.len());
             let key = &after_brace[..key_end];
-            if !key.is_empty() && after_brace[key_end..].trim_start().starts_with('}')
-                && seen.insert(key.to_string()) {
-                    keys.push(key.to_string());
-                }
+            if !key.is_empty()
+                && after_brace[key_end..].trim_start().starts_with('}')
+                && seen.insert(key.to_string())
+            {
+                keys.push(key.to_string());
+            }
             search_start = abs_pos + 1;
             if search_start >= source.len() {
                 break;
