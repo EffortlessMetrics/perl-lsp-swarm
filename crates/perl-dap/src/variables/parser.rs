@@ -201,17 +201,17 @@ impl VariableParser {
         }
 
         // Check for integer
-        if integer_re().is_some_and(|re| re.is_match(text)) {
-            if let Ok(i) = text.parse::<i64>() {
-                return Ok(PerlValue::Integer(i));
-            }
+        if integer_re().is_some_and(|re| re.is_match(text))
+            && let Ok(i) = text.parse::<i64>()
+        {
+            return Ok(PerlValue::Integer(i));
         }
 
         // Check for number
-        if number_re().is_some_and(|re| re.is_match(text)) {
-            if let Ok(n) = text.parse::<f64>() {
-                return Ok(PerlValue::Number(n));
-            }
+        if number_re().is_some_and(|re| re.is_match(text))
+            && let Ok(n) = text.parse::<f64>()
+        {
+            return Ok(PerlValue::Number(n));
         }
 
         // Check for quoted string

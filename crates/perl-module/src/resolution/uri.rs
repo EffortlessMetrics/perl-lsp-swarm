@@ -332,23 +332,18 @@ fn collect_module_uri_candidates(
     let mut search_order = 0usize;
 
     for uri in open_document_uris {
-        if open_document_uri_matches_relative_path(uri, &relative_path) {
-            if insert_seen_uri(&mut seen_uris, uri) {
-                candidates.push(ModuleUriCandidate {
-                    uri: uri.clone(),
-                    source: "open-document".to_string(),
-                    inc_root: None,
-                    search_order,
-                });
-                search_order += 1;
-                if candidate_limit == Some(candidates.len()) {
-                    return candidate_report(
-                        &canonical_module_name,
-                        &relative_path,
-                        candidates,
-                        false,
-                    );
-                }
+        if open_document_uri_matches_relative_path(uri, &relative_path)
+            && insert_seen_uri(&mut seen_uris, uri)
+        {
+            candidates.push(ModuleUriCandidate {
+                uri: uri.clone(),
+                source: "open-document".to_string(),
+                inc_root: None,
+                search_order,
+            });
+            search_order += 1;
+            if candidate_limit == Some(candidates.len()) {
+                return candidate_report(&canonical_module_name, &relative_path, candidates, false);
             }
         }
     }

@@ -381,7 +381,7 @@ fn compat_scope_old_formula_small_frame_ids() {
             let scope = perl_dap::VariableReference::Scope { frame_id, kind };
             let wire = scope
                 .encode()
-                .expect(&format!("frame_id={}, kind={:?} should encode", frame_id, kind));
+                .unwrap_or_else(|| panic!("frame_id={}, kind={:?} should encode", frame_id, kind));
             let old_formula = frame_id * 10 + disc;
             assert_eq!(
                 wire, old_formula,
@@ -398,7 +398,7 @@ fn compat_evalresult_old_formula_counters() {
     // Old formula: 1_000_000 + counter
     for counter in [0, 1, 3, 10, 100, 1000, 50_000, 500_000, 999_999, 1_000_000] {
         let eval = perl_dap::VariableReference::EvalResult { counter };
-        let wire = eval.encode().expect(&format!("counter={} should encode", counter));
+        let wire = eval.encode().unwrap_or_else(|| panic!("counter={} should encode", counter));
         let old_formula = 1_000_000 + counter;
         assert_eq!(
             wire, old_formula,
@@ -549,7 +549,7 @@ fn integration_multiple_frame_ids_consistency() {
         assert_eq!(
             decoded,
             Some(perl_dap::VariableReference::Scope {
-                frame_id: frame_id as i32,
+                frame_id: frame_id,
                 kind: perl_dap::ScopeKind::Locals,
             }),
             "Locals ref should round-trip for frame_id={}",

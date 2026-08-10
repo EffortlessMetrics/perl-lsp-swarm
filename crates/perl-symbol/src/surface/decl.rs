@@ -378,10 +378,10 @@ fn constant_names_from_use_args(args: &[String]) -> Vec<String> {
         }
     }
 
-    if names.is_empty() {
-        if let Some(name) = fallback_name {
-            names.push(name);
-        }
+    if names.is_empty()
+        && let Some(name) = fallback_name
+    {
+        names.push(name);
     }
 
     names

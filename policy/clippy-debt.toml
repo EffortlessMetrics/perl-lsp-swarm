@@ -4,6 +4,6 @@ schema = 1
 lint = "clippy::collapsible_if"
 path = "crates/**/*.rs"
 owner = "parser"
-reason = "Existing parser and provider control-flow shapes predate the strict lint policy; clean up in behavior-preserving follow-up PRs. 39 violations remain across perl-parser-core, perl-regex, perl-dap, and perl-lsp-rs (#6305)."
+reason = "Existing parser and provider control-flow shapes predate the strict lint policy; clean up in behavior-preserving follow-up PRs. perl-dap (#6359), perl-regex, perl-parser-core, perl-symbol, perl-module, and perl-lsp-perltidy are now clean; violations remain in perl-lsp-rs-core and perl-lsp-rs (#6305)."
 expires = "2026-10-01"
 
