@@ -5201,7 +5201,8 @@ package Foo {
 }
 
 #[test]
-fn lexical_my_sub_inside_block_stays_in_enclosing_scope() -> Result<(), Box<dyn std::error::Error>> {
+fn lexical_my_sub_inside_block_stays_in_enclosing_scope() -> Result<(), Box<dyn std::error::Error>>
+{
     let code = r#"
 {
     my sub lexical_helper {

@@ -57,7 +57,7 @@ export async function showVersionCommand(
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     const selection = await vscode.window.showErrorMessage(
-      `Could not get Perl LSP version: ${message}. The server binary may be missing or corrupt ΓÇö try reinstalling.`,
+      `Could not get Perl LSP version: ${message}. The server binary may be missing or corrupt — try reinstalling.`,
       'Reinstall',
     );
     if (selection === 'Reinstall') {
