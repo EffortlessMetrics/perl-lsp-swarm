@@ -184,7 +184,10 @@ struct ZeroBudgetCounts {
 }
 
 impl ZeroBudgetCounts {
-    #[expect(dead_code, reason = "policy:pending-zero-budget-consumer: reserved for receipt validation")]
+    #[expect(
+        dead_code,
+        reason = "policy:pending-zero-budget-consumer: reserved for receipt validation"
+    )]
     fn has_violations(&self) -> bool {
         self.false_exact > 0
             || self.stale_exact > 0
