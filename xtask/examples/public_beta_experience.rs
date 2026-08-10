@@ -184,6 +184,7 @@ struct ZeroBudgetCounts {
 }
 
 impl ZeroBudgetCounts {
+    #[expect(dead_code, reason = "policy:pending-zero-budget-consumer: reserved for receipt validation")]
     fn has_violations(&self) -> bool {
         self.false_exact > 0
             || self.stale_exact > 0
@@ -359,14 +360,14 @@ fn validate_journey_cells(receipt: &Receipt) -> Result<()> {
         }
         for evidence in &cell.evidence_refs {
             non_empty(evidence, "journey_cells[].evidence_refs[]")?;
-            if let Some((_, candidate_ref)) = evidence.rsplit_once('/') {
-                if candidate_ref.starts_with('v') && candidate_ref != receipt.candidate.candidate_id
-                {
-                    bail!(
-                        "journey_cells[].evidence_refs[] must bind to candidate {}",
-                        receipt.candidate.candidate_id
-                    );
-                }
+            if let Some((_, candidate_ref)) = evidence.rsplit_once('/')
+                && candidate_ref.starts_with('v')
+                && candidate_ref != receipt.candidate.candidate_id
+            {
+                bail!(
+                    "journey_cells[].evidence_refs[] must bind to candidate {}",
+                    receipt.candidate.candidate_id
+                );
             }
         }
         match cell.disposition {

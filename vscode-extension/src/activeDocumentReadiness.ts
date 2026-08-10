@@ -73,6 +73,11 @@ export class ActiveDocumentReadiness {
     }
   }
 
+  /** Whether the current generation may answer provider requests for a URI. */
+  public isReady(uri: string): boolean {
+    return this.indexReady || this.readyUris.has(uri);
+  }
+
   public currentIndexState(): IndexReadinessState {
     return this.indexState;
   }

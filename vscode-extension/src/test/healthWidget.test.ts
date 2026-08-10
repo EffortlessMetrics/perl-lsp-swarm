@@ -6,7 +6,7 @@
  */
 
 import { HealthWidget, ClientState } from '../healthWidget';
-import { ThemeColor } from 'vscode';
+import { type ThemeColor } from 'vscode';
 import type { StatusBarItem } from 'vscode';
 
 // ---------------------------------------------------------------------------
@@ -83,13 +83,13 @@ describe('HealthWidget — onStateChange', () => {
     expect(item.text).toBe('$(check) perl-lsp: 3 errors');
   });
 
-  test('Stopped → shows error icon and red background', () => {
+  test('Stopped → stays neutral because stop alone does not prove failure', () => {
     const { item, widget } = makeWidget();
     widget.onStateChange(ClientState.Stopped);
-    expect(widget.mode).toBe('stopped');
-    expect(item.text).toBe('$(error) perl-lsp: stopped');
-    expect(item.backgroundColor).toBeInstanceOf(ThemeColor);
-    expect((item.backgroundColor as ThemeColor).id).toBe('statusBarItem.errorBackground');
+    expect(widget.lifecycleState).toBe('starting');
+    expect(widget.mode).toBe('starting');
+    expect(item.text).toBe('$(sync~spin) Perl LSP');
+    expect(item.backgroundColor).toBeUndefined();
   });
 
   test('Starting → shows spinner', () => {
@@ -173,7 +173,7 @@ describe('HealthWidget — $/progress', () => {
     const { widget } = makeWidget();
     widget.onProgress('token-1', { kind: 'begin', title: 'Indexing' });
     widget.onStateChange(ClientState.Stopped);
-    expect(widget.mode).toBe('stopped');
+    expect(widget.mode).toBe('starting');
     // After restart, a Running state should render cleanly.
     widget.onStateChange(ClientState.Running);
     expect(widget.mode).toBe('running');
@@ -216,7 +216,7 @@ describe('HealthWidget — $/progress', () => {
     widget.onStateChange(ClientState.Running);
     widget.onIndexReadinessState('ready_limited', 'resource limit');
 
-    expect(widget.mode).toBe('ready_limited');
+    expect(widget.lifecycleState).toBe('ready_limited');
     expect(widget.readinessState).toBe('ready_limited');
     expect(item.text).toContain('(limited)');
     expect(item.tooltip).toContain('resource limit');
@@ -263,7 +263,7 @@ describe('HealthWidget — counts', () => {
     widget.onStateChange(ClientState.Stopped);
     widget.setFileCount(100);
     widget.setErrorCount(5);
-    expect(item.text).toBe('$(error) perl-lsp: stopped');
+    expect(item.text).toBe('$(sync~spin) Perl LSP');
   });
 
   test('indexing display includes file count when available', () => {
@@ -359,7 +359,7 @@ describe('HealthWidget — version display', () => {
     const { item, widget } = makeWidget();
     widget.setVersion('0.12.0');
     widget.onStateChange(ClientState.Stopped);
-    expect(item.text).toBe('$(error) perl-lsp: stopped');
+    expect(item.text).toBe('$(sync~spin) Perl LSP');
   });
 
   test('version does not affect starting display', () => {
