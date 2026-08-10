@@ -184,15 +184,31 @@ struct ZeroBudgetCounts {
 }
 
 impl ZeroBudgetCounts {
+    fn has_violations(&self) -> bool {
+        self.false_exact > 0
+            || self.stale_exact > 0
+            || self.unsafe_edit > 0
+            || self.unexplained_success_empty > 0
+            || self.silent_startup_failure > 0
+            || self.broken_documented_install > 0
+            || self.wrong_binary_or_version > 0
+            || self.orphaned_server_or_debuggee > 0
+    }
+
     fn total(&self) -> u64 {
-        self.false_exact
-            + self.stale_exact
-            + self.unsafe_edit
-            + self.unexplained_success_empty
-            + self.silent_startup_failure
-            + self.broken_documented_install
-            + self.wrong_binary_or_version
-            + self.orphaned_server_or_debuggee
+        [
+            self.false_exact,
+            self.stale_exact,
+            self.unsafe_edit,
+            self.unexplained_success_empty,
+            self.silent_startup_failure,
+            self.broken_documented_install,
+            self.wrong_binary_or_version,
+            self.orphaned_server_or_debuggee,
+        ]
+        .iter()
+        .try_fold(0u64, |acc, value| acc.checked_add(*value))
+        .unwrap_or(1)
     }
 }
 
@@ -343,6 +359,16 @@ fn validate_journey_cells(receipt: &Receipt) -> Result<()> {
         }
         for evidence in &cell.evidence_refs {
             non_empty(evidence, "journey_cells[].evidence_refs[]")?;
+            if let Some((_, candidate_ref)) = evidence.rsplit_once('/') {
+                if candidate_ref.starts_with('v')
+                    && candidate_ref != receipt.candidate.candidate_id
+                {
+                    bail!(
+                        "journey_cells[].evidence_refs[] must bind to candidate {}",
+                        receipt.candidate.candidate_id
+                    );
+                }
+            }
         }
         match cell.disposition {
             CellDisposition::Limited | CellDisposition::NotProven => {

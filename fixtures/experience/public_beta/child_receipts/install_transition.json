@@ -7,5 +7,6 @@
   "artifact_set_id": "v0.18.0-rc1-primary",
   "status": "pass",
   "claim_boundary": "Topology-bound primary install transition.",
-  "limitation": null
+  "limitation": null,
+  "source_receipt_sha256": null
 }
