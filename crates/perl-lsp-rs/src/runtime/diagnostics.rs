@@ -870,20 +870,18 @@ impl LspServer {
                         None => base_message,
                     };
                 let (line, character) = pos16(location);
-                json!({
-                    "range": {
-                        "start": {"line": line, "character": character},
-                        "end": {"line": line, "character": character + 1},
-                    },
-                    "severity": if e.blocks_clean_parse() { 1 } else { 2 },
-                    "code": DiagnosticCode::ParseError.as_str(),
-                    "source": "perl-lsp",
-                    "message": Self::diagnostic_message_value(
-                        &message,
-                        None,
-                        markup_message_support,
-                    ),
-                })
+                let msg_val = Self::diagnostic_message_value(
+                    &message,
+                    None,
+                    markup_message_support,
+                );
+                diagnostic_json(
+                    line, character, line, character + 1,
+                    if e.blocks_clean_parse() { 1 } else { 2 },
+                    DiagnosticCode::ParseError.as_str(),
+                    "perl-lsp",
+                    msg_val.as_str().unwrap_or("").to_string(),
+                )
             })
             .collect()
     }
