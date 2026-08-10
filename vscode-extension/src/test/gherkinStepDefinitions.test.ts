@@ -137,9 +137,7 @@ describe('gherkin step definition support', () => {
     const step = parseGherkinStepLine('Then I see catdog', 1);
     expect(step).not.toBeNull();
     expect(
-      classifyStepDefinitionStatus(step!, [
-        'Then qr/^I see (?:cat|dog)+$/, sub { return; };',
-      ]),
+      classifyStepDefinitionStatus(step!, ['Then qr/^I see (?:cat|dog)+$/, sub { return; };']),
     ).toBe('defined');
   });
 
@@ -148,11 +146,9 @@ describe('gherkin step definition support', () => {
     // catastrophic backtracking and should still be flagged.
     const step = parseGherkinStepLine('Then aaaaaaaaaaaaaaaaaaaa!', 1);
     expect(step).not.toBeNull();
-    expect(
-      classifyStepDefinitionStatus(step!, [
-        'Then qr/^(a|aa)+$/, sub { return; };',
-      ]),
-    ).toBe('ambiguous');
+    expect(classifyStepDefinitionStatus(step!, ['Then qr/^(a|aa)+$/, sub { return; };'])).toBe(
+      'ambiguous',
+    );
   });
 
   test('treats bounded inner quantifiers in quantified groups as expensive (#953)', () => {

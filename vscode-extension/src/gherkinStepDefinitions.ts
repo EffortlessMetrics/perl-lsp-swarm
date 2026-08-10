@@ -445,8 +445,14 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
       if (firstChar === undefined) {
         continue;
       }
-      if (firstChar === '\\' || firstChar === '[' || firstChar === '(' ||
-          firstChar === '^' || firstChar === '$' || firstChar === '.') {
+      if (
+        firstChar === '\\' ||
+        firstChar === '[' ||
+        firstChar === '(' ||
+        firstChar === '^' ||
+        firstChar === '$' ||
+        firstChar === '.'
+      ) {
         // Wildcard or complex — conservatively assume overlap
         return true;
       }
