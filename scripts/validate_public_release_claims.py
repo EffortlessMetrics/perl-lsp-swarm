@@ -16,6 +16,16 @@ SCHEMA_VERSION = "public_release_claims.v1"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 TOPOLOGY_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 STATUS_REQUIRING_LIMITATION = {"bounded", "blocked", "not_proven"}
+AUTHORITY_BY_PREFIX = {
+    "install.": {"release_topology", "installed_transition"},
+    "upgrade.": {"installed_transition"},
+    "workspace.": {"experience_contract"},
+    "readiness.": {"experience_contract"},
+    "fallback.": {"experience_contract"},
+    "refusal.": {"experience_contract"},
+    "failure.": {"experience_contract"},
+    "dap.": {"experience_contract", "api_audit"},
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -56,6 +66,10 @@ def validate_claims(catalog: dict[str, Any]) -> None:
         _string(claim.get("text_or_command"), f"{name}.text_or_command")
         authority = claim.get("authority")
         _require(authority in {"release_topology", "installed_transition", "experience_contract", "api_audit", "release_integrity"}, f"{name}.authority is invalid")
+        for prefix, allowed in AUTHORITY_BY_PREFIX.items():
+            if claim_id.startswith(prefix):
+                _require(authority in allowed, f"{name}.authority does not own claim id {claim_id}")
+                break
         evidence_refs = claim.get("evidence_refs")
         _require(isinstance(evidence_refs, list) and evidence_refs, f"{name}.evidence_refs must be non-empty")
         _require(len(evidence_refs) == len(set(evidence_refs)), f"{name}.evidence_refs must be unique")
