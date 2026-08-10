@@ -1280,6 +1280,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
 function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
+  healthWidget?.onIndexReadinessState('building');
   const serverOptions: ServerOptions = {
     run: {
       command: serverPath,
@@ -1378,6 +1379,7 @@ function createLanguageClient(serverPath: string): LanguageClient {
       const state = params?.state ?? (params?.ready === true ? 'ready' : undefined);
       if (state !== undefined) {
         activeDocumentReadiness.markIndexReady(generation, state, params.reason ?? undefined);
+        healthWidget?.onIndexReadinessState(state, params.reason ?? undefined);
       }
     },
   );
