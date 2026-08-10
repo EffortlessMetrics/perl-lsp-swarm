@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Focused tests for the candidate-bound public claims validator."""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).parents[2]
+SPEC = importlib.util.spec_from_file_location("validate_public_release_claims", ROOT / "scripts/validate_public_release_claims.py")
+assert SPEC and SPEC.loader
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+def catalog() -> dict:
+    return {
+        "schema_version": "public_release_claims.v1",
+        "release": "0.18.0",
+        "track": "public-beta",
+        "subject_sha": "0" * 40,
+        "topology_digest": "sha256:" + "1" * 64,
+        "claims": [
+            {
+                "id": "install.windows.powershell",
+                "surfaces": ["README.md", "install.ps1"],
+                "audience": "user",
+                "text_or_command": ".\\install.ps1 -Version 0.18.0",
+                "authority": "installed_transition",
+                "evidence_refs": ["#5903", "receipt:install-transition"],
+                "status": "bounded",
+                "public_context": "swarm",
+                "limitation": "Publication-repository promotion is not yet proven.",
+            }
+        ],
+    }
+
+
+class PublicReleaseClaimsTests(unittest.TestCase):
+    def test_valid_candidate_bound_claim_passes(self) -> None:
+        MODULE.validate_claims(catalog())
+
+    def assert_invalid(self, mutation, message: str) -> None:
+        value = copy.deepcopy(catalog())
+        mutation(value)
+        with self.assertRaisesRegex(ValueError, message):
+            MODULE.validate_claims(value)
+
+    def test_bounded_claim_requires_limitation(self) -> None:
+        self.assert_invalid(lambda value: value["claims"][0].update({"limitation": None}), "requires a limitation")
+
+    def test_claims_must_be_sorted_and_unique(self) -> None:
+        value = catalog()
+        duplicate = copy.deepcopy(value["claims"][0])
+        duplicate["id"] = "install.windows.archive"
+        value["claims"].extend([duplicate, copy.deepcopy(value["claims"][0])])
+        with self.assertRaisesRegex(ValueError, "unique"):
+            MODULE.validate_claims(value)
+
+        value["claims"] = [copy.deepcopy(value["claims"][0]), duplicate]
+        with self.assertRaisesRegex(ValueError, "sorted by id"):
+            MODULE.validate_claims(value)
+
+    def test_proven_claim_cannot_hide_a_blank_limitation(self) -> None:
+        self.assert_invalid(lambda value: value["claims"][0].update({"status": "proven", "limitation": "   "}), "limitation")
+
+    def test_not_proven_claim_is_still_explicitly_bounded(self) -> None:
+        self.assert_invalid(lambda value: value["claims"][0].update({"status": "not_proven", "limitation": None}), "requires a limitation")
+
+
+if __name__ == "__main__":
+    unittest.main()
