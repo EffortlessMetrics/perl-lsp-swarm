@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Security
-body: "AI-completion requests now validate the destination host against policy before sending, no longer follow redirects, and bind credentials to the approved endpoint identity, closing an SSRF/credential-exfiltration path (including an IPv6/DNS TOCTOU bypass) that a malicious AI-endpoint configuration could previously exploit."
-time: 2026-07-29T01:48:09Z
-custom:
-  PR: "5025"
-  Slug: ai-completion-ssrf-credential-binding
-  Breaking: "no"

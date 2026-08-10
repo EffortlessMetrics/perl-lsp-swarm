@@ -1,6 +1,0 @@
-# Rust toolchain configuration for perl-lsp
-# MSRV: 1.95 (pinned CI toolchain; not necessarily the latest stable release)
-[toolchain]
-channel = "1.95.0"
-components = ["rustfmt", "clippy"]
-profile = "minimal"

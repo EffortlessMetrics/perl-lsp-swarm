@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Replaced internal 'Trust boundary' developer jargon in user-facing diagnostic `relatedInformation` messages with plain-language wording that Perl programmers can act on."
-time: 2026-07-22T23:57:48Z
-custom:
-  PR: "4705"
-  Slug: trust-boundary-jargon-ux
-  Breaking: "no"

@@ -292,7 +292,7 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {

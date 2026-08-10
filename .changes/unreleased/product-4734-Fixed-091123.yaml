@@ -1,9 +1,0 @@
-project: product
-component: Compatibility
-kind: Fixed
-body: "In multi-root workspaces, per-folder .perl-lsp.toml settings ([diagnostics], [critic], [features], [formatting], [ai_completion], [next_edit]) no longer have the last-opened folder silently overwrite earlier folders' settings; the first folder to set a value now wins, and a warning is shown when folders disagree."
-time: 2026-07-23T09:11:23Z
-custom:
-  PR: "4734"
-  Slug: multiroot-config-first-folder-wins
-  Breaking: "no"

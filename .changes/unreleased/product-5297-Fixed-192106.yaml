@@ -1,9 +1,0 @@
-project: product
-component: Compatibility
-kind: Fixed
-body: "Six numeric config fields (maximumLineLength, indentColumns, blockCommentIndentation, timeoutSecs, maxLength, resolutionTimeout) now accept float-form JSON values like 4.0, instead of silently falling back to their defaults when a config generator emitted a float."
-time: 2026-07-29T19:21:06Z
-custom:
-  PR: "5297"
-  Slug: config-float-form-numerics
-  Breaking: "no"

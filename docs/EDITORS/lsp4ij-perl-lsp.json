@@ -1,6 +1,0 @@
-{
-  "name": "Perl Language Server",
-  "languageId": "perl",
-  "fileExtensions": ["pl", "pm", "t", "psgi"],
-  "command": ["perllsp", "--stdio"]
-}

@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "PL400 (BarewordFilehandle) and PL601 (SecurityBacktickExec) diagnostics now render at Warning severity as documented, instead of the Information severity the providers had hardcoded — PL601 in particular is a security finding that was appearing lower-priority than intended."
-time: 2026-07-29T11:19:26Z
-custom:
-  PR: "5286"
-  Slug: pl400-pl601-severity-warning
-  Breaking: "no"

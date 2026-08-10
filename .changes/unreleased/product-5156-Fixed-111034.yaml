@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "documentHighlight now scopes highlighted occurrences of a subroutine-local variable to its enclosing subroutine instead of highlighting every same-named variable across the whole file."
-time: 2026-07-28T11:10:34Z
-custom:
-  PR: "5156"
-  Slug: document-highlight-subroutine-scope
-  Breaking: "no"

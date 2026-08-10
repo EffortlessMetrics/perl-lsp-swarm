@@ -1,9 +1,0 @@
-project: product
-component: Developer experience
-kind: Fixed
-body: "Error messages for an unresolvable Perl interpreter no longer tell you to configure `perl.path`. That field has no user-facing writer — it is absent from the extension settings and from `.perl-lsp.toml`, and a workspace-supplied value is refused for security — so the advice was impossible to act on. The run/test/critic commands and `perl.debugFile` now give the same actionable remediation the startup detection already gave: install Perl, put it on PATH, reload the window. The fail-closed behaviour is unchanged."
-time: 2026-08-01T00:00:00Z
-custom:
-  PR: "5486"
-  Slug: perl-path-remediation-5376
-  Breaking: "no"

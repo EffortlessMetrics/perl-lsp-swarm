@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Opening a single .pl file with no workspace folder now discovers .perl-lsp.toml from that file's own directory instead of silently ignoring it, so a lone script sitting next to its config is configured rather than served with defaults. Applies to every LSP client, not just the VS Code extension."
-time: 2026-07-28T20:49:37Z
-custom:
-  PR: "5184"
-  Slug: single-file-toml-discovery
-  Breaking: "no"

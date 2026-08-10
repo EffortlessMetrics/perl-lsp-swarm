@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "types": ["node", "vscode", "mocha"]
-  },
-  "include": ["src/test/published/**/*.ts", "src/test/integration/firstHourReceipt.test.ts"],
-  "exclude": ["node_modules", "out"]
-}

@@ -1,5 +1,0 @@
----
-source: crates/tree-sitter-perl-rs/tests/snapshots.rs
-expression: sexp
----
-(source_file (my_declaration (variable $ x)(number 42)))

@@ -1,8 +1,0 @@
-[
-  {
-    "id": 202,
-    "author": {"login": "reviewer"},
-    "authorAssociation": "MEMBER",
-    "body": "Claim-bound formal review complete.\n\n<!-- review-run:v1 {\"v\":1,\"kind\":\"deep\",\"head\":\"1212121212121212121212121212121212121212\",\"claim_digest\":\"0ac28bc9c69ad7849f13905f7f36132883f34426fcefbb64f736139d7ab4e611\",\"reviewer\":\"reviewer\",\"status\":\"done\",\"comment_id\":\"202\"} -->"
-  }
-]

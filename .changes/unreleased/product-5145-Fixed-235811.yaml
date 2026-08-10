@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Lint diagnostics are now suppressed when the parser reports a blocking error, instead of piling spurious PL* findings from an unreliable recovered AST on top of the real parse error; a duplicate heredoc-folding path that produced overlapping fold ranges was removed; and workspace symbol search now supports fuzzy subsequence matching (e.g. 'gpn' matches 'get_page_name')."
-time: 2026-07-27T23:58:11Z
-custom:
-  PR: "5145"
-  Slug: cascade-gate-heredoc-fold-fuzzy-search
-  Breaking: "no"

@@ -1,8 +1,0 @@
-[
-  {
-    "id": "PRRT_active_unresolved_1",
-    "isResolved": false,
-    "isOutdated": false,
-    "path": "crates/perl-parser/src/lexer.rs"
-  }
-]

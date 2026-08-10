@@ -1,9 +1,0 @@
-project: product
-component: Distribution
-kind: Fixed
-body: "The documented `curl -fsSL .../install.sh | bash` bootstrap no longer aborts under `set -u` (`${BASH_SOURCE[0]}` is unbound when the script is read from stdin, and empty-array expansion is an error on macOS's bash 3.2). `install.ps1` now installs `perl-dap.exe` alongside `perllsp.exe` like every other channel. The Scoop, winget, Chocolatey, and Linux manifests now state the public-beta posture and the real `MIT OR Apache-2.0` dual license, the Chocolatey nuspec is well-formed XML again, the Linux package templates point at the release asset names that actually exist, and the unreferenced duplicate `distribution/homebrew/perllsp.rb` is gone. Two new CI self-tests (`scripts/tests/test-installer-zero-args.sh`, `scripts/tests/test-distribution-manifest-consistency.sh`) gate all of it."
-time: 2026-08-01T00:00:00Z
-custom:
-  PR: "5452"
-  Slug: install-surface-honesty-5448
-  Breaking: "no"

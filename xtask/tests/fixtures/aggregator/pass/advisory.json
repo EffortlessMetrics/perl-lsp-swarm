@@ -1,7 +1,0 @@
-{
-  "name": "advisory-lane",
-  "selected": true,
-  "required": false,
-  "verdict": "warn",
-  "classification": "infra_failure"
-}

@@ -1,9 +1,0 @@
-project: product
-component: Performance and reliability
-kind: Performance
-body: "The dispatched completion path now releases the client-capabilities lock before serializing completion items, matching the direct path's contention behavior instead of holding the lock across the full serialization loop."
-time: 2026-07-29T06:06:19Z
-custom:
-  PR: "5196"
-  Slug: completion-dispatch-lock-release
-  Breaking: "no"
