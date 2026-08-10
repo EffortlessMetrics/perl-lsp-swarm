@@ -177,23 +177,51 @@ fn non_empty(value: &str, field: &str) -> Result<()> {
 
 fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
     if value.len() != bytes * 2 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("{field} must be exactly {} hexadecimal characters", bytes * 2);
+        bail!(
+            "{field} must be exactly {} hexadecimal characters",
+            bytes * 2
+        );
     }
     Ok(())
 }
 
 fn validate_candidate(candidate: &CandidateIdentity) -> Result<()> {
     non_empty(&candidate.artifact_set_id, "candidate.artifact_set_id")?;
-    exact_hex(&candidate.frozen_product_sha, 20, "candidate.frozen_product_sha")?;
-    exact_hex(&candidate.prepared_swarm_sha, 20, "candidate.prepared_swarm_sha")?;
-    exact_hex(&candidate.release_repo_sha, 20, "candidate.release_repo_sha")?;
-    exact_hex(&candidate.release_topology_sha256, 32, "candidate.release_topology_sha256")?;
+    exact_hex(
+        &candidate.frozen_product_sha,
+        20,
+        "candidate.frozen_product_sha",
+    )?;
+    exact_hex(
+        &candidate.prepared_swarm_sha,
+        20,
+        "candidate.prepared_swarm_sha",
+    )?;
+    exact_hex(
+        &candidate.release_repo_sha,
+        20,
+        "candidate.release_repo_sha",
+    )?;
+    exact_hex(
+        &candidate.release_topology_sha256,
+        32,
+        "candidate.release_topology_sha256",
+    )?;
 
     for (field, value) in [
         ("candidate.candidate_id", candidate.candidate_id.as_str()),
-        ("candidate.candidate_version", candidate.candidate_version.as_str()),
-        ("candidate.extension_version", candidate.extension_version.as_str()),
-        ("candidate.server_version", candidate.server_version.as_str()),
+        (
+            "candidate.candidate_version",
+            candidate.candidate_version.as_str(),
+        ),
+        (
+            "candidate.extension_version",
+            candidate.extension_version.as_str(),
+        ),
+        (
+            "candidate.server_version",
+            candidate.server_version.as_str(),
+        ),
         ("candidate.dap_version", candidate.dap_version.as_str()),
         ("candidate.platform", candidate.platform.as_str()),
         ("candidate.target", candidate.target.as_str()),
@@ -234,15 +262,28 @@ fn expected_topology_asset(receipt: &Receipt) -> Result<String> {
     if receipt.transition.path == InstallPath::Vsix {
         return Ok(format!("perl-lsp-rs-{}.vsix", candidate.extension_version));
     }
-    let extension = if candidate.platform.starts_with("windows-") { "zip" } else { "tar.gz" };
-    Ok(format!("perllsp-{}-{}.{}", candidate.candidate_version, candidate.target, extension))
+    let extension = if candidate.platform.starts_with("windows-") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    Ok(format!(
+        "perllsp-{}-{}.{}",
+        candidate.candidate_version, candidate.target, extension
+    ))
 }
 
 fn validate_topology_path(receipt: &Receipt) -> Result<()> {
-    let expected_path_id =
-        format!("{}-{}", receipt.transition.path.topology_prefix(), receipt.candidate.platform);
+    let expected_path_id = format!(
+        "{}-{}",
+        receipt.transition.path.topology_prefix(),
+        receipt.candidate.platform
+    );
     if receipt.transition.topology_path_id != expected_path_id {
-        bail!("receipt topology_path_id is not the canonical path for {}", expected_path_id);
+        bail!(
+            "receipt topology_path_id is not the canonical path for {}",
+            expected_path_id
+        );
     }
     let expected_asset = expected_topology_asset(receipt)?;
     if receipt.transition.expected_asset != expected_asset {
@@ -265,7 +306,11 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
     if let Some(digest) = &transition.artifact_sha256 {
         exact_hex(digest, 32, "transition.artifact_sha256")?;
     }
-    for limitation in transition.limitations.iter().chain(receipt.limitations.iter()) {
+    for limitation in transition
+        .limitations
+        .iter()
+        .chain(receipt.limitations.iter())
+    {
         non_empty(limitation, "limitations[]")?;
     }
 
@@ -292,14 +337,22 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
     let bytes =
         fs::read(path).with_context(|| format!("reading release topology {}", path.display()))?;
     let digest = sha256_bytes(&bytes);
-    if digest != receipt.candidate.release_topology_sha256.to_ascii_lowercase() {
+    if digest
+        != receipt
+            .candidate
+            .release_topology_sha256
+            .to_ascii_lowercase()
+    {
         bail!(
             "release topology digest mismatch: receipt={}, actual={digest}",
             receipt.candidate.release_topology_sha256
@@ -350,7 +403,11 @@ fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
         color_eyre::eyre::eyre!("release topology target has no required_members array")
     })?;
     for required in [
-        if receipt.candidate.platform.starts_with("windows-") { "perllsp.exe" } else { "perllsp" },
+        if receipt.candidate.platform.starts_with("windows-") {
+            "perllsp.exe"
+        } else {
+            "perllsp"
+        },
         if receipt.candidate.platform.starts_with("windows-") {
             "perl-dap.exe"
         } else {
@@ -368,10 +425,11 @@ fn verify_artifact_binding(receipt: &Receipt, path: &Path) -> Result<()> {
     if !receipt.transition.artifact_verified {
         return Ok(());
     }
-    let expected =
-        receipt.transition.artifact_sha256.as_deref().ok_or_else(|| {
-            color_eyre::eyre::eyre!("verified artifact is missing artifact_sha256")
-        })?;
+    let expected = receipt
+        .transition
+        .artifact_sha256
+        .as_deref()
+        .ok_or_else(|| color_eyre::eyre::eyre!("verified artifact is missing artifact_sha256"))?;
     let bytes =
         fs::read(path).with_context(|| format!("reading candidate artifact {}", path.display()))?;
     let actual = sha256_bytes(&bytes);
@@ -557,14 +615,24 @@ fn write_verified_child_artifact(
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)
         .with_context(|| format!("creating verified artifact directory {}", parent.display()))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating temporary verified artifact near {}", path.display()))?;
-    std::io::Write::write_all(&mut temporary, &content)
-        .with_context(|| format!("writing temporary verified artifact near {}", path.display()))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .with_context(|| format!("flushing temporary verified artifact near {}", path.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "creating temporary verified artifact near {}",
+            path.display()
+        )
+    })?;
+    std::io::Write::write_all(&mut temporary, &content).with_context(|| {
+        format!(
+            "writing temporary verified artifact near {}",
+            path.display()
+        )
+    })?;
+    temporary.as_file().sync_all().with_context(|| {
+        format!(
+            "flushing temporary verified artifact near {}",
+            path.display()
+        )
+    })?;
     temporary
         .persist(path)
         .map_err(|error| error.error)
@@ -800,7 +868,11 @@ mod tests {
     #[test]
     fn every_install_path_has_one_canonical_path_and_asset() -> Result<()> {
         let cases = [
-            (InstallPath::Vsix, "vscode-linux-x86_64", "perl-lsp-rs-0.18.0.vsix"),
+            (
+                InstallPath::Vsix,
+                "vscode-linux-x86_64",
+                "perl-lsp-rs-0.18.0.vsix",
+            ),
             (
                 InstallPath::GithubArchive,
                 "github-archive-linux-x86_64",
