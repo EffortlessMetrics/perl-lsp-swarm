@@ -175,7 +175,14 @@ fn validate_receipt(path: &Path, registry: &Registry) -> Result<ValidationResult
         .with_context(|| format!("invalid JSON in {}", path.display()))?;
 
     let mut errors = Vec::new();
-    validate_common_fields(&receipt, &mut errors);
+
+    // Review receipts use a different schema (kind/producer/pr/head_sha)
+    // than gate receipts (check/schema_version/event/verdict). Skip the
+    // gate-specific common-field validation for them (#2093).
+    let is_review_receipt = receipt.get("kind").and_then(Value::as_str) == Some("review");
+    if !is_review_receipt {
+        validate_common_fields(&receipt, &mut errors);
+    }
 
     let check = receipt.get("check").and_then(Value::as_str).map(ToOwned::to_owned);
 

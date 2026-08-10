@@ -53,7 +53,7 @@ runs:
   steps:
     - name: Install Rust toolchain
       id: toolchain
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
@@ -61,7 +61,7 @@ runs:
     - name: Cache cargo dependencies
       id: cache
       if: inputs.cache == 'true'
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       with:
         key: ${{ runner.os }}-${{ inputs.toolchain }}-${{ inputs.cache-key-suffix }}-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
@@ -69,7 +69,7 @@ runs:
 
     - name: Install sccache
       if: inputs.sccache == 'true'
-      uses: mozilla-actions/sccache-action@v0.0.4
+      uses: mozilla-actions/sccache-action@2e7f9ec7921547d4b46598398ca573513895d0bd  # v0.0.4
 
     - name: Configure sccache
       if: inputs.sccache == 'true'
@@ -80,13 +80,15 @@ runs:
 
     - name: Install just
       if: inputs.install-just == 'true'
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60  # v2.85.7
       with:
         tool: just
 
     - name: Install nextest
       if: inputs.install-nextest == 'true'
-      uses: taiki-e/install-action@nextest
+      uses: taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60  # v2.85.7
+      with:
+        tool: nextest
 
     - name: Show toolchain info
       shell: bash

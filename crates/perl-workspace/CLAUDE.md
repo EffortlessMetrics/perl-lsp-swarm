@@ -45,7 +45,6 @@ cargo bench -p perl-workspace --features workspace  # Benchmarks
 | `src/workspace/document_store.rs` | Thread-safe `DocumentStore` and `Document` with URI normalization |
 | `src/workspace/state_machine.rs` | Enhanced `IndexStateMachine` with 8 states (Idle, Initializing, Building, Updating, Invalidating, Ready, Degraded, Error) and guarded transitions |
 | `src/workspace/cache.rs` | `BoundedLruCache<K,V>` with LRU eviction, TTL, `EstimateSize` trait, and typed cache configs |
-| `src/workspace/production_coordinator.rs` | `ProductionIndexCoordinator` integrating state machine, caches, SLO tracker |
 | `src/workspace/slo.rs` | `SloTracker` with per-operation latency percentiles and SLO compliance checks |
 | `src/workspace/workspace_rename.rs` | Deprecated stub (renamed to `perl-lsp` crate) |
 
@@ -64,8 +63,6 @@ cargo bench -p perl-workspace --features workspace  # Benchmarks
 | `BoundedLruCache<K,V>` | `cache` | Generic bounded LRU cache |
 | `CacheConfig` | `cache` | Max items, max bytes, optional TTL |
 | `EstimateSize` | `cache` | Trait for memory size estimation |
-| `ProductionIndexCoordinator` | `production_coordinator` | Integrates index + caches + SLOs |
-| `WorkspaceCacheManager` | `production_coordinator` | Manages AST, symbol, and workspace caches |
 | `SloTracker` | `slo` | Per-operation latency and error-rate tracking |
 | `OperationType` | `slo` | Enum of tracked operations (8 variants) |
 
@@ -95,18 +92,6 @@ store.open("file:///lib/Foo.pm".into(), 1, source.into());
 let doc = store.get("file:///lib/Foo.pm");
 store.update("file:///lib/Foo.pm", 2, new_source.into());
 store.close("file:///lib/Foo.pm");
-```
-
-### Production Coordinator
-
-```rust
-use perl_workspace::workspace::production_coordinator::ProductionIndexCoordinator;
-
-let coordinator = ProductionIndexCoordinator::new();
-coordinator.initialize()?;
-coordinator.index_file(uri, text)?;
-let def = coordinator.find_definition("my_sub");
-let stats = coordinator.statistics();
 ```
 
 ## Important Notes

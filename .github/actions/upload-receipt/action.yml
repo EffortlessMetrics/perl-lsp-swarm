@@ -48,18 +48,20 @@ runs:
     - name: Check receipt exists
       id: check
       shell: bash
+      env:
+        RECEIPT_PATH: ${{ inputs.receipt-path }}
       run: |
-        if [ -f "${{ inputs.receipt-path }}" ]; then
+        if [ -f "$RECEIPT_PATH" ]; then
           echo "exists=true" >> $GITHUB_OUTPUT
-          echo "Receipt found at ${{ inputs.receipt-path }}"
+          echo "Receipt found at $RECEIPT_PATH"
         else
           echo "exists=false" >> $GITHUB_OUTPUT
-          echo "::warning::Receipt not found at ${{ inputs.receipt-path }}"
+          echo "::warning::Receipt not found at $RECEIPT_PATH"
         fi
 
     - name: Upload gate receipt
       id: upload
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: ${{ inputs.artifact-name }}
         path: |
@@ -72,13 +74,15 @@ runs:
     - name: Generate summary
       if: inputs.generate-summary == 'true' && always()
       shell: bash
+      env:
+        RECEIPT_PATH: ${{ inputs.receipt-path }}
       run: |
         python3 - <<'PY'
         import json
         import os
         from pathlib import Path
 
-        receipt_path = Path("${{ inputs.receipt-path }}")
+        receipt_path = Path(os.environ["RECEIPT_PATH"])
         summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
 
         if not summary_path:
@@ -87,7 +91,7 @@ runs:
         lines = ["### Gate Receipt", ""]
 
         if not receipt_path.exists():
-            lines.append("> Receipt not found at `${{ inputs.receipt-path }}`")
+            lines.append(f"> Receipt not found at `{receipt_path}`")
             Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
             raise SystemExit(0)
 

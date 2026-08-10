@@ -199,5 +199,5 @@ kept only in prompt prose.
 
 ## Related Files
 
-- [`.claude/commands/swarm.md`](../../.claude/commands/swarm.md)
+- [`.agents/skills/worktree-manager/SKILL.md`](../../.agents/skills/worktree-manager/SKILL.md)
 - [`docs/reference/SKILL_AND_AGENT_DESIGN.md`](../reference/SKILL_AND_AGENT_DESIGN.md)

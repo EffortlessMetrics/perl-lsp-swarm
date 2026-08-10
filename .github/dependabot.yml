@@ -31,12 +31,11 @@ updates:
         update-types:
           - "minor"
           - "patch"
-      # Group all lsp-types and tower-lsp dependencies
+      # Group all lsp-types dependencies
       lsp:
         patterns:
           - "lsp-types"
           - "lsp-server"
-          - "tower-lsp"
         update-types:
           - "minor"
           - "patch"
@@ -77,8 +76,6 @@ updates:
       - dependency-name: "tree-sitter"
         update-types: ["version-update:semver-major"]
       - dependency-name: "lsp-types"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "tower-lsp"
         update-types: ["version-update:semver-major"]
       - dependency-name: "tokio"
         update-types: ["version-update:semver-major"]

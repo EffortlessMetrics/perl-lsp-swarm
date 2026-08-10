@@ -40,7 +40,8 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
             tracing::warn!("Failed to merge experimental capability into non-object capabilities");
             return;
         };
-        capabilities_object.insert("experimental".to_string(), json!({}));
+        capabilities_object
+            .insert("experimental".to_string(), Value::Object(serde_json::Map::new()));
     }
 
     let Some(experimental) = capabilities.get_mut("experimental").and_then(Value::as_object_mut)
@@ -558,9 +559,9 @@ impl LspServer {
         // Apply initializationOptions.perl.* as the base config layer.
         // This is parsed before .perl-lsp.toml so project config overrides it,
         // and subsequent workspace/configuration responses override both.
-        if let Some(params) = params.as_ref() {
-            if let Some(init_options) = params.get("initializationOptions") {
-                if let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
+        if let Some(params) = params.as_ref()
+            && let Some(init_options) = params.get("initializationOptions")
+                && let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
                     tracing::debug!("Applying initializationOptions.perl.* as base config layer");
                     {
                         let mut config = self.config.lock();
@@ -575,8 +576,6 @@ impl LspServer {
                     }
                     *self.initialization_options_perl_settings.lock() = Some(perl.clone());
                 }
-            }
-        }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
         self.load_and_apply_project_config();
@@ -649,7 +648,10 @@ impl LspServer {
             }
             (true, false) => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
-                    capabilities.insert("inlineCompletionProvider".to_string(), json!({}));
+                    capabilities.insert(
+                        "inlineCompletionProvider".to_string(),
+                        Value::Object(serde_json::Map::new()),
+                    );
                 }
             }
             (false, _) => {
@@ -672,9 +674,9 @@ impl LspServer {
         // providers. Advertising anything else here would silently corrupt
         // document sync and every position-bearing response for non-ASCII
         // content on a client that prefers a different encoding.
-        capabilities["positionEncoding"] = json!("utf-16");
+        capabilities["positionEncoding"] = Value::String("utf-16".to_string());
         if features.declaration {
-            capabilities["declarationProvider"] = json!(true);
+            capabilities["declarationProvider"] = Value::Bool(true);
         }
         let code_action_documentation_support =
             self.client_capabilities.lock().code_action_documentation_support;
@@ -754,7 +756,7 @@ impl LspServer {
             merge_experimental_capability(
                 &mut capabilities,
                 "perlInlineCompletionStream",
-                json!(true),
+                Value::Bool(true),
             );
         }
 
@@ -1654,7 +1656,7 @@ mod tests {
         }
         let non_jetbrains = json!({ "clientInfo": { "name": "vscode" } });
         assert!(!is_jetbrains_client(&non_jetbrains));
-        assert!(!is_jetbrains_client(&json!({})));
+        assert!(!is_jetbrains_client(&Value::Object(serde_json::Map::new())));
     }
 
     #[test]

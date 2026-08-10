@@ -7,8 +7,9 @@
 - **VS Code (recommended)**: install the [Perl LSP extension](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs) — it downloads the server binary automatically.
 - **Pre-built binary**: download from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases).
 - **Homebrew tap**: `brew install effortlessmetrics/tap/perllsp`.
-- **Installer script (Linux/macOS, best-effort)**:
-  `curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash`
+- **Installer script (Linux/macOS)**: prefer a release archive until closeout publishes
+  `PERL_LSP_INSTALLER_REF` and `PERL_LSP_INSTALLER_SHA256` for the reviewed
+  `scripts/install.sh` digest; see [INSTALLATION.md](../how-to/INSTALLATION.md#installer-script-macos-and-linux).
 - **From source**:
   `cargo install --path crates/perllsp`
 

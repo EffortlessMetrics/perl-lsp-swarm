@@ -55,20 +55,28 @@ The `perl-lsp-code-actions`, `perl-lsp-critic-parser`, and `perl-lsp-perltidy` e
 
 ### Exclusion Architecture (**Diataxis: Explanation** - Design decisions)
 
-The workspace uses a **production-focused exclusion strategy** to ensure reliable builds:
+The workspace keeps maintained crates as members and excludes only legacy or
+specialized trees. Authoritative decision: [ADR-0017](../adr/0017-workspace-exclusion-strategy.md);
+authoritative source: the root `Cargo.toml` `members`/`exclude` lists.
 
-#### Excluded Crates
-- **`tree-sitter-perl-c`**: Requires libclang and system dependencies
-- **Example crates with feature conflicts**: Avoid cross-crate feature dependency issues
-- **Legacy tooling**: Internal development tools not part of published API
+#### Excluded Trees
+- **`tree-sitter-perl/`**: Legacy top-level C parser
+- **`fuzz/`**: cargo-fuzz specialized requirements
+- **`archive/`**: Archived legacy components
+
+`crates/tree-sitter-perl-c` and `crates/tree-sitter-perl-rs` are **workspace
+members**, not exclusions. `tree-sitter-perl-c` compiles its vendored grammar
+with `cc` and declares the one C symbol it needs by hand — it does not use
+bindgen or libclang.
 
 #### Architectural Benefits
-1. **Platform Independence**: No C toolchain requirements
-2. **CI Stability**: Consistent build behavior across platforms
-3. **Production Focus**: Testing only published crate surface area
-4. **Dependency Safety**: Avoid system-specific build failures
+1. **Current-source visibility**: CI and workspace tooling build and test the maintained compatibility crates
+2. **Legacy isolation**: The old top-level parser and archive cannot silently become current dependencies
+3. **Honest prerequisites**: The C binding's vendored grammar and `cc` build path are visible rather than hidden behind a claimed libclang dependency
+4. **Clear package boundaries**: The Rust facade and the C binding remain independently addressable
 
-This approach prioritizes **published crate reliability** over comprehensive internal tooling, ensuring users can depend on stable builds regardless of their platform or system configuration.
+Building `tree-sitter-perl-c` requires a usable C compiler. Pure-Rust consumers
+of the parser and LSP server do not need one.
 
 See the [workspace status report](../project/status/workspace.md) for current workspace status.
 

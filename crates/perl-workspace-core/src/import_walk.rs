@@ -133,9 +133,9 @@ fn walk(
         NodeKind::VariableDeclaration { variable, initializer, .. } => {
             // `our @EXPORT = qw(...)` / `our @EXPORT_OK = (...)` declare the
             // package's Exporter interface.
-            if let NodeKind::Variable { sigil, name } = &variable.kind {
-                if sigil == "@" {
-                    if let Some(kind) = export_kind_for(name) {
+            if let NodeKind::Variable { sigil, name } = &variable.kind
+                && sigil == "@"
+                    && let Some(kind) = export_kind_for(name) {
                         let mut symbols = Vec::new();
                         if let Some(init) = initializer {
                             collect_string_values(init, &mut symbols);
@@ -149,8 +149,6 @@ fn walk(
                             confidence: Confidence::High,
                         });
                     }
-                }
-            }
         }
         NodeKind::Block { .. } => {
             // A statement-form `package Foo;` is scoped to its enclosing lexical
@@ -203,23 +201,21 @@ fn record_use_or_no(
 ) {
     let (mod_name, version) = split_module_version(module);
     // Capture the Perl language version from a bare `use v5.x`.
-    if mod_name.is_empty() && result.perl_version.is_none() {
-        if let Some(v) = &version {
+    if mod_name.is_empty() && result.perl_version.is_none()
+        && let Some(v) = &version {
             result.perl_version = Some(v.clone());
         }
-    }
     let imports: Vec<String> = args.iter().flat_map(|a| normalize_import_arg(a)).collect();
 
     // `use parent`/`use base` establish inheritance for the current package.
-    if kind == ImportKind::Use && (mod_name == "parent" || mod_name == "base") {
-        if let Some(pkg) = current_package {
+    if kind == ImportKind::Use && (mod_name == "parent" || mod_name == "base")
+        && let Some(pkg) = current_package {
             result
                 .parents_by_package
                 .entry(pkg.to_string())
                 .or_default()
                 .extend(imports.iter().cloned());
         }
-    }
 
     if has_filter_risk {
         result.boundaries.push(DynamicBoundary {

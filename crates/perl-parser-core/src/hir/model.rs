@@ -650,7 +650,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
         .into_iter()
         .enumerate()
         .map(|(ordinal, mut entry)| {
-            entry.effect.ordinal = ordinal as u32;
+            entry.effect.ordinal = ordinal.min(u32::MAX as usize) as u32;
             entry.effect
         })
         .collect()
@@ -2487,7 +2487,7 @@ fn import_spec(
         file_id: Some(file_id),
         anchor_id: Some(AnchorId(directive.range.start as u64)),
         scope_id: directive.scope_id.map(|id| ScopeId(id.index() as u64)),
-        span_start_byte: Some(directive.range.start as u32),
+        span_start_byte: Some(directive.range.start.min(u32::MAX as usize) as u32),
     }
 }
 
@@ -2781,6 +2781,12 @@ pub enum HirKind {
     ClassDecl(ClassDecl),
     /// `defer { ... }` shell (Perl 5.36+ experimental, stable in 5.40).
     DeferExpr(DeferExpr),
+    /// Heredoc migration adapter; canonical value semantics live in [`HirExpr`].
+    HeredocMigrationAdapter(HeredocMigrationAdapter),
+    /// Readline migration adapter; canonical value semantics live in [`HirExpr`].
+    ReadlineMigrationAdapter(ReadlineMigrationAdapter),
+    /// Glob migration adapter; canonical value semantics live in [`HirExpr`].
+    GlobMigrationAdapter(GlobMigrationAdapter),
 }
 
 impl HirKind {
@@ -2798,6 +2804,8 @@ impl HirKind {
         "DeferExpr",
         "DerefExpr",
         "DynamicBoundary",
+        "GlobMigrationAdapter",
+        "HeredocMigrationAdapter",
         "IndirectCallExpr",
         "LiteralExpr",
         "LoopShell",
@@ -2805,6 +2813,7 @@ impl HirKind {
         "MethodCallExpr",
         "MethodDecl",
         "PackageDecl",
+        "ReadlineMigrationAdapter",
         "RegexExpr",
         "RequireDecl",
         "StatementModifierShell",
@@ -2961,6 +2970,166 @@ pub struct IndirectCallExpr {
 pub struct BarewordExpr {
     /// Bareword text as parsed.
     pub name: String,
+}
+
+/// Heredoc migration payload (`<<EOF`, `<<~EOF`, ``<<`CMD` ``).
+///
+/// This is retained only for flat-HIR migration receipts. Canonical heredoc
+/// value semantics are carried by [`HirExpr::Heredoc`] in body HIR.
+///
+/// `command` marks the ``<<`CMD` `` form, which runs its body through the shell
+/// at runtime. That is a runtime effect, not a static string value; consumers
+/// must not treat a command heredoc as a known literal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HeredocMigrationAdapter {
+    /// Terminator token as written (`EOF`, `"EOF"`, `` `CMD` ``, …).
+    pub delimiter: String,
+    /// Whether the body interpolates variables (`<<"EOF"` / bare `<<EOF`).
+    pub interpolated: bool,
+    /// Whether the indented form (`<<~EOF`) was used.
+    pub indented: bool,
+    /// Whether this is a command heredoc (``<<`CMD` ``) executed at runtime.
+    pub command: bool,
+    /// Source range of the heredoc body, when the parser recorded one.
+    pub body_range: Option<SourceLocation>,
+}
+
+/// Readline migration payload (`<STDIN>`, `<$fh>`, `<>`, `<<>>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReadlineMigrationAdapter {
+    /// Where the lines come from.
+    pub source: ReadlineSource,
+    /// Filehandle text as parsed (`STDIN`, `$fh`), absent for the diamond forms.
+    pub filehandle: Option<String>,
+}
+
+/// Line source selected by a [`ReadlineMigrationAdapter`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ReadlineSource {
+    /// Bareword filehandle such as `<STDIN>` or `<FH>`.
+    NamedHandle,
+    /// Scalar holding a filehandle, such as `<$fh>`.
+    ScalarHandle,
+    /// Diamond form (`<>` or `<<>>`): reads the files named in `@ARGV`, or
+    /// `STDIN` when `@ARGV` is empty. The read set is a runtime property.
+    ArgvDiamond,
+}
+
+impl ReadlineSource {
+    /// Classify the line source from a parsed filehandle.
+    ///
+    /// A leading `$` is a scalar holding the handle (`<$fh>`); any other text is
+    /// a bareword handle (`<STDIN>`). The parser builds `NodeKind::Diamond` for
+    /// the handle-less forms, so a missing filehandle is the same `@ARGV`/STDIN
+    /// read.
+    ///
+    /// Single source of truth for both the item lowerer (`hir::lower`) and the
+    /// body lowerer (`hir::body`), which must not disagree about the same
+    /// construct.
+    #[must_use]
+    pub fn from_filehandle(filehandle: Option<&str>) -> Self {
+        match filehandle {
+            Some(name) if name.starts_with('$') => Self::ScalarHandle,
+            Some(_) => Self::NamedHandle,
+            None => Self::ArgvDiamond,
+        }
+    }
+}
+
+/// Glob migration payload (`<*.txt>`).
+///
+/// This is retained only for flat-HIR migration receipts. Canonical glob
+/// semantics are carried by [`HirExpr::Glob`] in body HIR. Only the
+/// angle-bracket form reaches this adapter; `glob("...")` is parsed as a
+/// function call and lowers to [`CallExpr`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GlobMigrationAdapter {
+    /// Glob pattern as parsed, without the surrounding angle brackets.
+    pub pattern: String,
+    /// Whether the pattern interpolates (`<$dir/*.txt>`). An interpolating
+    /// pattern has no statically known match set.
+    pub interpolated: bool,
+}
+
+/// Whether an angle-bracket glob pattern interpolates, so its match set is not
+/// statically known.
+///
+/// A sigil only interpolates when it actually starts a variable, so a trailing
+/// `@` in `<*.txt@>` or `<foo@>` is a literal character and those patterns are
+/// fully static. `\$` and `\@` are escaped literals as well. Reporting those as
+/// interpolating would tell consumers a statically known match set is
+/// unknowable.
+///
+/// The two sigils are not symmetric, because Perl's punctuation variables are
+/// overwhelmingly scalars. Nearly every character that can follow `$` names a
+/// variable: ordinary names (`$name`), digits (`$1`), braces (`${...}`),
+/// package qualification (`$::x`), the control forms (`$^V`), and the
+/// punctuation variables (`$/`, `$.`, `$!`, `$@`, `$$`, `$,`, `$)`, ...). The
+/// rule is therefore stated as the narrow set that does *not* start a scalar —
+/// end of pattern, or whitespace.
+///
+/// `@` is the opposite: `@1` is not a variable, so it admits only name starts,
+/// `{`, `:`, and the two punctuation arrays `@-` and `@+`.
+///
+/// The error directions are not equally costly. Claiming a dynamic pattern is
+/// static is unsound — a consumer would resolve a match set that depends on
+/// runtime state. Claiming a static pattern is dynamic only forfeits an
+/// optimization. Where Perl's own rules are ambiguous (`$*`, removed in 5.10),
+/// this classifier takes the conservative side and reports interpolation.
+///
+/// Single source of truth for both the item lowerer (`hir::lower`) and the body
+/// lowerer (`hir::body`), which must not disagree about the same construct.
+#[must_use]
+pub(super) fn glob_pattern_interpolates(pattern: &str) -> bool {
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            // Escaped character: skip the sigil-ness of whatever follows.
+            '\\' => {
+                chars.next();
+            }
+            '$' if chars.peek().is_some_and(starts_scalar_name) => return true,
+            '@' if chars.peek().is_some_and(starts_array_name) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether `ch` can begin the name of an interpolated scalar (`$name`, `${...}`,
+/// `$1`, `$::x`, `$^V`, and the punctuation variables `$/`, `$.`, `$!`, `$@`,
+/// `$$`, `$,`).
+///
+/// Stated as the complement, because the set of characters that follow `$`
+/// without naming a variable is far smaller than the set that does.
+///
+/// The caller's `None` lookahead — a `$` at the very end of the pattern — is a
+/// defensive guard rather than a live case: a pattern ending in `$` does not
+/// reach `NodeKind::Glob` through the current parser at all, so there is no
+/// glob shell to classify. It is left in place because this function's contract
+/// is about characters, not about one production's reachability.
+fn starts_scalar_name(ch: &char) -> bool {
+    !ch.is_whitespace()
+}
+
+/// Whether `ch` can begin the name of an interpolated array (`@name`, `@{...}`,
+/// `@::x`, and the match-offset arrays `@-` and `@+`). Digits are excluded:
+/// `@1` is not a variable.
+///
+/// Uses [`char::is_alphabetic`] rather than its ASCII-only counterpart because
+/// `use utf8;` admits Unicode identifiers: `@épattern` and `@π` are ordinary
+/// arrays and interpolate. Treating them as name-less would classify a dynamic
+/// pattern as static, which is the unsound direction.
+///
+/// This deliberately stays narrower than [`starts_scalar_name`]'s
+/// `!is_whitespace()`: that predicate would admit `@1`, and the digit exclusion
+/// above is load-bearing.
+fn starts_array_name(ch: &char) -> bool {
+    ch.is_alphabetic() || matches!(ch, '_' | '{' | ':' | '-' | '+')
 }
 
 /// Regex literal shell payload (`/pattern/modifiers` or `qr/pattern/modifiers`).

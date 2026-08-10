@@ -10,7 +10,7 @@ fn completions_at_end(source: &str) -> Vec<CompletionItem> {
 }
 
 fn labels(items: &[CompletionItem]) -> Vec<String> {
-    items.iter().map(|item| item.label.clone()).collect()
+    items.iter().map(|item| item.label.to_string()).collect()
 }
 
 fn has_label(labels: &[String], expected: &str) -> bool {

@@ -317,6 +317,7 @@ fn test_variables_response_body_round_trip() -> Result<(), Box<dyn std::error::E
                 variables_reference: 0,
                 named_variables: None,
                 indexed_variables: None,
+                evaluate_name: None,
             },
             ProtocolVariable {
                 name: "@arr".to_string(),
@@ -325,6 +326,7 @@ fn test_variables_response_body_round_trip() -> Result<(), Box<dyn std::error::E
                 variables_reference: 100,
                 named_variables: None,
                 indexed_variables: Some(3),
+                evaluate_name: None,
             },
         ],
         total_variables: Some(2),

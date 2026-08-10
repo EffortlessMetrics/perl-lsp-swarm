@@ -32,6 +32,7 @@ fn variable_serializes_type_field() -> Result<(), serde_json::Error> {
         variables_reference: 0,
         named_variables: None,
         indexed_variables: None,
+        evaluate_name: None,
     };
 
     let json = serde_json::to_string(&variable)?;

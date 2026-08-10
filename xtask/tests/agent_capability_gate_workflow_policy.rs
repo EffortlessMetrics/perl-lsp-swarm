@@ -102,7 +102,7 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "emit \"github\" \"runner_token_missing\" \"true\" \"true\"",
         "cargo xtask check-agent-capabilities",
         "uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-        "uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c",
+        "uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772",
     ] {
         ensure!(content.contains(required), "workflow contract missing `{required}`");
     }

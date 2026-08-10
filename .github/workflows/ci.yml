@@ -41,7 +41,7 @@ jobs:
     steps:
       - name: Checkout for docs-only detection
         if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 1
 
@@ -111,10 +111,24 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           CURRENT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" | awk '{print $1}')
+          # The freshness optimization (skip CI for superseded SHAs) is only
+          # safe for push events on same-repo refs. For pull_request and
+          # merge_group events, github.head_ref is attacker-controlled: a fork
+          # author can name their branch "main" so the ls-remote resolves the
+          # upstream branch, making every fork PR look "superseded" and
+          # silently skipping all gated jobs (#5981).
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR/merge_group event — freshness optimization bypassed for safety ($CURRENT)"
+            exit 0
+          fi
+
+          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git" "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}')
           if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
             echo "::notice::This SHA ($CURRENT) is latest on $BRANCH — running full CI"
@@ -157,7 +171,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           bash scripts/tools/aqua-doctor.sh
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
@@ -206,7 +220,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
       - name: Check for conflict markers
@@ -244,7 +258,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -259,13 +273,13 @@ jobs:
           git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -314,7 +328,7 @@ jobs:
 
       - name: Upload PR-fast receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: pr-fast-receipt-${{ github.sha }}
           path: |
@@ -334,7 +348,7 @@ jobs:
       - name: Upload PR-fast test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/pr-fast-junit.xml
@@ -369,6 +383,8 @@ jobs:
             gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
+          - name: parser_stack
+            gates: unit_parser_stack_full
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
@@ -378,14 +394,20 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            gates: docs_build non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count
+            # msrv_authority_sync runs first: it is the cheapest gate here (~1s
+            # against a warm xtask) and the shard aborts on first failure, so
+            # ordering it behind the 137s non_rust_inventory_check would leave
+            # it unexecuted whenever that gate is red — which is chronic while
+            # #6229 stands, since the committed inventory count is invalidated
+            # by every merge that adds or removes a file.
+            gates: msrv_authority_sync docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
     # Earlier gating > label-gated gating (see #4675)
     # Frequent commits will queue; preflight skips superseded SHAs.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -393,19 +415,28 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Reject unsupported PR attributions in reference docs
+        if: matrix.name == 'meta'
+        run: |
+          if git grep -n -E 'PR #153|pull/153|PR #753|pull/753' -- docs/reference ':(exclude)docs/reference/archive/**'; then
+            echo "Reference documentation contains an unsupported numbered PR attribution."
+            echo "Use a source-backed implementation reference, or remove the PR attribution when the source is historical."
+            exit 1
+          fi
+
       - name: Fetch release tags from canonical repo
         run: |
           # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none.
           git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -441,7 +472,7 @@ jobs:
 
       - name: Upload gate receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: gate-receipt-${{ matrix.name }}-${{ github.sha }}
           path: |
@@ -469,6 +500,7 @@ jobs:
           mkdir -p target/ci
           python3 scripts/ci/emit_ci_actuals.py \
             --receipts-dir target/receipts/shards \
+            --lane-id merge_gate_shards \
             --workflow "${{ github.workflow }}" \
             --sha "${{ github.sha }}" \
             --pr "${{ github.event.pull_request.number || 0 }}" \
@@ -477,7 +509,7 @@ jobs:
       - name: Upload CI actuals
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ci-actuals-${{ matrix.name }}-${{ github.sha }}
           path: target/ci/ci-actuals-${{ matrix.name }}.json
@@ -487,7 +519,7 @@ jobs:
       - name: Upload gate shard test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/gate-shard-${{ matrix.name }}-junit.xml
@@ -617,7 +649,7 @@ jobs:
 
       - name: Set PR status (check)
         if: always()
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
         with:
@@ -669,18 +701,18 @@ jobs:
     # fails this job fails and merge-gate blocks. Quarantine enforcement (reading the
     # registry to generate --skip flags) is a follow-up; see .ci/ux-flakes.json.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -719,7 +751,7 @@ jobs:
 
       - name: Upload UX regression artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ux-regression-receipt-${{ github.sha }}
           path: |
@@ -741,7 +773,7 @@ jobs:
       - name: Upload UX regression test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/ux-regression-junit.xml
@@ -799,18 +831,18 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
         with:
           tool: just
 
@@ -832,13 +864,13 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -916,7 +948,7 @@ jobs:
 
       - name: Upload memory smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: lsp-memory-smoke-${{ github.sha }}
           path: |

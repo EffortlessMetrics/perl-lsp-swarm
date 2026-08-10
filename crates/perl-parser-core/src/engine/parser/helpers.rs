@@ -1325,6 +1325,11 @@ impl<'a> Parser<'a> {
                 }
                 if next_text.starts_with(|c: char| c.is_ascii_uppercase()) {
                     // Plain uppercase identifier (e.g. constant) — not an argument.
+                    // Exception: if followed by `=>`, the fat-comma auto-quotes
+                    // it, making it a valid bare-call argument (#5929).
+                    if let Ok(third) = self.tokens.peek_second() {
+                        return third.kind == TokenKind::FatArrow;
+                    }
                     return false;
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`

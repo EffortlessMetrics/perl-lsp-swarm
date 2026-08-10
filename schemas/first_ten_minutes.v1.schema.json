@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/first_ten_minutes.v1.schema.json",
+  "title": "first_ten_minutes.v1",
+  "description": "Candidate-bound observation of the first ten minutes of the installed public-beta experience.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "check",
+    "schema_version",
+    "status",
+    "claim_boundary",
+    "study_pass",
+    "candidate",
+    "project",
+    "steps",
+    "first_useful_ms",
+    "first_correct_ms",
+    "counts",
+    "findings",
+    "expected_beta_boundaries",
+    "linked_issues",
+    "limitations"
+  ],
+  "properties": {
+    "check": {
+      "const": "first-ten-minutes"
+    },
+    "schema_version": {
+      "const": "first_ten_minutes.v1"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "blocked",
+        "not_proven"
+      ]
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "study_pass": {
+      "enum": [
+        "pre_freeze_release_shaped",
+        "exact_candidate_confirmation"
+      ]
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidate"
+    },
+    "project": {
+      "$ref": "#/$defs/project"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "first_useful_ms": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "first_correct_ms": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "counts": {
+      "$ref": "#/$defs/counts"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "expected_beta_boundaries": {
+      "$ref": "#/$defs/non_empty_strings"
+    },
+    "linked_issues": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^#[0-9]+$"
+      },
+      "uniqueItems": true
+    },
+    "limitations": {
+      "$ref": "#/$defs/non_empty_strings"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "non_empty_strings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "repository_sha",
+        "artifact_set_id",
+        "vsix_version",
+        "vsix_sha256",
+        "perllsp_version",
+        "perllsp_sha256",
+        "perl_dap_version",
+        "perl_dap_sha256",
+        "vscode_version",
+        "platform",
+        "clean_profile_id"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repository_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "artifact_set_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vsix_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vsix_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "perllsp_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "perllsp_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "perl_dap_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "perl_dap_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "vscode_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clean_profile_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "content_sha256",
+        "family"
+      ],
+      "properties": {
+        "fixture_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "family": {
+          "enum": [
+            "conventional_modules",
+            "test_heavy",
+            "framework_shaped",
+            "environment_sensitive",
+            "dynamic_boundary_control"
+          ]
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "evidence_ref",
+        "limitations"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "install_startup",
+            "understand_project",
+            "change_project",
+            "diagnose_recover"
+          ]
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "limited",
+            "failed",
+            "not_proven"
+          ]
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limitations": {
+          "$ref": "#/$defs/non_empty_strings"
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "false_exact",
+        "stale_exact",
+        "unsafe_edit",
+        "unexplained_empty",
+        "silent_startup_failure",
+        "broken_documented_install",
+        "wrong_binary_or_version",
+        "orphaned_server_or_debuggee",
+        "notifications",
+        "interventions"
+      ],
+      "properties": {
+        "false_exact": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stale_exact": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsafe_edit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unexplained_empty": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "silent_startup_failure": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "broken_documented_install": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "wrong_binary_or_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "orphaned_server_or_debuggee": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notifications": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "interventions": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "class",
+        "summary",
+        "evidence_ref",
+        "linked_issue"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "class": {
+          "enum": [
+            "broken",
+            "trust_breaker",
+            "actionability",
+            "discoverability",
+            "noise",
+            "latency_or_readiness",
+            "consistency",
+            "polish",
+            "expected_beta_boundary",
+            "not_proven"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "linked_issue": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^#[0-9]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -86,6 +86,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "nested_lock_check": {"lanes": ["pr_smoke"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
+    "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},
@@ -100,6 +101,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "from_raw_staged": {"lanes": ["commit_checks"]},
 
     # release-adjacent gates
+    "adr_link_check": {"lanes": ["docs_gate"]},
     "docs_build": {"lanes": ["docs_gate"]},
     "published_crate_count": {"lanes": ["release_check"]},
     "release_build": {"lanes": ["release_check"]},

@@ -55,7 +55,7 @@ pub(super) fn prepare_request(
             return PreflightOutcome::NotificationHandled;
         }
         return PreflightOutcome::Respond(JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id: context.id.as_ref().and_then(JsonRpcId::from_value),
             result: None,
             error: Some(JsonRpcError {

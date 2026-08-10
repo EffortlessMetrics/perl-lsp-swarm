@@ -2217,7 +2217,10 @@ fn score_method_completion_provider_expectations(
             let query_start = Instant::now();
             let completions = provider.get_completions(&provider_source, cursor);
             score.completion_query_micros.push(query_start.elapsed().as_micros() as u64);
-            let labels = completions.iter().map(|item| item.label.clone()).collect::<BTreeSet<_>>();
+            let labels = completions
+                .iter()
+                .map(|item| item.label.as_ref().to_owned())
+                .collect::<BTreeSet<_>>();
             score_method_completion_expectation(expectation, &labels, &mut score);
         }
     }
@@ -2298,7 +2301,7 @@ fn score_diagnostic_provider_expectations(
         let mut parser = Parser::new(&provider_source);
         let output = parser.parse_with_recovery();
         let ast = Arc::new(output.ast);
-        let provider = DiagnosticsProvider::new(&ast, provider_source.clone());
+        let provider = DiagnosticsProvider::new();
         let diagnostics = index
             .with_semantic_queries_for_uri(&source_path_text, |file_id, semantic_queries| {
                 provider.get_diagnostics_with_path_and_semantics(

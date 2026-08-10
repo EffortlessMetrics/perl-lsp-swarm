@@ -12,10 +12,17 @@
 //! `perl-lsp-rs-core::protocol` in Wave G3 (#4535).
 
 pub mod capabilities;
+pub mod error_disposition;
+pub mod error_inventory;
 mod errors;
 mod jsonrpc;
 pub mod methods;
 
+pub use error_disposition::{Disposition, disposition_for};
+pub use error_inventory::{
+    ErrorInventoryEntry, classified_count, error_type_inventory, unclassified_count,
+    unclassified_types,
+};
 pub use errors::*;
 pub use jsonrpc::*;
 
