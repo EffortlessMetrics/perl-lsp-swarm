@@ -1416,7 +1416,7 @@
     "@vscode/vsce": "3.9.2",
     "jest": "^30.4.2",
     "mocha": "^11.7.6",
-    "ovsx": "1.0.2",
+    "ovsx": "1.1.0",
     "oxfmt": "0.61.0",
     "oxlint": "1.76.0",
     "oxlint-tsgolint": "7.0.2001",
