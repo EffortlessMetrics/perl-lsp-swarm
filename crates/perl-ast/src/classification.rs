@@ -296,9 +296,9 @@ impl NodeKind {
         matches!(
             self,
             NodeKind::Subroutine { .. }
-            | NodeKind::Package { .. }
-            | NodeKind::Class { .. }
-            | NodeKind::Method { .. }
+                | NodeKind::Package { .. }
+                | NodeKind::Class { .. }
+                | NodeKind::Method { .. }
         )
     }
 
