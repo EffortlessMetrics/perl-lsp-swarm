@@ -725,7 +725,10 @@ impl LspServer {
                     };
                     let code_str = d.code.as_deref().unwrap_or("");
                     let mut diag = diagnostic_json(
-                        start_line, start_char, end_line, end_char,
+                        start_line,
+                        start_char,
+                        end_line,
+                        end_char,
                         severity,
                         code_str,
                         &push_diagnostic_source(d.code.as_deref()),
@@ -774,7 +777,10 @@ impl LspServer {
                     let (line, character) = pos16(location);
 
                     diagnostic_json(
-                        line, character, line, character + 1,
+                        line,
+                        character,
+                        line,
+                        character + 1,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1035,7 +1041,10 @@ impl LspServer {
                         };
                     let (line, character) = pos16(location);
                     diagnostic_json(
-                        line, character, line, character + 1,
+                        line,
+                        character,
+                        line,
+                        character + 1,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1375,7 +1384,10 @@ impl LspServer {
         let message_val = Self::diagnostic_message_value(&d.message, None, markup_message_support);
 
         let mut diag = diagnostic_json(
-            start_pos.0, start_pos.1, end_pos.0, end_pos.1,
+            start_pos.0,
+            start_pos.1,
+            end_pos.0,
+            end_pos.1,
             severity,
             code_str,
             &diagnostic_source(d.code.as_deref()),
@@ -2360,6 +2372,17 @@ mod tests {
         (server, buf)
     }
 
+    fn drain_pending_index_tasks(server: &LspServer) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while server.pending_index_tasks() > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "background index tasks did not drain before diagnostic assertion"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn make_server_with_capture_and_tuning(
         runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning,
     ) -> (LspServer, StdArc<parking_lot::Mutex<Vec<u8>>>) {
@@ -3189,11 +3212,16 @@ mod tests {
             })))
             .unwrap();
 
+        // didOpen may enqueue active-document readiness asynchronously; drain it
+        // and let the outbound writer thread flush before isolating fast-path behavior.
+        drain_pending_index_tasks(&server);
+        std::thread::sleep(Duration::from_millis(50));
+
         // Record buffer length before the fast-path call.
         let len_before = buf.lock().len();
         server.publish_parse_errors_fast(uri);
-        drop(server);
         let len_after = buf.lock().len();
+        drop(server);
 
         assert_eq!(
             len_before,
