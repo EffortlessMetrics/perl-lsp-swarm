@@ -1,0 +1,116 @@
+use perl_lexer::{PerlLexer, TokenType};
+
+#[test]
+fn lexer_terminates_on_backtick_heredoc_with_cr() {
+    let mut lx = PerlLexer::new("``<<a\r");
+
+    // Try to consume up to 16 tokens - should not spin forever
+    for i in 0..16 {
+        if let Some(token) = lx.next_token() {
+            // Just consume tokens, we're checking for termination
+            if matches!(token.token_type, perl_lexer::TokenType::EOF) {
+                // Found EOF, lexer terminated properly
+                break;
+            }
+        } else {
+            // No more tokens
+            break;
+        }
+
+        // Safety check - if we're still going after 15 iterations, something's wrong
+        assert!(i < 15, "Lexer appears to be in infinite loop");
+    }
+
+    // If we got here, the lexer terminated properly
+    // Test passed - lexer terminated without infinite loop
+}
+
+#[test]
+fn lexer_handles_heredoc_with_various_line_endings() {
+    // Test with LF
+    let mut lx = PerlLexer::new("<<EOF\nHello\nEOF\n");
+    let mut token_count = 0;
+    while let Some(token) = lx.next_token() {
+        token_count += 1;
+        if matches!(token.token_type, perl_lexer::TokenType::EOF) {
+            break;
+        }
+        assert!(token_count < 20, "Too many tokens, possible infinite loop");
+    }
+
+    // Test with CRLF
+    let mut lx = PerlLexer::new("<<EOF\r\nHello\r\nEOF\r\n");
+    let mut token_count = 0;
+    while let Some(token) = lx.next_token() {
+        token_count += 1;
+        if matches!(token.token_type, perl_lexer::TokenType::EOF) {
+            break;
+        }
+        assert!(token_count < 20, "Too many tokens, possible infinite loop");
+    }
+
+    // Test with just CR (old Mac style)
+    let mut lx = PerlLexer::new("<<EOF\rHello\rEOF\r");
+    let mut token_count = 0;
+    while let Some(token) = lx.next_token() {
+        token_count += 1;
+        if matches!(token.token_type, perl_lexer::TokenType::EOF) {
+            break;
+        }
+        assert!(token_count < 20, "Too many tokens, possible infinite loop");
+    }
+}
+
+#[test]
+fn lexer_handles_malformed_heredoc_gracefully() {
+    // Heredoc without terminator
+    let mut lx = PerlLexer::new("<<EOF\nThis heredoc never ends");
+    let mut token_count = 0;
+    while let Some(token) = lx.next_token() {
+        token_count += 1;
+        if matches!(token.token_type, perl_lexer::TokenType::EOF) {
+            break;
+        }
+        assert!(token_count < 30, "Too many tokens, possible infinite loop");
+    }
+
+    // Empty heredoc delimiter
+    let mut lx = PerlLexer::new("<<\nContent\n");
+    let mut token_count = 0;
+    while let Some(token) = lx.next_token() {
+        token_count += 1;
+        if matches!(token.token_type, perl_lexer::TokenType::EOF) {
+            break;
+        }
+        assert!(token_count < 20, "Too many tokens, possible infinite loop");
+    }
+}
+
+#[test]
+fn lexer_rejects_unterminated_backtick_heredoc_label() {
+    let input = "<<`EOF\rprint 1;\r";
+    let mut lx = PerlLexer::new(input);
+    let tokens = lx.collect_tokens();
+
+    let has_heredoc = tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart));
+    assert!(!has_heredoc, "unterminated backtick label should not become heredoc");
+    assert!(tokens.iter().any(|t| matches!(t.token_type, TokenType::EOF)));
+}
+
+#[test]
+fn lexer_handles_data_markers_with_cr_line_endings() {
+    let input = "my $x = 1;\r__DATA__\rline one\rline two\r";
+    let mut lx = PerlLexer::new(input);
+    let tokens = lx.collect_tokens();
+
+    assert!(
+        tokens
+            .iter()
+            .any(|t| matches!(&t.token_type, TokenType::DataMarker(marker) if marker.as_ref() == "__DATA__")),
+        "expected __DATA__ marker in CR-delimited source"
+    );
+    assert!(
+        tokens.iter().any(|t| matches!(t.token_type, TokenType::DataBody(_))),
+        "expected data body after __DATA__ marker"
+    );
+}

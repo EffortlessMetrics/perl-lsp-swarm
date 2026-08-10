@@ -1,0 +1,13 @@
+out/
+out-test/
+node_modules/
+.vscode-test/
+coverage/
+*.vsix
+bin/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+.env
+*.log

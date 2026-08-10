@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# check-pr-review-convergence — semantic GitHub review convergence.
+#
+# The existing core remains the paginated GitHub fact collector for review
+# requests, submitted reviews, review threads, and dispositions. This public
+# command deliberately does not compose claim-digest or exact-head receipt
+# state into the verdict. A candidate push does not erase every useful review
+# conclusion; changed semantic seams are re-reviewed by the provider-native
+# flow.
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "usage: $0 <pr-number> [owner/repo]" >&2
+    exit 2
+fi
+
+PR="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CORE="$SCRIPT_DIR/check-pr-review-convergence-core"
+
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found on PATH" >&2; exit 2; }
+[[ -x "$CORE" || -f "$CORE" ]] || { echo "ERROR: review convergence core not found at $CORE" >&2; exit 2; }
+
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+CORE_EXIT=0
+# The core's receipt/head axes are retained only as compatibility observations.
+# Clear the legacy enforcement flag even when inherited from a caller.
+REVIEW_PROTOCOL_ENFORCE= bash "$CORE" "$@" >"$TMP_DIR/core.out" 2>"$TMP_DIR/core.err" || CORE_EXIT=$?
+CORE_JSON="$(sed -n '/^{/,$p' "$TMP_DIR/core.out")"
+
+not_proven() {
+    local reason="$1"
+    echo "NOT_PROVEN PR #$PR: $reason" >&2
+    jq -n --arg pr "$PR" --arg reason "$reason" '{
+      pr: ($pr | tonumber? // $pr),
+      converged: false,
+      review_currentness: "semantic_changed_seam",
+      exact_head_review_required: false,
+      material_claim_receipt_required: false,
+      formal_review: {
+        classification: "NOT_PROVEN",
+        status: "unusable",
+        reason: $reason
+      }
+    }'
+    exit 2
+}
+
+if [[ "$CORE_EXIT" -ge 2 ]]; then
+    cat "$TMP_DIR/core.err" >&2 || true
+    not_proven "github_facts_unavailable"
+fi
+
+if [[ -z "$CORE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
+    cat "$TMP_DIR/core.err" >&2 || true
+    not_proven "invalid_fact_collector_output"
+fi
+
+get_num() {
+    local selector="$1"
+    local value
+    if ! value="$(jq -r "$selector // 0" <<<"$CORE_JSON")"; then
+        return 1
+    fi
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$value"
+}
+
+load_num() {
+    local target="$1"
+    local selector="$2"
+    local value
+    if ! value="$(get_num "$selector")"; then
+        not_proven "invalid_numeric_review_fact"
+    fi
+    printf -v "$target" '%s' "$value"
+}
+
+IS_DRAFT="$(jq -r '.is_draft // false' <<<"$CORE_JSON")"
+load_num PENDING_REVIEWER_COUNT '.pending_reviewers | length'
+REVIEW_DECISION="$(jq -r '.review_decision // ""' <<<"$CORE_JSON")"
+load_num CURRENT_CHANGE_REQUEST_COUNT '.current_change_requests | length'
+load_num UNRESOLVED_ACTIVE '.unresolved_active'
+load_num UNRESOLVED_OUTDATED '.unresolved_outdated'
+load_num UNRESOLVED_TOTAL '.unresolved_total'
+load_num RESOLVED_WITHOUT_DISPOSITION '.resolved_without_disposition'
+load_num HUMAN_REVIEW_COUNT '.human_review_count'
+load_num DISMISSED_HUMAN_REVIEW_COUNT '.dismissed_human_review_count'
+USABLE_HUMAN_REVIEW_COUNT=$((HUMAN_REVIEW_COUNT - DISMISSED_HUMAN_REVIEW_COUNT))
+if [[ "$USABLE_HUMAN_REVIEW_COUNT" -lt 0 ]]; then
+    USABLE_HUMAN_REVIEW_COUNT=0
+fi
+
+CONVERGED=true
+PENDING=false
+FINDINGS_OPEN=false
+
+if [[ "$IS_DRAFT" == "true" ]]; then
+    PENDING=true
+    CONVERGED=false
+    echo "BLOCK PR #$PR: PR is draft; broad review is not yet requested" >&2
+fi
+
+if [[ "$PENDING_REVIEWER_COUNT" -gt 0 ]]; then
+    PENDING=true
+    CONVERGED=false
+    while IFS= read -r reviewer; do
+        echo "BLOCK PR #$PR: review is still requested from '$reviewer'" >&2
+    done < <(jq -r '.pending_reviewers[]?' <<<"$CORE_JSON")
+fi
+
+if [[ "$REVIEW_DECISION" == "CHANGES_REQUESTED" || "$CURRENT_CHANGE_REQUEST_COUNT" -gt 0 ]]; then
+    FINDINGS_OPEN=true
+    CONVERGED=false
+    echo "BLOCK PR #$PR: a submitted review still requests changes" >&2
+fi
+
+if [[ "$UNRESOLVED_ACTIVE" -gt 0 ]]; then
+    FINDINGS_OPEN=true
+    CONVERGED=false
+    echo "BLOCK PR #$PR: $UNRESOLVED_ACTIVE active review thread(s) remain unresolved" >&2
+fi
+
+if [[ "$UNRESOLVED_OUTDATED" -gt 0 ]]; then
+    FINDINGS_OPEN=true
+    CONVERGED=false
+    echo "BLOCK PR #$PR: $UNRESOLVED_OUTDATED outdated review thread(s) remain unresolved; the live ruleset still requires resolution" >&2
+fi
+
+if [[ "$RESOLVED_WITHOUT_DISPOSITION" -gt 0 ]]; then
+    FINDINGS_OPEN=true
+    CONVERGED=false
+    echo "BLOCK PR #$PR: $RESOLVED_WITHOUT_DISPOSITION resolved thread(s) have no disposition reply" >&2
+fi
+
+FORMAL_CLASSIFICATION="NOT_APPLICABLE"
+FORMAL_STATUS="not_required"
+FORMAL_REASON="no_pending_or_submitted_human_review"
+
+if [[ "$PENDING" == "true" ]]; then
+    FORMAL_CLASSIFICATION="PENDING"
+    FORMAL_STATUS="pending"
+    FORMAL_REASON="native_review_request_or_draft"
+elif [[ "$FINDINGS_OPEN" == "true" ]]; then
+    FORMAL_CLASSIFICATION="FINDINGS_OPEN"
+    FORMAL_STATUS="findings_open"
+    FORMAL_REASON="change_request_or_thread_finding"
+elif [[ "$USABLE_HUMAN_REVIEW_COUNT" -gt 0 ]]; then
+    FORMAL_CLASSIFICATION="REVIEWED"
+    FORMAL_STATUS="reviewed"
+    FORMAL_REASON="submitted_human_review_present"
+fi
+
+if [[ "$CONVERGED" == "true" ]]; then
+    echo "OK   PR #$PR: native review requests and findings have converged; prior review conclusions remain usable except where changed semantic seams require focused refresh"
+else
+    echo "FAIL PR #$PR: semantic review convergence not achieved — see BLOCK lines above"
+fi
+
+jq -n \
+    --argjson core "$CORE_JSON" \
+    --argjson converged "$CONVERGED" \
+    --arg classification "$FORMAL_CLASSIFICATION" \
+    --arg status "$FORMAL_STATUS" \
+    --arg reason "$FORMAL_REASON" \
+    --argjson usableReviews "$USABLE_HUMAN_REVIEW_COUNT" \
+    '$core + {
+      converged: $converged,
+      review_currentness: "semantic_changed_seam",
+      exact_head_review_required: false,
+      material_claim_receipt_required: false,
+      useful_submitted_review_count: $usableReviews,
+      formal_review: {
+        classification: $classification,
+        status: $status,
+        reason: $reason
+      },
+      legacy_receipt_observations: {
+        review_runs_in_flight: ($core.review_runs_in_flight // 0),
+        deep_review_receipt_head_match: ($core.deep_review_receipt_head_match // true),
+        verification_receipt_head_match: ($core.verification_receipt_head_match // true),
+        stale_reviews: ($core.stale_reviews // []),
+        claim_receipt_required: false
+      }
+    }'
+
+if [[ "$CONVERGED" == "true" ]]; then
+    exit 0
+fi
+exit 1

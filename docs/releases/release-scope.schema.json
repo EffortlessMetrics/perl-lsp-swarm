@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/releases/release-scope.schema.json",
+  "title": "Perl LSP release scope receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "release",
+    "track",
+    "phase",
+    "observation_sha",
+    "observed_at_utc",
+    "frozen_swarm_sha",
+    "queue_snapshot",
+    "release_lanes",
+    "classification_method",
+    "items",
+    "known_limitations",
+    "proof_refs",
+    "freeze_rules",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "release": { "const": "0.18.0" },
+    "track": { "const": "public-beta" },
+    "phase": { "const": "admission-frozen" },
+    "observation_sha": { "$ref": "#/$defs/sha" },
+    "observed_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "frozen_swarm_sha": { "type": "null" },
+    "queue_snapshot": { "$ref": "#/$defs/queueSnapshot" },
+    "release_lanes": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/releaseLane" },
+      "allOf": [
+        { "contains": { "properties": { "name": { "const": "release-truth" } }, "required": ["name"] } },
+        { "contains": { "properties": { "name": { "const": "release-workflow" } }, "required": ["name"] } },
+        { "contains": { "properties": { "name": { "const": "release-lineage" } }, "required": ["name"] } },
+        { "contains": { "properties": { "name": { "const": "installed-acceptance" } }, "required": ["name"] } }
+      ]
+    },
+    "classification_method": { "$ref": "#/$defs/classificationMethod" },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/item" }
+    },
+    "known_limitations": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "proof_refs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "freeze_rules": { "$ref": "#/$defs/freezeRules" },
+    "claim_boundary": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "queueSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "query_limit", "observed_open_count", "receipt_count", "observed_numbers", "set_equality"],
+      "properties": {
+        "query": {
+          "const": "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number"
+        },
+        "query_limit": { "const": 100 },
+        "observed_open_count": { "type": "integer", "minimum": 0 },
+        "receipt_count": { "type": "integer", "minimum": 0 },
+        "observed_numbers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "set_equality": { "const": true }
+      }
+    },
+    "releaseLane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "issue", "owner", "status", "acceptance", "proof"],
+      "properties": {
+        "name": { "enum": ["release-truth", "release-workflow", "release-lineage", "installed-acceptance"] },
+        "issue": { "type": "string", "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$" },
+        "owner": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["queued", "active", "blocked", "complete"] },
+        "acceptance": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "proof": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "classificationMethod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_and_ancestry", "ancestry_status", "work_id", "user_outcome", "current_main", "proof_strength", "missing_controls", "release_value", "regression_risk", "proof_cost", "rollback"],
+      "properties": {
+        "base_and_ancestry": { "type": "string", "minLength": 1 },
+        "ancestry_status": { "const": "not-proven" },
+        "work_id": { "type": "string", "minLength": 1 },
+        "user_outcome": { "type": "string", "minLength": 1 },
+        "current_main": { "type": "string", "minLength": 1 },
+        "proof_strength": { "type": "string", "minLength": 1 },
+        "missing_controls": { "type": "string", "minLength": 1 },
+        "release_value": { "type": "string", "minLength": 1 },
+        "regression_risk": { "type": "string", "minLength": 1 },
+        "proof_cost": { "type": "string", "minLength": 1 },
+        "rollback": { "type": "string", "minLength": 1 }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["failed", "pending", "basis"],
+      "properties": {
+        "failed": { "type": ["integer", "null"], "minimum": 0 },
+        "pending": { "type": ["integer", "null"], "minimum": 0 },
+        "basis": { "type": "string", "minLength": 1 }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number", "title", "url", "head_sha", "base_ref", "is_draft",
+        "mergeability", "checks", "unresolved_threads", "controlling_issue",
+        "paths", "relationship", "disposition", "rationale", "owner",
+        "acceptance", "proof", "follow_up_issue"
+      ],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[0-9]+$" },
+        "head_sha": { "$ref": "#/$defs/sha" },
+        "base_ref": { "type": "string", "minLength": 1 },
+        "is_draft": { "type": "boolean" },
+        "mergeability": { "enum": ["mergeable", "conflicting", "unknown"] },
+        "checks": { "$ref": "#/$defs/checks" },
+        "unresolved_threads": { "type": ["integer", "null"], "minimum": 0 },
+        "controlling_issue": {
+          "oneOf": [
+            { "type": "string", "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$" },
+            { "type": "null" }
+          ]
+        },
+        "paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "relationship": { "type": "string", "minLength": 1 },
+        "disposition": { "enum": ["0.18-blocker", "0.18-candidate", "post-0.18", "superseded"] },
+        "rationale": { "type": "string", "minLength": 1 },
+        "owner": { "type": ["string", "null"] },
+        "acceptance": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "proof": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "follow_up_issue": {
+          "oneOf": [
+            { "type": "string", "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$" },
+            { "type": "null" }
+          ]
+        },
+        "close_ready": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "disposition": { "const": "0.18-candidate" } } },
+          "then": {
+            "properties": {
+              "owner": { "type": "string", "minLength": 1 },
+              "acceptance": { "minItems": 1 },
+              "proof": { "minItems": 1 },
+              "unresolved_threads": { "const": 0 },
+              "checks": {
+                "properties": { "failed": { "const": 0 }, "pending": { "const": 0 } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "disposition": { "const": "0.18-blocker" } } },
+          "then": {
+            "properties": {
+              "owner": { "type": "string", "minLength": 1 },
+              "acceptance": { "minItems": 1 },
+              "proof": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "disposition": { "const": "post-0.18" } } },
+          "then": {
+            "properties": {
+              "follow_up_issue": { "type": "string", "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "disposition": { "const": "superseded" } } },
+          "then": {
+            "required": ["close_ready"],
+            "properties": { "proof": { "minItems": 1 } }
+          }
+        }
+      ]
+    },
+    "freezeRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["features_closed", "allowed_changes", "late_arrivals_default", "superseded_requires_close_proof", "acceptance_invalidation"],
+      "properties": {
+        "features_closed": { "const": true },
+        "allowed_changes": {
+          "const": ["release-blocker", "regression-fix", "packaging", "proof", "release-docs", "lineage"]
+        },
+        "late_arrivals_default": { "const": "post-0.18-unless-admitted-as-release-blocker" },
+        "superseded_requires_close_proof": { "const": true },
+        "acceptance_invalidation": { "const": "any-product-mutation-requires-fresh-installed-acceptance" }
+      }
+    }
+  }
+}

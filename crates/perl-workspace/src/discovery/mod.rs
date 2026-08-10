@@ -1,0 +1,1227 @@
+//! Git-aware Perl workspace file discovery.
+//!
+//! Finds Perl source files in a workspace root with a two-step strategy:
+//! 1. Try `git ls-files` for fast, `.gitignore`-aware enumeration.
+//! 2. Fall back to filesystem walking with `WalkDir` when git is unavailable.
+//!
+//! The resulting behavior is intentionally conservative: common non-source directories
+//! are skipped in both modes (`.git`, `.hg`, `.svn`, `target`, `node_modules`, `.cache`).
+//! Explicit include roots can relax that skip only for configured Perl dependency
+//! trees such as `local/lib/perl5`.
+
+use crate::ignore::{is_skipped_dir_name_with_extra, path_contains_skipped_component_with_extra};
+use perl_parser_core::source_file::is_perl_source_path;
+use std::collections::HashSet;
+use std::ffi::OsString;
+use std::io::Read;
+use std::path::Component;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use walkdir::{DirEntry, WalkDir};
+
+const GIT_LS_FILES_ARGS: [&str; 5] =
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"];
+
+/// How files were discovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryMethod {
+    /// Files discovered via `git ls-files`.
+    Git,
+    /// Files discovered via `WalkDir` traversal.
+    Walk,
+}
+
+/// File discovery result metadata.
+#[derive(Debug, Clone)]
+pub struct DiscoveryResult {
+    /// Discovered Perl source files.
+    pub files: Vec<PathBuf>,
+    /// Discovery method used.
+    pub method: DiscoveryMethod,
+    /// Elapsed discovery duration.
+    pub duration: Duration,
+    /// Number of entries excluded by extension/skip rules.
+    pub excluded_count: usize,
+    /// Whether discovery stopped early because the caller requested cancellation.
+    pub cancelled: bool,
+}
+
+/// Additive discovery policy overrides.
+///
+/// Built-in extension and skipped-directory defaults remain active. These
+/// lists let a workspace add project-specific extensions or noise directories
+/// without replacing the safe defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiscoveryConfig {
+    /// Additional file extensions accepted by discovery, without a leading dot.
+    pub extra_extensions: Vec<String>,
+    /// Additional directory names skipped by discovery.
+    pub extra_skipped_dirs: Vec<String>,
+}
+
+impl DiscoveryConfig {
+    /// Create a normalized additive discovery policy.
+    #[must_use]
+    pub fn new(extra_extensions: Vec<String>, extra_skipped_dirs: Vec<String>) -> Self {
+        Self {
+            extra_extensions: normalize_extensions(extra_extensions),
+            extra_skipped_dirs: normalize_names(extra_skipped_dirs),
+        }
+    }
+
+    fn is_discovery_path(&self, path: &Path) -> bool {
+        is_perl_source_path(path)
+            || path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+                is_builtin_discovery_extension(ext)
+                    || self
+                        .extra_extensions
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(ext))
+            })
+    }
+}
+
+fn normalize_extensions(values: Vec<String>) -> Vec<String> {
+    let mut normalized: Vec<String> = Vec::new();
+    for value in values {
+        let value = value.trim().trim_start_matches('.');
+        if !value.is_empty() && !normalized.iter().any(|item| item.eq_ignore_ascii_case(value)) {
+            normalized.push(value.to_ascii_lowercase());
+        }
+    }
+    normalized
+}
+
+fn normalize_names(values: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if !value.is_empty() && !normalized.iter().any(|item| item == value) {
+            normalized.push(value.to_string());
+        }
+    }
+    normalized
+}
+
+/// Discover Perl source files under `root`.
+///
+/// Strategy:
+/// 1. Attempt `git ls-files -z --cached --others --exclude-standard`
+/// 2. If git is unavailable or the root is not a repository, use `WalkDir`
+#[must_use]
+pub fn discover_perl_files(root: &Path) -> DiscoveryResult {
+    discover_perl_files_with_config(root, &[] as &[&Path], &DiscoveryConfig::default())
+}
+
+/// Discover Perl source files under `root`, honoring explicitly configured include paths.
+///
+/// This preserves the normal skip-by-default behavior for noisy directories,
+/// but allows traversal when a skipped directory is an ancestor of an include
+/// root such as `local/lib/perl5`, `blib`, or `vendor`.
+#[must_use]
+pub fn discover_perl_files_with_include_paths<P>(
+    root: &Path,
+    include_paths: &[P],
+) -> DiscoveryResult
+where
+    P: AsRef<Path>,
+{
+    discover_perl_files_with_config(root, include_paths, &DiscoveryConfig::default())
+}
+
+/// Discover Perl source files with include-path and additive policy overrides.
+#[must_use]
+pub fn discover_perl_files_with_config<P>(
+    root: &Path,
+    include_paths: &[P],
+    config: &DiscoveryConfig,
+) -> DiscoveryResult
+where
+    P: AsRef<Path>,
+{
+    discover_perl_files_with_config_and_cancel(root, include_paths, config, || false)
+}
+
+/// Discover Perl source files while cooperatively observing cancellation.
+///
+/// The callback is checked while waiting for `git ls-files`, while parsing its
+/// output, and during filesystem walking. A cancelled result contains any
+/// files discovered before cancellation and sets [`DiscoveryResult::cancelled`]
+/// to `true`.
+#[must_use]
+pub fn discover_perl_files_with_config_and_cancel<P, F>(
+    root: &Path,
+    include_paths: &[P],
+    config: &DiscoveryConfig,
+    should_cancel: F,
+) -> DiscoveryResult
+where
+    P: AsRef<Path>,
+    F: Fn() -> bool,
+{
+    let allowlist = DiscoveryIncludeAllowlist::from_include_paths(root, include_paths, config);
+    discover_perl_files_with_allowlist(root, &allowlist, config, &should_cancel)
+}
+
+fn discover_perl_files_with_allowlist(
+    root: &Path,
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
+) -> DiscoveryResult {
+    let start = Instant::now();
+
+    match try_git_discovery(root, start, allowlist, config, should_cancel) {
+        Ok(GitDiscoveryOutcome::Complete(result)) => result,
+        Ok(GitDiscoveryOutcome::Cancelled) => DiscoveryResult {
+            files: Vec::new(),
+            method: DiscoveryMethod::Git,
+            duration: start.elapsed(),
+            excluded_count: 0,
+            cancelled: true,
+        },
+        Err(_) => walk_discovery_with_allowlist(root, start, allowlist, config, should_cancel),
+    }
+}
+
+/// Returns `true` if `path` should be considered discoverable by workspace
+/// indexing.
+///
+/// This intentionally includes XS implementation files, SWIG interface files,
+/// and common Perl templating formats so editor discovery can surface them
+/// even though they are not classified as Perl source files by the shared
+/// source-file helper.
+#[must_use]
+pub fn is_perl_discovery_path(path: &Path) -> bool {
+    DiscoveryConfig::default().is_discovery_path(path)
+}
+
+fn is_builtin_discovery_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("i") || extension.eq_ignore_ascii_case("xs")
+}
+
+fn try_git_discovery(
+    root: &Path,
+    start: Instant,
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
+) -> Result<GitDiscoveryOutcome, std::io::Error> {
+    if should_cancel() {
+        return Ok(GitDiscoveryOutcome::Cancelled);
+    }
+
+    let mut child = std::process::Command::new("git")
+        .args(GIT_LS_FILES_ARGS)
+        .current_dir(root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("git ls-files did not provide a stdout pipe"))?;
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).map(|_| output)
+    });
+
+    let status = loop {
+        if should_cancel() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Ok(GitDiscoveryOutcome::Cancelled);
+        }
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let stdout = reader
+        .join()
+        .map_err(|_| std::io::Error::other("git ls-files reader thread panicked"))??;
+
+    if !status.success() {
+        return Err(std::io::Error::other("git ls-files failed"));
+    }
+
+    let (files, excluded_count, cancelled) =
+        parse_git_ls_files_output_with_cancel(root, &stdout, allowlist, config, should_cancel);
+    if cancelled {
+        return Ok(GitDiscoveryOutcome::Cancelled);
+    }
+    let result = DiscoveryResult {
+        files,
+        method: DiscoveryMethod::Git,
+        duration: start.elapsed(),
+        excluded_count,
+        cancelled: false,
+    };
+
+    log_discovery(&result);
+    Ok(GitDiscoveryOutcome::Complete(result))
+}
+
+enum GitDiscoveryOutcome {
+    Complete(DiscoveryResult),
+    Cancelled,
+}
+
+#[cfg(test)]
+fn parse_git_ls_files_output(root: &Path, stdout: &[u8]) -> (Vec<PathBuf>, usize) {
+    parse_git_ls_files_output_with_allowlist(
+        root,
+        stdout,
+        &DiscoveryIncludeAllowlist::default(),
+        &DiscoveryConfig::default(),
+    )
+}
+
+#[cfg(test)]
+fn parse_git_ls_files_output_with_allowlist(
+    root: &Path,
+    stdout: &[u8],
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+) -> (Vec<PathBuf>, usize) {
+    let (files, excluded_count, _) =
+        parse_git_ls_files_output_with_cancel(root, stdout, allowlist, config, &|| false);
+    (files, excluded_count)
+}
+
+fn parse_git_ls_files_output_with_cancel(
+    root: &Path,
+    stdout: &[u8],
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
+) -> (Vec<PathBuf>, usize, bool) {
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    let mut excluded_count: usize = 0;
+
+    for entry in stdout.split(|byte| *byte == b'\0') {
+        if should_cancel() {
+            sort_paths_lexically(&mut files);
+            return (files, excluded_count, true);
+        }
+        if entry.is_empty() {
+            continue;
+        }
+
+        let relative_path = PathBuf::from(bytes_to_os_string(entry));
+        let relative_path = relative_path.as_path();
+        if !is_safe_relative_git_path(relative_path) {
+            excluded_count += 1;
+            continue;
+        }
+        if allowlist.has_unallowed_skipped_component(relative_path) {
+            excluded_count += 1;
+            continue;
+        }
+
+        let path = root.join(relative_path);
+        if !config.is_discovery_path(&path) {
+            excluded_count += 1;
+            continue;
+        }
+
+        if should_require_existing_git_files(root) && !is_existing_regular_file(&path) {
+            excluded_count += 1;
+            continue;
+        }
+
+        if seen.insert(path.clone()) {
+            files.push(path);
+        } else {
+            excluded_count += 1;
+        }
+    }
+
+    sort_paths_lexically(&mut files);
+    (files, excluded_count, false)
+}
+
+#[cfg(unix)]
+fn bytes_to_os_string(bytes: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(bytes.to_vec())
+}
+
+#[cfg(not(unix))]
+fn bytes_to_os_string(bytes: &[u8]) -> OsString {
+    String::from_utf8_lossy(bytes).into_owned().into()
+}
+
+fn should_require_existing_git_files(root: &Path) -> bool {
+    root.is_dir()
+}
+
+fn is_existing_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+#[cfg(test)]
+fn walk_discovery(root: &Path, start: Instant) -> DiscoveryResult {
+    walk_discovery_with_allowlist(
+        root,
+        start,
+        &DiscoveryIncludeAllowlist::default(),
+        &DiscoveryConfig::default(),
+        &|| false,
+    )
+}
+
+fn walk_discovery_with_allowlist(
+    root: &Path,
+    start: Instant,
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
+) -> DiscoveryResult {
+    let mut files = Vec::new();
+    let mut excluded_count: usize = 0;
+    let mut skipped_dir_count: usize = 0;
+    let mut cancelled = false;
+
+    for entry in WalkDir::new(root).follow_links(false).into_iter().filter_entry(|entry| {
+        if should_skip_dir_with_allowlist(root, entry, allowlist, config) {
+            skipped_dir_count += 1;
+            return false;
+        }
+        true
+    }) {
+        if should_cancel() {
+            cancelled = true;
+            break;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        if config.is_discovery_path(entry.path()) {
+            files.push(entry.path().to_path_buf());
+        } else {
+            excluded_count += 1;
+        }
+    }
+    excluded_count += skipped_dir_count;
+    sort_paths_lexically(&mut files);
+
+    let result = DiscoveryResult {
+        files,
+        method: DiscoveryMethod::Walk,
+        duration: start.elapsed(),
+        excluded_count,
+        cancelled,
+    };
+
+    log_discovery(&result);
+    result
+}
+
+#[cfg(test)]
+fn should_skip_dir(entry: &DirEntry) -> bool {
+    should_skip_dir_with_allowlist(
+        Path::new(""),
+        entry,
+        &DiscoveryIncludeAllowlist::default(),
+        &DiscoveryConfig::default(),
+    )
+}
+
+fn should_skip_dir_with_allowlist(
+    root: &Path,
+    entry: &DirEntry,
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+
+    if !is_skipped_dir_name_with_extra(
+        &entry.file_name().to_string_lossy(),
+        &config.extra_skipped_dirs,
+    ) {
+        return false;
+    }
+
+    let Ok(relative_path) = entry.path().strip_prefix(root) else {
+        return true;
+    };
+    if relative_path.as_os_str().is_empty() {
+        return false;
+    }
+
+    !allowlist.should_traverse_skipped_dir(relative_path)
+}
+
+fn sort_paths_lexically(paths: &mut [PathBuf]) {
+    paths.sort_unstable_by(|left, right| left.as_os_str().cmp(right.as_os_str()));
+}
+
+fn is_safe_relative_git_path(path: &Path) -> bool {
+    !path.is_absolute()
+        && !path.components().any(|component| matches!(component, Component::ParentDir))
+}
+
+fn log_discovery(result: &DiscoveryResult) {
+    tracing::debug!(
+        files = result.files.len(),
+        method = ?result.method,
+        duration_ms = result.duration.as_secs_f64() * 1000.0,
+        excluded = result.excluded_count,
+        "workspace discovery complete"
+    );
+}
+
+#[derive(Debug, Default)]
+struct DiscoveryIncludeAllowlist {
+    include_roots: Vec<PathBuf>,
+    extra_skipped_dirs: Vec<String>,
+}
+
+impl DiscoveryIncludeAllowlist {
+    fn from_include_paths<P>(
+        workspace_root: &Path,
+        include_paths: &[P],
+        config: &DiscoveryConfig,
+    ) -> Self
+    where
+        P: AsRef<Path>,
+    {
+        let mut include_roots = Vec::new();
+        let mut seen = HashSet::new();
+
+        for include_path in include_paths {
+            let Some(relative_path) = normalize_include_path(workspace_root, include_path.as_ref())
+            else {
+                continue;
+            };
+
+            if relative_path.as_os_str().is_empty()
+                || !path_contains_skipped_component_with_extra(
+                    &relative_path,
+                    &config.extra_skipped_dirs,
+                )
+            {
+                continue;
+            }
+
+            if seen.insert(relative_path.clone()) {
+                include_roots.push(relative_path);
+            }
+        }
+
+        Self { include_roots, extra_skipped_dirs: config.extra_skipped_dirs.clone() }
+    }
+
+    fn has_unallowed_skipped_component(&self, relative_path: &Path) -> bool {
+        if !path_contains_skipped_component_with_extra(relative_path, &self.extra_skipped_dirs) {
+            return false;
+        }
+
+        if let Some(remainder) = self.allowed_include_remainder(relative_path) {
+            return path_contains_skipped_component_with_extra(remainder, &self.extra_skipped_dirs);
+        }
+
+        true
+    }
+
+    fn should_traverse_skipped_dir(&self, relative_dir: &Path) -> bool {
+        self.include_roots.iter().any(|root| root == relative_dir || root.starts_with(relative_dir))
+    }
+
+    fn allowed_include_remainder<'a>(&self, relative_path: &'a Path) -> Option<&'a Path> {
+        self.include_roots
+            .iter()
+            .filter(|root| relative_path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .and_then(|root| relative_path.strip_prefix(root).ok())
+    }
+}
+
+fn normalize_include_path(workspace_root: &Path, include_path: &Path) -> Option<PathBuf> {
+    let relative_path = if include_path.is_absolute() {
+        include_path.strip_prefix(workspace_root).ok()?
+    } else {
+        include_path
+    };
+
+    normalize_relative_path(relative_path)
+}
+
+fn normalize_relative_path(path: &Path) -> Option<PathBuf> {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    Some(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DiscoveryConfig, DiscoveryIncludeAllowlist, DiscoveryMethod, parse_git_ls_files_output,
+        parse_git_ls_files_output_with_allowlist, should_skip_dir, walk_discovery,
+    };
+    use crate::ignore::path_contains_skipped_component;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn create_file(root: &Path, relative: &str) -> TestResult {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, "# synthetic\n")?;
+        Ok(())
+    }
+
+    #[test]
+    fn parses_git_output_and_filters_entries() {
+        let root = Path::new("/tmp/workspace");
+        let payload = b"lib/Foo.pm\0README.md\0node_modules/pkg.pm\0script.pl\0";
+
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|path| path.ends_with("lib/Foo.pm")));
+        assert!(files.iter().any(|path| path.ends_with("script.pl")));
+        assert_eq!(excluded_count, 2);
+    }
+
+    #[test]
+    fn skipped_component_detection_is_consistent() {
+        assert!(path_contains_skipped_component(Path::new("/repo/node_modules/pkg.pm")));
+        assert!(path_contains_skipped_component(Path::new("/repo/target/build/generated.pm")));
+        assert!(!path_contains_skipped_component(Path::new("/repo/lib/My/Module.pm")));
+    }
+
+    #[test]
+    fn parse_git_output_ignores_skipped_names_in_workspace_root_path() {
+        let root = Path::new("/tmp/target/workspace");
+        let payload = b"lib/Foo.pm\0";
+
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("lib/Foo.pm"));
+        assert_eq!(excluded_count, 0);
+    }
+
+    #[test]
+    fn walk_discovery_ignores_skipped_directories() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, "lib/Foo.pm")?;
+        create_file(root, "node_modules/pkg.pm")?;
+        create_file(root, "target/build/generated.pm")?;
+        create_file(root, ".cache/precompiled.pm")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(result.method, DiscoveryMethod::Walk);
+        assert_eq!(result.files.len(), 1);
+        assert!(result.files[0].ends_with("lib/Foo.pm"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn walk_discovery_counts_skipped_directories_as_excluded() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, "lib/Foo.pm")?;
+        create_file(root, "node_modules/pkg.pm")?;
+        create_file(root, "target/build/generated.pm")?;
+        create_file(root, ".cache/precompiled.pm")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(result.method, DiscoveryMethod::Walk);
+        assert_eq!(result.files.len(), 1);
+        assert!(result.files[0].ends_with("lib/Foo.pm"));
+        assert_eq!(result.excluded_count, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cancellable_discovery_stops_during_walk() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        for index in 0..256 {
+            create_file(tmp.path(), &format!("lib/Module{index}.pm"))?;
+        }
+        let checks = AtomicUsize::new(0);
+        let result = super::super::discovery::discover_perl_files_with_config_and_cancel(
+            tmp.path(),
+            &[] as &[&Path],
+            &DiscoveryConfig::default(),
+            || checks.fetch_add(1, Ordering::Relaxed) >= 3,
+        );
+
+        assert!(result.cancelled, "discovery should report cooperative cancellation");
+        assert!(
+            result.files.len() < 256,
+            "cancelled discovery should not enumerate the complete workspace"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn should_skip_dir_matches_conventional_noise_directories() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join(".git"))?;
+        fs::create_dir_all(root.join("node_modules"))?;
+        fs::create_dir_all(root.join("src"))?;
+
+        let mut seen_git = false;
+        let mut seen_node_modules = false;
+        let mut seen_src = false;
+
+        for entry in walkdir::WalkDir::new(root).max_depth(1).into_iter().flatten() {
+            if entry.path() == root {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy();
+            match name.as_ref() {
+                ".git" => {
+                    seen_git = true;
+                    assert!(should_skip_dir(&entry));
+                }
+                "node_modules" => {
+                    seen_node_modules = true;
+                    assert!(should_skip_dir(&entry));
+                }
+                "src" => {
+                    seen_src = true;
+                    assert!(!should_skip_dir(&entry));
+                }
+                _ => {}
+            }
+        }
+
+        assert!(seen_git);
+        assert!(seen_node_modules);
+        assert!(seen_src);
+
+        Ok(())
+    }
+
+    // --- Additional coverage: parse_git_ls_files_output edge cases ---
+
+    #[test]
+    fn parse_git_output_empty_input_returns_nothing() {
+        let root = Path::new("/tmp/workspace");
+        let (files, excluded_count) = parse_git_ls_files_output(root, b"");
+        assert_eq!(files.len(), 0);
+        assert_eq!(excluded_count, 0);
+    }
+
+    #[test]
+    fn parse_git_output_only_null_separators() {
+        let root = Path::new("/tmp/workspace");
+        let (files, excluded_count) = parse_git_ls_files_output(root, b"\0\0\0");
+        assert_eq!(files.len(), 0);
+        assert_eq!(excluded_count, 0);
+    }
+
+    #[test]
+    fn parse_git_output_recognizes_all_perl_extensions() {
+        let root = Path::new("/tmp/workspace");
+        let payload =
+            b"lib/Foo.pm\0scripts/run.pl\0t/basic.t\0app/main.psgi\0ext/native.xs\0templates/page.html.ep\0templates/page.tt\0templates/layout.tt2\0";
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 8);
+        assert!(files.iter().any(|p| p.ends_with("Foo.pm")));
+        assert!(files.iter().any(|p| p.ends_with("run.pl")));
+        assert!(files.iter().any(|p| p.ends_with("basic.t")));
+        assert!(files.iter().any(|p| p.ends_with("main.psgi")));
+        assert!(files.iter().any(|p| p.ends_with("native.xs")));
+        assert!(files.iter().any(|p| p.ends_with("page.html.ep")));
+        assert!(files.iter().any(|p| p.ends_with("page.tt")));
+        assert!(files.iter().any(|p| p.ends_with("layout.tt2")));
+        assert_eq!(excluded_count, 0);
+    }
+
+    #[test]
+    fn parse_git_output_counts_non_perl_as_excluded() {
+        let root = Path::new("/tmp/workspace");
+        let payload = b"README.md\0Makefile\0config.yaml\0";
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 0);
+        assert_eq!(excluded_count, 3);
+    }
+
+    #[test]
+    fn parse_git_output_excludes_all_skipped_directories() {
+        let root = Path::new("/tmp/workspace");
+        let payload = b".git/hooks/pre-commit.pl\0.hg/config.pm\0.svn/entries.pm\0target/out.pm\0node_modules/dep.pm\0.cache/fast.pm\0";
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 0);
+        assert_eq!(excluded_count, 6);
+    }
+
+    #[test]
+    fn parse_git_output_allows_configured_local_lib_perl5_only() {
+        let root = Path::new("/tmp/workspace");
+        let include_paths = vec!["local/lib/perl5".to_string()];
+        let allowlist = DiscoveryIncludeAllowlist::from_include_paths(
+            root,
+            &include_paths,
+            &DiscoveryConfig::default(),
+        );
+        let payload = b"lib/Foo.pm\0local/lib/perl5/Remote/Module.pm\0local/Other.pm\0local/lib/perl5/.cache/Skipped.pm\0";
+
+        let (files, excluded_count) = parse_git_ls_files_output_with_allowlist(
+            root,
+            payload,
+            &allowlist,
+            &DiscoveryConfig::default(),
+        );
+
+        assert_eq!(
+            files,
+            vec![root.join("lib/Foo.pm"), root.join("local/lib/perl5/Remote/Module.pm")]
+        );
+        assert_eq!(excluded_count, 2);
+    }
+
+    #[test]
+    fn parse_git_output_joins_root_to_relative_paths() {
+        let root = Path::new("/home/user/project");
+        let payload = b"lib/Module.pm\0";
+        let (files, _) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0], Path::new("/home/user/project/lib/Module.pm"));
+    }
+
+    #[test]
+    fn parse_git_output_filters_stale_and_non_file_entries_for_existing_roots() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, "lib/Current.pm")?;
+        fs::create_dir_all(root.join("lib/Directory.pm"))?;
+
+        let payload = b"lib/Current.pm\0lib/Deleted.pm\0lib/Directory.pm\0";
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files, vec![root.join("lib/Current.pm")]);
+        assert_eq!(excluded_count, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_git_output_excludes_parent_directory_components() {
+        let root = Path::new("/tmp/workspace");
+        let payload = b"../outside.pm\0lib/ok.pm\0";
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files, vec![root.join("lib/ok.pm")]);
+        assert_eq!(excluded_count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_git_output_excludes_absolute_paths() {
+        let root = Path::new("/tmp/workspace");
+        // git ls-files should never emit absolute paths, but defend against
+        // a corrupted or adversarial git output that attempts path escape.
+        let payload = b"/etc/passwd\0lib/ok.pm\0";
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files, vec![root.join("lib/ok.pm")]);
+        assert_eq!(excluded_count, 1);
+    }
+
+    #[test]
+    fn parse_git_output_excludes_embedded_parent_directory_traversal() {
+        let root = Path::new("/tmp/workspace");
+        // Embedded `..` must be rejected even when not at the start of the path.
+        let payload = b"lib/../../etc/passwd\0lib/ok.pm\0";
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files, vec![root.join("lib/ok.pm")]);
+        assert_eq!(excluded_count, 1);
+    }
+
+    #[test]
+    fn parse_git_output_deduplicates_duplicate_entries() {
+        let root = Path::new("/tmp/workspace");
+        let payload = b"lib/Foo.pm\0lib/Foo.pm\0script.pl\0script.pl\0README.md\0";
+
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|p| p.ends_with("lib/Foo.pm")));
+        assert!(files.iter().any(|p| p.ends_with("script.pl")));
+        // Two duplicate Perl paths + one non-Perl file.
+        assert_eq!(excluded_count, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_git_output_handles_non_utf8_paths() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = Path::new("/tmp/workspace");
+        let payload = b"lib/\xFFfoo.pm\0";
+
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(excluded_count, 0);
+        assert!(files[0].as_os_str().as_bytes().ends_with(b"lib/\xFFfoo.pm"));
+    }
+
+    // --- Additional coverage: path_contains_skipped_component ---
+
+    #[test]
+    fn skipped_component_detects_each_directory_individually() {
+        let skipped = [".git", ".hg", ".svn", "target", "node_modules", ".cache"];
+        for dir in skipped {
+            let path_str = format!("lib/{dir}/nested.pm");
+            assert!(
+                path_contains_skipped_component(Path::new(&path_str)),
+                "expected {dir} to be skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn skipped_component_allows_safe_directories() {
+        let safe = ["lib", "src", "bin", "t", "scripts"];
+        for dir in safe {
+            let path_str = format!("{dir}/Module.pm");
+            assert!(
+                !path_contains_skipped_component(Path::new(&path_str)),
+                "expected {dir} to be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn skipped_component_rejects_blib_directory() {
+        assert!(path_contains_skipped_component(Path::new("blib/Module.pm")));
+    }
+
+    #[test]
+    fn skipped_component_empty_path_returns_false() {
+        assert!(!path_contains_skipped_component(Path::new("")));
+    }
+
+    #[test]
+    fn skipped_component_single_filename_returns_false() {
+        assert!(!path_contains_skipped_component(Path::new("Module.pm")));
+    }
+
+    #[test]
+    fn skipped_component_deeply_nested() {
+        assert!(path_contains_skipped_component(Path::new("a/b/c/node_modules/d/e/f.pm")));
+    }
+
+    // --- Additional coverage: walk_discovery edge cases ---
+
+    #[test]
+    fn walk_discovery_empty_directory() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let result = walk_discovery(tmp.path(), Instant::now());
+
+        assert_eq!(result.method, DiscoveryMethod::Walk);
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.excluded_count, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn walk_discovery_only_non_perl_files() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, "README.md")?;
+        create_file(root, "Makefile")?;
+        create_file(root, "config.yaml")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(result.method, DiscoveryMethod::Walk);
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.excluded_count, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn walk_discovery_finds_all_perl_extensions() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, "lib/Foo.pm")?;
+        create_file(root, "bin/run.pl")?;
+        create_file(root, "t/basic.t")?;
+        create_file(root, "app/main.psgi")?;
+        create_file(root, "xs/native.xs")?;
+        create_file(root, "templates/page.html.ep")?;
+        create_file(root, "templates/page.tt")?;
+        create_file(root, "templates/layout.tt2")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(result.files.len(), 8);
+        assert!(result.files.iter().any(|p| p.ends_with("page.html.ep")));
+        assert!(result.files.iter().any(|p| p.ends_with("page.tt")));
+        assert!(result.files.iter().any(|p| p.ends_with("layout.tt2")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn walk_discovery_deeply_nested_perl_files() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, "a/b/c/d/e/Deep.pm")?;
+        create_file(root, "x/y/z/script.pl")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(result.files.len(), 2);
+        assert!(result.files.iter().any(|p| p.ends_with("Deep.pm")));
+        assert!(result.files.iter().any(|p| p.ends_with("script.pl")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn walk_discovery_skips_all_six_noise_directories() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, ".git/hooks/hook.pm")?;
+        create_file(root, ".hg/config.pm")?;
+        create_file(root, ".svn/entries.pm")?;
+        create_file(root, "target/build/out.pm")?;
+        create_file(root, "node_modules/dep.pm")?;
+        create_file(root, ".cache/fast.pm")?;
+        create_file(root, "lib/Visible.pm")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(result.files.len(), 1);
+        assert!(result.files[0].ends_with("lib/Visible.pm"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn walk_discovery_records_duration() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let result = walk_discovery(tmp.path(), Instant::now());
+        // Duration should be non-zero (or at least not panic)
+        let _ = result.duration.as_nanos();
+
+        Ok(())
+    }
+
+    #[test]
+    fn walk_discovery_ignores_subdirectories_themselves() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        // Create a directory that looks like a .pm file (edge case)
+        fs::create_dir_all(root.join("lib/Fake.pm/nested"))?;
+        create_file(root, "lib/Real.pm")?;
+
+        let result = walk_discovery(root, Instant::now());
+        // Only the actual file should be found, not the directory
+        assert_eq!(result.files.len(), 1);
+        assert!(result.files[0].ends_with("lib/Real.pm"));
+
+        Ok(())
+    }
+
+    // --- Additional coverage: should_skip_dir for non-directory entries ---
+
+    #[test]
+    fn should_skip_dir_returns_false_for_files() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        // Create a file (not a directory)
+        fs::write(root.join("target.txt"), "data")?;
+
+        for entry in walkdir::WalkDir::new(root).max_depth(1).into_iter().flatten() {
+            if entry.path() == root {
+                continue;
+            }
+            if entry.file_type().is_file() {
+                // Files should never be skipped by should_skip_dir
+                assert!(!should_skip_dir(&entry));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_skip_dir_covers_all_six_directories() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        let dirs = [".git", ".hg", ".svn", "target", "node_modules", ".cache"];
+        for d in dirs {
+            fs::create_dir_all(root.join(d))?;
+        }
+
+        let mut matched = 0usize;
+        for entry in walkdir::WalkDir::new(root).max_depth(1).into_iter().flatten() {
+            if entry.path() == root {
+                continue;
+            }
+            if entry.file_type().is_dir() {
+                let name = entry.file_name().to_string_lossy();
+                if dirs.contains(&name.as_ref()) {
+                    assert!(should_skip_dir(&entry), "expected {name} to be skipped");
+                    matched += 1;
+                }
+            }
+        }
+
+        assert_eq!(matched, dirs.len());
+        Ok(())
+    }
+
+    // --- Additional coverage: DiscoveryMethod traits ---
+
+    #[test]
+    fn discovery_method_debug_and_equality() {
+        let git = DiscoveryMethod::Git;
+        let walk = DiscoveryMethod::Walk;
+        let git2 = DiscoveryMethod::Git;
+
+        assert_eq!(git, git2);
+        assert_ne!(git, walk);
+        // Debug is derivable, just verify it doesn't panic
+        let _ = format!("{git:?}");
+        let _ = format!("{walk:?}");
+    }
+
+    #[test]
+    fn discovery_method_clone_and_copy() {
+        let original = DiscoveryMethod::Git;
+        let cloned = original;
+        let copied = original;
+
+        assert_eq!(original, cloned);
+        assert_eq!(original, copied);
+    }
+
+    // --- Additional coverage: DiscoveryResult ---
+
+    #[test]
+    fn discovery_result_clone_and_debug() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+        create_file(root, "lib/Foo.pm")?;
+
+        let result = walk_discovery(root, Instant::now());
+        let cloned = result.clone();
+
+        assert_eq!(cloned.files.len(), result.files.len());
+        assert_eq!(cloned.method, result.method);
+        assert_eq!(cloned.excluded_count, result.excluded_count);
+        // Debug format should not panic
+        let _ = format!("{result:?}");
+
+        Ok(())
+    }
+
+    // --- Additional coverage: mixed Perl and non-Perl content ---
+
+    #[test]
+    fn walk_discovery_mixed_content_accurate_counts() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        // 3 Perl files
+        create_file(root, "lib/A.pm")?;
+        create_file(root, "bin/b.pl")?;
+        create_file(root, "t/c.t")?;
+        // 2 non-Perl files
+        create_file(root, "README.md")?;
+        create_file(root, "Makefile")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(result.files.len(), 3);
+        assert_eq!(result.excluded_count, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_git_output_mixed_content_accurate_counts() {
+        let root = Path::new("/tmp/workspace");
+        let payload =
+            b"lib/A.pm\0bin/b.pl\0t/c.t\0app/d.psgi\0README.md\0Makefile\0node_modules/e.pm\0";
+
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+        assert_eq!(files.len(), 4);
+        // README.md + Makefile (non-perl) + node_modules/e.pm (skipped dir)
+        assert_eq!(excluded_count, 3);
+    }
+
+    #[test]
+    fn parse_git_output_sorts_paths_lexically_for_determinism() {
+        let root = Path::new("/tmp/workspace");
+        let payload = b"zeta/Z.pm\0alpha/A.pm\0mid/M.pm\0";
+
+        let (files, excluded_count) = parse_git_ls_files_output(root, payload);
+
+        assert_eq!(excluded_count, 0);
+        assert_eq!(
+            files,
+            vec![root.join("alpha/A.pm"), root.join("mid/M.pm"), root.join("zeta/Z.pm"),]
+        );
+    }
+
+    #[test]
+    fn walk_discovery_sorts_paths_lexically_for_determinism() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+
+        create_file(root, "zeta/Z.pm")?;
+        create_file(root, "alpha/A.pm")?;
+        create_file(root, "mid/M.pm")?;
+
+        let result = walk_discovery(root, Instant::now());
+        assert_eq!(
+            result.files,
+            vec![root.join("alpha/A.pm"), root.join("mid/M.pm"), root.join("zeta/Z.pm"),]
+        );
+
+        Ok(())
+    }
+}

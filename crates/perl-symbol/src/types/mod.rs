@@ -1,0 +1,484 @@
+//! Symbol taxonomy: `SymbolKind`, `VarKind`, and LSP protocol mappings.
+//!
+//! This module provides the canonical classification of Perl symbols used across
+//! the parser, semantic analyzer, workspace index, and LSP providers. It is the
+//! single source of truth for symbol kinds in the `perl-lsp` ecosystem.
+//!
+//! # Design Goals
+//!
+//! - **Single source of truth**: All symbol classification flows through this module
+//! - **Perl semantics**: Distinguishes variables by sigil type (scalar/array/hash)
+//! - **LSP compatibility**: Direct mapping to LSP protocol symbol kinds
+//! - **Zero-cost abstractions**: Enum variants are `Copy` types with inline methods
+
+use serde::{Deserialize, Serialize};
+
+/// Minimum query length (in `char`s of the lowercased query) that admits the
+/// loose match tiers (substring and subsequence) for symbol search. (#5335)
+///
+/// A one-character query is too weak to justify loose matching: nearly every
+/// symbol in a workspace contains that character somewhere, producing an
+/// overwhelming and unhelpful result set. Such queries are restricted to the
+/// exact and prefix tiers instead.
+///
+/// Length is measured on the *lowercased* query, because lowercasing can
+/// lengthen a one-character input: 'İ' (U+0130) lowercases to the two chars
+/// "i\u{307}", which then admits loose tiers. This is intentional. The
+/// lowercased form is what the matchers actually compare against.
+///
+/// Applied consistently to every symbol source that feeds a `workspace/symbol`
+/// response so that all result sets narrow short queries identically. (#5407)
+pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
+
+/// Variable sigil classification for Perl's three primary container types.
+///
+/// Perl distinguishes variables by their sigil prefix, which determines
+/// the container type and access semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum VarKind {
+    /// Scalar variable (`$foo`) - holds a single value
+    Scalar,
+    /// Array variable (`@foo`) - holds an ordered list
+    Array,
+    /// Hash variable (`%foo`) - holds key-value pairs
+    Hash,
+}
+
+impl VarKind {
+    /// Returns the sigil character for this variable kind.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_symbol::VarKind;
+    ///
+    /// assert_eq!(VarKind::Scalar.sigil(), "$");
+    /// assert_eq!(VarKind::Array.sigil(), "@");
+    /// assert_eq!(VarKind::Hash.sigil(), "%");
+    /// ```
+    #[inline]
+    pub const fn sigil(self) -> &'static str {
+        match self {
+            VarKind::Scalar => "$",
+            VarKind::Array => "@",
+            VarKind::Hash => "%",
+        }
+    }
+}
+
+/// Unified Perl symbol classification for LSP tooling.
+///
+/// This enum represents all meaningful symbol types in Perl code, designed
+/// to be the canonical taxonomy across all crates in the perl-lsp ecosystem.
+///
+/// # LSP Protocol Mapping
+///
+/// Each variant maps to an LSP `SymbolKind` number via [`Self::to_lsp_kind()`]:
+///
+/// | Variant | LSP Kind | Number | Description |
+/// |---------|----------|--------|-------------|
+/// | `Package` | Module | 2 | Package declaration |
+/// | `Class` | Class | 5 | OO class (Moose, Moo, class keyword) |
+/// | `Role` | Interface | 8 | Role definition (Moose::Role) |
+/// | `Subroutine` | Function | 12 | Standalone subroutine |
+/// | `Method` | Method | 6 | OO method |
+/// | `Variable(_)` | Variable | 13 | Variables (scalar, array, hash) |
+/// | `Constant` | Constant | 14 | use constant or Readonly |
+/// | `Import` | Module | 2 | Imported symbol |
+/// | `Export` | Function | 12 | Exported symbol |
+/// | `Label` | Key | 20 | Loop/block label |
+/// | `Format` | Struct | 23 | format declaration |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SymbolKind {
+    // -------------------------------------------------------------------------
+    // Package/namespace types
+    // -------------------------------------------------------------------------
+    /// Package declaration (`package Foo;`)
+    Package,
+    /// OO class declaration (class keyword, Moose, Moo)
+    Class,
+    /// Role definition (role keyword, Moose::Role)
+    Role,
+
+    // -------------------------------------------------------------------------
+    // Callable types
+    // -------------------------------------------------------------------------
+    /// Subroutine definition (`sub name { }`)
+    Subroutine,
+    /// Method definition in OO context
+    Method,
+
+    // -------------------------------------------------------------------------
+    // Variable types
+    // -------------------------------------------------------------------------
+    /// Variable declaration with sigil-based container type
+    Variable(VarKind),
+
+    // -------------------------------------------------------------------------
+    // Value/reference types
+    // -------------------------------------------------------------------------
+    /// Constant value (`use constant NAME => value`)
+    Constant,
+    /// Imported symbol from `use` statement
+    Import,
+    /// Exported symbol via Exporter
+    Export,
+
+    // -------------------------------------------------------------------------
+    // Control flow and special types
+    // -------------------------------------------------------------------------
+    /// Loop/block label (`LABEL: while ...`)
+    Label,
+    /// Format declaration (`format STDOUT =`)
+    Format,
+}
+
+impl SymbolKind {
+    #[inline]
+    const fn base_lsp_kind(self) -> u32 {
+        match self {
+            SymbolKind::Package => 2,      // Module
+            SymbolKind::Class => 5,        // Class
+            SymbolKind::Role => 8,         // Interface
+            SymbolKind::Subroutine => 12,  // Function
+            SymbolKind::Method => 6,       // Method
+            SymbolKind::Variable(_) => 13, // Variable
+            SymbolKind::Constant => 14,    // Constant
+            SymbolKind::Import => 2,       // Module
+            SymbolKind::Export => 12,      // Function
+            SymbolKind::Label => 20,       // Key
+            SymbolKind::Format => 23,      // Struct
+        }
+    }
+
+    /// Convert to LSP-compliant symbol kind number (workspace profile).
+    ///
+    /// Maps Perl symbol types to the closest LSP protocol equivalents.
+    /// This is the default mapping used for workspace symbols where a
+    /// generic "Variable" kind is appropriate for all variable types.
+    ///
+    /// See the enum documentation for the full mapping table.
+    #[inline]
+    pub const fn to_lsp_kind(self) -> u32 {
+        self.base_lsp_kind()
+    }
+
+    /// Convert to LSP symbol kind with richer variable type distinctions.
+    ///
+    /// This mapping provides a richer UI experience for document symbols
+    /// by distinguishing between scalar, array, and hash variables:
+    ///
+    /// | Variable Type | LSP Kind | Number | Icon |
+    /// |---------------|----------|--------|------|
+    /// | Scalar (`$`) | Variable | 13 | generic variable |
+    /// | Array (`@`) | Array | 18 | array/list icon |
+    /// | Hash (`%`) | Object | 19 | object/dict icon |
+    ///
+    /// Use this for document symbol providers where visual distinction
+    /// of variable types improves navigation.
+    #[inline]
+    pub const fn to_lsp_kind_document_symbol(self) -> u32 {
+        match self {
+            SymbolKind::Variable(VarKind::Scalar) => 13, // Variable
+            SymbolKind::Variable(VarKind::Array) => 18,  // Array
+            SymbolKind::Variable(VarKind::Hash) => 19,   // Object
+            _ => self.base_lsp_kind(),
+        }
+    }
+
+    /// Returns the sigil for this symbol kind if applicable.
+    ///
+    /// Only variable symbols have sigils; all other symbols return `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_symbol::{SymbolKind, VarKind};
+    ///
+    /// assert_eq!(SymbolKind::Variable(VarKind::Scalar).sigil(), Some("$"));
+    /// assert_eq!(SymbolKind::Variable(VarKind::Array).sigil(), Some("@"));
+    /// assert_eq!(SymbolKind::Subroutine.sigil(), None);
+    /// ```
+    #[inline]
+    pub const fn sigil(self) -> Option<&'static str> {
+        match self {
+            SymbolKind::Variable(vk) => Some(vk.sigil()),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this is any variable type.
+    #[inline]
+    pub const fn is_variable(self) -> bool {
+        matches!(self, SymbolKind::Variable(_))
+    }
+
+    /// Returns true if this is a callable type (subroutine or method).
+    #[inline]
+    pub const fn is_callable(self) -> bool {
+        matches!(self, SymbolKind::Subroutine | SymbolKind::Method)
+    }
+
+    /// Returns true if two kinds are compatible for rename/reference matching.
+    ///
+    /// This bridges gaps where declarations and references use different kinds:
+    /// - `Method` declarations ↔ `Subroutine` references (method calls recorded as Subroutine)
+    /// - `Constant` declarations ↔ `Subroutine` references (constants called as `FOO()`)
+    ///
+    /// Variables remain strict (cross-sigil handled separately via element-access logic).
+    #[inline]
+    pub fn kind_compatible(self, other: SymbolKind) -> bool {
+        if self == other {
+            return true;
+        }
+        // Method and Subroutine are interchangeable for rename purposes
+        if self.is_callable() && other.is_callable() {
+            return true;
+        }
+        // Constants invoked as FOO() are recorded as Subroutine references
+        if matches!(
+            (self, other),
+            (SymbolKind::Constant, SymbolKind::Subroutine)
+                | (SymbolKind::Subroutine, SymbolKind::Constant)
+        ) {
+            return true;
+        }
+        false
+    }
+
+    /// Returns true if this is a namespace type (package, class, or role).
+    #[inline]
+    pub const fn is_namespace(self) -> bool {
+        matches!(self, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role)
+    }
+
+    /// Create a scalar variable symbol kind.
+    #[inline]
+    pub const fn scalar() -> Self {
+        SymbolKind::Variable(VarKind::Scalar)
+    }
+
+    /// Create an array variable symbol kind.
+    #[inline]
+    pub const fn array() -> Self {
+        SymbolKind::Variable(VarKind::Array)
+    }
+
+    /// Create a hash variable symbol kind.
+    #[inline]
+    pub const fn hash() -> Self {
+        SymbolKind::Variable(VarKind::Hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_var_kind_sigils() {
+        assert_eq!(VarKind::Scalar.sigil(), "$");
+        assert_eq!(VarKind::Array.sigil(), "@");
+        assert_eq!(VarKind::Hash.sigil(), "%");
+    }
+
+    #[test]
+    fn test_symbol_kind_sigils() {
+        assert_eq!(SymbolKind::Variable(VarKind::Scalar).sigil(), Some("$"));
+        assert_eq!(SymbolKind::Variable(VarKind::Array).sigil(), Some("@"));
+        assert_eq!(SymbolKind::Variable(VarKind::Hash).sigil(), Some("%"));
+        assert_eq!(SymbolKind::Subroutine.sigil(), None);
+        assert_eq!(SymbolKind::Package.sigil(), None);
+    }
+
+    #[test]
+    fn test_lsp_kind_mapping() {
+        assert_eq!(SymbolKind::Package.to_lsp_kind(), 2);
+        assert_eq!(SymbolKind::Class.to_lsp_kind(), 5);
+        assert_eq!(SymbolKind::Method.to_lsp_kind(), 6);
+        assert_eq!(SymbolKind::Role.to_lsp_kind(), 8);
+        assert_eq!(SymbolKind::Subroutine.to_lsp_kind(), 12);
+        assert_eq!(SymbolKind::Variable(VarKind::Scalar).to_lsp_kind(), 13);
+        assert_eq!(SymbolKind::Constant.to_lsp_kind(), 14);
+        assert_eq!(SymbolKind::Label.to_lsp_kind(), 20);
+        assert_eq!(SymbolKind::Format.to_lsp_kind(), 23);
+    }
+
+    #[test]
+    fn test_lsp_kind_document_symbol_mapping() {
+        // Non-variable types should match to_lsp_kind()
+        assert_eq!(SymbolKind::Package.to_lsp_kind_document_symbol(), 2);
+        assert_eq!(SymbolKind::Class.to_lsp_kind_document_symbol(), 5);
+        assert_eq!(SymbolKind::Subroutine.to_lsp_kind_document_symbol(), 12);
+
+        // Variable types get richer distinctions
+        assert_eq!(SymbolKind::Variable(VarKind::Scalar).to_lsp_kind_document_symbol(), 13); // Variable
+        assert_eq!(SymbolKind::Variable(VarKind::Array).to_lsp_kind_document_symbol(), 18); // Array
+        assert_eq!(SymbolKind::Variable(VarKind::Hash).to_lsp_kind_document_symbol(), 19);
+        // Object
+    }
+
+    #[test]
+    fn test_non_variable_document_mapping_matches_workspace_mapping() {
+        let non_variable_kinds = [
+            SymbolKind::Package,
+            SymbolKind::Class,
+            SymbolKind::Role,
+            SymbolKind::Subroutine,
+            SymbolKind::Method,
+            SymbolKind::Constant,
+            SymbolKind::Import,
+            SymbolKind::Export,
+            SymbolKind::Label,
+            SymbolKind::Format,
+        ];
+
+        for kind in non_variable_kinds {
+            assert_eq!(kind.to_lsp_kind_document_symbol(), kind.to_lsp_kind());
+        }
+    }
+
+    #[test]
+    fn test_convenience_constructors() {
+        assert_eq!(SymbolKind::scalar(), SymbolKind::Variable(VarKind::Scalar));
+        assert_eq!(SymbolKind::array(), SymbolKind::Variable(VarKind::Array));
+        assert_eq!(SymbolKind::hash(), SymbolKind::Variable(VarKind::Hash));
+    }
+
+    #[test]
+    fn test_category_predicates() {
+        assert!(SymbolKind::Variable(VarKind::Scalar).is_variable());
+        assert!(!SymbolKind::Subroutine.is_variable());
+
+        assert!(SymbolKind::Subroutine.is_callable());
+        assert!(SymbolKind::Method.is_callable());
+        assert!(!SymbolKind::Variable(VarKind::Scalar).is_callable());
+
+        assert!(SymbolKind::Package.is_namespace());
+        assert!(SymbolKind::Class.is_namespace());
+        assert!(SymbolKind::Role.is_namespace());
+        assert!(!SymbolKind::Subroutine.is_namespace());
+    }
+
+    #[test]
+    fn test_category_predicates_exhaustive() -> Result<(), Box<dyn std::error::Error>> {
+        // is_variable: all three VarKind variants
+        assert!(SymbolKind::Variable(VarKind::Array).is_variable());
+        assert!(SymbolKind::Variable(VarKind::Hash).is_variable());
+        // non-variable kinds including Import/Export/Label/Format
+        assert!(!SymbolKind::Import.is_variable());
+        assert!(!SymbolKind::Export.is_variable());
+        assert!(!SymbolKind::Label.is_variable());
+        assert!(!SymbolKind::Format.is_variable());
+        assert!(!SymbolKind::Constant.is_variable());
+
+        // is_callable: non-callable kinds
+        assert!(!SymbolKind::Package.is_callable());
+        assert!(!SymbolKind::Import.is_callable());
+        assert!(!SymbolKind::Label.is_callable());
+        assert!(!SymbolKind::Constant.is_callable());
+
+        // is_namespace: non-namespace kinds
+        assert!(!SymbolKind::Subroutine.is_namespace());
+        assert!(!SymbolKind::Import.is_namespace());
+        assert!(!SymbolKind::Label.is_namespace());
+        assert!(!SymbolKind::Format.is_namespace());
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_variable_sigil_is_none() -> Result<(), Box<dyn std::error::Error>> {
+        // sigil() returns None for every non-Variable variant
+        for kind in [
+            SymbolKind::Package,
+            SymbolKind::Import,
+            SymbolKind::Export,
+            SymbolKind::Label,
+            SymbolKind::Format,
+            SymbolKind::Constant,
+        ] {
+            assert_eq!(kind.sigil(), None, "{kind:?} should have sigil None");
+        }
+        Ok(())
+    }
+
+    // ── VarKind: Copy / Hash / Eq semantics ───────────────────────────────────
+
+    #[test]
+    fn var_kind_is_copy() -> Result<(), Box<dyn std::error::Error>> {
+        let a = VarKind::Scalar;
+        let b = a; // copy — not move
+        assert_eq!(a, b);
+        Ok(())
+    }
+
+    #[test]
+    fn var_kind_hash_and_eq_consistency() -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(VarKind::Scalar);
+        set.insert(VarKind::Array);
+        set.insert(VarKind::Hash);
+        // Inserting again must not grow the set
+        set.insert(VarKind::Scalar);
+        assert_eq!(set.len(), 3);
+        assert!(set.contains(&VarKind::Scalar));
+        assert!(set.contains(&VarKind::Array));
+        assert!(set.contains(&VarKind::Hash));
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_kind_hash_and_eq_consistency() -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(SymbolKind::Package);
+        set.insert(SymbolKind::Variable(VarKind::Scalar));
+        set.insert(SymbolKind::Variable(VarKind::Array));
+        set.insert(SymbolKind::Package); // duplicate
+        assert_eq!(set.len(), 3);
+        assert!(set.contains(&SymbolKind::Variable(VarKind::Scalar)));
+        // Variable(Scalar) != Variable(Array)
+        assert_ne!(SymbolKind::Variable(VarKind::Scalar), SymbolKind::Variable(VarKind::Array));
+        Ok(())
+    }
+
+    // ── Serde roundtrips ──────────────────────────────────────────────────────
+
+    #[test]
+    fn var_kind_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let serialized = serde_json::to_string(&VarKind::Scalar)?;
+        let deserialized: VarKind = serde_json::from_str(&serialized)?;
+        assert_eq!(deserialized, VarKind::Scalar);
+
+        let serialized = serde_json::to_string(&VarKind::Hash)?;
+        let deserialized: VarKind = serde_json::from_str(&serialized)?;
+        assert_eq!(deserialized, VarKind::Hash);
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_kind_serde_roundtrip_all_variants() -> Result<(), Box<dyn std::error::Error>> {
+        let variants = [
+            SymbolKind::Package,
+            SymbolKind::Class,
+            SymbolKind::Role,
+            SymbolKind::Subroutine,
+            SymbolKind::Method,
+            SymbolKind::Variable(VarKind::Scalar),
+            SymbolKind::Variable(VarKind::Array),
+            SymbolKind::Variable(VarKind::Hash),
+            SymbolKind::Constant,
+            SymbolKind::Import,
+            SymbolKind::Export,
+            SymbolKind::Label,
+            SymbolKind::Format,
+        ];
+        for kind in variants {
+            let serialized = serde_json::to_string(&kind)?;
+            let deserialized: SymbolKind = serde_json::from_str(&serialized)?;
+            assert_eq!(deserialized, kind, "roundtrip failed for {kind:?}");
+        }
+        Ok(())
+    }
+}

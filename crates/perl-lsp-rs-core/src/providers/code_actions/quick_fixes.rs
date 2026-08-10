@@ -1,0 +1,2794 @@
+//! Quick fixes for diagnostic issues
+//!
+//! Provides automated fixes for common Perl issues driven by diagnostic codes.
+
+use std::collections::HashMap;
+
+use super::types::{
+    CodeAction, CodeActionEdit, CodeActionKind, QuickFixDiagnostic, QuickFixMetadata,
+};
+use crate::providers::import_management::guess_module_for_function;
+use crate::providers::rename::TextEdit;
+use perl_diagnostics::codes::DiagnosticCode;
+use perl_lexer::is_builtin;
+use perl_parser::ast_utils::{find_declaration_position, get_indent_at};
+use perl_parser_core::{Node, NodeKind, SourceLocation};
+
+/// Fix undefined variable by declaring it
+pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    // Extract variable name from diagnostic message
+    if let Some(var_name) = diagnostic.message.split('\'').nth(1) {
+        // Find the best place to insert declaration
+        let insert_pos = find_declaration_position(source, diagnostic.range.0);
+        let indent = get_indent_at(source, insert_pos);
+
+        // Add 'my' declaration
+        actions.push(CodeAction {
+            title: format!("Declare '{}' with 'my'", var_name),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::UndefinedVariable.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: insert_pos, end: insert_pos },
+                    new_text: format!("{}my {};\n", indent, var_name),
+                }],
+            },
+            is_preferred: true,
+        });
+
+        // Add 'our' declaration
+        actions.push(CodeAction {
+            title: format!("Declare '{}' with 'our'", var_name),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::UndefinedVariable.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: insert_pos, end: insert_pos },
+                    new_text: format!("{}our {};\n", indent, var_name),
+                }],
+            },
+            is_preferred: false,
+        });
+    }
+
+    actions
+}
+
+/// Fix unused variable by removing it
+pub fn fix_unused_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    let mut actions = Vec::new();
+
+    // Find the declaration line
+    let line_start = source[..range_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = source[range_end..].find('\n').map(|p| range_end + p).unwrap_or(source.len());
+    let delete_end = if line_end < source.len() { line_end + 1 } else { line_end };
+
+    actions.push(CodeAction {
+        title: "Remove unused variable".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::UnusedVariable.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: line_start, end: delete_end },
+                new_text: String::new(),
+            }],
+        },
+        is_preferred: true,
+    });
+
+    // Add underscore prefix to mark as intentionally unused
+    if let Some(var_name) = diagnostic.message.split('\'').nth(1) {
+        let unused_name = mark_intentionally_unused(var_name);
+        actions.push(CodeAction {
+            title: format!("Rename to '{}'", unused_name),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::UnusedVariable.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: range_start, end: range_end },
+                    new_text: unused_name,
+                }],
+            },
+            is_preferred: false,
+        });
+    }
+
+    actions
+}
+
+fn mark_intentionally_unused(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(sigil @ ('$' | '@' | '%' | '&' | '*')) => {
+            let rest = chars.as_str();
+            format!("{sigil}_{rest}")
+        }
+        _ => format!("_{name}"),
+    }
+}
+
+fn split_sigil(name: &str) -> (&str, &str) {
+    let bare = name.trim_start_matches(['$', '@', '%', '&', '*']);
+    let sigil_len = name.len() - bare.len();
+    (&name[..sigil_len], bare)
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "policy:#2064: large quick-fix regression block remains near the first fix helpers to avoid reorder-only churn"
+)]
+mod tests {
+    use super::*;
+    use perl_tdd_support::must_some;
+
+    fn diagnostic_for(range: (usize, usize), message: &str) -> QuickFixDiagnostic {
+        QuickFixDiagnostic { range, message: message.to_string(), code: None, metadata: None }
+    }
+
+    fn printf_diagnostic_for(
+        range: (usize, usize),
+        call_name: &str,
+        missing_arguments: usize,
+    ) -> QuickFixDiagnostic {
+        QuickFixDiagnostic {
+            range,
+            message: "message wording is intentionally irrelevant".to_string(),
+            code: Some("native.common.printf_format_arity".to_string()),
+            metadata: Some(QuickFixMetadata::PrintfFormatArity {
+                call_name: call_name.to_string(),
+                missing_arguments,
+            }),
+        }
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_rename_bareword_key() {
+        let source = "my %h = (\n    foo => 1,\n    foo => 2,\n);\n";
+        let key_start = must_some(source.rfind("foo"));
+        let key_end = key_start + "foo".len();
+        let diagnostic = diagnostic_for(
+            (key_start, key_end),
+            "Duplicate hash key 'foo' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+
+        let rename = must_some(actions.iter().find(|a| a.title.contains("Rename")));
+        assert_eq!(rename.edit.changes[0].new_text, "foo_2");
+        assert_eq!(rename.edit.changes[0].location.start, key_start);
+        assert_eq!(rename.edit.changes[0].location.end, key_end);
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_delete_removes_correct_line() {
+        let source = "my %h = (\n    foo => 1,\n    foo => 2,\n);\n";
+        let key_start = must_some(source.rfind("foo"));
+        let key_end = key_start + "foo".len();
+        let diagnostic = diagnostic_for(
+            (key_start, key_end),
+            "Duplicate hash key 'foo' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+
+        let delete = must_some(actions.iter().find(|a| a.title.contains("Remove")));
+        assert!(delete.is_preferred);
+        assert_eq!(delete.edit.changes[0].new_text, "");
+
+        // Applying the delete should remove only the duplicate line.
+        let edit = &delete.edit.changes[0];
+        let remaining =
+            format!("{}{}", &source[..edit.location.start], &source[edit.location.end..]);
+        assert_eq!(remaining, "my %h = (\n    foo => 1,\n);\n");
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_no_delete_for_inline_hash() {
+        // All pairs on one line: delete action is suppressed to avoid corrupting inline hash.
+        let source = "my %h = (foo => 1, foo => 2);\n";
+        let key_start = must_some(source.rfind("foo"));
+        let key_end = key_start + "foo".len();
+        let diagnostic = diagnostic_for(
+            (key_start, key_end),
+            "Duplicate hash key 'foo' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+
+        assert!(
+            !actions.iter().any(|a| a.title.contains("Remove")),
+            "should not offer delete for inline hash"
+        );
+        assert!(actions.iter().any(|a| a.title.contains("Rename")));
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_preserves_single_quote_style() {
+        let source = "my %h = (\n    'foo' => 1,\n    'foo' => 2,\n);\n";
+        let key_start = must_some(source.rfind("'foo'"));
+        let key_end = key_start + "'foo'".len();
+        let diagnostic = diagnostic_for(
+            (key_start, key_end),
+            "Duplicate hash key 'foo' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+
+        let rename = must_some(actions.iter().find(|a| a.title.contains("Rename")));
+        assert_eq!(rename.edit.changes[0].new_text, "'foo_2'");
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_preserves_double_quote_style() {
+        let source = "my %h = (\n    \"foo\" => 1,\n    \"foo\" => 2,\n);\n";
+        let key_start = must_some(source.rfind("\"foo\""));
+        let key_end = key_start + "\"foo\"".len();
+        let diagnostic = diagnostic_for(
+            (key_start, key_end),
+            "Duplicate hash key 'foo' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+
+        let rename = must_some(actions.iter().find(|a| a.title.contains("Rename")));
+        assert_eq!(rename.edit.changes[0].new_text, "\"foo_2\"");
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_empty_on_unparseable_message() {
+        let source = "my %h = (foo => 1, foo => 2);\n";
+        let diagnostic = diagnostic_for((19, 22), "No key name here");
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_empty_on_invalid_range() {
+        let source = "my %h = (foo => 1, foo => 2);\n";
+        let diagnostic = diagnostic_for(
+            (source.len() + 1, source.len() + 4),
+            "Duplicate hash key 'foo' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_empty_on_non_char_boundary_range() {
+        let source = "my %h = (\"\u{e9}\" => 1, \"\u{e9}\" => 2);\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for(
+            (char_start + 1, char_start + 2),
+            "Duplicate hash key 'e' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_no_delete_for_multiline_value() {
+        let source = "my %h = (\n    foo => 1,\n    foo => {\n        nested => 1,\n    },\n);\n";
+        let key_start = must_some(source.rfind("foo => {"));
+        let key_end = key_start + "foo".len();
+        let diagnostic = diagnostic_for(
+            (key_start, key_end),
+            "Duplicate hash key 'foo' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+
+        assert!(
+            !actions.iter().any(|a| a.title.contains("Remove")),
+            "should not offer line delete for multiline duplicate values"
+        );
+        assert!(actions.iter().any(|a| a.title.contains("Rename")));
+    }
+
+    #[test]
+    fn fix_duplicate_hash_keys_quotes_numeric_rename_candidate() {
+        let source = "my %h = (\n    42 => 1,\n    42 => 2,\n);\n";
+        let key_start = must_some(source.rfind("42"));
+        let key_end = key_start + "42".len();
+        let diagnostic = diagnostic_for(
+            (key_start, key_end),
+            "Duplicate hash key '42' -- only the last value will be used",
+        );
+
+        let actions = fix_duplicate_hash_keys(source, &diagnostic);
+
+        let rename = must_some(actions.iter().find(|a| a.title.contains("Rename")));
+        assert_eq!(rename.edit.changes[0].new_text, "'42_2'");
+    }
+
+    #[test]
+    fn fix_unused_variable_removal_does_not_overrun_end_of_file() {
+        // Source has no trailing newline -- delete_end must clamp to source.len().
+        let source = "my $unused = 1;";
+        let start = 3;
+        let end = 10;
+        let diagnostic = diagnostic_for((start, end), "Unused variable '$unused'");
+
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(!actions.is_empty());
+
+        let remove_action = &actions[0];
+        let edit = &remove_action.edit.changes[0];
+
+        assert_eq!(edit.location.start, 0);
+        assert_eq!(edit.location.end, source.len());
+        assert!(edit.location.end <= source.len(), "edit end must not exceed source length");
+        assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn fix_unused_variable_removal_includes_newline_when_present() {
+        // Source has trailing newline -- delete_end should include the newline character
+        // (line_end + 1) and must still be within source.len().
+        let source = "my $unused = 1;\n";
+        let start = 3;
+        let end = 10;
+        let diagnostic = diagnostic_for((start, end), "Unused variable '$unused'");
+
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(!actions.is_empty());
+
+        let remove_action = &actions[0];
+        let edit = &remove_action.edit.changes[0];
+
+        assert_eq!(edit.location.start, 0);
+        // The newline at position 15 is found; delete_end = 15 + 1 = 16 = source.len()
+        assert_eq!(edit.location.end, source.len());
+        assert!(edit.location.end <= source.len(), "edit end must not exceed source length");
+        assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn fix_unused_variable_removal_multiline_removes_correct_line() {
+        // Unused variable on the second line of a multiline source.
+        let source = "use strict;\nmy $unused = 1;\nmy $used = 2;\n";
+        let start = 16; // start of '$unused'
+        let end = 23; // end of '$unused'
+        let diagnostic = diagnostic_for((start, end), "Unused variable '$unused'");
+
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(!actions.is_empty());
+
+        let remove_action = &actions[0];
+        let edit = &remove_action.edit.changes[0];
+
+        // Line starts after 'use strict;\n' at offset 12
+        assert_eq!(edit.location.start, 12);
+        // Line ends at the '\n' after 'my $unused = 1;' -- include it: offset 28
+        assert_eq!(edit.location.end, 28);
+        assert!(edit.location.end <= source.len(), "edit end must not exceed source length");
+        assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn file_scope_pragma_additions_separate_unterminated_shebangs() {
+        let source = "#!/usr/bin/perl";
+
+        let strict_actions = add_use_strict_with_offset(source);
+        let strict_action = must_some(strict_actions.first());
+        let strict = must_some(strict_action.edit.changes.first());
+        assert_eq!(strict.location.start, source.len());
+        assert_eq!(strict.location.end, source.len());
+        assert_eq!(strict.new_text, "\nuse strict;\n");
+
+        let warnings_actions = add_use_warnings_with_offset(source);
+        let warnings_action = must_some(warnings_actions.first());
+        let warnings = must_some(warnings_action.edit.changes.first());
+        assert_eq!(warnings.location.start, source.len());
+        assert_eq!(warnings.location.end, source.len());
+        assert_eq!(warnings.new_text, "\nuse warnings;\n");
+    }
+
+    #[test]
+    fn file_scope_pragma_additions_preserve_terminated_shebangs() {
+        let source = "#!/usr/bin/perl\n";
+
+        let strict_actions = add_use_strict_with_offset(source);
+        let strict_action = must_some(strict_actions.first());
+        let strict = must_some(strict_action.edit.changes.first());
+        assert_eq!(strict.location.start, source.len());
+        assert_eq!(strict.new_text, "use strict;\n");
+    }
+
+    // --- fix_printf_format_arity ---
+
+    #[test]
+    fn fix_printf_format_arity_listop_one_missing() {
+        // Listop form: no parens, call node ends before the semicolon.
+        let source = r#"printf "%s %s", $name;"#;
+        // Call range covers "printf "%s %s", $name" (everything before ;)
+        let call_end = source.len() - 1;
+        let diagnostic = printf_diagnostic_for((0, call_end), "printf", 1);
+
+        let actions = fix_printf_format_arity(source, &diagnostic);
+
+        assert!(!actions.is_empty(), "should offer a fix for 1 missing arg");
+        assert_eq!(actions[0].title, "Add 1 missing argument as undef");
+        let edit = &actions[0].edit.changes[0];
+        assert_eq!(edit.new_text, ", undef");
+        // Insertion is at the end of the call node (before ';')
+        assert_eq!(edit.location.start, call_end);
+        assert_eq!(edit.location.end, call_end);
+    }
+
+    #[test]
+    fn printf_metadata_matches_indirect_call_range() {
+        let string_node = |value: &str, start: usize, end: usize| {
+            Node::new(
+                NodeKind::String { value: value.to_string(), interpolated: false },
+                SourceLocation { start, end },
+            )
+        };
+        let variable_node = |start: usize, end: usize| {
+            Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: "value".to_string() },
+                SourceLocation { start, end },
+            )
+        };
+        let indirect_call = Node::new(
+            NodeKind::IndirectCall {
+                method: "printf".to_string(),
+                object: Box::new(variable_node(0, 3)),
+                args: vec![string_node("\"%s %s %s\"", 4, 15), variable_node(17, 23)],
+            },
+            SourceLocation { start: 0, end: 23 },
+        );
+        let function_call = Node::new(
+            NodeKind::FunctionCall {
+                name: "printf".to_string(),
+                args: vec![string_node("\"%s %s\"", 24, 32), variable_node(34, 40)],
+            },
+            SourceLocation { start: 24, end: 40 },
+        );
+        let program = Node::new(
+            NodeKind::Program { statements: vec![indirect_call, function_call] },
+            SourceLocation { start: 0, end: 40 },
+        );
+
+        let metadata = printf_format_arity_metadata_by_range(&program).get(&(24, 40)).cloned();
+
+        assert_eq!(
+            metadata,
+            Some(QuickFixMetadata::PrintfFormatArity {
+                call_name: "printf".to_string(),
+                missing_arguments: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn printf_metadata_rejects_interpolated_arrays() {
+        let format = Node::new(
+            NodeKind::String { value: "\"%s @items\"".to_string(), interpolated: true },
+            SourceLocation { start: 7, end: 19 },
+        );
+        let argument = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
+            SourceLocation { start: 21, end: 26 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
+            SourceLocation { start: 0, end: 26 },
+        );
+
+        assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 26)), None);
+    }
+
+    #[test]
+    fn printf_metadata_allows_literal_at_in_static_format() {
+        let format = Node::new(
+            NodeKind::String {
+                value: "'email@example.com %s %s'".to_string(),
+                interpolated: false,
+            },
+            SourceLocation { start: 7, end: 29 },
+        );
+        let argument = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
+            SourceLocation { start: 31, end: 36 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
+            SourceLocation { start: 0, end: 40 },
+        );
+
+        assert!(printf_format_arity_metadata_by_range(&call).get(&(0, 40)).is_some());
+    }
+
+    #[test]
+    fn fix_printf_format_arity_listop_range_includes_semicolon() {
+        let source = r#"printf "%s %s", $name;"#;
+        let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
+
+        let actions = fix_printf_format_arity(source, &diagnostic);
+
+        let edit = &must_some(actions.first()).edit.changes[0];
+        assert_eq!(edit.new_text, ", undef");
+        assert_eq!(&source[edit.location.start..edit.location.start + 1], ";");
+    }
+
+    #[test]
+    fn fix_printf_format_arity_parens_one_missing() {
+        // Parens form: insert before the closing ')'.
+        let source = r#"printf("%s %s", $a)"#;
+        let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
+
+        let actions = fix_printf_format_arity(source, &diagnostic);
+
+        assert!(!actions.is_empty(), "should offer a fix for parens form");
+        assert_eq!(actions[0].title, "Add 1 missing argument as undef");
+        let edit = &actions[0].edit.changes[0];
+        assert_eq!(edit.new_text, ", undef");
+        // Insertion position should be at the closing ')'
+        assert_eq!(&source[edit.location.start..edit.location.start + 1], ")");
+    }
+
+    #[test]
+    fn fix_printf_format_arity_ignores_range_not_starting_at_call() {
+        let source = r#"my $n = printf "%s %s", $name;"#;
+        let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
+
+        let actions = fix_printf_format_arity(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_printf_format_arity_two_missing_appends_two_undefs() {
+        let source = r#"sprintf "%s %s %s", $a"#;
+        let diagnostic = printf_diagnostic_for((0, source.len()), "sprintf", 2);
+
+        let actions = fix_printf_format_arity(source, &diagnostic);
+
+        assert!(!actions.is_empty(), "should offer a fix for 2 missing args");
+        assert_eq!(actions[0].title, "Add 2 missing arguments as undef");
+        assert_eq!(actions[0].edit.changes[0].new_text, ", undef, undef");
+    }
+
+    #[test]
+    fn fix_printf_format_arity_too_many_args_returns_no_fix() {
+        // When args > specifiers we don't auto-remove -- too destructive.
+        let source = r#"printf "%s", $a, $b"#;
+        let diagnostic = diagnostic_for(
+            (0, source.len()),
+            r#"`printf` format string has 1 specifier but 2 arguments supplied"#,
+        );
+
+        let actions = fix_printf_format_arity(source, &diagnostic);
+
+        assert!(actions.is_empty(), "should not suggest fix when args exceed specifiers");
+    }
+
+    #[test]
+    fn fix_printf_format_arity_equal_counts_returns_no_fix() {
+        let source = r#"printf "%s", $a"#;
+        let diagnostic = diagnostic_for(
+            (0, source.len()),
+            r#"`printf` format string has 1 specifier but 1 argument supplied"#,
+        );
+        // Equal counts would not normally be flagged, but the function must handle it gracefully.
+        let actions = fix_printf_format_arity(source, &diagnostic);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_removes_only_label_segment() {
+        let source = "while (1) {\n    next MISSING;\n}\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next MISSING;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next MISSING` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        let action = must_some(actions.first());
+        assert_eq!(action.title, "Remove undefined label");
+        assert_eq!(action.kind, CodeActionKind::QuickFix);
+        assert!(action.is_preferred);
+        let edit = &action.edit.changes[0];
+        assert_eq!(&source[edit.location.start..edit.location.end], " MISSING");
+        assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_supports_last_and_redo() {
+        for op in ["last", "redo"] {
+            let source = format!("while (1) {{ {op} MISSING; }}\n");
+            let start = must_some(source.find(op));
+            let end = start + format!("{op} MISSING;").len();
+            let diagnostic = diagnostic_for(
+                (start, end),
+                &format!("`{op} MISSING` references a label that is not defined in this file"),
+            );
+
+            let actions = fix_loop_control_undefined_label(&source, &diagnostic);
+
+            let action = must_some(actions.first());
+            let edit = &action.edit.changes[0];
+            assert_eq!(&source[edit.location.start..edit.location.end], " MISSING");
+            assert_eq!(edit.new_text, "");
+        }
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_without_semicolon_deletes_to_range_end() {
+        let source = "while (1) { next MISSING }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next MISSING".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next MISSING` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        let action = must_some(actions.first());
+        let edit = &action.edit.changes[0];
+        assert_eq!(&source[edit.location.start..edit.location.end], " MISSING");
+        assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_bare_operator() {
+        let source = "while (1) { next; }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert_eq!(actions.len(), 0);
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_boundary_discriminator_rejects_empty_label_tail() {
+        let source = "while (1) { next   ; }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next   ".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert_eq!(actions.len(), 0);
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_non_label_tail() {
+        let source = "while (1) { next MISSING->bad; }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next MISSING->bad;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next MISSING` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_handles_colon_label_with_trailing_space() {
+        let source = "while (1) {\n    redo Some::Label ;\n}\n";
+        let start = must_some(source.find("redo"));
+        let end = start + "redo Some::Label ;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`redo Some::Label` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        let action = must_some(actions.first());
+        let edit = &action.edit.changes[0];
+        assert_eq!(&source[edit.location.start..edit.location.end], " Some::Label ");
+        assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_operator_with_whitespace_only_tail() {
+        let source = "while (1) { next   }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next   ".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_empty_label_before_semicolon() {
+        let source = "while (1) { next ; }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next ;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_non_loop_control_statement() {
+        let source = "while (1) { return MISSING; }\n";
+        let start = must_some(source.find("return"));
+        let end = start + "return MISSING;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`return MISSING` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_unused_variable_empty_on_non_char_boundary_range() {
+        // U+00E9 (é) is 2 bytes: C3 A9. Offset char_start + 1 is not a char boundary.
+        let source = "my $x = \"\u{e9}\";\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for((char_start + 1, char_start + 2), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_unreachable_code_empty_on_non_char_boundary_range() {
+        let source = "sub f { return; \"\u{e9}\"; }\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for(
+            (char_start + 1, char_start + 2),
+            "Unreachable code after unconditional return",
+        );
+        let actions = fix_unreachable_code(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_assignment_in_condition_empty_on_non_char_boundary_range() {
+        let source = "if (\"\u{e9}\" = 1) {}\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic =
+            diagnostic_for((char_start + 1, char_start + 2), "Assignment in condition");
+        let actions = fix_assignment_in_condition(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_deprecated_defined_empty_on_non_char_boundary_range() {
+        let source = "defined(\"\u{e9}\");\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for(
+            (char_start + 1, char_start + 2),
+            "Useless use of defined on array/hash",
+        );
+        let actions = fix_deprecated_defined(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_numeric_undef_empty_on_non_char_boundary_range() {
+        let source = "\"\u{e9}\" == undef;\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic =
+            diagnostic_for((char_start + 1, char_start + 2), "Numeric comparison with undef");
+        let actions = fix_numeric_undef(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_bareword_empty_on_non_char_boundary_range() {
+        let source = "\u{e9}bareword;\n";
+        let char_start = 0usize; // U+00E9 starts at byte 0
+        let diagnostic = diagnostic_for(
+            (char_start + 1, char_start + 2),
+            "Bareword found where string expected",
+        );
+        let actions = fix_bareword(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    // --- ported from closed PR #1466 (three-way boundary coverage for fix_unused_variable) ---
+
+    #[test]
+    fn fix_unused_variable_empty_on_non_char_boundary_range_start() {
+        // range.0 lands mid-emoji (U+1F600, 4 bytes) → range.0 is not a char boundary.
+        let source = "my $x = \"\u{1F600}\";\n";
+        let emoji_start = must_some(source.find('\u{1F600}'));
+        let diagnostic = diagnostic_for((emoji_start + 1, emoji_start + 4), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "range.0 mid-emoji must return empty actions");
+    }
+
+    #[test]
+    fn fix_unused_variable_empty_on_non_char_boundary_range_end() {
+        // range.1 lands mid-emoji → range.1 is not a char boundary.
+        let source = "my $x = \"\u{1F600}\";\n";
+        let emoji_start = must_some(source.find('\u{1F600}'));
+        let diagnostic = diagnostic_for((emoji_start, emoji_start + 2), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "range.1 mid-emoji must return empty actions");
+    }
+
+    #[test]
+    fn fix_unused_variable_empty_on_out_of_bounds_range() {
+        // range extends past source.len().
+        let source = "my $x = 1;\n";
+        let diagnostic =
+            diagnostic_for((source.len() + 10, source.len() + 20), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "out-of-bounds range must return empty actions");
+    }
+
+    #[test]
+    fn fix_parse_error_empty_on_non_char_boundary_range() {
+        // fix_parse_error slices source[range_start..] — confirm it guards against mid-multibyte.
+        // U+00E9 (é) is 2 bytes.  Putting range.0 at byte 1 (mid-é) must return empty, not panic.
+        let source = "\u{e9}code missing semicolon\n";
+        let diagnostic = diagnostic_for((1, 2), "Missing semicolon");
+        let actions = fix_parse_error(source, &diagnostic, "parse-error-missingsemicolon");
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    // --- acceptance-path (ACCEPT): valid multibyte char-boundary ranges produce real actions ---
+    // These tests verify the ACCEPT branch of valid_diagnostic_range: when both start and end
+    // land on UTF-8 char boundaries (even in non-ASCII source), the guard passes through and
+    // the function returns a non-empty Vec<CodeAction>.
+
+    #[test]
+    fn fix_unused_variable_accept_valid_multibyte_range() {
+        // Source contains U+00E9 (é, 2 bytes) after the variable name.
+        // The diagnostic range covers '$x' at ASCII offsets — both boundaries are char boundaries.
+        let source = "my $x = \"\u{e9}\";\n";
+        let start = must_some(source.find("$x"));
+        let end = start + "$x".len();
+        let diagnostic = diagnostic_for((start, end), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_assignment_in_condition_accept_valid_multibyte_range() {
+        // Source contains U+00E9 around the assignment; diagnostic range covers '= 1' at
+        // ASCII-boundary positions so the guard must pass and return actions.
+        let source = "if (\u{e9}var = 1) {}\n";
+        // Find the '= 1' segment — the '=' sign is at an ASCII byte, so boundaries are valid.
+        let eq_pos = must_some(source.find('='));
+        let end = eq_pos + "= 1".len();
+        let diagnostic = diagnostic_for((eq_pos, end), "Assignment in condition");
+        let actions = fix_assignment_in_condition(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_numeric_undef_accept_valid_multibyte_range() {
+        // Source has U+00E9 but the diagnostic range is over pure ASCII.
+        let source = "\"\u{e9}\" == undef;\n";
+        // U+00E9 is 2 bytes; the '==' sign starts at byte 4.
+        let eq_pos = must_some(source.find("=="));
+        let end = eq_pos + "== undef".len();
+        let diagnostic = diagnostic_for((eq_pos, end), "Numeric comparison with undef");
+        let actions = fix_numeric_undef(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_bareword_accept_valid_multibyte_range() {
+        // Source has U+00E9 before a bareword; diagnostic range covers only the ASCII bareword.
+        let source = "\u{e9}word;\n";
+        // U+00E9 is 2 bytes at offsets 0-1; 'word' starts at byte 2.
+        let word_start = 2usize;
+        let word_end = word_start + "word".len();
+        assert!(source.is_char_boundary(word_start), "word_start must be a char boundary");
+        assert!(source.is_char_boundary(word_end), "word_end must be a char boundary");
+        let diagnostic =
+            diagnostic_for((word_start, word_end), "Bareword found where string expected");
+        let actions = fix_bareword(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_unused_variable_accept_multibyte_on_char_boundary() {
+        // Range covers the entire U+1F600 emoji (4 bytes) at char-boundary offsets.
+        // Verifies that a valid full-char non-ASCII range is accepted and produces actions.
+        let source = "my $emoji = \"\u{1F600}\";\n";
+        let emoji_start = must_some(source.find('\u{1F600}'));
+        let emoji_end = emoji_start + '\u{1F600}'.len_utf8(); // 4 bytes, valid char boundary
+        assert!(source.is_char_boundary(emoji_start));
+        assert!(source.is_char_boundary(emoji_end));
+        // Use the variable name range ($emoji) as the diagnostic range — char boundaries.
+        let var_start = must_some(source.find("$emoji"));
+        let var_end = var_start + "$emoji".len();
+        let diagnostic = diagnostic_for((var_start, var_end), "Unused variable '$emoji'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(!actions.is_empty(), "char-boundary emoji range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_native_undef_comparison_empty_on_non_char_boundary_range() {
+        let source = "\"\u{e9}\" == undef;\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic =
+            diagnostic_for((char_start + 1, char_start + 2), "Native undef comparison");
+        let actions = fix_native_undef_comparison(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_bareword_uppercase_accept_valid_multibyte_range_declares_filehandle() {
+        let source = "\u{e9}\nFH;\n";
+        let start = must_some(source.find("FH"));
+        let end = start + "FH".len();
+        let diagnostic = diagnostic_for((start, end), "Bareword found where string expected");
+        let actions = fix_bareword(source, &diagnostic);
+        let filehandle =
+            must_some(actions.iter().find(|action| action.title.contains("filehandle")));
+        assert_eq!(filehandle.edit.changes[0].new_text, "open my $FH; \n");
+    }
+
+    #[test]
+    fn fix_parse_error_missingsemicolon_accept_valid_multibyte_range() {
+        let source = "my $x = \"\u{e9}\"   \n";
+        let diagnostic = diagnostic_for((0, source.len()), "Missing semicolon");
+        let actions = fix_parse_error(source, &diagnostic, "parse-error-missingsemicolon");
+        let action = must_some(actions.first());
+        let edit = &action.edit.changes[0];
+        assert_eq!(edit.new_text, ";");
+        assert_eq!(edit.location.start, must_some(source.find("   ")));
+        assert_eq!(edit.location.end, edit.location.start);
+    }
+
+    #[test]
+    fn fix_parse_error_pl001_missingsemicolon_accept_valid_multibyte_range() {
+        let source = "my $x = \"\u{e9}\"   \n";
+        let diagnostic = diagnostic_for((0, source.len()), "Missing semicolon near end of line");
+        let actions = fix_parse_error(source, &diagnostic, "PL001");
+        let action = must_some(actions.first());
+        let edit = &action.edit.changes[0];
+        assert_eq!(edit.new_text, ";");
+        assert_eq!(edit.location.start, must_some(source.find("   ")));
+        assert_eq!(edit.location.end, edit.location.start);
+    }
+
+    #[test]
+    fn fix_variable_redeclaration_empty_on_non_char_boundary_range() {
+        let source = "my \u{e9} = 1;\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for((char_start + 1, char_start + 2), "Variable redeclared");
+        let actions = fix_variable_redeclaration(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+}
+
+/// Fix assignment in condition
+pub fn fix_assignment_in_condition(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    let mut actions = Vec::new();
+
+    // Change = to ==
+    let assignment_pos = source[range_start..range_end].find('=').map(|p| range_start + p);
+
+    if let Some(pos) = assignment_pos {
+        actions.push(CodeAction {
+            title: "Change to comparison (==)".to_string(),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::AssignmentInCondition.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: pos, end: pos + 1 },
+                    new_text: "==".to_string(),
+                }],
+            },
+            is_preferred: true,
+        });
+
+        // Wrap in parentheses to make intention clear
+        actions.push(CodeAction {
+            title: "Keep assignment (add parentheses)".to_string(),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::AssignmentInCondition.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![
+                    TextEdit {
+                        location: SourceLocation {
+                            start: diagnostic.range.0,
+                            end: diagnostic.range.0,
+                        },
+                        new_text: "(".to_string(),
+                    },
+                    TextEdit {
+                        location: SourceLocation {
+                            start: diagnostic.range.1,
+                            end: diagnostic.range.1,
+                        },
+                        new_text: ")".to_string(),
+                    },
+                ],
+            },
+            is_preferred: false,
+        });
+    }
+
+    actions
+}
+
+/// Add 'use strict' pragma, inserting after shebang if present. (#UX_GAP_01)
+pub fn add_use_strict_with_offset(source: &str) -> Vec<CodeAction> {
+    let offset = file_scope_pragma_insertion_offset(source);
+    vec![CodeAction {
+        title: "Add 'use strict'".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::MissingStrict.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: offset, end: offset },
+                new_text: file_scope_pragma_text(source, "use strict"),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Add 'use warnings' pragma, inserting after shebang if present. (#UX_GAP_01)
+pub fn add_use_warnings_with_offset(source: &str) -> Vec<CodeAction> {
+    let offset = file_scope_pragma_insertion_offset(source);
+    vec![CodeAction {
+        title: "Add 'use warnings'".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::MissingWarnings.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: offset, end: offset },
+                new_text: file_scope_pragma_text(source, "use warnings"),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Compute the insertion offset for `use strict`/`use warnings`, skipping
+/// the shebang line if present. Without this, the pragma is inserted before
+/// `#!/usr/bin/perl`, breaking script execution. (#UX_GAP_01)
+fn file_scope_pragma_insertion_offset(source: &str) -> usize {
+    if source.starts_with("#!") {
+        source.find('\n').map(|offset| offset + 1).unwrap_or(source.len())
+    } else {
+        0
+    }
+}
+
+fn file_scope_pragma_text(source: &str, pragma: &str) -> String {
+    let separator = if source.starts_with("#!") && !source.contains('\n') { "\n" } else { "" };
+    format!("{separator}{pragma};\n")
+}
+
+/// Move a phase-scoped `use strict` pragma to file scope.
+pub fn move_use_strict_to_file_scope(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let insert_at = file_scope_pragma_insertion_offset(source);
+    let delete_end = if source.as_bytes().get(diagnostic.range.1).copied() == Some(b';') {
+        diagnostic.range.1 + 1
+    } else {
+        diagnostic.range.1
+    };
+
+    vec![CodeAction {
+        title: "Move 'use strict' to file scope".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::PhaseScopedStrictPragma.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![
+                TextEdit {
+                    location: SourceLocation { start: diagnostic.range.0, end: delete_end },
+                    new_text: String::new(),
+                },
+                TextEdit {
+                    location: SourceLocation { start: insert_at, end: insert_at },
+                    new_text: file_scope_pragma_text(source, "use strict"),
+                },
+            ],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Move a phase-scoped `use warnings` pragma to file scope.
+pub fn move_use_warnings_to_file_scope(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let insert_at = file_scope_pragma_insertion_offset(source);
+    let delete_end = if source.as_bytes().get(diagnostic.range.1).copied() == Some(b';') {
+        diagnostic.range.1 + 1
+    } else {
+        diagnostic.range.1
+    };
+
+    vec![CodeAction {
+        title: "Move 'use warnings' to file scope".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::PhaseScopedWarningsPragma.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![
+                TextEdit {
+                    location: SourceLocation { start: diagnostic.range.0, end: delete_end },
+                    new_text: String::new(),
+                },
+                TextEdit {
+                    location: SourceLocation { start: insert_at, end: insert_at },
+                    new_text: file_scope_pragma_text(source, "use warnings"),
+                },
+            ],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Fix deprecated 'defined @array' or 'defined %hash'
+pub fn fix_deprecated_defined(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    let mut actions = Vec::new();
+
+    // Extract the array/hash from the diagnostic
+    if let Some(start) = source[range_start..range_end].find("defined") {
+        let defined_start = range_start + start;
+        let arg_start = defined_start + 7; // "defined".len()
+
+        // Find the argument
+        let raw_arg = source[arg_start..range_end].trim();
+        let arg_text = normalize_deprecated_defined_arg(raw_arg);
+
+        actions.push(CodeAction {
+            title: format!("Replace with '{}'", arg_text),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::DeprecatedDefined.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: defined_start, end: range_end },
+                    new_text: arg_text.to_string(),
+                }],
+            },
+            is_preferred: true,
+        });
+    }
+
+    actions
+}
+
+fn normalize_deprecated_defined_arg(raw_arg: &str) -> &str {
+    raw_arg
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .map(str::trim)
+        .unwrap_or(raw_arg)
+}
+
+/// Fix numeric comparison with undef
+pub fn fix_numeric_undef(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    let mut actions = Vec::new();
+
+    // Add defined check
+    actions.push(CodeAction {
+        title: "Add defined check".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![
+                TextEdit {
+                    location: SourceLocation { start: range_start, end: range_start },
+                    new_text: "defined(".to_string(),
+                },
+                TextEdit {
+                    location: SourceLocation { start: range_end, end: range_end },
+                    new_text: ")".to_string(),
+                },
+            ],
+        },
+        is_preferred: true,
+    });
+
+    // Use // operator
+    if source[range_start..range_end].contains("==") {
+        actions.push(CodeAction {
+            title: "Use defined-or operator (//)".to_string(),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: range_start, end: range_end },
+                    new_text: "// 0".to_string(), // Default to 0
+                }],
+            },
+            is_preferred: false,
+        });
+    }
+
+    actions
+}
+
+/// Fix explicit numeric comparison with `undef` from native critic.
+pub fn fix_native_undef_comparison(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    let Some(replacement) = native_undef_comparison_replacement(&source[range_start..range_end])
+    else {
+        return Vec::new();
+    };
+
+    vec![CodeAction {
+        title: "Use defined() check".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec!["native.common.undef_comparison".to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: range_start, end: range_end },
+                new_text: replacement,
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+fn native_undef_comparison_replacement(text: &str) -> Option<String> {
+    if let Some((left, right)) = text.split_once("==") {
+        return native_defined_replacement(left, right, true);
+    }
+    if let Some((left, right)) = text.split_once("!=") {
+        return native_defined_replacement(left, right, false);
+    }
+
+    None
+}
+
+fn native_defined_replacement(left: &str, right: &str, equal: bool) -> Option<String> {
+    let left = left.trim();
+    let right = right.trim();
+    let compared = if left == "undef" {
+        right
+    } else if right == "undef" {
+        left
+    } else {
+        return None;
+    };
+    if compared.is_empty() {
+        return None;
+    }
+
+    let replacement =
+        if equal { format!("!defined({compared})") } else { format!("defined({compared})") };
+    Some(replacement)
+}
+
+/// Fix unquoted bareword by quoting or declaring as filehandle
+///
+/// Provides three options for fixing bareword issues under strict mode:
+/// 1. Quote with single quotes - wraps bareword in single quotes
+/// 2. Quote with double quotes - wraps bareword in double quotes
+/// 3. Declare as filehandle - for uppercase barewords, adds filehandle declaration
+pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    let mut actions = Vec::new();
+
+    // Extract bareword text from the source at the diagnostic range
+    let bareword = &source[range_start..range_end];
+
+    // Check if bareword is all uppercase (filehandle convention)
+    let is_uppercase = bareword.chars().all(|c| c.is_ascii_uppercase() || c == '_');
+
+    // Action 1: Quote with single quotes
+    actions.push(CodeAction {
+        title: format!("Quote '{}' with single quotes", bareword),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: range_start, end: range_end },
+                new_text: format!("'{}'", bareword),
+            }],
+        },
+        is_preferred: true,
+    });
+
+    // Action 2: Quote with double quotes
+    actions.push(CodeAction {
+        title: format!("Quote '{}' with double quotes", bareword),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: range_start, end: range_end },
+                new_text: format!("\"{}\"", bareword),
+            }],
+        },
+        is_preferred: false,
+    });
+
+    // Action 3: Declare as filehandle (only for uppercase barewords)
+    if is_uppercase {
+        // Find the best position to insert a filehandle declaration
+        let insert_pos = find_declaration_position(source, range_start);
+        let indent = get_indent_at(source, insert_pos);
+
+        actions.push(CodeAction {
+            title: format!("Declare '{}' as filehandle", bareword),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: insert_pos, end: insert_pos },
+                    new_text: format!("{}open my ${}; \n", indent, bareword),
+                }],
+            },
+            is_preferred: false,
+        });
+    }
+
+    actions
+}
+
+/// Fix parse errors with automated corrections
+pub fn fix_parse_error(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+    code: &str,
+) -> Vec<CodeAction> {
+    // Guard all byte-index slice operations.  A diagnostic range that lands
+    // mid-multibyte char (e.g. from an unconverted UTF-16 LSP offset) must
+    // not panic; return no actions instead.
+    let range_start = diagnostic.range.0;
+    if range_start > source.len() || !source.is_char_boundary(range_start) {
+        return Vec::new();
+    }
+
+    let mut actions = Vec::new();
+
+    match code {
+        "parse-error-missingsemicolon" => {
+            // Add semicolon at the end
+            let line_end =
+                source[range_start..].find('\n').map(|p| range_start + p).unwrap_or(source.len());
+
+            // Find the actual end of the statement (before any trailing whitespace)
+            let mut end_pos = line_end;
+            while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
+                end_pos -= 1;
+            }
+
+            actions.push(CodeAction {
+                title: "Add missing semicolon".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation { start: end_pos, end: end_pos },
+                        new_text: ";".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
+        }
+        "PL001" | "PL002"
+            if diagnostic.message.to_ascii_lowercase().contains("missing semicolon") =>
+        {
+            // PL001/PL002 are general parse error codes. When the message indicates a missing
+            // semicolon, apply the same fix -- but skip heredoc contexts where insertion is wrong.
+            let at_heredoc = source[range_start..].get(..2).is_some_and(|s| s == "<<");
+            if !at_heredoc {
+                let line_end = source[range_start..]
+                    .find('\n')
+                    .map(|p| range_start + p)
+                    .unwrap_or(source.len());
+
+                // Insert before trailing whitespace
+                let mut end_pos = line_end;
+                while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
+                {
+                    end_pos -= 1;
+                }
+
+                actions.push(CodeAction {
+                    title: "Add missing semicolon".to_string(),
+                    kind: CodeActionKind::QuickFix,
+                    diagnostics: vec![code.to_string()],
+                    edit: CodeActionEdit {
+                        changes: vec![TextEdit {
+                            location: SourceLocation { start: end_pos, end: end_pos },
+                            new_text: ";".to_string(),
+                        }],
+                    },
+                    is_preferred: true,
+                });
+            }
+        }
+        "parse-error-unclosedstring" => {
+            // Add closing quote
+            actions.push(CodeAction {
+                title: "Add closing quote".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation {
+                            start: diagnostic.range.1,
+                            end: diagnostic.range.1,
+                        },
+                        new_text: "\"".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
+        }
+        "parse-error-unclosedparenthesis" => {
+            actions.push(CodeAction {
+                title: "Add closing parenthesis".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation {
+                            start: diagnostic.range.1,
+                            end: diagnostic.range.1,
+                        },
+                        new_text: ")".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
+        }
+        "parse-error-unclosedbracket" => {
+            actions.push(CodeAction {
+                title: "Add closing bracket".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation {
+                            start: diagnostic.range.1,
+                            end: diagnostic.range.1,
+                        },
+                        new_text: "]".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
+        }
+        "parse-error-unclosedbrace" | "parse-error-unclosedblock" => {
+            actions.push(CodeAction {
+                title: "Add closing brace".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation {
+                            start: diagnostic.range.1,
+                            end: diagnostic.range.1,
+                        },
+                        new_text: "}".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
+        }
+        _ => {}
+    }
+
+    actions
+}
+
+/// Fix unused parameter by adding underscore prefix
+pub fn fix_unused_parameter(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    if let Some(param_name) = diagnostic.message.split('\'').nth(1) {
+        // Add underscore prefix
+        actions.push(CodeAction {
+            title: format!("Rename to '_{}'", param_name),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::UnusedParameter.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    new_text: format!("_{}", param_name),
+                }],
+            },
+            is_preferred: true,
+        });
+    }
+
+    actions
+}
+
+/// Fix duplicate parameter by removing or renaming the repeated binding.
+pub fn fix_duplicate_parameter(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some(param_name) = diagnostic.message.split('\'').nth(1) else {
+        return Vec::new();
+    };
+    let (sigil, base_name) = split_sigil(param_name);
+    let new_name = format!("{sigil}{base_name}_2");
+
+    vec![
+        CodeAction {
+            title: format!("Remove duplicate parameter '{}'", param_name),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::DuplicateParameter.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    new_text: String::new(),
+                }],
+            },
+            is_preferred: true,
+        },
+        CodeAction {
+            title: format!("Rename duplicate to '{}'", new_name),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::DuplicateParameter.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    new_text: new_name,
+                }],
+            },
+            is_preferred: false,
+        },
+    ]
+}
+
+/// Fix parameter shadowing by suggesting unambiguous parameter names.
+pub fn fix_parameter_shadowing(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some(param_name) = diagnostic.message.split('\'').nth(1) else {
+        return Vec::new();
+    };
+    let (sigil, base_name) = split_sigil(param_name);
+
+    [
+        format!("{sigil}p_{base_name}"),
+        format!("{sigil}{base_name}_param"),
+        format!("{sigil}{base_name}_arg"),
+    ]
+    .into_iter()
+    .map(|new_name| CodeAction {
+        title: format!("Rename parameter to '{}'", new_name),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::ParameterShadowsGlobal.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                new_text: new_name,
+            }],
+        },
+        is_preferred: false,
+    })
+    .collect()
+}
+
+/// Suggest portable shebang line
+///
+/// Detects hardcoded perl paths in shebang lines (e.g., `#!/usr/bin/perl`,
+/// `#!/usr/local/bin/perl`) and suggests replacing with `#!/usr/bin/env perl`
+/// for better portability across systems.
+///
+/// Only triggers on the first line of the file when it starts with `#!` and
+/// contains a path to perl that is not already using `env`.
+pub fn fix_hardcoded_shebang(source: &str) -> Vec<CodeAction> {
+    let first_line = match source.lines().next() {
+        Some(line) => line,
+        None => return Vec::new(),
+    };
+
+    // Must be a shebang line
+    if !first_line.starts_with("#!") {
+        return Vec::new();
+    }
+
+    // Already portable
+    if first_line.contains("/env ") || first_line.contains("/env\t") {
+        return Vec::new();
+    }
+
+    // Must reference perl
+    if !first_line.contains("perl") {
+        return Vec::new();
+    }
+
+    // Extract any flags after the perl path (e.g., -w, -T)
+    let flags = extract_shebang_flags(first_line);
+    let new_shebang = if flags.is_empty() {
+        "#!/usr/bin/env perl".to_string()
+    } else {
+        format!("#!/usr/bin/env perl {}", flags)
+    };
+
+    vec![CodeAction {
+        title: "Use portable shebang (#!/usr/bin/env perl)".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec!["hardcoded-shebang".to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: 0, end: first_line.len() },
+                new_text: new_shebang,
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Extract flags from a shebang line (e.g., `-w` from `#!/usr/bin/perl -w`)
+fn extract_shebang_flags(shebang_line: &str) -> String {
+    // Find "perl" in the line, then grab everything after it
+    if let Some(perl_pos) = shebang_line.find("perl") {
+        let after_perl = &shebang_line[perl_pos + 4..];
+        let trimmed = after_perl.trim();
+        if trimmed.is_empty() { String::new() } else { trimmed.to_string() }
+    } else {
+        String::new()
+    }
+}
+
+/// Fix variable shadowing by suggesting rename
+pub fn fix_variable_shadowing(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    if let Some(var_name) = diagnostic.message.split('\'').nth(1) {
+        // Remove sigil for the base name
+        let base_name =
+            var_name.trim_start_matches('$').trim_start_matches('@').trim_start_matches('%');
+
+        // Suggest alternative names
+        let suggestions = vec![
+            format!("{}_inner", base_name),
+            format!("{}_local", base_name),
+            format!("my_{}", base_name),
+        ];
+
+        for suggestion in suggestions {
+            let new_name = if var_name.starts_with('$') {
+                format!("${}", suggestion)
+            } else if var_name.starts_with('@') {
+                format!("@{}", suggestion)
+            } else if var_name.starts_with('%') {
+                format!("%{}", suggestion)
+            } else {
+                suggestion.clone()
+            };
+
+            actions.push(CodeAction {
+                title: format!("Rename to '{}'", new_name),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![DiagnosticCode::VariableShadowing.as_str().to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation {
+                            start: diagnostic.range.0,
+                            end: diagnostic.range.1,
+                        },
+                        new_text: new_name,
+                    }],
+                },
+                is_preferred: false,
+            });
+        }
+    }
+
+    actions
+}
+
+/// Fix bareword filehandle by replacing with lexical filehandle
+///
+/// Bareword filehandles (e.g., `open FILE, ...`) are a common Perl anti-pattern.
+/// This fix suggests replacing the bareword with a lexical variable (`my $fh`).
+pub fn fix_bareword_filehandle(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    // Extract filehandle name from message, e.g. "Bareword filehandle 'FILE'"
+    let fh_name = diagnostic.message.split('\'').nth(1).unwrap_or("FH");
+    // Derive a lowercase lexical name: FILE -> $file_fh, LOGFILE -> $logfile_fh
+    let lexical_name = format!("${}_fh", fh_name.to_lowercase());
+
+    vec![CodeAction {
+        title: format!("Replace bareword filehandle '{}' with lexical '{}'", fh_name, lexical_name),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::BarewordFilehandle.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                new_text: format!("my {}", lexical_name),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Fix missing package declaration by inserting `package main;` at the top
+///
+/// When a Perl file has no `package` declaration (PL200), the default package
+/// is `main`. This fix makes that intent explicit by inserting `package main;`
+/// at the top of the file.
+pub fn fix_missing_package_declaration(source: &str) -> Vec<CodeAction> {
+    // Insert after shebang if present, otherwise at top
+    let insert_pos =
+        if source.starts_with("#!") { source.find('\n').map(|p| p + 1).unwrap_or(0) } else { 0 };
+
+    vec![CodeAction {
+        title: "Add 'package main;' declaration".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::MissingPackageDeclaration.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: insert_pos, end: insert_pos },
+                new_text: "package main;\n".to_string(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Fix variable redeclaration by removing the duplicate `my` keyword
+///
+/// When a variable is declared twice in the same scope (PL105), the fix
+/// is to remove the `my` keyword from the second declaration, turning it
+/// into a plain assignment.
+pub fn fix_variable_redeclaration(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    if let Some((abs_my_start, abs_my_end)) = find_duplicate_my_span(source, diagnostic) {
+        // Remove only the duplicate declarator and keep the assignment/value intact.
+
+        actions.push(CodeAction {
+            title: "Remove duplicate 'my' declaration".to_string(),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::VariableRedeclaration.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: abs_my_start, end: abs_my_end },
+                    new_text: String::new(),
+                }],
+            },
+            is_preferred: true,
+        });
+    }
+
+    actions
+}
+
+fn find_duplicate_my_span(source: &str, diagnostic: &QuickFixDiagnostic) -> Option<(usize, usize)> {
+    let variable_start = diagnostic.range.0.min(source.len());
+    if !source.is_char_boundary(variable_start) {
+        return None;
+    }
+    let line_start = source[..variable_start].rfind('\n').map(|pos| pos + 1).unwrap_or(0);
+    let before_var = &source[line_start..variable_start];
+    let my_offset = before_var.rfind("my ")?;
+
+    if before_var[my_offset + 3..].chars().all(char::is_whitespace) {
+        let start = line_start + my_offset;
+        return Some((start, start + 3));
+    }
+
+    None
+}
+
+/// Fix misspelled pragma by replacing with the correctly spelled name
+///
+/// The MisspelledPragma diagnostic (PL111) message has the format:
+/// `"Did you mean 'use <correct>;'? '<typo>' is not a known pragma"`
+/// This fix extracts the correct name and replaces the entire `use <typo>` statement.
+pub fn fix_misspelled_pragma(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    // Parse correct pragma from message: "Did you mean 'use <correct>;'?"
+    let msg = &diagnostic.message;
+    if let Some(after_use) = msg.strip_prefix("Did you mean 'use ")
+        && let Some(correct_name) = after_use.split(';').next()
+    {
+        let correct_pragma = correct_name.trim();
+        actions.push(CodeAction {
+            title: format!("Fix pragma spelling: 'use {};'", correct_pragma),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::MisspelledPragma.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    new_text: format!("use {};", correct_pragma),
+                }],
+            },
+            is_preferred: true,
+        });
+    }
+
+    // Unused parameter suppression: source is used indirectly through the
+    // diagnostic message which was produced from the same source text.
+    let _ = source;
+
+    actions
+}
+
+/// Fix unreachable code by removing the unreachable statement
+///
+/// PL406 fires when a statement follows an unconditional exit (return, die, exit).
+/// The fix removes the entire line containing the unreachable statement.
+pub fn fix_unreachable_code(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    // Find the full line containing the unreachable statement
+    let line_start = source[..range_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end =
+        source[range_end..].find('\n').map(|p| range_end + p + 1).unwrap_or(source.len());
+
+    vec![CodeAction {
+        title: "Remove unreachable code".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::UnreachableCode.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: line_start, end: line_end },
+                new_text: String::new(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Fix duplicate subroutine by suggesting rename of the second definition
+///
+/// PL300 fires when a subroutine is defined more than once. The fix renames the
+/// second definition to avoid the conflict, preserving both implementations.
+pub fn fix_duplicate_subroutine(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    // Extract sub name from message: "Subroutine 'foo' is defined more than once..."
+    let sub_name = diagnostic.message.split('\'').nth(1).unwrap_or("sub");
+
+    actions.push(CodeAction {
+        title: format!("Rename duplicate subroutine '{}' to '{}_2'", sub_name, sub_name),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::DuplicateSubroutine.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                new_text: format!("{}_2", sub_name),
+            }],
+        },
+        is_preferred: true,
+    });
+
+    actions
+}
+
+/// Fix duplicate hash key by renaming or removing the duplicate entry (PL408).
+///
+/// Offers two actions when the same static key appears more than once in a hash literal:
+///
+/// 1. **Remove duplicate entry** - deletes the entire line containing the duplicate key,
+///    keeping the *first* value. Offered only for simple one-line entries
+///    so we don't corrupt inline hashes or multiline values.
+/// 2. **Rename duplicate key** - appends `_2` to the key name so both entries are kept
+///    under distinct names. The original quote style (single-quoted, double-quoted, or
+///    bareword) is preserved.
+///
+/// The diagnostic range covers the duplicate key token (second occurrence).
+/// The first occurrence location is available in `related_information` on the full
+/// `Diagnostic`, but is not needed here - we fix the duplicate in-place.
+pub fn fix_duplicate_hash_keys(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some(key_name) = duplicate_hash_key_name(&diagnostic.message) else {
+        return Vec::new();
+    };
+
+    let mut actions = Vec::new();
+
+    // Determine the key's source representation to preserve quote style.
+    let Some(key_source) = source.get(diagnostic.range.0..diagnostic.range.1) else {
+        return Vec::new();
+    };
+    let new_key = duplicate_hash_key_rename_text(key_source, key_name);
+
+    // Offer line deletion only when the duplicate pair occupies its own line.
+    if let Some((line_start, delete_end)) = duplicate_hash_key_delete_range(source, diagnostic) {
+        actions.push(CodeAction {
+            title: format!("Remove duplicate entry '{key_name}' (keep first value)"),
+            kind: CodeActionKind::QuickFix,
+            diagnostics: vec![DiagnosticCode::DuplicateHashKey.as_str().to_string()],
+            edit: CodeActionEdit {
+                changes: vec![TextEdit {
+                    location: SourceLocation { start: line_start, end: delete_end },
+                    new_text: String::new(),
+                }],
+            },
+            is_preferred: true,
+        });
+    }
+
+    // Rename action keeps the duplicate entry and edits only the key token.
+    actions.push(CodeAction {
+        title: format!("Rename duplicate key to '{new_key}'"),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::DuplicateHashKey.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                new_text: new_key,
+            }],
+        },
+        is_preferred: false,
+    });
+
+    actions
+}
+
+fn duplicate_hash_key_name(message: &str) -> Option<&str> {
+    const PREFIX: &str = "Duplicate hash key '";
+    const SUFFIX: &str = "' -- only the last value will be used";
+
+    message.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)
+}
+
+fn duplicate_hash_key_rename_text(key_source: &str, key_name: &str) -> String {
+    if is_quoted_with(key_source, '\'') || is_quoted_with(key_source, '"') {
+        let insert_at = key_source.len().saturating_sub(1);
+        let mut renamed = String::with_capacity(key_source.len() + 2);
+        renamed.push_str(&key_source[..insert_at]);
+        renamed.push_str("_2");
+        renamed.push_str(&key_source[insert_at..]);
+        return renamed;
+    }
+
+    if is_bareword_hash_key(key_source) {
+        format!("{key_source}_2")
+    } else {
+        format!("'{}'", escape_single_quoted_perl(key_name) + "_2")
+    }
+}
+
+fn is_quoted_with(value: &str, quote: char) -> bool {
+    value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote)
+}
+
+fn is_bareword_hash_key(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn escape_single_quoted_perl(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn duplicate_hash_key_delete_range(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Option<(usize, usize)> {
+    let before_key = source.get(..diagnostic.range.0)?;
+    let after_key = source.get(diagnostic.range.1..)?;
+    let line_start = before_key.rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = after_key.find('\n').map(|p| diagnostic.range.1 + p).unwrap_or(source.len());
+    let delete_end = if line_end < source.len() { line_end + 1 } else { line_end };
+    let line_content = source.get(line_start..line_end)?;
+
+    if is_simple_duplicate_hash_entry_line(line_content) {
+        Some((line_start, delete_end))
+    } else {
+        None
+    }
+}
+
+fn is_simple_duplicate_hash_entry_line(line_content: &str) -> bool {
+    let trimmed = line_content.trim_end();
+
+    line_content.matches("=>").count() == 1
+        && trimmed.ends_with(',')
+        && !line_content.contains(['(', ')', '[', ']', '{', '}'])
+}
+
+/// Fix missing return statement by adding an explicit `return` before the closing brace
+///
+/// PL301 fires when a subroutine has no explicit return statement. The diagnostic
+/// range covers the subroutine body. This inserts `return;` at the end of the range.
+pub fn fix_missing_return(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    // Find indentation to match surrounding code style
+    let insert_pos = diagnostic.range.1.min(source.len());
+    let indent = get_indent_at(source, insert_pos.saturating_sub(1));
+
+    vec![CodeAction {
+        title: "Add explicit 'return' statement".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::MissingReturn.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: insert_pos, end: insert_pos },
+                new_text: format!("{}return;\n", indent),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Suggest upgrading two-argument open() to three-argument form
+///
+/// Two-argument `open($fh, $filename)` is unsafe because `$filename` can
+/// contain shell metacharacters. The three-argument form separates the mode
+/// from the filename, e.g. `open(my $fh, '<', $filename)`.
+pub fn fix_two_arg_open(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range, new_text)) = two_arg_open_replacement(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    vec![CodeAction {
+        title: "Convert to three-argument open() for safety".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::TwoArgOpen.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: range.0, end: range.1 },
+                new_text,
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+fn two_arg_open_replacement(
+    source: &str,
+    range: (usize, usize),
+) -> Option<((usize, usize), String)> {
+    let snippet = source.get(range.0..range.1)?;
+    if let Some(((start, end), new_text)) = parse_two_arg_open_call(snippet) {
+        return Some(((range.0 + start, range.0 + end), new_text));
+    }
+
+    let start = range.0.min(source.len());
+    let line_start = source[..start].rfind('\n').map_or(0, |idx| idx + 1);
+    let line_end = source[start..].find('\n').map_or(source.len(), |offset| start + offset);
+    let diagnostic_offset = start.saturating_sub(line_start);
+    source.get(start..line_end).and_then(parse_two_arg_open_call).map(
+        |((call_start, call_end), new_text)| {
+            (
+                (
+                    line_start + diagnostic_offset + call_start,
+                    line_start + diagnostic_offset + call_end,
+                ),
+                new_text,
+            )
+        },
+    )
+}
+
+fn parse_two_arg_open_call(snippet: &str) -> Option<((usize, usize), String)> {
+    let call_start = first_non_whitespace(snippet)?;
+    let call = &snippet[call_start..];
+    let after_open = call.strip_prefix("open")?;
+    let next = after_open.chars().next()?;
+    if !next.is_whitespace() && next != '(' {
+        return None;
+    }
+
+    let body_start = call_start + "open".len();
+    let body_start = body_start + first_non_whitespace(&snippet[body_start..])?;
+    let body = &snippet[body_start..];
+
+    let (args, call_end) = if body.starts_with('(') {
+        let close = find_matching_parenthesis(body)?;
+        if has_non_statement_trailing_text(&body[close + 1..]) {
+            return None;
+        }
+        (&body[1..close], body_start + close + 1)
+    } else {
+        let args_end = bare_call_args_end(body)?;
+        (&body[..args_end], body_start + args_end)
+    };
+    let (handle, path) = split_two_top_level_args(args)?;
+
+    Some(((call_start, call_end), format!("open({}, '<', {})", handle.trim(), path.trim())))
+}
+
+fn first_non_whitespace(input: &str) -> Option<usize> {
+    input.char_indices().find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx))
+}
+
+fn has_non_statement_trailing_text(input: &str) -> bool {
+    let trimmed = input.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let Some(after_semicolon) = trimmed.strip_prefix(';') else {
+        return true;
+    };
+
+    !after_semicolon.trim().is_empty()
+}
+
+fn bare_call_args_end(input: &str) -> Option<usize> {
+    if input.trim().is_empty() {
+        return None;
+    }
+
+    find_statement_semicolon(input).map_or_else(
+        || {
+            if contains_unquoted_comment(input) { None } else { Some(input.trim_end().len()) }
+        },
+        |semicolon| {
+            let trailing = input[semicolon + 1..].trim();
+            if trailing.is_empty() && !contains_unquoted_comment(&input[..semicolon]) {
+                Some(input[..semicolon].trim_end().len())
+            } else {
+                None
+            }
+        },
+    )
+}
+
+fn find_statement_semicolon(input: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if let Some(quote_char) = quote {
+            if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_char {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' | '`' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => return Some(idx),
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn contains_unquoted_comment(input: &str) -> bool {
+    let mut quote = None;
+    let mut escaped = false;
+
+    for ch in input.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if let Some(quote_char) = quote {
+            if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_char {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' | '`' => quote = Some(ch),
+            '#' => return true,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn find_matching_parenthesis(input: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if let Some(quote_char) = quote {
+            if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_char {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' | '`' => quote = Some(ch),
+            '(' => paren_depth += 1,
+            '[' => bracket_depth += 1,
+            '{' => brace_depth += 1,
+            ')' if paren_depth == 1 && bracket_depth == 0 && brace_depth == 0 => return Some(idx),
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn split_two_top_level_args(input: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut split = None;
+
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if let Some(quote_char) = quote {
+            if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_char {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' | '`' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                if split.replace(idx).is_some() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let idx = split?;
+    let first = &input[..idx];
+    let second = &input[idx + 1..];
+
+    if first.trim().is_empty() || second.trim().is_empty() {
+        return None;
+    }
+
+    Some((first, second))
+}
+
+/// Remove an unused `use Module;` import statement (PL700).
+///
+/// When a module is imported but never referenced in the file, this fix
+/// deletes the entire `use Module;` line so no blank line is left behind.
+/// The module name is extracted from the diagnostic message
+/// (`"Module 'Foo::Bar' appears to be unused"`).
+pub fn fix_unused_import(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((line_start, line_end)) = diagnostic_line_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+    let Some(line_text) = source.get(line_start..line_end) else {
+        return Vec::new();
+    };
+    if !line_text.trim_start().starts_with("use ") {
+        return Vec::new();
+    }
+
+    let title = diagnostic.message.split('\'').nth(1).map_or_else(
+        || "Remove unused import".to_string(),
+        |module| format!("Remove unused 'use {module};'"),
+    );
+
+    vec![CodeAction {
+        title,
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::UnusedImport.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: line_start, end: line_end },
+                new_text: String::new(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Remove a deprecated `$[ = 0;` array-base variable assignment (PL501).
+///
+/// `$[` was a Perl variable that changed the starting index for arrays and
+/// string operations. It has been deprecated since Perl 5.12. This fix removes
+/// only a standalone `$[ = 0;` line. Non-zero assignments are intentionally not
+/// auto-fixed because removing them can require renumbering array subscripts.
+pub fn fix_deprecated_array_base(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((line_start, line_end)) = diagnostic_line_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+    let Some(line_text) = source.get(line_start..line_end) else {
+        return Vec::new();
+    };
+    if !is_zero_array_base_assignment(line_text) {
+        return Vec::new();
+    }
+
+    vec![CodeAction {
+        title: "Remove deprecated '$[' array base assignment".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::DeprecatedArrayBase.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: line_start, end: line_end },
+                new_text: String::new(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+fn is_zero_array_base_assignment(line_text: &str) -> bool {
+    let Some(rest) = line_text.trim_start().strip_prefix("$[") else {
+        return false;
+    };
+    let Some(rest) = rest.trim_start().strip_prefix('=') else {
+        return false;
+    };
+    let Some(rest) = rest.trim_start().strip_prefix('0') else {
+        return false;
+    };
+
+    rest.trim_start().starts_with(';')
+}
+
+/// Scope a global signal handler assignment with `local` (PL602).
+///
+/// A bare `$SIG{__DIE__} = ...` or `$SIG{__WARN__} = ...` at file scope
+/// changes signal handling for the whole process. Prepending `local` limits
+/// the effect to the enclosing block so the original handler is restored on
+/// scope exit, preventing the hook from leaking into unrelated call stacks.
+pub fn fix_security_signal_handler(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let Some((insert_pos, _)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+    let Some(at_pos) = source.get(insert_pos..) else {
+        return Vec::new();
+    };
+    if !at_pos.starts_with("$SIG")
+        && !at_pos.starts_with("$main::SIG")
+        && !at_pos.starts_with("$::SIG")
+    {
+        return Vec::new();
+    }
+
+    vec![CodeAction {
+        title: "Add 'local' to scope signal handler to the current block".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::SecuritySignalHandler.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: insert_pos, end: insert_pos },
+                new_text: "local ".to_string(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+/// Add missing arguments to a `printf`/`sprintf` call (PL405 / `native.common.printf_format_arity`).
+///
+/// When the format string has more specifiers than supplied arguments, this fix
+/// appends the required number of `undef` placeholders. When arguments exceed
+/// specifiers the fix is skipped; removing arguments is too destructive to automate.
+///
+/// Handles both listop form (`printf "%s", $a`) and parenthesised form
+/// (`printf("%s", $a)`), inserting before the closing `)`, statement semicolon,
+/// or range end as appropriate.
+pub fn fix_printf_format_arity(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some(QuickFixMetadata::PrintfFormatArity { call_name, missing_arguments }) =
+        diagnostic.metadata.as_ref()
+    else {
+        return Vec::new();
+    };
+    if *missing_arguments == 0 {
+        return Vec::new();
+    }
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+    let Some(insert_pos) = printf_format_insert_position(source, range_start, range_end, call_name)
+    else {
+        return Vec::new();
+    };
+
+    let undef_args = ", undef".repeat(*missing_arguments);
+    let plural = if *missing_arguments == 1 { "" } else { "s" };
+
+    vec![CodeAction {
+        title: format!("Add {missing_arguments} missing argument{plural} as undef"),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::PrintfFormatMismatch.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: insert_pos, end: insert_pos },
+                new_text: undef_args,
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+fn printf_format_arity_metadata_for_call(
+    call_name: &str,
+    args: &[Node],
+) -> Option<QuickFixMetadata> {
+    let format_node = args.first()?;
+    let NodeKind::String { value, interpolated } = &format_node.kind else {
+        return None;
+    };
+    let format = crate::providers::diagnostics::unquote_string(value);
+    if *interpolated && (format.contains('$') || format.contains('@')) {
+        return None;
+    }
+
+    let specifier_count = crate::providers::diagnostics::count_format_specifiers(format);
+    let supplied_arguments = args.len().saturating_sub(1);
+    let missing_arguments = specifier_count.checked_sub(supplied_arguments)?;
+    (missing_arguments > 0).then_some(QuickFixMetadata::PrintfFormatArity {
+        call_name: call_name.to_string(),
+        missing_arguments,
+    })
+}
+
+pub(super) struct PrintfFormatArityMetadata {
+    by_range: HashMap<(usize, usize), QuickFixMetadata>,
+}
+
+impl PrintfFormatArityMetadata {
+    pub(super) fn get(&self, range: &(usize, usize)) -> Option<&QuickFixMetadata> {
+        self.by_range.get(range)
+    }
+
+    pub(super) fn for_diagnostic(
+        &self,
+        source: &str,
+        diagnostic_range: (usize, usize),
+    ) -> Option<&QuickFixMetadata> {
+        if let Some(value) = self.get(&diagnostic_range) {
+            return Some(value);
+        }
+
+        let (diagnostic_start, diagnostic_end) = diagnostic_range;
+        let diagnostic_text = source.get(diagnostic_start..diagnostic_end)?.trim_end();
+        let before_semicolon = diagnostic_text.strip_suffix(';')?;
+        let semicolon_start = diagnostic_start + before_semicolon.len();
+        self.by_range.get(&(diagnostic_start, semicolon_start)).or_else(|| {
+            let call_end = diagnostic_start + before_semicolon.trim_end().len();
+            self.by_range.get(&(diagnostic_start, call_end))
+        })
+    }
+}
+
+/// Derive printf metadata for every statically analyzable call in one AST walk.
+pub(super) fn printf_format_arity_metadata_by_range(ast: &Node) -> PrintfFormatArityMetadata {
+    let mut metadata = PrintfFormatArityMetadata { by_range: HashMap::new() };
+    collect_printf_format_arity_metadata(ast, &mut metadata);
+    metadata
+}
+
+fn collect_printf_format_arity_metadata(node: &Node, metadata: &mut PrintfFormatArityMetadata) {
+    let call = match &node.kind {
+        NodeKind::FunctionCall { name, args } if matches!(name.as_str(), "printf" | "sprintf") => {
+            Some((name.as_str(), args))
+        }
+        NodeKind::IndirectCall { method, args, .. } if method == "printf" => {
+            Some((method.as_str(), args))
+        }
+        _ => None,
+    };
+
+    if let Some((call_name, args)) = call
+        && let Some(value) = printf_format_arity_metadata_for_call(call_name, args)
+    {
+        let range = (node.location.start, node.location.end);
+        metadata.by_range.insert(range, value);
+    }
+
+    for child in node.children() {
+        collect_printf_format_arity_metadata(child, metadata);
+    }
+}
+
+fn printf_format_insert_position(
+    source: &str,
+    range_start: usize,
+    range_end: usize,
+    call_name: &str,
+) -> Option<usize> {
+    let call_text = source.get(range_start..range_end)?;
+    let call_offset = first_non_whitespace(call_text)?;
+    let call_body = call_text.get(call_offset..)?;
+    if !call_body.starts_with(call_name) {
+        return None;
+    }
+
+    // Skip past the function name to detect whether the call uses parens.
+    let after_name = call_body.get(call_name.len()..)?;
+    let after_name_trimmed = after_name.trim_start();
+    if after_name_trimmed.starts_with('(') {
+        // Parenthesized form: insert the new args before the closing ')'.
+        let paren_start_offset = range_end - after_name_trimmed.len() - range_start;
+        let close = find_matching_parenthesis(after_name_trimmed)?;
+        if has_non_statement_trailing_text(&after_name_trimmed[close + 1..]) {
+            return None;
+        }
+        Some(range_start + paren_start_offset + close)
+    } else {
+        // Listop form: insert before a statement semicolon when one is inside
+        // the diagnostic range, otherwise at the trimmed range end.
+        bare_call_args_end(call_text).map(|end| range_start + end)
+    }
+}
+
+/// Remove an undefined label from a `next`, `last`, or `redo` statement (PL410).
+///
+/// The diagnostic range is expected to cover the loop-control statement. The
+/// edit deletes only the whitespace and label after the operator, leaving the
+/// bare operator to target the innermost enclosing loop.
+pub fn fix_loop_control_undefined_label(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+    let Some(range_text) = source.get(range_start..range_end) else {
+        return Vec::new();
+    };
+
+    let Some(op_offset) = first_non_whitespace(range_text) else {
+        return Vec::new();
+    };
+    let statement = &range_text[op_offset..];
+
+    let Some(op) =
+        ["next", "last", "redo"].into_iter().find(|candidate| statement.starts_with(candidate))
+    else {
+        return Vec::new();
+    };
+
+    let after_op = &statement[op.len()..];
+    let whitespace_len = after_op
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_whitespace())
+        .last()
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    if whitespace_len == 0 {
+        return Vec::new();
+    }
+
+    let label_tail = &after_op[whitespace_len..];
+    let label_tail_trimmed_end = label_tail.trim_end().len();
+    if label_tail_trimmed_end == 0 {
+        return Vec::new();
+    }
+
+    let label_tail_trimmed = &label_tail[..label_tail_trimmed_end];
+    let (label_text, delete_end) =
+        if let Some(before_semicolon) = label_tail_trimmed.strip_suffix(';') {
+            (
+                before_semicolon.trim(),
+                range_start + op_offset + op.len() + whitespace_len + before_semicolon.len(),
+            )
+        } else {
+            (label_tail_trimmed.trim(), range_end)
+        };
+    if label_text.is_empty()
+        || !label_text.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
+    {
+        return Vec::new();
+    }
+
+    let delete_start = range_start + op_offset + op.len();
+    vec![CodeAction {
+        title: "Remove undefined label".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::LoopControlUndefinedLabel.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: delete_start, end: delete_end },
+                new_text: String::new(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+fn diagnostic_line_range(source: &str, range: (usize, usize)) -> Option<(usize, usize)> {
+    let (start, end) = valid_diagnostic_range(source, range)?;
+    let line_start = source[..start].rfind('\n').map_or(0, |idx| idx + 1);
+    let newline_offset = source[end..].find('\n');
+    let line_end = newline_offset.map_or(source.len(), |offset| end + offset + 1);
+    Some((line_start, line_end))
+}
+
+fn valid_diagnostic_range(source: &str, range: (usize, usize)) -> Option<(usize, usize)> {
+    let (start, end) = range;
+    if start > end
+        || end > source.len()
+        || !source.is_char_boundary(start)
+        || !source.is_char_boundary(end)
+    {
+        return None;
+    }
+    Some((start, end))
+}
+
+/// Offer "Import 'Module'" for an unquoted-bareword function call (PL109).
+///
+/// Resolves the symbol name at the diagnostic range against the static
+/// symbol-to-module map ([`guess_module_for_function`]).  Returns a QuickFix
+/// action inserting `use Module;\n` after the last existing `use` / `require`
+/// line when:
+///
+/// - The symbol maps to a known module.
+/// - The symbol is not a Perl built-in function.
+/// - `use Module` (or `use Module qw(...)`) is not already present in source.
+///
+/// Returns an empty `Vec` for builtins, already-imported modules, and symbols
+/// not in the static map.
+pub fn fix_import_for_bareword_function(
+    source: &str,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    let (start, end) = match valid_diagnostic_range(source, diagnostic.range) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+
+    let symbol = source[start..end].trim();
+    if symbol.is_empty() {
+        return Vec::new();
+    }
+
+    // Skip Perl built-ins -- they never need an import.
+    if is_builtin(symbol) {
+        return Vec::new();
+    }
+
+    // Resolve to a module using the static map.
+    let module = match guess_module_for_function(symbol) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+
+    // Skip when the module is already imported to avoid duplicates.
+    // A simple substring check covers both `use JSON;` and `use JSON qw(...)`.
+    let use_marker = format!("use {}", module);
+    if source.contains(&use_marker) {
+        return Vec::new();
+    }
+
+    // Find the insert position: after the last `use` / `require` line.
+    let insert_pos = import_block_end(source);
+
+    vec![CodeAction {
+        title: format!("Import '{}'", module),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: insert_pos, end: insert_pos },
+                new_text: format!("use {};\n", module),
+            }],
+        },
+        is_preferred: false,
+    }]
+}
+
+/// Compute the byte offset at which a new `use` statement should be inserted.
+///
+/// Scans from the top of the file, skipping over:
+/// - A shebang (`#!`) line
+/// - Contiguous `use` and `require` statements (and blank/comment lines between them)
+///
+/// Returns the offset immediately after the last matching line (i.e. the
+/// position at which to insert, so the new line appears *after* existing imports).
+fn import_block_end(source: &str) -> usize {
+    let mut pos = 0;
+    // Skip shebang line if present.
+    if source.starts_with("#!") {
+        pos = source.find('\n').map(|p| p + 1).unwrap_or(source.len());
+    }
+
+    let mut last_use_end = pos;
+    let mut cursor = pos;
+
+    loop {
+        let rest = &source[cursor..];
+        let line_len = rest.find('\n').map(|p| p + 1).unwrap_or(rest.len());
+        if line_len == 0 {
+            break;
+        }
+
+        let line = &rest[..line_len];
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("use ") || trimmed.starts_with("require ") {
+            last_use_end = cursor + line_len;
+        } else if trimmed.is_empty() || trimmed.starts_with('#') {
+            // Allow blank lines and comments within the import block.
+        } else {
+            // First non-import, non-blank, non-comment line: stop.
+            break;
+        }
+
+        cursor += line_len;
+    }
+
+    last_use_end
+}

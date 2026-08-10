@@ -1,0 +1,20 @@
+name: Invalid Required Workflow (Label Trigger)
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, labeled]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [master]
+
+concurrency:
+  group: required-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

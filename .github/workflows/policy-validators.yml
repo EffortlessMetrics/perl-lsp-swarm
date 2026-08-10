@@ -1,0 +1,91 @@
+# Policy Validators
+#
+# Runs the CI economics policy validators on PRs that touch policy/, the
+# gate-policy YAML, or any of the validator scripts themselves. Catches drift
+# automatically instead of relying on contributors to remember to run the
+# scripts locally.
+#
+# See policy/ci-lane-whitelist.toml entry `policy_validators`.
+
+name: Policy Validators
+
+on:
+  pull_request:
+    paths:
+      - 'policy/**'
+      - '.ci/gate-policy.yaml'
+      - '.github/workflows/**'
+      - 'scripts/ci/validate_risk_packs.py'
+      - 'scripts/ci/validate_gate_lane_mapping.py'
+      # validate_gate_lane_mapping.py --strict also checks this doc's lane
+      # enumeration against the mapping, so a docs-only edit must trigger the
+      # workflow -- otherwise the drift check is not load-bearing on its own
+      # subject file (#5425).
+      - 'docs/ci/gate-policy-economics.md'
+      - 'scripts/ci/validate_trust_lanes.py'
+      - 'scripts/ci/check_bounded_result_overflow.py'
+      - 'docs/agents/bounded-subagent-result-v1.schema.json'
+      - 'docs/agents/bounded-subagent-result-v1.fixtures.json'
+      - '.github/workflows/policy-validators.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: policy-validators-${{ github.event.pull_request.number || github.ref }}
+  # Only cancel on synchronize to avoid label-event cancellation cascades
+  # (workflow-policy-lint LABEL_EVENT_CANCELS_PR_RUN rule).
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate CI policy ledgers
+    runs-on:
+      group: em-ci-nano
+      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 1
+
+      # System python3 on the self-hosted runner (Ubuntu ships >=3.11 with
+      # tomllib). actions/setup-python has no tool-cache build for this
+      # runner's OS, and the validators are stdlib-only, so no setup needed.
+      - name: Validate risk packs
+        run: |
+          python3 scripts/ci/validate_risk_packs.py --strict
+
+      - name: Validate trust lanes
+        run: |
+          python3 scripts/ci/validate_trust_lanes.py --strict
+
+      - name: Validate gate -> lane mapping
+        run: |
+          workflow_args=()
+          for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [[ -f "$workflow" ]] && workflow_args+=(--workflow "$workflow")
+          done
+          python3 scripts/ci/validate_gate_lane_mapping.py --strict "${workflow_args[@]}"
+
+      - name: Validate policy TOML parses
+        run: |
+          python3 - <<'EOF'
+          import sys, tomllib
+          from pathlib import Path
+          failed = []
+          for p in sorted(Path("policy").glob("*.toml")):
+              try:
+                  tomllib.loads(p.read_text(encoding="utf-8"))
+                  print(f"OK: {p}")
+              except tomllib.TOMLDecodeError as e:
+                  failed.append((p, e))
+                  print(f"FAIL: {p}: {e}")
+          sys.exit(1 if failed else 0)
+          EOF
+
+      - name: Validate bounded-result overflow invariants
+        run: |
+          python3 scripts/ci/check_bounded_result_overflow.py

@@ -1,0 +1,20 @@
+[scan]
+exclude = [
+  "target/**",
+  "target-tests/**",
+  ".runs/**",
+  ".codex-worktrees/**",
+  ".claude/worktrees/**",
+  ".ops-perl-lsp/**",
+  "tree-sitter-perl/**",
+  "fuzz/**",
+  "archive/**",
+  "book/book/**",
+  "docs/assets/recordings/**",
+  "test_corpus/workspaces/xlarge/lib/**",
+  "test_corpus/workspaces/xlarge/bin/**"
+]
+
+[module]
+roots = ["crates", "xtask", "docs", "book", "scripts"]
+depth = 2

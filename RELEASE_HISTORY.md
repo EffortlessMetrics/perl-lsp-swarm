@@ -1,0 +1,281 @@
+# Release History
+
+Canonical release ledger for [perl-lsp](https://github.com/EffortlessMetrics/perl-lsp).
+
+This file is:
+- **Backwards-looking** — records what shipped, not what is planned
+- **Append-only** — rows are not rewritten; corrections are additive with notes
+- **Cross-channel** — tracks GitHub assets, crates.io, editor marketplaces, and containers
+
+GitHub Release `publishedAt` is used as the release date when available.
+Tag commit timestamps may differ from release dates.
+
+## Release ledger
+
+| Version | Tag | GitHub Release | Released | Tag commit | Compare | Assets | crates.io | VS Code Marketplace | Notes file |
+|---------|-----|----------------|----------|------------|---------|--------|-----------|---------------------|------------|
+| [0.17.0] | `v0.17.0` | [yes][gh-0.17.0] | 2026-06-28 | `pending` | [v0.16.0...v0.17.0] | 10 (7 binaries, VSIX, SHA256SUMS, SBOM) | 0.17.0 (31 crates) | [perl-lsp-rs][vsce] | [v0.17.0][n-0.17.0] |
+| [0.16.0] | `v0.16.0` | [yes][gh-0.16.0] | 2026-06-06 | `b6d9f12b` | [v0.15.2...v0.16.0] | 9 uploaded (GitHub UI reported 11 incl. source archives) | 0.16.0 | pending | [v0.16.0][n-0.16.0] |
+| [0.15.2] | `v0.15.2` | pending | 2026-05-26 | `746edcb7` | [v0.15.1...v0.15.2] | pending | pending | pending | [v0.15.2][n-0.15.2] |
+| [0.15.1] | `v0.15.1` | pending | 2026-05-26 | `15cbe7e6` | [v0.15.0...v0.15.1] | pending | pending | pending | [v0.15.1][n-0.15.1] |
+| [0.15.0] | `v0.15.0` | pending | pending | `pending` | [v0.14.0...v0.15.0] | pending | pending | pending | [v0.15.0][n-0.15.0] |
+| [0.14.0] | `v0.14.0` | [yes][gh-0.14.0] | 2026-05-12 | `82e64200` | [v0.13.4...v0.14.0] | 1 VSIX | 0.14.0 primary packages visible; full receipt pending | pending | [v0.14.0][n-0.14.0] |
+| [0.13.4] | `v0.13.4` | pending | pending | `pending` | [v0.13.3...v0.13.4] | 10 (7 binaries, VSIX, SHA256SUMS, SBOM) | pending | pending | [v0.13.4][n-0.13.4] |
+| [0.13.3] | `v0.13.3` | [yes][gh-0.13.3] | 2026-05-03 | `06fc1443` | [v0.13.2...v0.13.3] | 10 (7 binaries, VSIX, SHA256SUMS, SBOM) | 0.13.3 (31 crates) | [perl-lsp-rs][vsce] | [v0.13.3][n-0.13.3] |
+| [0.13.2] | `v0.13.2` | [yes][gh-0.13.2] | 2026-05-02 | `0e9c5d78` | [v0.13.1...v0.13.2] | 10 (7 binaries, VSIX, SHA256SUMS, SBOM) | 0.13.2 (31 crates) | [perl-lsp-rs][vsce] | [v0.13.2][n-0.13.2] |
+| [0.13.1] | `v0.13.1` | [yes][gh-0.13.1] (prerelease) | 2026-05-01 | `6ef20484` | [v0.13.0...v0.13.1] | 10 (7 binaries, VSIX, SHA256SUMS, SBOM) | 0.13.1 (32 crates) | [perl-lsp-rs][vsce] | [v0.13.1][n-0.13.1] |
+| [0.13.0-rc1] | `v0.13.0-rc1` | [yes][gh-0.13.0-rc1] (prerelease) | 2026-04-30 | `4e4099cd` | [v0.12.4...v0.13.0-rc1] | 11 | pending verification | pending verification | [v0.13.0-rc1][n-0.13.0-rc1] |
+| [0.12.4] | `v0.12.4` | [yes][gh-0.12.4] | 2026-04-12 | `5ebb37aa` | [v0.12.3...v0.12.4] | 9 (7 binaries, SHA256SUMS, SBOM) | deferred | [perl-lsp-rs][vsce] | [v0.12.4][n-0.12.4] |
+| [0.12.3] | `v0.12.3` | [yes][gh-0.12.3] | 2026-04-09 | `a86af221` | [v0.12.2...v0.12.3] | 10 (+ VSIX) | deferred | [perl-lsp-rs][vsce] | [v0.12.3][n-0.12.3] |
+| [0.12.2] | `v0.12.2` | [yes][gh-0.12.2] | 2026-04-04 | `1c0620d8` | [v0.12.1...v0.12.2] | 9 | 0.12.2 (2026-04-08) | [perl-lsp-rs][vsce] | [v0.12.2][n-0.12.2] |
+| [0.12.1] | `v0.12.1` | [yes][gh-0.12.1] | 2026-03-31 | `7e8984b5` | [v0.12.0...v0.12.1] | 10 (+ VSIX) | 0.12.1 (2026-04-01) | [perl-lsp-rs][vsce] | [v0.12.1][n-0.12.1] |
+| [0.12.0] | `v0.12.0` | [yes][gh-0.12.0] | 2026-03-30 | `4c909c2d` | [v0.11.0...v0.12.0] | 10 (+ VSIX) | — | [perl-lsp-rs][vsce] | [v0.12.0][n-0.12.0] |
+| [0.11.0] | `v0.11.0` | [yes][gh-0.11.0] | 2026-03-12 | `d22ac734` | [v0.8.5...v0.11.0] | 11 (+ 2 VSIX) | — | [perl-lsp-rs][vsce] | [v0.11.0][n-0.11.0] |
+| [0.10.0] | — | — | 2026-02-28 (CL) | — | — | — | — | — | [v0.10.0][n-0.10.0] |
+| [0.9.1] | `v0.9.1` | — | 2026-02-20 (tag) | `c82a1604` | — | — | — | — | [v0.9.1][n-0.9.1] |
+| [0.9.0] | — | — | 2026-01-18 (CL) | — | — | — | — | — | [v0.9.0][n-0.9.0] |
+| [0.8.8] | — | — | 2025-12-01 (CL) | — | — | — | — | — | [v0.8.8][n-0.8.8] |
+| [0.8.5] | `v0.8.5` | [yes][gh-0.8.5] | 2025-08-24 | `ae75da03` | [v0.8.3...v0.8.5] | 2 (linux-x64 + checksum) | — | — | [v0.8.5][n-0.8.5] |
+| 0.8.3-rc1 | `v0.8.3-rc1` | — | 2025-08-15 (tag) | `150a22b1` | — | — | — | — | — |
+| [0.8.3] | `v0.8.3` | [yes][gh-0.8.3] | 2025-08-23 | `5331007a` | — | 0 (source-only) | — | — | [v0.8.3][n-0.8.3] |
+| 0.8.2 | `v0.8.2` | — | 2025-08-12 (tag) | `0b962684` | — | — | — | — | — |
+| 0.8.0 | `v0.8.0` | — | 2025-08-11 (tag) | `2eeb06c5` | — | — | — | — | — |
+| 0.7.3 | `v0.7.3` | — | 2025-08-06 (tag) | `20751374` | — | — | — | — | — |
+| 0.7.2 | `v0.7.2` | — | 2025-08-06 (tag) | `a19ba90b` | — | — | — | — | — |
+| 0.5.0 | `v0.5.0` | — | 2025-08-03 (tag) | `60190640` | — | — | — | — | — |
+| 0.1.0-pest | `v0.1.0-pest` | — | 2025-07-20 (tag) | `4f92dc57` | — | — | — | — | — |
+
+## Lineage corrections
+
+### 2026-07-12 — 0.13 release boundaries
+
+The ledger rows are append-only. The following corrections supersede the cited
+cells without erasing the original record. The rows above are retained as
+historical snapshots; use the corrected interpretations below for current
+lineage and publication claims.
+
+| Entry | Original ledger statement | Corrected interpretation |
+|---|---|---|
+| `0.13.1` predecessor | `v0.13.0` | No final `v0.13.0` tag exists. The actual predecessor is `v0.13.0-rc1`; use [v0.13.0-rc1...v0.13.1]. |
+| `0.13.4` artifact | Tagged release with assets pending | No `v0.13.4` ref exists. This was a prepared/versioned changelog milestone, not a distinct tagged artifact. Its historical note is retained as a source-state inventory. |
+| `0.14.0` predecessor | `v0.13.4` | The previous actual tag is `v0.13.3`; use [v0.13.3...v0.14.0]. That cumulative comparison includes the untagged 0.13.4 milestone and is not a narrow 0.14-only logical ledger. |
+
+The original `v0.13.4` asset count and channel cells are not evidence of a
+standalone 0.13.4 publication and should not be used as such.
+
+### 2026-07-12 — live tag SHA and branch-line audit
+
+The live ref audit found that several tag SHAs previously written in this ledger
+or standalone release notes no longer match the commit reached by the named tag.
+For multiple affected releases, the originally recorded full SHA no longer
+resolves in the repository.
+
+The complete immutable inventory is maintained in
+[`policy/release-tag-provenance.toml`](policy/release-tag-provenance.toml), with
+human guidance in [`docs/releases/TAG_PROVENANCE.md`](docs/releases/TAG_PROVENANCE.md).
+The original rows above remain unchanged as historical evidence.
+
+Key corrections:
+
+- the current tags from `v0.1.0-pest` through `v0.8.5` are linear even though
+  most of their recorded SHAs are stale;
+- `v0.8.5` and `v0.9.1` are divergent, so their GitHub comparison is not a
+  forward release range;
+- `v0.11.0` descends from `v0.9.1`, not from the divergent `v0.8.5` line;
+- the live refs for `v0.15.0`, `v0.16.0`, and `v0.17.0` are now pinned in the
+  provenance manifest instead of remaining `pending` only;
+- affected `Tag commit` cells in the original table are prior recorded values,
+  not current live-ref truth. Use the provenance manifest for current SHAs.
+
+No cause, actor, or rewrite date is inferred from the mismatch. The correction
+records observable repository state and installs a drift guard.
+
+## Release-channel corrections
+
+### 2026-07-12 — v0.15.0 through v0.17.0 release-channel actuals
+
+The original ledger rows remain visible as historical records. The following
+facts supersede their `pending` GitHub Release, release-date, live-tag, asset, and
+selected channel cells where stated:
+
+| Version | GitHub Release actual | Live tag commit | Asset accounting at audit | Other channel boundary |
+|---|---|---|---|---|
+| `0.15.0` | [published 2026-05-22][gh-0.15.0] | `ac8e281e73c6e14ae9d94ddf010ae0d45d1187d2` | GitHub UI reported 12 entries, including its two generated source archives; uploaded-artifact inventory was not separately reconciled. | crates.io and editor marketplaces remain unreconciled. Docker Hub builder/runtime tags expose `linux/amd64` and `linux/arm64`; GHCR builder/runtime tags exist but are `linux/arm64`-only. |
+| `0.15.1` | [published 2026-05-26][gh-0.15.1] | `15cbe7e6295a67ea0cba506c3cade628ee4847f6` | GitHub UI reported 12 entries, including its two generated source archives; uploaded-artifact inventory was not separately reconciled. | GitHub binaries remain usable. The crates.io package is superseded by `0.15.2` for fresh Cargo installs; marketplace state remains unreconciled. Docker Hub is amd64/arm64; GHCR is arm64-only. |
+| `0.15.2` | [published 2026-05-26][gh-0.15.2] | `746edcb78fe0fa8f48d87386fd4f110502588a87` | Original closeout verified 10 uploaded artifacts; GitHub UI reported 12 entries after including its two generated source archives. | PR #9617 verified crates.io install smokes, VS Code Marketplace, Open VSX, and Docker Hub. A later authenticated audit resolved GHCR as published but incomplete: both tags are arm64-only and lack amd64. |
+| `0.16.0` | [published 2026-06-06][gh-0.16.0] | `b6d9f12b995ad8ad78ca641940bd73e4b1a3c26d` | GitHub UI reported 11 entries, including its two generated source archives; uploaded-artifact inventory was not separately reconciled. | crates.io and editor marketplaces remain unreconciled. Docker Hub builder/runtime tags expose amd64/arm64; GHCR builder/runtime tags are arm64-only. |
+| `0.17.0` | [published 2026-06-28][gh-0.17.0] | `ffee2824938f415e54923112c7b79e3f22040699` | GitHub UI reported 12 entries, including its two generated source archives; uploaded-artifact inventory was not separately reconciled. | crates.io and editor marketplaces remain unreconciled. Docker Hub builder/runtime tags expose amd64/arm64; GHCR builder/runtime tags are arm64-only. |
+
+GitHub's rendered `Assets N` value and this ledger's uploaded-artifact count are
+not interchangeable. The UI total includes the generated source ZIP and tarball;
+the ledger records uploaded artifacts only when an independent inventory or
+closeout receipt exists.
+
+The note-level channel actuals and restored `v0.15.2` closeout receipt are tracked
+in #9965. The container classifications come from the read-only registry audit in
+#9973 (workflow runs `29192188862` and `29192323459`); #9972 fixes the GHCR
+multi-architecture publishing defect going forward. A GitHub Release page alone
+is not evidence that crates.io, Marketplace, Open VSX, Docker Hub, or GHCR
+completed.
+
+### 2026-07-17 — v0.17.0 receipt verification
+
+Verified the GitHub Release published 2026-06-28 at
+`ffee2824938f415e54923112c7b79e3f22040699`, with seven platform archives,
+VSIX, `SHA256SUMS`, and SPDX SBOM. The existing crates.io and VS Code
+Marketplace cells are historical assertions without current receipts and
+remain **not proven**; Homebrew, Open VSX, and Docker are also not proven by
+this GitHub receipt.
+
+### 2026-07-22 — v0.16.0 corrected to skipped (RETRACTED — see 2026-07-25)
+
+The 2026-07-12 release-channel audit above recorded a GitHub Release for
+`0.16.0` published 2026-06-06 at tag commit
+`b6d9f12b995ad8ad78ca641940bd73e4b1a3c26d`. A later pass found **no `v0.16.0`
+tag, GitHub Release, or crates.io publication exists**. The changes planned for
+0.16.0 shipped as part of 0.17.0 instead (see `CHANGELOG.md`
+`## [0.16.0] - Skipped (rolled into 0.17.0)`). The top ledger row for `0.16.0`
+is marked **skipped** accordingly; the 2026-07-12 entry above is retained as a
+superseded historical snapshot, not current lineage truth.
+
+### 2026-07-25 — v0.16.0 skipped-status RETRACTED; 0.16.0 did ship
+
+**The 2026-07-22 entry above is wrong and is retracted.** Its claim that "no
+`v0.16.0` tag, GitHub Release, or crates.io publication exists" is false in all
+three parts. The 2026-07-12 release-channel audit it superseded was correct,
+including its date and tag commit.
+
+Verified against live external sources, not repository contents:
+
+| Claim | Verification | Result |
+|-------|--------------|--------|
+| Git tag | `git ls-remote --tags` | `refs/tags/v0.16.0` → `b6d9f12b995ad8ad78ca641940bd73e4b1a3c26d` — exactly the SHA the 2026-07-12 audit cited |
+| GitHub Release | `repos/EffortlessMetrics/perl-lsp/releases/tags/v0.16.0` | published `2026-06-06T16:58:07Z`, `draft: false`, `prerelease: false`, 9 assets |
+| crates.io | `crates.io/api/v1/crates/perllsp/versions` | `0.16.0` published `2026-06-06`, `yanked: false` |
+
+The top ledger row for `0.16.0` is restored to shipped with these values.
+
+**Why this matters beyond one row.** The 2026-07-22 error was self-reinforcing:
+it wrote the skipped status into the ledger *and* into `CHANGELOG.md`
+(`## [0.16.0] - Skipped`), so the repository then corroborated itself. Any later
+check confined to repository contents would confirm the error rather than catch
+it. Release-lineage facts must be verified against the tag, the release API, and
+the registry — the tree is not evidence about what shipped.
+
+## Legend
+
+- **"—"** = does not exist / not applicable
+- **"deferred"** = release published to GitHub but crates.io publish intentionally postponed
+- **"skipped"** = version number was reserved but never released; changes rolled into a later version
+- **"unreconciled"** = a tag exists, but GitHub Release and channel state have not been independently closed out
+- **"(CL)"** = date from CHANGELOG only (no tag or release exists)
+- **"(tag)"** = date from tag commit (no verified GitHub Release date)
+- Versions without a tag or GitHub Release are CHANGELOG-only scope markers that never shipped as distinct artifacts
+- The v0.11.0 release included two VSIX files (`perl-lsp-0.11.0.vsix` and `perl-lsp-rs-0.11.0.vsix`) due to the extension rename
+
+## Eras
+
+| Era | Versions | Period | Focus |
+|-----|----------|--------|-------|
+| **Pest parser** | 0.1.0-pest — 0.5.0 | Jul — Aug 2025 | PEG grammar, initial AST |
+| **Native parser + LSP** | 0.7.x — 0.8.x | Aug 2025 | Recursive descent parser, first LSP features, first public releases |
+| **Feature buildout** | 0.9.x — 0.10.0 | Jan — Feb 2026 | Semantic analyzer, DAP, release orchestration |
+| **Platform availability** | 0.11.0 — 0.12.x | Mar — Apr 2026 | Multi-platform binaries, VS Code Marketplace, crates.io |
+
+## Links
+
+<!-- Notes files -->
+[n-0.17.0]: docs/releases/v0.17.0.md
+[n-0.16.0]: docs/releases/v0.16.0.md
+[n-0.15.2]: docs/releases/v0.15.2.md
+[n-0.15.1]: docs/releases/v0.15.1.md
+[n-0.15.0]: docs/releases/v0.15.0.md
+[n-0.14.0]: docs/releases/v0.14.0.md
+[n-0.13.4]: docs/releases/v0.13.4.md
+[n-0.13.3]: docs/releases/v0.13.3.md
+[n-0.13.2]: docs/releases/v0.13.2.md
+[n-0.13.1]: docs/releases/v0.13.1.md
+[n-0.13.0-rc1]: docs/releases/v0.13.0-rc1.md
+[n-0.12.4]: docs/releases/v0.12.4.md
+[n-0.12.3]: docs/releases/v0.12.3.md
+[n-0.12.2]: docs/releases/v0.12.2.md
+[n-0.12.1]: docs/releases/v0.12.1.md
+[n-0.12.0]: docs/releases/v0.12.0.md
+[n-0.11.0]: docs/releases/v0.11.0.md
+[n-0.10.0]: docs/releases/v0.10.0.md
+[n-0.9.1]: docs/releases/v0.9.1.md
+[n-0.9.0]: docs/releases/v0.9.0.md
+[n-0.8.8]: docs/releases/v0.8.8.md
+[n-0.8.5]: docs/releases/v0.8.5.md
+[n-0.8.3]: docs/releases/v0.8.3.md
+
+<!-- Version links (to notes files) -->
+[0.17.0]: docs/releases/v0.17.0.md
+[0.16.0]: docs/releases/v0.16.0.md
+[0.15.2]: docs/releases/v0.15.2.md
+[0.15.1]: docs/releases/v0.15.1.md
+[0.15.0]: docs/releases/v0.15.0.md
+[0.14.0]: docs/releases/v0.14.0.md
+[0.13.4]: docs/releases/v0.13.4.md
+[0.13.3]: docs/releases/v0.13.3.md
+[0.13.2]: docs/releases/v0.13.2.md
+[0.13.1]: docs/releases/v0.13.1.md
+[0.13.0-rc1]: docs/releases/v0.13.0-rc1.md
+[0.12.4]: docs/releases/v0.12.4.md
+[0.12.3]: docs/releases/v0.12.3.md
+[0.12.2]: docs/releases/v0.12.2.md
+[0.12.1]: docs/releases/v0.12.1.md
+[0.12.0]: docs/releases/v0.12.0.md
+[0.11.0]: docs/releases/v0.11.0.md
+[0.10.0]: docs/releases/v0.10.0.md
+[0.9.1]: docs/releases/v0.9.1.md
+[0.9.0]: docs/releases/v0.9.0.md
+[0.8.8]: docs/releases/v0.8.8.md
+[0.8.5]: docs/releases/v0.8.5.md
+[0.8.3]: docs/releases/v0.8.3.md
+
+<!-- GitHub Releases -->
+[gh-0.17.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.17.0
+[gh-0.16.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.16.0
+[gh-0.15.2]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.15.2
+[gh-0.15.1]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.15.1
+[gh-0.15.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.15.0
+[gh-0.14.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.14.0
+[gh-0.13.3]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.13.3
+[gh-0.13.2]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.13.2
+[gh-0.13.1]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.13.1
+[gh-0.13.0-rc1]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.13.0-rc1
+[gh-0.12.4]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.12.4
+[gh-0.12.3]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.12.3
+[gh-0.12.2]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.12.2
+[gh-0.12.1]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.12.1
+[gh-0.12.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.12.0
+[gh-0.11.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.11.0
+[gh-0.8.5]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.8.5
+[gh-0.8.3]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.8.3
+
+<!-- Compare ranges -->
+[v0.16.0...v0.17.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.16.0...v0.17.0
+[v0.15.2...v0.16.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.2...v0.16.0
+[v0.15.1...v0.15.2]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.1...v0.15.2
+[v0.15.0...v0.15.1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.0...v0.15.1
+[v0.14.0...v0.15.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.14.0...v0.15.0
+[v0.13.4...v0.14.0]: #lineage-corrections
+[v0.13.3...v0.13.4]: #lineage-corrections
+[v0.13.3...v0.14.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.3...v0.14.0
+[v0.13.2...v0.13.3]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.2...v0.13.3
+[v0.13.1...v0.13.2]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.1...v0.13.2
+[v0.13.0...v0.13.1]: #lineage-corrections
+[v0.13.0-rc1...v0.13.1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.0-rc1...v0.13.1
+[v0.12.4...v0.13.0-rc1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.4...v0.13.0-rc1
+[v0.12.3...v0.12.4]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.3...v0.12.4
+[v0.12.2...v0.12.3]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.2...v0.12.3
+[v0.12.1...v0.12.2]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.1...v0.12.2
+[v0.12.0...v0.12.1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.0...v0.12.1
+[v0.11.0...v0.12.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.11.0...v0.12.0
+[v0.9.1...v0.11.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.9.1...v0.11.0
+[v0.8.5...v0.11.0]: docs/releases/TAG_PROVENANCE.md
+[v0.8.3...v0.8.5]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.8.3...v0.8.5
+
+<!-- Channels -->
+[vsce]: https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs

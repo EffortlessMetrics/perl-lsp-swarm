@@ -1,0 +1,171 @@
+# Documentation Index
+
+This page is the documentation front door for the `perl-lsp` workspace.
+
+## Diataxis Quick Guide
+
+Use this quick classifier when you are reading or adding docs:
+
+| If your question sounds like... | Doc type | Primary docs folder |
+|---|---|---|
+| "Can you teach me this from scratch?" | Tutorial | `docs/tutorials/` |
+| "How do I complete a specific task?" | How-to | `docs/how-to/` |
+| "What is the exact behavior/contract?" | Reference | `docs/reference/` |
+| "Why is it designed this way?" | Explanation | `docs/explanation/` |
+
+Rule of thumb:
+- Tutorials optimize for learning flow.
+- How-to guides optimize for successful outcomes.
+- Reference docs optimize for completeness and lookup speed.
+- Explanation docs optimize for understanding tradeoffs and rationale.
+
+## Start Here
+
+Choose the path that matches what you are trying to do:
+
+| I want to... | Read this first |
+|---|---|
+| Install the language server | [Installation Guide](how-to/INSTALLATION.md) |
+| Integrate perl-lsp into GitHub Actions | [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md) |
+| Upgrade an existing installation | [Upgrading](how-to/UPGRADING.md) |
+| Get a working editor setup quickly | [Getting Started](tutorials/GETTING_STARTED.md) |
+| Set up continuous testing and watch loops | [Continuous Testing](how-to/CONTINUOUS_TESTING.md) |
+| Configure editor or workspace settings | [Configuration Reference](reference/CONFIG.md) |
+| Share project settings with my team | [Project Configuration File (.perl-lsp.toml)](reference/CONFIG.md#project-configuration-file-perl-lsptoml) |
+| Migrate from perltidy or perlcritic to native tooling | [Native Tooling Migration](how-to/NATIVE_TOOLING_MIGRATION.md) |
+| Troubleshoot startup, indexing, or editor issues | [Troubleshooting](how-to/TROUBLESHOOTING.md) |
+| Troubleshoot Perl binary, `@INC`, `PERL5LIB`, perldoc, or DAP setup | [Perl Setup Troubleshooting](how-to/PERL_SETUP_TROUBLESHOOTING.md) |
+| Understand editor trust, fallbacks, and receipts | [Editor Trust](how-to/EDITOR_TRUST.md) |
+| Understand the server architecture | [Architecture Overview](reference/ARCHITECTURE_OVERVIEW.md) |
+| Understand measured editor trust and the Rust Perl replacement path | [Measured Perl Editor Trust](explanation/MEASURED_PERL_EDITOR_TRUST.md) |
+| Understand the compiler-backed LSP direction | [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md) |
+| Work on LSP features as a contributor | [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md) |
+| Run builds, tests, and CI commands | [Commands Reference](reference/COMMANDS_REFERENCE.md) |
+| Add or audit public API documentation | [Missing Documentation Guide](reference/MISSING_DOCUMENTATION_GUIDE.md) |
+| Understand stability and compatibility | [Stability Policy](reference/STABILITY.md) |
+| Understand the native stack product policy | [Native Stack Product Policy](reference/NATIVE_STACK_POLICY.md) |
+| Read the historical analyses and launch material | [Articles and Research Notes](articles/README.md) |
+| Decide where a doc belongs in Diataxis | [Diataxis Authoring Guide](reference/DIATAXIS_GUIDE.md) |
+| **Contribute code to perl-lsp** | **[Contributing Guide](../CONTRIBUTING.md)** |
+| Develop the VS Code extension locally | [VS Code Extension Dev Guide](../vscode-extension/DEVELOPMENT.md) |
+| Navigate the 89 helper scripts | [Scripts Directory Index](../scripts/README.md) |
+
+## Documentation Map
+
+### Tutorials
+Hands-on guides for learning the system by doing (learning-oriented).
+
+- [Getting Started](tutorials/GETTING_STARTED.md)
+- [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md)
+- [DAP User Guide](tutorials/DAP_USER_GUIDE.md)
+- [Comprehensive Testing Guide](tutorials/COMPREHENSIVE_TESTING_GUIDE.md)
+- [AI Build Guide](tutorials/AI_BUILD_GUIDE.md)
+
+### How-to Guides
+Task-focused instructions for common workflows (goal-oriented).
+
+- [Installation Guide](how-to/INSTALLATION.md)
+- [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md)
+- [Upgrading](how-to/UPGRADING.md)
+- [Editor Setup](how-to/EDITOR_SETUP.md)
+- [Native Tooling Migration](how-to/NATIVE_TOOLING_MIGRATION.md)
+- [Troubleshooting](how-to/TROUBLESHOOTING.md)
+- [Perl Setup Troubleshooting](how-to/PERL_SETUP_TROUBLESHOOTING.md)
+- [Editor Trust](how-to/EDITOR_TRUST.md)
+- [Continuous Testing](how-to/CONTINUOUS_TESTING.md)
+- [Contributing LSP Features](how-to/CONTRIBUTING_LSP.md)
+- [Threading Configuration Guide](how-to/THREADING_CONFIGURATION_GUIDE.md)
+- [Performance Tuning](how-to/PERFORMANCE_TUNING.md)
+- [Security Development Guide](how-to/SECURITY_DEVELOPMENT_GUIDE.md)
+
+### Reference
+Authoritative descriptions of commands, options, data, and feature contracts (information-oriented).
+
+- [Commands Reference](reference/COMMANDS_REFERENCE.md)
+- [Configuration Reference](reference/CONFIG.md)
+- [Architecture Overview](reference/ARCHITECTURE_OVERVIEW.md)
+- [LSP Features](reference/LSP_FEATURES.md)
+- [Missing Documentation Guide](reference/MISSING_DOCUMENTATION_GUIDE.md)
+- [API Documentation Standards](reference/API_DOCUMENTATION_STANDARDS.md)
+- [Diataxis Authoring Guide](reference/DIATAXIS_GUIDE.md)
+- [FAQ](reference/FAQ.md)
+- [Parser Feature Matrix](reference/PARSER_FEATURE_MATRIX.md)
+- [Known Limitations](reference/KNOWN_LIMITATIONS.md)
+
+### Explanation
+Background material that explains why the system is designed the way it is (understanding-oriented).
+
+- [LSP Documentation](explanation/LSP_DOCUMENTATION.md)
+- [Measured Perl Editor Trust](explanation/MEASURED_PERL_EDITOR_TRUST.md)
+- [Cancellation Architecture Guide](explanation/CANCELLATION_ARCHITECTURE_GUIDE.md)
+- [Pure Rust Parser](explanation/PURE_RUST_PARSER.md)
+- [Slash Disambiguation](explanation/SLASH_DISAMBIGUATION.md)
+
+### Project / ADR / Specs
+Decision records, project status, and planning documents.
+
+- [ADR Index](adr/README.md) — chronological index plus a topic guide for parser, runtime, DAP, security, and swarm decisions
+- [0.14.0 Readiness Queue](releases/0.14.0-readiness.md) — current-release meta-roadmap: drain queue + implementation phase + release lock
+- [Project Roadmap](project/ROADMAP.md)
+- [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md)
+- [Preview Before Edit ADR](adr/PLSP-ADR-0003-preview-before-edit.md)
+- [PR Queue Disposition Spec](specs/PLSP-SPEC-0006-pr-queue-disposition.md)
+- [Receiver-Fact Completion Spec](specs/PLSP-SPEC-0007-receiver-fact-completion.md)
+- [Edit-Producing Provider Safety Spec](specs/PLSP-SPEC-0008-edit-producing-provider-safety.md)
+- [Workspace Trust Report Spec](specs/PLSP-SPEC-0009-workspace-trust-report.md)
+- [Support Claim Map Spec](specs/PLSP-SPEC-0010-support-claim-map.md)
+- [Trust-Lane CI Routing Spec](specs/PLSP-SPEC-0011-trust-lane-ci-routing.md)
+- [User-Facing Trust Surfaces Spec](specs/PLSP-SPEC-0012-user-facing-trust-surfaces.md)
+- [Agent Build Storage and Gates Spec](specs/PLSP-SPEC-0013-agent-build-storage-and-gates.md)
+- [Refactor Acceptance Spec](specs/PLSP-SPEC-0014-refactor-acceptance.md)
+- [Native Stack Product Surface Spec](specs/PLSP-SPEC-0015-native-stack-product-surface.md)
+- [Receiver Expression Facts Spec](specs/PLSP-SPEC-0005-receiver-expression-facts.md), [Receiver Facts Implementation Plan](project/RECEIVER_FACTS_IMPLEMENTATION_PLAN.md), and [Receiver Facts Status](project/status/receiver_facts.md)
+- [Project Milestones](project/MILESTONES.md)
+- [Feature Governance](project/FEATURE_GOVERNANCE.md)
+- [Metric Stack](project/metrics/README.md) — contributor-facing summary of the layered scorecard model and the ratchet
+- [Latency Caps SLO Spec](specs/LATENCY_CAPS_SLO_SPEC.md)
+- [Native Formatter and Critic Replacement Contract](specs/NATIVE_FORMATTER_CRITIC_REPLACEMENT.md)
+- [Release Candidate Baseline](specs/RELEASE_CANDIDATE_BASELINE.md)
+
+### Historical Analyses
+Long-form historical writing plus the supporting research notes that fed it.
+
+- [Articles and Research Notes](articles/README.md)
+- [Five Eras of AI-Assisted Development](articles/FIVE_ERAS.md)
+- [Agentic Swarm Development](articles/SWARM_METHODOLOGY.md)
+- [Parsing Perl](articles/PARSING_PERL.md)
+- [Zero-Panic Reliability and Security](articles/ZERO_PANIC.md)
+- [Curiosities, Records, and Surprising Facts](articles/CURIOSITIES.md)
+
+### Contributing & Development
+
+Resources for contributors working on the codebase itself.
+
+- [Contributing Guide](../CONTRIBUTING.md) — first-time setup checklist, workflow, coding standards, PR process
+- [CLAUDE.md](../CLAUDE.md) — architecture overview, crate map, agent pipeline, key commands
+- [VS Code Extension Dev Guide](../vscode-extension/DEVELOPMENT.md) — build, test, and point at a local binary
+- [Scripts Directory Index](../scripts/README.md) — categorized guide to the 89 helper scripts
+- [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md) — how to implement and test LSP features
+- [ADR Index](adr/README.md) — design decisions and rationale
+
+## Suggested Reading Order for New Contributors
+
+1. [Getting Started](tutorials/GETTING_STARTED.md)
+2. [Installation Guide](how-to/INSTALLATION.md)
+3. [Commands Reference](reference/COMMANDS_REFERENCE.md)
+4. [Architecture Overview](reference/ARCHITECTURE_OVERVIEW.md)
+5. [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md)
+
+## CLI Quick Reference
+
+These commands are especially useful when validating an installation or triaging an environment issue:
+
+```bash
+perllsp --version
+perllsp --health
+perllsp --info
+perllsp --check path/to/file.pl
+perllsp --completion bash
+```
+
+For the complete option list and behavior, see the [Commands Reference](reference/COMMANDS_REFERENCE.md).

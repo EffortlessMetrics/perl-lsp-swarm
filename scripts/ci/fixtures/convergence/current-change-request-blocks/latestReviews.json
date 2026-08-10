@@ -1,0 +1,12 @@
+[
+  {
+    "author": {
+      "login": "reviewer",
+      "__typename": "User"
+    },
+    "state": "CHANGES_REQUESTED",
+    "commit": {
+      "oid": "dddd4444dddd4444dddd4444dddd4444dddd4444"
+    }
+  }
+]

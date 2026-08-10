@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "base": "c1e600d940a18035d3c32d81409bb33745f433fc",
+  "source": "18614f4af65e35efe444ddfb5a8e5e4ed424ac98",
+  "target": "c1f3747dcc5509adaf8021ba4ce5a1ba458d909e",
+  "sync_commit": "2aefabe2d6c114864b5048fcb5d4c4302d3ddbf9",
+  "entries": [
+    {
+      "commit": "aea95b67531fc6430524b91019dde13ce1d71ba9",
+      "subject": "docs(sync): record Node 26 history-preserving cut (#0000)",
+      "classification": "release_lineage_only",
+      "evidence": [
+        "This commit records the release-repo history-preserving modernization cut and is not a product implementation."
+      ]
+    },
+    {
+      "commit": "aa0a38bf060ba1bd10d0aa5d4e6545518e301844",
+      "subject": "fix(lsp): reject malformed critic diagnostic ranges (#9976)",
+      "classification": "port_to_swarm",
+      "evidence": [
+        "perl-lsp PR #9977 and issue #9976; recovery umbrella #4376"
+      ]
+    },
+    {
+      "commit": "1a0ff8a164a01867978179136ed449d8db1b9ce7",
+      "subject": "fix(critic): align recommended profile helper with its name (#9978)",
+      "classification": "port_to_swarm",
+      "evidence": [
+        "perl-lsp PR #9979 and issue #9978; recovery umbrella #4376"
+      ]
+    },
+    {
+      "commit": "596d4635cffece463e9623876eb959d200d1634d",
+      "subject": "fix(format): fail closed on empty statement spans (#9980)",
+      "classification": "port_to_swarm",
+      "evidence": [
+        "perl-lsp PR #9981 and issue #9980; recovery umbrella #4376"
+      ]
+    },
+    {
+      "commit": "100f042cd4cbaf90208b320677f89cd0e521ea66",
+      "subject": "feat(test): add pure TAP result facts (#9982)",
+      "classification": "superseded_by_newer_architecture",
+      "evidence": [
+        "perl-lsp PR #9983 and issue #9982; compare current swarm TAP projection before recreating a standalone crate",
+        "recovery umbrella #4376"
+      ]
+    },
+    {
+      "commit": "63412e50c7a03547b7b7d5ef5e200e7ef5a8de1c",
+      "subject": "fix(critic): route printf fixes through structured metadata (#9984)",
+      "classification": "port_to_swarm",
+      "evidence": [
+        "perl-lsp PR #9985 and issue #9984; recovery umbrella #4376"
+      ]
+    },
+    {
+      "commit": "d5716354b0e05f460f393b9abdc70fe662afe6f1",
+      "subject": "fix(format): match leading closers to opener stack (#9992)",
+      "classification": "port_to_swarm",
+      "evidence": [
+        "perl-lsp PR #9993 and issue #9992; recovery umbrella #4376"
+      ]
+    },
+    {
+      "commit": "c1f3747dcc5509adaf8021ba4ce5a1ba458d909e",
+      "subject": "test(critic): isolate legacy engine diagnostic fixtures (#9994)",
+      "classification": "port_to_swarm",
+      "evidence": [
+        "perl-lsp PR #9995 and issue #9994; recovery umbrella #4376"
+      ]
+    }
+  ]
+}

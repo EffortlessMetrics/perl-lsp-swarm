@@ -1,0 +1,52 @@
+name: Portable Contract Tools
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'aqua.yaml'
+      - 'scripts/tools/aqua-doctor.sh'
+      - 'docs/how-to/PORTABLE_CONTRACT_TOOLS.md'
+      - '.github/workflows/portable-contract-tools.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: portable-contract-tools-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Aqua inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact pull request head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/repo"
+          curl -fsSL "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${HEAD_SHA}" \
+            -o "$RUNNER_TEMP/repo.tar.gz"
+          tar -xzf "$RUNNER_TEMP/repo.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/repo"
+
+      - name: Install pinned Aqua bootstrap
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/aquaproj/aqua/v2/cmd/aqua@v2.57.0 \
+            >"$RUNNER_TEMP/aqua-bootstrap.log" 2>&1
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Validate and install checked-in tools
+        working-directory: ${{ runner.temp }}/repo
+        run: |
+          set +e
+          bash scripts/tools/aqua-doctor.sh >"$RUNNER_TEMP/aqua-doctor.log" 2>&1
+          rc=$?
+          set -e
+          tail -n 160 "$RUNNER_TEMP/aqua-doctor.log"
+          exit "$rc"

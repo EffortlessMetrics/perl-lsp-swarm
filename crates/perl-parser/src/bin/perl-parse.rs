@@ -1,0 +1,733 @@
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::PathBuf;
+use std::time::Instant;
+
+use perl_parser::{Node, ParseError, Parser};
+
+#[derive(Default)]
+struct TotalStats {
+    files_parsed: usize,
+    files_failed: usize,
+    total_bytes: usize,
+    total_time: std::time::Duration,
+    total_nodes: usize,
+    file_details: Vec<FileStats>,
+}
+
+struct FileStats {
+    name: String,
+    bytes: usize,
+    time: std::time::Duration,
+    nodes: usize,
+    error: bool,
+}
+
+impl TotalStats {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn add_file(&mut self, name: &str, bytes: usize, time: std::time::Duration, nodes: usize) {
+        self.files_parsed += 1;
+        self.total_bytes += bytes;
+        self.total_time += time;
+        self.total_nodes += nodes;
+        self.file_details.push(FileStats {
+            name: name.to_string(),
+            bytes,
+            time,
+            nodes,
+            error: false,
+        });
+    }
+
+    fn add_error(&mut self, name: &str) {
+        self.files_failed += 1;
+        self.file_details.push(FileStats {
+            name: name.to_string(),
+            bytes: 0,
+            time: std::time::Duration::ZERO,
+            nodes: 0,
+            error: true,
+        });
+    }
+
+    fn print(&self) {
+        eprintln!("\n=== Total Statistics ===");
+        eprintln!("Files parsed: {}", self.files_parsed);
+        eprintln!("Files failed: {}", self.files_failed);
+        eprintln!(
+            "Total size: {} bytes ({:.2} KB)",
+            self.total_bytes,
+            self.total_bytes as f64 / 1024.0
+        );
+        eprintln!("Total time: {:?}", self.total_time);
+        eprintln!("Total nodes: {}", self.total_nodes);
+
+        if self.files_parsed > 0 {
+            let avg_speed = self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
+            eprintln!("Average speed: {:.2} MB/s", avg_speed);
+            eprintln!("Average nodes per file: {}", self.total_nodes / self.files_parsed);
+        }
+
+        if self.file_details.len() > 1 && self.file_details.len() <= 20 {
+            eprintln!("\n=== File Details ===");
+            for stat in &self.file_details {
+                if stat.error {
+                    eprintln!("{}: FAILED", stat.name);
+                } else {
+                    eprintln!(
+                        "{}: {} bytes, {:?}, {} nodes",
+                        stat.name, stat.bytes, stat.time, stat.nodes
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Args {
+    inputs: Vec<Input>,
+    output_format: OutputFormat,
+    show_stats: bool,
+    pretty: bool,
+    quiet: bool,
+    continue_on_error: bool,
+}
+
+#[derive(Debug)]
+enum Input {
+    File(PathBuf),
+    Stdin,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OutputFormat {
+    Sexp,
+    Json,
+    Debug,
+}
+
+impl Args {
+    fn parse() -> Result<Self, String> {
+        let mut args = std::env::args().skip(1);
+        let mut inputs = Vec::new();
+        let mut output_format = OutputFormat::Sexp;
+        let mut show_stats = false;
+        let mut pretty = false;
+        let mut quiet = false;
+        let mut continue_on_error = false;
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "-h" | "--help" => {
+                    print_help();
+                    std::process::exit(0);
+                }
+                "-V" | "--version" => {
+                    println!("perl-parse v{}", env!("CARGO_PKG_VERSION"));
+                    std::process::exit(0);
+                }
+                "-f" | "--format" => {
+                    let format = args.next().ok_or("Missing format argument")?;
+                    output_format = match format.as_str() {
+                        "sexp" | "s-expression" => OutputFormat::Sexp,
+                        "json" => OutputFormat::Json,
+                        "debug" => OutputFormat::Debug,
+                        _ => return Err(format!("Unknown format: {}", format)),
+                    };
+                }
+                "-s" | "--stats" => show_stats = true,
+                "-p" | "--pretty" => pretty = true,
+                "-q" | "--quiet" => quiet = true,
+                "-c" | "--continue" => continue_on_error = true,
+                "-" => inputs.push(Input::Stdin),
+                path if path.starts_with('-') => {
+                    return Err(format!("Unknown option: {}", path));
+                }
+                path => {
+                    inputs.push(Input::File(PathBuf::from(path)));
+                }
+            }
+        }
+
+        if inputs.is_empty() {
+            inputs.push(Input::Stdin);
+        }
+
+        Ok(Args { inputs, output_format, show_stats, pretty, quiet, continue_on_error })
+    }
+}
+
+fn print_help() {
+    println!(
+        r#"perl-parse - Parse Perl code and output the AST
+
+USAGE:
+    perl-parse [OPTIONS] [FILE...]
+
+ARGS:
+    <FILE>...    Path(s) to Perl file(s) to parse (use '-' for stdin)
+
+OPTIONS:
+    -h, --help              Print help information
+    -V, --version           Print version information
+    -f, --format <FORMAT>   Output format [default: sexp]
+                           Possible values: sexp, json, debug
+    -s, --stats            Show parsing statistics
+    -p, --pretty           Pretty-print output (for JSON)
+    -q, --quiet            Suppress output (useful with --stats)
+    -c, --continue         Continue on error when parsing multiple files
+
+EXAMPLES:
+    # Parse a file and output S-expression
+    perl-parse script.pl
+
+    # Parse from stdin
+    echo 'print "Hello"' | perl-parse -
+
+    # Output as JSON with statistics
+    perl-parse -f json -s script.pl
+
+    # Parse multiple files, show only stats
+    perl-parse -q -s *.pl
+
+    # Pretty-print JSON output
+    perl-parse -f json -p script.pl
+"#
+    );
+}
+
+fn main() {
+    let args = match Args::parse() {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Try 'perl-parse --help' for more information.");
+            std::process::exit(1);
+        }
+    };
+
+    let mut total_stats = TotalStats::new();
+    let mut had_error = false;
+
+    for input in &args.inputs {
+        let path_str = match input {
+            Input::File(path) => path.display().to_string(),
+            Input::Stdin => "<stdin>".to_string(),
+        };
+
+        if !args.quiet && args.inputs.len() > 1 {
+            eprintln!("=== Parsing {} ===", path_str);
+        }
+
+        let source = match read_input(input) {
+            Ok(source) => source,
+            Err(e) => {
+                eprintln!("Error reading {}: {}", path_str, e);
+                if args.continue_on_error {
+                    had_error = true;
+                    continue;
+                } else {
+                    std::process::exit(1);
+                }
+            }
+        };
+
+        let start = Instant::now();
+        let mut parser = Parser::new(&source);
+        let result = parser.parse();
+        let parse_time = start.elapsed();
+
+        match result {
+            Ok(ast) => {
+                if !args.quiet {
+                    match args.output_format {
+                        OutputFormat::Sexp => println!("{}", ast.to_sexp()),
+                        OutputFormat::Json => {
+                            let json = ast_to_json(&ast);
+                            let output = if args.pretty {
+                                serde_json::to_string_pretty(&json)
+                            } else {
+                                serde_json::to_string(&json)
+                            };
+                            match output {
+                                Ok(s) => println!("{s}"),
+                                Err(e) => eprintln!("JSON serialization error: {e}"),
+                            }
+                        }
+                        OutputFormat::Debug => println!("{:#?}", ast),
+                    }
+                }
+
+                total_stats.add_file(&path_str, source.len(), parse_time, ast.count_nodes());
+            }
+            Err(e) => {
+                if !args.quiet {
+                    eprintln!("\nError in {}:", path_str);
+                    print_error(&e, &source);
+                }
+                if args.continue_on_error {
+                    had_error = true;
+                    total_stats.add_error(&path_str);
+                } else {
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    if args.show_stats {
+        total_stats.print();
+    }
+
+    if had_error {
+        std::process::exit(1);
+    }
+}
+
+fn read_input(input: &Input) -> io::Result<String> {
+    match input {
+        Input::File(path) => read_source_bytes(fs::read(path)?),
+        Input::Stdin => {
+            let mut buffer = Vec::new();
+            io::stdin().read_to_end(&mut buffer)?;
+            read_source_bytes(buffer)
+        }
+    }
+}
+
+fn read_source_bytes(bytes: Vec<u8>) -> io::Result<String> {
+    if let Some(decoded) = decode_utf16_with_bom(&bytes) {
+        return Ok(decoded);
+    }
+
+    match String::from_utf8(bytes) {
+        Ok(source) => Ok(repair_common_mojibake(source)),
+        Err(err) => {
+            let raw = err.into_bytes();
+            let mut decoded = String::with_capacity(raw.len());
+            for byte in raw {
+                decoded.push(decode_byte_as_windows_1252(byte));
+            }
+            Ok(decoded)
+        }
+    }
+}
+
+fn decode_utf16_with_bom(bytes: &[u8]) -> Option<String> {
+    if bytes.len() < 2 {
+        return None;
+    }
+
+    let little_endian = if bytes.starts_with(&[0xFF, 0xFE]) {
+        true
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        false
+    } else {
+        return None;
+    };
+
+    let mut words = Vec::with_capacity((bytes.len().saturating_sub(2)) / 2);
+    let mut index = 2usize;
+    while index + 1 < bytes.len() {
+        let word = if little_endian {
+            u16::from_le_bytes([bytes[index], bytes[index + 1]])
+        } else {
+            u16::from_be_bytes([bytes[index], bytes[index + 1]])
+        };
+        words.push(word);
+        index += 2;
+    }
+
+    Some(String::from_utf16_lossy(&words))
+}
+
+fn repair_common_mojibake(source: String) -> String {
+    if mojibake_score(&source) == 0 {
+        return source;
+    }
+
+    let mut latin1_bytes = Vec::with_capacity(source.len());
+    for ch in source.chars() {
+        let codepoint = u32::from(ch);
+        if codepoint > u32::from(u8::MAX) {
+            return source;
+        }
+        latin1_bytes.push(codepoint as u8);
+    }
+
+    match String::from_utf8(latin1_bytes) {
+        Ok(repaired) if mojibake_score(&repaired) < mojibake_score(&source) => repaired,
+        _ => source,
+    }
+}
+
+fn mojibake_score(text: &str) -> usize {
+    // Common mojibake marker characters produced by decoding UTF-8 as Latin-1/CP-1252.
+    const MARKERS: [char; 4] = ['Ã', 'Â', 'â', '\u{FFFD}'];
+    text.chars().filter(|ch| MARKERS.contains(ch)).count()
+}
+
+fn decode_byte_as_windows_1252(byte: u8) -> char {
+    match byte {
+        0x80 => '\u{20AC}', // €
+        0x82 => '\u{201A}', // ‚
+        0x83 => '\u{0192}', // ƒ
+        0x84 => '\u{201E}', // „
+        0x85 => '\u{2026}', // …
+        0x86 => '\u{2020}', // †
+        0x87 => '\u{2021}', // ‡
+        0x88 => '\u{02C6}', // ˆ
+        0x89 => '\u{2030}', // ‰
+        0x8A => '\u{0160}', // Š
+        0x8B => '\u{2039}', // ‹
+        0x8C => '\u{0152}', // Œ
+        0x8E => '\u{017D}', // Ž
+        0x91 => '\u{2018}', // ‘
+        0x92 => '\u{2019}', // ’
+        0x93 => '\u{201C}', // “
+        0x94 => '\u{201D}', // ”
+        0x95 => '\u{2022}', // •
+        0x96 => '\u{2013}', // –
+        0x97 => '\u{2014}', // —
+        0x98 => '\u{02DC}', // ˜
+        0x99 => '\u{2122}', // ™
+        0x9A => '\u{0161}', // š
+        0x9B => '\u{203A}', // ›
+        0x9C => '\u{0153}', // œ
+        0x9E => '\u{017E}', // ž
+        0x9F => '\u{0178}', // Ÿ
+        _ => char::from(byte),
+    }
+}
+
+fn ast_to_json(ast: &Node) -> serde_json::Value {
+    // Convert AST to JSON representation
+    serde_json::json!({
+        "type": format!("{:?}", ast.kind).split('(').next().unwrap_or("Unknown"),
+        "location": {
+            "start": ast.location.start,
+            "end": ast.location.end,
+        },
+        "sexp": ast.to_sexp(),
+        "node_count": ast.count_nodes(),
+    })
+}
+
+fn print_error(error: &ParseError, source: &str) {
+    let mut stderr = io::stderr();
+
+    match error {
+        ParseError::UnexpectedToken { expected, found, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(stderr, "Parse error: Unexpected token at line {}, column {}", line, col).ok();
+            writeln!(stderr, "  Expected: {}", expected).ok();
+            writeln!(stderr, "  Found: {}", found).ok();
+            print_error_context(source, *location, &mut stderr);
+        }
+        ParseError::UnexpectedEof => {
+            writeln!(stderr, "Parse error: Unexpected end of input").ok();
+            if !source.is_empty() {
+                print_error_context(source, source.len() - 1, &mut stderr);
+            }
+        }
+        ParseError::SyntaxError { message, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(stderr, "Parse error: {} at line {}, column {}", message, line, col).ok();
+            print_error_context(source, *location, &mut stderr);
+        }
+        ParseError::Advisory { message, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(stderr, "Parse advisory: {} at line {}, column {}", message, line, col).ok();
+            print_error_context(source, *location, &mut stderr);
+        }
+        ParseError::InvalidNumber { literal } => {
+            writeln!(stderr, "Parse error: Invalid number literal: {}", literal).ok();
+        }
+        ParseError::InvalidString => {
+            writeln!(stderr, "Parse error: Invalid string literal").ok();
+        }
+        ParseError::UnclosedDelimiter { delimiter } => {
+            writeln!(stderr, "Parse error: Unclosed delimiter: {}", delimiter).ok();
+        }
+        ParseError::InvalidRegex { message } => {
+            writeln!(stderr, "Parse error: Invalid regex: {}", message).ok();
+        }
+        ParseError::LexerError { message } => {
+            writeln!(stderr, "Parse error: Lexer error: {}", message).ok();
+        }
+        ParseError::RecursionLimit => {
+            writeln!(stderr, "Parse error: Maximum recursion depth exceeded").ok();
+        }
+        ParseError::NestingTooDeep { depth, max_depth } => {
+            writeln!(stderr, "Parse error: Nesting too deep ({} > {})", depth, max_depth).ok();
+        }
+        ParseError::Cancelled => {
+            writeln!(stderr, "Parse error: Parsing cancelled").ok();
+        }
+        ParseError::Recovered { site, kind, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(
+                stderr,
+                "Parse recovery: {:?} at {:?} (line {}, column {})",
+                kind, site, line, col
+            )
+            .ok();
+            print_error_context(source, *location, &mut stderr);
+        }
+    }
+}
+
+fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+
+    for (i, ch) in source.chars().enumerate() {
+        if i >= position {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+
+    (line, col)
+}
+
+fn print_error_context(source: &str, position: usize, stderr: &mut io::Stderr) {
+    let lines: Vec<&str> = source.lines().collect();
+    let (line_num, col_num) = position_to_line_col(source, position);
+
+    if line_num > 0 && line_num <= lines.len() {
+        writeln!(stderr).ok();
+
+        // Show previous line if available
+        if line_num > 1 {
+            writeln!(stderr, "  {} | {}", line_num - 1, lines[line_num - 2]).ok();
+        }
+
+        // Show error line
+        writeln!(stderr, "  {} | {}", line_num, lines[line_num - 1]).ok();
+
+        // Show error pointer
+        write!(stderr, "  {} | ", " ".repeat(line_num.to_string().len())).ok();
+        writeln!(stderr, "{}^", " ".repeat(col_num - 1)).ok();
+
+        // Show next line if available
+        if line_num < lines.len() {
+            writeln!(stderr, "  {} | {}", line_num + 1, lines[line_num]).ok();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_source_bytes;
+
+    #[test]
+    fn read_source_bytes_preserves_utf8() -> Result<(), Box<dyn std::error::Error>> {
+        let decoded = read_source_bytes(b"use strict;\n".to_vec())?;
+        assert_eq!(decoded, "use strict;\n");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_decodes_latin1_losslessly() -> Result<(), Box<dyn std::error::Error>> {
+        // "Sår" in ISO-8859-1 bytes
+        let decoded = read_source_bytes(vec![0x53, 0xE5, 0x72, 0x0A])?;
+        assert_eq!(decoded, "Sår\n");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_decodes_windows_1252_punctuation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // “quote” in Windows-1252 bytes
+        let decoded = read_source_bytes(vec![0x93, b'q', b'u', b'o', b't', b'e', 0x94, b'\n'])?;
+        assert_eq!(decoded, "“quote”\n");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_repairs_utf8_mojibake() -> Result<(), Box<dyn std::error::Error>> {
+        // `cafÃ©` is mojibake for `café` after a UTF-8 -> Latin-1 decode/encode cycle.
+        let decoded = read_source_bytes("cafÃ©\n".as_bytes().to_vec())?;
+        assert_eq!(decoded, "café\n");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_decodes_utf16_le_bom() -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = vec![
+            0xFF, 0xFE, // UTF-16LE BOM
+            b'u', 0x00, b's', 0x00, b'e', 0x00, b' ', 0x00, b'8', 0x00, b';', 0x00, b'\n', 0x00,
+        ];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "use 8;\n");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_decodes_utf16_be_bom() -> Result<(), Box<dyn std::error::Error>> {
+        // UTF-16BE BOM followed by "use 8;\n" in big-endian encoding.
+        let bytes = vec![
+            0xFE, 0xFF, // UTF-16BE BOM
+            0x00, b'u', 0x00, b's', 0x00, b'e', 0x00, b' ', 0x00, b'8', 0x00, b';', 0x00, b'\n',
+        ];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "use 8;\n");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_decodes_utf16_surrogate_pair() -> Result<(), Box<dyn std::error::Error>> {
+        // UTF-16LE BOM + U+1F600 (grinning face), encoded as surrogate pair
+        // high=0xD83D, low=0xDE00 → LE bytes: 3D D8 00 DE.
+        let bytes = vec![
+            0xFF, 0xFE, // UTF-16LE BOM
+            0x3D, 0xD8, 0x00, 0xDE, // surrogate pair for U+1F600
+        ];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "\u{1F600}");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_unpaired_high_surrogate() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // UTF-16LE BOM + lone high surrogate (0xD83D) followed by a valid BMP char 'A' (0x0041).
+        // from_utf16_lossy replaces the unpaired surrogate with U+FFFD.
+        let bytes = vec![
+            0xFF, 0xFE, // UTF-16LE BOM
+            0x3D, 0xD8, // unpaired high surrogate (no low surrogate follows)
+            0x41, 0x00, // 'A'
+        ];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "\u{FFFD}A");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_unpaired_low_surrogate() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // UTF-16LE BOM + lone low surrogate (0xDE00) without a preceding high surrogate.
+        let bytes = vec![
+            0xFF, 0xFE, // UTF-16LE BOM
+            0x00, 0xDE, // unpaired low surrogate
+        ];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "\u{FFFD}");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_utf16_odd_byte_length() -> Result<(), Box<dyn std::error::Error>> {
+        // UTF-16LE BOM + 'A' (0x41 0x00) + trailing lone byte 0x42.
+        // The loop condition `index + 1 < bytes.len()` drops the trailing byte.
+        let bytes = vec![
+            0xFF, 0xFE, // UTF-16LE BOM
+            0x41, 0x00, // 'A'
+            0x42, // orphan trailing byte — must not panic
+        ];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "A");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_utf16_bom_only() -> Result<(), Box<dyn std::error::Error>> {
+        // Just the BOM with no payload — empty string expected, no panic.
+        let decoded = read_source_bytes(vec![0xFF, 0xFE])?;
+        assert_eq!(decoded, "");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_empty_input() -> Result<(), Box<dyn std::error::Error>> {
+        let decoded = read_source_bytes(Vec::new())?;
+        assert_eq!(decoded, "");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_truncated_utf8_multibyte() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Valid UTF-8 "ab" followed by a truncated 2-byte sequence (0xC3 without continuation).
+        // from_utf8 fails → Windows-1252 fallback kicks in. 0xC3 is undefined in the mapping
+        // table so it falls through to char::from(byte) = U+00C3 ('Ã').
+        let bytes = vec![b'a', b'b', 0xC3];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "ab\u{00C3}");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_lone_utf8_continuation_byte()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // 0x80 is a UTF-8 continuation byte with no leader — invalid UTF-8.
+        // Falls through to Windows-1252 which maps 0x80 → U+20AC ('€').
+        let bytes = vec![b'x', 0x80, b'y'];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "x\u{20AC}y");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_preserves_null_bytes_in_utf8() -> Result<(), Box<dyn std::error::Error>> {
+        // NUL (0x00) is valid UTF-8 and valid in Rust strings.
+        let bytes = vec![b'a', 0x00, b'b'];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "a\u{0000}b");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_maps_undefined_windows_1252_bytes_as_latin1()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Windows-1252 has five undefined slots: 0x81, 0x8D, 0x8F, 0x90, 0x9D.
+        // The fallback's `_` arm maps them via `char::from(byte)` which is Latin-1 (U+00xx).
+        // Combined with a truncated UTF-8 prefix byte to force the fallback path.
+        let bytes = vec![0xC3, 0x81, 0x8D, 0x8F, 0x90, 0x9D];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "\u{00C3}\u{0081}\u{008D}\u{008F}\u{0090}\u{009D}");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_handles_utf16_with_embedded_null_code_unit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // UTF-16LE BOM + 'A' + U+0000 (NUL, as a 16-bit code unit) + 'B'.
+        let bytes = vec![
+            0xFF, 0xFE, // UTF-16LE BOM
+            0x41, 0x00, // 'A'
+            0x00, 0x00, // NUL
+            0x42, 0x00, // 'B'
+        ];
+        let decoded = read_source_bytes(bytes)?;
+        assert_eq!(decoded, "A\u{0000}B");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_rejects_partial_bom_as_not_utf16() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A single 0xFF byte is neither a full BOM nor valid UTF-8; Windows-1252 fallback
+        // maps 0xFF through the `_` arm to U+00FF ('ÿ').
+        let decoded = read_source_bytes(vec![0xFF])?;
+        assert_eq!(decoded, "\u{00FF}");
+        Ok(())
+    }
+
+    #[test]
+    fn read_source_bytes_keeps_valid_non_mojibake_text() -> Result<(), Box<dyn std::error::Error>> {
+        let decoded = read_source_bytes("Ångström\n".as_bytes().to_vec())?;
+        assert_eq!(decoded, "Ångström\n");
+        Ok(())
+    }
+}

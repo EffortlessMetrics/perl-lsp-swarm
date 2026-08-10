@@ -1,0 +1,26 @@
+[alias]
+xtask = "run --package xtask --"
+
+# Agent/local-safe aliases. These do not choose machine paths.
+# Machine paths belong in .cargo/config.local.toml, ~/.cargo/config.toml,
+# or scripts/cargo-safe.
+agent-check = "check --workspace --all-targets --profile agent --locked"
+agent-test = "test --workspace --all-targets --profile agent --locked"
+agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs"
+
+t2 = "test -- --test-threads=2"
+
+[build]
+rustflags = []
+
+[env]
+RUST_BACKTRACE = "1"
+
+[term]
+color = "auto"
+
+[net]
+retry = 2
+
+[registries.crates-io]
+protocol = "sparse"

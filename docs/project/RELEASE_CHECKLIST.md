@@ -1,0 +1,153 @@
+# Release Checklist
+
+This checklist is the release gate for the current cut.
+The mechanics live in [RELEASE.md](../../RELEASE.md), the release-day sequence lives in
+[PUBLISHING_ROADMAP.md](PUBLISHING_ROADMAP.md), changelog generation lives in
+[CHANGELOG_WORKFLOW.md](../CHANGELOG_WORKFLOW.md), and provenance-aware release-note
+authoring lives in [docs/releases/README.md](../releases/README.md).
+
+Use `NEW_VERSION` as the target semver string for the release you are preparing.
+
+## Preflight
+
+- [ ] The working tree is clean on the current default branch.
+- [ ] `just release-check` passes.
+- [ ] `just status-check` passes if any files under `docs/project/status/` changed.
+- [ ] `gh secret list` shows `CARGO_REGISTRY_TOKEN`, `VSCE_PAT`, `OVSX_PAT`, `DOCKER_USERNAME`, and `DOCKER_PASSWORD`.
+- [ ] `just version-check` passes.
+- [ ] `CHANGELOG.md` contains a dated `## [NEW_VERSION]` section and leaves `[Unreleased]` empty.
+- [ ] The crates listed in `[workspace.metadata.publish.allow]` report `NEW_VERSION`.
+- [ ] `cargo xtask install-surface-check` passes.
+
+### Release provenance and note completeness
+
+Resolve these values to immutable SHAs before the source sync or version bump:
+
+```bash
+export SWARM_DIR="${SWARM_DIR:-../perl-lsp-swarm}"
+export PREVIOUS_RC=<previous-swarm-release-sha>
+export RC_SHA=<new-swarm-freeze-sha>
+export SYNC_SHA=<perl-lsp-history-preserving-sync-sha>
+```
+
+- [ ] The previous swarm release anchor and new swarm RC/freeze SHA are recorded in `docs/releases/vNEW_VERSION.md`.
+- [ ] The logical development range is forward-moving:
+
+  ```bash
+  git -C "$SWARM_DIR" merge-base --is-ancestor "$PREVIOUS_RC" "$RC_SHA"
+  ```
+
+- [ ] The logical squash-merge ledger was reviewed with first-parent history:
+
+  ```bash
+  git -C "$SWARM_DIR" log --first-parent --reverse --format='%H%x09%s' "$PREVIOUS_RC..$RC_SHA"
+  ```
+
+- [ ] Every user-visible `feat` and `fix` in that ledger appears in the release note or has an explicit exclusion reason.
+- [ ] Test-only, receipt-only, shadow-only, disabled, and swarm-internal work is classified separately from shipped user behavior.
+- [ ] The source sync is a history-preserving complete-tree merge with exactly two parents:
+
+  ```bash
+  test "$(git show -s --format='%P' "$SYNC_SHA" | wc -w)" -eq 2
+  ```
+
+- [ ] The promoted swarm RC is an ancestor of the source sync commit:
+
+  ```bash
+  git merge-base --is-ancestor "$RC_SHA" "$SYNC_SHA"
+  ```
+
+- [ ] `git diff --name-only "$SYNC_SHA" "$RC_SHA"` contains only documented release-repo exclusions.
+- [ ] The release note records the source tag comparison as `safe`, `inflated`, `incomplete`, or `tree-only`; include an explanation whenever it is not `safe`.
+- [ ] The release note contains an explicit claim boundary for disabled, capability-gated, config-gated, shadow-only, and compiler-substrate work.
+- [ ] The generated GitHub Release body was compared with the curated note; the generated body does not silently replace the logical-change review.
+
+Do not tag a content snapshot, patch replay, archive copy, or one-parent mirror when the logical swarm commits exist. See [docs/releases/README.md](../releases/README.md) and [docs/swarm/sync-protocol.md](../swarm/sync-protocol.md).
+
+### Install and artifact surface
+
+- [ ] Release archives ship the DAP binary: the release workflow runs `cargo xtask release artifact-check` on the produced `dist/` (see `.github/workflows/release.yml`). To verify a local/downloaded set: `cargo xtask release artifact-check --dist dist --version NEW_VERSION`.
+- [ ] `cargo xtask release-notes --tag vNEW_VERSION --output /tmp/vNEW_VERSION-body.md` produces release notes with the Linux asset chooser:
+
+  ```bash
+  cargo xtask release-notes --tag vNEW_VERSION --output /tmp/vNEW_VERSION-body.md
+  grep -q 'Which file should I download?' /tmp/vNEW_VERSION-body.md
+  grep -q 'x86_64-unknown-linux-gnu' /tmp/vNEW_VERSION-body.md
+  grep -q 'x86_64-unknown-linux-musl' /tmp/vNEW_VERSION-body.md
+  ```
+
+- [ ] `gh run list --branch master --limit 5` shows the default branch is green.
+- [ ] No stale `.snap.new` files remain in the worktree.
+
+### Local preflight gotchas (hard-won)
+
+- **Never run `just release-check` / `just pr-fast` while local cargo builders are
+  active.** Contention starves the gate processes and produces FALSE `exit=124`
+  timeouts — even a trivial conflict-marker grep can time out at 180s under load.
+  Run the health gate only when the machine is quiet. If a gate "times out," read
+  `target/receipts/logs/<gate>.log` to distinguish a real failure from a
+  compile-under-contention timeout before believing it.
+- **Main-green is CI(Linux)-authoritative, not local `pr-fast` on Windows.** Local
+  `pr-fast` carries Windows-only false-failures (e.g.
+  `set_root_uri_discovers_workspace_perltidyrc` path-case) that do not affect the
+  Linux-CI release. Treat such Windows-only failures as non-blocking (file a
+  follow-up); the authoritative signal is the required checks passing on CI.
+- **`gh secret list` shows REPO secrets only.** The publish secrets
+  (`CARGO_REGISTRY_TOKEN`, `VSCE_PAT`, `OVSX_PAT`, `DOCKER_USERNAME`,
+  `DOCKER_PASSWORD`) may live at the org level or in the release repo. Confirm they
+  are available **where the cut actually runs** before dispatching the release — a
+  repo-level `gh secret list` showing only `CODECOV_TOKEN` can still be fine.
+- **Verify publish-stage packaging BEFORE the cut, not during it.** e.g.
+  `cd vscode-extension && npm run package` must produce a `.vsix` (vsce 3.x rejects
+  `@types/vscode` newer than `engines.vscode`). Catching publish-stage breaks
+  pre-cut keeps the release dispatch boring.
+
+Use this version check when you need to confirm the release target:
+
+```bash
+cargo metadata --format-version=1 --no-deps | python3 -c '
+import json, sys
+meta = json.load(sys.stdin)
+workspace_members = set(meta["workspace_members"])
+packages = {pkg["name"]: pkg for pkg in meta["packages"] if pkg["id"] in workspace_members}
+allow = meta.get("metadata", {}).get("publish", {}).get("allow", [])
+target = "NEW_VERSION"
+for crate_name in allow:
+    pkg = packages.get(crate_name)
+    if pkg is None:
+        print(f"UNKNOWN: {crate_name}")
+        continue
+    if pkg["version"] != target:
+        print(f"MISMATCH: {pkg[\"name\"]}@{pkg[\"version\"]}")
+'
+```
+
+## Release Execution
+
+- [ ] Prepare the version bump and changelog with `cargo xtask release-turnkey NEW_VERSION` or the `version-bump.yml` workflow.
+- [ ] Review and merge the generated version-bump PR.
+- [ ] Dispatch `release-orchestration.yml` with `version=NEW_VERSION`, `prerelease=false`, `skip_crates=false`, `skip_extension=false`, and `skip_docker=false`.
+- [ ] If a downstream publish stage fails, re-run orchestration with the relevant `skip_*` flags instead of tagging manually.
+- [ ] Let `release.yml`, `publish-crates.yml`, `publish-extension.yml`, and `docker-publish.yml` finish.
+- [ ] Confirm the release-published triggers for `brew-bump.yml`, `scoop-bump.yml`, and `chocolatey-bump.yml` fired as expected.
+- [ ] After `brew-bump.yml` finishes, confirm the owned tap is updated or reported already current.
+
+## Post-Release Verification
+
+Use [`docs/releases/RELEASE_CLOSEOUT_AUDIT.md`](../releases/RELEASE_CLOSEOUT_AUDIT.md) as the canonical re-runnable checklist. The items below are the minimum subset; the audit doc covers each channel in detail (including dispatch-only workflows that don't fire on `release:published` and require manual `gh workflow run`).
+
+- [ ] `gh release view vNEW_VERSION` shows the expected release notes and assets.
+- [ ] `cargo search perl-lsp-rs --limit 1` resolves `perl-lsp-rs = "NEW_VERSION"`.
+- [ ] `cargo search perllsp --limit 1` resolves `perllsp = "NEW_VERSION"`.
+- [ ] The VS Code Marketplace and Open VSX listings show `NEW_VERSION`.
+- [ ] `docker pull effortlessmetrics/perl-lsp:NEW_VERSION` and `docker pull ghcr.io/effortlessmetrics/perl-lsp:NEW_VERSION` succeed.
+- [ ] `brew update`, `brew upgrade perllsp`, `perllsp --version`, and `perl-dap --version` show `NEW_VERSION`.
+- [ ] `cargo install perllsp` installs the new release and `perllsp --version` prints `NEW_VERSION`.
+- [ ] The smoke tests in [RELEASE.md](../../RELEASE.md) pass for the current release artifacts.
+- [ ] Any evidence-backed status docs are updated with `just status-update` and validated with `just status-check`.
+- [ ] **Closeout audit:** run the per-channel verification block in [`RELEASE_CLOSEOUT_AUDIT.md`](../releases/RELEASE_CLOSEOUT_AUDIT.md) and write the populated instance to `docs/releases/NEW_VERSION-closeout-audit.md`. Flip `notes_status` in `docs/releases/vNEW_VERSION.md` from `pending` to `closed` only when every channel resolves.
+
+## Repo-Native Cleanup Notes
+
+- Manual tag creation, `git checkout -B master origin/master`, and direct `git push origin vNEW_VERSION` are historical instructions from the issue context, not the current release path.
+- If you need the operational release procedure, follow [RELEASE.md](../../RELEASE.md) instead of duplicating the workflow in an issue comment.

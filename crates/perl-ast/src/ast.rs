@@ -1,0 +1,4037 @@
+//! Abstract Syntax Tree definitions for Perl within the parsing and LSP workflow.
+//!
+//! This module defines the comprehensive AST node types that represent parsed Perl code
+//! during the Parse → Index → Navigate → Complete → Analyze stages. The design is optimized
+//! for both direct use in Rust analysis and for generating tree-sitter compatible
+//! S-expressions during large workspace processing operations.
+//!
+//! # LSP Workflow Integration
+//!
+//! The AST structures support Perl tooling workflows by:
+//! - **Parse**: Produced by the parser as the canonical syntax tree
+//! - **Index**: Traversed to build symbol and reference tables
+//! - **Navigate**: Provides locations for definition and reference lookups
+//! - **Complete**: Supplies context for completion, hover, and signature help
+//! - **Analyze**: Feeds semantic analysis, diagnostics, and refactoring
+//!
+//! # Performance Characteristics
+//!
+//! AST structures are optimized for large codebases with:
+//! - Memory-efficient node representation using `Box<Node>` for recursive structures
+//! - Fast pattern matching via enum variants for common Perl constructs
+//! - Location tracking for precise error reporting in large files
+//! - Cheap cloning for parallel analysis tasks
+//!
+//! # Usage Examples
+//!
+//! ## Basic AST Construction
+//!
+//! ```rust
+//! use perl_ast::{Node, NodeKind, SourceLocation};
+//!
+//! // Create a simple variable declaration node
+//! let location = SourceLocation { start: 0, end: 10 };
+//! let node = Node::new(
+//!     NodeKind::VariableDeclaration {
+//!         declarator: "my".to_string(),
+//!         variable: Box::new(Node::new(
+//!             NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
+//!             location,
+//!         )),
+//!         attributes: vec![],
+//!         initializer: None,
+//!     },
+//!     location,
+//! );
+//! assert_eq!(node.kind.kind_name(), "VariableDeclaration");
+//! ```
+//!
+//! ## Tree-sitter S-expression Generation
+//!
+//! ```rust
+//! use perl_ast::{Node, NodeKind, SourceLocation};
+//!
+//! let loc = SourceLocation { start: 0, end: 2 };
+//! let num = Node::new(NodeKind::Number { value: "42".to_string() }, loc);
+//! let program = Node::new(NodeKind::Program { statements: vec![num] }, loc);
+//!
+//! let sexp = program.to_sexp();
+//! assert!(sexp.starts_with("(source_file"));
+//! ```
+//!
+//! ## AST Traversal and Analysis
+//!
+//! ```rust
+//! use perl_ast::{Node, NodeKind, SourceLocation};
+//!
+//! fn count_variables(node: &Node) -> usize {
+//!     let mut count = 0;
+//!     match &node.kind {
+//!         NodeKind::Variable { .. } => count += 1,
+//!         NodeKind::Program { statements } => {
+//!             for stmt in statements {
+//!                 count += count_variables(stmt);
+//!             }
+//!         }
+//!         _ => {} // Handle other node types as needed
+//!     }
+//!     count
+//! }
+//!
+//! let loc = SourceLocation { start: 0, end: 5 };
+//! let var = Node::new(
+//!     NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
+//!     loc,
+//! );
+//! let program = Node::new(NodeKind::Program { statements: vec![var] }, loc);
+//! assert_eq!(count_variables(&program), 1);
+//! ```
+//!
+//! ## Parsing Integration
+//!
+//! In practice the AST is produced by the parser rather than built by hand
+//! (requires `perl-parser-core`):
+//!
+//! ```rust,ignore
+//! use perl_parser_core::Parser;
+//! use perl_ast::NodeKind;
+//!
+//! let mut parser = Parser::new("my $x = 42;");
+//! let ast = parser.parse().expect("should parse");
+//! assert!(matches!(ast.kind, NodeKind::Program { .. }));
+//! ```
+
+// Re-export SourceLocation from perl-position-tracking for unified span handling
+pub use perl_position_tracking::SourceLocation;
+// Re-export Token and TokenKind from perl-token for AST error nodes
+pub use perl_token::{Token, TokenKind};
+use std::cell::Cell;
+use std::fmt;
+use std::ops::ControlFlow;
+use strum::VariantNames as _;
+
+/// Maximum AST traversal depth for recursive operations.
+///
+/// Guards [`Node::to_sexp`], [`Node::count_nodes`], and
+/// [`Node::find_deepest_containing_offset`] against stack-overflow panics on
+/// pathologically deep ASTs (e.g., thousands of nested blocks or expressions
+/// produced by malformed or adversarial input).
+///
+/// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
+/// 512 provides a comfortable safety margin while staying well within
+/// Rust's default 8 MB stack.
+pub const MAX_AST_DEPTH: usize = 512;
+
+thread_local! {
+    /// Per-thread recursion depth counter used by [`Node::to_sexp`].
+    ///
+    /// Incremented on entry and decremented on exit, so interleaved calls on
+    /// separate trees (e.g. in the same thread between tests) always start from 0.
+    static TO_SEXP_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct ToSexpDepthGuard;
+
+impl Drop for ToSexpDepthGuard {
+    fn drop(&mut self) {
+        TO_SEXP_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
+///
+/// Perl's `goto` is overloaded across three fundamentally different operations:
+///
+/// | Form | Example | Semantics |
+/// |------|---------|-----------|
+/// | `Label` | `goto LABEL` | Jump to a named label in the current program |
+/// | `Sub` | `goto &sub` | **Frame replacement** — tail-call with same `@_`; even `caller()` cannot distinguish |
+/// | `Expr` | `goto $expr` | Dynamic target — computed at run time |
+///
+/// The `Sub` form (`goto &NAME`) is semantically different from a normal call: it replaces
+/// the current stack frame with the called subroutine, so the called sub sees the same `@_`
+/// and `caller` context. Semantic analysis and DAP must treat it as a tail-call, not a jump.
+///
+/// This enum is always populated at parse time (never `None`); the parser detects the form
+/// by examining the first token of the target expression before consuming the full target.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GotoTargetForm {
+    /// `goto LABEL` — transfer control to a named label (plain identifier).
+    Label,
+    /// `goto &sub`, `goto &Pkg::sub`, `goto &$coderef` — frame replacement (tail call).
+    ///
+    /// The `&` sigil is the distinguishing marker. The target may be:
+    /// - A bare name: `goto &helper`
+    /// - A package-qualified name: `goto &Pkg::helper`
+    /// - A variable coderef: `goto &$dispatch_table{$key}`
+    Sub,
+    /// `goto $expr` or `goto EXPR` where the target is a computed scalar expression.
+    ///
+    /// This includes `goto $label_var` (dynamic label) and other computed forms
+    /// that are not a plain identifier (Label) or an ampersand-prefixed coderef (Sub).
+    Expr,
+}
+
+/// Stable identifier for a named child relationship in the syntax tree.
+///
+/// Field identifiers are represented by canonical static names so the AST,
+/// facade, and future query engine share one vocabulary without allocating at
+/// traversal time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct FieldId(&'static str);
+
+macro_rules! define_field_ids {
+    ($(($constant:ident, $name:literal)),+ $(,)?) => {
+        impl FieldId {
+            $(pub const $constant: Self = Self($name);)+
+
+            /// All field identifiers emitted by [`Node::for_each_child_with_field`].
+            pub const ALL: &'static [Self] = &[$(Self::$constant),+];
+
+            /// Return the canonical external name for this field.
+            pub const fn name(self) -> &'static str {
+                self.0
+            }
+
+            /// Resolve a canonical field name without allocating.
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(Self::$constant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+define_field_ids! {
+    (STATEMENTS, "statements"),
+    (EXPRESSION, "expression"),
+    (VARIABLE, "variable"),
+    (PACKAGE, "package"),
+    (STATEMENT, "statement"),
+    (INITIALIZER, "initializer"),
+    (ITEMS, "items"),
+    (LHS, "lhs"),
+    (RHS, "rhs"),
+    (LEFT, "left"),
+    (RIGHT, "right"),
+    (CONDITION, "condition"),
+    (THEN_BRANCH, "then_branch"),
+    (THEN_EXPR, "then_expr"),
+    (ELSE_EXPR, "else_expr"),
+    (ELSE_BRANCH, "else_branch"),
+    (OPERAND, "operand"),
+    (ELEMENTS, "elements"),
+    (KEY, "key"),
+    (VALUE, "value"),
+    (BLOCK, "block"),
+    (BODY, "body"),
+    (CATCH, "catch"),
+    (FINALLY, "finally"),
+    (CONTINUE_BLOCK, "continue_block"),
+    (INIT, "init"),
+    (UPDATE, "update"),
+    (LIST, "list"),
+    (EXPR, "expr"),
+    (PROTOTYPE, "prototype"),
+    (SIGNATURE, "signature"),
+    (PARAMETERS, "parameters"),
+    (DEFAULT_VALUE, "default_value"),
+    (TARGET, "target"),
+    (OBJECT, "object"),
+    (ARGS, "args"),
+    (PARTIAL, "partial"),
+}
+
+/// Core AST node representing any Perl language construct within parsing workflows.
+///
+/// This is the fundamental building block for representing parsed Perl code. Each node
+/// contains both the semantic information (kind) and positional information (location)
+/// necessary for comprehensive script analysis.
+///
+/// # LSP Workflow Role
+///
+/// Nodes flow through tooling stages:
+/// - **Parse**: Created by the parser as it builds the syntax tree
+/// - **Index**: Visited to build symbol and reference tables
+/// - **Navigate**: Used to resolve definitions, references, and call hierarchy
+/// - **Complete**: Provides contextual information for completion and hover
+/// - **Analyze**: Drives semantic analysis and diagnostics
+///
+/// # Memory Optimization
+///
+/// The structure is designed for efficient memory usage during large-scale parsing:
+/// - `SourceLocation` uses compact position encoding for large files
+/// - `NodeKind` enum variants minimize memory overhead for common constructs
+/// - Clone operations are optimized for shared analysis workflows
+///
+/// # Examples
+///
+/// Construct a variable declaration node manually:
+///
+/// ```
+/// use perl_ast::{Node, NodeKind, SourceLocation};
+///
+/// let loc = SourceLocation { start: 0, end: 11 };
+/// let var = Node::new(
+///     NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
+///     loc,
+/// );
+/// let decl = Node::new(
+///     NodeKind::VariableDeclaration {
+///         declarator: "my".to_string(),
+///         variable: Box::new(var),
+///         attributes: vec![],
+///         initializer: None,
+///     },
+///     loc,
+/// );
+/// assert_eq!(decl.kind.kind_name(), "VariableDeclaration");
+/// ```
+///
+/// Typically you obtain nodes from the parser rather than constructing them by hand:
+///
+/// ```ignore
+/// use perl_parser::Parser;
+///
+/// let mut parser = Parser::new("my $x = 42;");
+/// let ast = parser.parse()?;
+/// println!("AST: {}", ast.to_sexp());
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct Node {
+    /// The specific type and semantic content of this AST node
+    pub kind: NodeKind,
+    /// Source position information for error reporting and code navigation
+    pub location: SourceLocation,
+}
+
+impl Node {
+    /// Create a new AST node with the given kind and source location.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_ast::{Node, NodeKind, SourceLocation};
+    ///
+    /// let node = Node::new(
+    ///     NodeKind::Number { value: "42".to_string() },
+    ///     SourceLocation { start: 0, end: 2 },
+    /// );
+    /// assert_eq!(node.kind.kind_name(), "Number");
+    /// assert_eq!(node.location.start, 0);
+    /// ```
+    pub fn new(kind: NodeKind, location: SourceLocation) -> Self {
+        Node { kind, location }
+    }
+
+    /// Convert the AST to a tree-sitter compatible S-expression.
+    ///
+    /// Produces a parenthesized representation compatible with tree-sitter's
+    /// S-expression format, useful for debugging and snapshot testing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_ast::{Node, NodeKind, SourceLocation};
+    ///
+    /// let loc = SourceLocation { start: 0, end: 2 };
+    /// let num = Node::new(NodeKind::Number { value: "42".to_string() }, loc);
+    /// let program = Node::new(
+    ///     NodeKind::Program { statements: vec![num] },
+    ///     loc,
+    /// );
+    /// let sexp = program.to_sexp();
+    /// assert!(sexp.starts_with("(source_file"));
+    /// ```
+    pub fn to_sexp(&self) -> String {
+        let depth = TO_SEXP_DEPTH.with(|d| {
+            let v = d.get();
+            d.set(v + 1);
+            v
+        });
+        let _depth_guard = ToSexpDepthGuard;
+        if depth >= MAX_AST_DEPTH {
+            "(depth_limit_exceeded)".to_string()
+        } else {
+            self.to_sexp_impl()
+        }
+    }
+
+    /// Inner implementation of S-expression serialisation, called by [`to_sexp`].
+    ///
+    /// Separated so that the public entry-point can enforce the depth guard
+    /// without touching the 600-line match.
+    fn to_sexp_impl(&self) -> String {
+        match &self.kind {
+            NodeKind::Program { statements } => {
+                let stmts =
+                    statements.iter().map(|s| s.to_sexp_inner()).collect::<Vec<_>>().join(" ");
+                format!("(source_file {})", stmts)
+            }
+
+            NodeKind::ExpressionStatement { expression } => {
+                format!("(expression_statement {})", expression.to_sexp())
+            }
+
+            NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
+                let attrs_str = if attributes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (attributes {})", attributes.join(" "))
+                };
+                if let Some(init) = initializer {
+                    format!(
+                        "({}_declaration {}{}{})",
+                        declarator,
+                        variable.to_sexp(),
+                        attrs_str,
+                        init.to_sexp()
+                    )
+                } else {
+                    format!("({}_declaration {}{})", declarator, variable.to_sexp(), attrs_str)
+                }
+            }
+
+            NodeKind::VariableListDeclaration {
+                declarator,
+                variables,
+                attributes,
+                initializer,
+            } => {
+                let vars = variables.iter().map(|v| v.to_sexp()).collect::<Vec<_>>().join(" ");
+                let attrs_str = if attributes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (attributes {})", attributes.join(" "))
+                };
+                if let Some(init) = initializer {
+                    format!(
+                        "({}_declaration ({}){}{})",
+                        declarator,
+                        vars,
+                        attrs_str,
+                        init.to_sexp()
+                    )
+                } else {
+                    format!("({}_declaration ({}){})", declarator, vars, attrs_str)
+                }
+            }
+
+            NodeKind::NestedVariableList { items } => {
+                let item_sexps = items.iter().map(|i| i.to_sexp()).collect::<Vec<_>>().join(" ");
+                format!("(nested_variable_list {})", item_sexps)
+            }
+
+            NodeKind::Variable { sigil, name } => {
+                // Format expected by bless parsing tests: (variable $ name)
+                format!("(variable {} {})", sigil, sexp_escape(name))
+            }
+
+            NodeKind::VariableWithAttributes { variable, attributes } => {
+                let attrs = attributes.join(" ");
+                format!("({} (attributes {}))", variable.to_sexp(), attrs)
+            }
+
+            NodeKind::Assignment { lhs, rhs, op } => {
+                format!(
+                    "(assignment_{} {} {})",
+                    op.replace("=", "assign"),
+                    lhs.to_sexp(),
+                    rhs.to_sexp()
+                )
+            }
+
+            NodeKind::Binary { op, left, right } => {
+                // Tree-sitter format: (binary_op left right)
+                let op_name = format_binary_operator(op);
+                format!("({} {} {})", op_name, left.to_sexp(), right.to_sexp())
+            }
+
+            NodeKind::ArraySlice { target, indices } => {
+                format!("(array_slice {} {})", target.to_sexp(), indices.to_sexp())
+            }
+
+            NodeKind::HashSlice { target, keys } => {
+                format!("(hash_slice {} {})", target.to_sexp(), keys.to_sexp())
+            }
+
+            NodeKind::KeyValueSlice { target, keys } => {
+                format!("(key_value_slice {} {})", target.to_sexp(), keys.to_sexp())
+            }
+
+            NodeKind::ChainedComparison { operands, ops } => {
+                let mut parts = Vec::with_capacity(operands.len() + ops.len());
+                for (i, operand) in operands.iter().enumerate() {
+                    parts.push(operand.to_sexp());
+                    if let Some(op) = ops.get(i) {
+                        parts.push(op.clone());
+                    }
+                }
+                format!("(chained_comparison {})", parts.join(" "))
+            }
+
+            NodeKind::Ternary { condition, then_expr, else_expr } => {
+                format!(
+                    "(ternary {} {} {})",
+                    condition.to_sexp(),
+                    then_expr.to_sexp(),
+                    else_expr.to_sexp()
+                )
+            }
+
+            NodeKind::Unary { op, operand } => {
+                // Tree-sitter format: (unary_op operand)
+                let op_name = format_unary_operator(op);
+                format!("({} {})", op_name, operand.to_sexp())
+            }
+
+            NodeKind::Diamond => "(diamond)".to_string(),
+
+            NodeKind::Ellipsis => "(ellipsis)".to_string(),
+
+            NodeKind::Undef => "(undef)".to_string(),
+
+            NodeKind::Readline { filehandle } => {
+                if let Some(fh) = filehandle {
+                    format!("(readline {})", fh)
+                } else {
+                    "(readline)".to_string()
+                }
+            }
+
+            NodeKind::Glob { pattern } => {
+                format!("(glob {})", pattern)
+            }
+            NodeKind::Typeglob { name } => {
+                format!("(typeglob {})", name)
+            }
+
+            NodeKind::Number { value } => {
+                // Format expected by bless parsing tests: (number value)
+                format!("(number {})", value)
+            }
+
+            NodeKind::String { value, interpolated } => {
+                // Escape quotes in string value to prevent S-expression parsing issues
+                let escaped_value = value.replace('\\', "\\\\").replace('"', "\\\"");
+
+                // Format based on interpolation status
+                if *interpolated {
+                    format!("(string_interpolated \"{}\")", escaped_value)
+                } else {
+                    format!("(string \"{}\")", escaped_value)
+                }
+            }
+
+            NodeKind::VString { value } => {
+                // Escape quotes in version string to prevent S-expression parsing issues
+                let escaped_value = value.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("(vstring \"{}\")", escaped_value)
+            }
+
+            NodeKind::Heredoc { delimiter, content, interpolated, indented, command, .. } => {
+                let type_str = if *command {
+                    "heredoc_command"
+                } else if *indented {
+                    if *interpolated { "heredoc_indented_interpolated" } else { "heredoc_indented" }
+                } else if *interpolated {
+                    "heredoc_interpolated"
+                } else {
+                    "heredoc"
+                };
+                format!("({} {:?} {:?})", type_str, delimiter, content)
+            }
+
+            NodeKind::ArrayLiteral { elements } => {
+                let elems = elements.iter().map(|e| e.to_sexp()).collect::<Vec<_>>().join(" ");
+                format!("(array {})", elems)
+            }
+
+            NodeKind::HashLiteral { pairs } => {
+                let kvs = pairs
+                    .iter()
+                    .map(|(k, v)| format!("({} {})", k.to_sexp(), v.to_sexp()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(hash {})", kvs)
+            }
+
+            NodeKind::Block { statements } => {
+                let stmts = statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ");
+                format!("(block {})", stmts)
+            }
+
+            NodeKind::Eval { block } => {
+                format!("(eval {})", block.to_sexp())
+            }
+
+            NodeKind::Do { block } => {
+                format!("(do {})", block.to_sexp())
+            }
+
+            NodeKind::Defer { block } => {
+                format!("(defer {})", block.to_sexp())
+            }
+
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                let mut parts = vec![format!("(try {})", body.to_sexp())];
+
+                for (var, block) in catch_blocks {
+                    if let Some((v, _)) = var {
+                        parts.push(format!("(catch {} {})", v, block.to_sexp()));
+                    } else {
+                        parts.push(format!("(catch {})", block.to_sexp()));
+                    }
+                }
+
+                if let Some(finally) = finally_block {
+                    parts.push(format!("(finally {})", finally.to_sexp()));
+                }
+
+                parts.join(" ")
+            }
+
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, keyword } => {
+                let kw = keyword.as_deref().unwrap_or("if");
+                let mut parts =
+                    vec![format!("({} {} {})", kw, condition.to_sexp(), then_branch.to_sexp())];
+
+                for (cond, block) in elsif_branches {
+                    parts.push(format!("(elsif {} {})", cond.to_sexp(), block.to_sexp()));
+                }
+
+                if let Some(else_block) = else_branch {
+                    parts.push(format!("(else {})", else_block.to_sexp()));
+                }
+
+                parts.join(" ")
+            }
+
+            NodeKind::LabeledStatement { label, statement } => {
+                format!("(labeled_statement {} {})", label, statement.to_sexp())
+            }
+
+            NodeKind::While { condition, body, continue_block, keyword } => {
+                let kw = keyword.as_deref().unwrap_or("while");
+                let mut s = format!("({} {} {})", kw, condition.to_sexp(), body.to_sexp());
+                if let Some(cont) = continue_block {
+                    s.push_str(&format!(" (continue {})", cont.to_sexp()));
+                }
+                s
+            }
+            NodeKind::Tie { variable, package, args } => {
+                let mut s = format!("(tie {} {}", variable.to_sexp(), package.to_sexp());
+                for arg in args {
+                    s.push_str(&format!(" {}", arg.to_sexp()));
+                }
+                s.push(')');
+                s
+            }
+            NodeKind::Untie { variable } => {
+                format!("(untie {})", variable.to_sexp())
+            }
+            NodeKind::For { init, condition, update, body, continue_block } => {
+                let init_str =
+                    init.as_ref().map(|i| i.to_sexp()).unwrap_or_else(|| "()".to_string());
+                let cond_str =
+                    condition.as_ref().map(|c| c.to_sexp()).unwrap_or_else(|| "()".to_string());
+                let update_str =
+                    update.as_ref().map(|u| u.to_sexp()).unwrap_or_else(|| "()".to_string());
+                let mut result =
+                    format!("(for {} {} {} {})", init_str, cond_str, update_str, body.to_sexp());
+                if let Some(cont) = continue_block {
+                    result.push_str(&format!(" (continue {})", cont.to_sexp()));
+                }
+                result
+            }
+
+            NodeKind::Foreach { variable, list, body, continue_block } => {
+                let cont = if let Some(cb) = continue_block {
+                    format!(" {}", cb.to_sexp())
+                } else {
+                    String::new()
+                };
+                format!(
+                    "(foreach {} {} {}{})",
+                    variable.to_sexp(),
+                    list.to_sexp(),
+                    body.to_sexp(),
+                    cont
+                )
+            }
+
+            NodeKind::Given { expr, body } => {
+                format!("(given {} {})", expr.to_sexp(), body.to_sexp())
+            }
+
+            NodeKind::When { condition, body } => {
+                format!("(when {} {})", condition.to_sexp(), body.to_sexp())
+            }
+
+            NodeKind::Default { body } => {
+                format!("(default {})", body.to_sexp())
+            }
+
+            NodeKind::StatementModifier { statement, modifier, condition } => {
+                format!(
+                    "(statement_modifier_{} {} {})",
+                    modifier,
+                    statement.to_sexp(),
+                    condition.to_sexp()
+                )
+            }
+
+            NodeKind::Subroutine {
+                name,
+                prototype,
+                signature,
+                attributes,
+                body,
+                name_span: _,
+                declarator: _,
+            } => {
+                if let Some(sub_name) = name {
+                    // Named subroutine - bless test expected format: (sub name () block)
+                    let mut parts = vec![sub_name.clone()];
+
+                    // Add attributes if present (before prototype/signature)
+                    if !attributes.is_empty() {
+                        for attr in attributes {
+                            parts.push(format!(":{}", attr));
+                        }
+                    }
+
+                    // Add prototype/signature - use () for empty prototype
+                    if let Some(proto) = prototype {
+                        parts.push(format!("({})", proto.to_sexp()));
+                    } else if signature.is_some() {
+                        // If there's a signature but no prototype, still show ()
+                        parts.push("()".to_string());
+                    } else {
+                        parts.push("()".to_string());
+                    }
+
+                    // Add body
+                    parts.push(body.to_sexp());
+
+                    // Format: (sub name [attrs...] ()(block ...)) - space between name and (), no space between () and block
+                    if parts.len() >= 3 && parts[parts.len() - 2] == "()" {
+                        let name_and_attrs = parts[0..parts.len() - 2].join(" ");
+                        let proto = &parts[parts.len() - 2];
+                        let body = &parts[parts.len() - 1];
+                        format!("(sub {} {}{})", name_and_attrs, proto, body)
+                    } else {
+                        format!("(sub {})", parts.join(" "))
+                    }
+                } else {
+                    // Anonymous subroutine - tree-sitter format
+                    let mut parts = Vec::new();
+
+                    // Add attributes if present
+                    if !attributes.is_empty() {
+                        let attrs: Vec<String> = attributes
+                            .iter()
+                            .map(|_attr| "(attribute (attribute_name))".to_string())
+                            .collect();
+                        parts.push(format!("(attrlist {})", attrs.join("")));
+                    }
+
+                    // Add prototype if present
+                    if let Some(proto) = prototype {
+                        parts.push(proto.to_sexp());
+                    }
+
+                    // Add signature if present
+                    if let Some(sig) = signature {
+                        parts.push(sig.to_sexp());
+                    }
+
+                    // Add body
+                    parts.push(body.to_sexp());
+
+                    format!("(anonymous_subroutine_expression {})", parts.join(""))
+                }
+            }
+
+            NodeKind::Prototype { content: _ } => "(prototype)".to_string(),
+
+            NodeKind::Signature { parameters } => {
+                let params = parameters.iter().map(|p| p.to_sexp()).collect::<Vec<_>>().join(" ");
+                format!("(signature {})", params)
+            }
+
+            NodeKind::MandatoryParameter { variable } => {
+                format!("(mandatory_parameter {})", variable.to_sexp())
+            }
+
+            NodeKind::OptionalParameter { variable, default_value } => {
+                format!("(optional_parameter {} {})", variable.to_sexp(), default_value.to_sexp())
+            }
+
+            NodeKind::SlurpyParameter { variable } => {
+                format!("(slurpy_parameter {})", variable.to_sexp())
+            }
+
+            NodeKind::NamedParameter { variable, .. } => {
+                format!("(named_parameter {})", variable.to_sexp())
+            }
+
+            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
+                let block_contents = match &body.kind {
+                    NodeKind::Block { statements } => {
+                        statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ")
+                    }
+                    _ => body.to_sexp(),
+                };
+
+                let mut parts = vec![format!("(method_name {name})")];
+
+                // Add signature if present
+                if let Some(sig) = signature {
+                    parts.push(sig.to_sexp());
+                }
+
+                // Add attributes if present
+                if !attributes.is_empty() {
+                    let attrs: Vec<String> = attributes
+                        .iter()
+                        .map(|_attr| "(attribute (attribute_name))".to_string())
+                        .collect();
+                    parts.push(format!("(attrlist {})", attrs.join("")));
+                }
+
+                parts.push(format!("(block {})", block_contents));
+                format!("(method_declaration_statement {})", parts.join(" "))
+            }
+
+            NodeKind::Return { value } => {
+                if let Some(val) = value {
+                    format!("(return {})", val.to_sexp())
+                } else {
+                    "(return)".to_string()
+                }
+            }
+
+            NodeKind::LoopControl { op, label } => {
+                if let Some(l) = label {
+                    format!("({} {})", op, l)
+                } else {
+                    format!("({})", op)
+                }
+            }
+
+            NodeKind::Goto { target, form } => {
+                let form_str = match form {
+                    GotoTargetForm::Label => "label",
+                    GotoTargetForm::Sub => "sub",
+                    GotoTargetForm::Expr => "expr",
+                };
+                format!("(goto :{} {})", form_str, target.to_sexp())
+            }
+
+            NodeKind::MethodCall { object, method, args } => {
+                let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
+                format!("(method_call {} {} ({}))", object.to_sexp(), method, args_str)
+            }
+
+            NodeKind::FunctionCall { name, args } => {
+                // Special handling for functions that should use call format in tree-sitter tests
+                if is_call_form_function(name) {
+                    let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
+                    if args.is_empty() {
+                        format!("(call {} ())", name)
+                    } else {
+                        format!("(call {} ({}))", name, args_str)
+                    }
+                } else {
+                    // Tree-sitter format varies by context
+                    let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
+                    if args.is_empty() {
+                        "(function_call_expression (function))".to_string()
+                    } else {
+                        format!("(ambiguous_function_call_expression (function) {})", args_str)
+                    }
+                }
+            }
+
+            NodeKind::AmperCall { name, args } => {
+                let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
+                if args.is_empty() {
+                    format!("(amper_call &{})", name)
+                } else {
+                    format!("(amper_call &{} ({}))", name, args_str)
+                }
+            }
+
+            NodeKind::IndirectCall { method, object, args } => {
+                let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
+                format!("(indirect_call {} {} ({}))", method, object.to_sexp(), args_str)
+            }
+
+            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+                let risk_marker = if *has_embedded_code { " (risk:code)" } else { "" };
+                format!("(regex {:?} {:?} {:?}{})", pattern, replacement, modifiers, risk_marker)
+            }
+
+            NodeKind::Match { expr, pattern, modifiers, has_embedded_code, negated } => {
+                let risk_marker = if *has_embedded_code { " (risk:code)" } else { "" };
+                let op = if *negated { "not_match" } else { "match" };
+                format!(
+                    "({} {} (regex {:?} {:?}{}))",
+                    op,
+                    expr.to_sexp(),
+                    pattern,
+                    modifiers,
+                    risk_marker
+                )
+            }
+
+            NodeKind::Substitution {
+                expr,
+                pattern,
+                replacement,
+                modifiers,
+                has_embedded_code,
+                negated,
+            } => {
+                let risk_marker = if *has_embedded_code { " (risk:code)" } else { "" };
+                let neg_marker = if *negated { " (negated)" } else { "" };
+                format!(
+                    "(substitution {} {:?} {:?} {:?}{}{})",
+                    expr.to_sexp(),
+                    pattern,
+                    replacement,
+                    modifiers,
+                    risk_marker,
+                    neg_marker
+                )
+            }
+
+            NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
+                let neg_marker = if *negated { " (negated)" } else { "" };
+                format!(
+                    "(transliteration {} {:?} {:?} {:?}{})",
+                    expr.to_sexp(),
+                    search,
+                    replace,
+                    modifiers,
+                    neg_marker
+                )
+            }
+
+            NodeKind::Package { name, block, name_span: _ } => {
+                if let Some(blk) = block {
+                    format!("(package {} {})", name, blk.to_sexp())
+                } else {
+                    format!("(package {})", name)
+                }
+            }
+
+            NodeKind::Use { module, args, has_filter_risk } => {
+                let risk_marker = if *has_filter_risk { " (risk:filter)" } else { "" };
+                if args.is_empty() {
+                    format!("(use {}{})", module, risk_marker)
+                } else {
+                    let args_str = args.join(" ");
+                    format!("(use {} ({}){})", module, args_str, risk_marker)
+                }
+            }
+
+            NodeKind::No { module, args, has_filter_risk } => {
+                let risk_marker = if *has_filter_risk { " (risk:filter)" } else { "" };
+                if args.is_empty() {
+                    format!("(no {}{})", module, risk_marker)
+                } else {
+                    let args_str = args.join(" ");
+                    format!("(no {} ({}){})", module, args_str, risk_marker)
+                }
+            }
+
+            NodeKind::PhaseBlock { phase, phase_span: _, block } => {
+                format!("({} {})", phase, block.to_sexp())
+            }
+
+            NodeKind::DataSection { marker, body } => {
+                if let Some(body_text) = body {
+                    format!("(data_section {} \"{}\")", marker, body_text.escape_default())
+                } else {
+                    format!("(data_section {})", marker)
+                }
+            }
+
+            NodeKind::Class { name, name_span: _, parents, body } => {
+                if parents.is_empty() {
+                    format!("(class {} {})", name, body.to_sexp())
+                } else {
+                    format!("(class {} :isa({}) {})", name, parents.join(","), body.to_sexp())
+                }
+            }
+
+            NodeKind::Format { name, name_span: _, body } => {
+                format!("(format {} {:?})", name, body)
+            }
+
+            NodeKind::Identifier { name } => {
+                // Format expected by tests: (identifier name)
+                format!("(identifier {})", name)
+            }
+
+            NodeKind::Error { message, partial, .. } => {
+                if let Some(node) = partial {
+                    format!("(ERROR \"{}\" {})", message.escape_default(), node.to_sexp())
+                } else {
+                    format!("(ERROR \"{}\")", message.escape_default())
+                }
+            }
+            NodeKind::MissingExpression => "(missing_expression)".to_string(),
+            NodeKind::MissingStatement => "(missing_statement)".to_string(),
+            NodeKind::MissingIdentifier => "(missing_identifier)".to_string(),
+            NodeKind::MissingBlock => "(missing_block)".to_string(),
+            NodeKind::UnknownRest => "(UNKNOWN_REST)".to_string(),
+        }
+    }
+
+    /// Convert the AST to S-expression format that unwraps expression statements in programs
+    pub fn to_sexp_inner(&self) -> String {
+        match &self.kind {
+            NodeKind::ExpressionStatement { expression } => {
+                // Check if this is an anonymous subroutine - if so, keep it wrapped
+                match &expression.kind {
+                    NodeKind::Subroutine { name, .. } if name.is_none() => {
+                        // Anonymous subroutine should remain wrapped in expression statement
+                        self.to_sexp()
+                    }
+                    _ => {
+                        // In the inner format, other expression statements are unwrapped
+                        expression.to_sexp()
+                    }
+                }
+            }
+            _ => {
+                // For all other node types, use regular to_sexp
+                self.to_sexp()
+            }
+        }
+    }
+
+    /// Call a function on every direct child node of this node.
+    ///
+    /// This enables depth-first traversal for operations like heredoc content attachment.
+    /// The closure receives a mutable reference to each child node.
+    #[inline]
+    pub fn for_each_child_mut<F: FnMut(&mut Node)>(&mut self, mut f: F) {
+        match &mut self.kind {
+            NodeKind::Tie { variable, package, args } => {
+                f(variable);
+                f(package);
+                for arg in args {
+                    f(arg);
+                }
+            }
+            NodeKind::Untie { variable } => f(variable),
+
+            // Root program node
+            NodeKind::Program { statements } => {
+                for stmt in statements {
+                    f(stmt);
+                }
+            }
+
+            // Statement wrappers
+            NodeKind::ExpressionStatement { expression } => f(expression),
+
+            // Variable declarations
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                f(variable);
+                if let Some(init) = initializer {
+                    f(init);
+                }
+            }
+            NodeKind::VariableListDeclaration { variables, initializer, .. } => {
+                for var in variables {
+                    f(var);
+                }
+                if let Some(init) = initializer {
+                    f(init);
+                }
+            }
+            NodeKind::NestedVariableList { items } => {
+                for item in items {
+                    f(item);
+                }
+            }
+            NodeKind::VariableWithAttributes { variable, .. } => f(variable),
+
+            // Binary operations
+            NodeKind::Binary { left, right, .. } => {
+                f(left);
+                f(right);
+            }
+            NodeKind::ArraySlice { target, indices } => {
+                f(target);
+                f(indices);
+            }
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+                f(target);
+                f(keys);
+            }
+            NodeKind::ChainedComparison { operands, .. } => {
+                for operand in operands {
+                    f(operand);
+                }
+            }
+            NodeKind::Ternary { condition, then_expr, else_expr } => {
+                f(condition);
+                f(then_expr);
+                f(else_expr);
+            }
+            NodeKind::Unary { operand, .. } => f(operand),
+            NodeKind::Assignment { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+
+            // Control flow
+            NodeKind::Block { statements } => {
+                for stmt in statements {
+                    f(stmt);
+                }
+            }
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
+                f(condition);
+                f(then_branch);
+                for (elsif_cond, elsif_body) in elsif_branches {
+                    f(elsif_cond);
+                    f(elsif_body);
+                }
+                if let Some(else_body) = else_branch {
+                    f(else_body);
+                }
+            }
+            NodeKind::While { condition, body, continue_block, .. } => {
+                f(condition);
+                f(body);
+                if let Some(cont) = continue_block {
+                    f(cont);
+                }
+            }
+            NodeKind::For { init, condition, update, body, continue_block, .. } => {
+                if let Some(i) = init {
+                    f(i);
+                }
+                if let Some(c) = condition {
+                    f(c);
+                }
+                if let Some(u) = update {
+                    f(u);
+                }
+                f(body);
+                if let Some(cont) = continue_block {
+                    f(cont);
+                }
+            }
+            NodeKind::Foreach { variable, list, body, continue_block } => {
+                f(variable);
+                f(list);
+                f(body);
+                if let Some(cb) = continue_block {
+                    f(cb);
+                }
+            }
+            NodeKind::Given { expr, body } => {
+                f(expr);
+                f(body);
+            }
+            NodeKind::When { condition, body } => {
+                f(condition);
+                f(body);
+            }
+            NodeKind::Default { body } => f(body),
+            NodeKind::StatementModifier { statement, condition, .. } => {
+                f(statement);
+                f(condition);
+            }
+            NodeKind::LabeledStatement { statement, .. } => f(statement),
+
+            // Eval and Do blocks
+            NodeKind::Eval { block } => f(block),
+            NodeKind::Do { block } => f(block),
+            NodeKind::Defer { block } => f(block),
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                f(body);
+                for (_, catch_body) in catch_blocks {
+                    f(catch_body);
+                }
+                if let Some(finally) = finally_block {
+                    f(finally);
+                }
+            }
+
+            // Function calls
+            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
+                for arg in args {
+                    f(arg);
+                }
+            }
+            NodeKind::MethodCall { object, args, .. } => {
+                f(object);
+                for arg in args {
+                    f(arg);
+                }
+            }
+            NodeKind::IndirectCall { object, args, .. } => {
+                f(object);
+                for arg in args {
+                    f(arg);
+                }
+            }
+
+            // Functions
+            NodeKind::Subroutine { prototype, signature, body, .. } => {
+                if let Some(proto) = prototype {
+                    f(proto);
+                }
+                if let Some(sig) = signature {
+                    f(sig);
+                }
+                f(body);
+            }
+            NodeKind::Method { signature, body, .. } => {
+                if let Some(sig) = signature {
+                    f(sig);
+                }
+                f(body);
+            }
+            NodeKind::Return { value } => {
+                if let Some(v) = value {
+                    f(v);
+                }
+            }
+            NodeKind::Goto { target, .. } => f(target),
+            NodeKind::Signature { parameters } => {
+                for param in parameters {
+                    f(param);
+                }
+            }
+            NodeKind::MandatoryParameter { variable } => f(variable),
+            NodeKind::OptionalParameter { variable, default_value } => {
+                f(variable);
+                f(default_value);
+            }
+            NodeKind::SlurpyParameter { variable } => f(variable),
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                f(variable);
+                if let Some(default) = default_value {
+                    f(default);
+                }
+            }
+
+            // Pattern matching
+            NodeKind::Match { expr, .. } => f(expr),
+            NodeKind::Substitution { expr, .. } => f(expr),
+            NodeKind::Transliteration { expr, .. } => f(expr),
+
+            // Containers
+            NodeKind::ArrayLiteral { elements } => {
+                for elem in elements {
+                    f(elem);
+                }
+            }
+            NodeKind::HashLiteral { pairs } => {
+                for (key, value) in pairs {
+                    f(key);
+                    f(value);
+                }
+            }
+
+            // Package system
+            NodeKind::Package { block, .. } => {
+                if let Some(b) = block {
+                    f(b);
+                }
+            }
+            NodeKind::PhaseBlock { block, .. } => f(block),
+            NodeKind::Class { body, .. } => f(body),
+
+            // Error node might have a partial valid tree
+            NodeKind::Error { partial, .. } => {
+                if let Some(node) = partial {
+                    f(node);
+                }
+            }
+
+            // Leaf nodes (no children to traverse)
+            NodeKind::Variable { .. }
+            | NodeKind::Identifier { .. }
+            | NodeKind::Number { .. }
+            | NodeKind::String { .. }
+            | NodeKind::VString { .. }
+            | NodeKind::Heredoc { .. }
+            | NodeKind::Regex { .. }
+            | NodeKind::Readline { .. }
+            | NodeKind::Glob { .. }
+            | NodeKind::Typeglob { .. }
+            | NodeKind::Diamond
+            | NodeKind::Ellipsis
+            | NodeKind::Undef
+            | NodeKind::Use { .. }
+            | NodeKind::No { .. }
+            | NodeKind::Prototype { .. }
+            | NodeKind::DataSection { .. }
+            | NodeKind::Format { .. }
+            | NodeKind::LoopControl { .. }
+            | NodeKind::MissingExpression
+            | NodeKind::MissingStatement
+            | NodeKind::MissingIdentifier
+            | NodeKind::MissingBlock
+            | NodeKind::UnknownRest => {}
+        }
+    }
+
+    /// Visit direct children with short-circuiting and preserve their structural fields.
+    ///
+    /// `None` identifies an intentionally unnamed child. Repeated children in
+    /// list-like fields use the same [`FieldId`] for each element.
+    #[inline]
+    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, mut f: F) -> ControlFlow<B>
+    where
+        F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
+    {
+        macro_rules! emit {
+            ($field:expr, $child:expr) => {
+                if let ControlFlow::Break(b) = f(Some($field), $child) {
+                    return ControlFlow::Break(b);
+                }
+            };
+        }
+
+        match &self.kind {
+            NodeKind::Tie { variable, package, args } => {
+                emit!(FieldId::VARIABLE, variable);
+                emit!(FieldId::PACKAGE, package);
+                for arg in args {
+                    emit!(FieldId::ARGS, arg);
+                }
+            }
+            NodeKind::Untie { variable } => emit!(FieldId::VARIABLE, variable),
+
+            // Root program node
+            NodeKind::Program { statements } => {
+                for stmt in statements {
+                    emit!(FieldId::STATEMENTS, stmt);
+                }
+            }
+
+            // Statement wrappers
+            NodeKind::ExpressionStatement { expression } => emit!(FieldId::EXPRESSION, expression),
+
+            // Variable declarations
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                emit!(FieldId::VARIABLE, variable);
+                if let Some(init) = initializer {
+                    emit!(FieldId::INITIALIZER, init);
+                }
+            }
+            NodeKind::VariableListDeclaration { variables, initializer, .. } => {
+                for var in variables {
+                    emit!(FieldId::VARIABLE, var);
+                }
+                if let Some(init) = initializer {
+                    emit!(FieldId::INITIALIZER, init);
+                }
+            }
+            NodeKind::NestedVariableList { items } => {
+                for item in items {
+                    emit!(FieldId::ITEMS, item);
+                }
+            }
+            NodeKind::VariableWithAttributes { variable, .. } => emit!(FieldId::VARIABLE, variable),
+
+            // Binary operations
+            NodeKind::Binary { left, right, .. } => {
+                emit!(FieldId::LEFT, left);
+                emit!(FieldId::RIGHT, right);
+            }
+            NodeKind::ArraySlice { target, indices } => {
+                emit!(FieldId::TARGET, target);
+                emit!(FieldId::ELEMENTS, indices);
+            }
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
+                emit!(FieldId::TARGET, target);
+                emit!(FieldId::KEY, keys);
+            }
+            NodeKind::ChainedComparison { operands, .. } => {
+                for operand in operands {
+                    emit!(FieldId::ELEMENTS, operand);
+                }
+            }
+            NodeKind::Ternary { condition, then_expr, else_expr } => {
+                emit!(FieldId::CONDITION, condition);
+                emit!(FieldId::THEN_EXPR, then_expr);
+                emit!(FieldId::ELSE_EXPR, else_expr);
+            }
+            NodeKind::Unary { operand, .. } => emit!(FieldId::OPERAND, operand),
+            NodeKind::Assignment { lhs, rhs, .. } => {
+                emit!(FieldId::LHS, lhs);
+                emit!(FieldId::RHS, rhs);
+            }
+
+            // Control flow
+            NodeKind::Block { statements } => {
+                for stmt in statements {
+                    emit!(FieldId::STATEMENTS, stmt);
+                }
+            }
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
+                emit!(FieldId::CONDITION, condition);
+                emit!(FieldId::THEN_BRANCH, then_branch);
+                for (elsif_cond, elsif_body) in elsif_branches {
+                    emit!(FieldId::CONDITION, elsif_cond);
+                    emit!(FieldId::BODY, elsif_body);
+                }
+                if let Some(else_body) = else_branch {
+                    emit!(FieldId::ELSE_BRANCH, else_body);
+                }
+            }
+            NodeKind::While { condition, body, continue_block, .. } => {
+                emit!(FieldId::CONDITION, condition);
+                emit!(FieldId::BODY, body);
+                if let Some(cont) = continue_block {
+                    emit!(FieldId::CONTINUE_BLOCK, cont);
+                }
+            }
+            NodeKind::For { init, condition, update, body, continue_block, .. } => {
+                if let Some(i) = init {
+                    emit!(FieldId::INIT, i);
+                }
+                if let Some(c) = condition {
+                    emit!(FieldId::CONDITION, c);
+                }
+                if let Some(u) = update {
+                    emit!(FieldId::UPDATE, u);
+                }
+                emit!(FieldId::BODY, body);
+                if let Some(cont) = continue_block {
+                    emit!(FieldId::CONTINUE_BLOCK, cont);
+                }
+            }
+            NodeKind::Foreach { variable, list, body, continue_block } => {
+                emit!(FieldId::VARIABLE, variable);
+                emit!(FieldId::LIST, list);
+                emit!(FieldId::BODY, body);
+                if let Some(cb) = continue_block {
+                    emit!(FieldId::CONTINUE_BLOCK, cb);
+                }
+            }
+            NodeKind::Given { expr, body } => {
+                emit!(FieldId::EXPR, expr);
+                emit!(FieldId::BODY, body);
+            }
+            NodeKind::When { condition, body } => {
+                emit!(FieldId::CONDITION, condition);
+                emit!(FieldId::BODY, body);
+            }
+            NodeKind::Default { body } => emit!(FieldId::BODY, body),
+            NodeKind::StatementModifier { statement, condition, .. } => {
+                emit!(FieldId::STATEMENT, statement);
+                emit!(FieldId::CONDITION, condition);
+            }
+            NodeKind::LabeledStatement { statement, .. } => emit!(FieldId::STATEMENT, statement),
+
+            // Eval and Do blocks
+            NodeKind::Eval { block } => emit!(FieldId::BLOCK, block),
+            NodeKind::Do { block } => emit!(FieldId::BLOCK, block),
+            NodeKind::Defer { block } => emit!(FieldId::BLOCK, block),
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                emit!(FieldId::BODY, body);
+                for (_, catch_body) in catch_blocks {
+                    emit!(FieldId::CATCH, catch_body);
+                }
+                if let Some(finally) = finally_block {
+                    emit!(FieldId::FINALLY, finally);
+                }
+            }
+
+            // Function calls
+            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
+                for arg in args {
+                    emit!(FieldId::ARGS, arg);
+                }
+            }
+            NodeKind::MethodCall { object, args, .. } => {
+                emit!(FieldId::OBJECT, object);
+                for arg in args {
+                    emit!(FieldId::ARGS, arg);
+                }
+            }
+            NodeKind::IndirectCall { object, args, .. } => {
+                emit!(FieldId::OBJECT, object);
+                for arg in args {
+                    emit!(FieldId::ARGS, arg);
+                }
+            }
+
+            // Functions
+            NodeKind::Subroutine { prototype, signature, body, .. } => {
+                if let Some(proto) = prototype {
+                    emit!(FieldId::PROTOTYPE, proto);
+                }
+                if let Some(sig) = signature {
+                    emit!(FieldId::SIGNATURE, sig);
+                }
+                emit!(FieldId::BODY, body);
+            }
+            NodeKind::Method { signature, body, .. } => {
+                if let Some(sig) = signature {
+                    emit!(FieldId::SIGNATURE, sig);
+                }
+                emit!(FieldId::BODY, body);
+            }
+            NodeKind::Return { value } => {
+                if let Some(v) = value {
+                    emit!(FieldId::VALUE, v);
+                }
+            }
+            NodeKind::Goto { target, .. } => emit!(FieldId::TARGET, target),
+            NodeKind::Signature { parameters } => {
+                for param in parameters {
+                    emit!(FieldId::PARAMETERS, param);
+                }
+            }
+            NodeKind::MandatoryParameter { variable } => emit!(FieldId::VARIABLE, variable),
+            NodeKind::OptionalParameter { variable, default_value } => {
+                emit!(FieldId::VARIABLE, variable);
+                emit!(FieldId::DEFAULT_VALUE, default_value);
+            }
+            NodeKind::SlurpyParameter { variable } => emit!(FieldId::VARIABLE, variable),
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                emit!(FieldId::VARIABLE, variable);
+                if let Some(default) = default_value {
+                    emit!(FieldId::DEFAULT_VALUE, default);
+                }
+            }
+
+            // Pattern matching
+            NodeKind::Match { expr, .. } => emit!(FieldId::EXPR, expr),
+            NodeKind::Substitution { expr, .. } => emit!(FieldId::EXPR, expr),
+            NodeKind::Transliteration { expr, .. } => emit!(FieldId::EXPR, expr),
+
+            // Containers
+            NodeKind::ArrayLiteral { elements } => {
+                for elem in elements {
+                    emit!(FieldId::ELEMENTS, elem);
+                }
+            }
+            NodeKind::HashLiteral { pairs } => {
+                for (key, value) in pairs {
+                    emit!(FieldId::KEY, key);
+                    emit!(FieldId::VALUE, value);
+                }
+            }
+
+            // Package system
+            NodeKind::Package { block, .. } => {
+                if let Some(b) = block {
+                    emit!(FieldId::BLOCK, b);
+                }
+            }
+            NodeKind::PhaseBlock { block, .. } => emit!(FieldId::BLOCK, block),
+            NodeKind::Class { body, .. } => emit!(FieldId::BODY, body),
+
+            // Error node might have a partial valid tree
+            NodeKind::Error { partial, .. } => {
+                if let Some(node) = partial {
+                    emit!(FieldId::PARTIAL, node);
+                }
+            }
+
+            // Leaf nodes (no children to traverse)
+            NodeKind::Variable { .. }
+            | NodeKind::Identifier { .. }
+            | NodeKind::Number { .. }
+            | NodeKind::String { .. }
+            | NodeKind::VString { .. }
+            | NodeKind::Heredoc { .. }
+            | NodeKind::Regex { .. }
+            | NodeKind::Readline { .. }
+            | NodeKind::Glob { .. }
+            | NodeKind::Typeglob { .. }
+            | NodeKind::Diamond
+            | NodeKind::Ellipsis
+            | NodeKind::Undef
+            | NodeKind::Use { .. }
+            | NodeKind::No { .. }
+            | NodeKind::Prototype { .. }
+            | NodeKind::DataSection { .. }
+            | NodeKind::Format { .. }
+            | NodeKind::LoopControl { .. }
+            | NodeKind::MissingExpression
+            | NodeKind::MissingStatement
+            | NodeKind::MissingIdentifier
+            | NodeKind::MissingBlock
+            | NodeKind::UnknownRest => {}
+        }
+
+        ControlFlow::Continue(())
+    }
+
+    /// Call a function on every direct child, preserving its structural field.
+    #[inline]
+    pub fn for_each_child_with_field<'a, F: FnMut(Option<FieldId>, &'a Node)>(&'a self, mut f: F) {
+        let _ = self.try_for_each_child_with_field(|field, child| {
+            f(field, child);
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
+    /// Call a function on every direct child without field metadata.
+    #[inline]
+    pub fn for_each_child<'a, F: FnMut(&'a Node)>(&'a self, mut f: F) {
+        self.for_each_child_with_field(|_, child| f(child));
+    }
+
+    /// Count the total number of nodes in this subtree (inclusive).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_ast::{Node, NodeKind, SourceLocation};
+    ///
+    /// let loc = SourceLocation { start: 0, end: 1 };
+    /// let leaf = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
+    /// assert_eq!(leaf.count_nodes(), 1);
+    ///
+    /// let program = Node::new(
+    ///     NodeKind::Program { statements: vec![leaf] },
+    ///     loc,
+    /// );
+    /// assert_eq!(program.count_nodes(), 2);
+    /// ```
+    pub fn count_nodes(&self) -> usize {
+        self.count_nodes_impl(0)
+    }
+
+    /// Depth-bounded recursive helper for [`count_nodes`].
+    ///
+    /// Stops recursing at [`MAX_AST_DEPTH`] and counts the current node as 1,
+    /// skipping any further descendants.  This prevents stack overflow on
+    /// pathologically deep ASTs while preserving exact counts for normal inputs.
+    fn count_nodes_impl(&self, depth: usize) -> usize {
+        if depth >= MAX_AST_DEPTH {
+            return 1;
+        }
+        let mut count = 1;
+        self.for_each_child(|child| {
+            count += child.count_nodes_impl(depth + 1);
+        });
+        count
+    }
+
+    /// Collect direct child nodes into a vector for convenience APIs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_ast::{Node, NodeKind, SourceLocation};
+    ///
+    /// let loc = SourceLocation { start: 0, end: 1 };
+    /// let stmt = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
+    /// let program = Node::new(
+    ///     NodeKind::Program { statements: vec![stmt] },
+    ///     loc,
+    /// );
+    /// assert_eq!(program.children().len(), 1);
+    /// ```
+    #[inline]
+    pub fn children(&self) -> Vec<&Node> {
+        let mut children = Vec::new();
+        self.for_each_child(|child| children.push(child));
+        children
+    }
+
+    /// Count direct child nodes without allocating an intermediate vector.
+    ///
+    /// This is more efficient than `children().len()` when callers only need
+    /// cardinality.
+    #[inline]
+    pub fn child_count(&self) -> usize {
+        let mut count = 0;
+        self.for_each_child(|_| count += 1);
+        count
+    }
+
+    /// Get the first direct child node, if any.
+    ///
+    /// Optimized to avoid allocating the children vector.
+    #[inline]
+    pub fn first_child(&self) -> Option<&Node> {
+        let mut result = None;
+        self.for_each_child(|child| {
+            if result.is_none() {
+                result = Some(child);
+            }
+        });
+        result
+    }
+
+    /// Returns `true` when this node's source span contains `offset`.
+    ///
+    /// The start position is inclusive and the end position is exclusive.
+    #[inline]
+    pub fn contains_offset(&self, offset: usize) -> bool {
+        self.location.start <= offset && offset < self.location.end
+    }
+
+    /// Find the most specific node whose source span contains `offset`.
+    ///
+    /// Returns `None` when `offset` is outside this node. Otherwise, returns this
+    /// node or the deepest descendant whose span contains the offset. This is useful
+    /// for LSP features that need to map a cursor byte offset to the smallest AST
+    /// construct at that position.
+    ///
+    /// The same half-open span semantics as [`Node::contains_offset`] apply: start
+    /// positions are inclusive and end positions are exclusive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_ast::{Node, NodeKind, SourceLocation};
+    ///
+    /// let left = Node::new(
+    ///     NodeKind::Identifier { name: "left".to_string() },
+    ///     SourceLocation { start: 0, end: 4 },
+    /// );
+    /// let right = Node::new(
+    ///     NodeKind::Number { value: "1".to_string() },
+    ///     SourceLocation { start: 7, end: 8 },
+    /// );
+    /// let expr = Node::new(
+    ///     NodeKind::Binary {
+    ///         op: "+".to_string(),
+    ///         left: Box::new(left),
+    ///         right: Box::new(right),
+    ///     },
+    ///     SourceLocation { start: 0, end: 8 },
+    /// );
+    ///
+    /// assert_eq!(
+    ///     expr.find_deepest_containing_offset(7).map(|node| node.kind.kind_name()),
+    ///     Some("Number"),
+    /// );
+    /// assert_eq!(expr.find_deepest_containing_offset(8), None);
+    /// ```
+    #[inline]
+    pub fn find_deepest_containing_offset(&self, offset: usize) -> Option<&Node> {
+        self.find_deepest_containing_offset_impl(offset, 0)
+    }
+
+    /// Depth-bounded recursive helper for [`find_deepest_containing_offset`].
+    ///
+    /// When [`MAX_AST_DEPTH`] is reached, returns `Some(self)` rather than
+    /// recursing into children.  The caller already knows `self` contains
+    /// `offset` (the outer `contains_offset` check passed), so the result
+    /// is still a valid, containing node — just not necessarily the deepest one.
+    fn find_deepest_containing_offset_impl(&self, offset: usize, depth: usize) -> Option<&Node> {
+        if !self.contains_offset(offset) {
+            return None;
+        }
+        if depth >= MAX_AST_DEPTH {
+            return Some(self);
+        }
+        let mut result = self;
+        self.for_each_child(|child| {
+            if let Some(descendant) = child.find_deepest_containing_offset_impl(offset, depth + 1) {
+                result = descendant;
+            }
+        });
+        Some(result)
+    }
+
+    /// Returns the byte length of this node's source span.
+    ///
+    /// Uses saturating subtraction so malformed spans never underflow.
+    #[inline]
+    pub fn span_len(&self) -> usize {
+        self.location.end.saturating_sub(self.location.start)
+    }
+
+    /// Get the last direct child node, if any.
+    ///
+    /// Optimized to avoid allocating the children vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_ast::{Node, NodeKind, SourceLocation};
+    ///
+    /// let loc = SourceLocation { start: 0, end: 1 };
+    /// let first = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
+    /// let second = Node::new(NodeKind::Number { value: "2".to_string() }, loc);
+    /// let program = Node::new(
+    ///     NodeKind::Program { statements: vec![first, second] },
+    ///     loc,
+    /// );
+    ///
+    /// assert_eq!(program.last_child().map(|n| n.kind.kind_name()), Some("Number"));
+    /// assert_eq!(Node::new(NodeKind::Block { statements: vec![] }, loc).last_child(), None);
+    /// ```
+    #[inline]
+    pub fn last_child(&self) -> Option<&Node> {
+        let mut result = None;
+        self.for_each_child(|child| {
+            result = Some(child);
+        });
+        result
+    }
+}
+
+/// Comprehensive enumeration of all Perl language constructs supported by the parser.
+///
+/// This enum represents every possible AST node type that can be parsed from Perl code
+/// during the Parse → Index → Navigate → Complete → Analyze workflow. Each variant captures
+/// the semantic meaning and structural relationships needed for complete script analysis
+/// and transformation.
+///
+/// # LSP Workflow Integration
+///
+/// Node kinds are processed differently across workflow stages:
+/// - **Parse**: All variants are produced by the parser
+/// - **Index**: Symbol-bearing variants feed workspace indexing
+/// - **Navigate**: Call and reference variants support navigation features
+/// - **Complete**: Expression variants provide completion context
+/// - **Analyze**: Semantic variants drive diagnostics and refactoring
+///
+/// # Examples
+///
+/// Pattern-match on node kinds to extract semantic information:
+///
+/// ```
+/// use perl_ast::{Node, NodeKind, SourceLocation};
+///
+/// let loc = SourceLocation { start: 0, end: 5 };
+/// let node = Node::new(
+///     NodeKind::Variable { sigil: "$".to_string(), name: "foo".to_string() },
+///     loc,
+/// );
+///
+/// assert!(matches!(
+///     &node.kind,
+///     NodeKind::Variable { sigil, name } if sigil == "$" && name == "foo"
+/// ));
+/// ```
+///
+/// Use [`kind_name()`](NodeKind::kind_name) for debugging and diagnostics:
+///
+/// ```
+/// use perl_ast::NodeKind;
+///
+/// let kind = NodeKind::Number { value: "99".to_string() };
+/// assert_eq!(kind.kind_name(), "Number");
+///
+/// let kind = NodeKind::Variable { sigil: "@".to_string(), name: "list".to_string() };
+/// assert_eq!(kind.kind_name(), "Variable");
+/// ```
+///
+/// # Performance Considerations
+///
+/// The enum design optimizes for large codebases:
+/// - Box pointers minimize stack usage for recursive structures
+/// - Vector storage enables efficient bulk operations on child nodes
+/// - Clone operations optimized for concurrent analysis workflows
+/// - Pattern matching performance tuned for common Perl constructs
+#[derive(Debug, Clone, PartialEq, strum::VariantNames)]
+pub enum NodeKind {
+    /// Top-level program containing all statements in an Perl script
+    ///
+    /// This is the root node for any parsed Perl script content, containing all
+    /// top-level statements found during the Parse stage of LSP workflow.
+    Program {
+        /// All top-level statements in the Perl script
+        statements: Vec<Node>,
+    },
+
+    /// Statement wrapper for expressions that appear at statement level
+    ///
+    /// Used during Analyze stage to distinguish between expressions used as
+    /// statements versus expressions within other contexts during Perl parsing.
+    ExpressionStatement {
+        /// The expression being used as a statement
+        expression: Box<Node>,
+    },
+
+    /// Variable declaration with scope declarator in Perl script processing
+    ///
+    /// Represents declarations like `my $var`, `our $global`, `local $dynamic`, etc.
+    /// Critical for Analyze stage symbol table construction during Perl parsing.
+    VariableDeclaration {
+        /// Scope declarator: "my", "our", "local", "state"
+        declarator: String,
+        /// The variable being declared
+        variable: Box<Node>,
+        /// Variable attributes (e.g., ":shared", ":locked")
+        attributes: Vec<String>,
+        /// Optional initializer expression
+        initializer: Option<Box<Node>>,
+    },
+
+    /// Multiple variable declaration in a single statement
+    ///
+    /// Handles constructs like `my ($x, $y) = @values` common in Perl script processing.
+    /// Supports efficient bulk variable analysis during Navigate stage operations.
+    VariableListDeclaration {
+        /// Scope declarator for all variables in the list
+        declarator: String,
+        /// All variables being declared in the list
+        variables: Vec<Node>,
+        /// Attributes applied to the variable list
+        attributes: Vec<String>,
+        /// Optional initializer for the entire variable list
+        initializer: Option<Box<Node>>,
+    },
+
+    /// Nested variable list within a lexical list declaration.
+    ///
+    /// Represents a parenthesised group of variables inside a `my`/`our`/`state`
+    /// list declaration, such as the `($b, $c)` in `my ($a, ($b, $c)) = ...`.
+    /// A nested group with exactly one item is returned unwrapped (as the item
+    /// itself), so this variant only appears for two-or-more-item groups.
+    NestedVariableList {
+        /// The variables or nested lists inside the inner parentheses.
+        items: Vec<Node>,
+    },
+
+    /// Perl variable reference (scalar, array, hash, etc.) in Perl parsing workflow
+    Variable {
+        /// Variable sigil indicating type: $, @, %, &, *
+        sigil: String, // $, @, %, &, *
+        /// Variable name without sigil
+        name: String,
+    },
+
+    /// Variable with additional attributes for enhanced LSP workflow
+    VariableWithAttributes {
+        /// The base variable node
+        variable: Box<Node>,
+        /// List of attribute names applied to the variable
+        attributes: Vec<String>,
+    },
+
+    /// Assignment operation for LSP data processing workflows
+    Assignment {
+        /// Left-hand side of assignment
+        lhs: Box<Node>,
+        /// Right-hand side of assignment
+        rhs: Box<Node>,
+        /// Assignment operator: =, +=, -=, etc.
+        op: String, // =, +=, -=, etc.
+    },
+
+    // Expressions
+    /// Binary operation for Perl parsing workflow calculations
+    Binary {
+        /// Binary operator
+        op: String,
+        /// Left operand
+        left: Box<Node>,
+        /// Right operand
+        right: Box<Node>,
+    },
+
+    /// Array slice: `@arr[1, 3, 5]` — returns a list of array elements.
+    ///
+    /// Distinct from scalar element access (`$arr[idx]`, which stays `Binary { op: "[]" }`)
+    /// in that the `@` sigil signals list context and multiple indices.
+    ArraySlice {
+        /// Target array expression (typically `Variable { sigil: "@", .. }` or a dereference)
+        target: Box<Node>,
+        /// Index expression (single index or `ArrayLiteral` for multiple indices)
+        indices: Box<Node>,
+    },
+
+    /// Hash slice: `@hash{qw(a b c)}` — returns a list of hash values.
+    ///
+    /// The `@` sigil means the result is a list of values for the given keys.
+    /// The underlying storage is the `%hash` variable (not `@hash`).
+    HashSlice {
+        /// Target hash expression (typically `Variable { sigil: "@", .. }` or a dereference)
+        target: Box<Node>,
+        /// Key expression
+        keys: Box<Node>,
+    },
+
+    /// Key-value slice: `%hash{qw(a b)}` — returns an interleaved list of key-value pairs.
+    ///
+    /// The `%` sigil means the result preserves key-value pairing, suitable for
+    /// constructing hash subsets or passing to functions expecting key-value lists.
+    KeyValueSlice {
+        /// Target hash expression (typically `Variable { sigil: "%", .. }` or a dereference)
+        target: Box<Node>,
+        /// Key expression
+        keys: Box<Node>,
+    },
+
+    /// Chained comparison expression (Perl 5.32+): `1 < $x < 10`
+    ///
+    /// Represents two or more consecutive comparison operators at the same
+    /// precedence level. Semantically equivalent to `($a op1 $b) && ($b op2 $c)`
+    /// with each intermediate operand evaluated only once.
+    ///
+    /// A single comparison (`$x < 10`) always produces [`Binary`](Self::Binary) instead.
+    ChainedComparison {
+        /// The N+1 operands in declaration order, where N is the number of operators (N >= 2).
+        operands: Vec<Node>,
+        /// The N comparison operators between adjacent operand pairs.
+        ops: Vec<String>,
+    },
+
+    /// Ternary conditional expression for Perl parsing workflow logic
+    Ternary {
+        /// Condition to evaluate
+        condition: Box<Node>,
+        /// Expression when condition is true
+        then_expr: Box<Node>,
+        /// Expression when condition is false
+        else_expr: Box<Node>,
+    },
+
+    /// Unary operation for Perl parsing workflow
+    Unary {
+        /// Unary operator
+        op: String,
+        /// Operand to apply operator to
+        operand: Box<Node>,
+    },
+
+    // I/O operations
+    /// Diamond operator for file input in Perl parsing workflow
+    Diamond, // <>
+
+    /// Ellipsis operator for Perl parsing workflow
+    Ellipsis, // ...
+
+    /// Undef value for Perl parsing workflow
+    Undef, // undef
+
+    /// Readline operation for LSP file processing
+    Readline {
+        /// Optional filehandle: `<STDIN>`, `<$fh>`, etc.
+        filehandle: Option<String>, // <STDIN>, <$fh>, etc.
+    },
+
+    /// Glob pattern for LSP workspace file matching
+    Glob {
+        /// Pattern string for file matching
+        pattern: String, // <*.txt>
+    },
+
+    /// Typeglob expression: `*foo` or `*main::bar`
+    ///
+    /// Provides access to all symbol table entries for a given name.
+    Typeglob {
+        /// Name of the symbol (including package qualification)
+        name: String,
+    },
+
+    /// Numeric literal in Perl code (integer, float, hex, octal, binary)
+    ///
+    /// Represents all numeric literal forms: `42`, `3.14`, `0x1A`, `0o755`, `0b1010`.
+    Number {
+        /// String representation preserving original format
+        value: String,
+    },
+
+    /// String literal with optional interpolation
+    ///
+    /// Handles both single-quoted (`'literal'`) and double-quoted (`"$interpolated"`) strings.
+    String {
+        /// String content (after quote processing)
+        value: String,
+        /// Whether the string supports variable interpolation
+        interpolated: bool,
+    },
+
+    /// Version string literal (v-string) like `v1.2.3` or `v5.10.0`
+    ///
+    /// Semantically distinct from regular strings to support version checking
+    /// and special handling in contexts like `use v5.10` and `require v5.8.0`.
+    VString {
+        /// Version string content (e.g., "v1.2.3")
+        value: String,
+    },
+
+    /// Heredoc string literal for multi-line content
+    ///
+    /// Supports all heredoc forms: `<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<~EOF` (indented).
+    Heredoc {
+        /// Delimiter marking heredoc boundaries
+        delimiter: String,
+        /// Content between delimiters
+        content: String,
+        /// Whether content supports variable interpolation
+        interpolated: bool,
+        /// Whether leading whitespace is stripped (<<~ form)
+        indented: bool,
+        /// Whether this is a command execution heredoc (<<`EOF`)
+        command: bool,
+        /// Body span for breakpoint detection (populated by drain_pending_heredocs)
+        body_span: Option<SourceLocation>,
+    },
+
+    /// Array literal expression: `(1, 2, 3)` or `[1, 2, 3]`
+    ArrayLiteral {
+        /// Elements in the array
+        elements: Vec<Node>,
+    },
+
+    /// Hash literal expression: `(key => 'value')` or `{key => 'value'}`
+    HashLiteral {
+        /// Key-value pairs in the hash
+        pairs: Vec<(Node, Node)>,
+    },
+
+    /// Block of statements: `{ ... }`
+    ///
+    /// Used for control structures, subroutine bodies, and bare blocks.
+    Block {
+        /// Statements within the block
+        statements: Vec<Node>,
+    },
+
+    /// Eval block for exception handling: `eval { ... }`
+    Eval {
+        /// Block to evaluate with exception trapping
+        block: Box<Node>,
+    },
+
+    /// Do block for file inclusion or expression evaluation: `do { ... }` or `do "file"`
+    Do {
+        /// Block to execute or file expression
+        block: Box<Node>,
+    },
+
+    /// Defer block for deferred cleanup on scope exit (Perl 5.36+ experimental, stable in 5.40)
+    Defer {
+        /// Block to execute on scope exit
+        block: Box<Node>,
+    },
+
+    /// Try-catch-finally for modern exception handling (Syntax::Keyword::Try style)
+    Try {
+        /// Try block body
+        body: Box<Node>,
+        /// Catch blocks: (optional exception variable name with its source
+        /// location, handler block).  The source location is the precise byte
+        /// range of the catch variable as reported by the parser; when there
+        /// is no catch variable it is `None`.
+        catch_blocks: Vec<(Option<(String, SourceLocation)>, Box<Node>)>,
+        /// Optional finally block
+        finally_block: Option<Box<Node>>,
+    },
+
+    /// If-elsif-else conditional statement
+    If {
+        /// Condition expression
+        condition: Box<Node>,
+        /// Then branch block
+        then_branch: Box<Node>,
+        /// Elsif branches: (condition, block) pairs
+        elsif_branches: Vec<(Box<Node>, Box<Node>)>,
+        /// Optional else branch
+        else_branch: Option<Box<Node>>,
+        /// Original keyword: None for 'if', Some("unless") for 'unless' block form.
+        keyword: Option<String>,
+    },
+
+    /// Statement with a label for loop control: `LABEL: while (...)`
+    LabeledStatement {
+        /// Label name (e.g., "OUTER", "LINE")
+        label: String,
+        /// Labeled statement (typically a loop)
+        statement: Box<Node>,
+    },
+
+    /// While loop: `while (condition) { ... }`
+    While {
+        /// Loop condition
+        condition: Box<Node>,
+        /// Loop body
+        body: Box<Node>,
+        /// Optional continue block
+        continue_block: Option<Box<Node>>,
+        /// Original keyword: None for 'while', Some("until") for 'until' block form.
+        keyword: Option<String>,
+    },
+
+    /// Tie operation for binding variables to objects: `tie %hash, 'Package', @args`
+    Tie {
+        /// Variable being tied
+        variable: Box<Node>,
+        /// Class/package name to tie to
+        package: Box<Node>,
+        /// Arguments passed to TIE* method
+        args: Vec<Node>,
+    },
+
+    /// Untie operation for unbinding variables: `untie %hash`
+    Untie {
+        /// Variable being untied
+        variable: Box<Node>,
+    },
+
+    /// C-style for loop: `for (init; cond; update) { ... }`
+    For {
+        /// Initialization expression
+        init: Option<Box<Node>>,
+        /// Loop condition
+        condition: Option<Box<Node>>,
+        /// Update expression
+        update: Option<Box<Node>>,
+        /// Loop body
+        body: Box<Node>,
+        /// Optional continue block
+        continue_block: Option<Box<Node>>,
+    },
+
+    /// Foreach loop: `foreach my $item (@list) { ... }`
+    Foreach {
+        /// Iterator variable
+        variable: Box<Node>,
+        /// List to iterate
+        list: Box<Node>,
+        /// Loop body
+        body: Box<Node>,
+        /// Optional continue block
+        continue_block: Option<Box<Node>>,
+    },
+
+    /// Given statement for switch-like matching (Perl 5.10+)
+    Given {
+        /// Expression to match against
+        expr: Box<Node>,
+        /// Body containing when/default blocks
+        body: Box<Node>,
+    },
+
+    /// When clause in given/switch: `when ($pattern) { ... }`
+    When {
+        /// Pattern to match
+        condition: Box<Node>,
+        /// Handler block
+        body: Box<Node>,
+    },
+
+    /// Default clause in given/switch: `default { ... }`
+    Default {
+        /// Handler block for unmatched cases
+        body: Box<Node>,
+    },
+
+    /// Statement modifier syntax: `print "ok" if $condition`
+    StatementModifier {
+        /// Statement to conditionally execute
+        statement: Box<Node>,
+        /// Modifier keyword: if, unless, while, until, for, foreach
+        modifier: String,
+        /// Modifier condition
+        condition: Box<Node>,
+    },
+
+    // Functions
+    /// Subroutine declaration (function) including name, prototype, signature and body.
+    Subroutine {
+        /// Name of the subroutine
+        ///
+        /// # Precise Navigation Support
+        /// - Added name_span for exact LSP navigation
+        /// - Enables precise go-to-definition and hover behavior
+        /// - O(1) span lookup in workspace symbols
+        ///
+        /// ## Integration Points
+        /// - Semantic token providers
+        /// - Cross-reference generation
+        /// - Symbol renaming
+        name: Option<String>,
+
+        /// Source location span of the subroutine name
+        ///
+        /// ## Usage Notes
+        /// - Always corresponds to the name field
+        /// - Provides constant-time position information
+        /// - Essential for precise editor interactions
+        name_span: Option<SourceLocation>,
+
+        /// Optional scope declarator: "my", "our", or "state" for lexical/package-scoped subs
+        ///
+        /// # Lexical Subroutines
+        /// - Perl 5.18+ feature: `my sub helper { ... }`, `our sub global { ... }`, `state sub memo { ... }`
+        /// - Distinguishes lexical scope binding from package-scoped subroutines
+        /// - Essential for scope tracking, renaming, and dead code detection
+        ///
+        /// # Values
+        /// - `None` — package-scoped subroutine (no declarator)
+        /// - `Some("my")` — lexical subroutine with lexical binding
+        /// - `Some("our")` — package-scoped subroutine with explicit package declaration
+        /// - `Some("state")` — persistent lexical subroutine (persistent across invocations)
+        declarator: Option<String>,
+
+        /// Optional prototype node (e.g. `($;@)`).
+        prototype: Option<Box<Node>>,
+        /// Optional signature node (Perl 5.20+ feature).
+        signature: Option<Box<Node>>,
+        /// Attributes attached to the subroutine (`:lvalue`, etc.).
+        attributes: Vec<String>,
+        /// The body block of the subroutine.
+        body: Box<Node>,
+    },
+
+    /// Subroutine prototype specification: `sub foo ($;@) { ... }`
+    Prototype {
+        /// Prototype string defining argument behavior
+        content: String,
+    },
+
+    /// Subroutine signature (Perl 5.20+): `sub foo ($x, $y = 0) { ... }`
+    Signature {
+        /// List of signature parameters
+        parameters: Vec<Node>,
+    },
+
+    /// Mandatory signature parameter: `$x` in `sub foo ($x) { }`
+    MandatoryParameter {
+        /// Variable being bound
+        variable: Box<Node>,
+    },
+
+    /// Optional signature parameter with default: `$y = 0` in `sub foo ($y = 0) { }`
+    OptionalParameter {
+        /// Variable being bound
+        variable: Box<Node>,
+        /// Default value expression
+        default_value: Box<Node>,
+    },
+
+    /// Slurpy parameter collecting remaining args: `@rest` or `%opts` in signature
+    SlurpyParameter {
+        /// Array or hash variable to receive remaining arguments
+        variable: Box<Node>,
+    },
+
+    /// Named parameter in a signature: `:$alpha` or `:$beta = 1`
+    /// (Perl 5.44 named arguments, PPC0024). The caller supplies these by
+    /// name (`f(alpha => 1)`); the external key is derived from the lexical
+    /// variable name without its sigil.
+    NamedParameter {
+        /// Variable for named parameter binding (e.g. `$alpha`)
+        variable: Box<Node>,
+        /// External argument name, derived from the variable name without its
+        /// sigil (e.g. `alpha` for `:$alpha`). This is the key callers use.
+        external_name: String,
+        /// Default-assignment operator when a default is present: `=`, `//=`,
+        /// or `||=`. `None` when the parameter has no default.
+        default_operator: Option<String>,
+        /// Default value expression, when the parameter is defaulted.
+        default_value: Option<Box<Node>>,
+        /// True when the parameter has no default (the caller must supply it).
+        required: bool,
+    },
+
+    /// Method declaration (Perl 5.38+ with `use feature 'class'`)
+    Method {
+        /// Method name
+        name: String,
+        /// Source location span of the method name
+        name_span: Option<SourceLocation>,
+        /// Optional signature
+        signature: Option<Box<Node>>,
+        /// Method attributes (e.g., `:lvalue`)
+        attributes: Vec<String>,
+        /// Method body
+        body: Box<Node>,
+    },
+
+    /// Return statement: `return;` or `return $value;`
+    Return {
+        /// Optional return value
+        value: Option<Box<Node>>,
+    },
+
+    /// Loop control statement: `next`, `last`, or `redo`
+    LoopControl {
+        /// Control keyword: "next", "last", or "redo"
+        op: String,
+        /// Optional label: `next LABEL`
+        label: Option<String>,
+    },
+
+    /// Goto statement: `goto LABEL`, `goto &sub`, or `goto $expr`
+    Goto {
+        /// The target of the goto (label identifier, sub reference, or expression)
+        target: Box<Node>,
+        /// Which of the three goto forms this is.
+        ///
+        /// Always populated at parse time. Consumers should use this rather than
+        /// inspecting the target's node kind, to avoid coupling to target representation.
+        form: GotoTargetForm,
+    },
+
+    /// Method call: `$obj->method(@args)` or `$obj->method`
+    MethodCall {
+        /// Object or class expression
+        object: Box<Node>,
+        /// Method name being called
+        method: String,
+        /// Method arguments
+        args: Vec<Node>,
+    },
+
+    /// Function call: `foo(@args)` or `foo()`
+    FunctionCall {
+        /// Function name (may be qualified: `Package::func`)
+        name: String,
+        /// Function arguments
+        args: Vec<Node>,
+    },
+
+    /// Ampersand-sigil subroutine call: `&foo(@args)`, `&Package::sub()`
+    ///
+    /// Distinct from `FunctionCall`: the explicit `&` sigil bypasses prototypes
+    /// and changes argument-passing semantics in Perl (`&foo` with no parens
+    /// forwards the caller's `@_` verbatim).
+    AmperCall {
+        /// Target name (bareword or qualified: `Package::func`)
+        name: String,
+        /// Call arguments (empty when called without parens)
+        args: Vec<Node>,
+    },
+
+    /// Indirect object call (legacy syntax): `new Class @args`
+    IndirectCall {
+        /// Method name
+        method: String,
+        /// Object or class
+        object: Box<Node>,
+        /// Arguments
+        args: Vec<Node>,
+    },
+
+    /// Regex literal: `/pattern/modifiers` or `qr/pattern/modifiers`
+    Regex {
+        /// Regular expression pattern
+        pattern: String,
+        /// Replacement string (for s/// when parsed as regex)
+        replacement: Option<String>,
+        /// Regex modifiers (i, m, s, x, g, etc.)
+        modifiers: String,
+        /// Whether the regex contains embedded code `(?{...})`
+        has_embedded_code: bool,
+    },
+
+    /// Match operation: `$str =~ /pattern/modifiers` or `$str !~ /pattern/modifiers`
+    Match {
+        /// Expression to match against
+        expr: Box<Node>,
+        /// Pattern to match
+        pattern: String,
+        /// Match modifiers
+        modifiers: String,
+        /// Whether the regex contains embedded code `(?{...})`
+        has_embedded_code: bool,
+        /// Whether the binding operator was `!~` (negated match)
+        negated: bool,
+    },
+
+    /// Substitution operation: `$str =~ s/pattern/replacement/modifiers`
+    Substitution {
+        /// Expression to substitute in
+        expr: Box<Node>,
+        /// Pattern to find
+        pattern: String,
+        /// Replacement string
+        replacement: String,
+        /// Substitution modifiers (g, e, r, etc.)
+        modifiers: String,
+        /// Whether the substitution contains embedded code — either a `(?{...})` inline
+        /// code block in the pattern, or the `e`/`ee` modifier which evaluates the
+        /// replacement string as Perl code (equivalent to `eval`).
+        has_embedded_code: bool,
+        /// Whether the binding operator was `!~` (negated match)
+        negated: bool,
+    },
+
+    /// Transliteration operation: `$str =~ tr/search/replace/` or `y///`
+    Transliteration {
+        /// Expression to transliterate
+        expr: Box<Node>,
+        /// Characters to search for
+        search: String,
+        /// Replacement characters
+        replace: String,
+        /// Transliteration modifiers (c, d, s, r)
+        modifiers: String,
+        /// Whether the binding operator was `!~` (negated match)
+        negated: bool,
+    },
+
+    // Package system
+    /// Package declaration (e.g. `package Foo;`) and optional inline block form.
+    Package {
+        /// Name of the package
+        ///
+        /// # Precise Navigation Support
+        /// - Added name_span for exact LSP navigation
+        /// - Enables precise go-to-definition and hover behavior
+        /// - O(1) span lookup in workspace symbols
+        ///
+        /// ## Integration Points
+        /// - Workspace indexing
+        /// - Cross-module symbol resolution
+        /// - Code action providers
+        name: String,
+
+        /// Source location span of the package name
+        ///
+        /// ## Usage Notes
+        /// - Always corresponds to the name field
+        /// - Provides constant-time position information
+        /// - Essential for precise editor interactions
+        name_span: SourceLocation,
+
+        /// Optional inline block for `package Foo { ... }` declarations.
+        block: Option<Box<Node>>,
+    },
+
+    /// Use statement for module loading: `use Module qw(imports);`
+    Use {
+        /// Module name to load
+        module: String,
+        /// Import arguments (symbols to import)
+        args: Vec<String>,
+        /// Whether this module is a known source filter (security risk)
+        has_filter_risk: bool,
+    },
+
+    /// No statement for disabling features: `no strict;`
+    No {
+        /// Module/pragma name to disable
+        module: String,
+        /// Arguments for the no statement
+        args: Vec<String>,
+        /// Whether this module is a known source filter (security risk)
+        has_filter_risk: bool,
+    },
+
+    /// Phase block for compile/runtime hooks: `BEGIN`, `END`, `CHECK`, `INIT`, `UNITCHECK`
+    PhaseBlock {
+        /// Phase name: BEGIN, END, CHECK, INIT, UNITCHECK
+        phase: String,
+        /// Source location span of the phase block name for precise navigation
+        phase_span: Option<SourceLocation>,
+        /// Block to execute during the specified phase
+        block: Box<Node>,
+    },
+
+    /// Data section marker: `__DATA__` or `__END__`
+    DataSection {
+        /// Section marker (__DATA__ or __END__)
+        marker: String,
+        /// Content following the marker (if any)
+        body: Option<String>,
+    },
+
+    /// Class declaration (Perl 5.38+ with `use feature 'class'`)
+    Class {
+        /// Class name
+        name: String,
+        /// Source location span of the class name
+        name_span: Option<SourceLocation>,
+        /// Parent class names from `:isa(Parent)` attributes
+        parents: Vec<String>,
+        /// Class body containing methods and attributes
+        body: Box<Node>,
+    },
+
+    /// Format declaration for legacy report generation
+    Format {
+        /// Format name (defaults to filehandle name)
+        name: String,
+        /// Source location span of the format name
+        name_span: Option<SourceLocation>,
+        /// Format specification body
+        body: String,
+    },
+
+    /// Bare identifier (bareword or package-qualified name)
+    Identifier {
+        /// Identifier string
+        name: String,
+    },
+
+    /// Parse error placeholder with error message and recovery context
+    Error {
+        /// Error description
+        message: String,
+        /// Expected token types (if any)
+        expected: Vec<TokenKind>,
+        /// The token actually found (if any)
+        found: Option<Token>,
+        /// Partial AST node parsed before error (if any)
+        partial: Option<Box<Node>>,
+    },
+
+    /// Missing expression where one was expected.
+    ///
+    /// Emitted by `recover_missing_infix_rhs` when a binary operator has no
+    /// right-hand-side (e.g. `1 +` at end of input). This is the **only**
+    /// `Missing*` variant currently emitted by the production parser.
+    MissingExpression,
+
+    /// RESERVED — not currently emitted by the parser.
+    ///
+    /// Retained for API symmetry and future error-recovery work. If recovery
+    /// starts emitting this variant, add real parser fixture tests before
+    /// shipping. Do not pattern-match on this variant expecting it to appear
+    /// in normal parse output.
+    MissingStatement,
+
+    /// RESERVED — not currently emitted by the parser.
+    ///
+    /// Retained for API symmetry and future error-recovery work. If recovery
+    /// starts emitting this variant, add real parser fixture tests before
+    /// shipping. Do not pattern-match on this variant expecting it to appear
+    /// in normal parse output.
+    MissingIdentifier,
+
+    /// RESERVED — not currently emitted by the parser.
+    ///
+    /// Retained for API symmetry and future error-recovery work. If recovery
+    /// starts emitting this variant, add real parser fixture tests before
+    /// shipping. Do not pattern-match on this variant expecting it to appear
+    /// in normal parse output.
+    MissingBlock,
+
+    /// Lexer budget exceeded marker preserving partial parse results
+    ///
+    /// Used when recursion or token limits are hit to preserve already-parsed content.
+    UnknownRest,
+}
+
+impl NodeKind {
+    /// Get the name of this `NodeKind` as a static string.
+    ///
+    /// Useful for diagnostics, logging, and human-readable AST dumps.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_ast::NodeKind;
+    ///
+    /// let kind = NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() };
+    /// assert_eq!(kind.kind_name(), "Variable");
+    ///
+    /// let kind = NodeKind::Program { statements: vec![] };
+    /// assert_eq!(kind.kind_name(), "Program");
+    /// ```
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            NodeKind::Program { .. } => "Program",
+            NodeKind::ExpressionStatement { .. } => "ExpressionStatement",
+            NodeKind::VariableDeclaration { .. } => "VariableDeclaration",
+            NodeKind::VariableListDeclaration { .. } => "VariableListDeclaration",
+            NodeKind::NestedVariableList { .. } => "NestedVariableList",
+            NodeKind::Variable { .. } => "Variable",
+            NodeKind::VariableWithAttributes { .. } => "VariableWithAttributes",
+            NodeKind::Assignment { .. } => "Assignment",
+            NodeKind::Binary { .. } => "Binary",
+            NodeKind::ArraySlice { .. } => "ArraySlice",
+            NodeKind::HashSlice { .. } => "HashSlice",
+            NodeKind::KeyValueSlice { .. } => "KeyValueSlice",
+            NodeKind::ChainedComparison { .. } => "ChainedComparison",
+            NodeKind::Ternary { .. } => "Ternary",
+            NodeKind::Unary { .. } => "Unary",
+            NodeKind::Diamond => "Diamond",
+            NodeKind::Ellipsis => "Ellipsis",
+            NodeKind::Undef => "Undef",
+            NodeKind::Readline { .. } => "Readline",
+            NodeKind::Glob { .. } => "Glob",
+            NodeKind::Typeglob { .. } => "Typeglob",
+            NodeKind::Number { .. } => "Number",
+            NodeKind::String { .. } => "String",
+            NodeKind::VString { .. } => "VString",
+            NodeKind::Heredoc { .. } => "Heredoc",
+            NodeKind::ArrayLiteral { .. } => "ArrayLiteral",
+            NodeKind::HashLiteral { .. } => "HashLiteral",
+            NodeKind::Block { .. } => "Block",
+            NodeKind::Eval { .. } => "Eval",
+            NodeKind::Do { .. } => "Do",
+            NodeKind::Defer { .. } => "Defer",
+            NodeKind::Try { .. } => "Try",
+            NodeKind::If { .. } => "If",
+            NodeKind::LabeledStatement { .. } => "LabeledStatement",
+            NodeKind::While { .. } => "While",
+            NodeKind::Tie { .. } => "Tie",
+            NodeKind::Untie { .. } => "Untie",
+            NodeKind::For { .. } => "For",
+            NodeKind::Foreach { .. } => "Foreach",
+            NodeKind::Given { .. } => "Given",
+            NodeKind::When { .. } => "When",
+            NodeKind::Default { .. } => "Default",
+            NodeKind::StatementModifier { .. } => "StatementModifier",
+            NodeKind::Subroutine { .. } => "Subroutine",
+            NodeKind::Prototype { .. } => "Prototype",
+            NodeKind::Signature { .. } => "Signature",
+            NodeKind::MandatoryParameter { .. } => "MandatoryParameter",
+            NodeKind::OptionalParameter { .. } => "OptionalParameter",
+            NodeKind::SlurpyParameter { .. } => "SlurpyParameter",
+            NodeKind::NamedParameter { .. } => "NamedParameter",
+            NodeKind::Method { .. } => "Method",
+            NodeKind::Return { .. } => "Return",
+            NodeKind::LoopControl { .. } => "LoopControl",
+            NodeKind::Goto { .. } => "Goto",
+            NodeKind::MethodCall { .. } => "MethodCall",
+            NodeKind::FunctionCall { .. } => "FunctionCall",
+            NodeKind::AmperCall { .. } => "AmperCall",
+            NodeKind::IndirectCall { .. } => "IndirectCall",
+            NodeKind::Regex { .. } => "Regex",
+            NodeKind::Match { .. } => "Match",
+            NodeKind::Substitution { .. } => "Substitution",
+            NodeKind::Transliteration { .. } => "Transliteration",
+            NodeKind::Package { .. } => "Package",
+            NodeKind::Use { .. } => "Use",
+            NodeKind::No { .. } => "No",
+            NodeKind::PhaseBlock { .. } => "PhaseBlock",
+            NodeKind::DataSection { .. } => "DataSection",
+            NodeKind::Class { .. } => "Class",
+            NodeKind::Format { .. } => "Format",
+            NodeKind::Identifier { .. } => "Identifier",
+            NodeKind::Error { .. } => "Error",
+            NodeKind::MissingExpression => "MissingExpression",
+            NodeKind::MissingStatement => "MissingStatement",
+            NodeKind::MissingIdentifier => "MissingIdentifier",
+            NodeKind::MissingBlock => "MissingBlock",
+            NodeKind::UnknownRest => "UnknownRest",
+        }
+    }
+
+    /// Return the grammar kind when it is determined solely by the node variant.
+    ///
+    /// This is the allocation-free metadata path used by tree-sitter-style
+    /// facades.  `None` is reserved for variants whose grammar kind depends on
+    /// a runtime field such as an operator, keyword, or interpolation mode;
+    /// callers should use [`grammar_kind_name`](Self::grammar_kind_name) when
+    /// they need the complete name.
+    pub fn grammar_kind_name_static(&self) -> Option<&'static str> {
+        match self {
+            NodeKind::Program { .. } => Some("source_file"),
+            NodeKind::ExpressionStatement { .. } => Some("expression_statement"),
+            NodeKind::VariableDeclaration { .. }
+            | NodeKind::VariableListDeclaration { .. }
+            | NodeKind::Assignment { .. }
+            | NodeKind::Binary { .. }
+            | NodeKind::Unary { .. }
+            | NodeKind::String { .. }
+            | NodeKind::Heredoc { .. }
+            | NodeKind::If { .. }
+            | NodeKind::While { .. }
+            | NodeKind::StatementModifier { .. }
+            | NodeKind::Subroutine { .. }
+            | NodeKind::LoopControl { .. }
+            | NodeKind::FunctionCall { .. }
+            | NodeKind::AmperCall { .. }
+            | NodeKind::Match { .. }
+            | NodeKind::PhaseBlock { .. } => None,
+            NodeKind::ArraySlice { .. } => Some("array_slice"),
+            NodeKind::HashSlice { .. } => Some("hash_slice"),
+            NodeKind::KeyValueSlice { .. } => Some("key_value_slice"),
+            NodeKind::ChainedComparison { .. } => Some("chained_comparison"),
+            NodeKind::NestedVariableList { .. } => Some("nested_variable_list"),
+            NodeKind::Variable { .. } => Some("variable"),
+            NodeKind::VariableWithAttributes { .. } => Some("variable_with_attributes"),
+            NodeKind::Ternary { .. } => Some("ternary"),
+            NodeKind::Diamond => Some("diamond"),
+            NodeKind::Ellipsis => Some("ellipsis"),
+            NodeKind::Undef => Some("undef"),
+            NodeKind::Readline { .. } => Some("readline"),
+            NodeKind::Glob { .. } => Some("glob"),
+            NodeKind::Typeglob { .. } => Some("typeglob"),
+            NodeKind::Number { .. } => Some("number"),
+            NodeKind::VString { .. } => Some("vstring"),
+            NodeKind::ArrayLiteral { .. } => Some("array"),
+            NodeKind::HashLiteral { .. } => Some("hash"),
+            NodeKind::Block { .. } => Some("block"),
+            NodeKind::Eval { .. } => Some("eval"),
+            NodeKind::Do { .. } => Some("do"),
+            NodeKind::Defer { .. } => Some("defer"),
+            NodeKind::Try { .. } => Some("try"),
+            NodeKind::LabeledStatement { .. } => Some("labeled_statement"),
+            NodeKind::Tie { .. } => Some("tie"),
+            NodeKind::Untie { .. } => Some("untie"),
+            NodeKind::For { .. } => Some("for"),
+            NodeKind::Foreach { .. } => Some("foreach"),
+            NodeKind::Given { .. } => Some("given"),
+            NodeKind::When { .. } => Some("when"),
+            NodeKind::Default { .. } => Some("default"),
+            NodeKind::Prototype { .. } => Some("prototype"),
+            NodeKind::Signature { .. } => Some("signature"),
+            NodeKind::MandatoryParameter { .. } => Some("mandatory_parameter"),
+            NodeKind::OptionalParameter { .. } => Some("optional_parameter"),
+            NodeKind::SlurpyParameter { .. } => Some("slurpy_parameter"),
+            NodeKind::NamedParameter { .. } => Some("named_parameter"),
+            NodeKind::Method { .. } => Some("method_declaration_statement"),
+            NodeKind::Return { .. } => Some("return"),
+            NodeKind::Goto { .. } => Some("goto"),
+            NodeKind::MethodCall { .. } => Some("method_call"),
+            NodeKind::IndirectCall { .. } => Some("indirect_call"),
+            NodeKind::Regex { .. } => Some("regex"),
+            NodeKind::Substitution { .. } => Some("substitution"),
+            NodeKind::Transliteration { .. } => Some("transliteration"),
+            NodeKind::Package { .. } => Some("package"),
+            NodeKind::Use { .. } => Some("use"),
+            NodeKind::No { .. } => Some("no"),
+            NodeKind::DataSection { .. } => Some("data_section"),
+            NodeKind::Class { .. } => Some("class"),
+            NodeKind::Format { .. } => Some("format"),
+            NodeKind::Identifier { .. } => Some("identifier"),
+            NodeKind::Error { .. } => Some("ERROR"),
+            NodeKind::MissingExpression => Some("missing_expression"),
+            NodeKind::MissingStatement => Some("missing_statement"),
+            NodeKind::MissingIdentifier => Some("missing_identifier"),
+            NodeKind::MissingBlock => Some("missing_block"),
+            NodeKind::UnknownRest => Some("UNKNOWN_REST"),
+        }
+    }
+
+    /// Return the tree-sitter-style grammar kind without serializing the subtree.
+    ///
+    /// Most variants use [`grammar_kind_name_static`](Self::grammar_kind_name_static),
+    /// so lookup is O(1) and independent of subtree size. The returned `String`
+    /// may still allocate; the performance win is avoiding a full S-expression
+    /// traversal and allocation. Only runtime-derived names take the dynamic path.
+    pub fn grammar_kind_name(&self) -> String {
+        if let Some(name) = self.grammar_kind_name_static() {
+            return name.to_string();
+        }
+
+        match self {
+            NodeKind::VariableDeclaration { declarator, .. }
+            | NodeKind::VariableListDeclaration { declarator, .. } => {
+                format!("{declarator}_declaration")
+            }
+            NodeKind::Assignment { op, .. } => {
+                format!("assignment_{}", op.replace('=', "assign"))
+            }
+            NodeKind::Binary { op, .. } => format_binary_operator(op),
+            NodeKind::Unary { op, .. } => format_unary_operator(op),
+            NodeKind::String { interpolated, .. } => {
+                if *interpolated { "string_interpolated" } else { "string" }.to_string()
+            }
+            NodeKind::Heredoc { interpolated, indented, command, .. } => {
+                let name = if *command {
+                    "heredoc_command"
+                } else if *indented {
+                    if *interpolated { "heredoc_indented_interpolated" } else { "heredoc_indented" }
+                } else if *interpolated {
+                    "heredoc_interpolated"
+                } else {
+                    "heredoc"
+                };
+                name.to_string()
+            }
+            NodeKind::If { keyword, .. } => keyword.as_deref().unwrap_or("if").to_string(),
+            NodeKind::While { keyword, .. } => keyword.as_deref().unwrap_or("while").to_string(),
+            NodeKind::StatementModifier { modifier, .. } => {
+                format!("statement_modifier_{modifier}")
+            }
+            NodeKind::Subroutine { name, .. } => {
+                if name.is_some() { "sub" } else { "anonymous_subroutine_expression" }.to_string()
+            }
+            NodeKind::LoopControl { op, .. } => op.clone(),
+            NodeKind::FunctionCall { name, args } => if is_call_form_function(name) {
+                "call"
+            } else if args.is_empty() {
+                "function_call_expression"
+            } else {
+                "ambiguous_function_call_expression"
+            }
+            .to_string(),
+            NodeKind::AmperCall { args, .. } => {
+                if args.is_empty() { "amper_sub" } else { "amper_call_expression" }.to_string()
+            }
+            NodeKind::Match { negated, .. } => {
+                if *negated { "not_match" } else { "match" }.to_string()
+            }
+            NodeKind::PhaseBlock { phase, .. } => phase.clone(),
+            // Every variant with a runtime-derived grammar name is covered
+            // above; the exhaustive match is the drift guard for this table.
+            NodeKind::ArraySlice { .. }
+            | NodeKind::HashSlice { .. }
+            | NodeKind::KeyValueSlice { .. }
+            | NodeKind::ChainedComparison { .. }
+            | NodeKind::NestedVariableList { .. }
+            | NodeKind::Variable { .. }
+            | NodeKind::VariableWithAttributes { .. }
+            | NodeKind::Ternary { .. }
+            | NodeKind::Diamond
+            | NodeKind::Ellipsis
+            | NodeKind::Undef
+            | NodeKind::Readline { .. }
+            | NodeKind::Glob { .. }
+            | NodeKind::Typeglob { .. }
+            | NodeKind::Number { .. }
+            | NodeKind::VString { .. }
+            | NodeKind::ArrayLiteral { .. }
+            | NodeKind::HashLiteral { .. }
+            | NodeKind::Block { .. }
+            | NodeKind::Eval { .. }
+            | NodeKind::Do { .. }
+            | NodeKind::Defer { .. }
+            | NodeKind::Try { .. }
+            | NodeKind::LabeledStatement { .. }
+            | NodeKind::Tie { .. }
+            | NodeKind::Untie { .. }
+            | NodeKind::For { .. }
+            | NodeKind::Foreach { .. }
+            | NodeKind::Given { .. }
+            | NodeKind::When { .. }
+            | NodeKind::Default { .. }
+            | NodeKind::Prototype { .. }
+            | NodeKind::Signature { .. }
+            | NodeKind::MandatoryParameter { .. }
+            | NodeKind::OptionalParameter { .. }
+            | NodeKind::SlurpyParameter { .. }
+            | NodeKind::NamedParameter { .. }
+            | NodeKind::Method { .. }
+            | NodeKind::Return { .. }
+            | NodeKind::Goto { .. }
+            | NodeKind::MethodCall { .. }
+            | NodeKind::IndirectCall { .. }
+            | NodeKind::Regex { .. }
+            | NodeKind::Substitution { .. }
+            | NodeKind::Transliteration { .. }
+            | NodeKind::Package { .. }
+            | NodeKind::Use { .. }
+            | NodeKind::No { .. }
+            | NodeKind::DataSection { .. }
+            | NodeKind::Class { .. }
+            | NodeKind::Format { .. }
+            | NodeKind::Identifier { .. }
+            | NodeKind::Error { .. }
+            | NodeKind::MissingExpression
+            | NodeKind::MissingStatement
+            | NodeKind::MissingIdentifier
+            | NodeKind::MissingBlock
+            | NodeKind::UnknownRest
+            | NodeKind::Program { .. }
+            | NodeKind::ExpressionStatement { .. } => {
+                // The preceding static lookup handled these variants.
+                self.grammar_kind_name_static()
+                    .map_or_else(|| self.kind_name().to_string(), str::to_owned)
+            }
+        }
+    }
+
+    /// Canonical list of **all** `kind_name()` strings, in declaration order.
+    ///
+    /// Auto-derived from the `NodeKind` enum via `strum::VariantNames` — adding a new
+    /// variant automatically updates this list. No manual maintenance required.
+    ///
+    /// Every consumer that needs the full set of NodeKind names should reference
+    /// this constant instead of maintaining a hand-written copy.
+    pub const ALL_KIND_NAMES: &[&'static str] = NodeKind::VARIANTS;
+
+    /// Subset of `ALL_KIND_NAMES` that represent synthetic/recovery nodes.
+    ///
+    /// These kinds are only produced by `parse_with_recovery()` on malformed
+    /// input and should not be expected in clean parses.
+    pub const RECOVERY_KIND_NAMES: &[&'static str] = &[
+        "Error",
+        "MissingBlock",
+        "MissingExpression",
+        "MissingIdentifier",
+        "MissingStatement",
+        "UnknownRest",
+    ];
+}
+
+impl fmt::Display for NodeKind {
+    /// Formats as the canonical `kind_name()` string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.kind_name())
+    }
+}
+
+impl fmt::Display for Node {
+    /// Formats as the tree-sitter compatible S-expression.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_sexp())
+    }
+}
+
+/// Format unary operator for S-expression output
+fn format_unary_operator(op: &str) -> String {
+    match op {
+        // Arithmetic unary operators
+        "+" => "unary_+".to_string(),
+        "-" => "unary_-".to_string(),
+
+        // Logical unary operators
+        "!" => "unary_not".to_string(),
+        "not" => "unary_not".to_string(),
+
+        // Bitwise complement
+        "~" => "unary_complement".to_string(),
+
+        // Reference operator
+        "\\" => "unary_ref".to_string(),
+
+        // Postfix operators
+        "++" => "unary_++".to_string(),
+        "--" => "unary_--".to_string(),
+
+        // File test operators
+        "-f" => "unary_-f".to_string(),
+        "-d" => "unary_-d".to_string(),
+        "-e" => "unary_-e".to_string(),
+        "-r" => "unary_-r".to_string(),
+        "-w" => "unary_-w".to_string(),
+        "-x" => "unary_-x".to_string(),
+        "-o" => "unary_-o".to_string(),
+        "-R" => "unary_-R".to_string(),
+        "-W" => "unary_-W".to_string(),
+        "-X" => "unary_-X".to_string(),
+        "-O" => "unary_-O".to_string(),
+        "-s" => "unary_-s".to_string(),
+        "-p" => "unary_-p".to_string(),
+        "-S" => "unary_-S".to_string(),
+        "-b" => "unary_-b".to_string(),
+        "-c" => "unary_-c".to_string(),
+        "-t" => "unary_-t".to_string(),
+        "-u" => "unary_-u".to_string(),
+        "-g" => "unary_-g".to_string(),
+        "-k" => "unary_-k".to_string(),
+        "-T" => "unary_-T".to_string(),
+        "-B" => "unary_-B".to_string(),
+        "-M" => "unary_-M".to_string(),
+        "-A" => "unary_-A".to_string(),
+        "-C" => "unary_-C".to_string(),
+        "-l" => "unary_-l".to_string(),
+        "-z" => "unary_-z".to_string(),
+
+        // Postfix dereferencing
+        "->@*" => "unary_->@*".to_string(),
+        "->%*" => "unary_->%*".to_string(),
+        "->$*" => "unary_->$*".to_string(),
+        "->&*" => "unary_->&*".to_string(),
+        "->**" => "unary_->**".to_string(),
+
+        // Defined operator
+        "defined" => "unary_defined".to_string(),
+
+        // Default case for unknown operators
+        _ => format!("unary_{}", op.replace(' ', "_")),
+    }
+}
+
+/// Whether a function call uses the explicit `(call name (args...))` form.
+///
+/// This predicate is shared by S-expression rendering and grammar-kind
+/// metadata so those two public representations cannot drift apart.
+fn is_call_form_function(name: &str) -> bool {
+    matches!(
+        name,
+        "bless"
+            | "shift"
+            | "unshift"
+            | "open"
+            | "die"
+            | "warn"
+            | "print"
+            | "printf"
+            | "say"
+            | "push"
+            | "pop"
+            | "map"
+            | "sort"
+            | "grep"
+            | "keys"
+            | "values"
+            | "each"
+            | "defined"
+            | "scalar"
+            | "ref"
+    )
+}
+
+/// Format binary operator for S-expression output
+fn format_binary_operator(op: &str) -> String {
+    match op {
+        // Arithmetic operators
+        "+" => "binary_+".to_string(),
+        "-" => "binary_-".to_string(),
+        "*" => "binary_*".to_string(),
+        "/" => "binary_/".to_string(),
+        "%" => "binary_%".to_string(),
+        "**" => "binary_**".to_string(),
+
+        // Comparison operators
+        "==" => "binary_==".to_string(),
+        "!=" => "binary_!=".to_string(),
+        "<" => "binary_<".to_string(),
+        ">" => "binary_>".to_string(),
+        "<=" => "binary_<=".to_string(),
+        ">=" => "binary_>=".to_string(),
+        "<=>" => "binary_<=>".to_string(),
+
+        // String comparison
+        "eq" => "binary_eq".to_string(),
+        "ne" => "binary_ne".to_string(),
+        "lt" => "binary_lt".to_string(),
+        "le" => "binary_le".to_string(),
+        "gt" => "binary_gt".to_string(),
+        "ge" => "binary_ge".to_string(),
+        "cmp" => "binary_cmp".to_string(),
+
+        // Logical operators
+        "&&" => "binary_&&".to_string(),
+        "||" => "binary_||".to_string(),
+        "and" => "binary_and".to_string(),
+        "or" => "binary_or".to_string(),
+        "xor" => "binary_xor".to_string(),
+
+        // Bitwise operators
+        "&" => "binary_&".to_string(),
+        "|" => "binary_|".to_string(),
+        "^" => "binary_^".to_string(),
+        "<<" => "binary_<<".to_string(),
+        ">>" => "binary_>>".to_string(),
+
+        // Pattern matching
+        "=~" => "binary_=~".to_string(),
+        "!~" => "binary_!~".to_string(),
+
+        // Smart match
+        "~~" => "binary_~~".to_string(),
+
+        // String repetition
+        "x" => "binary_x".to_string(),
+
+        // Concatenation
+        "." => "binary_.".to_string(),
+
+        // Range operators
+        ".." => "binary_..".to_string(),
+        "..." => "binary_...".to_string(),
+
+        // Type checking
+        "isa" => "binary_isa".to_string(),
+
+        // Assignment operators
+        "=" => "binary_=".to_string(),
+        "+=" => "binary_+=".to_string(),
+        "-=" => "binary_-=".to_string(),
+        "*=" => "binary_*=".to_string(),
+        "/=" => "binary_/=".to_string(),
+        "%=" => "binary_%=".to_string(),
+        "**=" => "binary_**=".to_string(),
+        ".=" => "binary_.=".to_string(),
+        "&=" => "binary_&=".to_string(),
+        "|=" => "binary_|=".to_string(),
+        "^=" => "binary_^=".to_string(),
+        "<<=" => "binary_<<=".to_string(),
+        ">>=" => "binary_>>=".to_string(),
+        "&&=" => "binary_&&=".to_string(),
+        "||=" => "binary_||=".to_string(),
+        "//=" => "binary_//=".to_string(),
+
+        // Defined-or operator
+        "//" => "binary_//".to_string(),
+
+        // Method calls and dereferencing
+        "->" => "binary_->".to_string(),
+
+        // Hash/array access
+        "{}" => "binary_{}".to_string(),
+        "[]" => "binary_[]".to_string(),
+
+        // Arrow hash/array dereference
+        "->{}" => "arrow_hash_deref".to_string(),
+        "->[]" => "arrow_array_deref".to_string(),
+
+        // Default case for unknown operators
+        _ => format!("binary_{}", op.replace(' ', "_")),
+    }
+}
+
+/// Escape a string for safe embedding in an S-expression (#2130).
+///
+/// Wraps the string in double quotes and escapes special characters
+/// (parentheses, whitespace, double quotes, backslashes, and control
+/// characters) so that variable names or other identifiers containing these
+/// characters don't produce malformed S-expression output.
+fn sexp_escape(s: &str) -> String {
+    if s.chars().any(|c| c == '(' || c == ')' || c == '"' || c == '\\' || c.is_whitespace()) {
+        let escaped = s.chars().flat_map(char::escape_default).collect::<String>();
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
+    }
+}
+
+// SourceLocation is now provided by perl-position-tracking crate
+// See the re-export at the top of this file
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Build a dummy instance for every `NodeKind` variant.
+    ///
+    /// Keeping this constructor exhaustive makes metadata tests fail at compile
+    /// time when a new variant is added without being classified deliberately.
+    fn all_node_kinds() -> Vec<NodeKind> {
+        let loc = SourceLocation { start: 0, end: 0 };
+        let dummy_node = || Node::new(NodeKind::Undef, loc);
+
+        let variants: Vec<NodeKind> = vec![
+            NodeKind::Program { statements: vec![] },
+            NodeKind::ExpressionStatement { expression: Box::new(dummy_node()) },
+            NodeKind::VariableDeclaration {
+                declarator: String::new(),
+                variable: Box::new(dummy_node()),
+                attributes: vec![],
+                initializer: None,
+            },
+            NodeKind::VariableListDeclaration {
+                declarator: String::new(),
+                variables: vec![],
+                attributes: vec![],
+                initializer: None,
+            },
+            NodeKind::NestedVariableList { items: vec![] },
+            NodeKind::Variable { sigil: String::new(), name: String::new() },
+            NodeKind::VariableWithAttributes {
+                variable: Box::new(dummy_node()),
+                attributes: vec![],
+            },
+            NodeKind::Assignment {
+                lhs: Box::new(dummy_node()),
+                rhs: Box::new(dummy_node()),
+                op: String::new(),
+            },
+            NodeKind::Binary {
+                op: String::new(),
+                left: Box::new(dummy_node()),
+                right: Box::new(dummy_node()),
+            },
+            NodeKind::ArraySlice {
+                target: Box::new(dummy_node()),
+                indices: Box::new(dummy_node()),
+            },
+            NodeKind::HashSlice { target: Box::new(dummy_node()), keys: Box::new(dummy_node()) },
+            NodeKind::KeyValueSlice {
+                target: Box::new(dummy_node()),
+                keys: Box::new(dummy_node()),
+            },
+            NodeKind::ChainedComparison { operands: vec![], ops: vec![] },
+            NodeKind::Ternary {
+                condition: Box::new(dummy_node()),
+                then_expr: Box::new(dummy_node()),
+                else_expr: Box::new(dummy_node()),
+            },
+            NodeKind::Unary { op: String::new(), operand: Box::new(dummy_node()) },
+            NodeKind::Diamond,
+            NodeKind::Ellipsis,
+            NodeKind::Undef,
+            NodeKind::Readline { filehandle: None },
+            NodeKind::Glob { pattern: String::new() },
+            NodeKind::Typeglob { name: String::new() },
+            NodeKind::Number { value: String::new() },
+            NodeKind::String { value: String::new(), interpolated: false },
+            NodeKind::VString { value: String::new() },
+            NodeKind::Heredoc {
+                delimiter: String::new(),
+                content: String::new(),
+                interpolated: false,
+                indented: false,
+                command: false,
+                body_span: None,
+            },
+            NodeKind::ArrayLiteral { elements: vec![] },
+            NodeKind::HashLiteral { pairs: vec![] },
+            NodeKind::Block { statements: vec![] },
+            NodeKind::Eval { block: Box::new(dummy_node()) },
+            NodeKind::Do { block: Box::new(dummy_node()) },
+            NodeKind::Defer { block: Box::new(dummy_node()) },
+            NodeKind::Try {
+                body: Box::new(dummy_node()),
+                catch_blocks: vec![],
+                finally_block: None,
+            },
+            NodeKind::If {
+                condition: Box::new(dummy_node()),
+                then_branch: Box::new(dummy_node()),
+                elsif_branches: vec![],
+                else_branch: None,
+                keyword: None,
+            },
+            NodeKind::LabeledStatement { label: String::new(), statement: Box::new(dummy_node()) },
+            NodeKind::While {
+                condition: Box::new(dummy_node()),
+                body: Box::new(dummy_node()),
+                continue_block: None,
+                keyword: None,
+            },
+            NodeKind::Tie {
+                variable: Box::new(dummy_node()),
+                package: Box::new(dummy_node()),
+                args: vec![],
+            },
+            NodeKind::Untie { variable: Box::new(dummy_node()) },
+            NodeKind::For {
+                init: None,
+                condition: None,
+                update: None,
+                body: Box::new(dummy_node()),
+                continue_block: None,
+            },
+            NodeKind::Foreach {
+                variable: Box::new(dummy_node()),
+                list: Box::new(dummy_node()),
+                body: Box::new(dummy_node()),
+                continue_block: None,
+            },
+            NodeKind::Given { expr: Box::new(dummy_node()), body: Box::new(dummy_node()) },
+            NodeKind::When { condition: Box::new(dummy_node()), body: Box::new(dummy_node()) },
+            NodeKind::Default { body: Box::new(dummy_node()) },
+            NodeKind::StatementModifier {
+                statement: Box::new(dummy_node()),
+                modifier: String::new(),
+                condition: Box::new(dummy_node()),
+            },
+            NodeKind::Subroutine {
+                name: None,
+                name_span: None,
+                declarator: None,
+                prototype: None,
+                signature: None,
+                attributes: vec![],
+                body: Box::new(dummy_node()),
+            },
+            NodeKind::Prototype { content: String::new() },
+            NodeKind::Signature { parameters: vec![] },
+            NodeKind::MandatoryParameter { variable: Box::new(dummy_node()) },
+            NodeKind::OptionalParameter {
+                variable: Box::new(dummy_node()),
+                default_value: Box::new(dummy_node()),
+            },
+            NodeKind::SlurpyParameter { variable: Box::new(dummy_node()) },
+            NodeKind::NamedParameter {
+                variable: Box::new(dummy_node()),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            },
+            NodeKind::Method {
+                name: String::new(),
+                name_span: None,
+                signature: None,
+                attributes: vec![],
+                body: Box::new(dummy_node()),
+            },
+            NodeKind::Return { value: None },
+            NodeKind::LoopControl { op: String::new(), label: None },
+            NodeKind::Goto { target: Box::new(dummy_node()), form: GotoTargetForm::Label },
+            NodeKind::MethodCall {
+                object: Box::new(dummy_node()),
+                method: String::new(),
+                args: vec![],
+            },
+            NodeKind::FunctionCall { name: String::new(), args: vec![] },
+            NodeKind::AmperCall { name: String::new(), args: vec![] },
+            NodeKind::IndirectCall {
+                method: String::new(),
+                object: Box::new(dummy_node()),
+                args: vec![],
+            },
+            NodeKind::Regex {
+                pattern: String::new(),
+                replacement: None,
+                modifiers: String::new(),
+                has_embedded_code: false,
+            },
+            NodeKind::Match {
+                expr: Box::new(dummy_node()),
+                pattern: String::new(),
+                modifiers: String::new(),
+                has_embedded_code: false,
+                negated: false,
+            },
+            NodeKind::Substitution {
+                expr: Box::new(dummy_node()),
+                pattern: String::new(),
+                replacement: String::new(),
+                modifiers: String::new(),
+                has_embedded_code: false,
+                negated: false,
+            },
+            NodeKind::Transliteration {
+                expr: Box::new(dummy_node()),
+                search: String::new(),
+                replace: String::new(),
+                modifiers: String::new(),
+                negated: false,
+            },
+            NodeKind::Package { name: String::new(), name_span: loc, block: None },
+            NodeKind::Use { module: String::new(), args: vec![], has_filter_risk: false },
+            NodeKind::No { module: String::new(), args: vec![], has_filter_risk: false },
+            NodeKind::PhaseBlock {
+                phase: String::new(),
+                phase_span: None,
+                block: Box::new(dummy_node()),
+            },
+            NodeKind::DataSection { marker: String::new(), body: None },
+            NodeKind::Class {
+                name: String::new(),
+                name_span: None,
+                parents: vec![],
+                body: Box::new(dummy_node()),
+            },
+            NodeKind::Format { name: String::new(), name_span: None, body: String::new() },
+            NodeKind::Identifier { name: String::new() },
+            NodeKind::Error {
+                message: String::new(),
+                expected: vec![],
+                found: None,
+                partial: None,
+            },
+            NodeKind::MissingExpression,
+            NodeKind::MissingStatement,
+            NodeKind::MissingIdentifier,
+            NodeKind::MissingBlock,
+            NodeKind::UnknownRest,
+        ];
+
+        variants
+    }
+
+    /// Return the set of `kind_name()` values represented by every variant.
+    fn all_kind_names_from_variants() -> BTreeSet<&'static str> {
+        all_node_kinds().iter().map(|v| v.kind_name()).collect()
+    }
+
+    #[test]
+    fn for_each_child_mut_nested_variable_list() {
+        // Covers lines 876-879: NestedVariableList arm in for_each_child_mut.
+        let loc = SourceLocation { start: 0, end: 10 };
+        let item_a =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "a".to_string() }, loc);
+        let item_b =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "b".to_string() }, loc);
+        let mut node = Node::new(NodeKind::NestedVariableList { items: vec![item_a, item_b] }, loc);
+        let mut count = 0;
+        node.for_each_child_mut(|_child| count += 1);
+        assert_eq!(count, 2, "for_each_child_mut should visit both items in NestedVariableList");
+    }
+
+    #[test]
+    fn for_each_child_nested_variable_list() {
+        // Covers lines 1131-1134: NestedVariableList arm in for_each_child.
+        let loc = SourceLocation { start: 0, end: 10 };
+        let item_a =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc);
+        let item_b =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "y".to_string() }, loc);
+        let node = Node::new(NodeKind::NestedVariableList { items: vec![item_a, item_b] }, loc);
+        let mut names = Vec::new();
+        node.for_each_child(|child| {
+            if let NodeKind::Variable { name, .. } = &child.kind {
+                names.push(name.clone());
+            }
+        });
+        assert_eq!(
+            names,
+            vec!["x", "y"],
+            "for_each_child should visit all items in NestedVariableList"
+        );
+    }
+
+    #[test]
+    fn field_ids_round_trip_through_canonical_names() {
+        for field in FieldId::ALL {
+            assert_eq!(FieldId::from_name(field.name()), Some(*field));
+        }
+    }
+
+    #[test]
+    fn field_aware_traversal_preserves_structural_order() {
+        let loc = SourceLocation { start: 0, end: 1 };
+        let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
+        let node = Node::new(
+            NodeKind::If {
+                condition: Box::new(leaf()),
+                then_branch: Box::new(leaf()),
+                elsif_branches: vec![(Box::new(leaf()), Box::new(leaf()))],
+                else_branch: Some(Box::new(leaf())),
+                keyword: None,
+            },
+            loc,
+        );
+
+        let fields: Vec<_> = {
+            let mut fields = Vec::new();
+            node.for_each_child_with_field(|field, child| {
+                fields.push((field.map(FieldId::name), child.kind.kind_name()));
+            });
+            fields
+        };
+
+        assert_eq!(
+            fields,
+            vec![
+                (Some("condition"), "Number"),
+                (Some("then_branch"), "Number"),
+                (Some("condition"), "Number"),
+                (Some("body"), "Number"),
+                (Some("else_branch"), "Number"),
+            ]
+        );
+        assert_eq!(node.children().len(), fields.len());
+    }
+
+    #[test]
+    fn field_aware_traversal_labels_repeated_container_children() {
+        let loc = SourceLocation { start: 0, end: 1 };
+        let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
+        let node = Node::new(
+            NodeKind::HashLiteral { pairs: vec![(leaf(), leaf()), (leaf(), leaf())] },
+            loc,
+        );
+        let mut names = Vec::new();
+        node.for_each_child_with_field(|field, _| names.push(field.map(FieldId::name)));
+        assert_eq!(names, vec![Some("key"), Some("value"), Some("key"), Some("value")]);
+    }
+
+    #[test]
+    fn field_aware_metadata_covers_declarations_calls_signatures_and_recovery() {
+        let loc = SourceLocation { start: 0, end: 1 };
+        let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
+        let names = |node: &Node| {
+            let mut names = Vec::new();
+            node.for_each_child_with_field(|field, _| names.push(field.map(FieldId::name)));
+            names
+        };
+
+        let declaration = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".into(),
+                variable: Box::new(leaf()),
+                attributes: vec!["lvalue".into()],
+                initializer: Some(Box::new(leaf())),
+            },
+            loc,
+        );
+        assert_eq!(names(&declaration), vec![Some("variable"), Some("initializer")]);
+
+        let binary = Node::new(
+            NodeKind::Binary { op: "+".into(), left: Box::new(leaf()), right: Box::new(leaf()) },
+            loc,
+        );
+        assert_eq!(names(&binary), vec![Some("left"), Some("right")]);
+
+        let call = Node::new(
+            NodeKind::MethodCall {
+                object: Box::new(leaf()),
+                method: "run".into(),
+                args: vec![leaf(), leaf()],
+            },
+            loc,
+        );
+        assert_eq!(names(&call), vec![Some("object"), Some("args"), Some("args")]);
+
+        let subroutine = Node::new(
+            NodeKind::Subroutine {
+                name: Some("run".into()),
+                name_span: None,
+                declarator: None,
+                prototype: Some(Box::new(leaf())),
+                signature: Some(Box::new(leaf())),
+                attributes: vec![],
+                body: Box::new(leaf()),
+            },
+            loc,
+        );
+        assert_eq!(names(&subroutine), vec![Some("prototype"), Some("signature"), Some("body")]);
+
+        let recovery = Node::new(
+            NodeKind::Error {
+                message: "bad".into(),
+                expected: vec![],
+                found: None,
+                partial: Some(Box::new(leaf())),
+            },
+            loc,
+        );
+        assert_eq!(names(&recovery), vec![Some("partial")]);
+
+        let heredoc = Node::new(
+            NodeKind::Heredoc {
+                delimiter: "END".into(),
+                content: "body".into(),
+                interpolated: true,
+                indented: false,
+                command: false,
+                body_span: None,
+            },
+            loc,
+        );
+        assert!(names(&heredoc).is_empty());
+    }
+
+    #[test]
+    fn all_kind_names_is_consistent_with_kind_name() {
+        let from_enum = all_kind_names_from_variants();
+        let from_const: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+
+        // Check for duplicates in the const array
+        assert_eq!(
+            NodeKind::ALL_KIND_NAMES.len(),
+            from_const.len(),
+            "ALL_KIND_NAMES contains duplicates"
+        );
+
+        let only_in_enum: Vec<_> = from_enum.difference(&from_const).collect();
+        let only_in_const: Vec<_> = from_const.difference(&from_enum).collect();
+
+        assert!(
+            only_in_enum.is_empty() && only_in_const.is_empty(),
+            "ALL_KIND_NAMES is out of sync with NodeKind variants:\n  \
+             in enum but not in ALL_KIND_NAMES: {only_in_enum:?}\n  \
+             in ALL_KIND_NAMES but not in enum: {only_in_const:?}"
+        );
+    }
+
+    #[test]
+    fn static_grammar_kind_metadata_matches_sexp_roots() {
+        let loc = SourceLocation { start: 0, end: 0 };
+
+        for kind in all_node_kinds() {
+            if kind.grammar_kind_name_static().is_none() {
+                continue;
+            }
+
+            let grammar_kind = kind.grammar_kind_name();
+            let sexp = Node::new(kind, loc).to_sexp();
+            if sexp.starts_with("((") {
+                // VariableWithAttributes preserves its child as the outer
+                // S-expression form, but still has a stable facade kind.
+                assert_eq!(grammar_kind, "variable_with_attributes");
+                continue;
+            }
+
+            let root = sexp.trim_start_matches('(');
+            let end = root.find([' ', ')']).unwrap_or(root.len());
+            assert_eq!(grammar_kind, root[..end]);
+        }
+    }
+
+    #[test]
+    fn dynamic_grammar_kind_metadata_matches_sexp_roots() {
+        let loc = SourceLocation { start: 0, end: 0 };
+        let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
+        let cases = [
+            NodeKind::VariableDeclaration {
+                declarator: "my".into(),
+                variable: Box::new(leaf()),
+                attributes: vec![],
+                initializer: None,
+            },
+            NodeKind::Assignment { lhs: Box::new(leaf()), rhs: Box::new(leaf()), op: "+=".into() },
+            NodeKind::Binary { op: "->{}".into(), left: Box::new(leaf()), right: Box::new(leaf()) },
+            NodeKind::Unary { op: "!".into(), operand: Box::new(leaf()) },
+            NodeKind::String { value: "x".into(), interpolated: true },
+            NodeKind::Heredoc {
+                delimiter: "END".into(),
+                content: String::new(),
+                interpolated: true,
+                indented: false,
+                command: false,
+                body_span: None,
+            },
+            NodeKind::If {
+                condition: Box::new(leaf()),
+                then_branch: Box::new(leaf()),
+                elsif_branches: vec![],
+                else_branch: None,
+                keyword: Some("unless".into()),
+            },
+            NodeKind::StatementModifier {
+                statement: Box::new(leaf()),
+                modifier: "unless".into(),
+                condition: Box::new(leaf()),
+            },
+            NodeKind::Subroutine {
+                name: None,
+                name_span: None,
+                declarator: None,
+                prototype: None,
+                signature: None,
+                attributes: vec![],
+                body: Box::new(leaf()),
+            },
+            NodeKind::LoopControl { op: "next".into(), label: None },
+            NodeKind::FunctionCall { name: "print".into(), args: vec![] },
+            NodeKind::FunctionCall { name: "custom".into(), args: vec![leaf()] },
+            NodeKind::Match {
+                expr: Box::new(leaf()),
+                pattern: "x".into(),
+                modifiers: String::new(),
+                has_embedded_code: false,
+                negated: true,
+            },
+            NodeKind::PhaseBlock {
+                phase: "BEGIN".into(),
+                phase_span: None,
+                block: Box::new(leaf()),
+            },
+        ];
+
+        for kind in cases {
+            let grammar_kind = kind.grammar_kind_name();
+            let sexp = Node::new(kind, loc).to_sexp();
+            let root = sexp.trim_start_matches('(');
+            let end = root.find([' ', ')']).unwrap_or(root.len());
+            assert_eq!(grammar_kind, root[..end]);
+        }
+    }
+
+    /// Construct recovery variants and return their `kind_name()` strings.
+    ///
+    /// Adding a recovery variant to `NodeKind` without updating `RECOVERY_KIND_NAMES`
+    /// will cause `recovery_kind_names_is_consistent_with_kind_name` to fail.
+    fn recovery_kind_names_from_variants() -> BTreeSet<&'static str> {
+        [
+            NodeKind::Error {
+                message: String::new(),
+                expected: vec![],
+                found: None,
+                partial: None,
+            },
+            NodeKind::MissingExpression,
+            NodeKind::MissingStatement,
+            NodeKind::MissingIdentifier,
+            NodeKind::MissingBlock,
+            NodeKind::UnknownRest,
+        ]
+        .iter()
+        .map(|v| v.kind_name())
+        .collect()
+    }
+
+    #[test]
+    fn recovery_kind_names_is_consistent_with_kind_name() {
+        let from_enum = recovery_kind_names_from_variants();
+        let from_const: BTreeSet<&str> = NodeKind::RECOVERY_KIND_NAMES.iter().copied().collect();
+        let only_in_enum: Vec<_> = from_enum.difference(&from_const).collect();
+        let only_in_const: Vec<_> = from_const.difference(&from_enum).collect();
+        assert!(
+            only_in_enum.is_empty() && only_in_const.is_empty(),
+            "RECOVERY_KIND_NAMES is out of sync with recovery variants:\n  \
+             in enum but not in RECOVERY_KIND_NAMES: {only_in_enum:?}\n  \
+             in RECOVERY_KIND_NAMES but not in enum: {only_in_const:?}"
+        );
+    }
+
+    #[test]
+    fn recovery_kind_names_is_subset_of_all() {
+        let all: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+        let recovery: BTreeSet<&str> = NodeKind::RECOVERY_KIND_NAMES.iter().copied().collect();
+
+        // No duplicates
+        assert_eq!(
+            NodeKind::RECOVERY_KIND_NAMES.len(),
+            recovery.len(),
+            "RECOVERY_KIND_NAMES contains duplicates"
+        );
+
+        let not_in_all: Vec<_> = recovery.difference(&all).collect();
+        assert!(
+            not_in_all.is_empty(),
+            "RECOVERY_KIND_NAMES contains entries not in ALL_KIND_NAMES: {not_in_all:?}"
+        );
+    }
+
+    #[test]
+    fn all_kind_names_not_empty() {
+        // Regression guard: ALL_KIND_NAMES should always be populated
+        assert!(
+            !NodeKind::ALL_KIND_NAMES.is_empty(),
+            "ALL_KIND_NAMES should not be empty; strum derivation failed"
+        );
+    }
+
+    #[test]
+    fn all_kind_names_no_empty_strings() {
+        // Boundary condition: no entry should be an empty string
+        for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
+            assert!(!name.is_empty(), "ALL_KIND_NAMES[{}] is empty string", i);
+        }
+    }
+
+    #[test]
+    fn all_kind_names_starts_with_program() {
+        // Regression guard: first variant is Program (declaration order invariant)
+        assert_eq!(
+            NodeKind::ALL_KIND_NAMES.first(),
+            Some(&"Program"),
+            "First variant in ALL_KIND_NAMES should be 'Program' (declaration order)"
+        );
+    }
+
+    #[test]
+    fn all_kind_names_ends_with_unknown_rest() {
+        // Regression guard: last variant is UnknownRest (declaration order invariant)
+        assert_eq!(
+            NodeKind::ALL_KIND_NAMES.last(),
+            Some(&"UnknownRest"),
+            "Last variant in ALL_KIND_NAMES should be 'UnknownRest' (declaration order)"
+        );
+    }
+
+    #[test]
+    fn all_kind_names_valid_kind_names() {
+        // Regression guard: every string in ALL_KIND_NAMES is a valid kind_name() output
+        for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
+            let found = all_kind_names_from_variants().contains(name);
+            assert!(
+                found,
+                "ALL_KIND_NAMES[{}] = '{}' is not a valid kind_name() return value",
+                i, name
+            );
+        }
+    }
+
+    #[test]
+    fn all_kind_names_exact_match_with_variants_set() {
+        // Regression guard: ALL_KIND_NAMES contains exactly the same names as all variants
+        let from_enum = all_kind_names_from_variants();
+        let from_const: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+
+        assert_eq!(from_enum, from_const, "ALL_KIND_NAMES set does not match variant kind_names");
+    }
+
+    #[test]
+    fn all_kind_names_no_whitespace_padding() {
+        // Boundary condition: no leading/trailing whitespace in variant names
+        for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
+            assert_eq!(
+                *name,
+                name.trim(),
+                "ALL_KIND_NAMES[{}] = '{}' has leading/trailing whitespace",
+                i,
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn all_kind_names_count_regression_guard() {
+        // Regression guard: ALL_KIND_NAMES must have at least 70 entries.
+        // The previous hand-maintained list had 70 variants (including NestedVariableList
+        // added in #1457). Failing below that count means a variant was deleted or the
+        // strum derivation silently stopped working.
+        //
+        // Note: the previous test `all_kind_names_strum_derived_stability` asserted
+        // `NodeKind::VARIANTS == NodeKind::ALL_KIND_NAMES`, which is trivially true by
+        // definition (ALL_KIND_NAMES = NodeKind::VARIANTS). That assertion was vacuous
+        // and has been replaced with this count guard.
+        assert!(
+            NodeKind::ALL_KIND_NAMES.len() >= 70,
+            "ALL_KIND_NAMES has only {} entries; expected >= 70. \
+             A variant may have been accidentally removed, or strum::VariantNames \
+             is not being applied correctly.",
+            NodeKind::ALL_KIND_NAMES.len()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Depth-guard regression tests (--lib coverage for Codecov/Patch 95)
+// ---------------------------------------------------------------------------
+//
+// These tests verify that the three recursive AST operations — `to_sexp`,
+// `count_nodes`, and `find_deepest_containing_offset` — do NOT overflow the
+// stack on a pathologically deep input (50 000 levels), and that the depth
+// guard is transparent for shallow inputs that are well within MAX_AST_DEPTH.
+//
+// The tree is built iteratively (no recursion in the fixture builder itself),
+// so the fixture construction cannot itself overflow the stack.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod depth_guard_tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn loc() -> SourceLocation {
+        SourceLocation { start: 0, end: 1 }
+    }
+
+    /// Build a linearly-nested AST of depth `n` using `ExpressionStatement`
+    /// wrappers around a leaf `Number` node.  The resulting chain has `n + 1`
+    /// nodes in total.
+    ///
+    /// Construction is iterative, so this function itself does not recurse.
+    fn deep_chain(n: usize) -> Node {
+        let mut node = Node::new(NodeKind::Number { value: "1".to_string() }, loc());
+        for _ in 0..n {
+            node = Node::new(NodeKind::ExpressionStatement { expression: Box::new(node) }, loc());
+        }
+        node
+    }
+
+    // ------------------------------------------------------------------
+    // count_nodes
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn count_nodes_does_not_overflow_on_deep_input() -> TestResult {
+        // 50 000 levels deep: without the depth guard this stack-overflows.
+        let deep = deep_chain(50_000);
+        let count = deep.count_nodes();
+        // Prevent the recursive Box<Node> drop-glue from overflowing the stack
+        // (50 000 drop frames would also exceed the default 2 MB test stack).
+        // Memory leaks in tests are intentional and accepted.
+        std::mem::forget(deep);
+        // The guard fires at MAX_AST_DEPTH, so we count at most MAX_AST_DEPTH + 1
+        // nodes (root + one per guarded level).
+        assert!(count >= 1, "must count at least the root node");
+        assert!(
+            count <= MAX_AST_DEPTH + 2,
+            "count ({count}) must be bounded by the depth guard (MAX_AST_DEPTH={MAX_AST_DEPTH})"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn count_nodes_exact_on_shallow_input() -> TestResult {
+        // Depth-2 chain: ExpressionStatement(Number) — both visible.
+        let inner = Node::new(NodeKind::Number { value: "42".to_string() }, loc());
+        let outer = Node::new(NodeKind::ExpressionStatement { expression: Box::new(inner) }, loc());
+        // Depth guard must not fire: count must be exact.
+        assert_eq!(outer.count_nodes(), 2, "shallow chain: ExpressionStatement + Number = 2");
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // to_sexp
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn to_sexp_does_not_overflow_on_deep_input() -> TestResult {
+        // 50 000 levels deep: without the depth guard this stack-overflows.
+        let deep = deep_chain(50_000);
+        // Must return without panicking.
+        let sexp = deep.to_sexp();
+        // Prevent the recursive Box<Node> drop-glue from overflowing the stack.
+        std::mem::forget(deep);
+        assert!(!sexp.is_empty(), "must produce non-empty output");
+        // The truncation marker must appear somewhere in the output.
+        assert!(
+            sexp.contains("depth_limit_exceeded"),
+            "expected depth-limit truncation marker in sexp output, got: {sexp:.120}..."
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn to_sexp_depth_counter_resets_between_calls() -> TestResult {
+        // Calling to_sexp on a deep tree must not permanently raise the thread-local
+        // counter, so a second independent call returns a fresh result.
+        let deep = deep_chain(50_000);
+        let _ = deep.to_sexp();
+        // Prevent the recursive drop from overflowing the stack.
+        std::mem::forget(deep);
+
+        // Second call: shallow tree, must NOT see the depth_limit_exceeded marker.
+        let shallow = Node::new(NodeKind::Number { value: "7".to_string() }, loc());
+        let sexp2 = shallow.to_sexp();
+        assert!(
+            !sexp2.contains("depth_limit_exceeded"),
+            "depth counter must reset after the first call; got: {sexp2}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn to_sexp_normal_output_on_shallow_input() -> TestResult {
+        let inner = Node::new(NodeKind::Number { value: "42".to_string() }, loc());
+        let stmt = Node::new(NodeKind::ExpressionStatement { expression: Box::new(inner) }, loc());
+        let program = Node::new(NodeKind::Program { statements: vec![stmt] }, loc());
+        let sexp = program.to_sexp();
+        // Normal output: no truncation marker.
+        assert!(!sexp.contains("depth_limit_exceeded"), "shallow tree must not be truncated");
+        assert!(sexp.starts_with("(source_file"), "expected source_file wrapper");
+        assert!(sexp.contains("number"), "expected number node in output");
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // find_deepest_containing_offset
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn find_deepest_containing_offset_does_not_overflow_on_deep_input() -> TestResult {
+        // 50 000 levels deep: without the depth guard this stack-overflows.
+        let deep = deep_chain(50_000);
+        // Must return without panicking; result must be Some (offset 0 is inside the root).
+        // Assert before mem::forget because the result borrows from `deep`.
+        assert!(
+            deep.find_deepest_containing_offset(0).is_some(),
+            "must return Some(&Node) for an in-range offset"
+        );
+        // Prevent the recursive Box<Node> drop-glue from overflowing the stack.
+        std::mem::forget(deep);
+        Ok(())
+    }
+
+    #[test]
+    fn find_deepest_containing_offset_returns_none_for_out_of_range() -> TestResult {
+        // Offset 100 is outside the span (start: 0, end: 1) of every node in the chain.
+        let deep = deep_chain(50_000);
+        // Assert before mem::forget because the result borrows from `deep`.
+        assert!(
+            deep.find_deepest_containing_offset(100).is_none(),
+            "offset outside root span must return None"
+        );
+        // Prevent the recursive drop from overflowing the stack.
+        std::mem::forget(deep);
+        Ok(())
+    }
+
+    #[test]
+    fn find_deepest_containing_offset_finds_deepest_on_shallow_input() -> TestResult {
+        // Build: Program(loc 0..10) → ExpressionStatement(0..10)
+        //          → Number "42"(3..5)
+        let number_loc = SourceLocation { start: 3, end: 5 };
+        let stmt_loc = SourceLocation { start: 0, end: 10 };
+
+        let number = Node::new(NodeKind::Number { value: "42".to_string() }, number_loc);
+        let stmt =
+            Node::new(NodeKind::ExpressionStatement { expression: Box::new(number) }, stmt_loc);
+        let program = Node::new(NodeKind::Program { statements: vec![stmt] }, stmt_loc);
+
+        // Offset 4 is inside the Number node — deepest match.
+        let found = program.find_deepest_containing_offset(4);
+        assert!(found.is_some(), "offset 4 is inside Number(3..5)");
+        assert_eq!(
+            found.map(|n| n.kind.kind_name()),
+            Some("Number"),
+            "deepest node at offset 4 must be Number"
+        );
+        Ok(())
+    }
+}

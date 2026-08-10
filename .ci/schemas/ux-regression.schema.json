@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp/.ci/schemas/ux-regression.schema.json",
+  "title": "perl-lsp UX regression receipt",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "measured_at",
+    "sha",
+    "workflow",
+    "scenario_file",
+    "scenario",
+    "first_failing_test",
+    "result",
+    "failure_class",
+    "panic_location",
+    "canonical_repro",
+    "friendly_repro",
+    "first_failing_line",
+    "route",
+    "component",
+    "run_id",
+    "attempt",
+    "platform"
+  ],
+  "properties": {
+    "kind": {
+      "const": "ux_regression_receipt"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "measured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sha": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workflow": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scenario_file": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scenario": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "first_failing_test": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "result": {
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "failure_class": {
+      "enum": [
+        "provider_regression",
+        "server_crash",
+        "timeout",
+        "test_race",
+        "infra",
+        "matrix_drift",
+        "baseline_drift",
+        "new_test_bug",
+        "unknown"
+      ]
+    },
+    "panic_location": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "canonical_repro": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "friendly_repro": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "first_failing_line": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "route": {
+      "enum": [
+        "provider_fix",
+        "crash_fix",
+        "timeout_triage",
+        "ci_investigation",
+        "fixture_update",
+        "baseline_update",
+        "test_fix",
+        "triage"
+      ]
+    },
+    "component": {
+      "oneOf": [
+        {
+          "enum": [
+            "completion",
+            "diagnostics",
+            "module_resolution",
+            "workspace_symbols",
+            "rename",
+            "hover",
+            "goto_definition",
+            "infra",
+            "ai_completion"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "attempt": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "platform": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,1124 @@
+//! POD coverage lint for exported subroutines
+//!
+//! Detects exported subroutines that lack corresponding `=head2` or `=item`
+//! POD documentation. Only fires when the module uses `Exporter` and declares
+//! `@EXPORT` or `@EXPORT_OK`.
+//!
+//! # Diagnostic codes
+//!
+//! | Code   | Severity | Description |
+//! |--------|----------|-------------|
+//! | `PL304` | Hint    | Exported subroutine lacks POD documentation |
+
+use perl_diagnostics::codes::DiagnosticCode;
+use perl_parser_core::ast::{Node, NodeKind};
+
+use super::super::internal_types::Diagnostic;
+use super::super::walker::walk_node;
+use perl_diagnostics::codes::DiagnosticSeverity;
+
+/// Check for exported subroutines that lack POD documentation.
+///
+/// Walks the AST to find `our @EXPORT` / `our @EXPORT_OK` declarations and
+/// subroutine definitions, then scans the source text for `=head2` / `=item`
+/// POD sections that document each exported name.
+///
+/// Three classes of legitimate exported names are exempt from PL304:
+/// - Names created via typeglob assignment (`*alias = \&helper`): valid
+///   symbol-table aliases, not missing subroutine definitions.
+/// - Names defined via `use constant` (`use constant FOO => 1`): constants
+///   are implemented as zero-argument subs, but have no `sub FOO {}` AST node.
+/// - Names with no local `sub` definition that belong to a module with parent
+///   classes (`use parent`/`use base`): the sub may be inherited from a parent
+///   class and re-exported. Without workspace-level resolution the lint cannot
+///   confirm the definition exists in an ancestor, so it suppresses rather than
+///   producing a false positive (issue #3081).
+pub fn check_pod_coverage(node: &Node, source: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let exported_names = collect_exported_names(node, source);
+    if exported_names.is_empty() {
+        return;
+    }
+
+    let documented_names = collect_documented_names(source);
+    let typeglob_names = collect_typeglob_names(node);
+    let constant_names = collect_constant_names(node);
+    // Parent package names declared via `use parent`/`use base`. An exported
+    // name with no local `sub` definition may be inherited from one of these
+    // packages; we suppress PL304 in that case to avoid false positives.
+    let parent_packages = collect_parent_package_names(node);
+
+    let mut sub_locations: Vec<(String, usize, usize)> = Vec::new();
+    walk_node(node, &mut |n| {
+        if let NodeKind::Subroutine { name: Some(name), .. } = &n.kind {
+            sub_locations.push((name.clone(), n.location.start, n.location.end));
+        }
+    });
+
+    for (export_name, _export_start, _export_end) in &exported_names {
+        if documented_names.iter().any(|doc| doc == export_name) {
+            continue;
+        }
+
+        // Typeglob assignments (*alias = \&helper) create valid symbol-table
+        // entries — they are not missing subroutine definitions.
+        if typeglob_names.contains(export_name) {
+            continue;
+        }
+
+        // Constants defined via `use constant FOO => 1` are implemented as
+        // zero-argument subs but have no `sub FOO {}` AST node.
+        if constant_names.contains(export_name) {
+            continue;
+        }
+
+        let local_sub = sub_locations.iter().find(|(n, _, _)| n == export_name);
+
+        // If the name has no local `sub` definition but the module declares
+        // parent classes, the sub may be inherited and re-exported. We cannot
+        // verify cross-file inheritance here (no workspace index in pure-AST
+        // mode), so we conservatively skip PL304 rather than fire a false
+        // positive (issue #3081).
+        if local_sub.is_none() && !parent_packages.is_empty() {
+            continue;
+        }
+
+        let (range_start, range_end) = if let Some((_, start, end)) = local_sub {
+            (*start, *end)
+        } else {
+            (*_export_start, *_export_end)
+        };
+
+        diagnostics.push(Diagnostic {
+            range: (range_start, range_end),
+            severity: DiagnosticSeverity::Hint,
+            code: Some(DiagnosticCode::MissingPodCoverage.as_str().to_string()),
+            message: format!("Exported subroutine '{}' has no POD documentation", export_name),
+            related_information: Vec::new(),
+            tags: Vec::new(),
+            suggestion: Some(format!(
+                "Add '=head2 {}' documentation before or near the subroutine definition",
+                export_name
+            )),
+        });
+    }
+}
+
+/// Collect names from `our @EXPORT = qw(...)` and `our @EXPORT_OK = qw(...)`.
+///
+/// Uses AST walking first (handles `our @EXPORT = qw(foo bar)` parsed as
+/// VariableDeclaration with ArrayLiteral initializer), then falls back to
+/// source text scanning for patterns the AST doesn't capture (e.g. `push
+/// @EXPORT, 'foo'`).
+fn collect_exported_names(node: &Node, source: &str) -> Vec<(String, usize, usize)> {
+    let mut names: Vec<(String, usize, usize)> = Vec::new();
+    let mut has_exporter = false;
+
+    walk_node(node, &mut |n| {
+        if let NodeKind::Use { module, .. } = &n.kind
+            && (module == "Exporter" || module == "parent" || module == "base")
+        {
+            has_exporter = true;
+        }
+    });
+
+    if !has_exporter && !source.contains("@ISA") && !source.contains("Exporter") {
+        return names;
+    }
+
+    walk_node(node, &mut |n| match &n.kind {
+        NodeKind::VariableDeclaration { declarator, variable, initializer: Some(init), .. }
+            if declarator == "our" =>
+        {
+            if let NodeKind::Variable { sigil, name } = &variable.kind
+                && sigil == "@"
+                && (name == "EXPORT" || name == "EXPORT_OK")
+            {
+                collect_names_from_expr(init, &mut names);
+            }
+        }
+        NodeKind::Assignment { lhs, rhs, .. } if is_export_variable(lhs) => {
+            collect_names_from_expr(rhs, &mut names);
+        }
+        _ => {}
+    });
+
+    if names.is_empty() {
+        collect_exported_names_from_source(source, &mut names);
+    }
+
+    names
+}
+
+fn is_export_variable(node: &Node) -> bool {
+    if let NodeKind::Variable { sigil, name } = &node.kind {
+        sigil == "@" && (name == "EXPORT" || name == "EXPORT_OK")
+    } else {
+        false
+    }
+}
+
+/// Collect names that are assigned via typeglob (`*name = \&sub` or `*name = \$var`).
+///
+/// These are legitimate symbol-table aliases, not missing subroutine definitions,
+/// so they should not trigger PL304 even if listed in `@EXPORT`/`@EXPORT_OK`.
+fn collect_typeglob_names(node: &Node) -> Vec<String> {
+    let mut names = Vec::new();
+    walk_node(node, &mut |n| {
+        if let NodeKind::Assignment { lhs, .. } = &n.kind
+            && let NodeKind::Typeglob { name } = &lhs.kind
+        {
+            names.push(name.clone());
+        }
+    });
+    names
+}
+
+/// Collect names defined via `use constant NAME => value` or
+/// `use constant { NAME => value, ... }`.
+///
+/// Constants are implemented as zero-argument subroutines but produce no
+/// `NodeKind::Subroutine` AST node, so they should not trigger PL304 when
+/// listed in `@EXPORT`/`@EXPORT_OK`.
+fn collect_constant_names(node: &Node) -> Vec<String> {
+    let mut names = Vec::new();
+    walk_node(node, &mut |n| {
+        if let NodeKind::Use { module, args, .. } = &n.kind
+            && module == "constant"
+            && !args.is_empty()
+        {
+            let hash_form = args.first().map(String::as_str) == Some("{");
+            if hash_form {
+                // args: ["{", "NAME", "=>", "value", ",", "NAME", "=>", "value", "}"]
+                // Collect every token immediately before a fat arrow — that is the key.
+                let inner = &args[1..]; // skip leading "{"
+                for i in 0..inner.len().saturating_sub(1) {
+                    if inner[i + 1] == "=>" && is_valid_identifier(&inner[i]) {
+                        names.push(inner[i].clone());
+                    }
+                }
+            } else {
+                // args: ["NAME", "=>", "value", ...]
+                // The first token is the constant name.
+                if let Some(name) = args.first()
+                    && is_valid_identifier(name)
+                {
+                    names.push(name.clone());
+                }
+            }
+        }
+    });
+    names
+}
+
+/// Returns true if `s` looks like a bare Perl identifier.
+///
+/// Perl identifiers must start with a letter or underscore, followed by
+/// zero or more word characters. Numeric values like `1` or `42` are NOT
+/// identifiers and must be rejected, since they appear as values in
+/// `use constant { NAME => 1, ... }` forms.
+fn is_valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) if first.is_alphabetic() || first == '_' => {
+            chars.all(|c| c.is_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// Collect parent class names declared via `use parent 'Foo'` or `use base 'Foo'`.
+///
+/// When at least one parent class is present, an exported name with no local
+/// `sub` definition may be inherited from a parent — PL304 suppression applies
+/// to avoid false positives (issue #3081).
+fn collect_parent_package_names(node: &Node) -> Vec<String> {
+    let mut parents = Vec::new();
+    walk_node(node, &mut |n| {
+        if let NodeKind::Use { module, args, .. } = &n.kind
+            && (module == "parent" || module == "base")
+        {
+            for arg in args {
+                // Skip pragma flags like `-norequire`
+                if !arg.starts_with('-') {
+                    parents.push(arg.clone());
+                }
+            }
+        }
+    });
+    parents
+}
+
+fn collect_names_from_expr(node: &Node, names: &mut Vec<(String, usize, usize)>) {
+    match &node.kind {
+        NodeKind::ArrayLiteral { elements } => {
+            for elem in elements {
+                if let NodeKind::String { value, .. } = &elem.kind
+                    && !value.is_empty()
+                    && !value.starts_with('$')
+                    && !value.starts_with('@')
+                    && !value.starts_with('%')
+                {
+                    names.push((value.clone(), elem.location.start, elem.location.end));
+                }
+            }
+        }
+        NodeKind::String { value, .. } => {
+            if !value.is_empty()
+                && !value.starts_with('$')
+                && !value.starts_with('@')
+                && !value.starts_with('%')
+            {
+                names.push((value.clone(), node.location.start, node.location.end));
+            }
+        }
+        NodeKind::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_names_from_expr(arg, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Fallback: scan source text for `@EXPORT` / `@EXPORT_OK` assignments with `qw()`.
+fn collect_exported_names_from_source(source: &str, names: &mut Vec<(String, usize, usize)>) {
+    let mut line_start = 0usize;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("@EXPORT") {
+            line_start += line.len() + 1;
+            continue;
+        }
+
+        if let Some(qw_start) = trimmed.find("qw") {
+            let after_qw = &trimmed[qw_start + 2..];
+            if let Some(content) = extract_qw_content(after_qw) {
+                for word in content.split_whitespace() {
+                    if !word.starts_with('$') && !word.starts_with('@') && !word.starts_with('%') {
+                        names.push((word.to_string(), line_start, line_start + line.len()));
+                    }
+                }
+            }
+        }
+        line_start += line.len() + 1;
+    }
+}
+
+fn extract_qw_content(s: &str) -> Option<&str> {
+    let s = s.trim();
+    let (open, close) = match s.chars().next()? {
+        '(' => ('(', ')'),
+        '[' => ('[', ']'),
+        '{' => ('{', '}'),
+        '<' => ('<', '>'),
+        _ => return None,
+    };
+    let start = s.find(open)? + 1;
+    let end = s.rfind(close)?;
+    if start < end { Some(&s[start..end]) } else { None }
+}
+
+/// Scan source text for POD documentation sections.
+///
+/// Looks for `=head2 name`, `=item name`, and `=item B<name>` patterns.
+fn collect_documented_names(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("=head2").or_else(|| trimmed.strip_prefix("=item"))
+            && let Some(name) = extract_pod_name(rest)
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Extract a subroutine name from POD heading text.
+///
+/// Handles: `=head2 foo`, `=head2 foo()`, `=head2 B<foo>`, `=head2 C<foo()>`.
+fn extract_pod_name(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    let text = if let Some(inner) = text.strip_prefix("B<").and_then(|s| s.strip_suffix('>')) {
+        inner
+    } else if let Some(inner) = text.strip_prefix("C<").and_then(|s| s.strip_suffix('>')) {
+        inner
+    } else {
+        text
+    };
+
+    let name = text.split(['(', ' ', '\t']).next()?;
+
+    if name.is_empty() || name.starts_with('=') {
+        return None;
+    }
+
+    let name = name.trim_start_matches('$').trim_start_matches('@').trim_start_matches('%');
+
+    if name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ':') && !name.is_empty() {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_parser_core::ast::SourceLocation;
+
+    fn make_string_node(value: &str, start: usize, end: usize) -> Node {
+        Node::new(
+            NodeKind::String { value: value.to_string(), interpolated: false },
+            SourceLocation { start, end },
+        )
+    }
+
+    fn make_array_literal(elements: Vec<Node>, start: usize, end: usize) -> Node {
+        Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
+    }
+
+    fn make_var(sigil: &str, name: &str, start: usize, end: usize) -> Node {
+        Node::new(
+            NodeKind::Variable { sigil: sigil.to_string(), name: name.to_string() },
+            SourceLocation { start, end },
+        )
+    }
+
+    fn make_use(module: &str, start: usize, end: usize) -> Node {
+        Node::new(
+            NodeKind::Use { module: module.to_string(), args: Vec::new(), has_filter_risk: false },
+            SourceLocation { start, end },
+        )
+    }
+
+    fn make_sub(name: &str, start: usize, end: usize) -> Node {
+        Node::new(
+            NodeKind::Subroutine {
+                name: Some(name.to_string()),
+                name_span: None,
+                declarator: None,
+                prototype: None,
+                signature: None,
+                attributes: Vec::new(),
+                body: Box::new(Node::new(
+                    NodeKind::Block { statements: Vec::new() },
+                    SourceLocation { start: start + 10, end: end - 1 },
+                )),
+            },
+            SourceLocation { start, end },
+        )
+    }
+
+    fn make_program(stmts: Vec<Node>) -> Node {
+        let end = stmts.last().map_or(0, |n| n.location.end);
+        Node::new(NodeKind::Program { statements: stmts }, SourceLocation { start: 0, end })
+    }
+
+    fn make_var_decl(
+        declarator: &str,
+        sigil: &str,
+        name: &str,
+        init: Option<Node>,
+        start: usize,
+        end: usize,
+    ) -> Node {
+        Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: declarator.to_string(),
+                variable: Box::new(make_var(sigil, name, start + 4, start + 4 + name.len() + 1)),
+                attributes: Vec::new(),
+                initializer: init.map(Box::new),
+            },
+            SourceLocation { start, end },
+        )
+    }
+
+    #[test]
+    fn given_module_with_exporter_and_undocumented_exports_then_diagnostic_emitted() {
+        let source = r#"package MyModule;
+use Exporter 'import';
+our @EXPORT = qw(foo bar);
+
+sub foo { 1 }
+sub bar { 2 }
+"#;
+
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT",
+                Some(make_array_literal(
+                    vec![make_string_node("foo", 56, 59), make_string_node("bar", 60, 63)],
+                    52,
+                    64,
+                )),
+                40,
+                65,
+            ),
+            make_sub("foo", 67, 80),
+            make_sub("bar", 81, 94),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 2, "both foo and bar lack POD");
+        assert!(diagnostics.iter().all(|d| d.code.as_deref() == Some("PL304")));
+        assert!(diagnostics.iter().any(|d| d.message.contains("foo")));
+        assert!(diagnostics.iter().any(|d| d.message.contains("bar")));
+    }
+
+    #[test]
+    fn given_module_with_documented_exports_then_no_diagnostic() {
+        let source = r#"package MyModule;
+use Exporter 'import';
+our @EXPORT = qw(foo bar);
+
+=head2 foo
+
+Does foo things.
+
+=head2 bar
+
+Does bar things.
+
+=cut
+
+sub foo { 1 }
+sub bar { 2 }
+"#;
+
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT",
+                Some(make_array_literal(
+                    vec![make_string_node("foo", 56, 59), make_string_node("bar", 60, 63)],
+                    52,
+                    64,
+                )),
+                40,
+                65,
+            ),
+            make_sub("foo", 120, 133),
+            make_sub("bar", 134, 147),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert!(diagnostics.is_empty(), "documented exports should not fire");
+    }
+
+    #[test]
+    fn given_module_without_exporter_then_no_diagnostic() {
+        let source = r#"package Internal;
+sub helper { 1 }
+"#;
+
+        let ast = make_program(vec![make_sub("helper", 18, 34)]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert!(diagnostics.is_empty(), "no exporter = no lint");
+    }
+
+    #[test]
+    fn given_partial_documentation_then_only_missing_reported() {
+        let source = r#"package MyModule;
+use Exporter 'import';
+our @EXPORT_OK = qw(foo bar baz);
+
+=head2 foo
+
+Documented.
+
+=cut
+
+sub foo { 1 }
+sub bar { 2 }
+sub baz { 3 }
+"#;
+
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT_OK",
+                Some(make_array_literal(
+                    vec![
+                        make_string_node("foo", 59, 62),
+                        make_string_node("bar", 63, 66),
+                        make_string_node("baz", 67, 70),
+                    ],
+                    55,
+                    71,
+                )),
+                40,
+                72,
+            ),
+            make_sub("foo", 110, 123),
+            make_sub("bar", 124, 137),
+            make_sub("baz", 138, 151),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 2, "bar and baz lack POD");
+        assert!(diagnostics.iter().any(|d| d.message.contains("bar")));
+        assert!(diagnostics.iter().any(|d| d.message.contains("baz")));
+        assert!(!diagnostics.iter().any(|d| d.message.contains("foo")));
+    }
+
+    #[test]
+    fn given_item_pod_documentation_then_recognized() {
+        let source = r#"package MyModule;
+use Exporter 'import';
+our @EXPORT = qw(process);
+
+=over 4
+
+=item process()
+
+Processes data.
+
+=back
+
+=cut
+
+sub process { 1 }
+"#;
+
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT",
+                Some(make_array_literal(vec![make_string_node("process", 56, 63)], 52, 64)),
+                40,
+                65,
+            ),
+            make_sub("process", 120, 138),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert!(diagnostics.is_empty(), "=item documentation should be recognized");
+    }
+
+    #[test]
+    fn given_bold_pod_markup_then_recognized() {
+        let source = r#"package MyModule;
+use Exporter 'import';
+our @EXPORT = qw(run);
+
+=head2 B<run>
+
+Run the thing.
+
+=cut
+
+sub run { 1 }
+"#;
+
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT",
+                Some(make_array_literal(vec![make_string_node("run", 56, 59)], 52, 60)),
+                40,
+                61,
+            ),
+            make_sub("run", 100, 113),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert!(diagnostics.is_empty(), "B<run> markup should match");
+    }
+
+    #[test]
+    fn given_variable_exports_then_skipped() {
+        let source = r#"package MyModule;
+use Exporter 'import';
+our @EXPORT_OK = qw($VERSION @DATA %CONFIG);
+sub something { 1 }
+"#;
+
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT_OK",
+                Some(make_array_literal(
+                    vec![
+                        make_string_node("$VERSION", 59, 67),
+                        make_string_node("@DATA", 68, 73),
+                        make_string_node("%CONFIG", 74, 81),
+                    ],
+                    55,
+                    82,
+                )),
+                40,
+                83,
+            ),
+            make_sub("something", 84, 103),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert!(diagnostics.is_empty(), "variable exports should be ignored");
+    }
+
+    fn make_use_constant(names: &[&str], start: usize, end: usize) -> Node {
+        // Mimic `use constant FOO => 1` (single) or `use constant { FOO => 1, BAR => 2 }` (hash).
+        let args = if names.len() == 1 {
+            vec![names[0].to_string(), "=>".to_string(), "1".to_string()]
+        } else {
+            let mut args = vec!["{".to_string()];
+            for (i, name) in names.iter().enumerate() {
+                args.push(name.to_string());
+                args.push("=>".to_string());
+                args.push("1".to_string());
+                if i + 1 < names.len() {
+                    args.push(",".to_string());
+                }
+            }
+            args.push("}".to_string());
+            args
+        };
+        Node::new(
+            NodeKind::Use { module: "constant".to_string(), args, has_filter_risk: false },
+            SourceLocation { start, end },
+        )
+    }
+
+    fn make_typeglob(name: &str, start: usize, end: usize) -> Node {
+        Node::new(NodeKind::Typeglob { name: name.to_string() }, SourceLocation { start, end })
+    }
+
+    fn make_assignment(lhs: Node, rhs: Node, start: usize, end: usize) -> Node {
+        Node::new(
+            NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
+            SourceLocation { start, end },
+        )
+    }
+
+    #[test]
+    fn given_typeglob_alias_in_export_then_no_false_positive() {
+        // Reproduces the scenario from #3071:
+        //   our @EXPORT_OK = qw(helper alias);
+        //   sub helper { ... }
+        //   *alias = \&helper;   <- typeglob, NOT a `sub alias { ... }`
+        // PL304 must NOT fire for `alias`.
+        let source = r#"package RealBaseline::Util;
+use strict;
+use warnings;
+use Exporter 'import';
+
+our @EXPORT_OK = qw(helper alias);
+
+sub helper {
+    return shift;
+}
+
+*alias = \&helper;
+
+1;
+"#;
+
+        let ast = make_program(vec![
+            make_use("Exporter", 52, 71),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT_OK",
+                Some(make_array_literal(
+                    vec![make_string_node("helper", 90, 96), make_string_node("alias", 97, 102)],
+                    86,
+                    103,
+                )),
+                73,
+                104,
+            ),
+            make_sub("helper", 106, 130),
+            make_assignment(
+                make_typeglob("alias", 132, 138),
+                make_var("&", "helper", 141, 148),
+                132,
+                149,
+            ),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        // `helper` has no POD, so it should still fire.
+        // `alias` is a typeglob alias, so it must NOT fire.
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("alias")),
+            "PL304 must not fire for typeglob alias `*alias = \\&helper`: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn given_use_constant_in_export_then_no_false_positive() {
+        // `use constant FOO => 1` must not fire PL304 for FOO in @EXPORT_OK.
+        let source = r#"package MyModule;
+use Exporter 'import';
+use constant FOO => 42;
+our @EXPORT_OK = qw(FOO);
+"#;
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_use_constant(&["FOO"], 40, 63),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT_OK",
+                Some(make_array_literal(vec![make_string_node("FOO", 81, 84)], 77, 85)),
+                64,
+                86,
+            ),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("FOO")),
+            "PL304 must not fire for `use constant FOO`: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn given_use_constant_hash_form_in_export_then_no_false_positive() {
+        // `use constant { FOO => 1, BAR => 2 }` must not fire PL304.
+        let source = r#"package MyModule;
+use Exporter 'import';
+use constant { FOO => 1, BAR => 2 };
+our @EXPORT_OK = qw(FOO BAR);
+"#;
+        let ast = make_program(vec![
+            make_use("Exporter", 17, 39),
+            make_use_constant(&["FOO", "BAR"], 40, 76),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT_OK",
+                Some(make_array_literal(
+                    vec![make_string_node("FOO", 94, 97), make_string_node("BAR", 98, 101)],
+                    90,
+                    102,
+                )),
+                77,
+                103,
+            ),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("FOO") || d.message.contains("BAR")),
+            "PL304 must not fire for hash-form `use constant`: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn extract_pod_name_handles_various_formats() {
+        assert_eq!(extract_pod_name(" foo"), Some("foo".to_string()));
+        assert_eq!(extract_pod_name(" foo()"), Some("foo".to_string()));
+        assert_eq!(extract_pod_name(" B<foo>"), Some("foo".to_string()));
+        assert_eq!(extract_pod_name(" C<foo()>"), Some("foo".to_string()));
+        assert_eq!(extract_pod_name(" foo_bar"), Some("foo_bar".to_string()));
+        assert_eq!(extract_pod_name(""), None);
+        assert_eq!(extract_pod_name(" "), None);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Helper function unit tests (cover paths unreachable via check_pod_coverage
+    // synthetic AST — needed for --lib coverage gate)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn collect_names_from_expr_handles_string_node() {
+        // NodeKind::String as the direct initializer of @EXPORT (rare but valid).
+        let mut names: Vec<(String, usize, usize)> = Vec::new();
+        let string_node = make_string_node("process", 10, 17);
+        collect_names_from_expr(&string_node, &mut names);
+        assert_eq!(names, vec![("process".to_string(), 10, 17)]);
+    }
+
+    #[test]
+    fn collect_names_from_expr_skips_sigil_strings() {
+        // Variable names like $VERSION / @DATA / %CONFIG must be ignored.
+        let mut names: Vec<(String, usize, usize)> = Vec::new();
+        collect_names_from_expr(&make_string_node("$VERSION", 0, 8), &mut names);
+        collect_names_from_expr(&make_string_node("@DATA", 0, 5), &mut names);
+        collect_names_from_expr(&make_string_node("%CONFIG", 0, 7), &mut names);
+        assert!(names.is_empty(), "sigil-prefixed names must be skipped");
+    }
+
+    #[test]
+    fn collect_names_from_expr_handles_function_call_and_unknown_nodes() {
+        // NodeKind::FunctionCall — recurse into args.
+        let arg = make_string_node("run", 20, 23);
+        let call_node = Node::new(
+            NodeKind::FunctionCall { name: "qw".to_string(), args: vec![arg] },
+            SourceLocation { start: 10, end: 24 },
+        );
+        let mut names = Vec::new();
+        collect_names_from_expr(&call_node, &mut names);
+        assert_eq!(names, vec![("run".to_string(), 20, 23)]);
+
+        // Unknown/unmatched node kind — must be silently ignored (the `_ => {}` arm).
+        let unknown = make_use("SomeModule", 0, 20);
+        let mut names2 = Vec::new();
+        collect_names_from_expr(&unknown, &mut names2);
+        assert!(names2.is_empty(), "unknown node kind must be ignored");
+    }
+
+    #[test]
+    fn collect_exported_names_via_assignment_lhs() {
+        // @EXPORT set via Assignment { lhs: @EXPORT, rhs: ArrayLiteral } rather than
+        // VariableDeclaration — exercises lines 121-123 and is_export_variable (136).
+        let source = "use Exporter 'import';\n@EXPORT = qw(foo);\n";
+        let lhs = make_var("@", "EXPORT", 23, 29);
+        let rhs = make_array_literal(vec![make_string_node("foo", 35, 38)], 33, 39);
+        let assign = Node::new(
+            NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
+            SourceLocation { start: 23, end: 40 },
+        );
+        let ast = make_program(vec![make_use("Exporter", 0, 22), assign]);
+        let names = collect_exported_names(&ast, source);
+        assert!(names.iter().any(|(n, _, _)| n == "foo"), "Assignment path must collect foo");
+    }
+
+    #[test]
+    fn collect_exported_names_from_source_fallback() {
+        // When AST walk yields nothing, the source-text fallback runs (line 258).
+        let source = "use Exporter 'import';\nour @EXPORT_OK = qw(alpha beta);\n";
+        // Provide an AST with no VariableDeclaration/Assignment for @EXPORT — forces fallback.
+        let ast = make_program(vec![make_use("Exporter", 0, 22)]);
+        let names = collect_exported_names(&ast, source);
+        let collected: Vec<_> = names.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(collected.contains(&"alpha"), "fallback must collect alpha: {collected:?}");
+        assert!(collected.contains(&"beta"), "fallback must collect beta: {collected:?}");
+    }
+
+    #[test]
+    fn collect_constant_names_single_form_push() {
+        // Exercises the `names.push(name.clone())` at line 188 (single-form path).
+        let node = make_program(vec![make_use_constant(&["MY_CONST"], 0, 20)]);
+        let names = collect_constant_names(&node);
+        assert_eq!(names, vec!["MY_CONST".to_string()]);
+    }
+
+    #[test]
+    fn collect_constant_names_boundary_discriminator() {
+        // Boundary discriminators for ripr predicate seams in collect_constant_names:
+        //
+        // Seams 1b75c14235ace02d / 12668642306e9b10: `module == "constant"` — verify
+        // the false branch: a non-constant Use must produce no names.
+        let non_constant_use = Node::new(
+            NodeKind::Use {
+                module: "strict".to_string(),
+                args: vec!["FOO".to_string(), "=>".to_string(), "1".to_string()],
+                has_filter_risk: false,
+            },
+            SourceLocation { start: 0, end: 20 },
+        );
+        let no_names = collect_constant_names(&make_program(vec![non_constant_use]));
+        assert!(no_names.is_empty(), "non-constant Use must yield no names: {no_names:?}");
+
+        // True branch: module IS "constant" — names are collected.
+        let names =
+            collect_constant_names(&make_program(vec![make_use_constant(&["API_KEY"], 0, 25)]));
+        assert_eq!(names, vec!["API_KEY".to_string()]);
+
+        // Seam 0960ea422b3805a5: `args.first() == Some("{")` — verify both branches.
+        // Single-form (no leading "{") collects the first token.
+        let single_names =
+            collect_constant_names(&make_program(vec![make_use_constant(&["TIMEOUT"], 0, 22)]));
+        assert_eq!(single_names, vec!["TIMEOUT".to_string()]);
+
+        // Hash form (leading "{") collects keys before "=>".
+        let hash_names = collect_constant_names(&make_program(vec![make_use_constant(
+            &["HOST", "PORT"],
+            0,
+            35,
+        )]));
+        assert!(hash_names.contains(&"HOST".to_string()), "hash form must collect HOST");
+        assert!(hash_names.contains(&"PORT".to_string()), "hash form must collect PORT");
+    }
+
+    #[test]
+    fn is_valid_identifier_rejects_digit_leading_and_empty() {
+        // The `_ => false` arm (line 207): digit-leading and empty strings must fail.
+        assert!(!is_valid_identifier("1"), "digit-leading must be rejected");
+        assert!(!is_valid_identifier("42"), "numeric value must be rejected");
+        assert!(!is_valid_identifier(""), "empty string must be rejected");
+        assert!(!is_valid_identifier("=>"), "fat-arrow must be rejected");
+        // Valid identifiers must pass.
+        assert!(is_valid_identifier("FOO"), "FOO must be accepted");
+        assert!(is_valid_identifier("_private"), "_private must be accepted");
+        assert!(is_valid_identifier("FOO2"), "FOO2 must be accepted");
+    }
+
+    #[test]
+    fn is_valid_identifier_boundary_discriminator() {
+        // Boundary discriminators for ripr predicate seams in is_valid_identifier:
+        //
+        // Seam dc38996538df5e4b: `first == '_'` — underscore-leading identifier is valid.
+        assert!(is_valid_identifier("_PRIVATE"), "_PRIVATE must be accepted (leading _)");
+        assert!(is_valid_identifier("__WARN__"), "__WARN__ must be accepted");
+
+        // Seam e4fa39653ddc2db6: `first.is_alphabetic() || first == '_'` — both arms.
+        assert!(is_valid_identifier("a"), "lowercase alpha must be accepted");
+        assert!(is_valid_identifier("Z"), "uppercase alpha must be accepted");
+        assert!(!is_valid_identifier("!invalid"), "non-word first char must be rejected");
+
+        // Seams dc1a086538c56a59 / dc2b0d6538d3e60b: tail `c == '_'` and
+        // `c.is_alphanumeric() || c == '_'` — test underscore and digit in tail.
+        assert!(is_valid_identifier("foo_bar"), "underscore in tail must be accepted");
+        assert!(is_valid_identifier("foo2"), "digit in tail must be accepted");
+        assert!(!is_valid_identifier("foo!"), "non-word tail char must be rejected");
+        assert!(!is_valid_identifier("foo bar"), "space in tail must be rejected");
+    }
+
+    // ── #3081: inherited sub exemption ──
+
+    fn make_use_with_args(module: &str, args: Vec<&str>, start: usize, end: usize) -> Node {
+        Node::new(
+            NodeKind::Use {
+                module: module.to_string(),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                has_filter_risk: false,
+            },
+            SourceLocation { start, end },
+        )
+    }
+
+    #[test]
+    fn collect_parent_package_names_from_use_parent() {
+        let ast = make_program(vec![
+            make_use_with_args("parent", vec!["BaseUtil"], 0, 20),
+            make_use("Exporter", 21, 40),
+        ]);
+        let parents = collect_parent_package_names(&ast);
+        assert_eq!(parents, vec!["BaseUtil"]);
+    }
+
+    #[test]
+    fn collect_parent_package_names_from_use_base() {
+        let ast = make_program(vec![make_use_with_args("base", vec!["BaseUtil"], 0, 20)]);
+        let parents = collect_parent_package_names(&ast);
+        assert_eq!(parents, vec!["BaseUtil"]);
+    }
+
+    #[test]
+    fn collect_parent_package_names_excludes_pragma_flags() {
+        // `use parent -norequire, 'Foo'` — flags start with '-' and must be skipped
+        let ast =
+            make_program(vec![make_use_with_args("parent", vec!["-norequire", "Foo"], 0, 30)]);
+        let parents = collect_parent_package_names(&ast);
+        assert_eq!(parents, vec!["Foo"]);
+    }
+
+    #[test]
+    fn collect_parent_package_names_empty_when_no_use_parent() {
+        let ast = make_program(vec![make_use("Exporter", 0, 20)]);
+        let parents = collect_parent_package_names(&ast);
+        assert!(parents.is_empty());
+    }
+
+    #[test]
+    fn given_use_parent_and_inherited_export_then_no_pl304_false_positive() {
+        // #3081: `use parent 'BaseUtil'` + `@EXPORT_OK = qw(inherited_method)` with
+        // no local `sub inherited_method`. PL304 must NOT fire — the sub may be inherited.
+        let source = r#"package MyUtil;
+use parent 'BaseUtil';
+use Exporter 'import';
+our @EXPORT_OK = qw(inherited_method);
+1;
+"#;
+        let ast = make_program(vec![
+            make_use_with_args("parent", vec!["BaseUtil"], 16, 37),
+            make_use("Exporter", 38, 57),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT_OK",
+                Some(make_array_literal(
+                    vec![make_string_node("inherited_method", 72, 88)],
+                    68,
+                    89,
+                )),
+                58,
+                90,
+            ),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("inherited_method")),
+            "PL304 must not fire for re-exported inherited sub: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn given_use_parent_but_local_sub_defined_then_pl304_still_fires() {
+        // Regression guard: `use parent` must NOT suppress PL304 when the sub IS locally
+        // defined and merely lacks POD. The suppression only applies to subs with no local
+        // definition at all (potential inherited methods).
+        let source = r#"package MyUtil;
+use parent 'BaseUtil';
+use Exporter 'import';
+our @EXPORT_OK = qw(local_sub);
+sub local_sub { 1 }
+1;
+"#;
+        let ast = make_program(vec![
+            make_use_with_args("parent", vec!["BaseUtil"], 16, 37),
+            make_use("Exporter", 38, 57),
+            make_var_decl(
+                "our",
+                "@",
+                "EXPORT_OK",
+                Some(make_array_literal(vec![make_string_node("local_sub", 72, 81)], 68, 82)),
+                58,
+                83,
+            ),
+            make_sub("local_sub", 84, 103),
+        ]);
+
+        let mut diagnostics = Vec::new();
+        check_pod_coverage(&ast, source, &mut diagnostics);
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("local_sub")),
+            "PL304 MUST fire for locally-defined `local_sub` that lacks POD: {diagnostics:?}"
+        );
+    }
+}

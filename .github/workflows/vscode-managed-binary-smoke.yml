@@ -1,0 +1,68 @@
+name: VS Code Managed Binary Smoke
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'vscode-extension/**'
+      - '.github/workflows/vscode-managed-binary-smoke.yml'
+  schedule:
+    - cron: '0 13 * * 1'
+
+concurrency:
+  group: vscode-managed-binary-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  managed-binary-smoke:
+    name: VS Code smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    defaults:
+      run:
+        working-directory: vscode-extension
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Install Perl
+        uses: shogo82148/actions-setup-perl@05e67354f08b143fe5bd8495e9b80657a3086754  # v1.43.0
+        with:
+          perl-version: '5.40'
+
+      - name: Setup VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Compile extension
+        run: npm run compile
+
+      - name: Run extension-host smoke
+        if: runner.os != 'Linux'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run test:integration
+
+      - name: Run extension-host smoke under Xvfb
+        if: runner.os == 'Linux'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: xvfb-run -a npm run test:integration
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: vscode-smoke-source-${{ matrix.os }}
+          path: target/receipts/vscode-smoke/**
+          if-no-files-found: warn
+          retention-days: 14

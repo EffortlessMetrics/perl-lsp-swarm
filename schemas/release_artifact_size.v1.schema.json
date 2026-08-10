@@ -1,0 +1,464 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/release_artifact_size.v1.schema.json",
+  "title": "release_artifact_size.v1",
+  "description": "Same-SHA baseline versus safe-ICF release-artifact comparison receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "check",
+    "schema_version",
+    "status",
+    "recommendation",
+    "claim_boundary",
+    "subject",
+    "policy",
+    "baseline",
+    "candidate",
+    "comparison",
+    "limitations"
+  ],
+  "properties": {
+    "check": {
+      "const": "release-artifact-size"
+    },
+    "schema_version": {
+      "const": "release_artifact_size.v1"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail",
+        "not_proven"
+      ]
+    },
+    "recommendation": {
+      "enum": [
+        "adopt",
+        "do_not_adopt",
+        "reject",
+        "not_proven"
+      ]
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "baseline": {
+      "$ref": "#/$defs/variant"
+    },
+    "candidate": {
+      "$ref": "#/$defs/variant"
+    },
+    "comparison": {
+      "$ref": "#/$defs/comparison"
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "git_sha",
+        "tree_clean",
+        "target",
+        "host",
+        "workspace_version",
+        "cargo_lock_sha256",
+        "rustc",
+        "cargo",
+        "rust_lld",
+        "profile",
+        "baseline_rustflags",
+        "candidate_rustflags",
+        "environment"
+      ],
+      "properties": {
+        "repository": {
+          "const": "EffortlessMetrics/perl-lsp-swarm"
+        },
+        "git_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tree_clean": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cargo_lock_sha256": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rustc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cargo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rust_lld": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/tool_identity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profile": {
+          "const": "release"
+        },
+        "baseline_rustflags": {
+          "type": "string"
+        },
+        "candidate_rustflags": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "tool_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "sha256"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_reduction_basis_points",
+        "minimum_reduction_bytes",
+        "maximum_component_growth_basis_points",
+        "maximum_component_growth_bytes",
+        "repeat_required_below_basis_points"
+      ],
+      "properties": {
+        "minimum_reduction_basis_points": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minimum_reduction_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maximum_component_growth_basis_points": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maximum_component_growth_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repeat_required_below_basis_points": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directory",
+        "source_sha",
+        "binaries",
+        "archive",
+        "lsp_smoke",
+        "dap_smoke"
+      ],
+      "properties": {
+        "directory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binaries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/file_artifact"
+          }
+        },
+        "archive": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/archive"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lsp_smoke": {
+          "$ref": "#/$defs/smoke"
+        },
+        "dap_smoke": {
+          "$ref": "#/$defs/smoke"
+        }
+      }
+    },
+    "file_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256",
+        "file_description"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file_description": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact",
+        "embedded_binaries",
+        "matches_directory"
+      ],
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/file_artifact"
+        },
+        "embedded_binaries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/embedded_artifact"
+          }
+        },
+        "matches_directory": {
+          "type": "boolean"
+        }
+      }
+    },
+    "embedded_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "smoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status",
+        "observed_status",
+        "binary",
+        "binary_matches"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "invalid",
+            "missing"
+          ]
+        },
+        "observed_status": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "binary": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "binary_matches": {
+          "type": "boolean"
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binaries",
+        "combined",
+        "archive",
+        "structural_parity",
+        "target_architecture_match",
+        "baseline_archive_identity",
+        "candidate_archive_identity",
+        "baseline_smokes_pass",
+        "candidate_smokes_pass",
+        "source_identity_bound",
+        "material_reduction",
+        "component_growth_within_policy",
+        "repeat_confirmed",
+        "repeat_requirement_satisfied"
+      ],
+      "properties": {
+        "binaries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/size_delta"
+          }
+        },
+        "combined": {
+          "$ref": "#/$defs/size_delta"
+        },
+        "archive": {
+          "$ref": "#/$defs/size_delta"
+        },
+        "structural_parity": {
+          "type": "boolean"
+        },
+        "target_architecture_match": {
+          "type": "boolean"
+        },
+        "baseline_archive_identity": {
+          "type": "boolean"
+        },
+        "candidate_archive_identity": {
+          "type": "boolean"
+        },
+        "baseline_smokes_pass": {
+          "type": "boolean"
+        },
+        "candidate_smokes_pass": {
+          "type": "boolean"
+        },
+        "source_identity_bound": {
+          "type": "boolean"
+        },
+        "material_reduction": {
+          "type": "boolean"
+        },
+        "component_growth_within_policy": {
+          "type": "boolean"
+        },
+        "repeat_confirmed": {
+          "type": "boolean"
+        },
+        "repeat_requirement_satisfied": {
+          "type": "boolean"
+        }
+      }
+    },
+    "size_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_bytes",
+        "candidate_bytes",
+        "reduction_bytes",
+        "reduction_basis_points"
+      ],
+      "properties": {
+        "baseline_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "candidate_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reduction_bytes": {
+          "type": "integer"
+        },
+        "reduction_basis_points": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,75 @@
+# perl-lsp Docker image — Perl runtime + perllsp LSP server
+#
+# Stage 1: Build the perllsp binary from source
+# Stage 2: Minimal runtime image with Perl 5.40 installed (supports class/method
+#          and try/catch syntax — #5210)
+#
+# Usage (stdio LSP transport):
+#   docker run --rm -i -v "${PWD}:/workspace" ghcr.io/effortlessmetrics/perl-lsp:latest-perl
+#
+# Build locally:
+#   docker build -f .docker/perl-lsp/Dockerfile -t perl-lsp:local .
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: builder
+# ─────────────────────────────────────────────────────────────────────────────
+FROM rust:1.95-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy workspace manifests first for layer-cache efficiency.
+# We copy the full tree because the workspace has 130+ crates; selective
+# copy would be fragile and rarely faster.
+COPY Cargo.toml Cargo.lock ./
+COPY .cargo/ ./.cargo/
+COPY crates/ ./crates/
+COPY xtask/ ./xtask/
+
+# Build the public perllsp and perl-dap binaries in release mode.
+RUN cargo build -p perllsp --release --bin perllsp \
+    && cargo build -p perl-dap --release --bin perl-dap
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: runtime
+# ─────────────────────────────────────────────────────────────────────────────
+# Use the official Perl 5.40 image as the runtime base instead of
+# debian:bookworm-slim + apt perl (which ships Perl 5.36). Perl 5.40 provides
+# the `class`/`method` syntax (5.38+) and `try`/`catch` (5.34+, experimental
+# stabilization in 5.40) that modern Perl projects depend on (#5210).
+FROM perl:5.40-slim-bookworm AS runtime
+
+# Common CPAN modules useful for real projects.
+# Install Moose via cpanm (into the Perl 5.40 tree) rather than apt
+# (libmoose-perl targets the Debian system Perl 5.36 and would create two
+# incompatible Perl ecosystems — chatgpt-codex review on PR #5720).
+# ca-certificates is installed via apt (system-level, not Perl-specific).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && cpanm --no-wget Moose \
+    && rm -rf /root/.cpanm
+
+# Copy the compiled LSP server and DAP adapter binaries.
+COPY --from=builder /build/target/release/perllsp /usr/local/bin/perllsp
+COPY --from=builder /build/target/release/perl-dap /usr/local/bin/perl-dap
+
+RUN chmod +x /usr/local/bin/perllsp /usr/local/bin/perl-dap
+
+# Non-root user for safety.
+RUN useradd --create-home --uid 10001 --shell /bin/bash appuser
+
+# Default workspace mount point — callers bind-mount their Perl project here.
+RUN mkdir -p /workspace && chown appuser:appuser /workspace
+
+WORKDIR /workspace
+USER appuser
+
+# LSP communicates via stdin/stdout — no port exposure needed.
+# Pass --help to see available options.
+ENTRYPOINT ["perllsp"]

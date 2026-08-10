@@ -1,0 +1,330 @@
+{
+  "schema": "bounded-subagent-result-v1-fixtures",
+  "contract": "docs/agents/bounded-subagent-result-v1.schema.json",
+  "cases": [
+    {
+      "name": "valid-exact-head-review",
+      "valid": true,
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-review",
+        "issue": 1234,
+        "pr": 5678,
+        "role": "reviewer",
+        "basis_sha": "0123456789abcdef",
+        "head_sha": "89abcdef01234567",
+        "verdict": "clear",
+        "summary": "No correctness finding was identified at the inspected head.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind": "independent", "ref": "github:PR/5678@89abcdef01234567", "claim": "The review is bound to the exact head."}],
+        "uncertainty": [],
+        "recommended_next_action": "Continue integration adjudication.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "valid-writer-author-claim",
+      "valid": true,
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-build",
+        "issue": 1234,
+        "role": "writer",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "clear",
+        "summary": "The admitted edit cage was changed and focused proof was run.",
+        "findings": [],
+        "changes": [{"path": "crates/example/src/example.rs", "summary": "Implemented the accepted change."}],
+        "proof": [{"kind": "author_claim", "ref": "local:cargo-test-example", "claim": "The focused test passed locally."}],
+        "uncertainty": ["The local green result is an author claim until independent current-head proof exists."],
+        "recommended_next_action": "Publish and request exact-head review.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "valid-contradiction",
+      "valid": true,
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-plan",
+        "issue": 1234,
+        "role": "planner",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "not_proven",
+        "summary": "The plan premise conflicts with current external-oracle evidence.",
+        "findings": [{"severity": "P1", "claim": "The runtime capability is available.", "evidence":[{"kind":"author_claim","ref":"issue:1234:plan"},{"kind":"independent","ref":"runtime-help:2026-07-15"}]}],
+        "changes": [],
+        "proof": [{"kind": "independent", "ref": "runtime-help:2026-07-15", "claim": "The supported runtime reference was inspected."}],
+        "uncertainty": ["The issue plan and its comments are one source, not independent confirmations."],
+        "recommended_next_action": "Return to the issue before writing configuration.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "valid-large-log-overflow",
+      "valid": true,
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-ci",
+        "issue": 1234,
+        "pr": 5678,
+        "role": "ci_triager",
+        "basis_sha": "0123456789abcdef",
+        "head_sha": "89abcdef01234567",
+        "verdict": "blocked",
+        "summary": "The check failed in runner setup before repository proof executed.",
+        "findings": [{"severity":"P1","claim":"The failure is infrastructure-side.","evidence":[{"kind":"observed","ref":"github:check/ci@89abcdef01234567"}]}],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"github:check/ci@89abcdef01234567","claim":"The job stopped before its test step."}],
+        "uncertainty": ["A rerun is required."],
+        "recommended_next_action": "Rerun on the same head when the runner is available.",
+        "overflow": [{"ref":"github:check-log/ci@89abcdef01234567","reason":"Full log retained outside the result.","truncated":true,"counts":{"selected":20,"omitted":480,"total":500}}]
+      }
+    },
+    {
+      "name": "valid-scoped-none-found",
+      "valid": true,
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-ownership",
+        "issue": 1234,
+        "role": "explorer",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "clear",
+        "summary": "No owner declaration was found in the named documentation surfaces.",
+        "findings": [{"severity":"info","claim":"No owner declaration was found in the read scope.","evidence":[{"kind":"none_found","ref":"search:docs/agents","scope":"docs/agents/** and docs/reference/OWNERSHIP.md"}]}],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"search:docs/agents","claim":"The named surfaces were searched."}],
+        "uncertainty": ["This does not establish repository-wide absence."],
+        "recommended_next_action": "Return the scoped result to the root for synthesis.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "valid-cleanup",
+      "valid": true,
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-cleanup",
+        "issue": 1234,
+        "role": "cleanup_auditor",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "clear",
+        "summary": "Lane-created artifacts are reconciled without removing ambiguous work.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"git:worktree-list","claim":"The lane worktree was inspected."}],
+        "uncertainty": [],
+        "recommended_next_action": "Record the reconciliation in the issue.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "invalid-review-without-head",
+      "valid": false,
+      "expected": "reviewer results require PR and exact head identity",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-review",
+        "issue": 1234,
+        "pr": 5678,
+        "role": "reviewer",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "clear",
+        "summary": "Review completed.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"review:1234","claim":"Review completed."}],
+        "uncertainty": [],
+        "recommended_next_action": "Continue.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "invalid-read-only-change",
+      "valid": false,
+      "expected": "non-writer results cannot report changes",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-review",
+        "issue": 1234,
+        "role": "reviewer",
+        "basis_sha": "0123456789abcdef",
+        "pr": 5678,
+        "head_sha": "89abcdef01234567",
+        "verdict": "clear",
+        "summary": "Review completed.",
+        "findings": [],
+        "changes": [{"path":"docs/example.md","summary":"Edited documentation."}],
+        "proof": [{"kind":"observed","ref":"review:1234","claim":"Review completed."}],
+        "uncertainty": [],
+        "recommended_next_action": "Continue.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "invalid-truncated-without-counts",
+      "valid": false,
+      "expected": "truncated overflow requires selected, omitted, and total counts",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-ci",
+        "issue": 1234,
+        "role": "ci_triager",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "blocked",
+        "summary": "The check is blocked.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"ci:1234","claim":"The check is blocked."}],
+        "uncertainty": [],
+        "recommended_next_action": "Rerun.",
+        "overflow": [{"ref":"ci:1234:log","reason":"Full log omitted.","truncated":true}]
+      }
+    },
+    {
+      "name": "invalid-truncated-with-zero-omitted",
+      "valid": false,
+      "expected": "truncated overflow requires omitted to be greater than zero",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-ci",
+        "issue": 1234,
+        "role": "ci_triager",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "blocked",
+        "summary": "The check is blocked.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"ci:1234","claim":"The check is blocked."}],
+        "uncertainty": [],
+        "recommended_next_action": "Rerun.",
+        "overflow": [{"ref":"ci:1234:log","reason":"No entries were omitted.","truncated":true,"counts":{"selected":10,"omitted":0,"total":10}}]
+      }
+    },
+    {
+      "name": "invalid-truncated-count-sum-mismatch",
+      "valid": false,
+      "expected": "selected plus omitted must equal total",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-ci",
+        "issue": 1234,
+        "role": "ci_triager",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "blocked",
+        "summary": "The check is blocked.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"ci:1234","claim":"The check is blocked."}],
+        "uncertainty": [],
+        "recommended_next_action": "Rerun.",
+        "overflow": [{"ref":"ci:1234:log","reason":"The count metadata is contradictory.","truncated":true,"counts":{"selected":10,"omitted":5,"total":20}}]
+      }
+    },
+    {
+      "name": "invalid-none-found-without-scope",
+      "valid": false,
+      "expected": "none_found evidence requires a searched scope",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-search",
+        "issue": 1234,
+        "role": "explorer",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "clear",
+        "summary": "Nothing was found.",
+        "findings": [{"severity":"info","claim":"Nothing was found.","evidence":[{"kind":"none_found","ref":"search:unknown"}]}],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"search:unknown","claim":"Search completed."}],
+        "uncertainty": [],
+        "recommended_next_action": "Continue.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "valid-pre-pr-exact-head",
+      "valid": true,
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-build",
+        "issue": 1234,
+        "role": "writer",
+        "basis_sha": "0123456789abcdef",
+        "head_sha": "89abcdef01234567",
+        "verdict": "clear",
+        "summary": "The writer returned the exact committed implementation head before PR publication.",
+        "findings": [],
+        "changes": [{"path":"docs/example.md","summary":"Implemented the bounded contract."}],
+        "proof": [{"kind":"author_claim","ref":"git:commit/89abcdef01234567","claim":"The writer committed the admitted change at this exact head."}],
+        "uncertainty": ["Independent review is still owed."],
+        "recommended_next_action": "Publish the branch and request exact-head review.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "invalid-proof-without-kind",
+      "valid": false,
+      "expected": "proof references require evidence kind",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-review",
+        "issue": 1234,
+        "role": "reviewer",
+        "pr": 5678,
+        "basis_sha": "0123456789abcdef",
+        "head_sha": "89abcdef01234567",
+        "verdict": "clear",
+        "summary": "Review completed.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"ref":"review:1234","claim":"Review completed."}],
+        "uncertainty": [],
+        "recommended_next_action": "Continue.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "invalid-head-without-pr-for-reviewer",
+      "valid": false,
+      "expected": "reviewer results require PR and exact head identity",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-review",
+        "issue": 1234,
+        "role": "reviewer",
+        "basis_sha": "0123456789abcdef",
+        "head_sha": "89abcdef01234567",
+        "verdict": "clear",
+        "summary": "Review completed.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind":"observed","ref":"review:1234","claim":"Review completed."}],
+        "uncertainty": [],
+        "recommended_next_action": "Continue.",
+        "overflow": []
+      }
+    },
+    {
+      "name": "invalid-proof-none-found-without-scope",
+      "valid": false,
+      "expected": "none_found proof requires a searched scope",
+      "packet": {
+        "schema": "bounded-subagent-result-v1",
+        "work_item": "issue-1234-search",
+        "issue": 1234,
+        "role": "explorer",
+        "basis_sha": "0123456789abcdef",
+        "verdict": "clear",
+        "summary": "The named search found no result.",
+        "findings": [],
+        "changes": [],
+        "proof": [{"kind":"none_found","ref":"search:unknown","claim":"Search completed."}],
+        "uncertainty": [],
+        "recommended_next_action": "Continue.",
+        "overflow": []
+      }
+    }
+  ]
+}

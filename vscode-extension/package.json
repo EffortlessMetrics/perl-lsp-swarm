@@ -1,0 +1,1461 @@
+{
+  "name": "perl-lsp-rs",
+  "displayName": "Perl Language Server (perl-lsp)",
+  "description": "Native Rust LSP + DAP for Perl 5. Code intelligence, diagnostics, refactoring, tests, and step debugging.",
+  "version": "0.17.0",
+  "publisher": "EffortlessMetrics",
+  "preview": true,
+  "markdown": "github",
+  "engines": {
+    "node": ">=26.0.0 <27",
+    "npm": "11.18.0",
+    "vscode": "^1.125.0"
+  },
+  "packageManager": "npm@11.18.0",
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters",
+    "Debuggers",
+    "Testing"
+  ],
+  "keywords": [
+    "perl",
+    "perl5",
+    "language-server",
+    "lsp",
+    "debugger"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Perl LSP reads files through the OS file system and cannot serve virtual workspaces (vscode.dev, github.dev, GitHub Repositories)."
+    },
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EffortlessMetrics/perl-lsp"
+  },
+  "bugs": {
+    "url": "https://github.com/EffortlessMetrics/perl-lsp/issues"
+  },
+  "homepage": "https://github.com/EffortlessMetrics/perl-lsp#readme",
+  "galleryBanner": {
+    "color": "#1e3a8a",
+    "theme": "dark"
+  },
+  "license": "MIT",
+  "sponsor": {
+    "url": "https://github.com/EffortlessMetrics/perl-lsp"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:perl",
+    "onLanguage:perl5",
+    "onLanguage:gherkin",
+    "onWalkthrough:perl-lsp.gettingStarted",
+    "onDebugResolve:perl",
+    "onDebugInitialConfigurations"
+  ],
+  "contributes": {
+    "semanticTokenColors": {
+      "sql_string": {
+        "foreground": "#56b6c2",
+        "dark_foreground": "#56b6c2",
+        "light_foreground": "#098658",
+        "highContrast_foreground": "#4ec9b0"
+      },
+      "sql_heredoc_keyword": {
+        "foreground": "#c678dd",
+        "dark_foreground": "#c678dd",
+        "light_foreground": "#a31515",
+        "highContrast_foreground": "#d7ba7d"
+      },
+      "json_heredoc_key": {
+        "foreground": "#e5c07b",
+        "dark_foreground": "#e5c07b",
+        "light_foreground": "#8250df",
+        "highContrast_foreground": "#9cdcfe"
+      },
+      "label": {
+        "foreground": "#7f848e",
+        "dark_foreground": "#7f848e",
+        "light_foreground": "#6a737d",
+        "highContrast_foreground": "#dcdcaa"
+      }
+    },
+    "languages": [
+      {
+        "id": "perl",
+        "aliases": [
+          "Perl",
+          "perl",
+          "Perl 5"
+        ],
+        "extensions": [
+          ".pl",
+          ".PL",
+          ".cgi",
+          ".fcgi",
+          ".pm",
+          ".xs",
+          ".xsi",
+          ".pod",
+          ".t",
+          ".psgi",
+          ".mason",
+          ".mas",
+          ".tt",
+          ".tt2",
+          ".ep",
+          ".i"
+        ],
+        "firstLine": "^#!.*\\bperl\\b",
+        "configuration": "./language-configuration.json",
+        "filenames": [
+          "Makefile.PL",
+          "Build.PL",
+          "cpanfile",
+          "cpanfile.snapshot",
+          "dist.ini"
+        ]
+      },
+      {
+        "id": "gherkin",
+        "aliases": [
+          "Gherkin",
+          "gherkin",
+          "Cucumber"
+        ],
+        "extensions": [
+          ".feature"
+        ],
+        "configuration": "./gherkin-language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "perl",
+        "scopeName": "source.perl",
+        "path": "./syntaxes/perl.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.c.perl": "c",
+          "meta.embedded.block.perl.perl": "perl"
+        }
+      },
+      {
+        "language": "gherkin",
+        "scopeName": "source.gherkin",
+        "path": "./syntaxes/gherkin.tmLanguage.json"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "perl"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "perl",
+        "label": "Perl",
+        "program": "./out/extension.js",
+        "runtime": "node",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Perl script to debug",
+                "default": "${workspaceFolder}/script.pl"
+              },
+              "args": {
+                "type": "array",
+                "description": "Command line arguments passed to the script",
+                "default": [],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "perlPath": {
+                "type": "string",
+                "description": "Path to the Perl executable",
+                "default": "perl"
+              },
+              "includePaths": {
+                "type": "array",
+                "description": "Additional include paths (passed as -I)",
+                "default": [],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Automatically stop at the first line",
+                "default": true
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Current working directory for the script",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables",
+                "default": {}
+              },
+              "debuggerBackend": {
+                "type": "string",
+                "enum": [
+                  "native",
+                  "external",
+                  "ptkdb-bootstrap"
+                ],
+                "enumDescriptions": [
+                  "Native perl -d adapter (default)",
+                  "External debugger peer (e.g. Devel::ptkdb) over the Perl Debugger Peer Protocol",
+                  "Generate a .ptkdbrc bootstrap and launch perl -d:ptkdb (no live bridge)"
+                ],
+                "description": "Which debug backend perl-dap should drive",
+                "default": "native"
+              },
+              "externalDebugger": {
+                "type": "object",
+                "description": "Configuration for debuggerBackend=external (the Perl Debugger Peer Protocol)",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "ptkdb",
+                      "custom"
+                    ],
+                    "description": "The external debugger engine to cooperate with",
+                    "default": "ptkdb"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "connect",
+                      "listen",
+                      "launchPeer"
+                    ],
+                    "enumDescriptions": [
+                      "perl-dap connects out to a peer already listening at host:port (the supported rendezvous)",
+                      "perl-dap listens for the peer to connect (not yet implemented)",
+                      "perl-dap launches the peer itself (not yet implemented)"
+                    ],
+                    "description": "How perl-dap rendezvous with the peer. 'connect' is the supported mode; 'listen'/'launchPeer' are future work.",
+                    "default": "connect"
+                  },
+                  "control": {
+                    "type": "string",
+                    "enum": [
+                      "mirror",
+                      "cooperative",
+                      "dapControlled"
+                    ],
+                    "description": "Who owns stepping/control. 'mirror' (the peer's UI stays authoritative) is the supported default",
+                    "default": "mirror"
+                  },
+                  "host": {
+                    "type": "string",
+                    "description": "Host for the peer socket",
+                    "default": "127.0.0.1"
+                  },
+                  "port": {
+                    "type": "number",
+                    "description": "Port of the running debugger peer to connect to",
+                    "default": 13604
+                  }
+                }
+              }
+            }
+          },
+          "attach": {
+            "properties": {
+              "processId": {
+                "type": "number",
+                "description": "Attach to an existing Perl process by PID"
+              },
+              "host": {
+                "type": "string",
+                "description": "Host for TCP attach mode",
+                "default": "localhost"
+              },
+              "port": {
+                "type": "number",
+                "description": "Port for TCP attach mode",
+                "default": 13603
+              },
+              "timeout": {
+                "type": "number",
+                "description": "TCP attach timeout in milliseconds",
+                "default": 5000
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "perl",
+            "request": "launch",
+            "name": "Perl: Launch Script",
+            "program": "${workspaceFolder}/script.pl",
+            "stopOnEntry": true
+          },
+          {
+            "type": "perl",
+            "request": "attach",
+            "name": "Perl: Attach to Debugger",
+            "host": "localhost",
+            "port": 13603,
+            "timeout": 5000
+          },
+          {
+            "type": "perl",
+            "request": "launch",
+            "name": "Perl: ptkdb peer (mirror)",
+            "program": "${workspaceFolder}/script.pl",
+            "debuggerBackend": "external",
+            "externalDebugger": {
+              "kind": "ptkdb",
+              "mode": "connect",
+              "control": "mirror",
+              "host": "127.0.0.1",
+              "port": 13604
+            }
+          }
+        ]
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "perl-lsp.mcp-servers",
+        "label": "Perl LSP MCP Servers"
+      }
+    ],
+    "configuration": [
+      {
+        "title": "Perl LSP: Core",
+        "properties": {
+          "perl-lsp.serverPath": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "order": 10,
+            "description": "Absolute path to the perllsp binary. Leave empty to auto-download a release build.",
+            "markdownDescription": "Absolute path to the `perllsp` binary. Leave empty to auto-download a release build."
+          },
+          "perl-lsp.autoDownload": {
+            "type": "boolean",
+            "default": true,
+            "scope": "machine",
+            "order": 20,
+            "description": "Automatically download the perllsp binary if it is not found locally. Disable this for internal deployments that set serverPath.",
+            "markdownDescription": "Automatically download the `perllsp` binary if it is not found locally. Disable this for internal deployments that set `serverPath`."
+          },
+          "perl-lsp.includePaths": {
+            "type": "array",
+            "default": [
+              "lib",
+              "local/lib/perl5"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "scope": "resource",
+            "order": 30,
+            "description": "Additional library paths (like use lib) to search for Perl modules. Set this if you see \"Can't locate Foo/Bar.pm\" style module lookup errors. Relative paths resolve from the workspace root.",
+            "markdownDescription": "Additional library paths (like `use lib`) to search for Perl modules. Set this if you see `Can't locate Foo/Bar.pm` style module lookup errors. Relative paths resolve from the workspace root. Absolute external roots belong in `#perl-lsp.externalIncludePaths#`."
+          },
+          "perl-lsp.externalIncludePaths": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "scope": "machine",
+            "order": 31,
+            "description": "Absolute external library roots for module resolution. User/machine scope only — workspace settings cannot set this key.",
+            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Use this when your CPAN/local library lives outside the workspace."
+          },
+          "perl-lsp.enableSemanticTokens": {
+            "type": "boolean",
+            "default": true,
+            "scope": "resource",
+            "order": 50,
+            "description": "Enable semantic syntax highlighting. When disabled, the editor falls back to TextMate grammar coloring only.",
+            "markdownDescription": "Enable semantic syntax highlighting. When disabled, the editor falls back to TextMate grammar coloring only."
+          },
+          "perl-lsp.testAdapterTimeoutMs": {
+            "type": "number",
+            "default": 120000,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 51,
+            "description": "Maximum time in milliseconds for a Perl Test Explorer prove run before it is terminated.",
+            "markdownDescription": "Maximum time in milliseconds for a Perl Test Explorer `prove` run before it is terminated."
+          },
+          "perl-lsp.testAdapterMaxOutputBytes": {
+            "type": "number",
+            "default": 1048576,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 52,
+            "description": "Maximum combined stdout and stderr captured from a Perl Test Explorer prove run.",
+            "markdownDescription": "Maximum combined `stdout` and `stderr` captured from a Perl Test Explorer `prove` run."
+          },
+          "perl-lsp.testAdapterTerminationGraceMs": {
+            "type": "number",
+            "default": 1000,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 53,
+            "description": "Grace period in milliseconds between requesting prove termination and forcing it.",
+            "markdownDescription": "Grace period in milliseconds between requesting `prove` termination and forcing it."
+          }
+        }
+      },
+      {
+        "title": "Perl LSP: Editor",
+        "properties": {
+          "perl-lsp.enableFormatting": {
+            "type": "boolean",
+            "default": true,
+            "scope": "resource",
+            "order": 10,
+            "description": "Enable native Perl document formatting.",
+            "markdownDescription": "Enable native Perl document formatting. `perltidy` is not required unless you explicitly select an external compatibility mode."
+          },
+          "perl-lsp.formatOnSave": {
+            "type": "boolean",
+            "default": false,
+            "scope": "resource",
+            "order": 20,
+            "description": "Format the document automatically on save using the configured formatter engine. The default engine is native.",
+            "markdownDescription": "Format the document automatically on save using the configured formatter engine. The default engine is native; `perltidy` is used only when an external compatibility mode is explicitly selected."
+          },
+          "perl-lsp.perltidyConfig": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "order": 30,
+            "description": "Path to a .perltidyrc profile used for compatibility reporting or explicit external perltidy mode. It is not required for native formatting. If omitted, perl-lsp searches the workspace and home directory.",
+            "markdownDescription": "Path to a `.perltidyrc` profile used for compatibility reporting or explicit external `perltidy` mode. It is not required for native formatting. If omitted, perl-lsp searches the workspace and home directory."
+          },
+          "perl-lsp.critic.enabled": {
+            "type": "boolean",
+            "default": true,
+            "scope": "resource",
+            "order": 32,
+            "description": "Enable native critic diagnostics. Native critic is built in and requires no external tools.",
+            "markdownDescription": "Enable native critic diagnostics. Native critic is built into perl-lsp and requires no external tools."
+          },
+          "perl-lsp.critic.engine": {
+            "type": "string",
+            "enum": [
+              "native",
+              "legacy"
+            ],
+            "enumDescriptions": [
+              "Native built-in critic (default, no external tools required)",
+              "Legacy external Perl::Critic (requires the perlcritic binary on PATH)"
+            ],
+            "default": "native",
+            "scope": "machine",
+            "order": 33,
+            "description": "Critic engine. 'native' uses the built-in critic (default); 'legacy' shells out to an external perlcritic binary for compatibility.",
+            "markdownDescription": "Critic engine. `native` uses the built-in critic (default, no external tools); `legacy` shells out to an external `perlcritic` binary for compatibility and requires it on `PATH`."
+          },
+          "perl-lsp.critic.profile": {
+            "type": "string",
+            "enum": [
+              "recommended",
+              "strict"
+            ],
+            "enumDescriptions": [
+              "Recommended native rule set (balanced default)",
+              "Strict native rule set (more rules enabled)"
+            ],
+            "default": "recommended",
+            "scope": "resource",
+            "order": 34,
+            "description": "Native critic rule profile.",
+            "markdownDescription": "Native critic rule profile: `recommended` (balanced default) or `strict` (more rules enabled)."
+          },
+          "perl-lsp.critic.severity": {
+            "type": "number",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "enumDescriptions": [
+              "Severity 1 - very permissive",
+              "Severity 2 - permissive",
+              "Severity 3 - balanced default",
+              "Severity 4 - strict",
+              "Severity 5 - very strict"
+            ],
+            "default": 3,
+            "scope": "resource",
+            "order": 35,
+            "description": "Critic minimum severity (1 = least severe/reports more, 5 = most severe/reports less).",
+            "markdownDescription": "Critic minimum severity (`1` = least severe/reports more, `5` = most severe/reports less)."
+          },
+          "perl-lsp.critic.include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "scope": "resource",
+            "order": 36,
+            "description": "Only these native critic rule IDs run, including ones outside the selected profile (e.g. native.variables.unused_lexical).",
+            "markdownDescription": "Only these native critic rule IDs run, including ones outside the selected profile (e.g. `native.variables.unused_lexical`)."
+          },
+          "perl-lsp.critic.exclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "scope": "resource",
+            "order": 37,
+            "description": "Native critic rule IDs to disable (e.g. native.common.assignment_in_condition).",
+            "markdownDescription": "Native critic rule IDs to disable (e.g. `native.common.assignment_in_condition`)."
+          },
+          "perl-lsp.perlcritic.enabled": {
+            "type": "boolean",
+            "default": false,
+            "scope": "resource",
+            "order": 40,
+            "deprecationMessage": "Deprecated: use perl-lsp.critic.enabled (with perl-lsp.critic.engine = \"legacy\" for the external binary). This alias still works but perl-lsp.critic.* wins if both are set.",
+            "markdownDeprecationMessage": "**Deprecated:** use `perl-lsp.critic.enabled` (with `perl-lsp.critic.engine` = `legacy` for the external binary). This alias still works but `perl-lsp.critic.*` wins if both are set.",
+            "description": "Enable the optional external perlcritic diagnostics for legacy compatibility. Native critic diagnostics are on by default; this setting only takes effect when the critic engine is set to legacy in .perl-lsp.toml (the perlcritic binary must then be on PATH).",
+            "markdownDescription": "Enable the optional external `perlcritic` diagnostics for legacy compatibility. Native critic diagnostics are always on by default; this setting only takes effect when `[critic].engine = \"legacy\"` is set in `.perl-lsp.toml`, in which case the `perlcritic` binary must be on `PATH`."
+          },
+          "perl-lsp.perlcritic.severity": {
+            "type": "number",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "enumDescriptions": [
+              "Severity 1 - very permissive",
+              "Severity 2 - permissive",
+              "Severity 3 - balanced default",
+              "Severity 4 - strict",
+              "Severity 5 - very strict"
+            ],
+            "default": 3,
+            "scope": "resource",
+            "order": 41,
+            "deprecationMessage": "Deprecated: use perl-lsp.critic.severity. This alias still works but perl-lsp.critic.* wins if both are set.",
+            "markdownDeprecationMessage": "**Deprecated:** use `perl-lsp.critic.severity`. This alias still works but `perl-lsp.critic.*` wins if both are set.",
+            "description": "Critic minimum severity (1 = least severe/reports more, 5 = most severe/reports less). Applies to the native critic; the legacy external engine uses the same scale.",
+            "markdownDescription": "Critic minimum severity (`1` = least severe/reports more, `5` = most severe/reports less). Applies to the native critic; the legacy external engine uses the same scale."
+          },
+          "perl-lsp.perlcritic.profile": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "order": 42,
+            "deprecationMessage": "Deprecated: use perl-lsp.critic.profile for the native profile, or the legacy [critic] settings in .perl-lsp.toml for an external .perlcriticrc.",
+            "markdownDeprecationMessage": "**Deprecated:** use `perl-lsp.critic.profile` for the native profile, or the legacy `[critic]` settings in `.perl-lsp.toml` for an external `.perlcriticrc`.",
+            "description": "Optional path to a .perlcriticrc profile file used by the extension when synchronizing critic settings.",
+            "markdownDescription": "Optional path to a `.perlcriticrc` profile file used by the extension when synchronizing critic settings."
+          },
+          "perl-lsp.perlcritic.theme": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "order": 43,
+            "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile instead.",
+            "markdownDeprecationMessage": "**No effect.** This setting does nothing — it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` to select the native rule profile.",
+            "description": "[No effect] Legacy placeholder — will be removed.",
+            "markdownDescription": "**[No effect]** Legacy placeholder — will be removed. Use `perl-lsp.critic.profile` instead."
+          },
+          "perl-lsp.enableTestIntegration": {
+            "type": "boolean",
+            "default": true,
+            "scope": "resource",
+            "order": 60,
+            "description": "Enable Test::More and Test2 integration for the VS Code Test Explorer panel.",
+            "markdownDescription": "Enable `Test::More` and `Test2` integration for the VS Code Test Explorer panel."
+          },
+          "perl-lsp.autoPopulateNewFiles": {
+            "type": "boolean",
+            "default": true,
+            "scope": "resource",
+            "order": 70,
+            "description": "Auto-populate new .pm files with a package declaration and new .t files with Test::More boilerplate.",
+            "markdownDescription": "Auto-populate new `.pm` files with a `package` declaration and new `.t` files with `Test::More` boilerplate."
+          }
+        }
+      },
+      {
+        "title": "Perl LSP: AI Completion",
+        "properties": {
+          "perl-lsp.aiCompletion.enabled": {
+            "type": "boolean",
+            "default": false,
+            "scope": "machine",
+            "order": 10,
+            "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
+            "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+          },
+          "perl-lsp.aiCompletion.streaming.enabled": {
+            "type": "boolean",
+            "default": true,
+            "scope": "machine",
+            "order": 20,
+            "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
+            "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+          }
+        }
+      },
+      {
+        "title": "Perl LSP: Advanced",
+        "properties": {
+          "perl-lsp.channel": {
+            "type": "string",
+            "enum": [
+              "latest",
+              "stable",
+              "tag"
+            ],
+            "enumDescriptions": [
+              "Track the newest published release.",
+              "Stay on the latest stable release line.",
+              "Pin the extension to a specific release tag set in versionTag."
+            ],
+            "default": "latest",
+            "scope": "machine",
+            "order": 10,
+            "description": "Release channel for the perllsp binary: latest for newest release, stable for latest stable line, tag for a pinned version.",
+            "markdownDescription": "Release channel for the `perllsp` binary: `latest` for newest release, `stable` for latest stable line, `tag` for a pinned version set in `versionTag`."
+          },
+          "perl-lsp.versionTag": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "order": 20,
+            "description": "Specific release tag (for example v0.12.1) to pin when channel is set to tag.",
+            "markdownDescription": "Specific release tag (for example `v0.12.1`) to pin when `channel` is set to `tag`."
+          },
+          "perl-lsp.downloadBaseUrl": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "order": 30,
+            "description": "Internal base URL hosting perllsp archives and SHA256SUMS, bypassing GitHub releases. Leave empty to use GitHub releases.",
+            "markdownDescription": "Internal base URL hosting perllsp archives and SHA256SUMS, bypassing GitHub releases. Example: `https://internal.example.com/perllsp/`. Leave empty to use GitHub releases."
+          },
+          "perl-lsp.linuxLibc": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "gnu",
+              "glibc",
+              "musl"
+            ],
+            "enumDescriptions": [
+              "Detect Linux libc automatically.",
+              "Use the GNU/glibc Linux release asset.",
+              "Alias for gnu.",
+              "Use the musl Linux release asset."
+            ],
+            "default": "auto",
+            "scope": "machine",
+            "order": 34,
+            "description": "Linux libc release asset selection. Keep auto unless you need to force GNU/glibc or musl.",
+            "markdownDescription": "Linux libc release asset selection for managed `perllsp` downloads. Keep `auto` unless you need to force `gnu`/`glibc` or `musl`."
+          },
+          "perl-lsp.updateCheckInterval": {
+            "type": "number",
+            "default": 24,
+            "minimum": 0,
+            "scope": "machine",
+            "order": 35,
+            "description": "How often (in hours) to check for a new perllsp binary version in the background. Set to 0 to disable automatic update checks.",
+            "markdownDescription": "How often (in hours) to check for a new `perllsp` binary version in the background. Set to `0` to disable automatic update checks."
+          },
+          "perl-lsp.autoUpdate": {
+            "type": "boolean",
+            "default": false,
+            "scope": "machine",
+            "order": 36,
+            "description": "Automatically download and install a new perllsp binary when an update is available, without prompting. When disabled, a notification is shown instead.",
+            "markdownDescription": "Automatically download and install a new `perllsp` binary when an update is available, without prompting. When disabled, a notification is shown instead."
+          },
+          "perl-lsp.featureProfile": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "ga-lock",
+              "ga",
+              "prod",
+              "production",
+              "all"
+            ],
+            "enumDescriptions": [
+              "Choose the profile automatically based on the bundled binary.",
+              "Lock to the general-availability profile with conservative defaults.",
+              "Use the general-availability profile.",
+              "Use the production profile.",
+              "Alias for prod (production profile).",
+              "Enable every supported feature, including experimental ones."
+            ],
+            "default": "auto",
+            "scope": "window",
+            "order": 40,
+            "description": "Runtime LSP feature profile. auto follows the bundled binary build mode. Use ga or prod for production-safe features only. Use all to enable experimental features.",
+            "markdownDescription": "Runtime LSP feature profile. `auto` follows the bundled binary build mode. Use `ga` or `prod` for production-safe features only. Use `all` to enable experimental features."
+          },
+          "perl-lsp.disabledFeatures": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lsp.completion",
+                "lsp.hover",
+                "lsp.definition",
+                "lsp.declaration",
+                "lsp.references",
+                "lsp.document_symbol",
+                "lsp.workspace_symbol",
+                "lsp.document_link",
+                "lsp.code_action",
+                "lsp.code_lens",
+                "lsp.rename",
+                "lsp.implementation",
+                "lsp.type_definition",
+                "lsp.folding_range",
+                "lsp.selection_range",
+                "lsp.linked_editing_range",
+                "lsp.inlay_hint",
+                "lsp.semantic_tokens",
+                "lsp.call_hierarchy",
+                "lsp.type_hierarchy",
+                "lsp.pull_diagnostics",
+                "lsp.document_color",
+                "lsp.signature_help",
+                "lsp.document_highlight",
+                "lsp.formatting",
+                "lsp.range_formatting",
+                "lsp.ranges_formatting",
+                "lsp.on_type_formatting",
+                "lsp.inline_completion",
+                "lsp.inline_value",
+                "lsp.notebook_document_sync",
+                "lsp.notebook_cell_execution",
+                "lsp.moniker",
+                "lsp.execute_command"
+              ]
+            },
+            "default": [],
+            "scope": "window",
+            "order": 50,
+            "description": "Feature IDs to disable at server startup. Use canonical lsp.* IDs such as lsp.semantic_tokens. Changes take effect after restarting the language server.",
+            "markdownDescription": "Feature IDs to disable at server startup. Use canonical `lsp.*` IDs such as `lsp.semantic_tokens`. Changes take effect after restarting the language server."
+          },
+          "perl-lsp.trace.server": {
+            "type": "string",
+            "enum": [
+              "off",
+              "messages",
+              "verbose"
+            ],
+            "enumDescriptions": [
+              "Disable protocol tracing.",
+              "Log request and response message summaries to the output channel.",
+              "Log full verbose protocol details including all message payloads."
+            ],
+            "default": "off",
+            "scope": "window",
+            "order": 60,
+            "description": "Traces the communication between VS Code and the perl-lsp language server. Set to messages or verbose to capture protocol traffic for debugging.",
+            "markdownDescription": "Traces the communication between VS Code and the perl-lsp language server. Set to `messages` or `verbose` to capture protocol traffic for debugging."
+          },
+          "perl-lsp.mcp.servers": {
+            "type": "array",
+            "scope": "machine",
+            "order": 95,
+            "default": [],
+            "description": "Optional MCP stdio servers exposed to VS Code language models. Each entry supports label, command, args, cwd, env, version, and enabled.",
+            "markdownDescription": "Optional MCP stdio servers exposed to VS Code language models. Each entry supports `label`, `command`, `args`, `cwd`, `env`, `version`, and `enabled`.",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "command"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "description": "Display name shown in MCP server pickers."
+                },
+                "command": {
+                  "type": "string",
+                  "description": "Executable used to start the MCP server."
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Command-line arguments passed to the server."
+                },
+                "cwd": {
+                  "type": "string",
+                  "description": "Optional working directory used when launching the server."
+                },
+                "env": {
+                  "type": "object",
+                  "description": "Optional environment variable overrides (set a key to null to unset).",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "version": {
+                  "type": "string",
+                  "description": "Optional MCP server version used by VS Code for refresh prompts."
+                },
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Set to false to keep a server config without publishing it."
+                }
+              }
+            }
+          }
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "perl-lsp.restart",
+        "title": "%command.restart.title%",
+        "category": "Perl",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "perl-lsp.openDemoProject",
+        "title": "%command.openDemoProject.title%",
+        "category": "Perl",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "perl-lsp.showVersion",
+        "title": "%command.showVersion.title%",
+        "category": "Perl",
+        "icon": "$(info)"
+      },
+      {
+        "command": "perl-lsp.showOutput",
+        "title": "%command.showOutput.title%",
+        "category": "Perl",
+        "icon": "$(output)"
+      },
+      {
+        "command": "perl-lsp.showStatusMenu",
+        "title": "%command.showStatusMenu.title%",
+        "category": "Perl",
+        "icon": "$(menu)"
+      },
+      {
+        "command": "perl-lsp.showWorkspaceStatus",
+        "title": "%command.showWorkspaceStatus.title%",
+        "category": "Perl",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "perl-lsp.reinstall",
+        "title": "%command.reinstall.title%",
+        "category": "Perl",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "perl-lsp.checkForUpdate",
+        "title": "%command.checkForUpdate.title%",
+        "category": "Perl",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "perl-lsp.organizeImports",
+        "title": "%command.organizeImports.title%",
+        "category": "Perl",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "perl-lsp.runTests",
+        "title": "%command.runTests.title%",
+        "category": "Perl",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "perl-lsp.runPerlCritic",
+        "title": "%command.runPerlCritic.title%",
+        "category": "Perl",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "perl-lsp.setPerlCriticSeverity",
+        "title": "%command.setPerlCriticSeverity.title%",
+        "category": "Perl",
+        "icon": "$(symbol-numeric)"
+      },
+      {
+        "command": "perl-lsp.extractVariable",
+        "title": "%command.extractVariable.title%",
+        "category": "Perl",
+        "icon": "$(symbol-variable)"
+      },
+      {
+        "command": "perl-lsp.extractMethod",
+        "title": "%command.extractMethod.title%",
+        "category": "Perl",
+        "icon": "$(symbol-method)"
+      },
+      {
+        "command": "perl-lsp.showRefactoringOptions",
+        "title": "%command.showRefactoringOptions.title%",
+        "category": "Perl",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "perl-lsp.showWhatsNew",
+        "title": "%command.showWhatsNew.title%",
+        "category": "Perl",
+        "icon": "$(star-empty)"
+      },
+      {
+        "command": "perl-lsp.createDebugConfig",
+        "title": "%command.createDebugConfig.title%",
+        "category": "Perl",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "perl-lsp.runHealthCheck",
+        "title": "%command.runHealthCheck.title%",
+        "category": "Perl",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "perl-lsp.checkSyntax",
+        "title": "%command.checkSyntax.title%",
+        "category": "Perl",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "perl-lsp.runCurrentTest",
+        "title": "%command.runCurrentTest.title%",
+        "category": "Perl",
+        "icon": "$(play)"
+      },
+      {
+        "command": "perl-lsp.runTestAtCursor",
+        "title": "%command.runTestAtCursor.title%",
+        "category": "Perl",
+        "icon": "$(run)"
+      },
+      {
+        "command": "perl-lsp.runAllTests",
+        "title": "%command.runAllTests.title%",
+        "category": "Perl",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "perl-lsp.formatDocument",
+        "title": "%command.formatDocument.title%",
+        "category": "Perl",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "perl-lsp.showIncPaths",
+        "title": "%command.showIncPaths.title%",
+        "category": "Perl",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "perl-lsp.openModule",
+        "title": "%command.openModule.title%",
+        "category": "Perl",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "perl-lsp.showParserAst",
+        "title": "%command.showParserAst.title%",
+        "category": "Perl",
+        "icon": "$(symbol-structure)"
+      },
+      {
+        "command": "perl-lsp.openConfigurationGuide",
+        "title": "%command.openConfigurationGuide.title%",
+        "category": "Perl",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "perl-lsp.explainProviderDecision",
+        "title": "%command.explainProviderDecision.title%",
+        "category": "Perl",
+        "icon": "$(debug)"
+      },
+      {
+        "command": "perl-lsp.previewSafeDelete",
+        "title": "%command.previewSafeDelete.title%",
+        "category": "Perl",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "perl-lsp.previewPackageRename",
+        "title": "%command.previewPackageRename.title%",
+        "category": "Perl",
+        "icon": "$(symbol-method)"
+      },
+      {
+        "command": "perl-lsp.copyProviderDecisionReceipt",
+        "title": "%command.copyProviderDecisionReceipt.title%",
+        "category": "Perl",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "perl-lsp.showWorkspaceTrustReport",
+        "title": "%command.showWorkspaceTrustReport.title%",
+        "category": "Perl",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "perl-lsp.explainMissingModuleLookup",
+        "title": "%command.explainMissingModuleLookup.title%",
+        "category": "Perl",
+        "icon": "$(search)"
+      },
+      {
+        "command": "perl-lsp.explainDiagnostic",
+        "title": "%command.explainDiagnostic.title%",
+        "category": "Perl",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "perl-lsp.reportIssue",
+        "title": "%command.reportIssue.title%",
+        "category": "Perl",
+        "icon": "$(github)"
+      },
+      {
+        "command": "perl-lsp.previewPod",
+        "title": "%command.previewPod.title%",
+        "category": "Perl",
+        "icon": "$(preview)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "perl-lsp.restart",
+          "when": "perl-lsp.activated"
+        },
+        {
+          "command": "perl-lsp.showOutput",
+          "when": "perl-lsp.activated"
+        },
+        {
+          "command": "perl-lsp.showStatusMenu",
+          "when": "perl-lsp.activated"
+        },
+        {
+          "command": "perl-lsp.reinstall",
+          "when": "perl-lsp.activated"
+        },
+        {
+          "command": "perl-lsp.organizeImports",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.runTests",
+          "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/"
+        },
+        {
+          "command": "perl-lsp.runPerlCritic",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.setPerlCriticSeverity",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.checkSyntax",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.runCurrentTest",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.runTestAtCursor",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.runAllTests",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.formatDocument",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.showIncPaths",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.openModule",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.showParserAst",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.extractVariable",
+          "when": "editorLangId == perl && editorHasSelection"
+        },
+        {
+          "command": "perl-lsp.extractMethod",
+          "when": "editorLangId == perl && editorHasSelection"
+        },
+        {
+          "command": "perl-lsp.showRefactoringOptions",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.createDebugConfig",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.runHealthCheck"
+        },
+        {
+          "command": "perl-lsp.openConfigurationGuide"
+        },
+        {
+          "command": "perl-lsp.explainProviderDecision",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.previewSafeDelete",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.previewPackageRename",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.copyProviderDecisionReceipt",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.showWorkspaceTrustReport",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.explainMissingModuleLookup",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.explainDiagnostic",
+          "when": "editorLangId == perl"
+        },
+        {
+          "command": "perl-lsp.reportIssue"
+        },
+        {
+          "command": "perl-lsp.previewPod",
+          "when": "editorLangId == perl"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "perl-lsp.runTests",
+          "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/",
+          "group": "navigation"
+        },
+        {
+          "command": "perl-lsp.runPerlCritic",
+          "when": "editorLangId == perl",
+          "group": "navigation"
+        },
+        {
+          "command": "perl-lsp.previewPod",
+          "when": "editorLangId == perl",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "perl-lsp.runTests",
+          "when": "editorLangId == perl",
+          "group": "navigation"
+        },
+        {
+          "command": "perl-lsp.runTestAtCursor",
+          "when": "editorLangId == perl",
+          "group": "navigation"
+        },
+        {
+          "command": "perl-lsp.runPerlCritic",
+          "when": "editorLangId == perl",
+          "group": "navigation"
+        }
+      ],
+      "problem/context": [
+        {
+          "command": "perl-lsp.explainDiagnostic",
+          "when": "resourceLangId == perl",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "perl-lsp.organizeImports",
+        "key": "shift+alt+o",
+        "when": "editorTextFocus && editorLangId == perl"
+      },
+      {
+        "command": "perl-lsp.runTests",
+        "key": "shift+alt+t",
+        "when": "editorTextFocus && editorLangId == perl"
+      },
+      {
+        "command": "perl-lsp.runTestAtCursor",
+        "key": "ctrl+alt+shift+t",
+        "when": "editorTextFocus && editorLangId == perl"
+      },
+      {
+        "command": "perl-lsp.restart",
+        "key": "shift+alt+r",
+        "when": "editorTextFocus && editorLangId == perl"
+      },
+      {
+        "command": "editor.action.formatDocument",
+        "key": "shift+alt+f",
+        "when": "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly && editorLangId == perl"
+      },
+      {
+        "command": "perl-lsp.extractVariable",
+        "key": "shift+alt+v",
+        "when": "editorTextFocus && editorHasSelection && editorLangId == perl"
+      },
+      {
+        "command": "perl-lsp.extractMethod",
+        "key": "shift+alt+m",
+        "when": "editorTextFocus && editorHasSelection && editorLangId == perl"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "perl",
+        "path": "./snippets/perl.json"
+      },
+      {
+        "language": "json",
+        "path": "./snippets/launch.json"
+      },
+      {
+        "language": "jsonc",
+        "path": "./snippets/launch.json"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "perl",
+        "required": [
+          "script"
+        ],
+        "properties": {
+          "script": {
+            "type": "string",
+            "description": "The Perl script to execute"
+          },
+          "args": {
+            "type": "array",
+            "description": "Arguments to pass to the script"
+          }
+        }
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "perl-lsp.gettingStarted",
+        "title": "Get Started with Perl LSP",
+        "description": "Set up and explore Perl language support in VS Code.",
+        "steps": [
+          {
+            "id": "welcome",
+            "title": "Welcome to Perl LSP",
+            "description": "Perl LSP brings IDE-quality features to Perl development in VS Code.",
+            "media": {
+              "image": "media/walkthrough/welcome.svg",
+              "altText": "Welcome"
+            }
+          },
+          {
+            "id": "verify-perl",
+            "title": "Verify Your Perl Installation",
+            "description": "Run [Perl: Run Health Check](command:perl-lsp.runHealthCheck) to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
+            "media": {
+              "image": "media/walkthrough/verify-perl.svg",
+              "altText": "Verify Perl"
+            }
+          },
+          {
+            "id": "open-project",
+            "title": "Open a Perl Project",
+            "description": "Open a folder containing Perl files to activate workspace indexing.\n\n**No project handy?** [Open the demo project](command:perl-lsp.openDemoProject) — it ships with `lib/Utils.pm` and `lib/Database.pm` so you can try completion, hover, and go-to-definition right away.",
+            "media": {
+              "image": "media/walkthrough/open-project.svg",
+              "altText": "Open Project"
+            }
+          },
+          {
+            "id": "try-completion",
+            "title": "Try Code Completion",
+            "description": "Type in a .pl or .pm file and press Ctrl+Space for completions.",
+            "media": {
+              "image": "media/walkthrough/try-completion.svg",
+              "altText": "Code Completion"
+            }
+          },
+          {
+            "id": "try-goto-definition",
+            "title": "Go to Definition",
+            "description": "Hold Ctrl and click a symbol to jump to its definition.",
+            "media": {
+              "image": "media/walkthrough/try-goto-definition.svg",
+              "altText": "Go to Definition"
+            }
+          },
+          {
+            "id": "ai-completion",
+            "title": "AI-Powered Completions (Optional)",
+            "description": "Perl LSP supports AI-powered inline code suggestions, but the feature is **off by default** and only available when your language server advertises support.\n\nEnable it under `Settings` → search `perl-lsp.aiCompletion` (or run the command from the palette). If your server supports it, the extension also offers a one-time prompt to turn it on.",
+            "media": {
+              "image": "media/walkthrough/ai-completion.svg",
+              "altText": "AI Completions"
+            }
+          },
+          {
+            "id": "configure-settings",
+            "title": "Configure Settings",
+            "description": "Two ways to configure Perl LSP:\n\n**Editor settings** (personal, not committed) — open `Settings` and search for `perl-lsp`. Set `perl-lsp.includePaths` if you see _Can't locate Foo/Bar.pm_ errors. Use `perl-lsp.critic.enabled` and `perl-lsp.critic.severity` for quick local native-critic tuning, or run the `Perl: Run Critic` / `Perl: Set Critic Severity` commands from the palette. [Open Perl LSP Settings](command:perl-lsp.openConfigurationGuide)\n\n**`.perl-lsp.toml`** (team-wide, committed to your repo) — place this file in your project root, next to `.git/`. Key settings:\n- `[perl] include_paths = [\"lib\", \"local/lib/perl5\"]` — module search paths\n- `[diagnostics] perlcritic = true` — enable critic linting, native by default with the external `perlcritic` binary used only by the opt-in legacy engine\n- `[features] inlay_hints = true` — toggle inlay hints\n\nCopy `.perl-lsp.toml.example` from the repo root to get started. Editor settings always override `.perl-lsp.toml`.",
+            "media": {
+              "image": "media/walkthrough/configure-settings.svg",
+              "altText": "Configure Settings"
+            }
+          },
+          {
+            "id": "debug-first-script",
+            "title": "Debug Your First Script (Optional)",
+            "description": "Create a debug configuration with the Create Debug Configuration command. Debugging requires `perl-dap`; see the [debugging guide](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/tutorials/DAP_USER_GUIDE.md) for setup steps.",
+            "media": {
+              "image": "media/walkthrough/debug-first-script.svg",
+              "altText": "Debug Script"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run doctor && npm run typecheck:all && npm run compile",
+    "doctor": "node scripts/toolchain-doctor.js",
+    "typecheck": "tsc --noEmit -p ./tsconfig.json",
+    "typecheck:test": "tsc --noEmit -p ./tsconfig.test.json",
+    "typecheck:integration": "tsc --noEmit -p ./tsconfig.integration.json",
+    "typecheck:published": "tsc --noEmit -p ./tsconfig.published-smoke.json",
+    "typecheck:scripts": "tsc --noEmit -p ./tsconfig.scripts.json",
+    "typecheck:all": "npm run typecheck && npm run typecheck:test && npm run typecheck:integration && npm run typecheck:published && npm run typecheck:scripts",
+    "clean:out": "node -e \"const fs=require('fs'),path=require('path'); if(fs.existsSync('out')){for(const f of fs.readdirSync('out')){if(f!=='test')fs.rmSync(path.join('out',f),{recursive:true,force:true});}}\"",
+    "compile": "npm run clean:out && rolldown -c rolldown.config.mjs",
+    "clean:test": "node -e \"require('fs').rmSync('out-test',{recursive:true,force:true})\"",
+    "compile:test": "npm run clean:test && tsc -p ./tsconfig.test.json",
+    "watch": "npm run clean:out && rolldown -c rolldown.config.mjs --watch",
+    "watch:types": "tsc -watch --noEmit -p ./tsconfig.json",
+    "lint": "npm run lint:canary && node scripts/check-oxlint-warning-budget.js",
+    "lint:ratchet": "node scripts/check-oxlint-warning-budget.js",
+    "lint:canary": "node scripts/lint-canary.js",
+    "fmt": "oxfmt --write .",
+    "fmt:check": "oxfmt --check .",
+    "test": "npm run compile:test && node scripts/run-jest.js",
+    "test:ci": "npm run compile:test && npm run test:receipt-summary && node scripts/run-jest.js --ci --coverage --verbose",
+    "test:grammar": "vscode-tmgrammar-snap --config package.json \"test/grammar/fixtures/*.pl\"",
+    "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
+    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/run-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/reporter.test.js",
+    "check:package-inventory": "node scripts/check-vsix-inventory.js",
+    "check:source-map": "node scripts/check-source-map.js",
+    "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
+    "sample:published:local": "node scripts/sample-local-vsix-smoke.js",
+    "test:integration": "npm run typecheck && npm run compile && tsc -p ./tsconfig.integration.json && node ./out/test/integration/runTest.js",
+    "test:published": "tsc -p ./tsconfig.published-smoke.json && node ./out/test/published/runPublishedSmoke.js",
+    "test:published:local": "node ./scripts/run-local-vsix-smoke.js",
+    "test:workspace-capabilities": "node ./scripts/run-workspace-capability-smoke.js",
+    "bundle-lsp": "node ./scripts/bundle-lsp.js",
+    "check:publisher-tools": "node scripts/check-publisher-tools.js",
+    "package": "npm exec --offline --no -- @vscode/vsce package && npm run check:package-inventory",
+    "publish": "npm exec --offline --no -- @vscode/vsce publish",
+    "verify:marketplace": "npm run bundle-lsp && npm run package",
+    "publish:openvsx": "npm exec --offline --no -- ovsx publish",
+    "check:openvsx": "npm exec --offline --no -- ovsx --version"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "tar": "^7.5.22",
+    "vscode-languageclient": "^10.1.0"
+  },
+  "overrides": {
+    "brace-expansion@1": "1.1.16",
+    "brace-expansion@2": "2.1.3",
+    "brace-expansion@5": "5.0.9"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/jest": "^30.0.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.x",
+    "@types/tar": "^7.0.87",
+    "@types/vscode": "~1.125.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "3.9.2",
+    "jest": "^30.4.2",
+    "mocha": "^11.7.6",
+    "ovsx": "1.0.2",
+    "oxfmt": "0.61.0",
+    "oxlint": "1.76.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "rolldown": "1.2.1",
+    "source-map": "0.8.0",
+    "typescript": "^7.0.2",
+    "vscode-tmgrammar-test": "^0.1.3"
+  }
+}

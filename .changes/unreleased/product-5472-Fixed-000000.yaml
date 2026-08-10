@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "`perllsp --check-project` no longer reports valid Perl as unparsable. It now partitions recovered diagnostics into blocking and advisory the same way `--check` does, so a file whose only finding is an advisory (for example a nested-quantifier regex warning) counts as a clean parse instead of dragging down the parsable percentage and flipping the CI-facing assessment to FAIL. Advisories are still reported, in their own labelled section. The scan also reports paths it could not read — an unreadable directory or a symlink loop used to be dropped silently, leaving the report to print a confident percentage over whatever subset happened to be readable."
+time: 2026-08-01T00:00:00Z
+custom:
+  PR: "5472"
+  Slug: check-project-advisory-verdict-5465
+  Breaking: "no"

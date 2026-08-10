@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# scripts/reviews/run — retired live review-receipt writer.
+#
+# Historical review-run and verification markers remain readable through the
+# repository's compatibility fixtures and parsers. This command no longer has
+# GitHub mutation authority: provider-native review uses submitted GitHub
+# reviews, inline findings, evidence-backed dispositions, and useful clean
+# conclusions instead of status-only head/claim receipts.
+set -euo pipefail
+
+usage() {
+    echo "usage: $0 <review-start|review-done|verify> [retired arguments...]" >&2
+    exit 2
+}
+
+SUBCMD="${1:-}"
+[[ -n "$SUBCMD" ]] || usage
+
+case "$SUBCMD" in
+    review-start|review-done|verify)
+        cat >&2 <<'EOF'
+RETIRED: scripts/reviews/run no longer writes review lifecycle or verification receipts.
+
+Use the provider-native review flow and GitHub's durable review surfaces:
+  - submit a useful COMMENT review with scope, evidence/falsifiers, findings or
+    an explicit clean result, prior dispositions, what is established,
+    residual risk, and next action;
+  - publish actionable findings as inline review threads;
+  - reply with fixed/refuted/superseded/follow-up evidence before resolving a
+    substantive thread;
+  - use required checks and expected-head squash merge for machine/integration
+    identity.
+
+Historical markers are read-only compatibility evidence. No flag, including
+--dry-run, re-enables GitHub writes from this command.
+EOF
+        exit 2
+        ;;
+    *)
+        usage
+        ;;
+esac

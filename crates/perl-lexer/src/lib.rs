@@ -1,0 +1,4160 @@
+//! Context-aware Perl lexer with mode-based tokenization
+//!
+//! This crate provides a high-performance lexer for Perl that handles the inherently
+//! context-sensitive nature of the language. The lexer uses a mode-tracking system to
+//! correctly disambiguate ambiguous syntax like `/` (division vs. regex) and properly
+//! parse complex constructs like heredocs, quote-like operators, and nested delimiters.
+//!
+//! # Architecture
+//!
+//! The lexer is organized around several key concepts:
+//!
+//! - **Mode Tracking**: [`LexerMode`] tracks whether the parser expects a term or an operator,
+//!   enabling correct disambiguation of context-sensitive tokens.
+//! - **Checkpointing**: [`LexerCheckpoint`] and [`Checkpointable`] support incremental parsing
+//!   by allowing the lexer state to be saved and restored.
+//! - **Budget Limits**: Protection against pathological input with configurable size limits
+//!   for regex patterns, heredoc bodies, and delimiter nesting depth.
+//! - **Position Tracking**: [`Position`] maintains line/column information for error reporting
+//!   and LSP integration.
+//! - **Unicode Support**: Full Unicode identifier support following Perl 5.14+ semantics.
+//!
+//! # Usage
+//!
+//! ## Basic Tokenization
+//!
+//! ```rust
+//! use perl_lexer::{PerlLexer, TokenType};
+//!
+//! let mut lexer = PerlLexer::new("my $x = 42;");
+//! let tokens = lexer.collect_tokens();
+//!
+//! // First token is the keyword `my`
+//! assert!(matches!(&tokens[0].token_type, TokenType::Keyword(k) if &**k == "my"));
+//! // Tokens include variables, operators, literals, and EOF
+//! assert!(matches!(&tokens.last().map(|t| &t.token_type), Some(TokenType::EOF)));
+//! ```
+//!
+//! ## Context-Aware Parsing
+//!
+//! The lexer automatically tracks context to disambiguate operators:
+//!
+//! ```rust
+//! use perl_lexer::{PerlLexer, TokenType};
+//!
+//! // Division operator (after a term)
+//! let mut lexer = PerlLexer::new("42 / 2");
+//! // Regex operator (at start of expression)
+//! let mut lexer2 = PerlLexer::new("/pattern/");
+//! ```
+//!
+//! ## Checkpointing for Incremental Parsing
+//!
+//! ```rust,ignore
+//! use perl_lexer::{PerlLexer, Checkpointable};
+//!
+//! let mut lexer = PerlLexer::new("my $x = 1;");
+//! let checkpoint = lexer.checkpoint();
+//!
+//! // Parse some tokens
+//! let _ = lexer.next_token();
+//!
+//! // Restore to checkpoint
+//! lexer.restore(&checkpoint);
+//! ```
+//!
+//! ## Configuration Options
+//!
+//! ```rust
+//! use perl_lexer::{PerlLexer, LexerConfig};
+//!
+//! let config = LexerConfig {
+//!     parse_interpolation: true,  // Parse string interpolation
+//!     track_positions: true,      // Track line/column positions
+//!     max_lookahead: 1024,        // Maximum lookahead for disambiguation
+//!     symbol_table: None,         // No pre-scanned sub declarations
+//! };
+//!
+//! let mut lexer = PerlLexer::with_config("my $x = 1;", config);
+//! ```
+//!
+//! # Context Sensitivity Examples
+//!
+//! Perl's grammar is highly context-sensitive. The lexer handles these cases:
+//!
+//! - **Division vs. Regex**: `/` is division after terms, regex at expression start
+//! - **Modulo vs. Hash Sigil**: `%` is modulo after terms, hash sigil at expression start
+//! - **Glob vs. Exponent**: `**` can be exponentiation or glob pattern start
+//! - **Defined-or vs. Regex**: `//` is defined-or after terms, regex at expression start
+//! - **Heredoc Markers**: `<<` can be left shift, here-doc, or numeric less-than-less-than
+//!
+//! # Budget Limits
+//!
+//! To prevent hangs on pathological input, the lexer enforces these limits:
+//!
+//! - **MAX_REGEX_BYTES**: 64KB maximum for regex patterns
+//! - **MAX_HEREDOC_BYTES**: 256KB maximum for heredoc bodies
+//! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for delimiters
+//! - **MAX_REGEX_PARSE_STEPS**: 32K maximum scan iterations for regex literals
+//!
+//! When limits are exceeded, the lexer emits an `UnknownRest` token preserving
+//! all previously parsed symbols, allowing continued analysis.
+//!
+//! # Integration with perl-parser
+//!
+//! The lexer is designed to work seamlessly with `perl_parser_core::Parser`.
+//! You rarely need to use the lexer directly -- the parser creates and manages
+//! a `PerlLexer` instance internally:
+//!
+//! ```rust,ignore
+//! use perl_parser_core::Parser;
+//!
+//! let code = r#"sub hello { print "Hello, world!\n"; }"#;
+//! let mut parser = Parser::new(code);
+//! let ast = parser.parse().expect("should parse");
+//! ```
+
+#![warn(missing_docs)]
+#![allow(
+    // Core allows for lexer code
+    clippy::too_many_lines,
+    clippy::module_name_repetitions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::must_use_candidate,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+
+    // Lexer-specific patterns that are fine
+    clippy::match_same_arms,
+    clippy::redundant_else,
+    clippy::unnecessary_wraps,
+    clippy::unused_self,
+    clippy::items_after_statements,
+    clippy::struct_excessive_bools,
+    clippy::uninlined_format_args
+)]
+
+use std::sync::Arc;
+
+pub mod api;
+pub mod builtins;
+pub mod checkpoint;
+pub mod config;
+pub mod error;
+mod heredoc;
+pub mod keywords;
+mod lexer;
+pub mod limits;
+pub mod mode;
+pub mod numeric;
+mod quote_handler;
+pub mod symbol_table;
+pub mod token;
+pub mod tokenizer;
+mod unicode;
+
+pub use api::*;
+pub use checkpoint::{CheckpointCache, Checkpointable, LexerCheckpoint};
+pub use config::LexerConfig;
+pub use error::{LexerError, Result};
+pub use lexer::PerlLexer;
+pub use limits::MAX_REGEX_PARSE_STEPS;
+pub use mode::LexerMode;
+pub use perl_position_tracking::Position;
+pub use symbol_table::LocalSymbolTable;
+pub use token::{StringPart, Token, TokenType};
+
+use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
+
+use crate::heredoc::HeredocSpec;
+use crate::lexer::helpers::{
+    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
+    is_perl_punctuation_variable, is_quote_op_word_prefix, truncate_preview,
+};
+use crate::limits::{
+    HEREDOC_TIMEOUT_MS, MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES,
+};
+
+impl<'a> PerlLexer<'a> {
+    /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
+    pub fn with_body_tokens(input: &'a str) -> Self {
+        let mut lexer = Self::new(input);
+        lexer.emit_heredoc_body_tokens = true;
+        lexer
+    }
+
+    /// Set the lexer mode (for resetting state at statement boundaries)
+    pub fn set_mode(&mut self, mode: LexerMode) {
+        self.mode = mode;
+    }
+
+    /// Advance the lexer and return the next token.
+    ///
+    /// Returns `None` only after an `EOF` token has already been emitted.
+    /// The final meaningful call returns `Some(Token { token_type: TokenType::EOF, .. })`.
+    pub fn next_token(&mut self) -> Option<Token> {
+        // Normalize file start (BOM) once
+        if self.position == 0 {
+            self.normalize_file_start();
+        }
+        self.normalize_char_boundary();
+
+        // Loop to avoid recursion when processing heredocs
+        loop {
+            // Handle format body parsing if we're in that mode
+            if matches!(self.mode, LexerMode::InFormatBody) {
+                return self.parse_format_body();
+            }
+
+            // Handle data section parsing if we're in that mode
+            if matches!(self.mode, LexerMode::InDataSection) {
+                return self.parse_data_body();
+            }
+
+            // Check if we're inside a heredoc body BEFORE skipping whitespace
+            let mut found_terminator = false;
+            if !self.pending_heredocs.is_empty() {
+                // Clone what we need to avoid holding a borrow
+                let (body_start, label, allow_indent) =
+                    if let Some(spec) = self.pending_heredocs.first() {
+                        if spec.body_start > 0
+                            && self.position >= spec.body_start
+                            && self.position < self.input.len()
+                        {
+                            (spec.body_start, spec.label.clone(), spec.allow_indent)
+                        } else {
+                            // Not in a heredoc body yet or at EOF
+                            (0, empty_arc(), false)
+                        }
+                    } else {
+                        (0, empty_arc(), false)
+                    };
+
+                if body_start > 0 {
+                    // We're inside a heredoc body - scan for the terminator
+
+                    // Scan line by line looking for the terminator
+                    while self.position < self.input.len() {
+                        // Timeout protection (Issue #443)
+                        if self.start_time.elapsed().as_millis() > HEREDOC_TIMEOUT_MS as u128 {
+                            self.pending_heredocs.remove(0);
+                            self.position = self.input.len();
+                            return Some(Token {
+                                token_type: TokenType::Error(Arc::from("Heredoc parsing timeout")),
+                                text: Arc::from(&self.input[body_start..]),
+                                start: body_start,
+                                end: self.input.len(),
+                            });
+                        }
+
+                        // Budget cap for huge bodies - optimized check
+                        if self.position - body_start > MAX_HEREDOC_BYTES {
+                            // Remove the pending heredoc to avoid infinite loop
+                            self.pending_heredocs.remove(0);
+                            self.position = self.input.len();
+                            return Some(Token {
+                                token_type: TokenType::UnknownRest,
+                                text: Arc::from(&self.input[body_start..]),
+                                start: body_start,
+                                end: self.input.len(),
+                            });
+                        }
+
+                        // Skip to start of next line if not at line start
+                        // Exception: if we're at body_start exactly, we're at the heredoc body start
+                        if !self.after_newline && self.position != body_start {
+                            while self.position < self.input.len()
+                                && self.input_bytes[self.position] != b'\n'
+                                && self.input_bytes[self.position] != b'\r'
+                            {
+                                self.advance();
+                            }
+                            self.consume_newline();
+                            continue;
+                        }
+
+                        // We're at line start - check if this line is the terminator
+                        let line_start = self.position;
+                        let line_end = Self::find_line_end(self.input_bytes, self.position);
+                        let line = &self.input[line_start..line_end];
+                        // Strip trailing spaces/tabs (Perl allows them)
+                        let trimmed_end = line.trim_end_matches([' ', '\t']);
+
+                        // Check if this line is the terminator
+                        let is_terminator = if allow_indent {
+                            // Allow any leading spaces/tabs before the label
+                            let mut p = 0;
+                            while p < trimmed_end.len() {
+                                let b = trimmed_end.as_bytes()[p];
+                                if b == b' ' || b == b'\t' {
+                                    p += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            trimmed_end[p..] == *label
+                        } else {
+                            // Must start at column 0 (no leading whitespace)
+                            // The terminator is just the label (already trimmed trailing whitespace)
+                            trimmed_end == &*label
+                        };
+
+                        if is_terminator {
+                            // Found the terminator!
+                            self.pending_heredocs.remove(0);
+                            found_terminator = true;
+
+                            // Consume past the terminator line
+                            self.position = line_end;
+                            self.consume_newline();
+
+                            // Set body_start for the next pending heredoc (if any)
+                            if let Some(next) = self.pending_heredocs.first_mut()
+                                && next.body_start == 0
+                            {
+                                next.body_start = self.position;
+                            }
+
+                            // Only emit HeredocBody if requested (for folding)
+                            if self.emit_heredoc_body_tokens {
+                                return Some(Token {
+                                    token_type: TokenType::HeredocBody(empty_arc()),
+                                    text: empty_arc(),
+                                    start: body_start,
+                                    end: line_start,
+                                });
+                            }
+                            // Otherwise, continue the outer loop to get the next real token (avoiding recursion)
+                            break; // Break inner while loop, continue outer loop
+                        }
+
+                        // Not the terminator, continue to next line
+                        self.position = line_end;
+                        self.consume_newline();
+                    }
+
+                    // If we didn't find a terminator, we reached EOF - emit error token
+                    if !found_terminator {
+                        // Remove the pending heredoc to avoid infinite loop
+                        self.pending_heredocs.remove(0);
+                        self.position = self.input.len();
+                        return Some(Token {
+                            token_type: TokenType::UnknownRest,
+                            text: Arc::from(&self.input[body_start..]),
+                            start: body_start,
+                            end: self.input.len(),
+                        });
+                    }
+                }
+
+                // If we found a terminator, continue outer loop to get next token
+                if found_terminator {
+                    continue; // Continue outer loop to get next token
+                }
+            }
+
+            self.skip_whitespace_and_comments()?;
+
+            // Check again if we're now in a heredoc body (might have been set during skip_whitespace)
+            if !self.pending_heredocs.is_empty()
+                && let Some(spec) = self.pending_heredocs.first()
+                && spec.body_start > 0
+                && self.position >= spec.body_start
+                && self.position < self.input.len()
+            {
+                continue; // Go back to top of loop to process heredoc
+            }
+
+            // If we reach EOF with pending heredocs, clear them and emit EOF
+            if self.position >= self.input.len() && !self.pending_heredocs.is_empty() {
+                self.pending_heredocs.clear();
+            }
+
+            if self.position >= self.input.len() {
+                if self.eof_emitted {
+                    return None; // Stop the stream
+                }
+                self.eof_emitted = true;
+                return Some(Token {
+                    token_type: TokenType::EOF,
+                    text: empty_arc(),
+                    start: self.position,
+                    end: self.position,
+                });
+            }
+
+            let start = self.position;
+
+            // Check for special tokens first
+            if let Some(token) = self.try_heredoc() {
+                return Some(token);
+            }
+
+            if let Some(token) = self.try_string() {
+                return Some(token);
+            }
+
+            if let Some(token) = self.try_variable() {
+                return Some(token);
+            }
+
+            if let Some(token) = self.try_number() {
+                return Some(token);
+            }
+
+            // Only try v-string when NOT immediately after `sub` keyword —
+            // `sub v5 { }` should parse `v5` as an identifier, not a v-string (#2189)
+            if !self.after_sub
+                && let Some(token) = self.try_vstring()
+            {
+                return Some(token);
+            }
+
+            if let Some(token) = self.try_identifier_or_keyword() {
+                return Some(token);
+            }
+
+            // If we're expecting a delimiter for a quote operator, only try delimiter
+            if matches!(self.mode, LexerMode::ExpectDelimiter) && self.current_quote_op.is_some() {
+                if let Some(token) = self.try_delimiter() {
+                    return Some(token);
+                }
+                // Do NOT fall through to try_operator / try_punct / etc.
+                // Clear state first so we don't spin
+                self.mode = LexerMode::ExpectOperator;
+                self.current_quote_op = None;
+                continue;
+            }
+
+            if let Some(token) = self.try_operator() {
+                return Some(token);
+            }
+
+            if let Some(token) = self.try_delimiter() {
+                return Some(token);
+            }
+
+            // If nothing else matches, return an error token
+            let ch = self.current_char()?;
+            self.advance();
+
+            // Optimize error token creation - avoid expensive formatting in hot path
+            let text = if ch.is_ascii() {
+                // Fast path for ASCII characters
+                Arc::from(&self.input[start..self.position])
+            } else {
+                // Unicode path without intermediate heap allocation
+                let mut buf = [0_u8; 4];
+                Arc::from(ch.encode_utf8(&mut buf))
+            };
+
+            return Some(Token {
+                token_type: TokenType::Error(Arc::from("Unexpected character")),
+                text,
+                start,
+                end: self.position,
+            });
+        } // End of loop
+    }
+
+    /// Budget guard to prevent infinite loops and timeouts (Issue #422)
+    ///
+    /// **Purpose**: Protect against pathological input that could cause:
+    /// - Infinite loops in regex/heredoc parsing
+    /// - Excessive memory consumption
+    /// - LSP server hangs
+    ///
+    /// **Limits**:
+    /// - `MAX_REGEX_BYTES` (64KB): Maximum bytes in a single regex literal
+    /// - `MAX_DELIM_NEST` (128): Maximum delimiter nesting depth
+    ///
+    /// **Graceful Degradation**:
+    /// - Budget exceeded → emit `UnknownRest` token
+    /// - Jump to EOF to prevent further parsing of problematic region
+    /// - LSP client can emit soft diagnostic about truncation
+    /// - All previously parsed symbols remain valid
+    ///
+    /// **Performance**:
+    /// - Fast path: inlined subtraction + comparison (~1-2 CPU cycles)
+    /// - Slow path: Only triggered on pathological input
+    /// - Amortized cost: O(1) per token
+    #[allow(clippy::inline_always)] // Performance critical in lexer hot path
+    #[inline(always)]
+    fn budget_guard(&mut self, start: usize, depth: usize) -> Option<Token> {
+        // Fast path: most calls won't hit limits
+        let bytes_consumed = self.position - start;
+        if bytes_consumed <= MAX_REGEX_BYTES && depth <= MAX_DELIM_NEST {
+            return None;
+        }
+
+        // Slow path: budget exceeded - graceful degradation
+        #[cfg(debug_assertions)]
+        {
+            tracing::debug!(
+                bytes_consumed,
+                depth,
+                position = self.position,
+                "Lexer budget exceeded"
+            );
+        }
+
+        self.position = self.input.len();
+        Some(Token {
+            token_type: TokenType::UnknownRest,
+            text: Arc::from(""),
+            start,
+            end: self.position,
+        })
+    }
+
+    /// Peek at the next token without consuming it.
+    ///
+    /// Saves and restores the full lexer state so the next call to
+    /// [`next_token`](Self::next_token) returns the same token.
+    pub fn peek_token(&mut self) -> Option<Token> {
+        let saved_pos = self.position;
+        let saved_mode = self.mode;
+        let saved_delimiter_stack = self.delimiter_stack.clone();
+        let saved_prototype = self.in_prototype;
+        let saved_depth = self.prototype_depth;
+        let saved_after_sub = self.after_sub;
+        let saved_after_arrow = self.after_arrow;
+        let saved_hash_brace_depth = self.hash_brace_depth;
+        let saved_after_var_subscript = self.after_var_subscript;
+        let saved_paren_depth = self.paren_depth;
+        let saved_current_pos = self.current_pos;
+        let saved_after_newline = self.after_newline;
+        let saved_pending_heredocs = self.pending_heredocs.clone();
+        let saved_line_start_offset = self.line_start_offset;
+        let saved_current_quote_op = self.current_quote_op.clone();
+        let saved_eof_emitted = self.eof_emitted;
+        let saved_start_time = self.start_time;
+
+        let token = self.next_token();
+
+        self.position = saved_pos;
+        self.mode = saved_mode;
+        self.delimiter_stack = saved_delimiter_stack;
+        self.in_prototype = saved_prototype;
+        self.prototype_depth = saved_depth;
+        self.after_sub = saved_after_sub;
+        self.after_arrow = saved_after_arrow;
+        self.hash_brace_depth = saved_hash_brace_depth;
+        self.after_var_subscript = saved_after_var_subscript;
+        self.paren_depth = saved_paren_depth;
+        self.current_pos = saved_current_pos;
+        self.after_newline = saved_after_newline;
+        self.pending_heredocs = saved_pending_heredocs;
+        self.line_start_offset = saved_line_start_offset;
+        self.current_quote_op = saved_current_quote_op;
+        self.eof_emitted = saved_eof_emitted;
+        self.start_time = saved_start_time;
+
+        token
+    }
+
+    /// Consume all remaining tokens and return them as a vector.
+    ///
+    /// The returned vector always ends with an `EOF` token.
+    pub fn collect_tokens(&mut self) -> Vec<Token> {
+        let mut tokens = Vec::new();
+        while let Some(token) = self.next_token() {
+            if token.token_type == TokenType::EOF {
+                tokens.push(token);
+                break;
+            }
+            tokens.push(token);
+        }
+        tokens
+    }
+
+    /// Reset the lexer to the beginning of the input.
+    ///
+    /// Clears all internal state (mode, delimiter stack, heredoc queue, etc.)
+    /// so the lexer can re-tokenize the same source from scratch.
+    pub fn reset(&mut self) {
+        self.position = 0;
+        self.mode = LexerMode::ExpectTerm;
+        self.delimiter_stack.clear();
+        self.in_prototype = false;
+        self.prototype_depth = 0;
+        self.after_sub = false;
+        self.after_arrow = false;
+        self.hash_brace_depth = 0;
+        self.after_var_subscript = false;
+        self.paren_depth = 0;
+        self.current_pos = Position::start();
+        self.after_newline = true;
+        self.pending_heredocs.clear();
+        self.line_start_offset = 0;
+        self.current_quote_op = None;
+        self.eof_emitted = false;
+        self.start_time = std::time::Instant::now();
+    }
+
+    /// Switch the lexer into format-body parsing mode.
+    ///
+    /// In this mode the lexer consumes input verbatim until it encounters a
+    /// line containing only `.` (the Perl format terminator).
+    pub fn enter_format_mode(&mut self) {
+        self.mode = LexerMode::InFormatBody;
+    }
+
+    // Token-specific parsing methods
+
+    #[inline]
+    fn skip_whitespace_and_comments(&mut self) -> Option<()> {
+        // Don't reset after_newline if we're at the start of a line
+        if self.position > 0 && self.position != self.line_start_offset {
+            self.after_newline = false;
+        }
+
+        while self.position < self.input_bytes.len() {
+            let byte = Self::byte_at(self.input_bytes, self.position);
+            match byte {
+                // Fast path for ASCII whitespace - batch process
+                b' ' => {
+                    // Batch skip spaces for better cache efficiency
+                    let start = self.position;
+                    while self.position < self.input_bytes.len()
+                        && Self::byte_at(self.input_bytes, self.position) == b' '
+                    {
+                        self.position += 1;
+                    }
+                    // Continue outer loop if we processed any spaces
+                    if self.position > start {
+                        // Loop naturally continues to next iteration
+                    }
+                }
+                b'\t' | 0x0B | 0x0C => {
+                    // Batch skip horizontal tab, vertical tab, and form feed.
+                    // Perl treats these as whitespace separators.
+                    let start = self.position;
+                    while self.position < self.input_bytes.len()
+                        && matches!(
+                            Self::byte_at(self.input_bytes, self.position),
+                            b'\t' | 0x0B | 0x0C
+                        )
+                    {
+                        self.position += 1;
+                    }
+                    if self.position > start {
+                        // Loop naturally continues to next iteration
+                    }
+                }
+                b'\r' | b'\n' => {
+                    self.consume_newline();
+
+                    // Set body_start for the FIRST pending heredoc that needs it (FIFO)
+                    // Only check if we have pending heredocs to avoid unnecessary work
+                    if !self.pending_heredocs.is_empty() {
+                        for spec in &mut self.pending_heredocs {
+                            if spec.body_start == 0 {
+                                spec.body_start = self.position;
+                                break; // Only set for the first unresolved heredoc
+                            }
+                        }
+                    }
+                }
+                b'#' => {
+                    // In ExpectDelimiter mode, '#' is a delimiter, not a comment
+                    if matches!(self.mode, LexerMode::ExpectDelimiter) {
+                        break;
+                    }
+
+                    // Skip line comment using memchr for fast newline search
+                    self.position += 1; // Skip # directly
+
+                    // Use memchr2 to find CR/LF line endings quickly (supports LF, CRLF, and CR)
+                    if let Some(newline_offset) =
+                        memchr::memchr2(b'\n', b'\r', &self.input_bytes[self.position..])
+                    {
+                        self.position += newline_offset;
+                    } else {
+                        // No newline found, skip to end
+                        self.position = self.input_bytes.len();
+                    }
+                }
+                b'=' if self.position == 0
+                    || (self.position > 0
+                        && matches!(self.input_bytes[self.position - 1], b'\n' | b'\r')) =>
+                {
+                    // Check if this starts a POD section (=pod, =head, =over, etc.)
+                    // Use byte-safe checks — avoid slicing &str at arbitrary byte positions
+                    let remaining = &self.input_bytes[self.position..];
+                    if remaining.starts_with(b"=pod")
+                        || remaining.starts_with(b"=head")
+                        || remaining.starts_with(b"=over")
+                        || remaining.starts_with(b"=item")
+                        || remaining.starts_with(b"=back")
+                        || remaining.starts_with(b"=begin")
+                        || remaining.starts_with(b"=end")
+                        || remaining.starts_with(b"=for")
+                        || remaining.starts_with(b"=encoding")
+                    {
+                        // Scan forward for \n=cut (end of POD block)
+                        let search_start = self.position;
+                        let mut found_cut = false;
+                        let bytes = self.input_bytes;
+                        let mut i = search_start;
+                        while i < bytes.len() {
+                            // Look for =cut at the start of a line
+                            if (i == 0 || matches!(bytes[i - 1], b'\n' | b'\r'))
+                                && bytes[i..].starts_with(b"=cut")
+                            {
+                                i += 4; // Skip "=cut"
+                                // Skip rest of the =cut line
+                                while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+                                    i += 1;
+                                }
+                                // Consume one line ending sequence if present
+                                if i < bytes.len() && bytes[i] == b'\r' {
+                                    i += 1;
+                                    if i < bytes.len() && bytes[i] == b'\n' {
+                                        i += 1;
+                                    }
+                                } else if i < bytes.len() && bytes[i] == b'\n' {
+                                    i += 1;
+                                }
+                                self.position = i;
+                                found_cut = true;
+                                break;
+                            }
+                            i += 1;
+                        }
+                        if !found_cut {
+                            // POD extends to end of file
+                            self.position = bytes.len();
+                        }
+                        continue;
+                    }
+                    // Not a POD directive - regular '=' token
+                    break;
+                }
+                _ => {
+                    // For non-ASCII whitespace, use char check only when needed
+                    if byte >= 128
+                        && let Some(ch) = self.current_char()
+                        && ch.is_whitespace()
+                    {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        Some(())
+    }
+
+    fn try_heredoc(&mut self) -> Option<Token> {
+        // `<<` is the left-shift operator, not a heredoc, when we are inside
+        // a parenthesized expression and have just finished a term.
+        // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and paren_depth > 0,
+        // so `<<index` must be the bitshift operator, not a heredoc start.
+        //
+        // We must NOT fire the guard at statement level (paren_depth == 0) because
+        // `print $fh <<END` is valid Perl: `$fh` sets ExpectOperator but `<<END`
+        // is a heredoc.  The depth check distinguishes the two cases.
+        if self.mode == LexerMode::ExpectOperator && self.paren_depth > 0 {
+            return None;
+        }
+
+        // Check for heredoc start
+        if self.peek_byte(0) != Some(b'<') || self.peek_byte(1) != Some(b'<') {
+            return None;
+        }
+
+        let start = self.position;
+        let mut text = String::from("<<");
+        self.position += 2; // Skip <<
+
+        // Check for indented heredoc (~)
+        let allow_indent = if self.current_char() == Some('~') {
+            text.push('~');
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Skip whitespace
+        while let Some(ch) = self.current_char() {
+            if ch == ' ' || ch == '\t' {
+                text.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        // Optional backslash disables interpolation, treat like single-quoted label
+        let backslashed = if self.current_char() == Some('\\') {
+            text.push('\\');
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Parse delimiter
+        let delimiter = if self.position < self.input.len() {
+            match self.current_char() {
+                Some('"') if !backslashed => self.parse_quoted_heredoc_delimiter('"', &mut text)?,
+                Some('\'') if !backslashed => {
+                    self.parse_quoted_heredoc_delimiter('\'', &mut text)?
+                }
+                Some('`') if !backslashed => self.parse_quoted_heredoc_delimiter('`', &mut text)?,
+                Some(c) if is_perl_identifier_start(c) => {
+                    // Bare word delimiter
+                    let mut delim = String::new();
+                    while self.position < self.input.len() {
+                        if let Some(c) = self.current_char() {
+                            if is_perl_identifier_continue(c) {
+                                delim.push(c);
+                                text.push(c);
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    delim
+                }
+                _ => {
+                    // Not a valid heredoc delimiter - reset position and return None
+                    // This allows << to be parsed as bitshift operator (e.g., 1 << 2)
+                    self.position = start;
+                    return None;
+                }
+            }
+        } else {
+            // No delimiter found - reset position and return None
+            self.position = start;
+            return None;
+        };
+
+        // For now, return a placeholder token
+        // The actual heredoc body would be parsed later when we encounter it
+        self.mode = LexerMode::ExpectOperator;
+
+        // Recursion depth limit (Issue #443)
+        if self.pending_heredocs.len() >= MAX_HEREDOC_DEPTH {
+            return Some(Token {
+                token_type: TokenType::Error(Arc::from("Heredoc nesting too deep")),
+                text: Arc::from(text),
+                start,
+                end: self.position,
+            });
+        }
+
+        // Queue the heredoc spec with its label
+        self.pending_heredocs.push(HeredocSpec {
+            label: Arc::from(delimiter.as_str()),
+            body_start: 0, // Will be set when we see the newline after this line
+            allow_indent,
+        });
+
+        Some(Token {
+            token_type: TokenType::HeredocStart,
+            text: Arc::from(text),
+            start,
+            end: self.position,
+        })
+    }
+
+    fn try_string(&mut self) -> Option<Token> {
+        let start = self.position;
+        let quote = self.current_char()?;
+
+        match quote {
+            '"' => self.parse_double_quoted_string(start),
+            '\'' => self.parse_single_quoted_string(start),
+            '`' => self.parse_backtick_string(start),
+            'q' if self.peek_char(1) == Some('{') => self.parse_q_string(start),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn try_number(&mut self) -> Option<Token> {
+        let start = self.position;
+
+        // Fast byte check for digits - optimized bounds checking
+        let bytes = self.input_bytes;
+        if self.position >= bytes.len() || !Self::byte_at(bytes, self.position).is_ascii_digit() {
+            return None;
+        }
+
+        // Check for hex (0x), binary (0b), or octal (0o) prefixes
+        let mut pos = self.position;
+        if Self::byte_at(bytes, pos) == b'0' && pos + 1 < bytes.len() {
+            let prefix_byte = bytes[pos + 1];
+            if prefix_byte == b'x' || prefix_byte == b'X' {
+                // Hexadecimal: 0x[0-9a-fA-F_]+
+                pos += 2; // consume '0x'
+                let digit_start = pos;
+                let mut saw_digit = false;
+                while pos < bytes.len() && (bytes[pos].is_ascii_hexdigit() || bytes[pos] == b'_') {
+                    saw_digit |= bytes[pos].is_ascii_hexdigit();
+                    pos += 1;
+                }
+                if pos > digit_start && saw_digit {
+                    self.position = pos;
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+                    return Some(Token {
+                        token_type: TokenType::Number(Arc::from(text)),
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                // No hex digits after 0x - emit error
+                self.position = pos;
+                return Some(Token {
+                    token_type: TokenType::Error(Arc::from(
+                        "No digits found for hexadecimal literal",
+                    )),
+                    text: Arc::from(&self.input[start..pos]),
+                    start,
+                    end: pos,
+                });
+            } else if prefix_byte == b'b' || prefix_byte == b'B' {
+                // Binary: 0b[01_]+
+                pos += 2; // consume '0b'
+                let digit_start = pos;
+                let mut saw_digit = false;
+                while pos < bytes.len()
+                    && (bytes[pos] == b'0' || bytes[pos] == b'1' || bytes[pos] == b'_')
+                {
+                    saw_digit |= bytes[pos] == b'0' || bytes[pos] == b'1';
+                    pos += 1;
+                }
+                if pos > digit_start && saw_digit {
+                    self.position = pos;
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+                    return Some(Token {
+                        token_type: TokenType::Number(Arc::from(text)),
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                // No binary digits after 0b - emit error
+                self.position = pos;
+                return Some(Token {
+                    token_type: TokenType::Error(Arc::from("No digits found for binary literal")),
+                    text: Arc::from(&self.input[start..pos]),
+                    start,
+                    end: pos,
+                });
+            } else if prefix_byte == b'o' || prefix_byte == b'O' {
+                // Octal (explicit): 0o[0-7_]+
+                pos += 2; // consume '0o'
+                let digit_start = pos;
+                let mut saw_digit = false;
+                while pos < bytes.len()
+                    && ((bytes[pos] >= b'0' && bytes[pos] <= b'7') || bytes[pos] == b'_')
+                {
+                    saw_digit |= (b'0'..=b'7').contains(&bytes[pos]);
+                    pos += 1;
+                }
+                if pos > digit_start && saw_digit {
+                    self.position = pos;
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+                    return Some(Token {
+                        token_type: TokenType::Number(Arc::from(text)),
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                // No octal digits after 0o - emit error
+                self.position = pos;
+                return Some(Token {
+                    token_type: TokenType::Error(Arc::from("No digits found for octal literal")),
+                    text: Arc::from(&self.input[start..pos]),
+                    start,
+                    end: pos,
+                });
+            }
+        }
+
+        // Consume initial digits - unrolled for better performance
+        pos = self.position;
+        while pos < bytes.len() {
+            let byte = Self::byte_at(bytes, pos);
+            if byte.is_ascii_digit() || byte == b'_' {
+                pos += 1;
+            } else {
+                break;
+            }
+        }
+        self.position = pos;
+
+        // Check for decimal point - optimized with single bounds check
+        if pos < bytes.len() && Self::byte_at(bytes, pos) == b'.' {
+            // Peek ahead to see what follows the dot
+            let has_following_digit = pos + 1 < bytes.len() && bytes[pos + 1].is_ascii_digit();
+
+            // Optimized dot consumption logic
+            let should_consume_dot = has_following_digit || {
+                pos + 1 >= bytes.len() || {
+                    // Use bitwise operations for faster character classification
+                    let next_byte = bytes[pos + 1];
+                    // Whitespace, delimiters, operators - optimized check
+                    next_byte <= b' '
+                        || matches!(
+                            next_byte,
+                            b';' | b','
+                                | b')'
+                                | b'}'
+                                | b']'
+                                | b'+'
+                                | b'-'
+                                | b'*'
+                                | b'/'
+                                | b'%'
+                                | b'='
+                                | b'<'
+                                | b'>'
+                                | b'!'
+                                | b'&'
+                                | b'|'
+                                | b'^'
+                                | b'~'
+                                | b'e'
+                                | b'E'
+                        )
+                }
+            };
+
+            if should_consume_dot {
+                pos += 1; // consume the dot
+                // Consume fractional digits - batch processing
+                while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'_') {
+                    pos += 1;
+                }
+                self.position = pos;
+            }
+        }
+
+        // Check for exponent - optimized
+        if pos < bytes.len() && (bytes[pos] == b'e' || bytes[pos] == b'E') {
+            let exp_start = pos;
+            pos += 1; // consume 'e' or 'E'
+
+            // Check for optional sign
+            if pos < bytes.len() && (bytes[pos] == b'+' || bytes[pos] == b'-') {
+                pos += 1;
+            }
+
+            // Must have at least one digit after exponent (underscores allowed between digits)
+            let mut saw_digit = false;
+            while pos < bytes.len() {
+                let byte = bytes[pos];
+                if byte.is_ascii_digit() {
+                    saw_digit = true;
+                    pos += 1;
+                } else if byte == b'_' {
+                    pos += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // If no digits after exponent, backtrack
+            if !saw_digit {
+                pos = exp_start;
+            }
+
+            self.position = pos;
+        }
+
+        // Avoid string slicing for common number cases - use Arc::from directly on slice
+        let text = &self.input[start..self.position];
+        self.mode = LexerMode::ExpectOperator;
+
+        Some(Token {
+            token_type: TokenType::Number(Arc::from(text)),
+            text: Arc::from(text),
+            start,
+            end: self.position,
+        })
+    }
+
+    fn parse_decimal_number(&mut self, start: usize) -> Option<Token> {
+        // We're at the dot, consume it
+        self.advance();
+
+        // Parse the fractional part
+        while self.position < self.input_bytes.len() {
+            let byte = self.input_bytes[self.position];
+            match byte {
+                b'0'..=b'9' | b'_' => self.position += 1,
+                b'e' | b'E' => {
+                    // Handle scientific notation.
+                    // Save the position of 'e'/'E' so we can backtrack here if
+                    // no digits follow the exponent marker (with or without sign).
+                    let e_pos = self.position;
+                    self.advance();
+                    if self.position < self.input_bytes.len() {
+                        let next = self.input_bytes[self.position];
+                        if next == b'+' || next == b'-' {
+                            self.advance();
+                        }
+                    }
+                    // Parse exponent digits (underscores allowed between digits)
+                    let mut saw_digit = false;
+                    while self.position < self.input_bytes.len() {
+                        let byte = self.input_bytes[self.position];
+                        if byte.is_ascii_digit() {
+                            saw_digit = true;
+                            self.position += 1;
+                        } else if byte == b'_' {
+                            self.position += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // No digits after exponent marker — backtrack to just before
+                    // 'e'/'E' so the caller sees it as a separate token.
+                    // Using e_pos (not exponent_start-1) avoids including 'e' in
+                    // the number slice when a sign character was consumed.
+                    if !saw_digit {
+                        self.position = e_pos;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+
+        let text = &self.input[start..self.position];
+        self.mode = LexerMode::ExpectOperator;
+
+        Some(Token {
+            token_type: TokenType::Number(Arc::from(text)),
+            text: Arc::from(text),
+            start,
+            end: self.position,
+        })
+    }
+
+    fn try_variable(&mut self) -> Option<Token> {
+        let start = self.position;
+        let sigil = self.current_char()?;
+
+        match sigil {
+            '$' | '@' | '%' | '*' => {
+                // In ExpectOperator mode, treat % and * as operators rather than sigils
+                if self.mode == LexerMode::ExpectOperator && matches!(sigil, '*' | '%') {
+                    return None;
+                }
+                self.advance();
+
+                // Special case: After ->, sigils followed by { or [ should be tokenized separately
+                // This is for postfix dereference like ->@*, ->%{}, ->@[]
+                // We need to be careful with Unicode - check if we have enough bytes and valid char boundaries
+                let check_arrow = self.position >= 3
+                    && self.position.saturating_sub(1) <= self.input.len()
+                    && self.input.is_char_boundary(self.position.saturating_sub(3))
+                    && self.input.is_char_boundary(self.position.saturating_sub(1));
+
+                if check_arrow
+                    && {
+                        let saved = self.position;
+                        self.position -= 3;
+                        let arrow = self.matches_bytes(b"->");
+                        self.position = saved;
+                        arrow
+                    }
+                    && matches!(self.current_char(), Some('{' | '[' | '*'))
+                {
+                    // Just return the sigil
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+
+                    return Some(Token {
+                        token_type: TokenType::Identifier(Arc::from(text)),
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+
+                // Check for $# (array length operator)
+                if sigil == '$' && self.current_char() == Some('#') {
+                    self.advance(); // consume #
+                    // Now parse the array name
+                    while let Some(ch) = self.current_char() {
+                        if is_perl_identifier_continue(ch) {
+                            self.advance();
+                        } else if ch == ':' && self.peek_char(1) == Some(':') {
+                            // Package-qualified array name
+                            self.advance();
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+                    // $#foo is a complete variable token; a following `{` is a subscript.
+                    self.after_var_subscript = true;
+
+                    return Some(Token {
+                        token_type: TokenType::Identifier(Arc::from(text)),
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+
+                // Check for special cases like ${^MATCH} or ${::{foo}} or *{$glob}
+                if self.current_char() == Some('{') {
+                    // Peek ahead to decide if we should consume the brace
+                    let next_char = self.peek_char(1);
+
+                    // Check if this is a dereference like @{$ref} or @{[...]}
+                    // If the next char suggests dereference, don't consume the brace.
+                    // For @ and % sigils, identifiers inside braces are also derefs
+                    // (e.g. @{Foo::Bar::baz} or %{Some::Hash}).
+                    let is_deref = sigil != '*'
+                        && (matches!(
+                            next_char,
+                            Some('$' | '@' | '%' | '*' | '&' | '[' | ' ' | '\t' | '\n' | '\r',)
+                        ) || (matches!(sigil, '@' | '%')
+                            && next_char.is_some_and(is_perl_identifier_start)));
+                    if is_deref {
+                        // This is a dereference, don't consume the brace
+                        let text = &self.input[start..self.position];
+                        self.mode = LexerMode::ExpectOperator;
+                        // A standalone sigil token before `{` starts a dereference
+                        // sequence (e.g. `${$ref}` / `@{$aref}` / `%{$href}` / `&{$cref}`).
+                        // Mark it as subscript-capable so `{` increments brace depth
+                        // and the closing `}` can enable chained `{...}` subscripts.
+                        // (Broader form than master's `$|@|%` filter — `*` is already
+                        // excluded by the `is_deref` guard above and `&` deref also
+                        // benefits from chained-subscript handling.)
+                        self.after_var_subscript = true;
+
+                        return Some(Token {
+                            token_type: TokenType::Identifier(Arc::from(text)),
+                            text: Arc::from(text),
+                            start,
+                            end: self.position,
+                        });
+                    }
+
+                    self.advance(); // consume {
+
+                    // Handle special variables with caret
+                    if self.current_char() == Some('^') {
+                        self.advance(); // consume ^
+                        // Parse the special variable name
+                        while let Some(ch) = self.current_char() {
+                            if ch == '}' {
+                                self.advance(); // consume }
+                                break;
+                            } else if is_perl_identifier_continue(ch) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    // Handle stash access like $::{foo}
+                    else if self.current_char() == Some(':') && self.peek_char(1) == Some(':') {
+                        self.advance(); // consume first :
+                        self.advance(); // consume second :
+                        // Skip optional { and }
+                        if self.current_char() == Some('{') {
+                            self.advance();
+                        }
+                        // Parse the name
+                        while let Some(ch) = self.current_char() {
+                            if ch == '}' {
+                                self.advance();
+                                if self.current_char() == Some('}') {
+                                    self.advance(); // consume closing } of ${...}
+                                }
+                                break;
+                            } else if is_perl_identifier_continue(ch) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    // Regular braced variable like ${foo} or glob like *{$glob}
+                    else {
+                        // Check if this is a dereference like ${$ref} or @{$ref} or @{[...]}
+                        // If the next char is a sigil or other expression starter, we should stop here and let the parser handle it
+                        // EXCEPT for globs - *{$glob} should be parsed as one token
+                        // Also check for empty braces or EOF - in these cases we should split the tokens
+                        if sigil != '*'
+                            && !self.current_char().is_some_and(is_perl_identifier_start)
+                        {
+                            // This is a dereference or empty/invalid brace, backtrack
+                            self.position = start + 1; // Just past the sigil
+                            let text = &self.input[start..self.position];
+                            self.mode = LexerMode::ExpectOperator;
+                            // Same as above: sigil-only token means a dereference opener.
+                            self.after_var_subscript = true;
+
+                            return Some(Token {
+                                token_type: TokenType::Identifier(Arc::from(text)),
+                                text: Arc::from(text),
+                                start,
+                                end: self.position,
+                            });
+                        }
+
+                        // For glob access, we need to consume everything inside braces
+                        if sigil == '*' {
+                            let mut brace_depth: usize = 1;
+                            while let Some(ch) = self.current_char() {
+                                if ch == '{' {
+                                    brace_depth += 1;
+                                } else if ch == '}' {
+                                    brace_depth = brace_depth.saturating_sub(1);
+                                    if brace_depth == 0 {
+                                        self.advance(); // consume final }
+                                        break;
+                                    }
+                                }
+                                self.advance();
+                            }
+                        } else {
+                            // Regular variable
+                            while let Some(ch) = self.current_char() {
+                                if ch == '}' {
+                                    self.advance(); // consume }
+                                    break;
+                                } else if is_perl_identifier_continue(ch) {
+                                    self.advance();
+                                } else if ch == ':'
+                                    && self.peek_char(1) == Some(':')
+                                    && self.qualified_name_closes_brace_from_here()
+                                {
+                                    // Package-qualified segment inside braces,
+                                    // e.g. ${Foo::bar} — mirror the bare
+                                    // $Foo::bar scan below (lines ~1359-1370)
+                                    // so `::`-delimited names are consumed as
+                                    // part of the same braced-variable token,
+                                    // BUT only when the qualified name is the
+                                    // entire braced content (this `::` chain
+                                    // leads directly to `}`, verified by the
+                                    // guard above without consuming). A
+                                    // partial-deref/postfix-chain case like
+                                    // ${Foo::bar->{baz}} or ${Foo::bar[0]}
+                                    // must NOT fold `::` here — stop at the
+                                    // same "Foo" boundary the pre-fix lexer
+                                    // used, so `::`/`bar`/`->`/... remain
+                                    // separate tokens and the parser's
+                                    // existing multi-token qualified-scalar
+                                    // walk (parse_qualified_scalar_tail)
+                                    // reconstructs `Foo::bar` as the variable
+                                    // operand of the postfix chain instead of
+                                    // losing it to a merged bareword
+                                    // Identifier token (issue #3939).
+                                    self.advance();
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Parse regular variable name
+                else if let Some(ch) = self.current_char() {
+                    if is_perl_identifier_start(ch) {
+                        while let Some(ch) = self.current_char() {
+                            if is_perl_identifier_continue(ch) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        // Handle package-qualified segments like Foo::bar
+                        while self.current_char() == Some(':') && self.peek_char(1) == Some(':') {
+                            self.advance();
+                            self.advance();
+                            while let Some(ch) = self.current_char() {
+                                if is_perl_identifier_continue(ch) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Handle $^Letter (e.g. $^W, $^O, $^X) and bare $^ (format_top_name)
+                    // Not inside prototypes where ^ is a literal prototype char
+                    else if sigil == '$' && ch == '^' && !self.in_prototype {
+                        self.advance(); // consume ^
+                        // $^Letter: consume the single uppercase letter
+                        if let Some(letter) = self.current_char()
+                            && letter.is_ascii_uppercase()
+                        {
+                            self.advance();
+                        }
+                        // bare $^ (no uppercase letter follows): format_top_name — stop here
+                    }
+                    // Handle special punctuation variables
+                    // Not inside prototypes where ; and , are literal prototype chars
+                    else if sigil == '$'
+                        && !self.in_prototype
+                        && matches!(
+                            ch,
+                            '?' | '!'
+                                | '@'
+                                | '&'
+                                | '`'
+                                | '\''
+                                | '.'
+                                | '/'
+                                | '\\'
+                                | '|'
+                                | '+'
+                                | '-'
+                                | '['
+                                | ']'
+                                | '$'
+                                | '~'
+                                | '='
+                                | '%'
+                                | ','
+                                | '"'
+                                | ';'
+                                | '>'
+                                | '<'
+                                | ')'
+                                | '(' // $( = real group ID of this process
+                        )
+                    {
+                        self.advance(); // consume the special character
+                    }
+                    // $$ is the PID special variable, but only when it is not immediately
+                    // followed by an identifier-start character. $$var is scalar dereference
+                    // of $var, so keep the second $ for the next token.
+                    else if sigil == '$' && ch == '$' {
+                        if !self.peek_char(1).is_some_and(is_perl_identifier_start) {
+                            self.advance(); // consume the second $ for bare $$ PID
+                        }
+                    }
+                    // Handle special array/hash punctuation variables
+                    else if (sigil == '@' || sigil == '%') && matches!(ch, '+' | '-') {
+                        self.advance(); // consume the + or -
+                    }
+                }
+
+                let text = &self.input[start..self.position];
+                self.mode = LexerMode::ExpectOperator;
+                // A complete $foo, @foo, %foo token can be followed by a hash/slice
+                // subscript `{`. Set the flag so the `{` handler knows to increment
+                // hash_brace_depth. Glob tokens (*foo) are excluded: they don't take
+                // hash subscripts in the same way.
+                self.after_var_subscript = matches!(sigil, '$' | '@' | '%');
+
+                Some(Token {
+                    token_type: TokenType::Identifier(Arc::from(text)),
+                    text: Arc::from(text),
+                    start,
+                    end: self.position,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Return the next quote-operator delimiter candidate and following char
+    /// without consuming. Whitespace-led line comments are part of the delimiter
+    /// gap, but an immediate `#` remains a valid delimiter.
+    fn peek_nonspace_and_following(&self) -> (Option<char>, Option<char>) {
+        let mut offset = self.position;
+        let mut comment_eligible = false;
+
+        loop {
+            let mut saw_whitespace = false;
+            while let Some(ch) = self.input.get(offset..).and_then(|suffix| suffix.chars().next()) {
+                if ch.is_whitespace() {
+                    offset += ch.len_utf8();
+                    saw_whitespace = true;
+                } else {
+                    break;
+                }
+            }
+            comment_eligible |= saw_whitespace;
+
+            if comment_eligible
+                && self.input.get(offset..).is_some_and(|suffix| suffix.starts_with('#'))
+            {
+                while let Some(ch) =
+                    self.input.get(offset..).and_then(|suffix| suffix.chars().next())
+                {
+                    offset += ch.len_utf8();
+                    if matches!(ch, '\n' | '\r') {
+                        break;
+                    }
+                }
+                comment_eligible = true;
+                continue;
+            }
+
+            break;
+        }
+
+        let c = match self.input.get(offset..).and_then(|suffix| suffix.chars().next()) {
+            Some(c) => c,
+            None => return (None, None),
+        };
+        let next_offset = offset + c.len_utf8();
+        let following = self.input.get(next_offset..).and_then(|suffix| suffix.chars().next());
+        (Some(c), following)
+    }
+
+    /// Is `c` a valid quote-like delimiter? (non-alnum, including paired)
+    fn is_quote_delim(c: char) -> bool {
+        // Perl allows any non-alphanumeric, non-whitespace character as delimiter,
+        // including control characters (e.g. s\x07pattern\x07replacement\x07).
+        !c.is_ascii_alphanumeric() && !c.is_whitespace()
+    }
+
+    #[inline]
+    fn immediately_follows_sigil_prefix(&self, start: usize) -> bool {
+        start > 0
+            && matches!(
+                Self::byte_at(self.input_bytes, start.saturating_sub(1)),
+                b'$' | b'@' | b'%' | b'&' | b'*'
+            )
+    }
+
+    /// Try to parse a v-string (version string) like `v5.26.0` or `v5.10`.
+    ///
+    /// A v-string starts with `v` followed by one or more digits, then optionally
+    /// `.` followed by digits, repeated. The `v` prefix distinguishes these from
+    /// normal identifiers. Examples: `v5.26.0`, `v5.10`, `v1.2.3.4`.
+    #[inline]
+    fn try_vstring(&mut self) -> Option<Token> {
+        let start = self.position;
+        let bytes = self.input_bytes;
+
+        // Must start with 'v' followed by at least one digit
+        if start >= bytes.len() || bytes[start] != b'v' {
+            return None;
+        }
+
+        let next_pos = start + 1;
+        if next_pos >= bytes.len() || !bytes[next_pos].is_ascii_digit() {
+            return None;
+        }
+
+        // We have `v` followed by a digit — scan the rest of the v-string.
+        // Pattern: v DIGITS (.DIGITS)*
+        let mut pos = next_pos;
+
+        // Consume leading digits
+        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+            pos += 1;
+        }
+
+        // Consume optional `.DIGITS` segments (require at least one digit after dot)
+        while pos < bytes.len() && bytes[pos] == b'.' {
+            let dot_pos = pos;
+            pos += 1; // skip '.'
+
+            if pos >= bytes.len() || !bytes[pos].is_ascii_digit() {
+                // Dot not followed by digit — not part of the v-string
+                pos = dot_pos;
+                break;
+            }
+
+            // Consume digits after the dot
+            while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                pos += 1;
+            }
+        }
+
+        // Make sure the v-string isn't followed by identifier-continuation characters
+        // (e.g. `v5x` should remain an identifier, not a v-string `v5` + `x`)
+        if pos < bytes.len() {
+            let next_byte = bytes[pos];
+            if next_byte == b'_' || next_byte.is_ascii_alphabetic() {
+                return None;
+            }
+            // Also check for non-ASCII identifier continuations
+            if next_byte >= 128
+                && let Some(ch) = self.input.get(pos..).and_then(|s| s.chars().next())
+                && is_perl_identifier_continue(ch)
+            {
+                return None;
+            }
+        }
+
+        // `v5` (no dots) is a valid Perl v-string meaning chr(5).
+        let text = &self.input[start..pos];
+
+        self.position = pos;
+        self.mode = LexerMode::ExpectOperator;
+
+        Some(Token {
+            token_type: TokenType::Version(Arc::from(text)),
+            text: Arc::from(text),
+            start,
+            end: self.position,
+        })
+    }
+
+    #[inline]
+    fn apostrophe_starts_legacy_package_segment(&self, position: usize) -> bool {
+        let next_position = position + '\''.len_utf8();
+        self.input
+            .get(next_position..)
+            .and_then(|suffix| suffix.chars().next())
+            .is_some_and(is_perl_identifier_start)
+    }
+
+    #[inline]
+    fn try_identifier_or_keyword(&mut self) -> Option<Token> {
+        let start = self.position;
+        let ch = self.current_char()?;
+        let bytes = self.input_bytes;
+        let len = bytes.len();
+
+        if is_perl_identifier_start(ch) {
+            // Special case: substitution/transliteration with single-quote delimiter
+            // The single quote is considered an identifier continuation, so we need to
+            // detect these operators before consuming it as part of an identifier.
+            let follows_sigil_prefix = self.immediately_follows_sigil_prefix(start);
+            if !follows_sigil_prefix
+                && !self.after_arrow
+                && self.hash_brace_depth == 0
+                && ch == 's'
+                && self.peek_char(1) == Some('\'')
+            {
+                self.advance(); // consume 's'
+                return self.parse_substitution(start);
+            } else if !follows_sigil_prefix
+                && !self.after_arrow
+                && self.hash_brace_depth == 0
+                && ch == 'y'
+                && self.peek_char(1) == Some('\'')
+            {
+                self.advance(); // consume 'y'
+                return self.parse_transliteration(start);
+            } else if !follows_sigil_prefix
+                && !self.after_arrow
+                && self.hash_brace_depth == 0
+                && ch == 't'
+                && self.peek_char(1) == Some('r')
+                && self.peek_char(2) == Some('\'')
+            {
+                self.advance(); // consume 't'
+                self.advance(); // consume 'r'
+                return self.parse_transliteration(start);
+            }
+
+            // Fast ASCII path for identifier continuation.
+            while self.position < len {
+                let byte = bytes[self.position];
+                if byte == b'\'' {
+                    if is_quote_op_word_prefix(&bytes[start..self.position])
+                        || !self.apostrophe_starts_legacy_package_segment(self.position)
+                    {
+                        // Keep apostrophe for quote/string parsing in cases like q'...'
+                        // and split' ', while still accepting Foo'Bar package spelling.
+                        break;
+                    }
+                    self.position += 1;
+                    continue;
+                }
+
+                if byte.is_ascii_alphanumeric() || byte == b'_' {
+                    self.position += 1;
+                    continue;
+                }
+
+                if byte < 128 {
+                    break;
+                }
+
+                if let Some(ch) = self.current_char()
+                    && is_perl_identifier_continue(ch)
+                {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+            // Handle package-qualified identifiers like Foo::bar.
+            while self.config.max_lookahead >= 1
+                && self.position + 1 < len
+                && bytes[self.position] == b':'
+                && bytes[self.position + 1] == b':'
+            {
+                self.position += 2; // consume '::'
+
+                // consume following identifier segment if present
+                let Some(ch) = self.current_char() else {
+                    break;
+                };
+                if !is_perl_identifier_start(ch) {
+                    break;
+                }
+                self.advance();
+                while self.position < len {
+                    let byte = bytes[self.position];
+                    if byte == b'\'' {
+                        if !self.apostrophe_starts_legacy_package_segment(self.position) {
+                            break;
+                        }
+                        self.position += 1;
+                        continue;
+                    }
+
+                    if byte.is_ascii_alphanumeric() || byte == b'_' {
+                        self.position += 1;
+                        continue;
+                    }
+                    if byte < 128 {
+                        break;
+                    }
+                    if let Some(ch) = self.current_char()
+                        && is_perl_identifier_continue(ch)
+                    {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+            }
+
+            let text = &self.input[start..self.position];
+
+            // Check for __DATA__ and __END__ markers using exact match
+            // Only recognize these in code channel, not inside data/format sections or heredocs
+            let in_code_channel =
+                !matches!(self.mode, LexerMode::InDataSection | LexerMode::InFormatBody)
+                    && self.pending_heredocs.is_empty();
+
+            let marker = if in_code_channel {
+                if text == "__DATA__" {
+                    Some("__DATA__")
+                } else if text == "__END__" {
+                    Some("__END__")
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(marker_text) = marker {
+                // These must be at the beginning of a line
+                // Use the after_newline flag to determine if we're at line start
+                if self.after_newline {
+                    // Check if rest of line is only whitespace
+                    // Only treat as data marker if line has no trailing junk
+                    if Self::trailing_ws_only(self.input_bytes, self.position) {
+                        // Consume the rest of the line (the marker line)
+                        while self.position < self.input.len()
+                            && self.input_bytes[self.position] != b'\n'
+                            && self.input_bytes[self.position] != b'\r'
+                        {
+                            self.advance();
+                        }
+                        self.consume_newline();
+
+                        // Switch to data section mode
+                        self.mode = LexerMode::InDataSection;
+
+                        return Some(Token {
+                            token_type: TokenType::DataMarker(Arc::from(marker_text)),
+                            text: Arc::from(marker_text),
+                            start,
+                            end: self.position,
+                        });
+                    }
+                }
+            }
+
+            // Check for substitution/transliteration operators
+            // Skip if after '->'  -- these are method names, not operators.
+            #[allow(clippy::collapsible_if)]
+            if !self.after_sub
+                && !self.after_arrow
+                && !follows_sigil_prefix
+                && self.hash_brace_depth == 0
+                && matches!(text, "s" | "tr" | "y")
+            {
+                let (candidate, char_after_next, has_gap) =
+                    self.peek_quote_operator_gap_and_following();
+
+                if let Some(next) = candidate {
+                    // `s => 1` should remain a fat-arrow hash key, not quote op.
+                    let is_fat_arrow = next == '=' && char_after_next == Some('>');
+                    let is_filetest_s = text == "s"
+                        && self.input.get(..start).is_some_and(|prefix| prefix.ends_with('-'));
+                    let is_paired_delim = matches!(next, '{' | '[' | '(' | '<');
+                    let is_quote_char = matches!(next, '\'' | '"') && text != "s";
+                    let transliteration_allows_whitespace = text == "tr" || text == "y";
+                    let substitution_disallows_whitespace = text == "s" && has_gap;
+                    let is_valid_delim = Self::is_quote_delim(next)
+                        && !is_fat_arrow
+                        && !is_filetest_s
+                        && !substitution_disallows_whitespace
+                        && (!has_gap
+                            || is_paired_delim
+                            || is_quote_char
+                            || transliteration_allows_whitespace);
+
+                    if is_valid_delim {
+                        match text {
+                            "s" => return self.parse_substitution(start),
+                            "tr" | "y" => return self.parse_transliteration(start),
+                            unexpected => {
+                                return Some(Token {
+                                    token_type: TokenType::Error(Arc::from(format!(
+                                        "Unexpected substitution operator '{}': expected 's', 'tr', or 'y' at position {}",
+                                        unexpected, start
+                                    ))),
+                                    text: Arc::from(unexpected),
+                                    start,
+                                    end: self.position,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            let token_type = if is_keyword_fast(text) {
+                // Check for special keywords that affect lexer mode
+                match text {
+                    "if" | "unless" | "while" | "until" | "for" | "foreach" | "grep" | "map"
+                    | "sort" | "split" | "and" | "or" | "xor" | "not"
+                    // These keywords introduce an expression, so a following `/` is a
+                    // regex, not division.  `return /re/`, `die /re/`, `warn /re/`,
+                    // `do /file/`, and `eval /re/` are all valid Perl.
+                    | "return" | "die" | "warn" | "do" | "eval"
+                    // `given`/`when` (feature 'switch') also introduce an expression;
+                    // `when /re/ { ... }` and `given /re/ { ... }` must lex `/` as
+                    // regex, not division. (#818)
+                    | "given" | "when" => {
+                        self.mode = LexerMode::ExpectTerm;
+                    }
+                    "sub" | "method" => {
+                        self.after_sub = true;
+                        self.mode = LexerMode::ExpectTerm;
+                    }
+                    // Quote operators expect a delimiter next.
+                    // Skip if after '->' -- these are method names, not operators.
+                    // Inside hash subscript braces, regex-like operators stay bareword
+                    // keys (`@h{m, s}`), but q-family operators can still introduce real
+                    // quote expressions in slices (`@h{qw/a b/}`).
+                    op if !self.after_sub
+                        && !self.after_arrow
+                        && !follows_sigil_prefix
+                        && quote_handler::is_quote_operator(op)
+                        && (self.hash_brace_depth == 0
+                            || matches!(op, "q" | "qq" | "qw" | "qr" | "qx")) =>
+                    {
+                        // Perl allows whitespace between a quote-like operator and its delimiter,
+                        // but ONLY for paired delimiters (s { ... } { ... }g).
+                        // For non-paired delimiters (s/foo/bar/, s,foo,bar,), the delimiter
+                        // must be immediately adjacent — otherwise `s $foo` would wrongly
+                        // treat `$` as a delimiter instead of being a bareword `s` followed
+                        // by a scalar variable.
+                        //
+                        // Strategy:
+                        //   1. Check the immediately-adjacent char first (no whitespace skip).
+                        //      If it is a valid delimiter → any non-alnum, non-whitespace char.
+                        //   2. If the adjacent char is whitespace, peek past it.
+                        //      Only accept PAIRED delimiters ({, [, (, <) in that case.
+                        let (candidate, char_after_next, has_gap) =
+                            self.peek_quote_operator_gap_and_following();
+
+                        if let Some(next) = candidate {
+                            // Fat-arrow autoquoting: `s => value` — `=` followed by `>` is '=>',
+                            // not a valid substitution delimiter. Treat as identifier.
+                            let is_fat_arrow = next == '=' && char_after_next == Some('>');
+                            let is_filetest_s =
+                                op == "s" && self.input.get(..start).is_some_and(|prefix| {
+                                    prefix.ends_with('-')
+                                });
+
+                            // When whitespace precedes the delimiter, only unambiguous
+                            // delimiters are accepted:
+                            //   - Paired delimiters ({, [, (, <) are always safe.
+                            //   - ' and " are safe for all operators EXCEPT `s` — `-s 'filename'`
+                            //     is a valid file-size filetest and must not be treated as a
+                            //     substitution start. All other operators (qw, q, qq, qr, qx, m,
+                            //     tr, y) have no corresponding file-test operator.
+                            //   - / is safe for non-substitution quote operators; `qw /a b/` and
+                            //     `m /re/` are common, while `s /foo/bar/` remains ambiguous with
+                            //     the file-size test shape and stays rejected here.
+                            //   - Non-paired, non-quote chars ($, @, ,, etc.) remain rejected.
+                            let is_paired_delim = matches!(next, '{' | '[' | '(' | '<');
+                            let is_quote_char = matches!(next, '\'' | '"') && op != "s";
+                            let is_spaced_slash_delim = next == '/' && op != "s";
+                            let is_hash_subscript_bare_key_boundary =
+                                self.hash_brace_depth > 0 && matches!(next, ',' | '}');
+                            let is_valid_delim = Self::is_quote_delim(next)
+                                && !is_fat_arrow
+                                && !is_filetest_s
+                                && !is_hash_subscript_bare_key_boundary
+                                    && (!has_gap
+                                        || is_paired_delim
+                                        || is_quote_char
+                                        || is_spaced_slash_delim);
+
+                            if is_valid_delim {
+                                self.mode = LexerMode::ExpectDelimiter;
+                                self.current_quote_op = Some(quote_handler::QuoteOperatorInfo {
+                                    operator: op.to_string(),
+                                    delimiter: '\0', // Will be set when we see the delimiter
+                                    start_pos: start,
+                                });
+
+                                // Don't return a keyword token - continue to parse the delimiter
+                                self.skip_quote_operator_delimiter_gap();
+
+                                // Get the delimiter
+                                #[allow(clippy::collapsible_if)]
+                                if let Some(delim) = self.current_char() {
+                                    if !delim.is_alphanumeric() {
+                                        self.advance();
+                                        if let Some(ref mut info) = self.current_quote_op {
+                                            info.delimiter = delim;
+                                        }
+                                        // Parse the quote operator content and return the complete token
+                                        return self.parse_quote_operator(delim);
+                                    }
+                                }
+                            } else {
+                                // Not a quote operator here → treat as IDENTIFIER
+                                self.current_quote_op = None;
+                                self.mode = LexerMode::ExpectOperator;
+                                return Some(Token {
+                                    token_type: TokenType::Identifier(Arc::from(text)),
+                                    start,
+                                    end: self.position,
+                                    text: Arc::from(text),
+                                });
+                            }
+                        } else {
+                            // End-of-input after the word → also treat as IDENTIFIER
+                            self.current_quote_op = None;
+                            self.mode = LexerMode::ExpectOperator;
+                            return Some(Token {
+                                token_type: TokenType::Identifier(Arc::from(text)),
+                                start,
+                                end: self.position,
+                                text: Arc::from(text),
+                            });
+                        }
+                        // If we get here but haven't returned, something went wrong
+                        // Fall through to treat as identifier
+                        self.current_quote_op = None;
+                        self.mode = LexerMode::ExpectOperator;
+                        return Some(Token {
+                            token_type: TokenType::Identifier(Arc::from(text)),
+                            start,
+                            end: self.position,
+                            text: Arc::from(text),
+                        });
+                    }
+                    // Format declarations need special handling
+                    "format" => {
+                        // We'll need to check for the = after the format name
+                        // For now, just mark that we saw format
+                    }
+                    _ if is_builtin_function(text) => {
+                        // Bare builtins are term-introducing in Perl.
+                        self.mode = LexerMode::ExpectTerm;
+                    }
+                    _ => {
+                        self.mode = LexerMode::ExpectOperator;
+                    }
+                }
+                TokenType::Keyword(Arc::from(text))
+            } else {
+                // Mirror parser bare-builtin handling so `/` after builtins like
+                // `join` or `print` is lexed as a regex term, not division.
+                // Also treat known user-declared subs as term-introducing (issue #1353).
+                if is_builtin_function(text)
+                    || self.config.symbol_table.as_ref().is_some_and(|st| st.is_known_sub(text))
+                {
+                    self.mode = LexerMode::ExpectTerm;
+                } else {
+                    self.mode = LexerMode::ExpectOperator;
+                }
+                TokenType::Identifier(Arc::from(text))
+            };
+
+            self.after_arrow = false;
+            // A keyword/identifier is not a variable; `{` after it is a block opener.
+            self.after_var_subscript = false;
+            // hash_brace_depth is managed by { and } handlers, not cleared per-token
+            Some(Token { token_type, text: Arc::from(text), start, end: self.position })
+        } else {
+            None
+        }
+    }
+
+    /// Parse data section body - consumes everything to EOF
+    fn parse_data_body(&mut self) -> Option<Token> {
+        if self.position >= self.input.len() {
+            // Already at EOF
+            self.mode = LexerMode::ExpectTerm;
+            return Some(Token {
+                token_type: TokenType::EOF,
+                text: Arc::from(""),
+                start: self.position,
+                end: self.position,
+            });
+        }
+
+        let start = self.position;
+        // Consume everything to EOF
+        let body = &self.input[self.position..];
+        self.position = self.input.len();
+
+        // Reset mode for next parse (though we're at EOF)
+        self.mode = LexerMode::ExpectTerm;
+
+        Some(Token {
+            token_type: TokenType::DataBody(Arc::from(body)),
+            text: Arc::from(body),
+            start,
+            end: self.position,
+        })
+    }
+
+    /// Parse format body - consumes until a line with just a dot
+    fn parse_format_body(&mut self) -> Option<Token> {
+        let start = self.position;
+        let mut body = String::new();
+        let mut line_start = true;
+
+        while self.position < self.input.len() {
+            // Check if we're at the start of a line and the next char is a dot
+            if line_start && self.current_char() == Some('.') {
+                // Check if this line contains only a dot
+                let mut peek_pos = self.position + 1;
+                let mut found_terminator = true;
+
+                // Skip any trailing whitespace on the dot line
+                while peek_pos < self.input.len() {
+                    match self.input_bytes[peek_pos] {
+                        b' ' | b'\t' | b'\r' => peek_pos += 1,
+                        b'\n' => break,
+                        _ => {
+                            found_terminator = false;
+                            break;
+                        }
+                    }
+                }
+
+                if found_terminator {
+                    // We found the terminating dot, consume it
+                    self.position = peek_pos;
+                    if self.position < self.input.len() && self.input_bytes[self.position] == b'\n'
+                    {
+                        self.position += 1;
+                    }
+
+                    // Switch back to normal mode
+                    self.mode = LexerMode::ExpectTerm;
+
+                    return Some(Token {
+                        token_type: TokenType::FormatBody(Arc::from(body.clone())),
+                        text: Arc::from(body),
+                        start,
+                        end: self.position,
+                    });
+                }
+            }
+
+            // Not a terminator, consume the character
+            match self.current_char() {
+                Some(ch) => {
+                    body.push(ch);
+                    self.advance();
+
+                    // Track if we're at the start of a line
+                    line_start = ch == '\n';
+                }
+                None => {
+                    // Reached EOF without finding terminator
+                    break;
+                }
+            }
+        }
+
+        // If we reach here, we didn't find a terminator
+        self.mode = LexerMode::ExpectTerm;
+        Some(Token {
+            token_type: TokenType::Error(Arc::from("Unterminated format body")),
+            text: Arc::from(body),
+            start,
+            end: self.position,
+        })
+    }
+
+    fn try_operator(&mut self) -> Option<Token> {
+        // Skip operator parsing if we're expecting a delimiter for a quote operator
+        if matches!(self.mode, LexerMode::ExpectDelimiter) && self.current_quote_op.is_some() {
+            return None;
+        }
+
+        let start = self.position;
+        let ch = self.current_char()?;
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SLASH DISAMBIGUATION STRATEGY (Issue #422)
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // Perl's `/` character is ambiguous:
+        //   - Division operator: `$x / 2`
+        //   - Regex delimiter: `/pattern/`
+        //   - Defined-or operator: `$x // $y`
+        //
+        // **Disambiguation Strategy (Context-Aware Heuristics):**
+        //
+        // 1. **Mode-Based Decision (Primary)**:
+        //    - `LexerMode::ExpectTerm` → `/` starts a regex
+        //      Examples: `if (/pattern/)`, `=~ /test/`, `( /regex/`
+        //    - `LexerMode::ExpectOperator` → `/` is division or `//`
+        //      Examples: `$x / 2`, `$x // $y`, `) / 3`
+        //
+        // 2. **Context Heuristics (Secondary - Implicit in Mode)**:
+        //    Mode is set based on previous token:
+        //    - After identifier/number/closing paren → ExpectOperator → division
+        //    - After operator/keyword/opening paren → ExpectTerm → regex
+        //
+        // 3. **Budget Protection**:
+        //    - Regex parsing has a parse-step budget and byte budget
+        //    - Budget exceeded → emit UnknownRest token (graceful degradation)
+        //    - See `parse_regex()` and `budget_guard()` for implementation
+        //
+        // 4. **Performance Characteristics**:
+        //    - Single-pass: O(1) decision based on mode flag
+        //    - No backtracking: Mode updated after each token
+        //    - Optimized: Byte-level operations for common cases
+        //
+        // **Metrics & Monitoring**:
+        //    - Budget exceeded events tracked via UnknownRest token emission
+        //    - LSP diagnostics generated for truncated regexes
+        //    - Test coverage: lexer_slash_timeout_tests.rs (21 test cases)
+        //
+        // ═══════════════════════════════════════════════════════════════════════
+
+        if ch == '/' {
+            if self.mode == LexerMode::ExpectTerm {
+                // Mode indicates we're expecting a term → `/` starts a regex
+                // Examples: `if (/pattern/)`, `=~ /test/`, `while (/match/)`
+                return self.parse_regex(start);
+            } else {
+                // Mode indicates we're expecting an operator → `/` is division or `//`
+                // Examples: `$x / 2`, `$x // $y`, `10 / 3`
+                self.advance();
+                // Check for // or //= using byte-level operations for speed
+                if self.peek_byte(0) == Some(b'/') {
+                    self.position += 1; // consume second / directly
+                    if self.peek_byte(0) == Some(b'=') {
+                        self.position += 1; // consume = directly
+                        let text = &self.input[start..self.position];
+                        self.mode = LexerMode::ExpectTerm;
+                        return Some(Token {
+                            token_type: TokenType::Operator(Arc::from(text)),
+                            text: Arc::from(text),
+                            start,
+                            end: self.position,
+                        });
+                    } else {
+                        // Use cached string for common "//" operator
+                        self.mode = LexerMode::ExpectTerm;
+                        return Some(Token {
+                            token_type: TokenType::Operator(Arc::from("//")),
+                            text: Arc::from("//"),
+                            start,
+                            end: self.position,
+                        });
+                    }
+                } else if self.position < self.input_bytes.len()
+                    && self.input_bytes[self.position] == b'='
+                {
+                    // /= division-assign operator
+                    self.position += 1; // consume =
+                    self.mode = LexerMode::ExpectTerm;
+                    return Some(Token {
+                        token_type: TokenType::Operator(Arc::from("/=")),
+                        text: Arc::from("/="),
+                        start,
+                        end: self.position,
+                    });
+                } else {
+                    // Use cached string for common "/" division
+                    self.mode = LexerMode::ExpectTerm;
+                    return Some(Token {
+                        token_type: TokenType::Division,
+                        text: Arc::from("/"),
+                        start,
+                        end: self.position,
+                    });
+                }
+            }
+        }
+
+        // Handle other operators - simplified
+        match ch {
+            '.' => {
+                // Check if it's a decimal number like .5 -- but only when we
+                // expect a term.  In operator position `.5` is concatenation
+                // of the bareword/number on the left with the number `5`.
+                if self.mode != LexerMode::ExpectOperator
+                    && self.peek_char(1).is_some_and(|c| c.is_ascii_digit())
+                {
+                    return self.parse_decimal_number(start);
+                }
+                self.advance();
+                // Check for compound operators
+                #[allow(clippy::collapsible_if)]
+                if let Some(next) = self.current_char() {
+                    if is_compound_operator(ch, next) {
+                        self.advance();
+
+                        // Check for three-character operators like **=, <<=, >>=
+                        if self.position < self.input.len() {
+                            let third = self.current_char();
+                            // Check for three-character operators
+                            if matches!(
+                                (ch, next, third),
+                                ('*', '*', Some('='))
+                                    | ('<', '<', Some('='))
+                                    | ('>', '>', Some('='))
+                                    | ('&', '&', Some('='))
+                                    | ('|', '|', Some('='))
+                                    | ('/', '/', Some('='))
+                            ) {
+                                self.advance(); // consume the =
+                            } else if ch == '<' && next == '=' && third == Some('>') {
+                                self.advance(); // consume the >
+                            // Special case: <=> spaceship operator
+                            } else if ch == '.' && next == '.' && third == Some('.') {
+                                self.advance(); // consume the third .
+                            }
+                        }
+                    }
+                }
+            }
+            '+' | '-' | '*' | '%' | '&' | '|' | '^' | '~' | '!' | '=' | '<' | '>' | ':' | '?'
+            | '\\' => {
+                self.advance();
+                // Check for compound operators
+                #[allow(clippy::collapsible_if)]
+                if let Some(next) = self.current_char() {
+                    if is_compound_operator(ch, next) {
+                        self.advance();
+
+                        // Check for three-character operators like **=, <<=, >>=
+                        if self.position < self.input.len() {
+                            let third = self.current_char();
+                            // Check for three-character operators
+                            if matches!(
+                                (ch, next, third),
+                                ('*', '*', Some('='))
+                                    | ('<', '<', Some('='))
+                                    | ('>', '>', Some('='))
+                                    | ('&', '&', Some('='))
+                                    | ('|', '|', Some('='))
+                                    | ('/', '/', Some('='))
+                            ) {
+                                self.advance(); // consume the =
+                            } else if ch == '<' && next == '=' && third == Some('>') {
+                                self.advance(); // consume the >
+                                // Special case: <=> spaceship operator
+                            }
+                        }
+                    }
+                }
+            }
+            _ => return None,
+        }
+
+        let text = &self.input[start..self.position];
+        // Operator ends prototype window (e.g. `:` for attributes)
+        self.after_sub = false;
+        // Track whether this operator is '->' for method name disambiguation
+        self.after_arrow = text == "->";
+        // Any operator token ends the "just saw a variable" window; `{` after
+        // an operator is not a hash subscript (e.g. `foo() {`, `+ {`, etc.).
+        self.after_var_subscript = false;
+        // Postfix ++ and -- complete a term expression, so next token is an operator
+        // (e.g., "$x++ / 2" → / is division, not regex)
+        if (text == "++" || text == "--") && self.mode == LexerMode::ExpectOperator {
+            // Postfix: stay in ExpectOperator
+        } else {
+            self.mode = LexerMode::ExpectTerm;
+        }
+
+        Some(Token {
+            token_type: TokenType::Operator(Arc::from(text)),
+            text: Arc::from(text),
+            start,
+            end: self.position,
+        })
+    }
+
+    fn try_delimiter(&mut self) -> Option<Token> {
+        let start = self.position;
+        let ch = self.current_char()?;
+
+        // If we're expecting a delimiter for a quote operator, handle it specially
+        if matches!(self.mode, LexerMode::ExpectDelimiter) && self.current_quote_op.is_some() {
+            // Accept any non-alphanumeric character as a delimiter
+            if !ch.is_alphanumeric() && !ch.is_whitespace() {
+                self.advance();
+                if let Some(ref mut info) = self.current_quote_op {
+                    info.delimiter = ch;
+                }
+                // Now parse the quote operator content
+                return self.parse_quote_operator(ch);
+            }
+        }
+
+        match ch {
+            '(' => {
+                // Check if this is a quote operator delimiter
+                if matches!(self.mode, LexerMode::ExpectDelimiter)
+                    && self.current_quote_op.is_some()
+                {
+                    self.advance();
+                    if let Some(ref mut info) = self.current_quote_op {
+                        info.delimiter = ch;
+                    }
+                    return self.parse_quote_operator(ch);
+                }
+
+                self.advance();
+                if self.after_sub {
+                    // Promote after_sub to in_prototype now that we see '('
+                    self.in_prototype = true;
+                    self.after_sub = false;
+                    self.prototype_depth = 1;
+                } else if self.in_prototype {
+                    self.prototype_depth += 1;
+                }
+                self.paren_depth += 1;
+                self.after_var_subscript = false;
+                self.mode = LexerMode::ExpectTerm;
+                Some(Token {
+                    token_type: TokenType::LeftParen,
+                    text: Arc::from("("),
+                    start,
+                    end: self.position,
+                })
+            }
+            ')' => {
+                self.advance();
+                if self.in_prototype && self.prototype_depth > 0 {
+                    self.prototype_depth -= 1;
+                    if self.prototype_depth == 0 {
+                        self.in_prototype = false;
+                    }
+                }
+                self.after_arrow = false;
+                self.paren_depth = self.paren_depth.saturating_sub(1);
+                // A closing paren ends any var-subscript context: `if ($var)` should
+                // NOT leave after_var_subscript set, otherwise the following `{` would
+                // incorrectly increment hash_brace_depth and suppress regex operators
+                // inside the block body (issue #2844).
+                self.after_var_subscript = false;
+                self.mode = LexerMode::ExpectOperator;
+                Some(Token {
+                    token_type: TokenType::RightParen,
+                    text: Arc::from(")"),
+                    start,
+                    end: self.position,
+                })
+            }
+            ';' => {
+                self.advance();
+                // Semicolon ends prototype window (forward declaration)
+                self.after_sub = false;
+                // Semicolon is a statement boundary — any pending method-call chain is over.
+                self.after_arrow = false;
+                self.after_var_subscript = false;
+                self.mode = LexerMode::ExpectTerm;
+                Some(Token {
+                    token_type: TokenType::Semicolon,
+                    text: Arc::from(";"),
+                    start,
+                    end: self.position,
+                })
+            }
+            ',' => {
+                self.advance();
+                self.after_var_subscript = false;
+                self.mode = LexerMode::ExpectTerm;
+                Some(Token {
+                    token_type: TokenType::Comma,
+                    text: Arc::from(","),
+                    start,
+                    end: self.position,
+                })
+            }
+            '[' => {
+                self.advance();
+                self.after_var_subscript = false;
+                self.mode = LexerMode::ExpectTerm;
+                Some(Token {
+                    token_type: TokenType::LeftBracket,
+                    text: Arc::from("["),
+                    start,
+                    end: self.position,
+                })
+            }
+            ']' => {
+                self.advance();
+                // A closing `]` from an array subscript leaves us in a state where
+                // a `{` immediately following is a hash subscript — e.g. `$arr[$i]{key}`.
+                // Set after_var_subscript so the `{` handler recognises it as such.
+                // This mirrors the `}` handler's behavior when closing a hash subscript.
+                self.after_var_subscript = true;
+                self.mode = LexerMode::ExpectOperator;
+                Some(Token {
+                    token_type: TokenType::RightBracket,
+                    text: Arc::from("]"),
+                    start,
+                    end: self.position,
+                })
+            }
+            '{' => {
+                self.advance();
+                // Opening brace ends prototype window — no prototype follows
+                self.after_sub = false;
+                // `{` is a hash/slice subscript opener only when it immediately follows
+                // a variable token ($x, @x, %x) — tracked by `after_var_subscript`.
+                // This is narrower than the old `mode == ExpectOperator` check, which
+                // incorrectly incremented depth for block-opening braces after `sub foo`,
+                // `if (cond)`, `else`, `while (cond)`, etc., causing quote-op suppression
+                // inside those block bodies and breaking m//, s///, qr//, tr/// etc.
+                if self.after_var_subscript {
+                    self.hash_brace_depth = self.hash_brace_depth.saturating_add(1);
+                }
+                self.after_var_subscript = false;
+                self.mode = LexerMode::ExpectTerm;
+                Some(Token {
+                    token_type: TokenType::LeftBrace,
+                    text: Arc::from("{"),
+                    start,
+                    end: self.position,
+                })
+            }
+            '}' => {
+                self.advance();
+                self.after_arrow = false;
+                // Decrement hash subscript brace depth only if we were inside one.
+                // If depth > 0, this closes a hash subscript; enable chained subscripts
+                // like $h{a}{b} by setting after_var_subscript so the next `{` is
+                // recognized as another subscript opener.
+                if self.hash_brace_depth > 0 {
+                    self.hash_brace_depth -= 1;
+                    // The subscript value is now the "variable" for a chained subscript.
+                    self.after_var_subscript = true;
+                } else {
+                    // Block-close `}` — no subscript follows
+                    self.after_var_subscript = false;
+                }
+                self.mode = LexerMode::ExpectOperator;
+                Some(Token {
+                    token_type: TokenType::RightBrace,
+                    text: Arc::from("}"),
+                    start,
+                    end: self.position,
+                })
+            }
+            '#' => {
+                // Only treat as delimiter in ExpectDelimiter mode
+                if matches!(self.mode, LexerMode::ExpectDelimiter) {
+                    self.advance();
+                    // Reset mode after consuming delimiter
+                    self.mode = LexerMode::ExpectTerm;
+                    Some(Token {
+                        token_type: TokenType::Operator(Arc::from("#")),
+                        text: Arc::from("#"),
+                        start,
+                        end: self.position,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_double_quoted_string(&mut self, start: usize) -> Option<Token> {
+        self.advance(); // Skip opening quote
+        let mut parts = Vec::new();
+        let mut current_literal = String::new();
+        let mut last_pos = self.position;
+
+        while let Some(ch) = self.current_char() {
+            match ch {
+                '"' => {
+                    self.advance();
+                    if !current_literal.is_empty() {
+                        parts.push(StringPart::Literal(Arc::from(current_literal)));
+                    }
+
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+
+                    return Some(Token {
+                        token_type: if parts.is_empty() {
+                            TokenType::StringLiteral
+                        } else {
+                            TokenType::InterpolatedString(parts)
+                        },
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                '\\' => {
+                    self.advance();
+                    if let Some(escaped) = self.current_char() {
+                        // Optimize by reserving space to avoid frequent reallocations
+                        if current_literal.capacity() == 0 {
+                            current_literal.reserve(32);
+                        }
+                        current_literal.push('\\');
+                        current_literal.push(escaped);
+                        self.advance();
+                    }
+                }
+                // Array interpolation: @arr, @{expr}, @_. Ported from PR #5355
+                // (branch claude/inspiring-babbage-83z94q) -- issue #5042's
+                // headline claim is the `@` sigil, so this arm closes the gap
+                // left by the `$`-only fix above. `@` followed by neither an
+                // identifier nor `{` is not a valid interpolation opener and
+                // stays literal text (verified against real perl 5.38.2:
+                // `print "@!"` prints a literal `@!`, it does not interpolate
+                // `$!` under the `@` sigil).
+                '@' if self.config.parse_interpolation => {
+                    if !current_literal.is_empty() {
+                        parts.push(StringPart::Literal(Arc::from(current_literal)));
+                        current_literal = String::new();
+                    }
+                    let part_start = self.position;
+                    self.advance(); // consume '@'
+                    match self.current_char() {
+                        Some('{') => {
+                            let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Expression(Arc::from(part_text)));
+                        }
+                        // Package-qualified array names interpolate as one
+                        // variable -- verified against real perl 5.38.2:
+                        // `our @arr=("x","y"); print "@main::arr"` prints
+                        // "x y", so `::` segments belong to the variable, not
+                        // to the following literal text. A leading `::` names
+                        // the same array in package `main`: `@a=(1,2); print
+                        // "@::a"` prints "1 2". Both share
+                        // `consume_qualified_identifier_in_string` with the
+                        // `$#`, `@$` and `$$` deref arms, so every arm folds
+                        // `::` (and the old-style `'`) segments identically.
+                        Some(ch)
+                            if is_perl_identifier_start(ch)
+                                || (ch == ':' && self.peek_char(1) == Some(':')) =>
+                        {
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Array dereference: `@$ref`, `@$$ref`, `@$main::ref`.
+                        // Perl interpolates the whole deref chain as one array
+                        // (verified against real perl 5.38.2:
+                        // `our @a=(1,2); our $r=\@a; print "@$r"` prints "1 2",
+                        // and `my $rr=\$r; print "@$$rr"` prints "1 2" too).
+                        // Mirrors the `$#$ref` arm below, which already consumes
+                        // a `$` sigil run before the qualified identifier, so the
+                        // two arms agree on the same shape. A degenerate `@$`
+                        // with no identifier is still consumed as one unit, which
+                        // is what perl does: `print "@$ x"` prints " x", not
+                        // "@$ x".
+                        Some('$') => {
+                            while self.current_char() == Some('$') {
+                                self.advance();
+                            }
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Regex match-offset special arrays `@+` and `@-`. These
+                        // are real Perl array variables and DO interpolate
+                        // (verified against real perl 5.38.2:
+                        // `"foobar"=~/(o+)(b)/; print "@-"` prints "1 1 3" and
+                        // `print "@+"` prints "4 3 4"), so they must not fall
+                        // into the literal fallback below. `try_variable` already
+                        // recognizes the same two forms at token level, so this
+                        // keeps the string scanner consistent with it.
+                        Some('+' | '-') => {
+                            self.advance(); // consume the '+' or '-'
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        _ => {
+                            // '@' not followed by identifier or '{' — treat as literal
+                            current_literal.push('@');
+                        }
+                    }
+                }
+                '$' if self.config.parse_interpolation => {
+                    // Handle variable interpolation - avoid unnecessary clone
+                    if !current_literal.is_empty() {
+                        parts.push(StringPart::Literal(Arc::from(current_literal)));
+                        current_literal = String::new(); // Clear without cloning
+                    }
+
+                    let part_start = self.position;
+                    self.advance();
+                    match self.current_char() {
+                        Some('{') => {
+                            let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            parts.push(StringPart::Expression(Arc::from(
+                                &self.input[part_start..self.position],
+                            )));
+                        }
+                        Some(ch) if is_perl_identifier_start(ch) => {
+                            let var_start = self.position;
+
+                            // Fast path for ASCII identifier continuation
+                            while self.position < self.input_bytes.len() {
+                                let byte = self.input_bytes[self.position];
+                                if byte.is_ascii_alphanumeric() || byte == b'_' {
+                                    self.position += 1;
+                                } else if byte >= 128 {
+                                    // Only use UTF-8 parsing for non-ASCII
+                                    if let Some(ch) = self.current_char() {
+                                        if is_perl_identifier_continue(ch) {
+                                            self.advance();
+                                        } else {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            if self.position > var_start {
+                                let var_name = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(var_name)));
+
+                                if self.matches_bytes(b"->") {
+                                    let tail_start = self.position;
+                                    self.advance();
+                                    self.advance();
+
+                                    match self.current_char() {
+                                        Some('[') => {
+                                            let _ = self
+                                                .consume_balanced_segment_in_string('[', ']', '"');
+                                            parts.push(StringPart::MethodCall(Arc::from(
+                                                &self.input[tail_start..self.position],
+                                            )));
+                                        }
+                                        Some('{') => {
+                                            let _ = self
+                                                .consume_balanced_segment_in_string('{', '}', '"');
+                                            parts.push(StringPart::MethodCall(Arc::from(
+                                                &self.input[tail_start..self.position],
+                                            )));
+                                        }
+                                        Some('(') => {
+                                            let _ = self
+                                                .consume_balanced_segment_in_string('(', ')', '"');
+                                            parts.push(StringPart::MethodCall(Arc::from(
+                                                &self.input[tail_start..self.position],
+                                            )));
+                                        }
+                                        Some(ch) if is_perl_identifier_start(ch) => {
+                                            // Perl does NOT interpolate a bare
+                                            // method call inside a double-quoted
+                                            // string: `"$foo->bar"` interpolates
+                                            // `$foo` then prints a literal
+                                            // `->bar`. Only arrow *subscripts*
+                                            // (`->[]`, `->{}`, `->()`) genuinely
+                                            // interpolate and are handled by the
+                                            // arms above (#5428). Leave the arrow
+                                            // and method name in the literal
+                                            // bucket so downstream consumers do
+                                            // not treat a never-performed call as
+                                            // a real interpolation.
+                                            while self.position < self.input_bytes.len() {
+                                                let byte = self.input_bytes[self.position];
+                                                if byte.is_ascii_alphanumeric() || byte == b'_' {
+                                                    self.position += 1;
+                                                } else if byte >= 128 {
+                                                    if let Some(ch) = self.current_char() {
+                                                        if is_perl_identifier_continue(ch) {
+                                                            self.advance();
+                                                        } else {
+                                                            break;
+                                                        }
+                                                    } else {
+                                                        break;
+                                                    }
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                            let tail_text = &self.input[tail_start..self.position];
+                                            if !tail_text.is_empty() {
+                                                current_literal.reserve(tail_text.len());
+                                                current_literal.push_str(tail_text);
+                                            }
+                                        }
+                                        _ => {
+                                            // `->` not followed by a subscript or
+                                            // identifier — also literal (#5428).
+                                            let tail_text = &self.input[tail_start..self.position];
+                                            if !tail_text.is_empty() {
+                                                current_literal.reserve(tail_text.len());
+                                                current_literal.push_str(tail_text);
+                                            }
+                                        }
+                                    }
+                                } else if self.current_char() == Some('[') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('[', ']', '"');
+                                    parts.push(StringPart::ArraySlice(Arc::from(
+                                        &self.input[tail_start..self.position],
+                                    )));
+                                } else if self.current_char() == Some('{') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                    parts.push(StringPart::Expression(Arc::from(
+                                        &self.input[tail_start..self.position],
+                                    )));
+                                }
+                            }
+                        }
+                        // Digit variables: $0 (program name), $1..$9, $10, $11, ...
+                        // (capture groups). Perl consumes *all* consecutive digits
+                        // into one numeric variable -- `"$10"` is capture group 10,
+                        // not `$1` followed by literal `"0"` (verified against real
+                        // perl 5.38.2 with an 11-group match: `$10` prints the 10th
+                        // group, not `$1` + "0"). `$0` (the program name) is simply
+                        // the one-digit case of this same rule.
+                        Some(ch) if ch.is_ascii_digit() => {
+                            self.advance();
+                            while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
+                                self.advance();
+                            }
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Control variables: $^W, $^O, $^X, etc.
+                        Some('^') => {
+                            self.advance(); // consume '^'
+                            if self.current_char().is_some_and(|c| c.is_ascii_uppercase()) {
+                                self.advance(); // consume the uppercase letter
+                            }
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Array-length operator: $#array, $#{expr}, $#$ref. All
+                        // three interpolate to the last index of the referenced
+                        // array (verified against real perl 5.38.2: `$#{$ref}` and
+                        // `$#$ref` both print the same value as `$#array` for an
+                        // array ref `$ref`). Each is emitted as a single Variable
+                        // part -- `$#{$ref}`/`$#$ref` must not fragment into
+                        // separate Variable/Literal parts the way plain `${expr}`
+                        // subscripting would. The bare and `$ref`-tail identifier
+                        // scans also fold `::`-qualified package segments (e.g.
+                        // `$#main::array`), mirroring `try_variable`'s `$#` loop
+                        // (verified against real perl 5.38.2: `our @array=(1,2,3);
+                        // print "$#main::array"` prints "2").
+                        Some('#') => {
+                            self.advance(); // consume '#'
+                            if self.current_char() == Some('{') {
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                            } else {
+                                // `$#$ref` (and chained `$#$$ref`) first consume a
+                                // deref sigil run; bare `$#array` simply runs that
+                                // loop zero times. Both then take the same
+                                // package-qualified identifier scan, so they share
+                                // one path rather than duplicating it.
+                                while self.current_char() == Some('$') {
+                                    self.advance();
+                                }
+                                self.consume_qualified_identifier_in_string();
+                            }
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // $$ (PID) when not followed by an identifier or brace
+                        // group; otherwise `$$foo`, `$$$foo`, `$${foo}`, etc. are
+                        // scalar-dereference chains and interpolate as a single
+                        // unit (verified against real perl 5.38.2: `my $foo =
+                        // \$x; print "$$foo"` prints the dereferenced value of
+                        // $x, `"$$$foo"` double-derefs, and `my $r = \$x; my
+                        // $foo = \$r; print "$$${foo}"` also derefs through the
+                        // brace form). Bare `$$` (no trailing identifier/brace)
+                        // remains the PID.
+                        Some('$') => {
+                            // Count consecutive '$' sigils starting at the current
+                            // position (at least 1, since we matched on '$' here).
+                            let mut dollar_run = 0usize;
+                            while self.peek_char(dollar_run) == Some('$') {
+                                dollar_run += 1;
+                            }
+                            let after_run = self.peek_char(dollar_run);
+                            if after_run == Some('{') {
+                                // Deref chain terminated by a brace group, e.g.
+                                // `$${foo}` / `$$${foo}` -- consume the sigil run
+                                // then the balanced `{...}` as one Expression
+                                // unit, mirroring the plain `${expr}` arm. No
+                                // postfix subscript follows: verified against
+                                // real perl 5.38.2, `"$${foo}[0]"` interpolates
+                                // `$${foo}` and leaves the literal text "[0]"
+                                // afterward rather than subscripting.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Expression(Arc::from(part_text)));
+                            } else if after_run.is_some_and(is_perl_identifier_start) {
+                                // Deref chain: consume the remaining '$' sigils,
+                                // then the identifier they dereference, then any
+                                // postfix subscript -- verified against real perl
+                                // 5.38.2: `my @a=(1,2,3); my $foo=\@a; print
+                                // "$$foo[1]"` prints "2" and `my %h=(a=>1); my
+                                // $foo=\%h; print "$$foo{a}"` prints "1", so a
+                                // trailing `[` / `{` subscript belongs to the
+                                // deref chain, not the following literal text.
+                                //
+                                // The dereferenced name is package-qualified via
+                                // the shared scan, matching the `$#$ref` and
+                                // `@$ref` arms: perl reads `$$main::foo` as one
+                                // deref of `$main::foo`, not as `$$main` plus
+                                // the literal "::foo" (verified against real
+                                // perl 5.38.2: `$v="deep"; $main::foo=\$v;
+                                // print "$$main::foo"` prints "deep").
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                self.consume_qualified_identifier_in_string();
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
+
+                                // Arrow *subscripts* chain onto the deref and do
+                                // interpolate -- verified against real perl
+                                // 5.38.2: `my $ar=\@a; my $rr=\$ar; print
+                                // "$$rr->[1]"` prints the element. A bare
+                                // arrow *method* call does NOT interpolate
+                                // (`print "$$ro->bar"` prints the deref'd value
+                                // followed by a literal "->bar"), so `->name`
+                                // is deliberately left in the literal bucket.
+                                if self.matches_bytes(b"->")
+                                    && matches!(self.peek_byte(2), Some(b'[') | Some(b'{'))
+                                {
+                                    let tail_start = self.position;
+                                    self.advance();
+                                    self.advance();
+                                    if self.current_char() == Some('[') {
+                                        let _ =
+                                            self.consume_balanced_segment_in_string('[', ']', '"');
+                                    } else {
+                                        let _ =
+                                            self.consume_balanced_segment_in_string('{', '}', '"');
+                                    }
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::MethodCall(Arc::from(tail_text)));
+                                } else if self.current_char() == Some('[') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('[', ']', '"');
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::ArraySlice(Arc::from(tail_text)));
+                                } else if self.current_char() == Some('{') {
+                                    let tail_start = self.position;
+                                    let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                    let tail_text = &self.input[tail_start..self.position];
+                                    parts.push(StringPart::Expression(Arc::from(tail_text)));
+                                }
+                            } else if after_run.is_some_and(|c| c.is_ascii_digit()) {
+                                // Digits do not start an identifier, but they do
+                                // name capture variables, and a `$` run in front
+                                // of one is a scalar deref of that capture --
+                                // not a PID followed by literal text (verified
+                                // against real perl 5.38.2:
+                                // `perl -W -e '"abc"=~/(a)/; print "$$1X"'`
+                                // prints just "X" with one "uninitialized value"
+                                // warning, i.e. `$$1` is one deref unit that
+                                // interpolates empty, leaving "X" literal). The
+                                // whole digit run belongs to the variable for
+                                // the same reason `"$10"` is capture group 10.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
+                                    self.advance();
+                                }
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
+                            } else {
+                                // Bare `$$` is the PID. A longer pure sigil run
+                                // (`$$$`, `$$$$`) is still one interpolation
+                                // unit, so consume the whole run rather than a
+                                // single '$' -- verified against real perl
+                                // 5.38.2: `print "[$$]"` prints the PID, while
+                                // `print "[$$$]"` and `print "[$$$$]"` both
+                                // print "[]" (one deref unit that interpolates
+                                // empty), never the PID followed by a literal
+                                // '$'. A trailing punctuation variable is NOT
+                                // part of the run: `print "[$$!]"` prints the
+                                // PID followed by a literal '!', which is what
+                                // consuming only the run leaves behind.
+                                for _ in 0..dollar_run {
+                                    self.advance();
+                                }
+                                let part_text = &self.input[part_start..self.position];
+                                parts.push(StringPart::Variable(Arc::from(part_text)));
+                            }
+                        }
+                        // Package-qualified scalars written with a leading `::`
+                        // name the variable in package `main`, and they must be
+                        // matched before the punctuation set below, which also
+                        // owns the single-`:` variable `$:`. Verified against
+                        // real perl 5.38.2: `$foo="P"; print "$::foo"` prints
+                        // "P", `print "$::"` interpolates `$main::` (empty),
+                        // and `print "$:::foo"` interpolates `$main::` followed
+                        // by the literal ":foo" -- which is exactly what the
+                        // shared `::`-folding scan produces here.
+                        Some(':') if self.peek_char(1) == Some(':') => {
+                            self.consume_qualified_identifier_in_string();
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Punctuation special variables: $!, $@, $?, $&, $:, etc.
+                        // `is_perl_punctuation_variable` owns the exact set and
+                        // documents why '"' is excluded and why ':' must be
+                        // tried against the `::` arm above first; a trailing '$'
+                        // falls through to the literal arm below.
+                        Some(ch) if is_perl_punctuation_variable(ch) => {
+                            self.advance(); // consume the special character
+                            let part_text = &self.input[part_start..self.position];
+                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                        }
+                        // Unrecognized '$' — treat as literal character
+                        _ => {
+                            current_literal.push('$');
+                        }
+                    }
+                }
+                _ => {
+                    // Optimize string building with better capacity management
+                    if current_literal.capacity() == 0 {
+                        current_literal.reserve(32);
+                    }
+                    current_literal.push(ch);
+                    self.advance();
+                }
+            }
+
+            // Safety check: ensure we're making progress
+            if self.position == last_pos {
+                break;
+            }
+            last_pos = self.position;
+        }
+
+        Some(self.unterminated_string_error(start))
+    }
+
+    fn parse_single_quoted_string(&mut self, start: usize) -> Option<Token> {
+        self.advance(); // Skip opening quote
+
+        let mut last_pos = self.position;
+
+        while let Some(ch) = self.current_char() {
+            match ch {
+                '\'' => {
+                    self.advance();
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+
+                    return Some(Token {
+                        token_type: TokenType::StringLiteral,
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                '\\' => {
+                    self.advance();
+                    if self.current_char() == Some('\'') || self.current_char() == Some('\\') {
+                        self.advance();
+                    }
+                }
+                _ => self.advance(),
+            }
+
+            // Safety check: ensure we're making progress
+            if self.position == last_pos {
+                break;
+            }
+            last_pos = self.position;
+        }
+
+        Some(self.unterminated_string_error(start))
+    }
+
+    fn parse_backtick_string(&mut self, start: usize) -> Option<Token> {
+        self.advance(); // Skip opening backtick
+
+        let mut last_pos = self.position;
+
+        while let Some(ch) = self.current_char() {
+            match ch {
+                '`' => {
+                    self.advance();
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+
+                    return Some(Token {
+                        token_type: TokenType::QuoteCommand,
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                '\\' => {
+                    self.advance();
+                    if self.current_char().is_some() {
+                        self.advance();
+                    }
+                }
+                _ => self.advance(),
+            }
+
+            // Safety check: ensure we're making progress
+            if self.position == last_pos {
+                break;
+            }
+            last_pos = self.position;
+        }
+
+        Some(self.unterminated_string_error(start))
+    }
+
+    fn parse_q_string(&mut self, _start: usize) -> Option<Token> {
+        // Simplified q-string parsing
+        None
+    }
+
+    #[inline]
+    fn unterminated_string_error(&mut self, start: usize) -> Token {
+        // Line-bounded recovery: consume to end of line (or EOF if no newline).
+        // This allows subsequent declarations to be lexed after an unterminated
+        // string on the same line, instead of losing the entire rest of the file. (#5090)
+        let remaining = &self.input[start..];
+        let end = match remaining.find('\n') {
+            Some(nl_offset) => start + nl_offset, // include the newline in the error token
+            None => self.input.len(),             // single-line file or last line
+        };
+        self.position = end;
+
+        Token {
+            token_type: TokenType::Error(Arc::from("unterminated string")),
+            text: Arc::from(&self.input[start..end]),
+            start,
+            end,
+        }
+    }
+
+    fn parse_substitution(&mut self, start: usize) -> Option<Token> {
+        // We've already consumed 's'
+        self.skip_quote_operator_delimiter_gap();
+        let delimiter = self.current_char()?;
+        self.advance(); // Skip delimiter
+        self.parse_substitution_with_delimiter(start, delimiter)
+    }
+
+    fn parse_substitution_with_delimiter(
+        &mut self,
+        start: usize,
+        delimiter: char,
+    ) -> Option<Token> {
+        let (_pattern, pattern_closed) = self.read_delimited_body(delimiter);
+        let replacement_closed;
+
+        let pattern_is_paired = quote_handler::paired_close(delimiter).is_some();
+        if pattern_is_paired {
+            self.skip_paired_substitution_replacement_gap();
+
+            if let Some(repl_delim) = self.current_char()
+                && Self::is_quote_delim(repl_delim)
+            {
+                self.advance();
+                let (_replacement, closed) = self.read_substitution_replacement_body(repl_delim);
+                replacement_closed = closed;
+            } else {
+                replacement_closed = false;
+            }
+        } else {
+            let (_replacement, closed) = self.read_substitution_replacement_body(delimiter);
+            replacement_closed = closed;
+        }
+
+        // Parse modifiers - include all alphanumeric for proper validation in parser (MUT_005 fix)
+        while let Some(ch) = self.current_char() {
+            if ch.is_ascii_alphanumeric() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let text = &self.input[start..self.position];
+        self.mode = LexerMode::ExpectOperator;
+
+        let token_type = if pattern_closed && replacement_closed {
+            TokenType::Substitution
+        } else {
+            TokenType::Error(Arc::from(format!(
+                "unclosed quote-like operator 's' delimiter '{}'",
+                delimiter
+            )))
+        };
+
+        Some(Token { token_type, text: Arc::from(text), start, end: self.position })
+    }
+
+    fn skip_paired_substitution_replacement_gap(&mut self) {
+        self.skip_comment_gap_after_whitespace();
+    }
+
+    fn skip_quote_operator_delimiter_gap(&mut self) {
+        if self.current_char().is_some_and(char::is_whitespace) {
+            self.skip_comment_gap_after_whitespace();
+        }
+    }
+
+    fn skip_comment_gap_after_whitespace(&mut self) {
+        let mut comment_eligible = false;
+        loop {
+            let mut saw_whitespace = false;
+            while self.current_char().is_some_and(char::is_whitespace) {
+                self.advance();
+                saw_whitespace = true;
+            }
+            comment_eligible |= saw_whitespace;
+
+            if comment_eligible && self.current_char() == Some('#') {
+                while let Some(ch) = self.current_char() {
+                    self.advance();
+                    if matches!(ch, '\n' | '\r') {
+                        break;
+                    }
+                }
+                comment_eligible = true;
+                continue;
+            }
+
+            break;
+        }
+    }
+
+    fn peek_quote_operator_gap_and_following(&self) -> (Option<char>, Option<char>, bool) {
+        let (candidate, following) = self.peek_nonspace_and_following();
+        let saw_gap = self.current_char().is_some_and(char::is_whitespace);
+        (candidate, following, saw_gap)
+    }
+
+    fn read_substitution_replacement_body(&mut self, delim: char) -> (String, bool) {
+        if quote_handler::paired_close(delim).is_some() {
+            return self.read_delimited_body(delim);
+        }
+
+        self.read_unpaired_substitution_replacement_body(delim)
+    }
+
+    fn read_unpaired_substitution_replacement_body(&mut self, delim: char) -> (String, bool) {
+        let mut body = String::new();
+        let mut escaped = false;
+
+        while let Some(ch) = self.current_char() {
+            if escaped {
+                body.push(ch);
+                self.advance();
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' => {
+                    body.push(ch);
+                    self.advance();
+                    escaped = true;
+                }
+                '"' | '\'' if ch != delim => {
+                    if let Some((string_end, true)) =
+                        self.scan_inner_string_for_delimiter(self.position, ch, delim)
+                    {
+                        if let Some(string_text) = self.input.get(self.position..string_end) {
+                            body.push_str(string_text);
+                            self.position = string_end;
+                        } else {
+                            body.push(ch);
+                            self.advance();
+                        }
+                    } else {
+                        body.push(ch);
+                        self.advance();
+                    }
+                }
+                c if c == delim => {
+                    self.advance();
+                    return (body, true);
+                }
+                _ => {
+                    body.push(ch);
+                    self.advance();
+                }
+            }
+        }
+
+        (body, false)
+    }
+
+    fn scan_inner_string_for_delimiter(
+        &self,
+        start: usize,
+        quote: char,
+        delim: char,
+    ) -> Option<(usize, bool)> {
+        if Self::is_word_apostrophe(self.input, start, quote) {
+            return None;
+        }
+        // Adjacent quotes are literal replacement text (for example s/"/""/g),
+        // not a string literal to skip while hunting for the replacement delimiter.
+        if self.input.get(..start).and_then(|text| text.chars().next_back()) == Some(quote) {
+            return None;
+        }
+        let mut pos = start.checked_add(quote.len_utf8())?;
+        let expression_quote = Self::can_start_replacement_expression_quote(self.input, start);
+        if !expression_quote && self.input.get(pos..).is_some_and(|text| text.starts_with(delim)) {
+            return None;
+        }
+        if self.input.get(pos..).is_some_and(|text| text.starts_with(quote)) {
+            return None;
+        }
+        let mut escaped = false;
+        let mut contains_delim = false;
+
+        while let Some(ch) = self.input.get(pos..).and_then(|text| text.chars().next()) {
+            if matches!(ch, '\n' | '\r') {
+                return None;
+            }
+            if !expression_quote && matches!(ch, ';' | '#') {
+                return None;
+            }
+
+            if escaped {
+                if ch == delim {
+                    contains_delim = true;
+                }
+                pos += ch.len_utf8();
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' => {
+                    pos += ch.len_utf8();
+                    escaped = true;
+                }
+                c if c == quote => {
+                    return Some((pos + ch.len_utf8(), contains_delim));
+                }
+                c if c == delim => {
+                    contains_delim = true;
+                    pos += ch.len_utf8();
+                }
+                _ => {
+                    pos += ch.len_utf8();
+                }
+            }
+        }
+
+        None
+    }
+
+    // Only skip delimiter-bearing inner strings in positions that look like
+    // replacement expressions; literal replacement quotes still let the next
+    // delimiter close the substitution.
+    fn can_start_replacement_expression_quote(input: &str, pos: usize) -> bool {
+        input
+            .get(..pos)
+            .and_then(|text| text.chars().rev().find(|ch| !ch.is_whitespace()))
+            .is_some_and(|ch| {
+                matches!(
+                    ch,
+                    '(' | '['
+                        | '{'
+                        | ','
+                        | '='
+                        | ':'
+                        | '?'
+                        | '!'
+                        | '~'
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '%'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '<'
+                        | '>'
+                )
+            })
+    }
+
+    fn is_word_apostrophe(input: &str, pos: usize, quote: char) -> bool {
+        quote == '\''
+            && input
+                .get(..pos)
+                .and_then(|text| text.chars().next_back())
+                .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    }
+
+    fn parse_transliteration(&mut self, start: usize) -> Option<Token> {
+        // We've already consumed 'tr' or 'y'
+        while self.current_char().is_some_and(char::is_whitespace) {
+            self.advance();
+        }
+
+        let delimiter = self.current_char()?;
+        self.advance(); // Skip delimiter
+        self.parse_transliteration_with_delimiter(start, delimiter)
+    }
+
+    fn parse_transliteration_with_delimiter(
+        &mut self,
+        start: usize,
+        delimiter: char,
+    ) -> Option<Token> {
+        let (_search, search_closed) = self.read_delimited_body(delimiter);
+        let replacement_closed;
+
+        let search_is_paired = quote_handler::paired_close(delimiter).is_some();
+        if search_is_paired {
+            while self.current_char().is_some_and(char::is_whitespace) {
+                self.advance();
+            }
+
+            if let Some(repl_delim) = self.current_char()
+                && Self::is_quote_delim(repl_delim)
+            {
+                self.advance();
+                let (_replacement, closed) = self.read_delimited_body(repl_delim);
+                replacement_closed = closed;
+            } else {
+                replacement_closed = false;
+            }
+        } else {
+            let (_replacement, closed) = self.read_delimited_body(delimiter);
+            replacement_closed = closed;
+        }
+
+        // Parse modifiers - include all alphanumeric for proper validation in parser (MUT_005 fix)
+        while let Some(ch) = self.current_char() {
+            if ch.is_ascii_alphanumeric() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let text = &self.input[start..self.position];
+        self.mode = LexerMode::ExpectOperator;
+
+        let token_type = if search_closed && replacement_closed {
+            TokenType::Transliteration
+        } else {
+            TokenType::Error(Arc::from(format!(
+                "unclosed quote-like operator '{}' delimiter '{}'",
+                if self.input[start..].starts_with("tr") { "tr" } else { "y" },
+                delimiter
+            )))
+        };
+
+        Some(Token { token_type, text: Arc::from(text), start, end: self.position })
+    }
+
+    /// Read content between delimiters.
+    ///
+    /// Returns `(body, closed)` where `closed` is `true` if the closing
+    /// delimiter was found before EOF, and `false` if EOF was reached first.
+    fn read_delimited_body(&mut self, delim: char) -> (String, bool) {
+        self.read_delimited_body_with_recovery(delim, |_lexer, _position| false)
+    }
+
+    /// Read a delimited body while allowing a caller-specific recovery boundary.
+    ///
+    /// Quote-like operators share escape, nesting, and close-delimiter semantics;
+    /// `qw` additionally needs to stop before a safe statement boundary when its
+    /// closer is missing. Keeping that policy as a callback makes the scanner
+    /// behavior-preserving for ordinary operators without duplicating the loop.
+    /// The callback runs before the character at `position` is consumed. It must
+    /// only inspect the lexer and position; advancing or otherwise mutating the
+    /// lexer would desynchronize the scanner's escape and nesting state.
+    fn read_delimited_body_with_recovery<F>(
+        &mut self,
+        delim: char,
+        mut should_recover: F,
+    ) -> (String, bool)
+    where
+        F: FnMut(&Self, usize) -> bool,
+    {
+        let paired = quote_handler::paired_close(delim);
+        let close = paired.unwrap_or(delim);
+        let mut body = String::new();
+        let mut depth = i32::from(paired.is_some());
+
+        while let Some(ch) = self.current_char() {
+            if should_recover(self, self.position) {
+                return (body, false);
+            }
+
+            if ch == '\\' {
+                body.push(ch);
+                self.advance();
+                if let Some(next) = self.current_char() {
+                    body.push(next);
+                    self.advance();
+                }
+                continue;
+            }
+
+            if paired.is_some() && ch == delim {
+                body.push(ch);
+                self.advance();
+                depth += 1;
+                continue;
+            }
+
+            if ch == close {
+                if paired.is_some() {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.advance();
+                        return (body, true);
+                    }
+                    body.push(ch);
+                    self.advance();
+                } else {
+                    self.advance();
+                    return (body, true);
+                }
+                continue;
+            }
+
+            body.push(ch);
+            self.advance();
+        }
+
+        // EOF reached without finding the closing delimiter
+        (body, false)
+    }
+
+    fn read_qw_body(&mut self, delim: char) -> (String, bool) {
+        let recover_at_statement = !self.qw_has_closing_delimiter(delim);
+        self.read_delimited_body_with_recovery(delim, |lexer, position| {
+            recover_at_statement && lexer.qw_statement_boundary_at(position)
+        })
+    }
+
+    fn qw_has_closing_delimiter(&self, delim: char) -> bool {
+        let paired = quote_handler::paired_close(delim);
+        let close = paired.unwrap_or(delim);
+        let mut depth = i32::from(paired.is_some());
+        let mut escaped = false;
+        let mut at_line_prefix = false;
+
+        for (offset, ch) in self.input[self.position..].char_indices() {
+            let position = self.position.saturating_add(offset);
+            if at_line_prefix && !ch.is_whitespace() && self.qw_statement_boundary_at(position) {
+                return self.qw_has_top_level_closer_after(position, close);
+            }
+            if ch == '\n' {
+                at_line_prefix = true;
+            } else if at_line_prefix && !ch.is_whitespace() {
+                at_line_prefix = false;
+            }
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if paired.is_some() && ch == delim {
+                depth += 1;
+            } else if ch == close {
+                if paired.is_none() {
+                    return true;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn qw_has_top_level_closer_after(&self, position: usize, close: char) -> bool {
+        if close != ')' {
+            return false;
+        }
+        let mut lexer = Self::without_qw_recovery(&self.input[position..], self.config.clone());
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => depth = depth.saturating_add(1),
+                TokenType::RightParen if depth == 0 => return true,
+                TokenType::RightParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn qw_statement_boundary_at(&self, position: usize) -> bool {
+        let consumed = &self.input[..position];
+        let line_start = consumed.rfind('\n').map_or(0, |index| index + 1);
+        if !consumed[line_start..].chars().all(char::is_whitespace) {
+            return false;
+        }
+
+        let remaining = &self.input[position..];
+        for keyword in ["my", "our", "state", "local"] {
+            if let Some(after) = remaining.strip_prefix(keyword)
+                && ((after.starts_with(char::is_whitespace)
+                    && after.trim_start().starts_with(['$', '@', '%', '(']))
+                    || after.starts_with(['$', '@', '%']))
+                && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        if remaining
+            .strip_prefix("print")
+            .is_some_and(|after| after.starts_with(char::is_whitespace))
+            && self.qw_statement_terminates(position)
+        {
+            return true;
+        }
+        self.qw_block_statement_boundary_at(position)
+    }
+
+    /// Recognize block-form and parenthesized statement starters that follow an
+    /// unclosed `qw(` (#4491): `sub NAME { … }`, `package NAME;` / `package NAME { … }`,
+    /// `class NAME { … }`, phaser blocks (`BEGIN`/`END`/`INIT`/`CHECK`/`UNITCHECK { … }`),
+    /// and parenthesized `print( … )`.
+    ///
+    /// These are only recovery boundaries in a specific syntactic shape: a block
+    /// opener (`{`), a terminating `;` for `package` only (the parser errors on the
+    /// unbraced `class Foo;` form, so it is not accepted here), and an immediate `(`
+    /// for `print`. The shape requirement is the false-positive guard —
+    /// bare `qw` words like `sub run more` (no block, no `;`) stay quote-word content.
+    /// The block shape is self-contained, so — unlike the whitespace `print` form —
+    /// a following line-start statement does not defeat the boundary.
+    fn qw_block_statement_boundary_at(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let Some(first) = lexer.next_token() else {
+            return false;
+        };
+        let keyword = first.text.as_ref();
+
+        // Parenthesized `print(...)`: the whitespace form is handled by the caller,
+        // so here the distinguishing shape is `print` immediately followed by `(`.
+        if keyword == "print" {
+            return lexer
+                .next_token()
+                .is_some_and(|token| token.token_type == TokenType::LeftParen)
+                && self.qw_statement_terminates(position);
+        }
+
+        let is_phaser = matches!(keyword, "BEGIN" | "END" | "INIT" | "CHECK" | "UNITCHECK");
+        let is_named = matches!(keyword, "sub" | "package" | "class");
+        if !is_phaser && !is_named {
+            return false;
+        }
+        // Only `package Foo;` has a semicolon form the parser recovers into a clean
+        // declaration node; `class`/`sub` require an actual block here (the parser
+        // errors on the unbraced `class Foo;` statement form), so claiming a boundary
+        // for them would only synchronize onto an Error node.
+        let allows_semicolon_form = keyword == "package";
+
+        // The token immediately after the keyword fixes the shape: a phaser opens
+        // its block directly (`BEGIN {`), while a named declaration must be followed
+        // by an identifier name — never an operator such as `->`, which would make
+        // the word a method-call invocant (`class->new(...)`), not a declaration.
+        let Some(second) = lexer.next_token() else {
+            return false;
+        };
+        match (is_phaser, &second.token_type) {
+            (true, TokenType::LeftBrace) => {
+                return Self::header_ends_at_own_terminator(source, second.start)
+                    && Self::block_statement_terminates(&mut lexer);
+            }
+            (true, TokenType::Operator(operator))
+                if operator.as_ref() == ":"
+                    && Self::phaser_attribute_block_boundary(source, &mut lexer) =>
+            {
+                return true;
+            }
+            (false, TokenType::Identifier(_)) => {}
+            (false, TokenType::Operator(operator)) if is_named && operator.as_ref() == "::" => {}
+            (false, TokenType::Keyword(_)) if keyword == "sub" => {}
+            (false, TokenType::Version(version))
+                if keyword == "sub" && !version.as_ref().contains('.') => {}
+            (false, _) => return false,
+            (true, _) => return false,
+        }
+
+        // A real `sub NAME {` / `package NAME;` header may put its terminator on the
+        // next line, but the terminator must be the first non-whitespace token there.
+        // Without that boundary, a bare quote-word keyword followed on a later line
+        // by an unrelated statement could borrow that statement's `{`/`;` and silently
+        // swallow real code as a bogus declaration (#4491 review).
+        //
+        // The block `{` (or the `package` `;` semicolon form) that closes the header on one line
+        // is itself the boundary proof — unlike the whitespace `print`/`my` forms, a
+        // strong block shape does *not* additionally require `qw_statement_terminates`
+        // over the whole tail. Requiring it swallowed the declaration whenever another
+        // line-start statement followed (`sub run { … }\nmy $x = 1;`) (#4491 review).
+        let mut expected_closers = Vec::new();
+        let mut expect_name_segment = matches!(
+            &second.token_type,
+            TokenType::Operator(operator) if operator.as_ref() == "::"
+        );
+        let mut expect_attribute_name = false;
+        let mut package_version_started = false;
+        let mut package_version_needs_component = false;
+        while let Some(token) = lexer.next_token() {
+            if is_named && expected_closers.is_empty() {
+                if expect_name_segment {
+                    if matches!(
+                        &token.token_type,
+                        TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_)
+                    ) {
+                        expect_name_segment = false;
+                        continue;
+                    }
+                    return false;
+                }
+                if expect_attribute_name {
+                    match token.token_type {
+                        TokenType::Identifier(_) | TokenType::Keyword(_) => {
+                            expect_attribute_name = false;
+                            continue;
+                        }
+                        TokenType::Operator(operator) if operator.as_ref() == "::" => continue,
+                        _ => return false,
+                    }
+                }
+                match &token.token_type {
+                    TokenType::Operator(operator) if operator.as_ref() == "::" => {
+                        expect_name_segment = true;
+                        continue;
+                    }
+                    // `after_sub` deliberately lexes `v1.2` as `Identifier("v1")`,
+                    // `.` and `Number("2")` so that the valid single-component
+                    // `sub v5 { ... }` form remains a name.  A dotted v-string is
+                    // not a valid named-sub declaration, however; reject the dot
+                    // instead of allowing a later `{` to create a false recovery
+                    // boundary for an unclosed `qw`.
+                    TokenType::Operator(operator)
+                        if keyword == "sub" && operator.as_ref() == "." =>
+                    {
+                        return false;
+                    }
+                    TokenType::Operator(operator) if operator.as_ref() == ":" => {
+                        expect_attribute_name = true;
+                        continue;
+                    }
+                    TokenType::Number(_) if keyword == "package" => {
+                        if package_version_needs_component {
+                            package_version_needs_component = false;
+                        } else if !package_version_started {
+                            package_version_started = true;
+                        } else {
+                            return false;
+                        }
+                        continue;
+                    }
+                    TokenType::Version(_) if keyword == "package" && !package_version_started => {
+                        package_version_started = true;
+                        continue;
+                    }
+                    TokenType::Operator(operator)
+                        if keyword == "package"
+                            && package_version_started
+                            && operator.as_ref() == "."
+                            && !package_version_needs_component =>
+                    {
+                        package_version_needs_component = true;
+                        continue;
+                    }
+                    TokenType::LeftParen => {}
+                    TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            match token.token_type {
+                TokenType::LeftBrace if expected_closers.is_empty() => {
+                    return !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
+                        && Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(&mut lexer);
+                }
+                TokenType::Semicolon if expected_closers.is_empty() => {
+                    return allows_semicolon_form
+                        && !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
+                        && Self::header_ends_at_own_terminator(source, token.start);
+                }
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Confirm that the already-recognized top-level block closes before the
+    /// candidate source ends. This keeps incomplete editor input inside `qw`
+    /// while allowing a later statement after a complete block to be scanned
+    /// independently (#4491).
+    fn block_statement_terminates(lexer: &mut Self) -> bool {
+        let mut expected_closers = vec![TokenType::RightBrace];
+        while let Some(token) = lexer.next_token() {
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                return false;
+            }
+            match token.token_type {
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Continue a phaser recovery boundary through its optional attribute list,
+    /// such as `BEGIN :lvalue { ... }`, while rejecting malformed headers.
+    fn phaser_attribute_block_boundary(source: &'a str, lexer: &mut Self) -> bool {
+        let mut expect_name = true;
+        while let Some(token) = lexer.next_token() {
+            if expect_name {
+                if !matches!(token.token_type, TokenType::Identifier(_) | TokenType::Keyword(_)) {
+                    return false;
+                }
+                expect_name = false;
+                continue;
+            }
+            match token.token_type {
+                TokenType::Operator(operator) if matches!(operator.as_ref(), ":" | "::") => {
+                    expect_name = true;
+                }
+                TokenType::LeftParen => {
+                    if !Self::attribute_arguments_terminate(lexer) {
+                        return false;
+                    }
+                }
+                TokenType::LeftBrace => {
+                    return Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(lexer);
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Consume a balanced attribute argument list after its opening `(`.
+    fn attribute_arguments_terminate(lexer: &mut Self) -> bool {
+        let mut expected_closers = vec![TokenType::RightParen];
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
+                        return true;
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// The candidate statement header — from the starter keyword at the front of
+    /// `source` up to (but excluding) the terminator token at `terminator_start` —
+    /// may contain a newline when the terminator is the first non-whitespace token
+    /// on that line, or when it follows a balanced prototype line. This accepts
+    /// valid multiline headers while preventing a starter-shaped quote-word from
+    /// borrowing a later statement's `{`/`;`.
+    fn header_ends_at_own_terminator(source: &'a str, terminator_start: usize) -> bool {
+        let header = &source[..terminator_start];
+        let first_line = header.lines().next().unwrap_or_default();
+        let first_line_before_comment =
+            first_line.split_once('#').map_or(first_line, |(code, _)| code);
+        let first_word = first_line_before_comment.split_whitespace().next();
+        if matches!(first_word, Some("sub" | "package" | "class"))
+            && first_line_before_comment.split_whitespace().nth(1).is_none()
+        {
+            return false;
+        }
+        let Some((_, line_prefix)) = header.rsplit_once('\n') else {
+            return true;
+        };
+        if line_prefix.chars().all(char::is_whitespace) {
+            return true;
+        }
+
+        // A prototype may be placed on its own line immediately before the block:
+        // `sub run\n($) { ... }`. That line is part of the declaration header, not
+        // an unrelated statement borrowing the block opener.
+        let trimmed = line_prefix.trim();
+        if !trimmed.starts_with('(') {
+            return false;
+        }
+        let mut lexer = Self::without_qw_recovery(trimmed, LexerConfig::default());
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => depth = depth.saturating_add(1),
+                TokenType::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
+                    }
+                }
+                TokenType::Identifier(text) if depth > 0 && text.ends_with(')') => {
+                    // Compact prototypes may be tokenized as `(` followed by an
+                    // identifier ending in `)`, for example `($)`.
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// A candidate line-start statement inside an unclosed `qw(` is a real recovery
+    /// boundary only when it forms a complete statement: either a top-level semicolon
+    /// terminates it, or it runs cleanly to end-of-file with balanced delimiters. The
+    /// EOF case recovers a semicolonless trailing declaration/print statement (#4494)
+    /// without splitting on keyword-like words that continue into further source.
+    fn qw_statement_terminates(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let mut first = true;
+        let mut delimiter_depth = 0usize;
+        let mut saw_incomplete = false;
+        let mut last_end = 0usize;
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
+                return true;
+            }
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                // A trailing statement carrying its own unclosed quote-like operator or a
+                // degraded construct reaches EOF at balanced delimiter depth but is not a
+                // clean statement; do not let it masquerade as one (this preserves the
+                // nested-qw suffix behavior, where the inner qw emits an Error token).
+                saw_incomplete = true;
+            }
+            if !first && delimiter_depth == 0 {
+                let prefix = &source[..token.start];
+                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                if prefix[line_start..].chars().all(char::is_whitespace)
+                    && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
+                {
+                    return false;
+                }
+            }
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
+                    delimiter_depth = delimiter_depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBrace | TokenType::RightBracket => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            last_end = token.end;
+            first = false;
+        }
+        // No terminating semicolon before EOF: recover only when the candidate ran to
+        // end-of-file cleanly — balanced delimiters, no degraded/unclosed token, and every
+        // trailing byte turned into a real token. The final check rejects constructs that
+        // silently consume to EOF without emitting a token (an unterminated bare `/regex/`
+        // or heredoc body leaves its text after the last token), which would otherwise be
+        // misclassified as a complete statement and split the qw list incorrectly (#4494).
+        delimiter_depth == 0
+            && !saw_incomplete
+            && source[last_end..].chars().all(char::is_whitespace)
+    }
+
+    /// Parse a quote operator after we've seen the delimiter
+    fn parse_quote_operator(&mut self, delimiter: char) -> Option<Token> {
+        let info = self.current_quote_op.as_ref()?;
+        let start = info.start_pos;
+        let operator = info.operator.clone();
+
+        // Clear the quote-op context eagerly so any early-return path (s/tr/y delegations
+        // below) does not leave a stale reference behind. The post-match cleanup at the
+        // bottom of this function would otherwise be skipped for those operators.
+        self.current_quote_op = None;
+
+        // Parse based on operator type; track whether all delimiters were closed.
+        let closed = match operator.as_str() {
+            "s" => {
+                return self.parse_substitution_with_delimiter(start, delimiter);
+            }
+            "tr" | "y" => {
+                return self.parse_transliteration_with_delimiter(start, delimiter);
+            }
+            "qr" => {
+                let (_pattern, body_closed) = self.read_delimited_body(delimiter);
+                self.parse_regex_modifiers(&quote_handler::QR_SPEC);
+                body_closed
+            }
+            "m" => {
+                let (_pattern, body_closed) = self.read_delimited_body(delimiter);
+                self.parse_regex_modifiers(&quote_handler::M_SPEC);
+                body_closed
+            }
+            "qw" if delimiter == '(' && self.qw_recovery_enabled => {
+                let (_body, body_closed) = self.read_qw_body(delimiter);
+                body_closed
+            }
+            _ => {
+                // q, qq, qx - no modifiers
+                let (_body, body_closed) = self.read_delimited_body(delimiter);
+                body_closed
+            }
+        };
+
+        let text = &self.input[start..self.position];
+
+        self.mode = LexerMode::ExpectOperator;
+
+        if !closed {
+            // EOF reached before finding the closing delimiter — emit an error
+            // token so the parser's recovery mechanism records a diagnostic.
+            return Some(Token {
+                token_type: TokenType::Error(Arc::from(format!(
+                    "unclosed {} delimiter '{}'",
+                    operator, delimiter
+                ))),
+                text: Arc::from(text),
+                start,
+                end: self.position,
+            });
+        }
+
+        let token_type = quote_handler::get_quote_token_type(&operator);
+        Some(Token { token_type, text: Arc::from(text), start, end: self.position })
+    }
+
+    /// Parse regex modifiers according to the given spec
+    ///
+    /// This function includes ALL characters that could be intended as modifiers,
+    /// including invalid ones. This allows the parser to properly reject invalid
+    /// modifiers with a clear error message, rather than leaving them as separate
+    /// tokens that could be confusingly parsed.
+    fn parse_regex_modifiers(&mut self, _spec: &quote_handler::ModSpec) {
+        // Consume all alphanumeric characters that could be intended as modifiers
+        // The parser will validate and reject invalid ones
+        while let Some(ch) = self.current_char() {
+            if ch.is_ascii_alphanumeric() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        // Note: We no longer validate here - the parser will validate and provide
+        // clear error messages for invalid modifiers (MUT_005 fix)
+    }
+
+    /// Parse a regex literal starting with `/`
+    ///
+    /// **Budget Protection (Issue #422)**:
+    /// - Budget guards prevent runaway scanning on pathological input
+    /// - `MAX_REGEX_PARSE_STEPS` bounds literal scanning before the byte budget
+    /// - `MAX_REGEX_BYTES` bounds total bytes consumed in a single regex literal
+    /// - Graceful degradation: emit UnknownRest token if budget exceeded
+    ///
+    /// **Performance**:
+    /// - Single-pass scanning with escape handling
+    /// - Budget check per iteration (amortized O(1) via inline fast path)
+    /// - Typical regex: <10μs, Large regex (64KB): ~1ms
+    fn parse_regex(&mut self, start: usize) -> Option<Token> {
+        self.advance(); // Skip opening /
+
+        let mut regex_parse_steps: usize = 0;
+        let mut in_character_class = false;
+
+        while let Some(ch) = self.current_char() {
+            regex_parse_steps += 1;
+            if regex_parse_steps > MAX_REGEX_PARSE_STEPS {
+                #[cfg(debug_assertions)]
+                {
+                    let text = &self.input[start..self.position];
+                    let preview = truncate_preview(text, 50);
+                    tracing::debug!(
+                        limit = MAX_REGEX_PARSE_STEPS,
+                        pattern_preview = %preview,
+                        "Regex parse step budget exceeded"
+                    );
+                }
+                self.position = self.input.len();
+                return Some(Token {
+                    token_type: TokenType::UnknownRest,
+                    text: empty_arc(),
+                    start,
+                    end: self.position,
+                });
+            }
+
+            // Budget guard: prevent timeout on pathological input (Issue #422)
+            // If exceeded, returns UnknownRest token for graceful degradation
+            if let Some(token) = self.budget_guard(start, 0) {
+                return Some(token);
+            }
+
+            match ch {
+                '/' if !in_character_class => {
+                    self.advance();
+                    // Parse flags - include all alphanumeric for proper validation in parser (MUT_005 fix)
+                    while let Some(ch) = self.current_char() {
+                        if ch.is_ascii_alphanumeric() {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+
+                    return Some(Token {
+                        token_type: TokenType::RegexMatch,
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                '\\' => {
+                    // Handle escape sequences: consume backslash + next char
+                    self.advance();
+                    if self.current_char().is_some() {
+                        self.advance();
+                    }
+                }
+                '[' => {
+                    in_character_class = true;
+                    self.advance();
+                }
+                ']' if in_character_class => {
+                    in_character_class = false;
+                    self.advance();
+                }
+                _ => self.advance(),
+            }
+        }
+
+        // Unterminated regex - EOF reached before closing /
+        // Parser will emit diagnostic for unterminated literal
+        None
+    }
+}
+
+// Checkpoint support for incremental parsing
+
+mod checkpoint_impl;
+
+#[cfg(test)]
+mod test_format_debug;
+#[cfg(test)]
+mod tests;

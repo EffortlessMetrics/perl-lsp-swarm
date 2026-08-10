@@ -1,0 +1,343 @@
+import * as fs from 'fs';
+import * as crypto from 'crypto';
+import * as https from 'https';
+import * as os from 'os';
+import * as path from 'path';
+import { execSync, spawnSync } from 'child_process';
+import {
+  downloadAndUnzipVSCode,
+  resolveCliArgsFromVSCodeExecutablePath,
+  runTests,
+} from '@vscode/test-electron';
+import { resolveVSCodeTestVersion } from '../vscodeHostVersion';
+import { runWithoutForcedWorkspaceTrust } from '../runVsCodeTests';
+import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceSmokeOptions';
+
+const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
+
+type ExtensionSource = 'marketplace' | 'open-vsx' | 'vsix';
+
+function envValue(name: string): string {
+  return process.env[name]?.trim() ?? '';
+}
+
+function toolchainNpmVersion(): string {
+  const npmUserAgent = process.env.npm_config_user_agent ?? '';
+  const configuredVersion = /(?:^|\s)npm\/([^\s]+)/.exec(npmUserAgent)?.[1];
+  if (configuredVersion) {
+    return configuredVersion;
+  }
+  try {
+    return execSync('npm --version', {
+      encoding: 'utf8',
+      windowsHide: true,
+    }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function selectedVsixSha256(installTarget: string): string | undefined {
+  if (!fs.existsSync(installTarget) || !fs.statSync(installTarget).isFile()) {
+    return undefined;
+  }
+  return crypto.createHash('sha256').update(fs.readFileSync(installTarget)).digest('hex');
+}
+
+function publishedSource(): ExtensionSource {
+  const source = envValue('PERL_LSP_PUBLISHED_EXTENSION_SOURCE') || 'marketplace';
+  if (source === 'marketplace' || source === 'open-vsx' || source === 'vsix') {
+    return source;
+  }
+
+  throw new Error(`Unsupported PERL_LSP_PUBLISHED_EXTENSION_SOURCE=${source}`);
+}
+
+function validateExtensionId(extensionId: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z0-9][A-Za-z0-9-]*$/.test(extensionId)) {
+    throw new Error(`Extension id must be publisher.name, got ${extensionId}`);
+  }
+}
+
+function validatePublishedVersion(version: string): void {
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error(`Published extension version must be a SemVer package version, got ${version}`);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function downloadFile(url: string, destination: string, redirects = 0): Promise<void> {
+  if (redirects > 5) {
+    return Promise.reject(new Error(`Too many redirects while downloading ${url}`));
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, (response) => {
+      const statusCode = response.statusCode ?? 0;
+      const location = response.headers.location;
+      if (statusCode >= 300 && statusCode < 400 && location) {
+        response.resume();
+        const redirectedUrl = new URL(location, url).toString();
+        downloadFile(redirectedUrl, destination, redirects + 1).then(resolve, reject);
+        return;
+      }
+
+      if (statusCode !== 200) {
+        response.resume();
+        reject(new Error(`GET ${url} failed with HTTP ${statusCode}`));
+        return;
+      }
+
+      const output = fs.createWriteStream(destination);
+      response.pipe(output);
+      output.on('finish', () => {
+        output.close();
+        resolve();
+      });
+      output.on('error', reject);
+    });
+
+    request.on('error', reject);
+    request.setTimeout(60_000, () => {
+      request.destroy(new Error(`Timed out downloading ${url}`));
+    });
+  });
+}
+
+async function downloadFileWithRetry(url: string, destination: string): Promise<void> {
+  let lastFailure = '';
+
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    try {
+      await downloadFile(url, destination);
+      return;
+    } catch (error: unknown) {
+      lastFailure = error instanceof Error ? error.message : String(error);
+      if (fs.existsSync(destination)) {
+        fs.rmSync(destination, { force: true });
+      }
+      if (attempt < 12) {
+        await sleep(20_000);
+      }
+    }
+  }
+
+  throw new Error(`Failed to download published extension from ${url}\n${lastFailure}`);
+}
+
+async function resolveInstallTarget(source: ExtensionSource, tempDir: string): Promise<string> {
+  const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
+  const extensionId = envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID;
+  validateExtensionId(extensionId);
+
+  if (version) {
+    validatePublishedVersion(version);
+  }
+
+  if (source === 'marketplace') {
+    return version ? `${extensionId}@${version}` : extensionId;
+  }
+
+  if (source === 'vsix') {
+    const vsixPath = envValue('PERL_LSP_PUBLISHED_VSIX_PATH');
+    if (!vsixPath) {
+      throw new Error('PERL_LSP_PUBLISHED_VSIX_PATH is required when source is vsix');
+    }
+    return path.resolve(vsixPath);
+  }
+
+  if (!version) {
+    throw new Error('PERL_LSP_PUBLISHED_EXTENSION_VERSION is required when source is open-vsx');
+  }
+
+  const [namespace, extensionName] = extensionId.split('.');
+
+  const fileName = `${namespace}.${extensionName}-${version}.vsix`;
+  const url = `https://open-vsx.org/api/${namespace}/${extensionName}/${version}/file/${fileName}`;
+  const destination = path.join(tempDir, fileName);
+  await downloadFileWithRetry(url, destination);
+  return destination;
+}
+
+async function installExtension(
+  vscodeExecutablePath: string,
+  installTarget: string,
+  userDataDir: string,
+  extensionsDir: string,
+): Promise<void> {
+  const resolvedCliArgs = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
+  const cliPath = resolvedCliArgs[0];
+  if (cliPath === undefined) {
+    throw new Error(`Unable to resolve the VS Code CLI for ${vscodeExecutablePath}`);
+  }
+  const cliArgs = resolvedCliArgs.slice(1);
+  const args = [
+    ...cliArgs,
+    `--user-data-dir=${userDataDir}`,
+    `--extensions-dir=${extensionsDir}`,
+    '--install-extension',
+    installTarget,
+    '--force',
+  ];
+  const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : cliPath;
+  const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', cliPath, ...args] : args;
+  let lastFailure = '';
+
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    const result = spawnSync(command, commandArgs, {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+
+    if (result.status === 0) {
+      return;
+    }
+
+    lastFailure = [
+      `attempt ${attempt}`,
+      `exit ${result.status ?? 'unknown'}`,
+      result.error instanceof Error ? result.error.message : '',
+      result.stdout,
+      result.stderr,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    if (attempt < 12) {
+      await sleep(20_000);
+    }
+  }
+
+  throw new Error(`Failed to install published extension ${installTarget}\n${lastFailure}`);
+}
+
+function configureCurrentSourceSmoke(
+  userDataDir: string,
+  extensionsDir: string,
+  workspaceTrustMode: 'disabled' | 'untrusted',
+): void {
+  const serverPath = envValue('PERL_LSP_FIRST_HOUR_SERVER_PATH');
+  if (!serverPath) {
+    return;
+  }
+
+  if (!fs.existsSync(serverPath)) {
+    throw new Error(`Current-source server binary does not exist: ${serverPath}`);
+  }
+
+  const settingsDir = path.join(userDataDir, 'User');
+  fs.mkdirSync(settingsDir, { recursive: true });
+  const settings: Record<string, unknown> = {
+    'perl-lsp.autoDownload': false,
+    'perl-lsp.serverPath': path.resolve(serverPath),
+    'perl-lsp.includePaths': [],
+    'perl-lsp.critic.enabled': false,
+  };
+  if (workspaceTrustMode === 'untrusted') {
+    settings['security.workspace.trust.enabled'] = true;
+    settings['security.workspace.trust.startupPrompt'] = 'never';
+  }
+  fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
+  process.env.PERL_LSP_PUBLISHED_EXTENSIONS_DIR = extensionsDir;
+}
+
+async function main(): Promise<void> {
+  const source = publishedSource();
+  const vscodeVersion = resolveVSCodeTestVersion(process.env.PERL_LSP_VSCODE_VERSION);
+  const toolchainNodeVersion = process.version;
+  const toolchainNpmVersionValue = toolchainNpmVersion();
+  const configuredWorkspace = envValue('PERL_LSP_SMOKE_WORKSPACE');
+  const workspaceTrustMode = workspaceSmokeTrustMode();
+  const generatedWorkspacePath = configuredWorkspace
+    ? undefined
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-workspace-'));
+  const workspacePath = configuredWorkspace
+    ? path.resolve(configuredWorkspace)
+    : generatedWorkspacePath!;
+  if (!fs.existsSync(workspacePath)) {
+    throw new Error(`Configured smoke workspace does not exist: ${workspacePath}`);
+  }
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-user-'));
+  const extensionsDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'perl-lsp-published-smoke-extensions-'),
+  );
+  const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-download-'));
+  const harnessExtensionPath = path.resolve(process.cwd(), 'src/test/published/harness');
+  const extensionTestsPath = path.resolve(__dirname, './suite');
+  const repoRoot = path.resolve(__dirname, '../../../..');
+  const receiptsRoot =
+    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
+    path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
+  fs.mkdirSync(receiptsRoot, { recursive: true });
+
+  if (!configuredWorkspace) {
+    fs.writeFileSync(
+      path.join(workspacePath, 'smoke.pl'),
+      'use strict;\nuse warnings;\nprint "ok\\n";\n',
+    );
+  }
+
+  try {
+    const vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
+    const installTarget = await resolveInstallTarget(source, downloadDir);
+    configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
+    await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
+    const vsixSha256 = selectedVsixSha256(installTarget);
+    const extensionTestsEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: '1',
+      PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
+      PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
+      PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
+      PERL_LSP_SMOKE_SOURCE_LABEL: process.env.PERL_LSP_SMOKE_SOURCE_LABEL || source,
+      PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
+      PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
+      PERL_LSP_VSCODE_VERSION: vscodeVersion,
+    };
+    if (vsixSha256 === undefined) {
+      delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
+    } else {
+      extensionTestsEnv.PERL_LSP_VSIX_SHA256 = vsixSha256;
+    }
+
+    const testOptions = {
+      vscodeExecutablePath,
+      extensionDevelopmentPath: harnessExtensionPath,
+      extensionTestsPath,
+      extensionTestsEnv,
+      launchArgs: [
+        ...workspaceSmokeLaunchArgs(workspacePath),
+        `--user-data-dir=${userDataDir}`,
+        `--extensions-dir=${extensionsDir}`,
+      ],
+    };
+    if (workspaceTrustMode === 'untrusted') {
+      await runWithoutForcedWorkspaceTrust(testOptions);
+    } else {
+      await runTests(testOptions);
+    }
+  } finally {
+    for (const directory of [generatedWorkspacePath, userDataDir, extensionsDir, downloadDir]) {
+      if (!directory) {
+        continue;
+      }
+      try {
+        fs.rmSync(directory, { recursive: true, force: true });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`[published-smoke] cleanup failed for ${directory}: ${message}\n`);
+      }
+    }
+  }
+}
+
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+});

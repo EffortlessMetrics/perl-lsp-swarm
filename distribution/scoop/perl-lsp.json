@@ -1,0 +1,34 @@
+{
+  "version": "__RELEASE_VERSION__",
+  "description": "Public-beta Perl language server and debug adapter",
+  "homepage": "https://github.com/EffortlessMetrics/perl-lsp",
+  "license": "MIT|Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v__RELEASE_VERSION__/perllsp-__RELEASE_VERSION__-x86_64-pc-windows-msvc.zip",
+      "hash": "__RELEASE_HASH__"
+    }
+  },
+  "bin": ["perllsp.exe", "perl-dap.exe"],
+  "checkver": "github",
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v$version/perllsp-$version-x86_64-pc-windows-msvc.zip"
+      }
+    },
+    "hash": {
+      "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v$version/SHA256SUMS",
+      "regex": "(?m)^([a-fA-F0-9]{64})\\s+perllsp-\\$version-x86_64-pc-windows-msvc\\.zip$"
+    }
+  },
+  "notes": [
+    "perl-lsp is a public-beta Language Server Protocol implementation for Perl.",
+    "",
+    "Usage:",
+    "  perllsp --stdio    # language server",
+    "  perl-dap           # debug adapter",
+    "",
+    "For more information, visit: https://github.com/EffortlessMetrics/perl-lsp"
+  ]
+}

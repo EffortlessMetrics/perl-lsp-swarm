@@ -1,0 +1,2301 @@
+//! Debug Adapter Protocol (DAP) implementation for Perl debugging
+//!
+//! This module provides a DAP server that integrates with Perl's built-in debugger
+//! to enable debugging support in VSCode and other DAP-compatible editors.
+
+mod breakpoints;
+mod data_breakpoints;
+mod evaluation;
+mod execution;
+mod frames;
+mod logpoint;
+mod output;
+mod patterns;
+mod process;
+mod variables;
+
+#[cfg(test)]
+mod dap_outbound_backpressure_tests;
+mod dispatch;
+mod parsing;
+mod regexes;
+pub(crate) mod safe_eval;
+mod session;
+mod sync_utils;
+mod transport;
+pub mod var_ref;
+mod variable_cache;
+
+use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};
+use crate::eval::SafeEvaluator;
+use crate::feature_catalog::has_feature as catalog_has_feature;
+use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
+use crate::protocol::{
+    BreakpointLocation, BreakpointLocationsArguments, BreakpointLocationsResponseBody,
+    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueArguments,
+    ContinueResponseBody, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody,
+    DisconnectArguments, EvaluateArguments, EvaluateResponseBody, ExceptionDetails,
+    ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
+    GotoTargetsArguments, GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
+    LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, NextArguments,
+    PauseArguments, RestartArguments, Scope, ScopesArguments, ScopesResponseBody,
+    SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments,
+    SetExpressionArguments, SetExpressionResponseBody, SetFunctionBreakpointsArguments,
+    SetVariableArguments, SetVariableResponseBody, SourceArguments, SourceResponseBody,
+    StackTraceArguments, StepInArguments, StepInTarget, StepInTargetsArguments,
+    StepInTargetsResponseBody, StepOutArguments, TerminateArguments, VariablesArguments,
+};
+use crate::stack::{PerlStackParser, is_internal_frame_name_and_path};
+use crate::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
+use crate::types::{Source, StackFrame, Variable};
+use crate::variables::{PerlVariableRenderer, RenderedVariable, VariableParser, VariableRenderer};
+use perl_lexer::DAP_COMPLETION_KEYWORDS;
+use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
+use perl_module::path::module_path_to_name;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
+use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
+use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+#[cfg(any(test, feature = "test-helpers"))]
+use crate::debug_adapter::variable_cache::VariableCache;
+use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
+use crate::security;
+use patterns::{
+    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
+    EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
+    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, error_re,
+    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
+    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+};
+use safe_eval::validate_safe_expression;
+use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
+
+#[derive(Debug, Default)]
+struct TerminationState {
+    generation: u64,
+    emitted: bool,
+}
+
+/// Check if the match is an escape sequence (preceded by backslash)
+fn is_escape_sequence(s: &str, match_start: usize) -> bool {
+    if match_start == 0 {
+        return false;
+    }
+    s.as_bytes()[match_start - 1] == b'\\'
+}
+
+/// DAP server that handles debug sessions
+pub struct DebugAdapter {
+    /// Sequence number for messages
+    seq: Arc<Mutex<i64>>,
+    /// Active debug session (process-based)
+    session: Arc<Mutex<Option<DebugSession>>>,
+    /// Attached process ID for PID-based attach mode
+    attached_pid: Arc<Mutex<Option<u32>>>,
+    /// TCP attach session (for connecting to running debugger)
+    tcp_session: Arc<Mutex<Option<TcpAttachSession>>>,
+    /// Breakpoints store
+    breakpoints: BreakpointStore,
+    /// Thread ID counter
+    thread_counter: Arc<Mutex<i32>>,
+    /// Bounded output channel for sending events to client
+    event_sender: Option<SyncSender<DapMessage>>,
+    /// Ensures competing session shutdown paths emit one terminal event per session.
+    termination_state: Arc<Mutex<TerminationState>>,
+    /// Bounded history of debugger output for stack/variable/evaluate parsing
+    recent_output: Arc<Mutex<RecentOutputBuffer>>,
+    /// Function breakpoints (`setFunctionBreakpoints`) stored with REPLACE semantics
+    function_breakpoints: Arc<Mutex<Vec<String>>>,
+    /// Monotonic IDs for function breakpoints
+    next_function_breakpoint_id: Arc<Mutex<i64>>,
+    /// Exception breakpoint policy: break on `die`/uncaught exception output.
+    exception_break_on_die: Arc<Mutex<bool>>,
+    /// Exception breakpoint policy: break on `warn`/carp/cluck output.
+    exception_break_on_warn: Arc<Mutex<bool>>,
+    /// Unique marker IDs used to frame debugger output per command.
+    debugger_output_marker: Arc<AtomicU64>,
+    /// Cancellation flag for in-progress requests.
+    cancel_requested: Arc<AtomicBool>,
+    /// Data breakpoints (watchpoints) stored with REPLACE semantics
+    data_breakpoints: Arc<Mutex<Vec<DataBreakpointRecord>>>,
+    /// Last exception message captured by the output reader (for exceptionInfo)
+    last_exception_message: Arc<Mutex<Option<String>>>,
+    /// Stored launch arguments for restart support
+    last_launch_args: Arc<Mutex<Option<Value>>>,
+    /// Goto target ID → (file_path, line) mapping for cross-file goto
+    goto_targets: Arc<Mutex<HashMap<i64, (String, i64)>>>,
+    /// Monotonic goto target ID counter
+    next_goto_target_id: Arc<Mutex<i64>>,
+    /// Workspace root for path validation (set during launch)
+    workspace_root: Arc<Mutex<Option<PathBuf>>>,
+    /// Transport broken flag: set by event handler on persistent write failure
+    transport_broken: Arc<AtomicBool>,
+    /// Tracks whether initialize request has been received (state machine validation)
+    initialized: Arc<AtomicBool>,
+}
+
+/// Represents a DAP message, which can be a request, response, or event.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DapMessage {
+    /// A request from the client to the debug adapter.
+    #[serde(rename = "request")]
+    Request {
+        /// Sequence number of the request.
+        seq: i64,
+        /// The command to execute.
+        command: String,
+        /// Arguments for the command.
+        arguments: Option<Value>,
+    },
+    /// A response from the debug adapter to a client request.
+    #[serde(rename = "response")]
+    Response {
+        /// Sequence number of the response.
+        seq: i64,
+        /// Sequence number of the corresponding request.
+        request_seq: i64,
+        /// Indicates whether the request was successful.
+        success: bool,
+        /// The command that was executed.
+        command: String,
+        /// The body of the response.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        body: Option<Value>,
+        /// An optional message providing additional information.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+    /// An event from the debug adapter to the client.
+    #[serde(rename = "event")]
+    Event {
+        /// Sequence number of the event.
+        seq: i64,
+        /// The type of event.
+        event: String,
+        /// The body of the event.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        body: Option<Value>,
+    },
+}
+
+impl Default for DebugAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for DebugAdapter {
+    fn drop(&mut self) {
+        self.cancel_requested.store(true, Ordering::Release);
+        self.clear_active_session_state();
+    }
+}
+
+impl DebugAdapter {
+    /// Create a new debug adapter
+    pub fn new() -> Self {
+        Self {
+            seq: Arc::new(Mutex::new(0)),
+            session: Arc::new(Mutex::new(None)),
+            attached_pid: Arc::new(Mutex::new(None)),
+            tcp_session: Arc::new(Mutex::new(None)),
+            breakpoints: BreakpointStore::new(),
+            thread_counter: Arc::new(Mutex::new(0)),
+            event_sender: None,
+            termination_state: Arc::new(Mutex::new(TerminationState::default())),
+            recent_output: Arc::new(Mutex::new(RecentOutputBuffer::new())),
+            function_breakpoints: Arc::new(Mutex::new(Vec::new())),
+            next_function_breakpoint_id: Arc::new(Mutex::new(1)),
+            exception_break_on_die: Arc::new(Mutex::new(false)),
+            exception_break_on_warn: Arc::new(Mutex::new(false)),
+            debugger_output_marker: Arc::new(AtomicU64::new(1)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            data_breakpoints: Arc::new(Mutex::new(Vec::new())),
+            last_exception_message: Arc::new(Mutex::new(None)),
+            last_launch_args: Arc::new(Mutex::new(None)),
+            goto_targets: Arc::new(Mutex::new(HashMap::new())),
+            next_goto_target_id: Arc::new(Mutex::new(1)),
+            workspace_root: Arc::new(Mutex::new(None)),
+            transport_broken: Arc::new(AtomicBool::new(false)),
+            initialized: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Set the event sender (primarily for testing).
+    ///
+    /// The sender must come from a `sync_channel` — an unbounded `channel`
+    /// sender will fail to compile since `SyncSender` and `Sender` are distinct
+    /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
+    /// enough for the test's event volume.
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
+        self.event_sender = Some(sender);
+    }
+
+    /// Configure the workspace boundary used to validate launch/attach paths.
+    ///
+    /// This is the server-configured root — normally wired from
+    /// `DapConfig.workspace_root` when the adapter is constructed
+    /// (see `DapServer::new`). It is the authoritative boundary: a
+    /// launch-args `workspaceRoot` may narrow it for a single launch, but
+    /// can never widen it (see `handle_launch`). Takes `&self` because the
+    /// underlying field is an `Arc<Mutex<_>>`, so this is safe to call
+    /// without exclusive access to the adapter.
+    pub fn set_workspace_root(&self, root: PathBuf) {
+        *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
+    }
+
+    /// Start a new session generation and reset its terminal-event gate.
+    pub(super) fn begin_session_generation(&self) -> u64 {
+        let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
+        state.generation = state.generation.saturating_add(1);
+        state.emitted = false;
+        state.generation
+    }
+
+    /// Return the current session generation for event-handler threads.
+    pub(super) fn current_session_generation(&self) -> u64 {
+        lock_or_recover(&self.termination_state, "debug_adapter.termination_state").generation
+    }
+
+    /// Validate a client-provided source path against the workspace root.
+    ///
+    /// Returns the validated `PathBuf` on success, or an error message on failure.
+    /// If no workspace root is set (pre-launch), the path is allowed through with a
+    /// warning — defense-in-depth only blocks when a workspace boundary is known.
+    fn validate_source_path(&self, path: &str) -> Result<PathBuf, String> {
+        let ws = lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root");
+        match ws.as_ref() {
+            Some(root) => security::validate_path(Path::new(path), root)
+                .map_err(|e| format!("Path validation failed: {e}")),
+            None => {
+                // No workspace set (pre-launch).  Defense-in-depth: reject paths
+                // that contain parent-directory traversal components.  Absolute
+                // paths outside the current working directory are allowed with an
+                // elevated warning (no workspace boundary is known, so we cannot
+                // definitively reject them — temp files and explicit user paths
+                // are legitimate pre-launch use cases).
+                let p = Path::new(path);
+
+                // Best-effort canonicalize for logging; fall back to raw path.
+                let resolved = std::fs::canonicalize(p)
+                    .map(|c| c.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.to_string());
+
+                // Reject any path containing a ParentDir component — these can
+                // escape the (unknown) workspace boundary.
+                if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                    return Err(format!(
+                        "Path validation failed: parent-directory traversal not allowed \
+                         without a workspace boundary: {resolved}"
+                    ));
+                }
+
+                // For absolute paths outside the current working directory, emit
+                // an elevated warning.  We cannot hard-reject because no workspace
+                // boundary is known and temp files / explicit user paths are
+                // legitimate pre-launch use cases.
+                if p.is_absolute()
+                    && let Ok(cwd) = std::env::current_dir()
+                {
+                    let canonical_p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                    let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+                    if !canonical_p.starts_with(&canonical_cwd) {
+                        tracing::warn!(
+                            target = "debug_adapter.security",
+                            path = %resolved,
+                            "Pre-launch absolute path outside current working directory \
+                             accepted without workspace boundary check"
+                        );
+                        return Ok(PathBuf::from(path));
+                    }
+                }
+
+                tracing::warn!(
+                    target = "debug_adapter.security",
+                    path = %resolved,
+                    "Pre-launch path accepted without workspace boundary check"
+                );
+                Ok(PathBuf::from(path))
+            }
+        }
+    }
+
+    /// Get next sequence number (monotonically increasing, poison-safe)
+    fn next_seq(&self) -> i64 {
+        let mut seq = lock_or_recover(&self.seq, "next_seq");
+        *seq += 1;
+        *seq
+    }
+
+    /// Send an event to the client.
+    ///
+    /// Routes through `dispatch_event`: `output` events are non-blocking (dropped
+    /// when the queue is full); all other events apply backpressure.
+    fn send_event(&self, event: &str, body: Option<Value>) {
+        if let Some(ref sender) = self.event_sender {
+            dispatch_event(sender, &self.seq, event, body);
+        }
+    }
+
+    /// Snapshot debugger output history for parsing without holding locks.
+    fn snapshot_recent_output_lines(&self) -> Vec<String> {
+        let output = lock_or_recover(&self.recent_output, "debug_adapter.recent_output");
+        output.lines.iter().map(|line| line.raw.clone()).collect()
+    }
+
+    fn append_recent_output_line_locked(output: &mut RecentOutputBuffer, line: &str) {
+        if output.lines.len() >= RECENT_OUTPUT_MAX_LINES {
+            let _ = output.lines.pop_front();
+        }
+
+        let id = output.next_line_id;
+        output.next_line_id = output.next_line_id.saturating_add(1);
+        output.lines.push_back(RecentOutputLine {
+            id,
+            raw: line.to_string(),
+            normalized: Self::normalize_debugger_output_line(line),
+        });
+    }
+
+    /// Allocate a unique marker id used for framed debugger output capture.
+    fn next_debugger_marker_id(&self) -> u64 {
+        self.debugger_output_marker.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Write a debugger command and flush immediately so output framing remains ordered.
+    fn write_debugger_command(stdin: &mut impl Write, command: &str) -> Result<(), String> {
+        stdin.write_all(command.as_bytes()).map_err(|e| format!("write debugger command: {e}"))?;
+        stdin.flush().map_err(|e| format!("flush debugger command: {e}"))?;
+        Ok(())
+    }
+
+    /// Send commands wrapped with unique begin/end markers.
+    ///
+    /// Returns `(begin_marker, end_marker)` so callers can wait for framed output.
+    fn send_framed_debugger_commands(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+    ) -> Result<(String, String), String> {
+        let marker_id = self.next_debugger_marker_id();
+        let begin_marker = format!("DAP_BEGIN_{marker_id}");
+        let end_marker = format!("DAP_END_{marker_id}");
+
+        Self::write_debugger_command(stdin, &format!("p \"{begin_marker}\"\n"))?;
+        for command in commands {
+            if command.ends_with('\n') {
+                Self::write_debugger_command(stdin, command)?;
+            } else {
+                Self::write_debugger_command(stdin, &format!("{command}\n"))?;
+            }
+        }
+        Self::write_debugger_command(stdin, &format!("p \"{end_marker}\"\n"))?;
+
+        Ok((begin_marker, end_marker))
+    }
+
+    /// Capture debugger output lines between begin/end markers.
+    fn capture_framed_debugger_output(
+        &self,
+        begin_marker: &str,
+        end_marker: &str,
+        timeout_ms: u64,
+    ) -> Option<Vec<String>> {
+        let deadline =
+            Instant::now() + Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms));
+        let mut next_scan_id = 0_u64;
+        let mut saw_begin_marker = false;
+        let mut framed_lines = Vec::new();
+
+        loop {
+            // Check for cancellation before each poll iteration
+            if self.cancel_requested.load(Ordering::Acquire) {
+                self.cancel_requested.store(false, Ordering::Release);
+                return None;
+            }
+
+            {
+                let output = lock_or_recover(&self.recent_output, "debug_adapter.recent_output");
+                for line in output.lines.iter().filter(|line| line.id >= next_scan_id) {
+                    if !saw_begin_marker {
+                        if Self::line_contains_full_marker(&line.normalized, begin_marker) {
+                            saw_begin_marker = true;
+                            framed_lines.clear();
+                        }
+                    } else if Self::line_contains_full_marker(&line.normalized, end_marker) {
+                        return Some(framed_lines);
+                    } else if !line.normalized.trim().is_empty() {
+                        framed_lines.push(line.normalized.clone());
+                    }
+                }
+
+                if let Some(last) = output.lines.back() {
+                    next_scan_id = last.id.saturating_add(1);
+                }
+            }
+
+            if Instant::now() >= deadline {
+                return None;
+            }
+
+            thread::sleep(Duration::from_millis(DEBUGGER_FRAME_POLL_MS));
+        }
+    }
+
+    /// Wait briefly for debugger command responses to arrive in the output buffer.
+    fn debugger_output_window_ms(timeout_ms: u32) -> u64 {
+        u64::from(timeout_ms).max(DEBUGGER_QUERY_WAIT_MS)
+    }
+
+    fn wait_for_debugger_output_window(timeout_ms: u32) {
+        thread::sleep(Duration::from_millis(Self::debugger_output_window_ms(timeout_ms)));
+    }
+
+    /// Expand debugger query budgets in heavily instrumented environments.
+    ///
+    /// `cargo llvm-cov` adds noticeable overhead to framed debugger queries against a
+    /// real `perl -d` subprocess. Keep the normal fast path unchanged, but allow a
+    /// larger budget when coverage profiling is active.
+    fn debugger_timeout_budget_ms(timeout_ms: u64) -> u64 {
+        let base = timeout_ms.max(DEBUGGER_QUERY_WAIT_MS);
+        if std::env::var_os("LLVM_PROFILE_FILE").is_some()
+            || std::env::var_os("CARGO_LLVM_COV").is_some()
+        {
+            base.clamp(15_000, 30_000)
+        } else {
+            base
+        }
+    }
+
+    /// Convert i64 values in protocol payloads to i32 with saturation.
+    fn i64_to_i32_saturating(value: i64) -> i32 {
+        match i32::try_from(value) {
+            Ok(v) => v,
+            Err(_) => {
+                if value.is_negative() {
+                    i32::MIN
+                } else {
+                    i32::MAX
+                }
+            }
+        }
+    }
+
+    /// Convert u64 values (e.g. JSON protocol IDs) to u32 with saturation.
+    /// Values above [`u32::MAX`] are clamped to [`u32::MAX`] rather than wrapping.
+    fn u64_to_u32_saturating(value: u64) -> u32 {
+        u32::try_from(value).unwrap_or(u32::MAX)
+    }
+
+    /// Convert u32 process/thread IDs to i32 (as required by Unix signal APIs) with saturation.
+    /// Values above [`i32::MAX`] are clamped to [`i32::MAX`] rather than wrapping to negatives.
+    // Windows builds do not call the Unix signal PID conversion paths.
+    #[cfg_attr(windows, allow(dead_code))]
+    fn u32_to_i32_saturating(value: u32) -> i32 {
+        i32::try_from(value).unwrap_or(i32::MAX)
+    }
+
+    fn line_contains_full_marker(line: &str, marker: &str) -> bool {
+        line.match_indices(marker).any(|(idx, _)| {
+            let before = line[..idx].chars().next_back();
+            let after = line[idx + marker.len()..].chars().next();
+            let before_ok =
+                before.is_none_or(|ch| !matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_'));
+            let after_ok =
+                after.is_none_or(|ch| !matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_'));
+            before_ok && after_ok
+        })
+    }
+
+    /// Push a line into the recent-output buffer for testing parser paths.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn push_recent_output_line_for_test(&self, line: &str) {
+        let mut output = lock_or_recover(&self.recent_output, "debug_adapter.push_recent_output");
+        Self::append_recent_output_line_locked(&mut output, line);
+    }
+
+    /// Seed a minimal DebugSession in Running state for testing stale-ref guards.
+    ///
+    /// Creates a `perl -e 1` child process, installs it as the active session, and
+    /// sets the state to `DebugState::Running` so that stale-ref-guard tests can
+    /// verify the "session is not stopped" path without a live debugging scenario.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_running_session_for_test(&self) {
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        use crate::debug_adapter::variable_cache::VariableCache;
+        if let Ok(child) = std::process::Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Ok(mut guard) = self.session.lock() {
+                *guard = Some(DebugSession {
+                    process: child,
+                    state: DebugState::Running,
+                    stack_frames: vec![],
+                    stack_frame_arguments: HashMap::new(),
+                    variable_cache: VariableCache::default(),
+                    thread_id: 1,
+                    last_resume_mode: ResumeMode::Continue,
+                });
+            }
+        }
+    }
+
+    /// Seed `attached_pid` with the given PID for testing.
+    ///
+    /// Use a PID that is guaranteed not to exist (e.g. `999_999`) to drive the
+    /// "session present, signal delivery failed" path in `handle_pause`.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_attached_pid_for_test(&self, pid: u32) {
+        if let Ok(mut guard) = self.attached_pid.lock() {
+            *guard = Some(pid);
+        }
+    }
+
+    #[cfg(test)]
+    fn seed_session_for_test(&self) -> io::Result<()> {
+        // Spawn a cheap no-op subprocess so we have a real Child (no unsafe zeroed memory).
+        let child = Self::spawn_noop_child_for_test()?;
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
+        *session = Some(DebugSession {
+            process: child,
+            state: DebugState::Stopped,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+        });
+        Ok(())
+    }
+
+    /// Spawn the cheapest available no-op child process for use in unit tests.
+    /// Tries perl first, then a platform-native no-op. Returns an error if no
+    /// subprocess can be spawned at all — that indicates a broken CI environment.
+    #[cfg(test)]
+    fn spawn_noop_child_for_test() -> io::Result<Child> {
+        use std::process::{Command, Stdio};
+        // perl -e 1 exits immediately with no output.
+        if let Ok(c) = Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            return Ok(c);
+        }
+        // Platform-native fallback when perl is not on PATH.
+        #[cfg(windows)]
+        let (prog, args): (&str, &[&str]) = ("cmd", &["/c", "exit", "0"]);
+        #[cfg(not(windows))]
+        let (prog, args): (&str, &[&str]) = ("true", &[]);
+        // SAFETY NOTE: no unsafe — uses only std::process::Command.
+        Command::new(prog)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                io::Error::new(e.kind(), format!("cannot spawn noop subprocess ({prog}): {e}"))
+            })
+    }
+
+    #[cfg(test)]
+    fn inject_stack_frames_for_test(&self, frames: Vec<StackFrame>) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.inject_frames");
+        if let Some(ref mut sess) = *session {
+            sess.stack_frames = frames;
+        }
+    }
+
+    #[cfg(test)]
+    fn stack_frames_snapshot_for_test(&self) -> Vec<StackFrame> {
+        let session = lock_or_recover(&self.session, "debug_adapter.snapshot_frames");
+        session.as_ref().map(|s| s.stack_frames.clone()).unwrap_or_default()
+    }
+
+    /// Seed the active session's variable_cache with an EvalResult entry for testing.
+    ///
+    /// Used by the fix #1338 guard test: a CACHED EvalResult ref must serve its children
+    /// via the cache-hit path, NOT be swallowed by the early-return short-circuit added
+    /// for stale (cache-miss) EvalResult refs.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    #[cfg(test)]
+    pub fn seed_eval_result_cache_for_test(
+        &self,
+        eval_ref_wire: i32,
+        variables: Vec<crate::types::Variable>,
+    ) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_eval_result_cache");
+        if let Some(ref mut sess) = *session {
+            sess.variable_cache.upsert(eval_ref_wire, VariableCacheKind::EvaluateResult, variables);
+        }
+    }
+
+    /// Seed a stopped DebugSession with a given set of stack frames for testing
+    /// frameId validation paths in handle_evaluate.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_stopped_session_with_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
+        use std::process::{Command, Stdio};
+        let Ok(child) = Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        else {
+            return;
+        };
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_stopped_session");
+        *session = Some(DebugSession {
+            process: child,
+            state: DebugState::Stopped,
+            stack_frames: frames,
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+        });
+    }
+
+    /// Seed captured stack-frame arguments for scope/variables protocol tests.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_stack_frame_arguments_for_test(&self, frame_id: i32, arguments: Vec<String>) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_frame_arguments");
+        if let Some(ref mut sess) = *session {
+            sess.stack_frame_arguments.insert(frame_id, arguments);
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_breakpoint_test_perl_file()
+    -> Result<(tempfile::NamedTempFile, String), Box<dyn std::error::Error>> {
+        let mut file = tempfile::NamedTempFile::with_suffix(".pl")?;
+        let perl_code = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+my $x = 1;
+my $y = 2;
+my $z = $x + $y;
+
+if ($x > 0) {
+    print "positive\n";
+}
+
+my @arr = (1, 2, 3);
+while (my $item = shift @arr) {
+    my $doubled = $item * 2;
+    print "$doubled\n";
+}
+
+sub process {
+    my ($value) = @_;
+    my $result = $value * 2;
+    return $result;
+}
+
+print "done\n";
+my $final = process($x);
+print "result: $final\n";
+"#;
+        file.write_all(perl_code.as_bytes())?;
+        file.flush()?;
+        let path = file.path().to_string_lossy().to_string();
+        Ok((file, path))
+    }
+
+    #[test]
+    fn test_debug_adapter_creation() {
+        let adapter = DebugAdapter::new();
+        assert!(adapter.session.lock().ok().is_some_and(|guard| guard.is_none()));
+        assert!(adapter.breakpoints.is_empty());
+    }
+
+    // --- `impl Drop for DebugAdapter` coverage (#1405) ---
+    //
+    // These are direct call-observation --lib tests proving the Drop body's two
+    // effects without spawning a real `perl -d` child process: (1) the cancel
+    // flag is set before delegating to `clear_active_session_state`, and (2)
+    // `clear_active_session_state` genuinely clears adapter-owned state when the
+    // adapter is dropped (not merely called directly). The SIGTERM/kill branches
+    // inside `terminate_child_process` sit behind a real OS process and are
+    // covered by the Perl-gated tests in `tests/dap_session_cleanup_e2e.rs`
+    // instead (see `ripr-suppress-debug-adapter-drop-process-boundary` in
+    // `policy/ripr-suppressions.toml`).
+
+    #[test]
+    fn test_drop_sets_cancel_requested_before_clearing_session_state() {
+        let adapter = DebugAdapter::new();
+        let cancel_flag = Arc::clone(&adapter.cancel_requested);
+        assert!(!cancel_flag.load(Ordering::Acquire), "cancel flag should start false");
+
+        drop(adapter);
+
+        assert!(
+            cancel_flag.load(Ordering::Acquire),
+            "Drop must set cancel_requested so any in-flight output-reader thread observes it"
+        );
+    }
+
+    #[test]
+    fn test_drop_clears_attached_pid_session_state() {
+        let adapter = DebugAdapter::new();
+        let attached_pid = Arc::clone(&adapter.attached_pid);
+        if let Ok(mut guard) = attached_pid.lock() {
+            *guard = Some(9999);
+        }
+
+        drop(adapter);
+
+        assert!(
+            attached_pid.lock().ok().is_some_and(|guard| guard.is_none()),
+            "Drop must delegate to clear_active_session_state, clearing attached_pid"
+        );
+    }
+
+    #[test]
+    fn test_sequence_numbers() {
+        let adapter = DebugAdapter::new();
+        assert_eq!(adapter.next_seq(), 1);
+        assert_eq!(adapter.next_seq(), 2);
+        assert_eq!(adapter.next_seq(), 3);
+    }
+
+    #[test]
+    fn test_debugger_output_window_ms_enforces_minimum_budget() {
+        assert_eq!(DebugAdapter::debugger_output_window_ms(1), DEBUGGER_QUERY_WAIT_MS);
+    }
+
+    #[test]
+    fn test_debugger_output_window_ms_honors_extended_budget() {
+        assert_eq!(DebugAdapter::debugger_output_window_ms(600), 600);
+    }
+
+    #[test]
+    fn test_initialize_response() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let response = adapter.handle_request(1, "initialize", None);
+
+        match response {
+            DapMessage::Response { success, command, body, .. } => {
+                assert!(success);
+                assert_eq!(command, "initialize");
+                assert!(body.is_some());
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_breakpoints_replace_semantics_updates_adapter_store()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_keep, source_path) = create_breakpoint_test_perl_file()?;
+        let mut adapter = DebugAdapter::new();
+
+        let first = adapter.handle_request(
+            1,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [{ "line": 10 }],
+            })),
+        );
+        match first {
+            DapMessage::Response { success: true, command, .. } => {
+                assert_eq!(command, "setBreakpoints");
+            }
+            other => {
+                return Err(format!("expected successful setBreakpoints, got {other:?}").into());
+            }
+        }
+
+        let first_lines: Vec<i64> =
+            adapter.breakpoints.get_breakpoints(&source_path).iter().map(|bp| bp.line).collect();
+        assert_eq!(first_lines, vec![10], "first request should seed one stored breakpoint");
+
+        let second = adapter.handle_request(
+            2,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [
+                    { "line": 20 },
+                    { "line": 26 },
+                ],
+            })),
+        );
+        match second {
+            DapMessage::Response { success: true, command, .. } => {
+                assert_eq!(command, "setBreakpoints");
+            }
+            other => {
+                return Err(format!("expected successful setBreakpoints, got {other:?}").into());
+            }
+        }
+
+        let stored_lines: Vec<i64> =
+            adapter.breakpoints.get_breakpoints(&source_path).iter().map(|bp| bp.line).collect();
+        assert_eq!(
+            stored_lines,
+            vec![20, 26],
+            "second request must replace the stored adapter breakpoints, not append to them"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_capabilities_mirror_feature_catalog()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let init = adapter.handle_request(1, "initialize", None);
+
+        let capabilities = match init {
+            DapMessage::Response { success: true, command, body: Some(body), .. }
+                if command == "initialize" =>
+            {
+                body
+            }
+            _ => return Err("Expected successful initialize response".into()),
+        };
+
+        let capability_map =
+            capabilities.as_object().ok_or("Initialize response body must be a JSON object")?;
+
+        let expectations = [
+            ("supportsConfigurationDoneRequest", crate::feature_catalog::has_feature("dap.core")),
+            ("supportsFunctionBreakpoints", crate::feature_catalog::has_feature("dap.core")),
+            (
+                "supportsConditionalBreakpoints",
+                crate::feature_catalog::has_feature("dap.breakpoints.basic"),
+            ),
+            (
+                "supportsHitConditionalBreakpoints",
+                crate::feature_catalog::has_feature("dap.breakpoints.hit_condition"),
+            ),
+            ("supportsEvaluateForHovers", crate::feature_catalog::has_feature("dap.core")),
+            ("supportsSetVariable", crate::feature_catalog::has_feature("dap.core")),
+            ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
+            ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),
+            ("supportsLogPoints", crate::feature_catalog::has_feature("dap.breakpoints.logpoints")),
+            (
+                "supportsExceptionOptions",
+                crate::feature_catalog::has_feature("dap.exceptions.die")
+                    || crate::feature_catalog::has_feature("dap.exceptions.warn"),
+            ),
+            (
+                "supportsExceptionFilterOptions",
+                crate::feature_catalog::has_feature("dap.exceptions.die")
+                    || crate::feature_catalog::has_feature("dap.exceptions.warn"),
+            ),
+            ("supportsInlineValues", crate::feature_catalog::has_feature("dap.inline_values")),
+            ("supportsTerminateRequest", crate::feature_catalog::has_feature("dap.core")),
+            ("supportsCompletionsRequest", crate::feature_catalog::has_feature("dap.completions")),
+            ("supportsModulesRequest", crate::feature_catalog::has_feature("dap.modules")),
+            ("supportsDataBreakpoints", crate::feature_catalog::has_feature("dap.watchpoints")),
+            (
+                "supportsTerminateThreadsRequest",
+                // Handler unconditionally returns success: false — do not
+                // advertise (#5045).
+                false,
+            ),
+            ("supportsGotoTargetsRequest", crate::feature_catalog::has_feature("dap.core")),
+            (
+                "supportsRestartFrame",
+                // Handler unconditionally returns success: false — do not
+                // advertise (#5045).
+                false,
+            ),
+            (
+                "supportsStepInTargetsRequest",
+                crate::feature_catalog::has_feature("dap.step_in_targets"),
+            ),
+            ("supportsRestartRequest", crate::feature_catalog::has_feature("dap.restart")),
+            (
+                "supportsLoadedSourcesRequest",
+                crate::feature_catalog::has_feature("dap.loaded_sources"),
+            ),
+        ];
+
+        for (capability, expected) in expectations {
+            let actual = capability_map
+                .get(capability)
+                .and_then(Value::as_bool)
+                .ok_or_else(|| format!("Capability `{capability}` must be present as boolean"))?;
+            assert_eq!(
+                actual, expected,
+                "Capability `{capability}` must mirror features.toml advertisement"
+            );
+        }
+
+        let exception_filters = capability_map
+            .get("exceptionBreakpointFilters")
+            .and_then(Value::as_array)
+            .ok_or("exceptionBreakpointFilters must be present as an array")?;
+
+        let has_filter = |id: &str| -> bool {
+            exception_filters.iter().any(|f| f.get("filter").and_then(Value::as_str) == Some(id))
+        };
+
+        let die_enabled = crate::feature_catalog::has_feature("dap.exceptions.die");
+        let warn_enabled = crate::feature_catalog::has_feature("dap.exceptions.warn");
+
+        assert_eq!(
+            has_filter("die"),
+            die_enabled,
+            "die filter presence must match dap.exceptions.die"
+        );
+        assert_eq!(
+            has_filter("all"),
+            die_enabled,
+            "all filter presence must match dap.exceptions.die"
+        );
+        assert_eq!(
+            has_filter("warn"),
+            warn_enabled,
+            "warn filter presence must match dap.exceptions.warn"
+        );
+
+        if !die_enabled && !warn_enabled {
+            assert!(
+                exception_filters.is_empty(),
+                "exceptionBreakpointFilters must be empty when no exception features are enabled"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_capabilities_are_backed_by_handlers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let init = adapter.handle_request(1, "initialize", None);
+
+        let capabilities = match init {
+            DapMessage::Response { success: true, command, body: Some(body), .. }
+                if command == "initialize" =>
+            {
+                body
+            }
+            _ => return Err("Expected successful initialize response".into()),
+        };
+
+        let capability_map =
+            capabilities.as_object().ok_or("Initialize response body must be a JSON object")?;
+
+        let capability_to_command = [
+            ("supportsConfigurationDoneRequest", "configurationDone"),
+            ("supportsFunctionBreakpoints", "setFunctionBreakpoints"),
+            ("supportsConditionalBreakpoints", "setBreakpoints"),
+            ("supportsHitConditionalBreakpoints", "setBreakpoints"),
+            ("supportsEvaluateForHovers", "evaluate"),
+            ("supportsSetVariable", "setVariable"),
+            ("supportsValueFormattingOptions", "variables"),
+            ("supportsLogPoints", "setBreakpoints"),
+            ("supportsExceptionOptions", "setExceptionBreakpoints"),
+            ("supportsExceptionFilterOptions", "setExceptionBreakpoints"),
+            ("supportsInlineValues", "inlineValues"),
+            ("supportsTerminateRequest", "terminate"),
+            ("supportTerminateDebuggee", "terminate"),
+            ("supportsCompletionsRequest", "completions"),
+            ("supportsModulesRequest", "modules"),
+            ("supportsRestartRequest", "restart"),
+            ("supportsExceptionInfoRequest", "exceptionInfo"),
+            ("supportsBreakpointLocationsRequest", "breakpointLocations"),
+            ("supportsSetExpression", "setExpression"),
+            ("supportsDataBreakpoints", "setDataBreakpoints"),
+            ("supportsLoadedSourcesRequest", "loadedSources"),
+            ("supportsCancelRequest", "cancel"),
+            ("supportsRestartFrame", "restartFrame"),
+            ("supportsStepInTargetsRequest", "stepInTargets"),
+            ("supportsGotoTargetsRequest", "gotoTargets"),
+            ("supportsTerminateThreadsRequest", "terminateThreads"),
+        ];
+
+        let mut mapped_commands = HashSet::new();
+        for (capability, raw_value) in capability_map {
+            let is_support_flag =
+                capability.starts_with("supports") || capability == "supportTerminateDebuggee";
+            if !is_support_flag || !raw_value.as_bool().unwrap_or(false) {
+                continue;
+            }
+
+            let command = capability_to_command
+                .iter()
+                .find_map(|(supported, command)| (*supported == capability).then_some(*command))
+                .ok_or_else(|| {
+                    format!(
+                        "Capability `{capability}` is true but has no handler mapping in this invariant test"
+                    )
+                })?;
+
+            let _ = mapped_commands.insert(command);
+        }
+
+        let mut request_seq = 2;
+        for command in mapped_commands {
+            let arguments = match command {
+                "configurationDone" => Some(json!({})),
+                "setFunctionBreakpoints" => {
+                    Some(json!({"breakpoints": [{ "name": "main::noop" }]}))
+                }
+                "setBreakpoints" => Some(json!({
+                    "source": { "path": "/tmp/capability_honesty.pl" },
+                    "breakpoints": [{ "line": 1, "hitCondition": ">= 1", "logMessage": "breakpoint hit" }]
+                })),
+                "setExceptionBreakpoints" => Some(json!({"filters": ["die"]})),
+                "evaluate" => Some(json!({"expression": "$x", "allowSideEffects": true})),
+                "setVariable" => {
+                    Some(json!({"variablesReference": 11, "name": "$x", "value": "1"}))
+                }
+                "variables" => Some(json!({"variablesReference": 11})),
+                "inlineValues" => Some(json!({
+                    "source": { "path": "/tmp/capability_honesty.pl" },
+                    "startLine": 1,
+                    "endLine": 1
+                })),
+                "terminate" => Some(json!({"restart": false})),
+                "completions" => Some(json!({"text": "pr", "column": 2})),
+                "modules" => Some(json!({})),
+                "restart" => Some(json!({})),
+                "exceptionInfo" => Some(json!({"threadId": 1})),
+                "breakpointLocations" => Some(json!({
+                    "source": { "path": "/tmp/capability_honesty.pl" },
+                    "line": 1
+                })),
+                "setExpression" => Some(json!({"expression": "$x", "value": "1"})),
+                "setDataBreakpoints" => Some(json!({"breakpoints": []})),
+                "loadedSources" => Some(json!({})),
+                "cancel" => Some(json!({})),
+                "stepInTargets" => Some(json!({"frameId": 1})),
+                "gotoTargets" => Some(json!({
+                    "source": { "path": "/tmp/capability_honesty.pl" },
+                    "line": 1
+                })),
+                "terminateThreads" => Some(json!({})),
+                _ => None,
+            };
+
+            let response = adapter.handle_request(request_seq, command, arguments);
+            request_seq += 1;
+
+            match response {
+                DapMessage::Response { command: actual, message, .. } => {
+                    assert_eq!(
+                        actual, command,
+                        "Capability-mapped command `{command}` must route to its handler"
+                    );
+                    let message_text = message.unwrap_or_default();
+                    assert!(
+                        !message_text.contains("Unknown command"),
+                        "Capability-mapped command `{command}` must not hit unknown-command path"
+                    );
+                }
+                _ => return Err(format!("Expected response for `{command}`").into()),
+            }
+        }
+
+        // supportsTerminateThreadsRequest is not advertised because the handler
+        // unconditionally returns success: false (#5045). The feature catalog
+        // entry exists for future use, but the capability is suppressed until
+        // a real implementation lands.
+        assert_eq!(
+            capability_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
+            Some(false),
+            "supportsTerminateThreadsRequest must not be advertised (handler always fails)"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_exception_breakpoints_toggles_die_filter() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut adapter = DebugAdapter::new();
+
+        assert!(
+            !*lock_or_recover(
+                &adapter.exception_break_on_die,
+                "test_set_exception_breakpoints.initial"
+            ),
+            "die filter should default to disabled"
+        );
+
+        let response = adapter.handle_request(
+            1,
+            "setExceptionBreakpoints",
+            Some(json!({
+                "filters": ["die"]
+            })),
+        );
+        match response {
+            DapMessage::Response { success: true, command, .. } => {
+                assert_eq!(command, "setExceptionBreakpoints");
+            }
+            _ => return Err("Expected successful setExceptionBreakpoints response".into()),
+        }
+
+        assert!(
+            *lock_or_recover(
+                &adapter.exception_break_on_die,
+                "test_set_exception_breakpoints.enabled"
+            ),
+            "die filter should be enabled after request"
+        );
+
+        let disable = adapter.handle_request(
+            2,
+            "setExceptionBreakpoints",
+            Some(json!({
+                "filters": []
+            })),
+        );
+        match disable {
+            DapMessage::Response { success: true, command, .. } => {
+                assert_eq!(command, "setExceptionBreakpoints");
+            }
+            _ => return Err("Expected successful setExceptionBreakpoints response".into()),
+        }
+
+        assert!(
+            !*lock_or_recover(
+                &adapter.exception_break_on_die,
+                "test_set_exception_breakpoints.disabled"
+            ),
+            "die filter should be disabled when no matching filters are configured"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_missing_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let response = adapter.handle_request(1, "attach", None);
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("Missing attach arguments"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_tcp_valid_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "localhost",
+            "port": 13603,
+            "timeout": 5000
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success); // Not yet implemented, but validates correctly
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("localhost:13603"));
+                assert!(msg.contains("5000ms timeout"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_process_id_mode() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        // #4638: use current process PID so verify_attach_target succeeds.
+        let pid = std::process::id();
+        let args = json!({
+            "processId": pid
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, body, message, .. } => {
+                assert!(success);
+                assert_eq!(command, "attach");
+                assert!(body.is_some());
+                let body = body.ok_or("Expected body")?;
+                assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("signal-control mode"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_empty_host() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "",
+            "port": 13603
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("Host cannot be empty"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_whitespace_host() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "   ",
+            "port": 13603
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("Host cannot be empty"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_zero_port() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "localhost",
+            "port": 0
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("Port must be in range"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_zero_timeout() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "localhost",
+            "port": 13603,
+            "timeout": 0
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("Timeout must be greater than 0"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_excessive_timeout() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "localhost",
+            "port": 13603,
+            "timeout": 400000
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("Timeout cannot exceed"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_default_values() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        // Empty args should use defaults and fail with missing arguments message
+        let args = json!({});
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                // Should use default host/port but still not be implemented
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("localhost:13603"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_custom_port() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "127.0.0.1",
+            "port": 9000
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success); // Not yet implemented
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("127.0.0.1:9000"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_trims_host_for_tcp_target() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": " 127.0.0.1 ",
+            "port": 9000
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("127.0.0.1:9000"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_accepts_timeout_ms_alias() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let args = json!({
+            "host": "localhost",
+            "port": 13603,
+            "timeoutMs": 0
+        });
+        let response = adapter.handle_request(1, "attach", Some(args));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "attach");
+                assert!(message.is_some());
+                let msg = message.ok_or("Expected message")?;
+                assert!(msg.contains("Timeout must be greater than 0"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_tcp_session_threads_non_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        // Inject a TcpAttachSession so handle_threads sees it
+        {
+            let mut guard = lock_or_recover(&adapter.tcp_session, "test.tcp_session");
+            *guard = Some(TcpAttachSession::new());
+        }
+        let response = adapter.handle_threads(1, 1);
+        match response {
+            DapMessage::Response { success, body: Some(body), .. } => {
+                assert!(success);
+                let threads = body["threads"].as_array().ok_or("threads must be array")?;
+                assert!(!threads.is_empty(), "TCP attach should return non-empty threads");
+                assert_eq!(threads[0]["id"], 1);
+                assert_eq!(threads[0]["name"], "TCP Attached Thread");
+            }
+            _ => return Err("Expected successful response with body".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_port_out_of_range() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        // Initialize first so attach is allowed
+        let _ = adapter.handle_request(1, "initialize", None);
+
+        for port in [65536_u64, 70000, u64::MAX] {
+            let args = json!({ "port": port });
+            let response = adapter.handle_request(2, "attach", Some(args));
+            match response {
+                DapMessage::Response { success, message, .. } => {
+                    assert!(!success, "port {port} should be rejected");
+                    assert!(
+                        message.as_ref().is_some_and(|m| m.contains("out of range")),
+                        "expected 'out of range' error for port {port}, got: {message:?}"
+                    );
+                }
+                _ => return Err(format!("Expected error response for port {port}").into()),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_port_valid_boundary() {
+        let mut adapter = DebugAdapter::new();
+        let _ = adapter.handle_request(1, "initialize", None);
+
+        // Port 1 and 65535 should pass port validation (may fail later at TCP connect)
+        for port in [1_u64, 65535] {
+            let args = json!({ "port": port });
+            let response = adapter.handle_request(2, "attach", Some(args));
+            if let DapMessage::Response { message, .. } = response {
+                // Should NOT contain "out of range" — it passed validation
+                assert!(
+                    !message.as_ref().is_some_and(|m| m.contains("out of range")),
+                    "port {port} should pass range validation, got: {message:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_goto_missing_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let response = adapter.handle_request(1, "goto", None);
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "goto");
+                assert_eq!(message.as_deref(), Some("Missing or invalid arguments"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_goto_invalid_target() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let response =
+            adapter.handle_request(1, "goto", Some(json!({"threadId": 1, "targetId": -1})));
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "goto");
+                // With target mapping, unknown IDs produce "Unknown goto target id"
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("Unknown goto target"),
+                    "expected unknown target message, got: {msg}"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_goto_no_session() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        // First store a mapping so goto gets past the lookup
+        {
+            let mut goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+            goto_map.insert(10, ("/test/file.pl".to_string(), 10));
+        }
+        let response =
+            adapter.handle_request(1, "goto", Some(json!({"threadId": 1, "targetId": 10})));
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "goto");
+                assert_eq!(message.as_deref(), Some("No active debug session"));
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_terminate_threads_capability_is_not_advertised()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #5045: supportsTerminateThreadsRequest is not advertised because the
+        // handler unconditionally returns success: false.
+        let mut adapter = DebugAdapter::new();
+        let init = adapter.handle_request(1, "initialize", None);
+        let capabilities = match init {
+            DapMessage::Response { success: true, body: Some(body), .. } => body,
+            _ => return Err("Expected successful initialize response".into()),
+        };
+        let cap_map = capabilities.as_object().ok_or("body must be object")?;
+        assert_eq!(
+            cap_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
+            Some(false),
+            "supportsTerminateThreadsRequest must not be advertised (handler always fails)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_restart_frame_capability_is_not_advertised()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #5045: supportsRestartFrame is not advertised because the handler
+        // unconditionally returns failure ("Perl does not support restarting
+        // execution from a specific stack frame").
+        let mut adapter = DebugAdapter::new();
+        let init = adapter.handle_request(1, "initialize", None);
+        let capabilities = match init {
+            DapMessage::Response { success: true, body: Some(body), .. } => body,
+            _ => return Err("Expected successful initialize response".into()),
+        };
+        let cap_map = capabilities.as_object().ok_or("body must be object")?;
+        assert_eq!(
+            cap_map.get("supportsRestartFrame").and_then(|v| v.as_bool()),
+            Some(false),
+            "supportsRestartFrame must not be advertised (handler always fails)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_goto_targets_then_goto_flow() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+
+        // gotoTargets should succeed (even with no file — returns empty targets)
+        let gt_response = adapter.handle_request(
+            1,
+            "gotoTargets",
+            Some(json!({"source": {"path": "/tmp/nonexistent.pl"}, "line": 1})),
+        );
+        match gt_response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(success, "gotoTargets should succeed");
+                assert_eq!(command, "gotoTargets");
+                // Must NOT say "does not support"
+                assert!(
+                    !message.as_deref().unwrap_or("").contains("does not support"),
+                    "gotoTargets must not claim lack of support"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+
+        // goto should fail gracefully with unknown target (no stored mapping)
+        let goto_response =
+            adapter.handle_request(2, "goto", Some(json!({"threadId": 1, "targetId": 999})));
+        match goto_response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success, "goto with unknown target should fail");
+                assert_eq!(command, "goto");
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("Unknown goto target"),
+                    "goto must report unknown target, got: {msg}"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_goto_targets_stores_mapping() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
+
+        // Create a temp file with executable content
+        let dir = tempfile::tempdir()?;
+        let file_path = dir.path().join("test_goto.pl");
+        {
+            let mut f = std::fs::File::create(&file_path)?;
+            writeln!(f, "my $x = 1;")?;
+            writeln!(f, "my $y = 2;")?;
+            writeln!(f, "print $x + $y;")?;
+        }
+
+        let path_str = file_path.to_string_lossy().to_string();
+        let response = adapter.handle_request(
+            2,
+            "gotoTargets",
+            Some(json!({
+                "source": {"path": path_str},
+                "line": 2
+            })),
+        );
+
+        // Verify the response contains targets with monotonic IDs (not line numbers)
+        match response {
+            DapMessage::Response { success, body: Some(body), .. } => {
+                assert!(success, "gotoTargets should succeed");
+                let targets = body
+                    .get("targets")
+                    .and_then(|t| t.as_array())
+                    .ok_or("should have targets array")?;
+                assert!(!targets.is_empty(), "should find executable lines");
+
+                // Verify IDs are monotonic starting from 1, NOT equal to line numbers
+                let first_id = targets[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                assert!(first_id >= 1, "IDs should start at 1 or higher");
+
+                // Verify the mapping was stored internally
+                let goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+                assert!(!goto_map.is_empty(), "goto_targets map should be populated");
+                // Each stored entry should reference our temp file
+                for (_id, (stored_path, _line)) in goto_map.iter() {
+                    assert_eq!(stored_path, &path_str, "stored path should match source");
+                }
+            }
+            _ => return Err("Expected successful response".into()),
+        }
+
+        let _ = std::fs::remove_file(&file_path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_goto_uses_stored_mapping() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
+
+        // Manually populate the goto_targets map to simulate handle_goto_targets
+        {
+            let mut goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+            goto_map.insert(42, ("/some/file.pl".to_string(), 10));
+        }
+
+        // Without a debug session, goto should fail with "No active debug session"
+        // but only after successfully looking up the target
+        let response =
+            adapter.handle_request(2, "goto", Some(json!({"threadId": 1, "targetId": 42})));
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success, "goto without session should fail");
+                assert_eq!(command, "goto");
+                // It should NOT say "Unknown goto target" — the mapping was found
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("No active debug session"),
+                    "goto should report no session, got: {msg}"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+
+        // Verify the consumed entry was removed from the map
+        let goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+        assert!(!goto_map.contains_key(&42), "consumed goto target should be removed from map");
+        Ok(())
+    }
+
+    #[test]
+    fn test_inline_values_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
+
+        let dir = tempfile::tempdir()?;
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(dir.path().to_path_buf());
+
+        let response = adapter.handle_request(
+            2,
+            "inlineValues",
+            Some(json!({
+                "source": {"path": "../../../etc/passwd"},
+                "startLine": 1,
+                "endLine": 1
+            })),
+        );
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success, "inlineValues with traversal path should fail");
+                assert_eq!(command, "inlineValues");
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("Path validation failed"),
+                    "should report path validation failure, got: {msg}"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_source_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
+
+        // Set workspace root to a temp directory
+        let dir = tempfile::tempdir()?;
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(dir.path().to_path_buf());
+
+        let response = adapter.handle_request(
+            2,
+            "source",
+            Some(json!({
+                "source": {"path": "../../../etc/passwd"},
+                "sourceReference": 0
+            })),
+        );
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success, "source with traversal path should fail");
+                assert_eq!(command, "source");
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("Path validation failed"),
+                    "should report path validation failure, got: {msg}"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_breakpoint_locations_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
+
+        let dir = tempfile::tempdir()?;
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(dir.path().to_path_buf());
+
+        let response = adapter.handle_request(
+            2,
+            "breakpointLocations",
+            Some(json!({
+                "source": {"path": "../../../etc/passwd"},
+                "line": 1
+            })),
+        );
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success, "breakpointLocations with traversal path should fail");
+                assert_eq!(command, "breakpointLocations");
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("Path validation failed"),
+                    "should report path validation failure, got: {msg}"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_goto_targets_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
+
+        let dir = tempfile::tempdir()?;
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(dir.path().to_path_buf());
+
+        let response = adapter.handle_request(
+            2,
+            "gotoTargets",
+            Some(json!({
+                "source": {"path": "../../../etc/passwd"},
+                "line": 1
+            })),
+        );
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success, "gotoTargets with traversal path should fail");
+                assert_eq!(command, "gotoTargets");
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("Path validation failed"),
+                    "should report path validation failure, got: {msg}"
+                );
+            }
+            _ => return Err("Expected response".into()),
+        }
+        Ok(())
+    }
+
+    // --- Signal handling tests (#3028) ---
+
+    #[test]
+    fn test_send_continue_signal_does_not_panic_on_pid_1() {
+        // PID 1 on Unix is init (EPERM). On Windows, send_continue_signal is a
+        // no-op that returns true (no SIGCONT equivalent — #4639).
+        // Must not panic on any platform.
+        let adapter = DebugAdapter::new();
+        let _ = adapter.send_continue_signal(1);
+    }
+
+    #[test]
+    fn test_send_interrupt_signal_does_not_panic_on_pid_1() {
+        let adapter = DebugAdapter::new();
+        let _ = adapter.send_interrupt_signal(1);
+    }
+
+    #[test]
+    fn test_send_continue_signal_pid_zero_returns_false() {
+        let adapter = DebugAdapter::new();
+        assert!(!adapter.send_continue_signal(0));
+    }
+
+    #[test]
+    fn test_send_interrupt_signal_pid_zero_returns_false() {
+        let adapter = DebugAdapter::new();
+        assert!(!adapter.send_interrupt_signal(0));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_send_continue_signal_nonexistent_pid_returns_false() {
+        let adapter = DebugAdapter::new();
+        assert!(!adapter.send_continue_signal(999_999));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_send_interrupt_signal_nonexistent_pid_returns_false() {
+        let adapter = DebugAdapter::new();
+        assert!(!adapter.send_interrupt_signal(999_999));
+    }
+
+    // ── Windows signal delivery tests (#4639) ──────────────────────────────────
+
+    /// On Windows, `send_continue_signal` returns `true` for a nonzero pid.
+    ///
+    /// Regression for #4639 defect #1: the old Windows branch always returned
+    /// `false`, which the adapter could misinterpret as "stuck". The fix returns
+    /// `true` because external-process continue is a no-op on Windows, not a
+    /// failure.
+    #[test]
+    #[cfg(windows)]
+    fn test_send_continue_signal_returns_true_on_windows_for_nonzero_pid() {
+        let adapter = DebugAdapter::new();
+        let pid = std::process::id();
+        assert!(
+            adapter.send_continue_signal(pid),
+            "send_continue_signal should return true on Windows for a nonzero pid (no-op, not failure)"
+        );
+    }
+
+    /// On Windows, `send_interrupt_signal` for a nonexistent pid does not panic.
+    ///
+    /// Regression for #4639 defect #2: the old code could call terminate_child_process
+    /// as a fallback on stdin-write failure. The fix returns `false` cleanly without
+    /// destroying the debuggee.
+    #[test]
+    #[cfg(windows)]
+    fn test_send_interrupt_signal_nonexistent_pid_no_panic_on_windows() {
+        let adapter = DebugAdapter::new();
+        // The key assertion is that it doesn't panic or destroy anything.
+        let _ = adapter.send_interrupt_signal(999_999);
+    }
+
+    // ── context_re unit tests ─────────────────────────────────────────────────
+
+    /// Helper: apply context_re to `line` and return (file, line_num) if matched.
+    fn apply_context_re(line: &str) -> Option<(String, String)> {
+        let re = context_re()?;
+        let caps = re.captures(line)?;
+        let file =
+            caps.name("file").or_else(|| caps.name("file2")).map(|m| m.as_str().to_string())?;
+        let line_num =
+            caps.name("line").or_else(|| caps.name("line2")).map(|m| m.as_str().to_string())?;
+        Some((file, line_num))
+    }
+
+    #[test]
+    fn test_context_re_unix_path() {
+        let result = apply_context_re("main::(/path/to/file.pl:42):");
+        assert_eq!(result, Some(("/path/to/file.pl".to_string(), "42".to_string())));
+    }
+
+    #[test]
+    fn test_context_re_windows_drive_letter_backslash() {
+        // Windows drive-letter path: colon followed by backslash must be captured
+        // as part of the file path, not treated as a line-number separator.
+        let result = apply_context_re(r"main::(C:\Users\name\file.pl:42):");
+        assert_eq!(result, Some((r"C:\Users\name\file.pl".to_string(), "42".to_string())));
+    }
+
+    #[test]
+    fn test_context_re_windows_drive_letter_forward_slash() {
+        // Forward-slash Windows path from Git Bash / cross-platform tools.
+        let result = apply_context_re("main::(C:/Users/file.pl:7):");
+        assert_eq!(result, Some(("C:/Users/file.pl".to_string(), "7".to_string())));
+    }
+
+    #[test]
+    fn test_context_re_unc_path() {
+        // UNC path (Windows network share).
+        let result = apply_context_re(r"main::(\\server\share\file.pl:5):");
+        assert_eq!(result, Some((r"\\server\share\file.pl".to_string(), "5".to_string())));
+    }
+
+    #[test]
+    fn test_context_re_named_function() {
+        // Func::Name context line.
+        let result = apply_context_re("Foo::Bar::(/path/script.pl:10):");
+        assert_eq!(result, Some(("/path/script.pl".to_string(), "10".to_string())));
+    }
+
+    #[test]
+    fn test_context_re_windows_path_named_function() {
+        // Func::Name context line with Windows path.
+        let result = apply_context_re(r"Foo::Bar::(C:\path\script.pl:10):");
+        assert_eq!(result, Some((r"C:\path\script.pl".to_string(), "10".to_string())));
+    }
+
+    #[test]
+    fn context_re_accepts_perl_named_sub_without_trailing_namespace_separator() -> Result<(), String>
+    {
+        let result = apply_context_re(r"main::inner_sub(C:\Temp\scope_filter_locals.pl:9):")
+            .ok_or("named-sub debugger context did not match")?;
+        let expected = (r"C:\Temp\scope_filter_locals.pl".to_string(), "9".to_string());
+        if result != expected {
+            return Err(format!("named-sub context parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_no_match_path_with_spaces() {
+        // Paths with spaces do not match — the character class excludes \s.
+        let result = apply_context_re("main::(/path with spaces/file.pl:5):");
+        assert!(result.is_none(), "paths with spaces should not match");
+    }
+
+    #[test]
+    fn test_context_re_colon_digit_is_line_separator() {
+        // Colon followed by digit is the line-number separator, not a path component.
+        // "/path/file.pl:42" should yield file="/path/file.pl", line="42".
+        let result = apply_context_re("main::(/path/file.pl:42):");
+        assert_eq!(result, Some(("/path/file.pl".to_string(), "42".to_string())));
+    }
+
+    // Helper to create a test stack frame for #964 and #933 tests
+    fn make_test_frame(line_num: i32) -> StackFrame {
+        StackFrame::new(
+            line_num,
+            format!("test_func::{}", line_num),
+            Source::new(format!("/test/file{}.pl", line_num)),
+            line_num,
+        )
+    }
+
+    #[test]
+    fn test_handle_continue_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?;
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        // Precondition: frames are present
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            2,
+            "precondition: should have 2 frames before continue"
+        );
+
+        // Call the handler (this should clear stack_frames)
+        let _response = adapter.handle_continue(1, 1, None);
+
+        // Assert: frames are now cleared (FAILS if fix not implemented)
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_continue must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_next_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?;
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_next(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_next must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_step_in_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?;
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_step_in(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_step_in must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_step_out_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?;
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_step_out(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_step_out must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_pause_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?;
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_pause(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_pause must clear stack_frames after pause"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_goto_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        // #964: handle_goto is the 6th resume handler that must clear stack_frames.
+        // It clears inside the `if let Some(session) && stdin` arm, so a seeded session
+        // and a resolvable goto target are both required to exercise the clear path.
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?;
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        // Precondition: stale frames are present
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            2,
+            "precondition: should have 2 frames before goto"
+        );
+
+        // Seed a goto target so handle_goto resolves it (otherwise returns early with
+        // "Unknown goto target" before reaching the clear).
+        {
+            let mut goto_map =
+                lock_or_recover(&adapter.goto_targets, "test.handle_goto_clears_stack_frames");
+            goto_map.insert(1, ("/tmp/test_goto.pl".to_string(), 5));
+        }
+
+        // Call handle_goto -- writes commands to the noop child's stdin (bytes are
+        // discarded by the no-op process); stack_frames.clear() must still fire.
+        let _response = adapter.handle_goto(1, 1, Some(json!({"threadId": 1, "targetId": 1})));
+
+        // Assert: frames cleared (FAILS if handle_goto does not call stack_frames.clear())
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_goto must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_configuration_done_without_launch_should_fail() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut adapter = DebugAdapter::new();
+
+        // Call initialize first (correct)
+        let init_response = adapter.handle_request(1, "initialize", None);
+        match init_response {
+            DapMessage::Response { success: true, command, .. } => {
+                assert_eq!(command, "initialize");
+            }
+            _ => return Err("Initialize should succeed".into()),
+        }
+
+        // Call configurationDone WITHOUT calling launch first (incorrect sequence)
+        let config_response = adapter.handle_request(2, "configurationDone", None);
+
+        // This should FAIL because no session exists (launch was never called)
+        match config_response {
+            DapMessage::Response { success: false, command, message, .. } => {
+                assert_eq!(command, "configurationDone");
+                assert!(message.is_some(), "should provide error message");
+                let msg = message.ok_or("Expected error message")?;
+                assert!(
+                    msg.contains("No active debug session")
+                        || msg.contains("launch")
+                        || msg.contains("session"),
+                    "Error message should explain that launch was not called, got: {msg}"
+                );
+                Ok(())
+            }
+            DapMessage::Response { success: true, .. } => {
+                Err("configurationDone should FAIL when no launch has been called".into())
+            }
+            _ => Err("Expected response".into()),
+        }
+    }
+
+    #[test]
+    fn test_launch_before_initialize_should_fail() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+
+        // Try to call launch WITHOUT calling initialize first (incorrect sequence)
+        let launch_response = adapter.handle_request(
+            1,
+            "launch",
+            Some(json!({
+                "program": "/tmp/test.pl"
+            })),
+        );
+
+        // This should FAIL because initialize was never called
+        match launch_response {
+            DapMessage::Response { success: false, command, message, .. } => {
+                assert_eq!(command, "launch");
+                assert!(message.is_some(), "should provide error message");
+                let msg = message.ok_or("Expected error message")?;
+                assert!(
+                    msg.contains("initialize")
+                        || msg.contains("Initialize")
+                        || msg.contains("session"),
+                    "Error message should explain that initialize is required, got: {msg}"
+                );
+                Ok(())
+            }
+            DapMessage::Response { success: true, .. } => {
+                Err("launch should FAIL when initialize has not been called".into())
+            }
+            _ => Err("Expected response".into()),
+        }
+    }
+
+    // --- Saturating cast helper tests (#3052) ---
+
+    #[test]
+    fn test_u64_to_u32_saturating_below_max() {
+        assert_eq!(DebugAdapter::u64_to_u32_saturating(0), 0);
+        assert_eq!(DebugAdapter::u64_to_u32_saturating(1), 1);
+        assert_eq!(DebugAdapter::u64_to_u32_saturating(u32::MAX as u64), u32::MAX);
+    }
+
+    #[test]
+    fn test_u64_to_u32_saturating_at_max() {
+        assert_eq!(DebugAdapter::u64_to_u32_saturating(u32::MAX as u64), u32::MAX);
+    }
+
+    #[test]
+    fn test_u64_to_u32_saturating_above_max() {
+        assert_eq!(DebugAdapter::u64_to_u32_saturating(u32::MAX as u64 + 1), u32::MAX);
+        assert_eq!(DebugAdapter::u64_to_u32_saturating(u64::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn test_u32_to_i32_saturating_below_max() {
+        assert_eq!(DebugAdapter::u32_to_i32_saturating(0), 0);
+        assert_eq!(DebugAdapter::u32_to_i32_saturating(1), 1);
+        assert_eq!(DebugAdapter::u32_to_i32_saturating(i32::MAX as u32), i32::MAX);
+    }
+
+    #[test]
+    fn test_u32_to_i32_saturating_at_max() {
+        assert_eq!(DebugAdapter::u32_to_i32_saturating(i32::MAX as u32), i32::MAX);
+    }
+
+    #[test]
+    fn test_u32_to_i32_saturating_above_max() {
+        assert_eq!(DebugAdapter::u32_to_i32_saturating(i32::MAX as u32 + 1), i32::MAX);
+        assert_eq!(DebugAdapter::u32_to_i32_saturating(u32::MAX), i32::MAX);
+    }
+}

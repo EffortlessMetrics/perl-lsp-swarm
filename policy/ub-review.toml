@@ -1,0 +1,155 @@
+# ub-review advisory config for perl-lsp-swarm.
+#
+# This file configures the ub-review evidence packet for this repo.
+# It is passed to the action via `config: policy/ub-review.toml`.
+#
+# Status: advisory — see docs/ci/review-gates.md.
+#
+# PR 1 (this file): minimal advisory scaffold.
+# PR 2: add runner-size profiles and tune sensor weights for Rust LSP code.
+# PR 3: add unsafe-review sensor policy and per-tool thresholds.
+#
+# See https://github.com/EffortlessMetrics/ub-review for full config reference.
+
+# Use the bun-ub profile as the closest available preset for Rust repos.
+# A perl-lsp-specific profile is tracked for PR 2.
+# TODO(PR 2): Replace with a perl-lsp profile that reflects the actual
+#             unsafe surface (perl-parser FFI, tree-sitter bindings, etc.)
+review_profile = "bun-ub-v0"
+profile = "gh-runner"
+
+[repo]
+kind = "rust"
+base = "origin/main"
+head = "HEAD"
+
+[review]
+# Advisory: post a grouped PR review on opened/ready_for_review; skip on
+# synchronize to avoid review spam on push storms.
+posting_engine = "review"
+ban_standalone_approval = false
+
+# Review body posture. Promoted from "suppress" to "post_substantive" so
+# actionable findings (severity medium+ or confidence medium-high+) reach
+# the PR; pure lane-status boilerplate stays suppressed. Under "suppress"
+# nothing posts, which structurally zeroes the acted-on-comment metric
+# tracked by the calibration artifact. See ub-review #717 / #718.
+[review_body]
+include_successful_lane_table = false
+include_provider_table = "on_failure"
+include_sensor_table = "on_failure"
+include_execution_summary = "none"
+summary_only_body = "post_substantive"
+
+# Core sensors: best-effort and advisory, all non-blocking.
+# Required = false means sensor availability is not a merge decision. The
+# separate deterministic RIPR receipt gate still blocks stale/missing/invalid
+# receipts and named new production-scope gaps.
+# TODO(PR 3): Review unsafe-review and ripr thresholds for perl-lsp's
+#             actual unsafe surface area.
+[tools.tokmd]
+enabled = true
+required = false
+
+[tools.cargo-allow]
+enabled = true
+required = false
+
+[tools.ripr]
+enabled = true
+required = false
+
+[tools.unsafe-review]
+enabled = true
+required = false
+
+[tools.ast-grep]
+enabled = true
+required = false
+
+[tools.actionlint]
+enabled = true
+required = false
+
+# Heavy witnesses are off for PR 1; enable via allow-heavy in the workflow
+# when the advisory phase graduates to a proof-required mode.
+[tools.coverage]
+enabled = false
+
+
+# perl-lsp-v0 lanes: tuned to the actual risk surfaces of this repo.
+[[lanes]]
+id = "tests-oracle"
+role = "Test oracle strength and focused-test discrimination"
+focus = "Check whether tests for changed code actually discriminate the patch. Identify the smallest focused test that would prove or refute the claim."
+
+[[lanes]]
+id = "source-route"
+role = "Source routes from changed code to unchanged callers"
+focus = "Trace source routes from each changed function to its callers including cross-crate boundaries. Identify broken callers or missing route updates."
+
+[[lanes]]
+id = "workspace-state"
+role = "Workspace index lifecycle and incremental state"
+focus = "Review workspace/index lifecycle, incremental state updates, file-watching triggers, and cache invalidation. Are there stale-state bugs or missing invalidation?"
+
+[[lanes]]
+id = "parser-edge-cases"
+role = "Perl syntax edge cases and parser correctness"
+focus = "Check parser behavior on edge cases: nested data structures, special variables, regex, heredocs. Does the change handle them correctly?"
+
+[[lanes]]
+id = "diagnostics-truth"
+role = "Diagnostics accuracy"
+focus = "Verify diagnostics accuracy. Are there false positives, false negatives, or missing diagnostics for common error patterns?"
+
+[[lanes]]
+id = "lsp-protocol-contract"
+role = "LSP protocol compliance"
+focus = "Check LSP protocol compliance: request/response pairing, cancellation, capability negotiation, transport lifecycle."
+
+[[lanes]]
+id = "opposition"
+role = "Strongest substantiated objection"
+focus = "Find the strongest objection grounded in code, tests, or protocol behavior. If none, state what you checked and residual risk."
+
+[[lanes]]
+id = "spec-honesty"
+role = "Doc and spec honesty"
+focus = "Check whether PR body, commits, docs, and specs accurately describe what the code does. Flag overclaims or stale docs."
+
+[providers]
+policy = "minimax-only"
+
+[providers.minimax]
+enabled = true
+env = "MINIMAX_API_KEY"
+model = "MiniMax-M3"
+role = "primary"
+prompt_cache = "explicit-anthropic"
+max_concurrency = 6
+
+[providers.opencode]
+enabled = true
+env = "OPENCODE"
+role = "fallback"
+
+# Proof requirements: focused build for the perl-core-test-runner crate.
+# This enables the proof broker to produce receipts that route to lanes.
+[[proof.required]]
+command = "cargo check --package perl-core-test-runner --locked"
+reason = "Focused build check for perl-core-test-runner crate."
+cost = "focused-build"
+timeout_sec = 180
+
+
+# Custom profile with non-zero focused-build leases for proof execution.
+# This enables the proof broker to execute model-suggested focused-build
+# requests and produce receipts that route to lanes in multi-turn continuation.
+[profiles.gh-runner-proof]
+extends = "gh-runner"
+
+[profiles.gh-runner-proof.budgets]
+proof_max_focused_tests = 1
+proof_command_timeout_sec = 120
+proof_total_timeout_sec = 180

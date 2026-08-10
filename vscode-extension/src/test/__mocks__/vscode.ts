@@ -1,0 +1,348 @@
+/**
+ * Minimal mock of the vscode module for unit testing.
+ *
+ * Only the surfaces actually touched by unit-testable code paths are stubbed.
+ * Integration tests requiring the full VSCode runtime should use
+ * @vscode/test-electron instead of this mock.
+ */
+
+import { jest } from '@jest/globals';
+
+export const Uri = {
+  parse: (value: string) => ({ toString: () => value, fsPath: value }),
+  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path }),
+};
+
+export class ThemeColor {
+  constructor(public id: string) {}
+}
+
+export enum StatusBarAlignment {
+  Left = 1,
+  Right = 2,
+}
+
+export enum ExtensionMode {
+  Production = 1,
+  Development = 2,
+  Test = 3,
+}
+
+export enum QuickPickItemKind {
+  Separator = -1,
+  Default = 0,
+}
+
+export enum TestRunProfileKind {
+  Run = 1,
+  Debug = 2,
+  Coverage = 3,
+}
+
+export enum TaskScope {
+  Global = 1,
+}
+
+export enum TaskRevealKind {
+  Always = 1,
+  Silent = 2,
+  Never = 3,
+}
+
+export enum TaskPanelKind {
+  Shared = 1,
+  Dedicated = 2,
+  New = 3,
+}
+
+export enum ProgressLocation {
+  SourceControl = 1,
+  Window = 10,
+  Notification = 15,
+}
+
+export class Range {
+  public start: { line: number; character: number };
+  public end: { line: number; character: number };
+
+  constructor(
+    startOrLine: { line: number; character: number } | number,
+    endOrStartChar: { line: number; character: number } | number,
+    endLine?: number,
+    endChar?: number,
+  ) {
+    if (typeof startOrLine === 'number') {
+      this.start = { line: startOrLine, character: endOrStartChar as number };
+      this.end = { line: endLine ?? 0, character: endChar ?? 0 };
+    } else {
+      this.start = { line: startOrLine.line, character: startOrLine.character };
+      this.end = {
+        line: (endOrStartChar as { line: number; character: number }).line,
+        character: (endOrStartChar as { line: number; character: number }).character,
+      };
+    }
+  }
+}
+
+export enum SymbolKind {
+  File = 0,
+  Module = 1,
+  Namespace = 2,
+  Package = 3,
+  Class = 4,
+  Method = 5,
+  Property = 6,
+  Field = 7,
+  Constructor = 8,
+  Enum = 9,
+  Interface = 10,
+  Function = 11,
+  Variable = 12,
+  Constant = 13,
+  String = 15,
+  Number = 16,
+  Boolean = 17,
+  Array = 18,
+  Object = 19,
+  Key = 20,
+  Null = 21,
+  EnumMember = 22,
+  Struct = 23,
+  Event = 24,
+  Operator = 25,
+  TypeParameter = 26,
+}
+
+export class TestMessage {
+  constructor(public message: string) {}
+}
+
+export class CancellationTokenSource {
+  token = { isCancellationRequested: false };
+  cancel(): void {
+    this.token.isCancellationRequested = true;
+  }
+  dispose(): void {}
+}
+
+export class ProcessExecution {
+  constructor(
+    public command: string,
+    public args: string[],
+    public options?: unknown,
+  ) {}
+}
+
+export class Task {
+  presentationOptions: unknown;
+
+  constructor(
+    public definition: unknown,
+    public scope: unknown,
+    public name: string,
+    public source: string,
+    public execution: ProcessExecution,
+  ) {}
+}
+
+type CommandCallback = (...args: unknown[]) => unknown | Promise<unknown>;
+type ProgressReporter = { report: jest.Mock };
+type CancellationToken = { isCancellationRequested: boolean };
+type ProgressTask = (
+  progress: ProgressReporter,
+  token: CancellationToken,
+) => unknown | Promise<unknown>;
+
+const _commands = new Map<string, CommandCallback>();
+
+export const commands = {
+  registerCommand: jest.fn((command: string, callback: CommandCallback) => {
+    _commands.set(command, callback);
+    return { dispose: jest.fn() };
+  }),
+  executeCommand: jest.fn(async (command: string, ...args: unknown[]) => {
+    const handler = _commands.get(command);
+    if (handler) return handler(...args);
+  }),
+};
+
+function createMockOutputChannel() {
+  const appendLine = jest.fn();
+  return {
+    clear: jest.fn(),
+    appendLine,
+    info: jest.fn((message: string) => appendLine(message)),
+    warn: jest.fn((message: string) => appendLine(message)),
+    error: jest.fn((message: string) => appendLine(message)),
+    debug: jest.fn((message: string) => appendLine(message)),
+    show: jest.fn(),
+    dispose: jest.fn(),
+  };
+}
+
+export const window = {
+  createOutputChannel: jest.fn(() => createMockOutputChannel()),
+  createStatusBarItem: jest.fn(() => ({
+    text: '',
+    tooltip: '',
+    command: '',
+    backgroundColor: undefined,
+    show: jest.fn(),
+    hide: jest.fn(),
+    dispose: jest.fn(),
+  })),
+  showErrorMessage: jest.fn(async () => undefined),
+  showWarningMessage: jest.fn(async () => undefined),
+  showInformationMessage: jest.fn(async () => undefined),
+  showQuickPick: jest.fn(async () => undefined),
+  showInputBox: jest.fn(async () => undefined),
+  showTextDocument: jest.fn(async () => undefined),
+  withProgress: jest.fn(async (_options: unknown, task: ProgressTask) => {
+    const progress = { report: jest.fn() };
+    const token = { isCancellationRequested: false };
+    return task(progress, token);
+  }),
+  activeTextEditor: undefined as { document: unknown } | undefined,
+};
+
+export const workspace = {
+  getConfiguration: jest.fn((_section?: string) => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    has: jest.fn(() => false),
+    inspect: jest.fn(),
+    update: jest.fn(),
+  })),
+  createFileSystemWatcher: jest.fn(() => ({
+    onDidCreate: jest.fn(),
+    onDidChange: jest.fn(),
+    onDidDelete: jest.fn(),
+    dispose: jest.fn(),
+  })),
+  onDidOpenTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidChangeTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidSaveTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidCreateFiles: jest.fn(() => ({ dispose: jest.fn() })),
+  onWillSaveTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidChangeConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
+  onDidChangeWorkspaceFolders: jest.fn(() => ({ dispose: jest.fn() })),
+  getWorkspaceFolder: jest.fn(
+    (_uri: unknown) => undefined as { uri: { fsPath: string } } | undefined,
+  ),
+  asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
+  textDocuments: [],
+  findFiles: jest.fn(async () => []),
+  openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
+    uri: typeof value === 'string' ? { fsPath: value } : value,
+    getText: jest.fn(() => ''),
+  })),
+  applyEdit: jest.fn(async () => true),
+  workspaceFolders: undefined as Array<{ uri: { fsPath: string } }> | undefined,
+  isTrusted: true,
+  onDidGrantWorkspaceTrust: jest.fn((callback: () => void) => {
+    // Store the callback so tests can simulate trust being granted.
+    (workspace as { _trustCallback?: () => void })._trustCallback = callback;
+    return { dispose: jest.fn() };
+  }),
+};
+
+export const tasks = {
+  executeTask: jest.fn(async (task: Task) => task),
+};
+
+export const tests = {
+  createTestController: jest.fn(() => ({
+    createRunProfile: jest.fn(),
+    createTestItem: jest.fn((id: string, label: string, uri?: unknown) => ({
+      id,
+      label,
+      uri,
+      range: undefined,
+      description: undefined,
+      children: {
+        add: jest.fn(),
+        delete: jest.fn(),
+        replace: jest.fn(),
+        forEach: jest.fn(),
+        get: jest.fn(),
+        size: 0,
+      },
+    })),
+    items: {
+      add: jest.fn(),
+      delete: jest.fn(),
+      replace: jest.fn(),
+      forEach: jest.fn(),
+      get: jest.fn(),
+      size: 0,
+    },
+    refreshHandler: null,
+    createTestRun: jest.fn(() => ({
+      started: jest.fn(),
+      passed: jest.fn(),
+      failed: jest.fn(),
+      skipped: jest.fn(),
+      errored: jest.fn(),
+      end: jest.fn(),
+    })),
+    dispose: jest.fn(),
+  })),
+};
+
+export const debug = {
+  registerDebugConfigurationProvider: jest.fn(() => ({ dispose: jest.fn() })),
+  registerDebugAdapterDescriptorFactory: jest.fn(() => ({ dispose: jest.fn() })),
+  startDebugging: jest.fn(async () => true),
+};
+
+export class DebugAdapterExecutable {
+  constructor(
+    public command: string,
+    public args: string[],
+    public options?: unknown,
+  ) {}
+}
+
+export const env = {
+  clipboard: { writeText: jest.fn() },
+  openExternal: jest.fn(),
+};
+
+export const extensions = {
+  all: [] as unknown[],
+  getExtension: jest.fn(() => undefined),
+};
+
+export class Disposable {
+  constructor(private callOnDispose: () => void) {}
+  dispose() {
+    this.callOnDispose();
+  }
+}
+
+export class EventEmitter {
+  event = jest.fn();
+  fire = jest.fn();
+  dispose = jest.fn();
+}
+
+export enum DiagnosticSeverity {
+  Error = 0,
+  Warning = 1,
+  Information = 2,
+  Hint = 3,
+}
+
+export enum ConfigurationTarget {
+  Global = 1,
+  Workspace = 2,
+  WorkspaceFolder = 3,
+}
+
+export const languages = {
+  onDidChangeDiagnostics: jest.fn(() => ({ dispose: jest.fn() })),
+  getDiagnostics: jest.fn(() => [] as Array<[unknown, unknown[]]>),
+  registerDocumentSymbolProvider: jest.fn(() => ({ dispose: jest.fn() })),
+  registerFoldingRangeProvider: jest.fn(() => ({ dispose: jest.fn() })),
+  registerCodeActionsProvider: jest.fn(() => ({ dispose: jest.fn() })),
+  registerDefinitionProvider: jest.fn(() => ({ dispose: jest.fn() })),
+};

@@ -1,0 +1,73 @@
+registry_version = "1"
+
+[[receipt]]
+check = "methodology-gate"
+schema = ".ci/receipts/schemas/methodology-gate.schema.json"
+description = "Records gate methodology interpretation and decisioning substrate."
+
+[[receipt]]
+check = "parser-ratchet"
+schema = ".ci/receipts/schemas/parser-ratchet.schema.json"
+description = "Captures parser ratchet result summaries and violation metadata."
+
+[[receipt]]
+check = "aggregator"
+schema = ".ci/receipts/schemas/aggregator-receipt.schema.json"
+description = "Aggregates multiple gate receipts into a control-plane summary."
+
+[[receipt]]
+check = "merge-readiness"
+schema = ".ci/receipts/schemas/merge-readiness.schema.json"
+description = "Represents merge readiness derivation from upstream receipts."
+producer = "cargo xtask merge-ready emit"
+required_fields = ["head_sha", "base_sha", "gate_graph_version", "verdict"]
+
+[[receipt]]
+check = "memory-plateau"
+schema = ".ci/receipts/schemas/memory-plateau.schema.json"
+description = "Captures LSP memory plateau workload summaries for trend comparison."
+producer = "cargo xtask metrics memory"
+required_fields = ["kind", "scenario", "files", "changes_per_file", "tail_growth_kb", "median_tail_slope_kb_per_file", "passed", "commit"]
+
+[[receipt]]
+check = "fmt"
+schema = ".ci/receipts/schemas/fmt.schema.json"
+description = "Rustfmt gate receipt for explicit formatting outcomes."
+
+[[receipt]]
+check = "failure-classifier"
+schema = ".ci/receipts/schemas/failure-classifier.schema.json"
+description = "Classifies failures into code/infra/staleness classes."
+
+[[receipt]]
+check = "review"
+schema = ".ci/receipts/schemas/review.schema.json"
+description = "Agent sign-off receipt with material observations and negative checks."
+required_fields = ["material_observations", "negative_checks", "verdict"]
+
+[[receipt]]
+check = "queue-health"
+schema = ".ci/receipts/schemas/queue-health.schema.json"
+description = "Classifies master queue health into GREEN/PENDING/RED modes for orchestrator merge safety."
+producer = "cargo xtask queue health"
+required_fields = ["master_sha", "mode", "allowed_lanes", "blocked_lanes", "reasons", "verdict"]
+
+[[receipt]]
+check = "queue-snapshot"
+schema = ".ci/receipts/schemas/queue-snapshot.schema.json"
+description = "Captures the open PR queue into a stable JSON snapshot document."
+producer = "cargo xtask queue snapshot"
+required_fields = ["snapshot_id", "captured_at", "repository", "default_branch", "master_sha", "prs", "buckets"]
+
+[[receipt]]
+check = "review-projection"
+schema = ".ci/receipts/schemas/review-projection.schema.json"
+description = "Reviewer-emitted current-SHA receipt used by reconciler to project review labels."
+required_fields = ["sha", "verdict", "review_depth", "fix_forward_applied", "blocking_findings", "labels_projected"]
+
+[[receipt]]
+check = "droid-live-run"
+schema = ".ci/receipts/schemas/droid-live-run.schema.json"
+description = "Records the Droid review lane runtime shape for live-run evidence."
+producer = "Droid PR Review"
+required_fields = ["check", "schema_version", "event", "verdict", "workflow", "model", "runner_labels", "action", "review_posted", "debug_artifacts_uploaded", "anthropic_env_cleared"]

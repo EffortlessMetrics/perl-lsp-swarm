@@ -1,0 +1,77 @@
+//! LSP diagnostics provider for Perl
+//!
+//! This crate provides diagnostic generation and linting functionality for Perl code.
+//!
+//! ## Features
+//!
+//! - Diagnostic generation from AST
+//! - Linting for common mistakes
+//! - Deprecated feature detection
+//! - Strict warnings
+//! - Security anti-pattern detection
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! use perl_lsp_rs_core::providers::diagnostics::PullDiagnosticsContext;
+//!
+//! // Diagnostics are computed via the pull-based provider, which takes an
+//! // AST, source text, and optional workspace context. See
+//! // `PullDiagnosticsContext` for the full API surface.
+//! let ctx = PullDiagnosticsContext { /* ... */ };
+//! ```
+
+/// Dead code detection
+#[cfg(not(target_arch = "wasm32"))]
+mod dead_code;
+/// Diagnostic deduplication utilities
+mod dedup;
+/// Core diagnostics provider
+#[allow(clippy::module_inception)]
+mod diagnostics;
+/// Diagnostics shadow compare and cutover paths for undefined-symbol diagnostics.
+pub mod diagnostics_shadow;
+/// Dynamic boundary acceptance test fixtures (Req 23.1–23.8).
+#[cfg(test)]
+mod dynamic_boundary_acceptance;
+/// ERROR node classification and reporting
+mod error_nodes;
+/// Heredoc anti-pattern detection
+mod heredoc_antipatterns;
+/// Internal diagnostic types (Diagnostic, RelatedInformation) for this crate's linting machinery.
+mod internal_types;
+/// Lint checks (common mistakes, deprecations, strict warnings, security)
+pub(crate) mod lints;
+/// Parse error to diagnostic conversion
+mod parse_errors;
+/// Scoped package-graph builder for cross-file PL303 role-conflict diagnostics.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod role_graph_scope;
+/// Scope analysis integration
+pub mod scope;
+/// AST walker utilities
+mod walker;
+
+pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
+pub use heredoc_antipatterns::detect_heredoc_antipatterns;
+pub use internal_types::{Diagnostic, DiagnosticTag, RelatedInformation};
+pub use parse_errors::{parse_error_code, parse_error_severity};
+pub use perl_diagnostics::codes::DiagnosticSeverity;
+
+// Re-export lint checks from the lints module
+pub use lints::common_mistakes;
+pub use lints::deprecated;
+pub use lints::missing_module;
+pub use lints::package_subroutine;
+pub(crate) use lints::printf_format::{count_format_specifiers, unquote_string};
+/// Same-file Moo/Moose role conflict detection.
+pub use lints::role_conflicts;
+pub use lints::security;
+pub use lints::strict_warnings;
+pub use lints::unreachable_code;
+pub use lints::unused_imports;
+pub use lints::version_compat;
+
+// Re-export dead code detection (when not targeting WASM)
+#[cfg(not(target_arch = "wasm32"))]
+pub use dead_code::detect_dead_code;

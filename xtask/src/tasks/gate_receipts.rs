@@ -1,0 +1,445 @@
+//! Gate receipt schema registry helpers.
+//!
+//! This task provides a lightweight control-plane registry for CI receipts.
+//! It validates registry membership and required/common fields, with optional
+//! JSON output for machine consumers.
+
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::Path;
+use walkdir::WalkDir;
+
+const REGISTRY_PATH: &str = ".ci/receipts/registry.toml";
+
+const REQUIRED_COMMON_FIELDS: &[&str] = &["check", "schema_version", "event", "verdict"];
+
+const SUPPORTED_VERDICTS: &[&str] = &["pass", "fail", "warn", "skipped"];
+const SUPPORTED_EVENTS: &[&str] = &["pull_request", "merge_group", "push", "local"];
+const SUPPORTED_CLASSIFICATIONS: &[&str] =
+    &["code_regression", "infra_failure", "stale_base", "master_red", "skipped", "unknown"];
+
+#[derive(Debug, Clone, Copy)]
+pub enum OutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Deserialize)]
+struct Registry {
+    registry_version: String,
+    #[serde(default)]
+    receipt: Vec<RegistryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RegistryEntry {
+    check: String,
+    schema: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    producer: Option<String>,
+    #[serde(default)]
+    required_fields: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListItem {
+    check: String,
+    schema: String,
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    producer: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    required_fields: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationResult {
+    path: String,
+    ok: bool,
+    check: Option<String>,
+    schema: Option<String>,
+    errors: Vec<String>,
+}
+
+pub fn list(format: OutputFormat) -> Result<()> {
+    let registry = load_registry()?;
+
+    let items = registry
+        .receipt
+        .iter()
+        .map(|entry| ListItem {
+            check: entry.check.clone(),
+            schema: entry.schema.clone(),
+            description: entry.description.clone(),
+            producer: entry.producer.clone(),
+            required_fields: entry.required_fields.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    match format {
+        OutputFormat::Human => {
+            println!("Gate receipt registry v{}", registry.registry_version);
+            for item in &items {
+                if let Some(description) = &item.description {
+                    println!("- {} => {} ({description})", item.check, item.schema);
+                } else {
+                    println!("- {} => {}", item.check, item.schema);
+                }
+                if let Some(producer) = &item.producer {
+                    println!("    producer: {producer}");
+                }
+                if !item.required_fields.is_empty() {
+                    println!("    required_fields: {}", item.required_fields.join(", "));
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let payload = json!({
+                "registry_version": registry.registry_version,
+                "receipts": items,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn validate(path: &Path, format: OutputFormat) -> Result<()> {
+    let registry = load_registry()?;
+    let result = validate_receipt(path, &registry)?;
+    emit_results(vec![result], format)
+}
+
+pub fn validate_all(dir: &Path, format: OutputFormat) -> Result<()> {
+    let registry = load_registry()?;
+
+    let mut results = Vec::new();
+    for entry in WalkDir::new(dir) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+
+        let result = validate_receipt(entry.path(), &registry)?;
+        results.push(result);
+    }
+
+    if results.is_empty() {
+        return Err(anyhow!("no .json files found in {}", dir.display()));
+    }
+
+    emit_results(results, format)
+}
+
+fn emit_results(results: Vec<ValidationResult>, format: OutputFormat) -> Result<()> {
+    let has_errors = results.iter().any(|result| !result.ok);
+
+    match format {
+        OutputFormat::Human => {
+            for result in &results {
+                if result.ok {
+                    println!("PASS {}", result.path);
+                } else {
+                    println!("FAIL {}", result.path);
+                    for error in &result.errors {
+                        println!("  - {error}");
+                    }
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let payload = json!({
+                "ok": !has_errors,
+                "results": results,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+    }
+
+    if has_errors { Err(anyhow!("gate receipt validation failed")) } else { Ok(()) }
+}
+
+fn validate_receipt(path: &Path, registry: &Registry) -> Result<ValidationResult> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read receipt {}", path.display()))?;
+    let receipt: Value = serde_json::from_str(&content)
+        .with_context(|| format!("invalid JSON in {}", path.display()))?;
+
+    let mut errors = Vec::new();
+
+    // Review receipts use a different schema (kind/producer/pr/head_sha)
+    // than gate receipts (check/schema_version/event/verdict). Skip the
+    // gate-specific common-field validation for them (#2093).
+    let is_review_receipt = receipt.get("kind").and_then(Value::as_str) == Some("review");
+    if !is_review_receipt {
+        validate_common_fields(&receipt, &mut errors);
+    }
+
+    let check = receipt.get("check").and_then(Value::as_str).map(ToOwned::to_owned);
+
+    let registry_map = registry_map(registry)?;
+    let schema = check.as_ref().and_then(|check_name| registry_map.get(check_name)).cloned();
+
+    match &check {
+        Some(check_name) => {
+            if !registry_map.contains_key(check_name) {
+                errors.push(format!("unknown check '{check_name}' (not in registry)"));
+            }
+        }
+        None => {
+            errors.push("missing or non-string field: check".to_string());
+        }
+    }
+
+    if let Some(schema_path) = &schema {
+        validate_schema_required_fields(&receipt, schema_path, &mut errors)?;
+    }
+    if check.as_deref() == Some("memory-plateau") {
+        validate_memory_plateau_semantics(&receipt, &mut errors);
+    }
+
+    Ok(ValidationResult {
+        path: path.display().to_string(),
+        ok: errors.is_empty(),
+        check,
+        schema,
+        errors,
+    })
+}
+
+fn validate_common_fields(receipt: &Value, errors: &mut Vec<String>) {
+    for field in REQUIRED_COMMON_FIELDS {
+        let value = receipt.get(field);
+        if value.is_none() {
+            errors.push(format!("missing required field: {field}"));
+            continue;
+        }
+        if value.and_then(Value::as_str).is_none() {
+            errors.push(format!("field '{field}' must be a string"));
+        }
+    }
+
+    if let Some(event) = receipt.get("event").and_then(Value::as_str)
+        && !SUPPORTED_EVENTS.contains(&event)
+    {
+        errors.push(format!(
+            "unsupported event '{event}', expected one of {}",
+            SUPPORTED_EVENTS.join(", ")
+        ));
+    }
+
+    if let Some(verdict) = receipt.get("verdict").and_then(Value::as_str)
+        && !SUPPORTED_VERDICTS.contains(&verdict)
+    {
+        errors.push(format!(
+            "unsupported verdict '{verdict}', expected one of {}",
+            SUPPORTED_VERDICTS.join(", ")
+        ));
+    }
+
+    if let Some(classification) = receipt.get("classification").and_then(Value::as_str)
+        && !SUPPORTED_CLASSIFICATIONS.contains(&classification)
+    {
+        errors.push(format!(
+            "unsupported classification '{classification}', expected one of {}",
+            SUPPORTED_CLASSIFICATIONS.join(", ")
+        ));
+    }
+}
+
+fn validate_schema_required_fields(
+    receipt: &Value,
+    schema_path: &str,
+    errors: &mut Vec<String>,
+) -> Result<()> {
+    let schema_content = fs::read_to_string(schema_path)
+        .with_context(|| format!("failed to read schema {schema_path}"))?;
+    let schema_value: Value = serde_json::from_str(&schema_content)
+        .with_context(|| format!("invalid schema JSON in {schema_path}"))?;
+
+    let mut required = HashSet::new();
+    collect_required_fields(&schema_value, &mut required);
+
+    for field in required {
+        if receipt.get(&field).is_none() {
+            errors.push(format!("missing schema-required field: {field}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_required_fields(schema_value: &Value, required: &mut HashSet<String>) {
+    if let Some(required_fields) = schema_value.get("required").and_then(Value::as_array) {
+        for field in required_fields.iter().filter_map(Value::as_str) {
+            required.insert(field.to_string());
+        }
+    }
+
+    if let Some(all_of) = schema_value.get("allOf").and_then(Value::as_array) {
+        for sub_schema in all_of {
+            collect_required_fields(sub_schema, required);
+        }
+    }
+}
+
+fn validate_memory_plateau_semantics(receipt: &Value, errors: &mut Vec<String>) {
+    require_string_eq(receipt, "kind", "memory_plateau", errors);
+    require_nonempty_string(receipt, "scenario", errors);
+    require_integer_min(receipt, "files", 1, errors);
+    require_integer_min(receipt, "changes_per_file", 0, errors);
+    require_integer(receipt, "tail_growth_kb", errors);
+    require_number(receipt, "median_tail_slope_kb_per_file", errors);
+    require_bool(receipt, "passed", errors);
+
+    if let Some(commit) = receipt.get("commit")
+        && !commit.is_string()
+        && !commit.is_null()
+    {
+        errors.push("field 'commit' must be a string or null".to_string());
+    }
+
+    if let Some(passed) = receipt.get("passed").and_then(Value::as_bool)
+        && let Some(verdict) = receipt.get("verdict").and_then(Value::as_str)
+    {
+        let expected = if passed { "pass" } else { "fail" };
+        if verdict != expected {
+            errors.push(format!("field 'verdict' must be '{expected}' when passed is {passed}"));
+        }
+    }
+}
+
+fn require_string_eq(receipt: &Value, field: &str, expected: &str, errors: &mut Vec<String>) {
+    match receipt.get(field).and_then(Value::as_str) {
+        Some(actual) if actual == expected => {}
+        Some(actual) => {
+            errors.push(format!("field '{field}' must be '{expected}', got '{actual}'"))
+        }
+        None => errors.push(format!("field '{field}' must be a string")),
+    }
+}
+
+fn require_nonempty_string(receipt: &Value, field: &str, errors: &mut Vec<String>) {
+    match receipt.get(field).and_then(Value::as_str) {
+        Some(value) if !value.is_empty() => {}
+        Some(_) => errors.push(format!("field '{field}' must not be empty")),
+        None => errors.push(format!("field '{field}' must be a string")),
+    }
+}
+
+fn require_integer(receipt: &Value, field: &str, errors: &mut Vec<String>) {
+    if receipt.get(field).and_then(Value::as_i64).is_none() {
+        errors.push(format!("field '{field}' must be an integer"));
+    }
+}
+
+fn require_integer_min(receipt: &Value, field: &str, min: i64, errors: &mut Vec<String>) {
+    match receipt.get(field).and_then(Value::as_i64) {
+        Some(value) if value >= min => {}
+        Some(value) => errors.push(format!("field '{field}' must be >= {min}, got {value}")),
+        None => errors.push(format!("field '{field}' must be an integer")),
+    }
+}
+
+fn require_number(receipt: &Value, field: &str, errors: &mut Vec<String>) {
+    if receipt.get(field).and_then(Value::as_f64).is_none() {
+        errors.push(format!("field '{field}' must be a number"));
+    }
+}
+
+fn require_bool(receipt: &Value, field: &str, errors: &mut Vec<String>) {
+    if receipt.get(field).and_then(Value::as_bool).is_none() {
+        errors.push(format!("field '{field}' must be a boolean"));
+    }
+}
+
+fn load_registry() -> Result<Registry> {
+    let content = fs::read_to_string(REGISTRY_PATH)
+        .with_context(|| format!("failed to read registry at {REGISTRY_PATH}"))?;
+    let registry: Registry = toml::from_str(&content).context("invalid registry TOML")?;
+
+    if registry.receipt.is_empty() {
+        return Err(anyhow!("registry has no receipt entries"));
+    }
+
+    Ok(registry)
+}
+
+fn registry_map(registry: &Registry) -> Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    for entry in &registry.receipt {
+        if map.insert(entry.check.clone(), entry.schema.clone()).is_some() {
+            return Err(anyhow!("duplicate registry check '{}'", entry.check));
+        }
+    }
+    Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_memory_receipt() -> Value {
+        json!({
+            "check": "memory-plateau",
+            "kind": "memory_plateau",
+            "schema_version": "1",
+            "event": "local",
+            "verdict": "pass",
+            "scenario": "lsp_doc_churn_delete",
+            "files": 500,
+            "changes_per_file": 10,
+            "tail_growth_kb": 152,
+            "median_tail_slope_kb_per_file": 0.69,
+            "passed": true,
+            "commit": "abc123"
+        })
+    }
+
+    #[test]
+    fn memory_plateau_semantics_accept_valid_receipt() {
+        let receipt = valid_memory_receipt();
+        let mut errors = Vec::new();
+
+        validate_memory_plateau_semantics(&receipt, &mut errors);
+
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn memory_plateau_semantics_reject_malformed_receipt() {
+        let mut receipt = valid_memory_receipt();
+        receipt["kind"] = json!("wrong");
+        receipt["files"] = json!("500");
+        receipt["passed"] = json!("yes");
+        receipt["verdict"] = json!("pass");
+
+        let mut errors = Vec::new();
+        validate_memory_plateau_semantics(&receipt, &mut errors);
+
+        assert!(errors.iter().any(|error| error.contains("field 'kind'")));
+        assert!(errors.iter().any(|error| error.contains("field 'files'")));
+        assert!(errors.iter().any(|error| error.contains("field 'passed'")));
+    }
+
+    #[test]
+    fn memory_plateau_semantics_reject_verdict_mismatch() {
+        let mut receipt = valid_memory_receipt();
+        receipt["passed"] = json!(false);
+        receipt["verdict"] = json!("pass");
+
+        let mut errors = Vec::new();
+        validate_memory_plateau_semantics(&receipt, &mut errors);
+
+        assert!(errors.iter().any(|error| error.contains("verdict")));
+    }
+}

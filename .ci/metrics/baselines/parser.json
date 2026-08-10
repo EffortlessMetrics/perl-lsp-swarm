@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-04-24T00:00:00Z",
+  "subsystem": "parser",
+  "commit": "522c47f",
+  "floor_metrics": {
+    "system_clean_rate": 0.944816,
+    "cpan_clean_rate": 0.952945,
+    "system_crash_count": 0,
+    "system_files_unreadable": 42,
+    "system_total_error_nodes": 490,
+    "cpan_total_error_nodes": 3015,
+    "strict_clean_subset_pass_rate": 1.0,
+    "valid_parser_gap_count": 0,
+    "node_kind_coverage": 0.942029
+  },
+  "improvement_metrics": {
+    "node_kind_coverage": 0.942029,
+    "error_density_per_1k_loc": 1.95,
+    "recovery_salvage_rate": 0.204545
+  },
+  "tolerance_pct": 0.005
+}

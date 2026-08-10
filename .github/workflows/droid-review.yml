@@ -1,0 +1,27 @@
+name: Droid PR Review
+
+# PAUSED — the Factory/Droid review lane has repeatedly failed or produced
+# incomplete review state. It is not part of the repository's merge argument.
+#
+# The normal Claude/Codex delivery flow still performs serious multi-round
+# issue, proof, candidate, and PR review. Preserve Droid history for reference,
+# but do not spend runner/model capacity or add PR noise until a future bounded
+# experiment proves that the service is stable and adds material review value.
+#
+# Keep the historical job ID while paused so policy and old receipts remain
+# readable. The job is statically skipped and does not access review secrets.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  droid-review:
+    name: Droid review (paused)
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Droid review is paused pending a future evidence-backed re-evaluation."

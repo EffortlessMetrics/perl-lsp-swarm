@@ -1,0 +1,30 @@
+[workspace]
+members = ["cargo:."]
+
+# Shadow-only config for dist 0.29.0.
+#
+# `.github/workflows/release.yml` remains the artifact-building authority. This
+# file may generate and compare a release plan, but it must not publish, create a
+# GitHub Release, or silently diverge from the live binary/target matrix.
+[dist]
+include = ["perllsp", "perl-dap"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+ci = "github"
+installers = []
+cargo-dist-version = "0.29.0"
+install-path = "CARGO_HOME"
+pr-run-mode = "skip"
+checksum = "sha256"
+allow-dirty = ["ci"]
+
+[dist.github-releases]
+create = false

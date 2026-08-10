@@ -1,0 +1,24 @@
+# CODEOWNERS — review gate for sensitive paths
+#
+# These patterns require a designated reviewer before merging.
+# This is a coordination gate, not an enforcement mechanism.
+# See: scripts/control-plane-lock.sh for the advisory write lock.
+
+# Control-plane files — any change here needs orchestrator review
+CLAUDE.md                    @EffortlessMetrics
+.claude/agents/**            @EffortlessMetrics
+.claude/commands/**          @EffortlessMetrics
+
+# Lock and ops infrastructure
+scripts/control-plane-lock.sh   @EffortlessMetrics
+.ops-perl-lsp/                   @EffortlessMetrics
+
+# CI workflows and reusable actions
+.github/workflows/**         @EffortlessMetrics
+.github/actions/**           @EffortlessMetrics
+.github/CODEOWNERS           @EffortlessMetrics
+
+# Trusted-base workflow-security controls
+.ci/workflow-security-baseline.json             @EffortlessMetrics
+scripts/ci/workflow_security_ratchet.py          @EffortlessMetrics
+scripts/ci/test_workflow_security_ratchet.py     @EffortlessMetrics

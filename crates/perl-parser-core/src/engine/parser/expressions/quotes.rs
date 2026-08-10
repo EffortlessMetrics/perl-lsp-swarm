@@ -1,0 +1,602 @@
+impl<'a> Parser<'a> {
+    /// Parse quote operator (q, qq, qw, qr, qx)
+    fn parse_quote_operator(&mut self) -> ParseResult<Node> {
+        let op_token = self.consume_token()?; // consume q/qq/qw/qr/qx
+        let start = op_token.start;
+        let op = op_token.text.as_ref();
+
+        // Get the delimiter - it might be a bracket token or other punctuation
+        let delim_token = self.consume_token()?;
+        let delim_char = match delim_token.kind {
+            TokenKind::LeftBrace => '{',
+            TokenKind::LeftBracket => '[',
+            TokenKind::LeftParen => '(',
+            TokenKind::Less => '<',
+            _ => delim_token.text.chars().next().ok_or_else(|| {
+                ParseError::syntax("Expected delimiter after quote operator", delim_token.start)
+            })?,
+        };
+
+        // Determine closing delimiter
+        let close_delim = match delim_char {
+            '{' => '}',
+            '[' => ']',
+            '(' => ')',
+            '<' => '>',
+            _ => delim_char, // For other delimiters like / or |, use the same char
+        };
+
+        // Store delimiters for later use
+        let opening_delim = delim_char;
+        let closing_delim = close_delim;
+
+        // Collect content until closing delimiter
+        let mut content = String::new();
+        
+        // For regex operators (m, s), we need to preserve the exact pattern
+        let preserve_exact_content = matches!(op, "m" | "s" | "qr");
+
+        // Stack-based matching for balanced delimiters
+        // For non-balanced, we just look for the closing delimiter
+        if matches!(delim_char, '{' | '[' | '(' | '<') {
+            let mut depth = 1;
+            let max_depth = 50; // Limit nesting depth to prevent timeouts
+            
+            while depth > 0 && !self.tokens.is_eof() {
+                let token_kind = self.peek_kind();
+                
+                // Check if we hit recursion limit
+                if depth > max_depth {
+                    return Err(ParseError::syntax(
+                        format!("Quote delimiter nesting too deep (exceeded {})", max_depth), 
+                        self.current_position()
+                    ));
+                }
+
+                match (delim_char, token_kind) {
+                    ('{', Some(TokenKind::LeftBrace)) => {
+                        self.consume_token()?;
+                        content.push('{');
+                        depth += 1;
+                    }
+                    ('{', Some(TokenKind::RightBrace)) => {
+                        self.consume_token()?;
+                        depth -= 1;
+                        if depth > 0 {
+                            content.push('}');
+                        }
+                    }
+                    ('[', Some(TokenKind::LeftBracket)) => {
+                        self.consume_token()?;
+                        content.push('[');
+                        depth += 1;
+                    }
+                    ('[', Some(TokenKind::RightBracket)) => {
+                        self.consume_token()?;
+                        depth -= 1;
+                        if depth > 0 {
+                            content.push(']');
+                        }
+                    }
+                    ('(', Some(TokenKind::LeftParen)) => {
+                        self.consume_token()?;
+                        content.push('(');
+                        depth += 1;
+                    }
+                    ('(', Some(TokenKind::RightParen)) => {
+                        self.consume_token()?;
+                        depth -= 1;
+                        if depth > 0 {
+                            content.push(')');
+                        }
+                    }
+                    ('<', Some(TokenKind::Less)) => {
+                        self.consume_token()?;
+                        content.push('<');
+                        depth += 1;
+                    }
+                    ('<', Some(TokenKind::Greater)) => {
+                        self.consume_token()?;
+                        depth -= 1;
+                        if depth > 0 {
+                            content.push('>');
+                        }
+                    }
+                    _ => {
+                        // Regular token, add to content
+                        let token = self.consume_token()?;
+                        content.push_str(&token.text);
+                        if !preserve_exact_content && !self.tokens.is_eof() && !content.is_empty() {
+                            content.push(' ');
+                        }
+                    }
+                }
+            }
+        } else {
+            // For non-balanced delimiters, just scan for the closing char.
+            //
+            // Special case: when `hash_brace_depth > 0`, the lexer suppresses
+            // quote-operator recognition and emits e.g. `qw/a b c/` as
+            // Identifier("qw") + Regex("/a b c/").  In that situation
+            // `delim_token` already holds the complete content including both
+            // delimiters, so extract it directly rather than scanning forward
+            // tokens (which would incorrectly consume the `}` that closes the
+            // enclosing hash subscript).
+            let delim_text = delim_token.text.as_ref();
+            if delim_text.len() >= delim_char.len_utf8() + close_delim.len_utf8()
+                && delim_text.starts_with(delim_char)
+                && delim_text.ends_with(close_delim)
+            {
+                content = delim_text
+                    [delim_char.len_utf8()..delim_text.len() - close_delim.len_utf8()]
+                    .to_string();
+            } else {
+                while !self.tokens.is_eof() {
+                    let token = self.consume_token()?;
+                    if token.text.contains(close_delim) {
+                        let pos = token.text.find(close_delim).ok_or_else(|| {
+                            ParseError::syntax("Closing delimiter not found in token", token.start)
+                        })?;
+                        content.push_str(&token.text[..pos]);
+                        break;
+                    } else {
+                        content.push_str(&token.text);
+                        if !preserve_exact_content && !self.tokens.is_eof() {
+                            content.push(' ');
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse modifiers for qr// only. The m// arm below does its own scan
+        // because m// accepts g and c which qr// does not (#1727).
+        let mut modifiers = String::new();
+        if op == "qr" {
+            while let Ok(token) = self.tokens.peek() {
+                if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                    let ch = token.text.chars().next().ok_or_else(|| {
+                        ParseError::syntax("Empty identifier token", token.start)
+                    })?;
+                    if ch.is_ascii_alphabetic()
+                        && matches!(ch, 'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'o' | 'a' | 'd' | 'l' | 'u')
+                    {
+                        modifiers.push(ch);
+                        self.tokens.next()?;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let mut end = self.previous_position();
+
+        // Create appropriate node based on operator
+        match op {
+            "qq" => {
+                // Double-quoted string with interpolation
+                Ok(Node::new(
+                    NodeKind::String { value: format!("\"{}\"", content), interpolated: true },
+                    SourceLocation { start, end },
+                ))
+            }
+            "q" => {
+                // Single-quoted string without interpolation
+                Ok(Node::new(
+                    NodeKind::String { value: format!("'{}'", content), interpolated: false },
+                    SourceLocation { start, end },
+                ))
+            }
+            "qw" => {
+                // Word list - split on whitespace
+                let words: Vec<Node> = content
+                    .split_whitespace()
+                    .map(|word| {
+                        Node::new(
+                            NodeKind::String { value: format!("'{}'", word), interpolated: false },
+                            SourceLocation { start, end },
+                        )
+                    })
+                    .collect();
+
+                Ok(Node::new(
+                    NodeKind::ArrayLiteral { elements: words },
+                    SourceLocation { start, end },
+                ))
+            }
+            "qr" => {
+                // Regular expression
+                let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?;
+
+                Ok(Node::new(
+                    NodeKind::Regex {
+                        pattern: format!("{}{}{}", opening_delim, content, closing_delim),
+                        replacement: None,
+                        modifiers,
+                        has_embedded_code,
+                    },
+                    SourceLocation { start, end },
+                ))
+            }
+            "qx" => {
+                // Backticks/command execution
+                Ok(Node::new(
+                    NodeKind::String { value: format!("`{}`", content), interpolated: true },
+                    SourceLocation { start, end },
+                ))
+            }
+            "m" => {
+                // Match operator with pattern
+                let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?;
+
+                let mut modifiers = String::new();
+                while let Ok(token) = self.tokens.peek() {
+                    if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                        let ch = token.text.chars().next().ok_or_else(|| {
+                            ParseError::syntax("Empty identifier token", token.start)
+                        })?;
+                        if ch.is_ascii_alphabetic()
+                            && matches!(
+                                ch,
+                                'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'c' | 'g' | 'o' | 'a' | 'd'
+                                    | 'l' | 'u'
+                            )
+                        {
+                            modifiers.push(ch);
+                            self.tokens.next()?;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                end = self.previous_position();
+                Ok(Node::new(
+                    NodeKind::Regex {
+                        pattern: format!("{}{}{}", opening_delim, content, closing_delim),
+                        replacement: None,
+                        modifiers,
+                        has_embedded_code,
+                    },
+                    SourceLocation { start, end },
+                ))
+            }
+            "s" => {
+                let replacement = self.parse_quote_operator_substitution_replacement(
+                    opening_delim,
+                    closing_delim,
+                )?;
+                let modifiers = self.parse_quote_operator_substitution_modifiers()?;
+                // The `e`/`ee` modifier evaluates the replacement as Perl code — equivalent to
+                // eval — so it counts as embedded code regardless of the pattern body (#975).
+                let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?
+                    || modifiers.contains('e');
+                end = self.previous_position();
+
+                Ok(Node::new(
+                    NodeKind::Substitution {
+                        expr: Box::new(Node::new(
+                            NodeKind::Identifier { name: String::from("$_") },
+                            SourceLocation { start, end: start },
+                        )),
+                        pattern: content,
+                        replacement,
+                        modifiers,
+                        has_embedded_code,
+                        negated: false,
+                    },
+                    SourceLocation { start, end },
+                ))
+            }
+            _ => Err(ParseError::syntax(format!("Unknown quote operator: {}", op), start)),
+        }
+    }
+
+    fn parse_quote_operator_substitution_replacement(
+        &mut self,
+        pattern_open_delim: char,
+        pattern_close_delim: char,
+    ) -> ParseResult<String> {
+        if pattern_open_delim != pattern_close_delim {
+            return Err(ParseError::syntax(
+                "Paired-delimiter substitution should be handled by TokenKind::Substitution",
+                self.current_position(),
+            ));
+        }
+
+        self.collect_quote_operator_unpaired_body(pattern_close_delim)
+    }
+
+    fn collect_quote_operator_unpaired_body(&mut self, close_delim: char) -> ParseResult<String> {
+        let mut content = String::new();
+
+        while !self.tokens.is_eof() {
+            let token = self.consume_token()?;
+            if token.kind != TokenKind::String && token.text.contains(close_delim) {
+                let pos = token.text.find(close_delim).ok_or_else(|| {
+                    ParseError::syntax("Closing delimiter not found in token", token.start)
+                })?;
+                content.push_str(&token.text[..pos]);
+                break;
+            }
+            content.push_str(&token.text);
+        }
+
+        Ok(content)
+    }
+
+    fn parse_quote_operator_substitution_modifiers(&mut self) -> ParseResult<String> {
+        let mut modifiers = String::new();
+
+        while let Ok(token) = self.tokens.peek() {
+            if token.kind != TokenKind::Identifier || token.text.len() != 1 {
+                break;
+            }
+
+            let ch = token.text.chars().next().ok_or_else(|| {
+                ParseError::syntax("Empty identifier token", token.start)
+            })?;
+            if !ch.is_ascii_alphabetic() {
+                break;
+            }
+            if !matches!(ch, 'g' | 'i' | 'm' | 's' | 'x' | 'o' | 'e' | 'r' | 'p' | 'n' | 'a' | 'd' | 'l' | 'u' | 'c') {
+                return Err(ParseError::syntax(
+                    format!(
+                        "Invalid substitution modifier '{}'. Valid modifiers are: \
+                         g, i, m, s, x, o, e, r, p, n, a, d, l, u, c",
+                        ch
+                    ),
+                    token.start,
+                ));
+            }
+
+            modifiers.push(ch);
+            self.tokens.next()?;
+        }
+
+        Ok(modifiers)
+    }
+
+    /// After having consumed the `qw` identifier, parse `qw<delim>...<close>`
+    fn parse_qw_words(&mut self) -> ParseResult<Vec<String>> {
+        // Grab the opening delimiter as a single *token* (whatever it is).
+        // This could be (, [, {, <, or any single character like |, !, #, etc.
+        let open = self.tokens.next()?; // e.g., '(', '{', '|', '#', '!'
+        let open_txt = &open.text;
+
+        // Special case for # - it causes lexer issues as it starts comments
+        // When we see qw#, we need to consume carefully
+        if open_txt.as_ref() == "#" {
+            let mut words = Vec::<String>::new();
+
+            // The lexer will treat the closing # as starting a comment,
+            // so we won't see it as a token. We need to consume words
+            // until we hit something that indicates the qw list is done.
+            // We'll stop when we see a keyword that starts a new statement.
+            while !self.tokens.is_eof() {
+                let peek = self.tokens.peek()?;
+
+                // Stop if we see a keyword that starts a new statement
+                if matches!(
+                    peek.kind,
+                    TokenKind::Use
+                        | TokenKind::My
+                        | TokenKind::Our
+                        | TokenKind::Sub
+                        | TokenKind::Package
+                        | TokenKind::If
+                        | TokenKind::While
+                        | TokenKind::For
+                        | TokenKind::Return
+                ) {
+                    break;
+                }
+
+                // Also stop on semicolon (though we likely won't see it after #)
+                if matches!(peek.kind, TokenKind::Semicolon) {
+                    break;
+                }
+
+                match peek.kind {
+                    TokenKind::Identifier | TokenKind::Number => {
+                        // Check if this is a keyword that likely isn't part of the qw list
+                        if matches!(peek.text.as_ref(), "use" | "constant" | "my" | "our" | "sub") {
+                            // Don't consume it, just stop here
+                            break;
+                        }
+                        let t = self.tokens.next()?;
+                        words.push(t.text.to_string());
+                    }
+                    _ => {
+                        // Skip other tokens
+                        self.tokens.next()?;
+                    }
+                }
+            }
+            return Ok(words);
+        }
+
+        let close_txt = if let Some(ct) = Self::closing_delim_for(open_txt) {
+            ct
+        } else {
+            // If we can't determine closing delimiter, use the same as opening for symmetric
+            open_txt.to_string()
+        };
+
+        let mut words = Vec::<String>::new();
+
+        // naive word split: treat IDENT/STRING/NUMBER as word atoms; anything else
+        // (including newlines and whitespace that your lexer doesn't surface) just
+        // acts as a separator or gets skipped.
+        while !self.tokens.is_eof() {
+            let peek = self.tokens.peek()?;
+            if &*peek.text == close_txt.as_str() {
+                self.tokens.next()?; // consume closer
+                break;
+            }
+
+            match self.peek_kind() {
+                Some(TokenKind::Identifier) | Some(TokenKind::Number) => {
+                    let t = self.tokens.next()?;
+                    words.push(t.text.to_string());
+                }
+                Some(TokenKind::String) => {
+                    let t = self.tokens.next()?;
+                    // normalize quotes → word (qw() is non-interpolating as list of words)
+                    let w = t.text.trim_matches(|c| c == '"' || c == '\'').to_string();
+                    if !w.is_empty() {
+                        words.push(w);
+                    }
+                }
+                // Skip whitespace, newlines, and any other tokens
+                _ => {
+                    self.tokens.next()?;
+                }
+            }
+        }
+        Ok(words)
+    }
+
+    /// Parse qw() word list
+    fn parse_qw_list(&mut self) -> ParseResult<Vec<Node>> {
+        // Handle different delimiters for qw
+        let delimiter_token = self.tokens.peek()?.clone();
+        let close_delim = match delimiter_token.kind {
+            TokenKind::LeftParen => {
+                self.consume_token()?;
+                TokenKind::RightParen
+            }
+            TokenKind::LeftBracket => {
+                self.consume_token()?;
+                TokenKind::RightBracket
+            }
+            TokenKind::LeftBrace => {
+                self.consume_token()?;
+                TokenKind::RightBrace
+            }
+            TokenKind::Less => {
+                self.consume_token()?;
+                TokenKind::Greater
+            }
+            // For other delimiters like |, !, #, ~, etc.
+            _ => {
+                // Try to consume whatever delimiter is there
+                // For now, default to parentheses if we don't recognize it
+                self.expect(TokenKind::LeftParen)?;
+                TokenKind::RightParen
+            }
+        };
+
+        let mut words = Vec::new();
+
+        // Parse space-separated words until closing delimiter
+        while self.peek_kind() != Some(close_delim) && !self.tokens.is_eof() {
+            if let Some(TokenKind::Identifier) = self.peek_kind() {
+                let token = self.tokens.next()?;
+                words.push(Node::new(
+                    NodeKind::String {
+                        value: format!("'{}'", token.text), // qw produces single-quoted strings
+                        interpolated: false,
+                    },
+                    SourceLocation { start: token.start, end: token.end },
+                ));
+            } else if self.peek_kind() == Some(TokenKind::String) {
+                // Also allow string tokens in qw lists
+                let token = self.tokens.next()?;
+                words.push(Node::new(
+                    NodeKind::String {
+                        value: format!("'{}'", token.text.trim_matches(|c| c == '"' || c == '\'')),
+                        interpolated: false,
+                    },
+                    SourceLocation { start: token.start, end: token.end },
+                ));
+            } else {
+                // Skip other tokens (might be separators or special chars)
+                self.tokens.next()?;
+            }
+        }
+
+        self.expect(close_delim)?;
+        Ok(words)
+    }
+
+}
+
+#[cfg(test)]
+mod modifier_tests {
+    use crate::Parser;
+
+    /// Parse a Perl expression and return the parse output (#1727).
+    fn parse(source: &str) -> crate::error::ParseOutput {
+        let mut parser = Parser::new(source);
+        parser.parse_with_recovery()
+    }
+
+    #[test]
+    fn m_with_valid_modifier_i() {
+        // /i is a standard modifier — should parse cleanly.
+        let result = parse("m/pattern/i");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_with_charset_modifier_u() {
+        // /u is a valid charset modifier (5.14+).
+        let result = parse("m/pattern/u");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_with_preserve_modifier_p() {
+        // /p is a valid modifier (5.10+).
+        let result = parse("m/pattern/p");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn qr_with_global_modifier_g() {
+        // /g should be accepted for qr// (and m//).
+        let result = parse("qr/pattern/g");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_preserve_and_global() {
+        // /gp is valid for s///.
+        let result = parse("s/pattern/replacement/gp");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_charset_modifier_a() {
+        // /a is a valid charset modifier for s///.
+        let result = parse("s/pattern/replacement/a");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_continue_modifier_c() {
+        // /c is valid for s/// (was previously rejected).
+        let result = parse("s/pattern/replacement/c");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_does_not_crash_on_unknown_modifier_z() {
+        // /z is NOT a valid regex modifier. The parser should handle it
+        // gracefully without crashing — either by consuming it as a modifier
+        // (the lexer pre-tokenizes m//z as a single token) or by breaking
+        // out of the modifier scan. Either way, no panic.
+        let result = parse("m/pattern/z");
+        // The regex was parsed into some node.
+        assert!(
+            result.ast.to_sexp().contains("/pattern/"),
+            "expected pattern in AST, got: {}",
+            result.ast.to_sexp()
+        );
+    }
+}

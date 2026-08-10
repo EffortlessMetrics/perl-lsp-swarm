@@ -1,0 +1,409 @@
+{
+  "schema_version": 2,
+  "measured_at": "deterministic-fixture-baseline",
+  "subsystem": "semantic",
+  "fixture_family_version": 1,
+  "fixture_count": 16,
+  "fixture_ids": [
+    "autoload_dynamic_boundary",
+    "dynamic_import_via_variable",
+    "dynamic_require_boundary",
+    "empty_import_suppression",
+    "eval_string_dynamic_boundary",
+    "export_tag_expansion",
+    "generated_accessor",
+    "imported_function_visibility",
+    "inherited_method",
+    "normal_static_missing_symbol",
+    "qualified_vs_bare_references",
+    "role_method",
+    "same_bare_sub_two_packages",
+    "static_class_dynamic_import",
+    "symbolic_deref_assign",
+    "typeglob_alias"
+  ],
+  "fixture_families": [
+    "AUTOLOAD dynamic boundary",
+    "dynamic import via variable",
+    "dynamic require boundary",
+    "empty import suppression",
+    "eval STRING dynamic boundary",
+    "export tag expansion",
+    "generated accessor",
+    "imported function visibility",
+    "inherited method",
+    "normal static missing symbol",
+    "qualified vs bare references",
+    "role method",
+    "same bare sub in two packages",
+    "static class dynamic import",
+    "symbolic dereference assign",
+    "typeglob alias"
+  ],
+  "fact_rows": {
+    "declaration_facts": {
+      "status": "available",
+      "total_facts": 42,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "definition_candidates": {
+      "status": "available",
+      "total_facts": 42,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "export_facts": {
+      "status": "available",
+      "total_facts": 3,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "import_specs": {
+      "status": "available",
+      "total_facts": 11,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "inheritance_edges": {
+      "status": "available",
+      "total_facts": 1,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "occurrence_facts": {
+      "status": "available",
+      "total_facts": 26,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "package_graph_edges": {
+      "status": "available",
+      "total_facts": 2,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "reference_edges": {
+      "status": "available",
+      "total_facts": 1,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    },
+    "role_composition_edges": {
+      "status": "available",
+      "total_facts": 1,
+      "fixture_coverage": {
+        "covered_fixture_count": 16,
+        "total_fixture_count": 16,
+        "covered_fixture_families": [
+          "AUTOLOAD dynamic boundary",
+          "dynamic import via variable",
+          "dynamic require boundary",
+          "empty import suppression",
+          "eval STRING dynamic boundary",
+          "export tag expansion",
+          "generated accessor",
+          "imported function visibility",
+          "inherited method",
+          "normal static missing symbol",
+          "qualified vs bare references",
+          "role method",
+          "same bare sub in two packages",
+          "static class dynamic import",
+          "symbolic dereference assign",
+          "typeglob alias"
+        ]
+      },
+      "confidence_breakdown": {
+        "exact_facts": 154,
+        "high_confidence_facts": 152,
+        "heuristic_facts": 1,
+        "dynamic_boundary_facts": 5
+      }
+    }
+  },
+  "readiness_rows": {
+    "completion_import_fixture_pass_rate": {
+      "status": "pass",
+      "value": "100%",
+      "threshold": "100%",
+      "evidence": "import/export visibility fixtures"
+    },
+    "definition_shadow_regressions": {
+      "status": "pass",
+      "value": "0",
+      "threshold": "0",
+      "evidence": "semantic shadow compare release-readiness receipts"
+    },
+    "method_candidates_fixture_pass_rate": {
+      "status": "pass",
+      "value": "100%",
+      "threshold": "100%",
+      "evidence": "method candidate query fixtures"
+    },
+    "package_graph": {
+      "status": "pass",
+      "value": "2",
+      "threshold": "> 0",
+      "evidence": "package graph fixture edges"
+    },
+    "reference_shadow_regressions": {
+      "status": "pass",
+      "value": "0",
+      "threshold": "0",
+      "evidence": "semantic shadow compare release-readiness receipts"
+    },
+    "rename_plan": {
+      "status": "pass",
+      "value": "100%",
+      "threshold": "100%",
+      "evidence": "rename plan query fixtures"
+    },
+    "rename_unsafe_edit_count": {
+      "status": "pass",
+      "value": "0",
+      "threshold": "0",
+      "evidence": "rename plan query fixtures"
+    },
+    "safe_delete_blocker_fixture_pass_rate": {
+      "status": "pass",
+      "value": "100%",
+      "threshold": "100%",
+      "evidence": "safe-delete plan query fixtures"
+    },
+    "safe_delete_plan": {
+      "status": "pass",
+      "value": "100%",
+      "threshold": "100%",
+      "evidence": "safe-delete plan query fixtures"
+    },
+    "semantic_fact_counts_nonzero": {
+      "status": "pass",
+      "value": "85",
+      "threshold": "> 0",
+      "evidence": "semantic fixture indexing"
+    },
+    "undefined_symbol_false_positive_fixture_rate": {
+      "status": "pass",
+      "value": "0%",
+      "threshold": "0%",
+      "evidence": "diagnostics fixture receipts"
+    },
+    "visible_symbols_fixture_pass_rate": {
+      "status": "pass",
+      "value": "100%",
+      "threshold": "100%",
+      "evidence": "workspace scorecard fixtures"
+    }
+  },
+  "unavailable_rows": {},
+  "notes": "0.13.2 semantic proof rail: scorecard rows are deterministic and fixture-backed; semantic expansion remains conservative for unavailable rows."
+}

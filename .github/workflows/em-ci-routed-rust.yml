@@ -1,0 +1,762 @@
+name: EM CI Routed Rust
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_target:
+        description: Force a route target for fallback proof.
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - cx53
+          - cx43
+          - github
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_VERSION: "1.95.0"
+
+jobs:
+  route-rust-small:
+    name: Route Perl LSP Rust Small
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
+    outputs:
+      target: ${{ steps.route.outputs.target }}
+      reason: ${{ steps.route.outputs.reason }}
+      error: ${{ steps.route.outputs.error }}
+      fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
+    steps:
+      - name: Decide target runner
+        id: route
+        env:
+          GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
+          ORG: EffortlessMetrics
+          FORCE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.force_target || 'auto' }}
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_AUTHOR_LOGIN: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login || '' }}
+          PR_AUTHOR_TYPE: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.type || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emit() {
+            local target="$1" reason="$2" error="$3" fallback_allowed="$4"
+            echo "router_target=$target"
+            echo "router_reason=$reason"
+            echo "router_error=$error"
+            echo "router_fallback_allowed=$fallback_allowed"
+            {
+              echo "target=$target"
+              echo "reason=$reason"
+              echo "error=$error"
+              echo "fallback_allowed=$fallback_allowed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### Perl LSP Rust Small Route"
+              echo ""
+              echo "- router_target: \`$target\`"
+              echo "- router_reason: \`$reason\`"
+              echo "- router_error: \`$error\`"
+              echo "- router_fallback_allowed: \`$fallback_allowed\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          if [ "$IS_FORK_PR" = "true" ]; then
+            emit "github" "fork_pr" "false" "true"
+            exit 0
+          fi
+
+          if [ "$IS_PULL_REQUEST" = "true" ]; then
+            pr_author_login_lc="$(printf '%s' "${PR_AUTHOR_LOGIN:-}" | tr '[:upper:]' '[:lower:]')"
+            pr_author_type_lc="$(printf '%s' "${PR_AUTHOR_TYPE:-}" | tr '[:upper:]' '[:lower:]')"
+            is_bot_pr="false"
+
+            case "$pr_author_login_lc" in
+              dependabot*|app/*|*\[bot\])
+                is_bot_pr="true"
+                ;;
+            esac
+
+            if [ "$pr_author_type_lc" = "bot" ]; then
+              is_bot_pr="true"
+            fi
+
+            if [ "$is_bot_pr" = "true" ]; then
+              emit "github" "bot_pr_github_hosted" "false" "true"
+              exit 0
+            fi
+          fi
+
+          case "${FORCE_TARGET:-auto}" in
+            cx53|cx43|github)
+              emit "$FORCE_TARGET" "workflow_dispatch_force_target" "false" "true"
+              exit 0
+              ;;
+            auto|"")
+              ;;
+            *)
+              emit "none" "invalid_force_target" "true" "false"
+              exit 0
+              ;;
+          esac
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::runner inventory token is unavailable; routing the full Rust Small contract to GitHub-hosted"
+            emit "github" "runner_token_missing_github_hosted" "false" "true"
+            exit 0
+          fi
+
+          response="$(mktemp)"
+          status="$(curl -sS -w '%{http_code}' -o "$response" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" || true)"
+
+          if [ "$status" != "200" ]; then
+            echo "::warning::runner inventory API returned HTTP $status; routing the full Rust Small contract to GitHub-hosted"
+            emit "github" "runner_api_unavailable_github_hosted" "false" "true"
+            exit 0
+          fi
+
+          idle_runner_count() {
+            local runner_label="$1"
+            jq --arg runner_label "$runner_label" '
+              [ .runners[]?
+                | select(.status == "online")
+                | select(.busy == false)
+                | ([.labels[].name | ascii_downcase] // []) as $have
+                | select(
+                    ($have | index("em-ci")) and
+                    ($have | index($runner_label)) and
+                    ($have | index("rust-small")) and
+                    ($have | index("trusted-pr"))
+                  )
+              ] | length
+            ' "$response"
+          }
+
+          idle_cx53="$(idle_runner_count "cx53")"
+          idle_cx43="$(idle_runner_count "cx43")"
+
+          echo "idle_cx53=${idle_cx53:-0}"
+          echo "idle_cx43=${idle_cx43:-0}"
+
+          # TEMPORARY: CX43 is demoted from routing. The CX43 host has lost its
+          # preloaded em-ci-rust:1.95 Docker image (a local-only image, not in any
+          # registry), so every CX43 job fails preflight in ~11-14s with
+          # "Unable to find image 'em-ci-rust:1.95' locally / pull access denied".
+          # The GitHub-hosted disk-full fallback then rescues the required aggregate,
+          # but this (a) shows a misleading red "Perl LSP Rust Small on CX43" check on
+          # every PR and (b) wastes a doomed CX43 start plus a full GH-hosted re-run.
+          # Evidence: PR #3321 job 85060598571 — "repository does not exist or may
+          # require 'docker login'". Routing straight to CX53 (or GH-hosted when CX53
+          # is busy) is both cleaner and cheaper until ops restores the CX43 image.
+          # Revert: delete this block's CX43 skip and restore the `elif ... emit cx43`
+          # branch (preserved below) once `docker image inspect em-ci-rust:1.95`
+          # passes on the CX43 host.
+          #
+          # Prefer CX53 (301 GB volume, ~140 GB free); fall back to GitHub-hosted
+          # when CX53 is busy. CX43 intentionally skipped (see above).
+          if [ "${idle_cx53:-0}" -gt 0 ]; then
+            emit "cx53" "cx53_idle" "false" "false"
+          else
+            emit "github" "no_idle_runner" "false" "true"
+          fi
+
+          # --- BEGIN temporarily dead code (restore to re-enable CX43) ---
+          # elif [ "${idle_cx43:-0}" -gt 0 ]; then
+          #   emit "cx43" "cx43_idle" "false" "false"
+          # --- END temporarily dead code ---
+
+  rust-small-cx53:
+    name: Perl LSP Rust Small on CX53
+    needs: route-rust-small
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'cx53'
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
+    timeout-minutes: 60
+    outputs:
+      preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
+    env:
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 60G
+      CARGO_BUILD_JOBS: "12"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/${{ github.run_id }}-${{ github.run_attempt }}
+      RUST_TEST_THREADS: "2"
+      TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Fix workspace ownership (pre-checkout)
+        shell: bash
+        run: |
+          # ripr.yml (and any other Docker-on-CX job) may leave root-owned files
+          # in the workspace target/ dir. actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0 cannot clean them
+          # (EACCES). Use Docker (running as root) to chown back and then delete
+          # the stale workspace target/ so it cannot cause `mkdir target` failures
+          # on the next run. Fall back to a host-side rm -rf in case the Docker
+          # image is unavailable (e.g. first boot before image pull).
+          # Safe on CI: CARGO_TARGET_DIR is set to /mnt/ci-scratch/... so the real
+          # build artifacts are NOT in workspace/target/. Only xtask/ripr JSON
+          # receipts accumulate there and they must not persist between runs.
+          set +e
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            em-ci-rust:1.95 \
+            bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
+          # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
+          rm -rf "$GITHUB_WORKSPACE/target" || true
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Preflight disk and toolchain
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ── Orphan reaper (primary disk hygiene) ─────────────────────────────
+          # Invariant: an idle runner is a disk-clean runner.  Killed, OOM-evicted,
+          # and timed-out runs skip their cleanup step, leaving orphaned
+          # run_id-attempt scratch dirs that accumulate and fill the volume.
+          # Reap them at >2 h (120 min) — well past the 60 min CX53 job timeout —
+          # rather than the previous 24 h threshold that let CX43 reach 0 GB.
+          # Pattern [0-9]*-[0-9]* matches bare run_id-attempt dirs only; ripr-*
+          # dirs are handled by ripr.yml and intentionally excluded here.
+          find /mnt/ci-scratch/perl-lsp-swarm -maxdepth 1 -name '[0-9]*-[0-9]*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+          find /mnt/ci-scratch/tmp -maxdepth 1 -name '[0-9]*-[0-9]*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+          # ── sccache size cap ──────────────────────────────────────────────────
+          # sccache self-prunes when it runs, but if bypassed the dir grows
+          # unbounded.  Hard-cap at 70 GB (CX53 SCCACHE_CACHE_SIZE=60G + buffer).
+          if [ -d "$SCCACHE_DIR" ]; then
+            sccache_gb=$(du -sm "$SCCACHE_DIR" 2>/dev/null | awk '{print int($1/1024)}' || echo 0)
+            if [ "${sccache_gb:-0}" -gt 70 ]; then
+              echo "::warning::sccache is ${sccache_gb} GB (>70 GB cap); purging to free disk"
+              rm -rf "${SCCACHE_DIR:?}"/* 2>/dev/null || true
+            fi
+          fi
+          # ── Docker dangling resource prune ────────────────────────────────────
+          # Dangling images/stopped containers from prior runs consume /mnt/docker.
+          # --filter until=2h targets resources idle for >2 h (safe to remove).
+          docker image prune -f --filter "until=2h" 2>/dev/null || true
+          docker container prune -f --filter "until=2h" 2>/dev/null || true
+          docker volume prune -f 2>/dev/null || true
+          # ── Disk guard ────────────────────────────────────────────────────────
+          # The Rust Small lane runs cargo check --workspace + two targeted tests.
+          # Cold build (no sccache): ~10-15 GB of incremental artifacts.
+          # Warm build (sccache hit): ~1 GB. 40 GB gives 3-4x cold-build headroom
+          # and fits on CX53 (301 GB volume, ~140 GB free) after self-clean.
+          # If the guard still fails, set preflight_ok=false and exit 1 so the
+          # rust-small-fallback job can take over on GitHub-hosted.
+          disk_ok=true
+          ci-disk-guard /mnt/ci-scratch 40 || disk_ok=false
+          ci-disk-guard /mnt/docker 20 || disk_ok=false
+          ci-disk-guard /mnt/ci-cache 20 || disk_ok=false
+          image_ok=true
+          docker image inspect em-ci-rust:1.95 >/dev/null 2>&1 || image_ok=false
+          df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
+          if [ "$disk_ok" = "true" ] && [ "$image_ok" = "true" ]; then
+            preflight_ok=true
+          else
+            preflight_ok=false
+          fi
+          echo "preflight_ok=${preflight_ok}" >> "$GITHUB_OUTPUT"
+          if [ "$disk_ok" = "false" ]; then
+            echo "::error::Disk preflight failed on CX53 after cleanup. Failover job will run on GitHub-hosted."
+            exit 1
+          fi
+          if [ "$image_ok" = "false" ]; then
+            echo "::error::Required Docker image em-ci-rust:1.95 is missing on CX53. Failover job will run on GitHub-hosted."
+            exit 1
+          fi
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+
+      - name: Run Rust small lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --cpus="14" \
+            --memory="28g" \
+            -e CARGO_HOME=/cargo-home \
+            -e SCCACHE_DIR=/sccache \
+            -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
+            -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
+            -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
+            -e CARGO_TARGET_DIR=/target \
+            -e RUST_TEST_THREADS="$RUST_TEST_THREADS" \
+            -e RUST_BACKTRACE=1 \
+            -e CARGO_TERM_COLOR=always \
+            -e TMPDIR=/tmp/jobtmp \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$CARGO_HOME:/cargo-home" \
+            -v "$SCCACHE_DIR:/sccache" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            -v "$TMPDIR:/tmp/jobtmp" \
+            -w /workspace \
+            em-ci-rust:1.95 \
+            bash -eu -o pipefail -c '
+              rustc --version
+              cargo --version
+              sccache --version || true
+              cargo fetch --locked
+              cargo check --workspace --locked
+              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+              scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
+              test "$scorecard_tests" -gt 0
+              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+              sccache --show-stats || true
+            '
+
+      - name: Cleanup and final stats
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          docker run --rm \
+            -v "$TMPDIR:/tmpdir" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            em-ci-rust:1.95 \
+            bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
+          rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
+          df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
+
+  rust-small-cx43:
+    name: Perl LSP Rust Small on CX43
+    needs: route-rust-small
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'cx43'
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
+    timeout-minutes: 75
+    outputs:
+      preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
+    env:
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 30G
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/${{ github.run_id }}-${{ github.run_attempt }}
+      RUST_TEST_THREADS: "2"
+      TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Fix workspace ownership (pre-checkout)
+        shell: bash
+        run: |
+          # ripr.yml (and any other Docker-on-CX job) may leave root-owned files
+          # in the workspace target/ dir. actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0 cannot clean them
+          # (EACCES). Use Docker (running as root) to chown back and then delete
+          # the stale workspace target/ so it cannot cause `mkdir target` failures
+          # on the next run. Fall back to a host-side rm -rf in case the Docker
+          # image is unavailable (e.g. first boot before image pull).
+          # Safe on CI: CARGO_TARGET_DIR is set to /mnt/ci-scratch/... so the real
+          # build artifacts are NOT in workspace/target/. Only xtask/ripr JSON
+          # receipts accumulate there and they must not persist between runs.
+          set +e
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            em-ci-rust:1.95 \
+            bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
+          # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
+          rm -rf "$GITHUB_WORKSPACE/target" || true
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Preflight disk and toolchain
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ── Orphan reaper (primary disk hygiene) ─────────────────────────────
+          # Invariant: an idle runner is a disk-clean runner.  Killed, OOM-evicted,
+          # and timed-out runs skip their cleanup step, leaving orphaned
+          # run_id-attempt scratch dirs that accumulate and fill the volume.
+          # Reap them at >2 h (120 min) — well past the 75 min CX43 job timeout —
+          # rather than the previous 24 h threshold.  The 24 h window let CX43 reach
+          # 0 GB free; a 2 h window ensures orphans are cleared before the next run.
+          find /mnt/ci-scratch/perl-lsp-swarm -maxdepth 1 -name '[0-9]*-[0-9]*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+          find /mnt/ci-scratch/tmp -maxdepth 1 -name '[0-9]*-[0-9]*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+          # ── sccache size cap ──────────────────────────────────────────────────
+          # CX43 has a smaller volume (150 GB). Hard-cap sccache at 35 GB.
+          if [ -d "$SCCACHE_DIR" ]; then
+            sccache_gb=$(du -sm "$SCCACHE_DIR" 2>/dev/null | awk '{print int($1/1024)}' || echo 0)
+            if [ "${sccache_gb:-0}" -gt 35 ]; then
+              echo "::warning::sccache is ${sccache_gb} GB (>35 GB cap); purging to free disk"
+              rm -rf "${SCCACHE_DIR:?}"/* 2>/dev/null || true
+            fi
+          fi
+          # ── Docker dangling resource prune ────────────────────────────────────
+          docker image prune -f --filter "until=2h" 2>/dev/null || true
+          docker container prune -f --filter "until=2h" 2>/dev/null || true
+          docker volume prune -f 2>/dev/null || true
+          # ── Disk guard ────────────────────────────────────────────────────────
+          # The Rust Small lane runs cargo check --workspace + two targeted tests.
+          # Cold build (no sccache): ~10-15 GB of incremental artifacts.
+          # Warm build (sccache hit): ~1 GB. 40 GB gives 3-4x cold-build headroom.
+          # CX43 had 64 GB free when the 80 GB guard fired (PR #1228 evidence) --
+          # 64 GB > 40 GB, so this guard will pass on a reasonably maintained host.
+          # If the guard still fails after cleanup, set preflight_ok=false and exit 1
+          # so the rust-small-fallback job can take over on GitHub-hosted.
+          disk_ok=true
+          ci-disk-guard /mnt/ci-scratch 40 || disk_ok=false
+          ci-disk-guard /mnt/docker 15 || disk_ok=false
+          ci-disk-guard /mnt/ci-cache 15 || disk_ok=false
+          image_ok=true
+          docker image inspect em-ci-rust:1.95 >/dev/null 2>&1 || image_ok=false
+          df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
+          if [ "$disk_ok" = "true" ] && [ "$image_ok" = "true" ]; then
+            preflight_ok=true
+          else
+            preflight_ok=false
+          fi
+          echo "preflight_ok=${preflight_ok}" >> "$GITHUB_OUTPUT"
+          if [ "$disk_ok" = "false" ]; then
+            echo "::error::Disk preflight failed on CX43 after cleanup. Failover job will run on GitHub-hosted."
+            exit 1
+          fi
+          if [ "$image_ok" = "false" ]; then
+            echo "::error::Required Docker image em-ci-rust:1.95 is missing on CX43. Failover job will run on GitHub-hosted."
+            exit 1
+          fi
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+
+      - name: Run Rust small lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --cpus="8" \
+            --memory="16g" \
+            -e CARGO_HOME=/cargo-home \
+            -e SCCACHE_DIR=/sccache \
+            -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
+            -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
+            -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
+            -e CARGO_TARGET_DIR=/target \
+            -e RUST_TEST_THREADS="$RUST_TEST_THREADS" \
+            -e RUST_BACKTRACE=1 \
+            -e CARGO_TERM_COLOR=always \
+            -e TMPDIR=/tmp/jobtmp \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$CARGO_HOME:/cargo-home" \
+            -v "$SCCACHE_DIR:/sccache" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            -v "$TMPDIR:/tmp/jobtmp" \
+            -w /workspace \
+            em-ci-rust:1.95 \
+            bash -eu -o pipefail -c '
+              rustc --version
+              cargo --version
+              sccache --version || true
+              cargo fetch --locked
+              cargo check --workspace --locked
+              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+              scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
+              test "$scorecard_tests" -gt 0
+              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+              sccache --show-stats || true
+            '
+
+      - name: Cleanup and final stats
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          docker run --rm \
+            -v "$TMPDIR:/tmpdir" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            em-ci-rust:1.95 \
+            bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
+          rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
+          df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
+
+  rust-small-github:
+    name: Perl LSP Rust Small on GitHub Hosted
+    needs: route-rust-small
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'github' &&
+      needs.route-rust-small.outputs.fallback_allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_TEST_THREADS: "2"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          shared-key: perl-lsp-rust-small-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run Rust small lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          cargo check --workspace --locked
+          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+          scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
+          test "$scorecard_tests" -gt 0
+          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+          git diff --check
+
+  # ── Disk-full failover ──────────────────────────────────────────────────────
+  # Defense-in-depth: if the primary self-hosted runner's preflight disk-guard
+  # still fails AFTER aggressive cleanup (orphan reap + sccache cap + docker
+  # prune), fall back to GitHub-hosted so the PR is not blocked by a disk-full
+  # runner. The hosted failover runs the same cargo check, parser smoke, LSP
+  # smoke, and references scorecard contract as every other accepted route.
+  rust-small-fallback:
+    name: Perl LSP Rust Small (Disk-Full Fallback)
+    needs:
+      - route-rust-small
+      - rust-small-cx53
+      - rust-small-cx43
+    # Trigger ONLY when the primary self-hosted job failed AND the preflight step
+    # explicitly recorded preflight_ok=false (written to GITHUB_OUTPUT before exit 1).
+    # This prevents a real test failure from masking under a GH-hosted run.
+    # If preflight_ok is empty (job OOM-killed before the step could write output), we
+    # do NOT trigger the fallback — that case needs ops investigation, not a workaround.
+    if: >-
+      always() &&
+      needs.route-rust-small.result == 'success' &&
+      (
+        (needs.route-rust-small.outputs.target == 'cx53' && needs.rust-small-cx53.result == 'failure' && needs.rust-small-cx53.outputs.preflight_ok == 'false') ||
+        (needs.route-rust-small.outputs.target == 'cx43' && needs.rust-small-cx43.result == 'failure' && needs.rust-small-cx43.outputs.preflight_ok == 'false')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_TEST_THREADS: "2"
+    steps:
+      - name: Annotate failover reason
+        shell: bash
+        run: |
+          echo "::warning::Primary runner (${{ needs.route-rust-small.outputs.target }}) failed preflight — falling back to GitHub-hosted. Check runner disk and em-ci-rust image before next run."
+          {
+            echo "### Self-Hosted Preflight Failover"
+            echo ""
+            echo "Primary runner \`${{ needs.route-rust-small.outputs.target }}\` failed"
+            echo "preflight before the Rust lane started. This job ran the full Rust Small"
+            echo "contract on GitHub-hosted. Ops: check disk and the"
+            echo "\`em-ci-rust:1.95\` image on the failing runner."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          shared-key: perl-lsp-rust-small-fallback-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run Rust small lane (fallback)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          cargo check --workspace --locked
+          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+          scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
+          test "$scorecard_tests" -gt 0
+          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+          git diff --check
+
+  rust-small-result:
+    name: Perl LSP Rust Small Result
+    needs:
+      - route-rust-small
+      - rust-small-cx53
+      - rust-small-cx43
+      - rust-small-github
+      - rust-small-fallback
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate routed result
+        shell: bash
+        env:
+          ROUTE_RESULT: ${{ needs.route-rust-small.result }}
+          ROUTER_TARGET: ${{ needs.route-rust-small.outputs.target }}
+          ROUTER_REASON: ${{ needs.route-rust-small.outputs.reason }}
+          ROUTER_ERROR: ${{ needs.route-rust-small.outputs.error }}
+          ROUTER_FALLBACK_ALLOWED: ${{ needs.route-rust-small.outputs.fallback_allowed }}
+          CX53_RESULT: ${{ needs.rust-small-cx53.result }}
+          CX43_RESULT: ${{ needs.rust-small-cx43.result }}
+          GITHUB_RESULT: ${{ needs.rust-small-github.result }}
+          FALLBACK_RESULT: ${{ needs.rust-small-fallback.result }}
+        run: |
+          set -euo pipefail
+
+          echo "route_result=${ROUTE_RESULT:-}"
+          echo "router_target=${ROUTER_TARGET:-}"
+          echo "router_reason=${ROUTER_REASON:-}"
+          echo "router_error=${ROUTER_ERROR:-}"
+          echo "router_fallback_allowed=${ROUTER_FALLBACK_ALLOWED:-}"
+          echo "cx53_result=${CX53_RESULT:-}"
+          echo "cx43_result=${CX43_RESULT:-}"
+          echo "github_result=${GITHUB_RESULT:-}"
+          echo "fallback_result=${FALLBACK_RESULT:-}"
+
+          {
+            echo "### Perl LSP Rust Small Result"
+            echo ""
+            echo "- route_result: \`${ROUTE_RESULT:-}\`"
+            echo "- router_target: \`${ROUTER_TARGET:-}\`"
+            echo "- router_reason: \`${ROUTER_REASON:-}\`"
+            echo "- router_error: \`${ROUTER_ERROR:-}\`"
+            echo "- router_fallback_allowed: \`${ROUTER_FALLBACK_ALLOWED:-}\`"
+            echo "- cx53_result: \`${CX53_RESULT:-}\`"
+            echo "- cx43_result: \`${CX43_RESULT:-}\`"
+            echo "- github_result: \`${GITHUB_RESULT:-}\`"
+            echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Draft PRs intentionally skip route-rust-small via the job-level
+          # guard above. A skipped router is not a gate failure: the Rust lane
+          # will run when the PR becomes ready for review.
+          if [ "$ROUTE_RESULT" = "skipped" ]; then
+            echo "::notice::Rust Small router was skipped (draft PR or non-applicable event) — required check is neutral/pass."
+            echo "Perl LSP Rust Small Result: neutral (router skipped — draft PR or non-applicable event)"
+            exit 0
+          fi
+
+          if [ "$ROUTE_RESULT" != "success" ]; then
+            echo "::error::Router did not complete successfully: $ROUTE_RESULT"
+            exit 1
+          fi
+
+          # A cancelled lane is the ABSENCE of evidence, not negative evidence.
+          # The check stays blocking — no proof was produced for this SHA — but
+          # it must not read as a test failure. Without this branch, `cancelled`
+          # falls through to the bare `test "$X_RESULT" = "success"` below, which
+          # exits 1 printing nothing but "Process completed with exit code 1",
+          # indistinguishable from a real failure without opening the log (#5460).
+          #
+          # The cause is deliberately not asserted. The usual one is a newer push
+          # superseding this run via the concurrency group's cancel-in-progress,
+          # but a manual or API cancellation produces an identical `cancelled`
+          # result and no newer run exists in that case. Nothing available here
+          # distinguishes them, so the message names the outcome and offers
+          # supersession as the likely cause rather than directing the reader to
+          # a run that may not exist.
+          for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
+            if [ "$lane_result" = "cancelled" ]; then
+              echo "::error::Rust Small lane cancelled — no proof produced for this SHA. This is NOT a test failure. Most often a newer push superseded this run; a manual or API cancellation looks the same here. If a newer run exists for this PR, that run is authoritative; otherwise re-run this one."
+              echo "Perl LSP Rust Small Result: cancelled (no proof for this SHA)"
+              exit 1
+            fi
+          done
+
+          case "${ROUTER_TARGET:-}" in
+            cx53)
+              if [ "$CX53_RESULT" = "success" ]; then
+                # Primary succeeded normally.
+                test "$CX43_RESULT" = "skipped"
+                test "$GITHUB_RESULT" = "skipped"
+                test "$FALLBACK_RESULT" = "skipped"
+              elif [ "$FALLBACK_RESULT" = "success" ]; then
+                # Self-hosted preflight failover: fallback ran on GitHub-hosted.
+                # The fallback only triggers when preflight_ok=false, so this is
+                # safe — we know the primary failed at preflight, not at test time.
+                echo "::warning::CX53 preflight failed; lane passed via GitHub-hosted fallback. Check CX53 disk and em-ci-rust image."
+                test "$CX43_RESULT" = "skipped"
+                test "$GITHUB_RESULT" = "skipped"
+              else
+                # Primary failed and no fallback ran (real test failure, or fallback
+                # itself failed). Fail the check.
+                echo "::error::Rust Small on CX53 failed ($CX53_RESULT); fallback result: $FALLBACK_RESULT"
+                exit 1
+              fi
+              ;;
+            cx43)
+              if [ "$CX43_RESULT" = "success" ]; then
+                test "$CX53_RESULT" = "skipped"
+                test "$GITHUB_RESULT" = "skipped"
+                test "$FALLBACK_RESULT" = "skipped"
+              elif [ "$FALLBACK_RESULT" = "success" ]; then
+                echo "::warning::CX43 preflight failed; lane passed via GitHub-hosted fallback. Check CX43 disk and em-ci-rust image."
+                test "$CX53_RESULT" = "skipped"
+                test "$GITHUB_RESULT" = "skipped"
+              else
+                echo "::error::Rust Small on CX43 failed ($CX43_RESULT); fallback result: $FALLBACK_RESULT"
+                exit 1
+              fi
+              ;;
+            github)
+              test "$GITHUB_RESULT" = "success"
+              test "$CX53_RESULT" = "skipped"
+              test "$CX43_RESULT" = "skipped"
+              test "$FALLBACK_RESULT" = "skipped"
+              ;;
+            none)
+              test "$CX53_RESULT" = "skipped"
+              test "$CX43_RESULT" = "skipped"
+              test "$GITHUB_RESULT" = "skipped"
+              test "$FALLBACK_RESULT" = "skipped"
+              echo "::error::No runner route available (reason: ${ROUTER_REASON:-unknown}). Re-run later or use workflow_dispatch force_target=github."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unknown router target: ${ROUTER_TARGET:-<empty>}"
+              exit 1
+              ;;
+          esac
+
+          echo "Perl LSP Rust Small Result: success"

@@ -1,0 +1,61 @@
+name: UB Review
+
+# PAUSED — UB Review is not yet a useful or reliable PR reviewer/CI gate for
+# this repository. Automatic execution is intentionally disabled under #3653
+# and #5778 while the upstream tool is simplified, calibrated, and dogfooded.
+#
+# The repository's normal Claude/Codex development flow still performs serious
+# multi-round review. UB Review may return only after real PR evidence shows:
+#
+# - concise, relevant reviewer output with low boilerplate/noise;
+# - reliable production-route and proof investigation;
+# - deterministic CI evidence separate from model judgment;
+# - stable execution and publication;
+# - a clear economic advantage over the existing review-forward process.
+#
+# Keep the historical job IDs while paused so policy and historical receipts
+# remain readable. No job performs review work or accesses review secrets.
+
+on:
+  pull_request:
+    branches: [master, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  fork-policy:
+    name: UB Review (paused)
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "UB Review is paused pending #3653 usefulness calibration."
+
+  route-ub-review:
+    name: Route UB review runner (paused)
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "UB Review routing is paused pending #3653."
+
+  ub-review-cx53:
+    name: UB Review Advisory on CX53 (paused)
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "UB Review is paused."
+
+  ub-review-cx43:
+    name: UB Review Advisory on CX43 (paused)
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "UB Review is paused."
+
+  ub-review-github:
+    name: UB Review Advisory on GitHub Hosted (paused)
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "UB Review is paused."

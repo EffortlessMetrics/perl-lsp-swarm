@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>perl-lsp</id>
+    <!-- PLACEHOLDER-GUARD: release automation replaces this token. -->
+    <version>__RELEASE_VERSION__</version>
+    <title>Perl Language Server</title>
+    <authors>EffortlessMetrics</authors>
+    <owners>EffortlessMetrics</owners>
+    <!--
+      The project is dual-licensed MIT OR Apache-2.0 (LICENSE-MIT and
+      LICENSE-APACHE are both in the repository root), so pointing at
+      LICENSE-APACHE alone misreports the license on the Chocolatey listing.
+      Chocolatey consumes `licenseUrl` (the NuGet `<license>` expression
+      element is not part of the Chocolatey nuspec surface), so this points at
+      the README section that names both licenses.
+    -->
+    <licenseUrl>https://github.com/EffortlessMetrics/perl-lsp/blob/master/README.md#license</licenseUrl>
+    <projectUrl>https://github.com/EffortlessMetrics/perl-lsp</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/vscode-extension/icon.png</iconUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>
+perl-lsp is a public-beta Language Server Protocol implementation for Perl,
+providing advanced IDE features including real-time syntax checking, code completion,
+go-to-definition, find references, symbol search, and refactoring support.
+Licensed MIT OR Apache-2.0.
+
+## Features
+
+- Public-beta Perl language-server support
+- Real-time syntax checking and diagnostics
+- Code completion with type inference
+- Go-to-definition and find references
+- Symbol search across workspace
+- Advanced refactoring operations
+- Cross-file navigation with dual indexing
+- Import optimization
+- Debug adapter (perl-dap) shipped alongside the language server
+
+## Installation
+
+After installation, configure your editor to use `perllsp --stdio`,
+and your DAP client to use `perl-dap`.
+
+## Documentation
+
+See https://github.com/EffortlessMetrics/perl-lsp for full documentation.
+    </description>
+    <summary>Public-beta Perl language server and debug adapter</summary>
+    <releaseNotes>https://github.com/EffortlessMetrics/perl-lsp/releases</releaseNotes>
+    <copyright>2025 EffortlessMetrics</copyright>
+    <tags>perl lsp language-server development ide</tags>
+    <packageSourceUrl>https://github.com/EffortlessMetrics/perl-lsp</packageSourceUrl>
+    <docsUrl>https://github.com/EffortlessMetrics/perl-lsp/blob/master/README.md</docsUrl>
+    <bugTrackerUrl>https://github.com/EffortlessMetrics/perl-lsp/issues</bugTrackerUrl>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
