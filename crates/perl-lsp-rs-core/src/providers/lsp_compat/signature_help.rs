@@ -304,13 +304,14 @@ impl SignatureHelpProvider {
         // Try to extract parameters from the AST signature node first (modern Perl syntax)
         if let Some(sub_node) = self.find_subroutine_definition(&self.ast, &symbol.name)
             && let NodeKind::Subroutine { signature: Some(sig), .. } = &sub_node.kind
-                && let NodeKind::Signature { parameters } = &sig.kind {
-                    for param in parameters {
-                        if let Some(info) = self.param_info_from_node(param) {
-                            params.push(info);
-                        }
-                    }
+            && let NodeKind::Signature { parameters } = &sig.kind
+        {
+            for param in parameters {
+                if let Some(info) = self.param_info_from_node(param) {
+                    params.push(info);
                 }
+            }
+        }
 
         // If no AST signature found, fall back to extended prototype parsing
         if params.is_empty() {

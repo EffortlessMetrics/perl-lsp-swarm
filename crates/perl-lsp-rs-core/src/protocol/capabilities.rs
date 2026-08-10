@@ -98,11 +98,11 @@ pub fn capabilities_json(build: BuildFlags) -> Value {
     // insertReplaceEdit and insertTextFormat/insertTextMode negotiation.
     if build.completion
         && let Some(comp_provider) = json["completionProvider"].as_object_mut()
-            && let Some(comp_item) =
-                comp_provider.get_mut("completionItem").and_then(Value::as_object_mut)
-            {
-                comp_item.insert("insertTextModes".to_string(), serde_json::json!([1, 2]));
-            }
+        && let Some(comp_item) =
+            comp_provider.get_mut("completionItem").and_then(Value::as_object_mut)
+    {
+        comp_item.insert("insertTextModes".to_string(), serde_json::json!([1, 2]));
+    }
 
     json
 }
