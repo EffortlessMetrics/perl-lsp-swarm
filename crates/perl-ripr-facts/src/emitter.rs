@@ -629,10 +629,10 @@ fn collect_pm_files_recursive(
 fn extract_package_name(content: &str) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("package ") {
-            if let Some(name_end) = rest.find(';') {
-                return rest[..name_end].trim().to_string();
-            }
+        if let Some(rest) = trimmed.strip_prefix("package ")
+            && let Some(name_end) = rest.find(';')
+        {
+            return rest[..name_end].trim().to_string();
         }
     }
     String::new()

@@ -47,6 +47,15 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-lsp-rs/src/runtime/parse_worker.rs",
+      "enclosing_test_or_function": "is_operational_reports_false_when_all_threads_are_finished",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"dummy thread did not finish within 2s timeout\");",
+      "selector_identity": "invocation:c847024e92b79721:occurrence:1",
+      "accepted_reason": "Intentional test timeout diagnostic for a worker-thread liveness precondition; this bounded panic fails the test if the dummy thread does not terminate.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
       "enclosing_test_or_function": "panicked_request_handler_answers_with_internal_error",
       "macro_family": "panic!",

@@ -33,6 +33,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 use super::super::LspServer;
 
 /// Sentinel request ID used for the notification-path token in
@@ -230,7 +235,7 @@ impl LspServer {
                         .as_deref()
                         .is_some_and(|sort_text| sort_text.starts_with("3_")))
             })
-            .map(|completion| completion.label.clone())
+            .map(|completion| completion.label.to_string())
             .collect()
     }
 
@@ -411,10 +416,10 @@ impl LspServer {
                 "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
             }
         });
-        if let Some(shadow_receipt) = semantic_shadow_receipt {
-            if let Some(object) = receipt.as_object_mut() {
-                object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
-            }
+        if let Some(shadow_receipt) = semantic_shadow_receipt
+            && let Some(object) = receipt.as_object_mut()
+        {
+            object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
         }
         self.record_provider_decision_trace("completion", &receipt);
     }
@@ -446,6 +451,9 @@ impl LspServer {
             return None;
         }
         if !(budget.should_continue)() {
+            return None;
+        }
+        if self.workspace_index_stale_for_any_open_document() {
             return None;
         }
         let index = coordinator.index();
@@ -496,7 +504,7 @@ impl LspServer {
         completions: &[crate::completion::CompletionItem],
     ) -> CompletionDecisionSummary {
         let sample_labels =
-            completions.iter().take(5).map(|completion| completion.label.clone()).collect();
+            completions.iter().take(5).map(|completion| completion.label.to_string()).collect();
         let mut compiler_fact_items = 0;
         let mut generated_items = 0;
         let mut dynamic_boundary_items = 0;
@@ -785,7 +793,7 @@ impl LspServer {
         let config =
             self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
         let mut seen: HashSet<String> =
-            completions.iter().map(|completion| completion.label.clone()).collect();
+            completions.iter().map(|completion| completion.label.to_string()).collect();
 
         for dependency in config.declared_dependencies {
             if should_continue.is_some_and(|check| !check()) {
@@ -806,12 +814,12 @@ impl LspServer {
             );
 
             completions.push(crate::completion::CompletionItem {
-                label: module.clone(),
+                label: module.clone().into(),
                 kind: CompletionItemKind::Module,
-                detail: Some(detail),
-                documentation: Some(documentation),
-                insert_text: Some(module.clone()),
-                sort_text: Some(format!("080_declared_dependency_{module}")),
+                detail: Some(detail.into()),
+                documentation: Some(documentation.into()),
+                insert_text: Some(module.clone().into()),
+                sort_text: Some(format!("080_declared_dependency_{module}").into()),
                 filter_text: None,
                 additional_edits: Vec::new(),
                 text_edit_range: None,
@@ -900,7 +908,7 @@ impl LspServer {
                     qualified_variable_symbols.unwrap_or_else(|| index.find_symbols(&prefix));
                 use std::collections::HashSet;
                 let mut seen: HashSet<String> =
-                    completions.iter().map(|completion| completion.label.clone()).collect();
+                    completions.iter().map(|completion| completion.label.to_string()).collect();
 
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
@@ -919,17 +927,17 @@ impl LspServer {
                             | crate::workspace_index::SymbolKind::Class
                             | crate::workspace_index::SymbolKind::Role
                     );
-                    if is_use_module_context && is_module_kind {
-                        if let Some(ctx) = inc_ctx {
-                            if !ctx.symbol_uri_reachable(&symbol.uri) {
-                                tracing::trace!(
-                                    symbol = %symbol.name,
-                                    uri = %symbol.uri,
-                                    "completion: skipping workspace symbol not reachable via @INC"
-                                );
-                                continue;
-                            }
-                        }
+                    if is_use_module_context
+                        && is_module_kind
+                        && let Some(ctx) = inc_ctx
+                        && !ctx.symbol_uri_reachable(&symbol.uri)
+                    {
+                        tracing::trace!(
+                            symbol = %symbol.name,
+                            uri = %symbol.uri,
+                            "completion: skipping workspace symbol not reachable via @INC"
+                        );
+                        continue;
                     }
 
                     // Strategy B: non-module symbols in multi-root workspace — filter
@@ -937,18 +945,17 @@ impl LspServer {
                     // for @INC paths (module files) and would incorrectly drop scripts
                     // and .pm files not on @INC. Folder containment is the right filter
                     // for subroutines, variables, methods, and constants (fixes #970).
-                    if !is_module_kind {
-                        if let Some(ref folder) = doc_folder_filter {
-                            if !workspace_folder_matches_doc_uri(folder, &symbol.uri) {
-                                tracing::trace!(
-                                    symbol = %symbol.name,
-                                    uri = %symbol.uri,
-                                    folder = %folder.uri,
-                                    "completion: skipping cross-folder non-module symbol"
-                                );
-                                continue;
-                            }
-                        }
+                    if !is_module_kind
+                        && let Some(ref folder) = doc_folder_filter
+                        && !workspace_folder_matches_doc_uri(folder, &symbol.uri)
+                    {
+                        tracing::trace!(
+                            symbol = %symbol.name,
+                            uri = %symbol.uri,
+                            folder = %folder.uri,
+                            "completion: skipping cross-folder non-module symbol"
+                        );
+                        continue;
                     }
 
                     let label = symbol.name.clone();
@@ -968,17 +975,18 @@ impl LspServer {
                     let sort_text = format!("9_workspace_{label}");
 
                     completions.push(crate::completion::CompletionItem {
-                        label,
+                        label: label.into(),
                         kind: Self::workspace_symbol_kind(&symbol),
-                        detail,
-                        insert_text,
+                        detail: detail.map(Into::into),
+                        insert_text: insert_text.map(Into::into),
                         // Workspace enrichment is a fallback tier. Give it an
                         // explicit low-priority rank so unranked labels (for
                         // example `$...` variables) cannot displace ranked
                         // in-file methods when the final response is capped.
-                        sort_text: Some(sort_text),
+                        sort_text: Some(sort_text.into()),
                         filter_text: None,
-                        documentation: Self::workspace_symbol_documentation(&symbol),
+                        documentation: Self::workspace_symbol_documentation(&symbol)
+                            .map(Into::into),
                         additional_edits: Vec::new(),
                         text_edit_range,
                         commit_characters: None,
@@ -1134,7 +1142,8 @@ impl LspServer {
         }
 
         if let Some(insert_text) = c.insert_text {
-            item["insertText"] = json!(degraded_insert_text.unwrap_or(insert_text));
+            item["insertText"] =
+                json!(degraded_insert_text.unwrap_or_else(|| insert_text.into_owned()));
         }
 
         if let Some(documentation) = c.documentation {
@@ -1155,18 +1164,16 @@ impl LspServer {
             item["filterText"] = json!(filter_text);
         }
 
-        if label_details_support {
-            if let Some(ld) = c.label_details {
-                let mut obj = serde_json::Map::new();
-                if let Some(d) = ld.detail {
-                    obj.insert("detail".to_string(), json!(d));
-                }
-                if let Some(desc) = ld.description {
-                    obj.insert("description".to_string(), json!(desc));
-                }
-                if !obj.is_empty() {
-                    item["labelDetails"] = Value::Object(obj);
-                }
+        if label_details_support && let Some(ld) = c.label_details {
+            let mut obj = serde_json::Map::new();
+            if let Some(d) = ld.detail {
+                obj.insert("detail".to_string(), json!(d));
+            }
+            if let Some(desc) = ld.description {
+                obj.insert("description".to_string(), json!(desc));
+            }
+            if !obj.is_empty() {
+                item["labelDetails"] = Value::Object(obj);
             }
         }
 
@@ -1186,7 +1193,7 @@ impl LspServer {
                     })
                 })
                 .collect();
-            item["additionalTextEdits"] = json!(edits);
+            item["additionalTextEdits"] = to_json_array(&edits);
         }
 
         // LSP 3.17 §3.16.1: when `textEdit` is present it takes precedence over
@@ -1243,7 +1250,7 @@ impl LspServer {
 
             // Use routing to determine workspace index access mode
             let mut workspace_mode = route_index_access(self.coordinator());
-            if self.workspace_index_stale_for_document(uri) {
+            if self.workspace_index_stale_for_any_open_document() {
                 workspace_mode = IndexAccessMode::None;
             }
 
@@ -1367,10 +1374,11 @@ impl LspServer {
                             if let Some(perl_type) =
                                 type_engine.as_ref().and_then(|engine| engine.get_type_at(var_name))
                             {
-                                completion.detail = Some(Self::format_type_for_detail(&perl_type));
+                                completion.detail =
+                                    Some(Self::format_type_for_detail(&perl_type).into());
                             } else {
                                 // Fallback to sigil-based type hint
-                                let type_hint = if completion.label.starts_with('$') {
+                                let type_hint: &'static str = if completion.label.starts_with('$') {
                                     "scalar"
                                 } else if completion.label.starts_with('@') {
                                     "array"
@@ -1381,7 +1389,7 @@ impl LspServer {
                                 } else {
                                     "unknown"
                                 };
-                                completion.detail = Some(type_hint.to_string());
+                                completion.detail = Some(type_hint.into());
                             }
                         }
                     }
@@ -1575,7 +1583,7 @@ impl LspServer {
 
             // Use routing to determine workspace index access mode
             let mut workspace_mode = route_index_access(self.coordinator());
-            if self.workspace_index_stale_for_document(uri) {
+            if self.workspace_index_stale_for_any_open_document() {
                 workspace_mode = IndexAccessMode::None;
             }
 
@@ -1925,11 +1933,11 @@ impl LspServer {
             for (method, kind) in &common_methods {
                 if method.starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: method.to_string(),
+                        label: method.to_string().into(),
                         kind: CompletionItemKind::Function,
-                        detail: Some(format!("method ({})", kind)),
+                        detail: Some(format!("method ({})", kind).into()),
                         documentation: None,
-                        insert_text: Some(method.to_string()),
+                        insert_text: Some(method.to_string().into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -1948,11 +1956,11 @@ impl LspServer {
                 // Scalar variables - suggest common ones
                 if "_".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "_".to_string(),
+                        label: "_".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Default variable".to_string()),
+                        detail: Some("Default variable".into()),
                         documentation: None,
-                        insert_text: Some("_".to_string()),
+                        insert_text: Some("_".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -1967,11 +1975,11 @@ impl LspServer {
                 // Array variables - suggest common ones
                 if "ARGV".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "ARGV".to_string(),
+                        label: "ARGV".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Command line arguments".to_string()),
+                        detail: Some("Command line arguments".into()),
                         documentation: None,
-                        insert_text: Some("ARGV".to_string()),
+                        insert_text: Some("ARGV".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -1983,11 +1991,11 @@ impl LspServer {
                 }
                 if "_".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "_".to_string(),
+                        label: "_".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Function arguments".to_string()),
+                        detail: Some("Function arguments".into()),
                         documentation: None,
-                        insert_text: Some("_".to_string()),
+                        insert_text: Some("_".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -2002,11 +2010,11 @@ impl LspServer {
                 // Hash variables - suggest common ones
                 if "ENV".starts_with(&prefix) || prefix.is_empty() {
                     completions.push(crate::completion::CompletionItem {
-                        label: "ENV".to_string(),
+                        label: "ENV".into(),
                         kind: CompletionItemKind::Variable,
-                        detail: Some("Environment variables".to_string()),
+                        detail: Some("Environment variables".into()),
                         documentation: None,
-                        insert_text: Some("ENV".to_string()),
+                        insert_text: Some("ENV".into()),
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
@@ -2031,11 +2039,11 @@ impl LspServer {
                 for kw in LSP_RUNTIME_COMPLETION_KEYWORDS {
                     if kw.starts_with(&prefix) {
                         completions.push(crate::completion::CompletionItem {
-                            label: kw.to_string(),
+                            label: (*kw).into(),
                             kind: CompletionItemKind::Keyword,
                             detail: None,
                             documentation: None,
-                            insert_text: Some(kw.to_string()),
+                            insert_text: Some((*kw).into()),
                             additional_edits: vec![],
                             sort_text: None,
                             filter_text: None,
@@ -2143,12 +2151,11 @@ impl LspServer {
                         }),
                     );
                 }
-                if label_details_support {
-                    if let Some(detail) = label_detail {
-                        if obj.get("labelDetails").is_none() {
-                            obj.insert("labelDetails".to_string(), json!({ "detail": detail }));
-                        }
-                    }
+                if label_details_support
+                    && let Some(detail) = label_detail
+                    && obj.get("labelDetails").is_none()
+                {
+                    obj.insert("labelDetails".to_string(), json!({ "detail": detail }));
                 }
             }
             return Ok(Some(item));
@@ -2185,16 +2192,16 @@ impl LspServer {
                 _ => None,
             };
 
-            if let Some(doc) = keyword_doc {
-                if let Some(obj) = item.as_object_mut() {
-                    obj.insert(
-                        "documentation".to_string(),
-                        json!({
-                            "kind": "markdown",
-                            "value": doc
-                        }),
-                    );
-                }
+            if let Some(doc) = keyword_doc
+                && let Some(obj) = item.as_object_mut()
+            {
+                obj.insert(
+                    "documentation".to_string(),
+                    json!({
+                        "kind": "markdown",
+                        "value": doc
+                    }),
+                );
             }
         }
 
@@ -2232,12 +2239,12 @@ mod tests {
     #[test]
     fn completion_cap_applies_after_final_ranking() {
         let item = |label: &str, sort_text: &str| crate::completion::CompletionItem {
-            label: label.to_string(),
+            label: label.to_string().into(),
             kind: CompletionItemKind::Function,
             detail: None,
             documentation: None,
-            insert_text: Some(label.to_string()),
-            sort_text: Some(sort_text.to_string()),
+            insert_text: Some(label.to_string().into()),
+            sort_text: Some(sort_text.to_string().into()),
             filter_text: None,
             additional_edits: Vec::new(),
             text_edit_range: None,
@@ -2260,7 +2267,7 @@ mod tests {
 
         assert!(is_incomplete, "cap should mark the response incomplete");
         assert_eq!(
-            items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>(),
             ["late", "provider-first"]
         );
     }
@@ -2624,14 +2631,14 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "foreach".to_string(),
+            label: "foreach".into(),
             kind: CompletionItemKind::Snippet,
             detail: None,
             documentation: None,
-            insert_text: Some(FOREACH_SNIPPET.to_string()),
+            insert_text: Some(FOREACH_SNIPPET.into()),
             additional_edits: Vec::new(),
-            sort_text: Some("1_foreach".to_string()),
-            filter_text: Some("foreach".to_string()),
+            sort_text: Some("1_foreach".into()),
+            filter_text: Some("foreach".into()),
             text_edit_range: None,
             commit_characters: None,
             insert_text_format: InsertTextFormat::snippet(FOREACH_SNIPPET),
@@ -2663,13 +2670,13 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "fallback".to_string(),
+            label: "fallback".into(),
             kind: CompletionItemKind::Keyword,
             detail: None,
             documentation: None,
-            insert_text: Some("fallback".to_string()),
+            insert_text: Some("fallback".into()),
             additional_edits: Vec::new(),
-            sort_text: Some("9_fallback".to_string()),
+            sort_text: Some("9_fallback".into()),
             filter_text: None,
             text_edit_range: None,
             commit_characters: None,
@@ -2714,7 +2721,7 @@ mod tests {
 
         for (kind, expected_kind) in cases {
             let item = crate::completion::CompletionItem {
-                label: format!("{kind:?}"),
+                label: format!("{kind:?}").into(),
                 kind,
                 detail: None,
                 documentation: None,
@@ -2760,17 +2767,17 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "render".to_string(),
+            label: "render".into(),
             kind: CompletionItemKind::Function,
-            detail: Some("render($ctx)".to_string()),
-            documentation: Some("Render the current context.".to_string()),
-            insert_text: Some("render($ctx)".to_string()),
+            detail: Some("render($ctx)".into()),
+            documentation: Some("Render the current context.".into()),
+            insert_text: Some("render($ctx)".into()),
             additional_edits: vec![(
                 SourceLocation { start: 0, end: 0 },
                 "use Demo::Renderer;\n".to_string(),
             )],
-            sort_text: Some("2_render".to_string()),
-            filter_text: Some("render".to_string()),
+            sort_text: Some("2_render".into()),
+            filter_text: Some("render".into()),
             text_edit_range: None,
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
@@ -2821,14 +2828,14 @@ mod tests {
         let documents = server.documents_guard();
         let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
         let item = crate::completion::CompletionItem {
-            label: "foreach".to_string(),
+            label: "foreach".into(),
             kind: CompletionItemKind::Snippet,
             detail: None,
             documentation: None,
-            insert_text: Some(FOREACH_SNIPPET.to_string()),
+            insert_text: Some(FOREACH_SNIPPET.into()),
             additional_edits: Vec::new(),
             sort_text: None,
-            filter_text: Some("foreach".to_string()),
+            filter_text: Some("foreach".into()),
             text_edit_range: None,
             commit_characters: None,
             insert_text_format: InsertTextFormat::snippet(FOREACH_SNIPPET),
@@ -3004,6 +3011,10 @@ mod tests {
             Some("none"),
             "stale current-document index must downgrade regular completion index access"
         );
+        assert!(
+            receipt.get("semantic_shadow_receipt").is_none(),
+            "stale workspace index must not run completion visibility shadow queries"
+        );
 
         Ok(())
     }
@@ -3043,6 +3054,72 @@ mod tests {
             receipt.get("workspace_index_state").and_then(Value::as_str),
             Some("none"),
             "stale current-document index must downgrade cancellable completion index access"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): cross-file completion must not use the
+    /// workspace index tier while an unrelated open document is ahead of the
+    /// indexed snapshot.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn completion_skips_workspace_index_when_unrelated_open_document_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/completion_source.pl";
+        let unrelated_uri = "file:///workspace/completion_unrelated.pl";
+        let source_text = "package CompletionSource;\nmy $ready = 1;\n$re\n";
+        let unrelated_v1 = "package CompletionUnrelated;\nsub helper {}\n";
+        let unrelated_v2 = "package CompletionUnrelated;\nsub renamed {}\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": source_uri, "version": 1 },
+            "position": { "line": 2, "character": 3 }
+        })))?;
+        let fresh = explain_provider_decision(&server, "completion")?;
+        let fresh_receipt = fresh
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing fresh completion request receipt")?;
+        assert_eq!(
+            fresh_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("full"),
+            "fresh completion request should observe the full index: {fresh:?}"
+        );
+
+        server
+            .test_replace_document_without_index(unrelated_uri, unrelated_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": source_uri, "version": 1 },
+            "position": { "line": 2, "character": 3 }
+        })))?;
+        let stale = explain_provider_decision(&server, "completion")?;
+        let stale_receipt = stale
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing stale completion request receipt")?;
+        assert_eq!(
+            stale_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "unrelated stale open document must disable cross-file completion index access: {stale:?}"
+        );
+        assert!(
+            stale_receipt.get("semantic_shadow_receipt").is_none(),
+            "stale workspace index must not run completion visibility shadow queries"
         );
 
         Ok(())
@@ -3124,12 +3201,12 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let item = |label: &str, kind: CompletionItemKind, sort_text: Option<&str>| {
             crate::completion::CompletionItem {
-                label: label.to_string(),
+                label: label.to_string().into(),
                 kind,
                 detail: None,
                 documentation: None,
                 insert_text: None,
-                sort_text: sort_text.map(str::to_string),
+                sort_text: sort_text.map(|s| s.to_string().into()),
                 filter_text: None,
                 additional_edits: Vec::new(),
                 text_edit_range: None,
@@ -4371,7 +4448,7 @@ mod tests {
         let labels: Vec<String> = provider
             .get_completions_with_path(source, source.len(), None)
             .into_iter()
-            .map(|item| item.label)
+            .map(|item| item.label.into_owned())
             .collect();
 
         assert!(
@@ -4416,7 +4493,8 @@ mod tests {
             false,
         );
         let uncached = uncached_provider.get_completions_with_path(source, source.len(), None);
-        let mut uncached_labels: Vec<String> = uncached.iter().map(|c| c.label.clone()).collect();
+        let mut uncached_labels: Vec<String> =
+            uncached.iter().map(|c| c.label.to_string()).collect();
         uncached_labels.sort();
 
         // Cached call — first invocation populates the cache.
@@ -4432,7 +4510,7 @@ mod tests {
         .with_scan_cache(Arc::clone(&cache));
         let cached_first = cached_provider.get_completions_with_path(source, source.len(), None);
         let mut cached_first_labels: Vec<String> =
-            cached_first.iter().map(|c| c.label.clone()).collect();
+            cached_first.iter().map(|c| c.label.to_string()).collect();
         cached_first_labels.sort();
 
         // Second invocation should hit the cache.
@@ -4447,7 +4525,7 @@ mod tests {
         .with_scan_cache(Arc::clone(&cache));
         let cached_second = cached_provider2.get_completions_with_path(source, source.len(), None);
         let mut cached_second_labels: Vec<String> =
-            cached_second.iter().map(|c| c.label.clone()).collect();
+            cached_second.iter().map(|c| c.label.to_string()).collect();
         cached_second_labels.sort();
 
         assert_eq!(
@@ -4670,7 +4748,7 @@ sub cross_folder_sub_b { 1 }
             None,
         );
 
-        let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
             !names.contains(&"cross_folder_sub_b"),
             "Strategy-B must reject cross_folder_sub_b from folder-b when doc is in folder-a;              got completions: {names:?}"
@@ -4720,7 +4798,7 @@ sub single_root_sub { 1 }
             None,
         );
 
-        let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
             names.contains(&"single_root_sub"),
             "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"

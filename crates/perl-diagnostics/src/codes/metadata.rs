@@ -76,6 +76,7 @@ impl DiagnosticCode {
             Self::InvalidPrototype => "PL302",
             Self::RoleConflict => "PL303",
             Self::MissingPodCoverage => "PL304",
+            Self::UnresolvedQualifiedCall => "PL305",
             Self::BarewordFilehandle => "PL400",
             Self::TwoArgOpen => "PL401",
             Self::ImplicitReturn => "PL402",
@@ -140,6 +141,7 @@ impl DiagnosticCode {
             "PL302" => "https://docs.perl-lsp.org/errors/PL302",
             "PL303" => "https://docs.perl-lsp.org/errors/PL303",
             "PL304" => "https://docs.perl-lsp.org/errors/PL304",
+            "PL305" => "https://docs.perl-lsp.org/errors/PL305",
             "PL400" => "https://docs.perl-lsp.org/errors/PL400",
             "PL401" => "https://docs.perl-lsp.org/errors/PL401",
             "PL402" => "https://docs.perl-lsp.org/errors/PL402",
@@ -187,7 +189,8 @@ impl DiagnosticCode {
             | Self::UndefinedVariable
             | Self::VariableRedeclaration
             | Self::DuplicateParameter
-            | Self::UnquotedBareword => DiagnosticSeverity::Error,
+            | Self::UnquotedBareword
+            | Self::UnresolvedQualifiedCall => DiagnosticSeverity::Error,
 
             // Warnings
             Self::MissingStrict
@@ -492,6 +495,11 @@ impl DiagnosticCode {
                 In Perl 5.42+, given/when/default and smartmatch are feature-gated \
                 (not removed) — add `use feature 'switch';` or `use feature 'smartmatch';`.",
             ),
+            Self::UnresolvedQualifiedCall => Some(
+                "Under `use strict`, package-qualified calls to undefined subroutines \
+                in an in-file package are flagged. Define the sub, correct the call, \
+                or load the package via `use`/`require` if it is external.",
+            ),
         }
     }
 
@@ -538,10 +546,10 @@ impl DiagnosticCode {
             || contains_diagnostic_phrase(&msg_lower, "prototype mismatch")
         {
             Some(Self::InvalidPrototype)
-        } else if contains_diagnostic_phrase(&msg_lower, "parse error")
-            || contains_diagnostic_phrase(&msg_lower, "syntax error")
-        {
+        } else if contains_diagnostic_phrase(&msg_lower, "parse error") {
             Some(Self::ParseError)
+        } else if contains_diagnostic_phrase(&msg_lower, "syntax error") {
+            Some(Self::SyntaxError)
         // Real Perl: "Use of uninitialized value $x in string at file.pl line N."
         // Also: "Use of uninitialized value in concatenation (.) or string at file.pl line N."
         } else if contains_diagnostic_phrase(&msg_lower, "uninitialized value") {
@@ -597,6 +605,7 @@ impl DiagnosticCode {
             "PL302" => Some(Self::InvalidPrototype),
             "PL303" => Some(Self::RoleConflict),
             "PL304" => Some(Self::MissingPodCoverage),
+            "PL305" => Some(Self::UnresolvedQualifiedCall),
             "PL400" => Some(Self::BarewordFilehandle),
             "PL401" => Some(Self::TwoArgOpen),
             "PL402" => Some(Self::ImplicitReturn),
@@ -702,5 +711,27 @@ mod tests {
         assert_eq!(DiagnosticCode::from_message("Can't locate Foo/Bar.pmx in @INC"), None,);
         assert_eq!(DiagnosticCode::from_message("Can't locate Foo/Bar.pm2 in @INC"), None,);
         assert_eq!(DiagnosticCode::from_message("Can't locate Foo/Bar.pm.bak in @INC"), None,);
+    }
+
+    #[test]
+    fn from_message_parse_error_maps_to_pl001() {
+        assert_eq!(
+            DiagnosticCode::from_message("parse error at file.pl line 5"),
+            Some(DiagnosticCode::ParseError),
+        );
+    }
+
+    #[test]
+    fn from_message_syntax_error_maps_to_pl002() {
+        // Regression guard for issue #2218: "syntax error" was mis-classified
+        // as ParseError (PL001) instead of SyntaxError (PL002).
+        assert_eq!(
+            DiagnosticCode::from_message("syntax error at file.pl line 5"),
+            Some(DiagnosticCode::SyntaxError),
+        );
+        assert_eq!(
+            DiagnosticCode::from_message("Bareword found where operator expected (syntax error)"),
+            Some(DiagnosticCode::SyntaxError),
+        );
     }
 }

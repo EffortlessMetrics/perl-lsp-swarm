@@ -8,7 +8,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct AgentReceipt {
+pub struct AgentLeaseReceipt {
     pub schema_version: u32,
     pub task_id: String,
     pub snapshot_id: String,
@@ -32,14 +32,14 @@ pub fn validate(receipt_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read_receipt(path: &Path) -> Result<AgentReceipt> {
+fn read_receipt(path: &Path) -> Result<AgentLeaseReceipt> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("reading receipt JSON from {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("parsing receipt JSON from {}", path.display()))
 }
 
-fn validate_core_fields(receipt: &AgentReceipt) -> Result<()> {
+fn validate_core_fields(receipt: &AgentLeaseReceipt) -> Result<()> {
     if receipt.task_id.trim().is_empty() {
         bail!("task_id must not be empty");
     }
@@ -52,7 +52,7 @@ fn validate_core_fields(receipt: &AgentReceipt) -> Result<()> {
     Ok(())
 }
 
-fn validate_against_lease(receipt: &AgentReceipt, lease: &AgentLease) -> Result<()> {
+fn validate_against_lease(receipt: &AgentLeaseReceipt, lease: &AgentLease) -> Result<()> {
     if receipt.task_id != lease.task.task_id {
         bail!("task_id mismatch: receipt={}, lease={}", receipt.task_id, lease.task.task_id);
     }
@@ -180,18 +180,18 @@ mod tests {
         for (field, receipt) in [
             (
                 "task_id",
-                AgentReceipt { task_id: " ".to_string(), ..valid_receipt("comment_upsert") },
+                AgentLeaseReceipt { task_id: " ".to_string(), ..valid_receipt("comment_upsert") },
             ),
             (
                 "idempotency_key",
-                AgentReceipt {
+                AgentLeaseReceipt {
                     idempotency_key: " ".to_string(),
                     ..valid_receipt("comment_upsert")
                 },
             ),
             (
                 "mutation",
-                AgentReceipt { mutation: " ".to_string(), ..valid_receipt("comment_upsert") },
+                AgentLeaseReceipt { mutation: " ".to_string(), ..valid_receipt("comment_upsert") },
             ),
         ] {
             let err = validate_core_fields(&receipt)
@@ -220,7 +220,7 @@ mod tests {
             (
                 "task_id",
                 "task_id mismatch",
-                AgentReceipt {
+                AgentLeaseReceipt {
                     task_id: "other-task".to_string(),
                     ..valid_receipt("comment_upsert")
                 },
@@ -228,7 +228,7 @@ mod tests {
             (
                 "snapshot_id",
                 "snapshot_id mismatch",
-                AgentReceipt {
+                AgentLeaseReceipt {
                     snapshot_id: "other-snapshot".to_string(),
                     ..valid_receipt("comment_upsert")
                 },
@@ -236,7 +236,7 @@ mod tests {
             (
                 "head_sha",
                 "stale head",
-                AgentReceipt {
+                AgentLeaseReceipt {
                     head_sha: "other-head".to_string(),
                     ..valid_receipt("comment_upsert")
                 },
@@ -244,7 +244,7 @@ mod tests {
             (
                 "required_output_schema",
                 "required_output_schema mismatch",
-                AgentReceipt {
+                AgentLeaseReceipt {
                     required_output_schema: "other.schema".to_string(),
                     ..valid_receipt("comment_upsert")
                 },
@@ -314,8 +314,8 @@ mod tests {
         Ok(())
     }
 
-    fn valid_receipt(mutation: &str) -> AgentReceipt {
-        AgentReceipt {
+    fn valid_receipt(mutation: &str) -> AgentLeaseReceipt {
+        AgentLeaseReceipt {
             schema_version: 1,
             task_id: "task-6853".to_string(),
             snapshot_id: "snap-001".to_string(),

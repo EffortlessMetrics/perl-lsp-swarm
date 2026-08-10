@@ -164,10 +164,10 @@ fn is_export_variable(node: &Node) -> bool {
 fn collect_typeglob_names(node: &Node) -> Vec<String> {
     let mut names = Vec::new();
     walk_node(node, &mut |n| {
-        if let NodeKind::Assignment { lhs, .. } = &n.kind {
-            if let NodeKind::Typeglob { name } = &lhs.kind {
-                names.push(name.clone());
-            }
+        if let NodeKind::Assignment { lhs, .. } = &n.kind
+            && let NodeKind::Typeglob { name } = &lhs.kind
+        {
+            names.push(name.clone());
         }
     });
     names
@@ -199,10 +199,10 @@ fn collect_constant_names(node: &Node) -> Vec<String> {
             } else {
                 // args: ["NAME", "=>", "value", ...]
                 // The first token is the constant name.
-                if let Some(name) = args.first() {
-                    if is_valid_identifier(name) {
-                        names.push(name.clone());
-                    }
+                if let Some(name) = args.first()
+                    && is_valid_identifier(name)
+                {
+                    names.push(name.clone());
                 }
             }
         }

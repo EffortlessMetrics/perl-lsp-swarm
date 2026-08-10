@@ -6,6 +6,7 @@
 //! the security policy themselves.
 
 use crate::providers::completion_item::{CompletionItem, CompletionItemKind, InsertTextFormat};
+use std::borrow::Cow;
 
 #[cfg(test)]
 pub(crate) static CWD_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
@@ -114,13 +115,13 @@ pub fn complete_file_paths(
             build_completion_path(&dir_part, file_name, entry.file_type().is_dir());
         let (detail, documentation) = file_completion_metadata(&entry);
         completions.push(CompletionItem {
-            label: completion_path.clone(),
+            label: Cow::Owned(completion_path.clone()),
             kind: CompletionItemKind::File,
-            detail: Some(detail),
-            documentation,
-            insert_text: Some(completion_path.clone()),
-            sort_text: Some(format!("1_{completion_path}")),
-            filter_text: Some(completion_path.clone()),
+            detail: Some(Cow::Owned(detail)),
+            documentation: documentation.map(Cow::Owned),
+            insert_text: Some(Cow::Owned(completion_path.clone())),
+            sort_text: Some(Cow::Owned(format!("1_{completion_path}"))),
+            filter_text: Some(Cow::Owned(completion_path.clone())),
             additional_edits: Vec::new(),
             text_edit_range: Some((context.prefix_start, context.position)),
             commit_characters: None,
@@ -228,7 +229,7 @@ mod tests {
 
         let context = FileCompletionContext::new("fixtures/", 0, "fixtures/".len());
         let completions = complete_file_paths(&context, &|| false);
-        let labels: Vec<&str> = completions.iter().map(|item| item.label.as_str()).collect();
+        let labels: Vec<&str> = completions.iter().map(|item| item.label.as_ref()).collect();
 
         assert_eq!(
             labels,

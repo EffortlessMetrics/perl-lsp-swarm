@@ -422,11 +422,9 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     // `:ALL` is handled via `use_default` above: we do not enumerate EXPORT_OK,
     // so the default set is our best-effort superset for known bundles.
     let mut symbols: BTreeSet<String> = BTreeSet::new();
-    if use_default {
-        if let Some(defaults) = default_set {
-            for &sym in defaults {
-                symbols.insert(sym.to_string());
-            }
+    if use_default && let Some(defaults) = default_set {
+        for &sym in defaults {
+            symbols.insert(sym.to_string());
         }
     }
     for name in &positives {

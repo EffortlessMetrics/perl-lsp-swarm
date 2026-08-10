@@ -14,12 +14,14 @@ const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier* (e.g. `(a+)+` or `([a-z]{2,5})+`), a backreference,
-// or a lookaround. A single character class followed by one quantifier
-// (`[^"]+`, `[0-9]+`) is linear-time and safe — flagging it produced false
-// "ambiguous" classifications for ordinary step definitions, including the
-// `"([^"]+)"` patterns this module generates itself (see buildGeneratedStepPattern).
+// a lookaround, OR a *quantified group containing alternation* where the
+// alternatives can overlap (e.g. `(a|aa)+` or `(a|a)*`). Disjoint alternatives
+// like `(cat|dog)+` are linear-time and safe — each position can match at most
+// one branch, so there is no ambiguity to backtrack through (#6167).
+// A single character class followed by one quantifier (`[^"]+`, `[0-9]+`) is
+// also linear-time and safe.
 // Keep this in sync with the identical constant in gherkinProviders.ts.
-const POTENTIALLY_EXPENSIVE_REGEX_RE =
+const POTENTIALLY_EXPLOSIVE_REGEX_RE =
   /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 
 export type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But';
@@ -396,5 +398,63 @@ function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
     return false;
   }
 
-  return !POTENTIALLY_EXPENSIVE_REGEX_RE.test(source);
+  if (POTENTIALLY_EXPLOSIVE_REGEX_RE.test(source)) {
+    return false;
+  }
+
+  // Check for overlapping quantified alternations (#6167):
+  // `(a|aa)+` is dangerous because both branches can match at the same
+  // position. `(cat|dog)+` is safe because the branches are disjoint.
+  // We flag a quantified group containing alternation only when at least
+  // two branches share a possible first character.
+  return !hasOverlappingQuantifiedAlternation(source);
+}
+
+/// Detect quantified groups containing alternation where branches can overlap.
+///
+/// Returns true if the regex contains a pattern like `(a|aa)+` where at least
+/// two alternation branches share a possible first character, creating
+/// catastrophic backtracking potential. Disjoint alternations like
+/// `(cat|dog)+` return false (#6167).
+function hasOverlappingQuantifiedAlternation(source: string): boolean {
+  // Find all quantified groups: (...) followed by +, *, or {n,m}
+  // For each, check if it contains alternation with overlapping branches.
+  const groupQuantifierRe = /\(([^)]*)\)([+*]|\{[0-9]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = groupQuantifierRe.exec(source)) !== null) {
+    const groupContent = match[1];
+    if (groupContent === undefined || !groupContent.includes('|')) {
+      continue;
+    }
+    // Split into alternation branches (top-level | only — naive but effective)
+    const branches = groupContent.split('|');
+    if (branches.length < 2) {
+      continue;
+    }
+    // Extract the first literal character of each branch
+    const firstChars = new Set<string>();
+    for (const branch of branches) {
+      const trimmed = branch.trim();
+      if (trimmed.length === 0) {
+        // Empty branch matches anything — overlapping with all
+        return true;
+      }
+      // Skip character classes, groups, anchors, backreferences —
+      // only compare literal first characters
+      const firstChar = trimmed[0];
+      if (firstChar === undefined) {
+        continue;
+      }
+      if (firstChar === '\\' || firstChar === '[' || firstChar === '(' ||
+          firstChar === '^' || firstChar === '$' || firstChar === '.') {
+        // Wildcard or complex — conservatively assume overlap
+        return true;
+      }
+      if (firstChars.has(firstChar)) {
+        return true;
+      }
+      firstChars.add(firstChar);
+    }
+  }
+  return false;
 }

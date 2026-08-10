@@ -96,14 +96,12 @@ pub fn capabilities_json(build: BuildFlags) -> Value {
     // We advertise PlainText (1) and Snippet (2) modes, which we already support.
     // Clients can use this to determine if they should rely on server-provided
     // insertReplaceEdit and insertTextFormat/insertTextMode negotiation.
-    if build.completion {
-        if let Some(comp_provider) = json["completionProvider"].as_object_mut() {
-            if let Some(comp_item) =
-                comp_provider.get_mut("completionItem").and_then(Value::as_object_mut)
-            {
-                comp_item.insert("insertTextModes".to_string(), serde_json::json!([1, 2]));
-            }
-        }
+    if build.completion
+        && let Some(comp_provider) = json["completionProvider"].as_object_mut()
+        && let Some(comp_item) =
+            comp_provider.get_mut("completionItem").and_then(Value::as_object_mut)
+    {
+        comp_item.insert("insertTextModes".to_string(), serde_json::json!([1, 2]));
     }
 
     json
@@ -166,7 +164,10 @@ pub fn default_capabilities() -> ServerCapabilities {
 mod tests {
     use super::*;
     use crate::features::contracts::feature_ids_from_caps;
-    use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncSaveOptions};
+    use lsp_types::{
+        CodeActionKind, CodeActionProviderCapability, OneOf, SemanticTokensServerCapabilities,
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
+    };
     use std::collections::BTreeSet;
 
     /// Feature IDs that `to_feature_ids()` correctly emits but
@@ -449,6 +450,370 @@ mod tests {
             save,
             Some(&TextDocumentSyncSaveOptions::Supported(true)),
             "textDocumentSync.save must advertise didSave support"
+        );
+    }
+
+    // --------------------------------------------------------------------------
+    // Independent unit assertions for snapshot-only-guarded capability fields.
+    //
+    // Each of these tests pins a specific ServerCapabilities field that was
+    // previously only guarded by the `lsp_cap_snap` snapshot fixtures. Snapshots
+    // can be regenerated away; an independent assertion fails loudly and cannot
+    // be. The expected values deliberately duplicate the source lists rather than
+    // sharing a constant — sharing would recreate the single-source-of-truth gap
+    // that allows silent drift (see issue #5357 and #5353/#5354 for context).
+    // --------------------------------------------------------------------------
+
+    /// Pin the `textDocumentSync.change` kind as FULL and `openClose` as true.
+    ///
+    /// These are the core sync options for every client — changing them silently
+    /// would break incremental-edit handling for all connected editors.
+    #[test]
+    fn text_document_sync_advertises_full_sync_and_open_close() {
+        let caps = capabilities_for(BuildFlags::default());
+        match caps.text_document_sync.as_ref() {
+            Some(TextDocumentSyncCapability::Options(opts)) => {
+                assert_eq!(
+                    opts.change,
+                    Some(TextDocumentSyncKind::FULL),
+                    "textDocumentSync.change must be FULL (1) — the server reparses the whole \
+                     document on every didChange; INCREMENTAL would be inaccurate"
+                );
+                assert_eq!(
+                    opts.open_close,
+                    Some(true),
+                    "textDocumentSync.openClose must be true — didOpen/didClose are required \
+                     for workspace tracking"
+                );
+            }
+            other => panic!("expected TextDocumentSyncCapability::Options, got {other:?}"),
+        }
+    }
+
+    /// Pin the exact set of `codeActionProvider.codeActionKinds` advertised to
+    /// clients.
+    ///
+    /// `refactor.inline` must NOT appear: no inline action is implemented and
+    /// advertising it would make clients send requests the server cannot handle.
+    /// `source.modernize` must appear: it was added in PR #5384 but was missing
+    /// from the JSON fixtures until they were regenerated (#5357).
+    ///
+    /// The expected list intentionally duplicates `sections.rs::code_action_kinds`
+    /// rather than sharing a constant — divergence between the two is the thing
+    /// this test is meant to catch.
+    #[test]
+    fn code_action_kinds_include_exact_advertised_set() {
+        let flags = BuildFlags {
+            code_actions: true,
+            source_organize_imports: true,
+            ..BuildFlags::default()
+        };
+        let caps = capabilities_for(flags);
+
+        let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
+            Some(CodeActionProviderCapability::Options(opts)) => opts
+                .code_action_kinds
+                .as_ref()
+                .expect("code_action_kinds must be Some when code_actions is enabled")
+                .iter()
+                .map(|k| k.as_str().to_string())
+                .collect(),
+            other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
+        };
+
+        // Duplicate the full ordered list from sections.rs::code_action_kinds().
+        let expected: &[&str] = &[
+            "quickfix",
+            "source.organizeImports",
+            "refactor",
+            "refactor.extract",
+            "refactor.rewrite",
+            "source.fixAll",
+            "source.modernize",
+        ];
+        assert_eq!(
+            kinds.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected,
+            "codeActionKinds must match the exact ordered list — extra kinds (e.g. \
+             refactor.inline) or omissions (e.g. source.modernize) break client filtering"
+        );
+    }
+
+    /// Pin the `signatureHelpProvider.triggerCharacters` as `["(", ","]`.
+    ///
+    /// These are the only characters that open or re-open the signature-help
+    /// popup. Removing or adding characters here silently changes editor UX.
+    #[test]
+    fn signature_help_trigger_characters_are_paren_and_comma() {
+        let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        let triggers = caps
+            .signature_help_provider
+            .as_ref()
+            .expect("signatureHelpProvider must be present when signature_help is enabled")
+            .trigger_characters
+            .as_ref()
+            .expect("signatureHelpProvider.triggerCharacters must be Some");
+
+        // Duplicate the expected list from sections.rs — divergence is the defect.
+        let expected: &[&str] = &["(", ","];
+        assert_eq!(
+            triggers.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected,
+            "signatureHelpProvider.triggerCharacters must be exactly [\"(\", \",\"]"
+        );
+    }
+
+    /// Pin the `signatureHelpProvider.retriggerCharacters`.
+    ///
+    /// Retrigger characters refresh the signature popup when already visible
+    /// (e.g. when the user types another argument). Missing one silently removes
+    /// that refresh point without any client error.
+    #[test]
+    fn signature_help_retrigger_characters_include_required_set() {
+        let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        let retriggers = caps
+            .signature_help_provider
+            .as_ref()
+            .expect("signatureHelpProvider must be present when signature_help is enabled")
+            .retrigger_characters
+            .as_ref()
+            .expect("signatureHelpProvider.retriggerCharacters must be Some");
+
+        // Duplicate the expected list from sections.rs.
+        let expected: &[&str] = &[",", "@", "%", "{", "["];
+        assert_eq!(
+            retriggers.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected,
+            "signatureHelpProvider.retriggerCharacters must be exactly [\",\", \"@\", \"%\", \
+             \"{{\" , \"[\"]"
+        );
+    }
+
+    /// Pin the complete `semanticTokensProvider.legend.tokenTypes` list.
+    ///
+    /// The token-type index is the wire format — client semantic-highlighting
+    /// rules depend on index position, not name. Removing or reordering a type
+    /// silently breaks highlighting for every client that cached the legend.
+    /// The custom types (`sql_string`, `sql_heredoc_keyword`, `json_heredoc_key`,
+    /// `label`) must appear at the end of the standard types.
+    #[test]
+    fn semantic_token_types_are_exact_ordered_list() {
+        let flags = BuildFlags { semantic_tokens: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        let types: Vec<String> = match caps.semantic_tokens_provider.as_ref() {
+            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
+                opts.legend.token_types.iter().map(|t| t.as_str().to_string()).collect()
+            }
+            other => panic!(
+                "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}"
+            ),
+        };
+
+        // Duplicate the full ordered list from sections.rs::semantic_token_types().
+        // Index position is the wire format — order matters.
+        let expected: &[&str] = &[
+            "namespace",
+            "type",
+            "class",
+            "interface",
+            "enum",
+            "enumMember",
+            "typeParameter",
+            "function",
+            "method",
+            "property",
+            "macro",
+            "variable",
+            "parameter",
+            "keyword",
+            "modifier",
+            "comment",
+            "string",
+            "number",
+            "regexp",
+            "operator",
+            // Perl-specific extensions:
+            "sql_string",          // DBI/SQL string context (#2337)
+            "sql_heredoc_keyword", // SQL keyword in <<SQL heredoc (#2059)
+            "json_heredoc_key",    // JSON key in <<JSON heredoc (#2059)
+            "label", // statement labels (lsp-types 0.97 lacks SemanticTokenType::LABEL)
+        ];
+
+        assert_eq!(
+            types.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected,
+            "semanticTokensProvider.legend.tokenTypes must match the exact ordered list — \
+             index position is the wire format, reordering or removing a type breaks clients"
+        );
+    }
+
+    /// Pin the complete `semanticTokensProvider.legend.tokenModifiers` list.
+    ///
+    /// Token modifiers are advertised as a bitmask — each modifier occupies
+    /// a bit position determined by its index in this list. Reordering or
+    /// removing a modifier silently corrupts all semantic highlighting.
+    #[test]
+    fn semantic_token_modifiers_are_exact_ordered_list() {
+        let flags = BuildFlags { semantic_tokens: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        let modifiers: Vec<String> = match caps.semantic_tokens_provider.as_ref() {
+            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
+                opts.legend.token_modifiers.iter().map(|m| m.as_str().to_string()).collect()
+            }
+            other => panic!(
+                "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}"
+            ),
+        };
+
+        // Duplicate the full ordered list from sections.rs::semantic_token_modifiers().
+        // Bitmask position matters — order is part of the wire contract.
+        let expected: &[&str] = &[
+            "declaration",
+            "definition",
+            "readonly",
+            "static",
+            "deprecated",
+            "abstract",
+            "async",
+            "modification",
+            "documentation",
+            "defaultLibrary",
+            // Perl-specific modifiers:
+            "scalarVariable",
+            "arrayVariable",
+            "hashVariable",
+        ];
+
+        assert_eq!(
+            modifiers.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected,
+            "semanticTokensProvider.legend.tokenModifiers must match the exact ordered list — \
+             bitmask position is the wire format, reordering or removing a modifier breaks clients"
+        );
+    }
+
+    /// Assert `documentSymbolProvider` is advertised when the flag is enabled.
+    ///
+    /// This is a simple presence guard. A snapshot would catch the same thing,
+    /// but an independent assertion cannot be regenerated away.
+    #[test]
+    fn document_symbol_provider_advertised_when_enabled() {
+        let flags = BuildFlags { document_symbol: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        match caps.document_symbol_provider.as_ref() {
+            Some(OneOf::Left(true)) => {}
+            Some(OneOf::Left(false)) => {
+                panic!(
+                    "documentSymbolProvider must be true when document_symbol is enabled, \
+                     not false"
+                );
+            }
+            other => panic!(
+                "documentSymbolProvider must be Some(true) when document_symbol is enabled, \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// Assert `documentSymbolProvider` is absent when the flag is disabled.
+    #[test]
+    fn document_symbol_provider_absent_when_disabled() {
+        let flags = BuildFlags { document_symbol: false, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        assert!(
+            caps.document_symbol_provider.is_none(),
+            "documentSymbolProvider must be absent when document_symbol is disabled"
+        );
+    }
+
+    /// Assert `workspaceSymbolProvider` is advertised with `resolveProvider: true`
+    /// when `workspace_symbol_resolve` is enabled.
+    ///
+    /// The resolve variant is required for on-demand name resolution of
+    /// workspace symbols without serializing the full detail up-front.
+    #[test]
+    fn workspace_symbol_provider_advertises_resolve_when_enabled() {
+        let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        match caps.workspace_symbol_provider.as_ref() {
+            Some(OneOf::Right(opts)) => {
+                assert_eq!(
+                    opts.resolve_provider,
+                    Some(true),
+                    "workspaceSymbolProvider.resolveProvider must be true when \
+                     workspace_symbol_resolve is enabled"
+                );
+            }
+            Some(OneOf::Left(_)) => {
+                panic!(
+                    "expected workspaceSymbolProvider to use the Options variant (with \
+                     resolveProvider), not the simple boolean variant, when \
+                     workspace_symbol_resolve is enabled"
+                );
+            }
+            None => {
+                panic!(
+                    "workspaceSymbolProvider must be advertised when workspace_symbol_resolve \
+                     is enabled"
+                );
+            }
+        }
+    }
+
+    /// Assert `codeActionProvider` is absent when `code_actions` is disabled —
+    /// regression guard against accidental unconditional wiring.
+    #[test]
+    fn code_action_provider_absent_when_disabled() {
+        let flags = BuildFlags { code_actions: false, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        assert!(
+            caps.code_action_provider.is_none(),
+            "codeActionProvider must be absent when code_actions is disabled"
+        );
+    }
+
+    /// Assert the `source.fixAll` kind is advertised alongside `quickfix`.
+    ///
+    /// `source.fixAll` aggregates every safe quickfix into a single invocation;
+    /// clients use it for "fix all in file" commands. The kinds are independent
+    /// (both must appear), so a targeted test catches if one is dropped.
+    #[test]
+    fn code_action_source_fix_all_and_quickfix_are_both_present() {
+        let flags = BuildFlags {
+            code_actions: true,
+            source_organize_imports: true,
+            ..BuildFlags::default()
+        };
+        let caps = capabilities_for(flags);
+
+        let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
+            Some(CodeActionProviderCapability::Options(opts)) => opts
+                .code_action_kinds
+                .as_ref()
+                .expect("code_action_kinds must be Some")
+                .iter()
+                .map(|k| k.as_str().to_string())
+                .collect(),
+            other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
+        };
+
+        assert!(
+            kinds.iter().any(|k| k == CodeActionKind::QUICKFIX.as_str()),
+            "codeActionKinds must contain \"quickfix\""
+        );
+        assert!(
+            kinds.iter().any(|k| k == CodeActionKind::SOURCE_FIX_ALL.as_str()),
+            "codeActionKinds must contain \"source.fixAll\""
         );
     }
 }

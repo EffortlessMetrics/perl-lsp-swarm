@@ -239,7 +239,7 @@ fn try_classify_standalone_class_import(node: &Node, file_id: FileId) -> Option<
         file_id: Some(file_id),
         anchor_id: Some(anchor_id),
         scope_id: None,
-        span_start_byte: Some(node.location.start as u32),
+        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
     })
 }
 
@@ -291,7 +291,7 @@ fn walk_statements(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpe
                 file_id: Some(file_id),
                 anchor_id: Some(anchor_id),
                 scope_id: None,
-                span_start_byte: Some(require_node.location.start as u32),
+                span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
             });
             consumed.insert(i);
             consumed.insert(i + 1);
@@ -306,7 +306,7 @@ fn walk_statements(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpe
                 file_id: Some(file_id),
                 anchor_id: Some(anchor_id),
                 scope_id: None,
-                span_start_byte: Some(require_node.location.start as u32),
+                span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
             });
             consumed.insert(i);
         }
@@ -351,7 +351,7 @@ fn make_dynamic_require(file_id: FileId, node: &Node) -> ImportSpec {
         file_id: Some(file_id),
         anchor_id: Some(anchor_id),
         scope_id: None,
-        span_start_byte: Some(node.location.start as u32),
+        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
     }
 }
 
@@ -479,7 +479,7 @@ fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> 
         file_id: Some(file_id),
         anchor_id: Some(anchor_id),
         scope_id: None,
-        span_start_byte: Some(node.location.start as u32),
+        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
     })
 }
 

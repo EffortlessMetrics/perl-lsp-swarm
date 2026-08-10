@@ -840,7 +840,7 @@ impl Scheduler {
                 // the method name is enough for the user to know what broke.
                 tracing::error!(method = %method, "Request handler panicked: {detail}");
                 HandlerOutcome::Panicked(JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: "2.0",
                     id: Some(id),
                     result: None,
                     error: Some(JsonRpcError {
@@ -933,7 +933,7 @@ impl Scheduler {
             ),
         };
         let cancelled_response = JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id,
             result: None,
             error: Some(JsonRpcError { code: REQUEST_CANCELLED, message, data: None }),
@@ -953,21 +953,20 @@ impl Scheduler {
         mutation_notify: &Arc<Notify>,
     ) {
         // Stale check 1: position dedupe — newer same-position request supersedes.
-        if let Some(ref key) = queued.dedup_key {
-            if let Some(&latest) = latest_seq.get(key) {
-                if queued.arrival_seq < latest {
-                    if let Some(id) = queued.request.id.as_ref() {
-                        server.clear_request_pending(id);
-                    }
-                    Self::send_cancellation(
-                        server,
-                        queued.request.id,
-                        &queued.request.method,
-                        StaleReason::PositionSuperseded,
-                    );
-                    return;
-                }
+        if let Some(ref key) = queued.dedup_key
+            && let Some(&latest) = latest_seq.get(key)
+            && queued.arrival_seq < latest
+        {
+            if let Some(id) = queued.request.id.as_ref() {
+                server.clear_request_pending(id);
             }
+            Self::send_cancellation(
+                server,
+                queued.request.id,
+                &queued.request.method,
+                StaleReason::PositionSuperseded,
+            );
+            return;
         }
 
         // Stale check 2: generation freshness — document moved on between
@@ -2384,7 +2383,7 @@ mod tests {
         // Guards the refactor: the non-panicking paths must behave exactly as
         // the previous `if let Ok(Some(response))` did.
         let response = JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id: Some(JsonRpcId::Integer(3)),
             result: Some(serde_json::json!({"ok": true})),
             error: None,

@@ -1,0 +1,54 @@
+name: Security Reconciliation Ledger
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.ci/security/may-2026-findings.json'
+      - '.ci/security/may-2026-findings/**'
+      - 'docs/security/may-2026-findings.md'
+      - 'scripts/ci/check_security_reconciliation.py'
+      - 'scripts/ci/security_reconciliation_model.py'
+      - 'scripts/ci/security_reconciliation_io.py'
+      - 'scripts/ci/test_check_security_reconciliation.py'
+      - '.github/workflows/security-reconciliation.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.ci/security/may-2026-findings.json'
+      - '.ci/security/may-2026-findings/**'
+      - 'docs/security/may-2026-findings.md'
+      - 'scripts/ci/check_security_reconciliation.py'
+      - 'scripts/ci/security_reconciliation_model.py'
+      - 'scripts/ci/security_reconciliation_io.py'
+      - 'scripts/ci/test_check_security_reconciliation.py'
+      - '.github/workflows/security-reconciliation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Security reconciliation ledger
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checkout identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Run focused negative controls
+        run: python3 scripts/ci/test_check_security_reconciliation.py
+
+      - name: Validate source rows and generated status
+        run: python3 scripts/ci/check_security_reconciliation.py --check

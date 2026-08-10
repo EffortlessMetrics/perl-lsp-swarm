@@ -17,6 +17,11 @@ use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
@@ -103,6 +108,8 @@ pub(crate) enum SourceBackedReferenceDecline {
     ByteOffsetOutOfRange,
     /// No workspace index was available.
     WorkspaceIndexUnavailable,
+    /// The workspace index is stale relative to the request document.
+    WorkspaceIndexStale,
     /// Semantic queries could not be opened for the request URI.
     SemanticQueriesUnavailableForUri,
     /// Entity resolution did not produce one exact entity.
@@ -144,6 +151,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::WorkspaceIndexUnavailable => {
                         ("workspace_index", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::WorkspaceIndexStale => {
+                        ("workspace_index_stale", false, 0, None)
                     }
                     SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri => {
                         ("semantic_queries", false, 0, None)
@@ -576,6 +586,7 @@ impl LspServer {
     ///
     /// Includes deadline enforcement to prevent blocking on large workspaces.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    #[tracing::instrument(skip(self, params), name = "textDocument/references")]
     pub(crate) fn handle_references(
         &self,
         params: Option<Value>,
@@ -660,7 +671,6 @@ impl LspServer {
             let req_version =
                 params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
             self.ensure_latest(uri, req_version)?;
-            let workspace_index_stale_for_document = self.workspace_index_stale_for_document(uri);
             let include_declaration = if let Some(context) = params.get("context") {
                 context["includeDeclaration"].as_bool().unwrap_or(true)
             } else {
@@ -744,11 +754,17 @@ impl LspServer {
                     #[cfg(feature = "workspace")]
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
 
+                    // Sample after the readiness wait and before index/semantic use; do
+                    // not call while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
+                    #[cfg(feature = "workspace")]
+                    let workspace_index_stale_for_any_open_document =
+                        self.workspace_index_stale_for_any_open_document();
+
                     // Check index state and use appropriate search strategy
                     #[cfg(feature = "workspace")]
                     {
                         let mut access_mode = route_index_access(self.coordinator());
-                        if workspace_index_stale_for_document {
+                        if workspace_index_stale_for_any_open_document {
                             access_mode = IndexAccessMode::None;
                         }
                         // A Full index can still fall through to semantic_analyzer when no symbol
@@ -812,7 +828,7 @@ impl LspServer {
                                                 );
                                                 let result_count = live_locations.len();
                                                 return Ok((
-                                                    Some(json!(live_locations)),
+                                                    Some(to_json_array(&live_locations)),
                                                     ReferencesAnsweringTier::SemanticSourceBacked,
                                                     index_state,
                                                     result_count,
@@ -836,10 +852,10 @@ impl LspServer {
                                     let mut all_refs = index.find_refs(symbol_key);
 
                                     // Add the definition if includeDeclaration is true
-                                    if include_declaration {
-                                        if let Some(def) = index.find_def(symbol_key) {
-                                            all_refs.push(def);
-                                        }
+                                    if include_declaration
+                                        && let Some(def) = index.find_def(symbol_key)
+                                    {
+                                        all_refs.push(def);
                                     }
 
                                     let mut workspace_locations: Vec<Value> = Vec::new();
@@ -866,7 +882,7 @@ impl LspServer {
                                         let index_count = workspace_locations.len();
                                         workspace_locations.truncate(cap);
                                         return Ok((
-                                            Some(json!(workspace_locations)),
+                                            Some(to_json_array(&workspace_locations)),
                                             ReferencesAnsweringTier::WorkspaceExact,
                                             index_state,
                                             index_count,
@@ -996,7 +1012,7 @@ impl LspServer {
                                             "Found total references via combined search"
                                         );
                                         return Ok((
-                                            Some(json!(all_combined_locations)),
+                                            Some(to_json_array(&all_combined_locations)),
                                             classify_combined_tier(index_count, text_count),
                                             index_state,
                                             index_count,
@@ -1035,7 +1051,7 @@ impl LspServer {
                                         if !lsp_locations.is_empty() {
                                             let result_count = lsp_locations.len();
                                             return Ok((
-                                                Some(json!(lsp_locations)),
+                                                Some(to_json_array(&lsp_locations)),
                                                 ReferencesAnsweringTier::WorkspaceExact,
                                                 index_state,
                                                 result_count,
@@ -1058,152 +1074,136 @@ impl LspServer {
                                 // Use cached regex to avoid per-request compilation overhead
                                 if let Some(qualified_name_re) = get_qualified_name_regex() {
                                     for captures in qualified_name_re.captures_iter(&text_around) {
-                                        if let Some(m) = captures.get(1) {
-                                            if cursor_in_text >= m.start()
-                                                && cursor_in_text <= m.end()
-                                            {
-                                                let parts: Vec<&str> =
-                                                    m.as_str().split("::").collect();
-                                                if parts.len() >= 2 {
-                                                    // Only search for references when the cursor
-                                                    // is on the final component (sub/function name).
-                                                    // If the cursor is on a package-prefix component
-                                                    // (e.g. `Foo` in `Foo::bar`), skip this match
-                                                    // so we do not return references to the wrong
-                                                    // symbol.
-                                                    let cursor_rel =
-                                                        cursor_in_text.saturating_sub(m.start());
-                                                    let last_sep_offset =
-                                                        m.as_str().rfind("::").map_or(0, |p| p + 2);
-                                                    if cursor_rel < last_sep_offset {
-                                                        break;
-                                                    }
+                                        if let Some(m) = captures.get(1)
+                                            && cursor_in_text >= m.start()
+                                            && cursor_in_text <= m.end()
+                                        {
+                                            let parts: Vec<&str> = m.as_str().split("::").collect();
+                                            if parts.len() >= 2 {
+                                                // Only search for references when the cursor
+                                                // is on the final component (sub/function name).
+                                                // If the cursor is on a package-prefix component
+                                                // (e.g. `Foo` in `Foo::bar`), skip this match
+                                                // so we do not return references to the wrong
+                                                // symbol.
+                                                let cursor_rel =
+                                                    cursor_in_text.saturating_sub(m.start());
+                                                let last_sep_offset =
+                                                    m.as_str().rfind("::").map_or(0, |p| p + 2);
+                                                if cursor_rel < last_sep_offset {
+                                                    break;
+                                                }
 
-                                                    let name = parts
-                                                        .last()
-                                                        .copied()
-                                                        .unwrap_or("")
-                                                        .to_string();
-                                                    let pkg = parts[..parts.len() - 1].join("::");
-                                                    let key = crate::workspace_index::SymbolKey {
-                                                        pkg: pkg.clone().into(),
-                                                        name: name.clone().into(),
-                                                        sigil: None,
-                                                        kind: crate::workspace_index::SymKind::Sub,
-                                                    };
+                                                let name =
+                                                    parts.last().copied().unwrap_or("").to_string();
+                                                let pkg = parts[..parts.len() - 1].join("::");
+                                                let key = crate::workspace_index::SymbolKey {
+                                                    pkg: pkg.clone().into(),
+                                                    name: name.clone().into(),
+                                                    sigil: None,
+                                                    kind: crate::workspace_index::SymKind::Sub,
+                                                };
 
-                                                    // Search for all references to this qualified symbol
-                                                    let mut all_refs = Vec::new();
+                                                // Search for all references to this qualified symbol
+                                                let mut all_refs = Vec::new();
 
-                                                    // Find references via symbol key
-                                                    let refs = index.find_refs(&key);
-                                                    all_refs.extend(refs);
+                                                // Find references via symbol key
+                                                let refs = index.find_refs(&key);
+                                                all_refs.extend(refs);
 
-                                                    // Also try with qualified name
-                                                    let symbol_name = format!("{}::{}", pkg, name);
-                                                    let alt_refs =
-                                                        index.find_references(&symbol_name);
-                                                    all_refs.extend(alt_refs);
+                                                // Also try with qualified name
+                                                let symbol_name = format!("{}::{}", pkg, name);
+                                                let alt_refs = index.find_references(&symbol_name);
+                                                all_refs.extend(alt_refs);
 
-                                                    // Add definition if includeDeclaration is true
-                                                    if include_declaration {
-                                                        if let Some(def) = index.find_def(&key) {
-                                                            all_refs.push(def);
-                                                        }
-                                                    }
+                                                // Add definition if includeDeclaration is true
+                                                if include_declaration
+                                                    && let Some(def) = index.find_def(&key)
+                                                {
+                                                    all_refs.push(def);
+                                                }
 
-                                                    if !all_refs.is_empty() {
-                                                        // Cap results
-                                                        let capped_refs: Vec<_> = all_refs
-                                                            .into_iter()
-                                                            .take(cap)
-                                                            .collect();
-                                                        // Convert internal Locations to LSP Locations
-                                                        let lsp_locations =
+                                                if !all_refs.is_empty() {
+                                                    // Cap results
+                                                    let capped_refs: Vec<_> =
+                                                        all_refs.into_iter().take(cap).collect();
+                                                    // Convert internal Locations to LSP Locations
+                                                    let lsp_locations =
                                                     crate::workspace_index::lsp_adapter::to_lsp_locations(capped_refs);
-                                                        if !lsp_locations.is_empty() {
-                                                            let result_count = lsp_locations.len();
-                                                            return Ok((
-                                                                Some(json!(lsp_locations)),
-                                                                ReferencesAnsweringTier::WorkspaceExact,
-                                                                index_state,
-                                                                result_count,
-                                                                0,
-                                                                start.elapsed().as_micros(),
-                                                                source_backed_attempt.clone(),
-                                                                fallback_receipt.clone(),
-                                                            ));
-                                                        }
+                                                    if !lsp_locations.is_empty() {
+                                                        let result_count = lsp_locations.len();
+                                                        return Ok((
+                                                            Some(to_json_array(&lsp_locations)),
+                                                            ReferencesAnsweringTier::WorkspaceExact,
+                                                            index_state,
+                                                            result_count,
+                                                            0,
+                                                            start.elapsed().as_micros(),
+                                                            source_backed_attempt.clone(),
+                                                            fallback_receipt.clone(),
+                                                        ));
                                                     }
+                                                }
 
-                                                    // Fallback: scan open documents for qualified name references
-                                                    // Snapshot only (uri, text) to minimize cloning overhead.
-                                                    // Re-acquires a fresh, brief documents-map lock only at
-                                                    // this point of use (#3396 off-lock provider consumption).
-                                                    //
-                                                    // `uri`'s own entry is pinned to `doc.text` (the
-                                                    // generation captured in `doc_owned` above) -- see
-                                                    // the identical rationale on the enhanced-fallback
-                                                    // snapshot above: `qualified_name` was derived from
-                                                    // that same capture, so this document must not be
-                                                    // re-read at a fresher generation for this search.
-                                                    let docs_snapshot = self
-                                                        .bounded_open_document_snapshot(
-                                                            uri,
-                                                            &doc.text,
-                                                            &fallback_budget,
-                                                            &mut fallback_receipt,
-                                                            typed_request_id.as_ref(),
-                                                        )?;
+                                                // Fallback: scan open documents for qualified name references
+                                                // Snapshot only (uri, text) to minimize cloning overhead.
+                                                // Re-acquires a fresh, brief documents-map lock only at
+                                                // this point of use (#3396 off-lock provider consumption).
+                                                //
+                                                // `uri`'s own entry is pinned to `doc.text` (the
+                                                // generation captured in `doc_owned` above) -- see
+                                                // the identical rationale on the enhanced-fallback
+                                                // snapshot above: `qualified_name` was derived from
+                                                // that same capture, so this document must not be
+                                                // re-read at a fresher generation for this search.
+                                                let docs_snapshot = self
+                                                    .bounded_open_document_snapshot(
+                                                        uri,
+                                                        &doc.text,
+                                                        &fallback_budget,
+                                                        &mut fallback_receipt,
+                                                        typed_request_id.as_ref(),
+                                                    )?;
 
-                                                    let mut all_locations = Vec::new();
-                                                    let qualified_name =
-                                                        format!("{}::{}", pkg, name);
-                                                    let Ok(search_regex) =
-                                                        regex::Regex::new(&format!(
-                                                            r"\b{}\b",
-                                                            regex::escape(&qualified_name)
-                                                        ))
-                                                    else {
-                                                        continue;
-                                                    };
+                                                let mut all_locations = Vec::new();
+                                                let qualified_name = format!("{}::{}", pkg, name);
+                                                let Ok(search_regex) = regex::Regex::new(&format!(
+                                                    r"\b{}\b",
+                                                    regex::escape(&qualified_name)
+                                                )) else {
+                                                    continue;
+                                                };
 
-                                                    'doc_scan: for (doc_uri, doc_text) in
-                                                        docs_snapshot
+                                                'doc_scan: for (doc_uri, doc_text) in docs_snapshot
+                                                {
+                                                    self.check_references_cancellation(
+                                                        typed_request_id.as_ref(),
+                                                        &mut fallback_receipt,
+                                                    )?;
+                                                    // Check deadline
+                                                    if start.elapsed() >= deadline {
+                                                        fallback_receipt.deadline_exhausted = true;
+                                                        fallback_receipt.fallback_completeness =
+                                                            "partial";
+                                                        fallback_receipt.fallback_reason = Some(
+                                                            "reference_scan_deadline_during_search"
+                                                                .to_owned(),
+                                                        );
+                                                        break 'doc_scan;
+                                                    }
+                                                    let lines: Vec<&str> =
+                                                        doc_text.lines().collect();
+                                                    for (line_num, line) in lines.iter().enumerate()
                                                     {
-                                                        self.check_references_cancellation(
-                                                            typed_request_id.as_ref(),
-                                                            &mut fallback_receipt,
-                                                        )?;
-                                                        // Check deadline
-                                                        if start.elapsed() >= deadline {
-                                                            fallback_receipt.deadline_exhausted =
-                                                                true;
-                                                            fallback_receipt
-                                                                .fallback_completeness = "partial";
-                                                            fallback_receipt.fallback_reason = Some(
-                                                                "reference_scan_deadline_during_search"
-                                                                    .to_owned(),
+                                                        for mat in search_regex.find_iter(line) {
+                                                            // Convert byte offsets to UTF-16 columns for LSP compliance
+                                                            let start_utf16 = byte_to_utf16_col(
+                                                                line,
+                                                                mat.start(),
                                                             );
-                                                            break 'doc_scan;
-                                                        }
-                                                        let lines: Vec<&str> =
-                                                            doc_text.lines().collect();
-                                                        for (line_num, line) in
-                                                            lines.iter().enumerate()
-                                                        {
-                                                            for mat in search_regex.find_iter(line)
-                                                            {
-                                                                // Convert byte offsets to UTF-16 columns for LSP compliance
-                                                                let start_utf16 = byte_to_utf16_col(
-                                                                    line,
-                                                                    mat.start(),
-                                                                );
-                                                                let end_utf16 = byte_to_utf16_col(
-                                                                    line,
-                                                                    mat.end(),
-                                                                );
-                                                                all_locations.push(json!({
+                                                            let end_utf16 =
+                                                                byte_to_utf16_col(line, mat.end());
+                                                            all_locations.push(json!({
                                                                 "uri": doc_uri,
                                                                 "range": {
                                                                     "start": {
@@ -1216,32 +1216,31 @@ impl LspServer {
                                                                     },
                                                                 },
                                                             }));
-                                                                // Early exit if we hit the cap
-                                                                if all_locations.len() >= cap {
-                                                                    break 'doc_scan;
-                                                                }
+                                                            // Early exit if we hit the cap
+                                                            if all_locations.len() >= cap {
+                                                                break 'doc_scan;
                                                             }
                                                         }
                                                     }
-
-                                                    if !all_locations.is_empty() {
-                                                        let text_count = all_locations.len();
-                                                        // Truncate to cap
-                                                        all_locations.truncate(cap);
-                                                        return Ok((
-                                                            Some(json!(all_locations)),
-                                                            ReferencesAnsweringTier::WorkspaceText,
-                                                            index_state,
-                                                            0,
-                                                            text_count,
-                                                            start.elapsed().as_micros(),
-                                                            source_backed_attempt.clone(),
-                                                            fallback_receipt.clone(),
-                                                        ));
-                                                    }
                                                 }
-                                                break;
+
+                                                if !all_locations.is_empty() {
+                                                    let text_count = all_locations.len();
+                                                    // Truncate to cap
+                                                    all_locations.truncate(cap);
+                                                    return Ok((
+                                                        Some(to_json_array(&all_locations)),
+                                                        ReferencesAnsweringTier::WorkspaceText,
+                                                        index_state,
+                                                        0,
+                                                        text_count,
+                                                        start.elapsed().as_micros(),
+                                                        source_backed_attempt.clone(),
+                                                        fallback_receipt.clone(),
+                                                    ));
+                                                }
                                             }
+                                            break;
                                         }
                                     }
                                 }
@@ -1276,7 +1275,7 @@ impl LspServer {
                                             );
                                             let result_count = lsp_locations.len();
                                             return Ok((
-                                                Some(json!(lsp_locations)),
+                                                Some(to_json_array(&lsp_locations)),
                                                 ReferencesAnsweringTier::PartialIndex,
                                                 index_state,
                                                 result_count,
@@ -1323,7 +1322,7 @@ impl LspServer {
                                         );
                                         let result_count = open_doc_locations.len();
                                         return Ok((
-                                            Some(json!(open_doc_locations)),
+                                            Some(to_json_array(&open_doc_locations)),
                                             ReferencesAnsweringTier::OpenDocumentText,
                                             index_state,
                                             0,
@@ -1380,7 +1379,7 @@ impl LspServer {
                             "References: returned same-file results"
                         );
                         return Ok((
-                            Some(json!(locations)),
+                            Some(to_json_array(&locations)),
                             ReferencesAnsweringTier::SemanticAnalyzer,
                             index_state,
                             0,
@@ -1501,7 +1500,7 @@ impl LspServer {
                 if receipt.scanned_bytes.saturating_add(document.text.len()) > budget.max_bytes {
                     None
                 } else {
-                    Some(document.text.clone())
+                    Some(document.text_arc.to_string())
                 }
             };
             let Some(document_text) = document_text else {
@@ -1543,6 +1542,11 @@ impl LspServer {
                 SourceBackedReferenceDecline::WorkspaceIndexUnavailable,
             );
         };
+        if self.workspace_index_stale_for_any_open_document() {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::WorkspaceIndexStale,
+            );
+        }
 
         // Resolve the semantic outcome plus the declaration anchor when either
         // the caller wants it included or the P8 lexical slice needs to prove
@@ -1632,6 +1636,11 @@ impl LspServer {
                 SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
             );
         };
+        if self.workspace_index_stale_for_any_open_document() {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::WorkspaceIndexStale,
+            );
+        }
         let (outcome, decl_anchor) = match semantic_resolution {
             Ok(resolution) => resolution,
             Err(decline) => return SourceBackedReferenceAttempt::Declined(decline),
@@ -1702,22 +1711,19 @@ impl LspServer {
 
         // Include the declaration location when requested, deduped against the
         // reference set already collected above.
-        if include_declaration {
-            if let Some(anchor_id) = decl_anchor {
-                if let Some(wire_location) =
-                    workspace_index.semantic_anchor_wire_location(anchor_id)
-                {
-                    let decl_location: lsp_types::Location = wire_location.into();
-                    let Ok(decl_value) = serde_json::to_value(&decl_location) else {
-                        return SourceBackedReferenceAttempt::Declined(
-                            SourceBackedReferenceDecline::DeclarationSerializationFailed,
-                        );
-                    };
-                    let already_present = locations.iter().any(|loc| loc == &decl_value);
-                    if !already_present {
-                        locations.push(decl_value);
-                    }
-                }
+        if include_declaration
+            && let Some(anchor_id) = decl_anchor
+            && let Some(wire_location) = workspace_index.semantic_anchor_wire_location(anchor_id)
+        {
+            let decl_location: lsp_types::Location = wire_location.into();
+            let Ok(decl_value) = serde_json::to_value(&decl_location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationSerializationFailed,
+                );
+            };
+            let already_present = locations.iter().any(|loc| loc == &decl_value);
+            if !already_present {
+                locations.push(decl_value);
             }
         }
 
@@ -1780,10 +1786,15 @@ impl LspServer {
                 })));
             };
 
-            let compiler_receipt_and_cutover = match route_index_access(self.coordinator()) {
-                IndexAccessMode::Full(coordinator) => {
-                    let index = coordinator.index();
-                    index
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let compiler_receipt_and_cutover = if self.workspace_index_stale_for_any_open_document()
+            {
+                None
+            } else {
+                match route_index_access(self.coordinator()) {
+                    IndexAccessMode::Full(coordinator) => {
+                        let index = coordinator.index();
+                        index
                         .with_semantic_queries_for_uri(uri, |file_id, queries| {
                             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                             let entity_id = queries
@@ -1819,8 +1830,9 @@ impl LspServer {
                             Some((receipt, live_cutover))
                         })
                         .flatten()
+                    }
+                    IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
-                IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
             };
             let (compiler_receipt, live_cutover) = match compiler_receipt_and_cutover {
                 Some((receipt, live_cutover)) => (Some(receipt), live_cutover),
@@ -2062,6 +2074,13 @@ mod tests {
                 None,
             ),
             (
+                SourceBackedReferenceDecline::WorkspaceIndexStale,
+                "workspace_index_stale",
+                false,
+                0,
+                None,
+            ),
+            (
                 SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
                 "semantic_queries",
                 false,
@@ -2260,6 +2279,77 @@ mod tests {
         assert!(
             server.workspace_index_stale_for_document(uri),
             "test setup must leave the open document newer than the workspace index"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): cross-file references must not use the
+    /// workspace semantic tier while an unrelated open document is ahead of
+    /// the indexed snapshot.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn references_skip_semantic_tier_when_unrelated_open_document_is_stale()
+    -> Result<(), Box<dyn Error>> {
+        let server = crate::runtime::LspServer::default();
+        let source_uri = "file:///workspace/reference-source.pl";
+        let unrelated_uri = "file:///workspace/reference-unrelated.pl";
+        let source_text = "package ReferenceSource;\nsub target { return 1; }\ntarget();\n";
+        let unrelated_v1 = "package ReferenceUnrelated;\nsub helper {}\n";
+        let unrelated_v2 = "package ReferenceUnrelated;\nsub renamed {}\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let params = || {
+            json!({
+                "textDocument": { "uri": source_uri, "version": 1 },
+                "position": { "line": 2, "character": 1 },
+                "context": { "includeDeclaration": false }
+            })
+        };
+        server.test_handle_references(Some(params()))?;
+        let fresh = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .ok_or("missing fresh references receipt")?;
+        assert_eq!(
+            fresh
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("index_state"))
+                .and_then(Value::as_str),
+            Some("full"),
+            "fresh references request should observe the full index: {fresh:?}"
+        );
+
+        server
+            .test_replace_document_without_index(unrelated_uri, unrelated_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        server.test_handle_references(Some(params()))?;
+        let stale = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .ok_or("missing stale references receipt")?;
+        assert_eq!(
+            stale
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("index_state"))
+                .and_then(Value::as_str),
+            Some("none"),
+            "unrelated stale open document must disable cross-file index access: {stale:?}"
         );
 
         Ok(())

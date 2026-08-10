@@ -87,7 +87,7 @@
 //! ## Comprehensive Error Context
 //!
 //! ```
-//! use perl_error::ParseError;
+//! use perl_parser_core::syntax::error::ParseError;
 //!
 //! fn create_detailed_error() -> ParseError {
 //!     ParseError::UnexpectedToken {
@@ -158,6 +158,9 @@ pub enum RecoverySite {
     PostfixChain,
     /// After a binary infix operator (right-hand side missing).
     InfixRhs,
+    /// At a statement boundary — one statement ended and the next began with no
+    /// `;` between them.
+    Statement,
 }
 
 /// What kind of recovery was applied at a [`RecoverySite`].
@@ -186,7 +189,7 @@ pub enum RecoveryKind {
 /// # Usage
 ///
 /// ```
-/// use perl_error::ParseBudget;
+/// use perl_parser_core::syntax::error::ParseBudget;
 ///
 /// // Use defaults for normal parsing
 /// let budget = ParseBudget::default();
@@ -1339,6 +1342,7 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         RecoverySite::HashSubscript => "hash subscript",
         RecoverySite::PostfixChain => "method chain",
         RecoverySite::InfixRhs => "expression",
+        RecoverySite::Statement => "statement",
     };
     match kind {
         RecoveryKind::InsertedCloser => {
@@ -1350,6 +1354,8 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         RecoveryKind::TruncatedChain => {
             format!("Incomplete {site_desc} — expected a continuation")
         }
-        RecoveryKind::InferredSemicolon => "Inferred a missing semicolon".to_string(),
+        RecoveryKind::InferredSemicolon => {
+            format!("Missing `;` at the end of the {site_desc}")
+        }
     }
 }

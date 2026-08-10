@@ -681,10 +681,10 @@ impl UxHarness {
             {
                 let events = self.client.peek_events();
                 for ev in events.iter() {
-                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev {
-                        if diag_uri == &uri {
-                            return diagnostics.clone();
-                        }
+                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev
+                        && diag_uri == &uri
+                    {
+                        return diagnostics.clone();
                     }
                 }
             }
@@ -714,10 +714,10 @@ impl UxHarness {
             {
                 let events = self.client.peek_events();
                 for ev in events.iter().rev() {
-                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev {
-                        if diag_uri == &uri {
-                            return diagnostics.clone();
-                        }
+                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev
+                        && diag_uri == &uri
+                    {
+                        return diagnostics.clone();
                     }
                 }
             }
@@ -1042,14 +1042,14 @@ pub fn normalize_lsp_payload(payload: &Value, workspace_root: &Path) -> Value {
         Value::Object(map) => {
             let mut normalized = serde_json::Map::with_capacity(map.len());
             for (key, value) in map {
-                if matches!(key.as_str(), "uri" | "targetUri" | "workspaceFolderUri") {
-                    if let Some(uri) = value.as_str() {
-                        normalized.insert(
-                            key.clone(),
-                            Value::String(normalize_uri_for_expectations(uri, workspace_root)),
-                        );
-                        continue;
-                    }
+                if matches!(key.as_str(), "uri" | "targetUri" | "workspaceFolderUri")
+                    && let Some(uri) = value.as_str()
+                {
+                    normalized.insert(
+                        key.clone(),
+                        Value::String(normalize_uri_for_expectations(uri, workspace_root)),
+                    );
+                    continue;
                 }
                 normalized.insert(key.clone(), normalize_lsp_payload(value, workspace_root));
             }
@@ -1197,10 +1197,10 @@ pub fn missing_binary_skip() -> UxScenarioSkip {
 /// 6. Error with actionable message.
 pub fn resolve_binary() -> Result<String> {
     // 1. Explicit override
-    if let Ok(p) = std::env::var("PERL_LSP_BIN") {
-        if !p.is_empty() {
-            return Ok(p);
-        }
+    if let Ok(p) = std::env::var("PERL_LSP_BIN")
+        && !p.is_empty()
+    {
+        return Ok(p);
     }
 
     // 2. Runtime walk from current_exe() — robust on all platforms including
@@ -1213,10 +1213,10 @@ pub fn resolve_binary() -> Result<String> {
     //
     //    We walk up from current_exe() until we find a `target` directory
     //    whose parent contains `Cargo.lock` (the workspace root).
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(binary) = find_binary_near_exe(&exe) {
-            return Ok(binary);
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(binary) = find_binary_near_exe(&exe)
+    {
+        return Ok(binary);
     }
 
     // 3. CARGO_TARGET_DIR — if set, look directly in its active/default profile subdirs.

@@ -9,6 +9,15 @@ export interface NavigationCommandDependencies {
   readonly getServerVersion: (serverPath: string) => Promise<string>;
 }
 
+export type WorkspaceStatusMode = 'starting' | 'indexing' | 'running' | 'stopped';
+
+export interface WorkspaceStatusSnapshot {
+  readonly mode: WorkspaceStatusMode;
+  readonly version?: string;
+  readonly fileCount?: number;
+  readonly errorCount?: number;
+}
+
 /** Invoke VS Code's organize-imports command. */
 export async function organizeImportsCommand(): Promise<void> {
   await vscode.commands.executeCommand('editor.action.organizeImports');
@@ -48,12 +57,52 @@ export async function showVersionCommand(
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     const selection = await vscode.window.showErrorMessage(
-      `Could not get Perl LSP version: ${message}. The server binary may be missing or corrupt — try reinstalling.`,
+      `Could not get Perl LSP version: ${message}. The server binary may be missing or corrupt ΓÇö try reinstalling.`,
       'Reinstall',
     );
     if (selection === 'Reinstall') {
       void vscode.commands.executeCommand('perl-lsp.reinstall');
     }
+  }
+}
+
+export async function showWorkspaceStatusCommand(dependencies: {
+  readonly getWorkspaceStatus: () => WorkspaceStatusSnapshot;
+}): Promise<void> {
+  const status = dependencies.getWorkspaceStatus();
+  const modeLabel = {
+    starting: 'starting',
+    indexing: 'indexing',
+    running: 'running',
+    stopped: 'stopped',
+  }[status.mode];
+  const lines = [`Perl LSP workspace status`, `Server: ${modeLabel}`];
+  const hasLiveServer = status.mode === 'running' || status.mode === 'indexing';
+  if (hasLiveServer && status.version) {
+    lines.push(`Version: ${status.version}`);
+  }
+  if (status.fileCount !== undefined) {
+    lines.push(`Workspace files: ${status.fileCount}`);
+  }
+  if (status.errorCount !== undefined) {
+    lines.push(`Diagnostics: ${status.errorCount} error${status.errorCount === 1 ? '' : 's'}`);
+  }
+
+  const actions =
+    status.mode === 'stopped'
+      ? (['Restart Server', 'Run Health Check', 'Show Output'] as const)
+      : (['Run Health Check', 'Show Output'] as const);
+  const selection =
+    status.mode === 'stopped'
+      ? await vscode.window.showWarningMessage(lines.join('\n'), ...actions)
+      : await vscode.window.showInformationMessage(lines.join('\n'), ...actions);
+
+  if (selection === 'Restart Server') {
+    void vscode.commands.executeCommand('perl-lsp.restart');
+  } else if (selection === 'Run Health Check') {
+    void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+  } else if (selection === 'Show Output') {
+    void vscode.commands.executeCommand('perl-lsp.showOutput');
   }
 }
 

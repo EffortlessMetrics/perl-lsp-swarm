@@ -8,10 +8,12 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "type": "string",
-      "description": "Schema version for forward compatibility",
-      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
-      "examples": ["1.0.0"]
+      "description": "Schema version for forward compatibility. Accepts both integer (Rust u32 serialization) and semver string formats (#2093 §7.1).",
+      "oneOf": [
+        { "type": "integer", "minimum": 1 },
+        { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+      ],
+      "examples": ["1.0.0", 1]
     },
     "metadata": {
       "$ref": "#/$defs/metadata"

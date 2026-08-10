@@ -73,16 +73,22 @@ fn stopped_event(value: &Value) -> Option<DapEvent> {
         .and_then(|r| r.as_str())
         .unwrap_or("unknown")
         .to_string();
-    let thread_id =
-        body.and_then(|b| b.get("threadId")).and_then(|t| t.as_i64()).unwrap_or(1) as i32;
+    let thread_id = body
+        .and_then(|b| b.get("threadId"))
+        .and_then(|t| t.as_i64())
+        .unwrap_or(1)
+        .clamp(1, i32::MAX as i64) as i32;
 
     Some(DapEvent::Stopped { reason, thread_id })
 }
 
 fn continued_event(value: &Value) -> Option<DapEvent> {
     let body = value.get("body");
-    let thread_id =
-        body.and_then(|b| b.get("threadId")).and_then(|t| t.as_i64()).unwrap_or(1) as i32;
+    let thread_id = body
+        .and_then(|b| b.get("threadId"))
+        .and_then(|t| t.as_i64())
+        .unwrap_or(1)
+        .clamp(1, i32::MAX as i64) as i32;
 
     Some(DapEvent::Continued { thread_id })
 }

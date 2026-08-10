@@ -30,7 +30,7 @@ use super::{FileExportMetadata, SemanticAnalyzer};
 /// # Example
 /// ```rust,ignore
 /// use perl_parser::Parser;
-/// use perl_parser::semantic::SemanticModel;
+/// use perl_semantic_analyzer::analysis::semantic::SemanticModel;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let code = "my $x = 42; $x + 10;";
@@ -131,7 +131,7 @@ impl SemanticModel {
     /// # Example
     /// ```rust,ignore
     /// use perl_parser::Parser;
-    /// use perl_parser::semantic::SemanticModel;
+    /// use perl_semantic_analyzer::analysis::semantic::SemanticModel;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let code = "my $x = 1;\n$x + 2;\n";

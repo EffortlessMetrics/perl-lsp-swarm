@@ -11,6 +11,7 @@
  */
 
 import * as vscode from 'vscode';
+import type { IndexReadinessState } from './activeDocumentReadiness';
 import {
   presentWorkspaceExperience,
   type LegacyWidgetMode,
@@ -18,6 +19,8 @@ import {
   type WorkspaceExperienceSnapshot,
   type WorkspaceLifecycleState,
 } from './workspaceExperienceState';
+
+export type { IndexReadinessState };
 
 /**
  * Mirror of `State` from vscode-languageclient.
@@ -77,6 +80,8 @@ export class HealthWidget {
   private _indexingPercentage: number | undefined = undefined;
   private _activeTokens = new Set<ProgressToken>();
   private _version: string | undefined = undefined;
+  private _readinessState: IndexReadinessState = 'ready';
+  private _readinessReason: string | undefined = undefined;
 
   constructor(private readonly item: vscode.StatusBarItem) {
     this._render();
@@ -95,7 +100,7 @@ export class HealthWidget {
       case ClientState.Running:
         // Only move to ready if no active indexing progress tokens.
         if (this._activeTokens.size === 0) {
-          this.setWorkspaceLifecycleState('ready');
+          this._applyReadinessLifecycle();
         }
         break;
       case ClientState.Stopped:
@@ -138,8 +143,17 @@ export class HealthWidget {
       if (this._activeTokens.size === 0) {
         this._indexingMessage = undefined;
         this._indexingPercentage = undefined;
-        this.setWorkspaceLifecycleState('ready');
+        this._applyReadinessLifecycle();
       }
+    }
+  }
+
+  /** Consume canonical server readiness without inferring it from progress. */
+  onIndexReadinessState(state: IndexReadinessState, reason?: string): void {
+    this._readinessState = state;
+    this._readinessReason = reason;
+    if (this._activeTokens.size === 0) {
+      this._applyReadinessLifecycle();
     }
   }
 
@@ -226,9 +240,33 @@ export class HealthWidget {
     return this._version;
   }
 
+  /** Current canonical index readiness state from the server. */
+  get readinessState(): IndexReadinessState {
+    return this._readinessState;
+  }
+
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  private _applyReadinessLifecycle(): void {
+    switch (this._readinessState) {
+      case 'building':
+        this.setWorkspaceLifecycleState('indexing_workspace');
+        break;
+      case 'ready_limited':
+        this.setWorkspaceLifecycleState(
+          'ready_limited',
+          this._readinessReason === undefined
+            ? { reasonCode: 'index_ready_limited' }
+            : { detail: this._readinessReason, reasonCode: 'index_ready_limited' },
+        );
+        break;
+      case 'ready':
+        this.setWorkspaceLifecycleState('ready');
+        break;
+    }
+  }
 
   private _render(): void {
     const presentation = presentWorkspaceExperience(this._experience, {

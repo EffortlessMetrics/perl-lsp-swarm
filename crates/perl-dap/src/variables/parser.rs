@@ -32,6 +32,21 @@ pub enum VariableParseError {
     RegexError(#[from] regex::Error),
 }
 
+impl perl_parser_core::ErrorClass for VariableParseError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Nesting safety limit exceeded — a resource-protection guard.
+            Self::MaxDepthExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
+            // All other variants are adapter/parser gaps: malformed engine
+            // output or constant regex compilation failures.
+            Self::UnrecognizedFormat(_)
+            | Self::UnterminatedString
+            | Self::UnterminatedCollection
+            | Self::RegexError(_) => perl_parser_core::ErrorCategory::Bug,
+        }
+    }
+}
+
 // Compiled regex patterns for variable parsing.
 // Stored as Results to avoid panics. All patterns are compile-time constants,
 // so failure is not expected, but this provides graceful degradation.
@@ -186,17 +201,17 @@ impl VariableParser {
         }
 
         // Check for integer
-        if integer_re().is_some_and(|re| re.is_match(text)) {
-            if let Ok(i) = text.parse::<i64>() {
-                return Ok(PerlValue::Integer(i));
-            }
+        if integer_re().is_some_and(|re| re.is_match(text))
+            && let Ok(i) = text.parse::<i64>()
+        {
+            return Ok(PerlValue::Integer(i));
         }
 
         // Check for number
-        if number_re().is_some_and(|re| re.is_match(text)) {
-            if let Ok(n) = text.parse::<f64>() {
-                return Ok(PerlValue::Number(n));
-            }
+        if number_re().is_some_and(|re| re.is_match(text))
+            && let Ok(n) = text.parse::<f64>()
+        {
+            return Ok(PerlValue::Number(n));
         }
 
         // Check for quoted string

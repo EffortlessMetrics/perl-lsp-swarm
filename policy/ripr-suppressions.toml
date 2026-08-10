@@ -102,17 +102,6 @@ expires = "2026-09-30"
 # #1622, but RIPR 0.9.x cannot connect those oracles through the scanner state
 # machine and reports the seams as weakly_exposed.
 # -----------------------------------------------------------------------------
-[[suppress]]
-id = "ripr-suppress-completion-lexical-string-scanner-boundaries"
-kind = "predicate_infection_untraceable"
-paths = ["crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"]
-classification = ["weakly_exposed"]
-owner = "editor-trust"
-issue = "EffortlessMetrics/ripr#1429"
-reason = "Issue #1622 adds string-context completion suppression. Focused tests cover the exact quote-parity boundary and the qr/qq/qw/qx/tr quote-like operator boundaries through literal_scan_quote_parity_boundary_discriminator, literal_scan_quote_like_operator_boundary_discriminator, quote_like_literal_start_discriminates_qr_from_q_strings, quote_like_literal_start_discriminates_q_string_variants, quote_like_literal_start_discriminates_tr_operator, and end-to-end string completion hard rejects. RIPR 0.9.x sees the tests as related and reports strong exact-value oracles, but still cannot trace the scanner-state propagation through is_in_string and scan_segment, the same EffortlessMetrics/ripr#1429 limitation as the neighboring resolver and hover predicate suppressions. Remove when RIPR can trace these state-machine predicates or targeted mutation replaces this advisory path."
-created = "2026-06-22"
-review_after = "2026-07-22"
-expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
 # LSP cancellation performance receipt: test harness timing policy, not
@@ -310,13 +299,10 @@ expires = "2026-09-30"
 # PR #1288 (fix #956) extracted char-aware word-boundary predicate helpers
 # from inline logic in find_occurrences:
 #   crates/perl-parser/src/refactor/workspace_rename.rs
-#   crates/perl-refactoring/src/refactor/workspace_rename.rs
 #
-# Both helpers are covered by 4 inline #[cfg(test)] unit tests in each file:
+# Both helpers are covered by 4 inline #[cfg(test)] unit tests:
 #   test_is_word_boundary_before_ascii, test_is_word_boundary_before_unicode,
 #   test_is_word_boundary_after_ascii, test_is_word_boundary_after_unicode
-# plus the 3 integration regression tests in:
-#   crates/perl-refactoring/tests/workspace_rename_tests.rs
 #
 # ripr 0.5.0 cannot statically trace activation from test inputs through the
 # helper call chain (text[..offset].chars().next_back() -> is_perl_ident_char)
@@ -329,12 +315,11 @@ id = "ripr-suppress-workspace-rename-char-boundary-helpers"
 kind = "predicate_infection_untraceable"
 paths = [
   "crates/perl-parser/src/refactor/workspace_rename.rs",
-  "crates/perl-refactoring/src/refactor/workspace_rename.rs",
 ]
 classification = ["static_unknown", "no_static_path"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "is_word_boundary_before and is_word_boundary_after are char-aware word-boundary predicate helpers extracted for Codecov --lib coverage in PR #1288 (fix #956). Both predicates are covered by 4 inline #[cfg(test)] unit tests each (test_is_word_boundary_before_ascii, test_is_word_boundary_before_unicode, test_is_word_boundary_after_ascii, test_is_word_boundary_after_unicode) plus 3 integration regression tests. ripr 0.5.0 cannot statically trace activation from test inputs through the helper call chain — same ripr#1429 limitation as sibling suppressions. Remove when ripr#1429 is fixed upstream."
+reason = "is_word_boundary_before and is_word_boundary_after are char-aware word-boundary predicate helpers extracted for Codecov --lib coverage in PR #1288 (fix #956). Both predicates are covered by 4 inline #[cfg(test)] unit tests each (test_is_word_boundary_before_ascii, test_is_word_boundary_before_unicode, test_is_word_boundary_after_ascii, test_is_word_boundary_after_unicode). ripr 0.5.0 cannot statically trace activation from test inputs through the helper call chain — same ripr#1429 limitation as sibling suppressions. Remove when ripr#1429 is fixed upstream."
 created = "2026-06-11"
 review_after = "2026-07-11"
 expires = "2026-09-30"
@@ -2054,17 +2039,6 @@ removal_criteria = "perl-workspace-core / perl-tree-sitter-compat are consumed b
 # ripr 0.9.x run mis-associates them — its guidance pass timed out (210s) and
 # the mis-association reproduced on a clean re-run of the same head.
 # -----------------------------------------------------------------------------
-[[suppress]]
-id = "ripr-suppress-lsp-timing-parse-mode-exact-values"
-kind = "predicate_infection_untraceable"
-paths = ["crates/perl-lsp-rs/src/runtime/timing.rs"]
-classification = ["weakly_exposed"]
-owner = "proof-lane"
-issue = "EffortlessMetrics/ripr#1429"
-reason = "PR #3397 (#3396) adds the PERL_LSP_TIMING instrumentation sink. ripr 0.9.x reports 2 weakly_exposed severe seams for the exact-value predicates trimmed == \"0\" (timing.rs:108) and trimmed == \"1\" (timing.rs:113) in parse_mode, claiming no related test uses those values — but parse_mode is a pure function and the same file's test module already calls it directly with the exact target literals: parse_mode_off_variants asserts parse_mode(\"0\") -> TimingMode::Off and parse_mode_stderr_variants asserts parse_mode(\"1\") -> TimingMode::Stderr, plus case-insensitive neighbors (off/OFF/false, stderr/STDERR/true) and the file-path fallthrough in parse_mode_file_path. The flagging run's own guidance pass reported tool_error: ripr timed out after 210s with zero annotations, and the identical mis-association reproduced on a clean re-run (run 28712164718) — an instrument-degradation case of the EffortlessMetrics/ripr#1429 class (tracer fails to associate direct exact-value oracles). Suppression is narrow (one production file, one PR). Remove when ripr#1429 is fixed upstream, when PR #3363 (#2015) makes weakly_exposed-only findings non-blocking, or when targeted mutation replaces this advisory path."
-created = "2026-07-04"
-review_after = "2026-08-04"
-expires = "2026-10-04"
 
 # -----------------------------------------------------------------------------
 # INDIRECT_METHOD_EXCLUDED const array (PR #1914, #1758): no_static_path on a

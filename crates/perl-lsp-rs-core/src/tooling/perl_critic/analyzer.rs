@@ -87,14 +87,14 @@ impl CriticAnalyzer {
     ) -> Result<Vec<Violation>, String> {
         let path_str = file_path.to_string_lossy().to_string();
 
-        if let Some(entry) = self.cache.get_mut(&path_str) {
-            if entry.content_hash == content_hash {
-                self.access_counter += 1;
-                entry.access_seq = self.access_counter;
-                return Ok(entry.violations.clone());
-            }
-            // Hash mismatch: entry is stale; fall through to re-run perlcritic.
+        if let Some(entry) = self.cache.get_mut(&path_str)
+            && entry.content_hash == content_hash
+        {
+            self.access_counter += 1;
+            entry.access_seq = self.access_counter;
+            return Ok(entry.violations.clone());
         }
+        // Hash mismatch: entry is stale; fall through to re-run perlcritic.
 
         let violations = self.run_perlcritic(file_path, &path_str, doc_text)?;
         self.insert_entry(path_str, content_hash, violations.clone());

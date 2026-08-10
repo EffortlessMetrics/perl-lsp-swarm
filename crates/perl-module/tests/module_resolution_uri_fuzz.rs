@@ -3,7 +3,6 @@ use perl_module::resolution::uri::{ModuleUriResolution, resolve_module_uri};
 use perl_module::{IncRoot, IncRootKind, collect_module_uri_candidates_with_effective_inc};
 use std::path::PathBuf;
 use std::time::Duration;
-use url::Url;
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state >> 12;
@@ -89,13 +88,14 @@ fn fuzz_resolution_inputs_never_panic_and_emit_valid_uri_shape()
         assert!(report.timed_out);
         assert!(!report.candidates.is_empty());
         let candidate = report.candidates.first().ok_or("fuzz report has no candidate")?;
-        let normalized_matching_open_document = Url::parse(&matching_open_document)
-            .ok()
-            .and_then(|url| url.to_file_path().ok())
-            .and_then(|path| Url::from_file_path(path).ok())
-            .map(|url| url.to_string())
-            .unwrap_or(matching_open_document);
-        assert_eq!(candidate.uri, normalized_matching_open_document);
+        // Open-document candidates preserve the supplied URI spelling verbatim
+        // (ModuleUriCandidate.uri contract).  The previous round-trip normalization
+        // (Url::parse → to_file_path → from_file_path) was platform-dependent:
+        // on Linux it URL-encodes raw characters and produces a different string;
+        // on Windows, to_file_path() may fail for certain path shapes and silently
+        // falls back to the original, hiding the divergence.  Assert the raw form
+        // directly so the check is identical on every platform.
+        assert_eq!(candidate.uri, matching_open_document);
         assert_eq!(candidate.source, "open-document");
         assert_eq!(candidate.search_order, 0);
         assert!(

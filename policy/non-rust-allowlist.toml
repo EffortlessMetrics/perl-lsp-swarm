@@ -711,35 +711,68 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
-id = "non-rust-other-agents"
-glob = ".{aider,roo,kiro,hermes,jules}/**"
+id = "non-rust-roo"
+glob = ".roo/**"
 kind = "agent_config"
 language = "mixed"
 surface = "tooling"
 classification = "tooling"
 owner = "developer-experience"
-reason = "Other-agent configuration directories used by the swarm orchestration."
+reason = "Roo configuration directory used by the swarm orchestration."
 covered_by = [
   "cargo xtask check-file-policy",
 ]
-broad_glob_reason = "Each agent ecosystem has its own directory layout; covered together to avoid one entry per agent."
-created = "2026-05-07"
-review_after = "2026-08-07"
+broad_glob_reason = "Roo configuration is a directory tree of agent prompts and runtime settings."
+created = "2026-08-08"
+review_after = "2026-11-08"
 
 [[allow]]
-id = "non-rust-agent-config-files"
-glob = "{AGENTS,AIDER,CLAUDE,CRUSH,GEMINI}.md"
+id = "non-rust-kiro"
+glob = ".kiro/**"
 kind = "agent_config"
-language = "markdown"
-surface = "docs"
-classification = "documentation"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
 owner = "developer-experience"
-reason = "Top-level agent guidance files (project-level prompts) read by the agent runtimes."
+reason = "Kiro configuration directory used by the swarm orchestration."
 covered_by = [
   "cargo xtask check-file-policy",
 ]
-created = "2026-05-07"
-review_after = "2026-08-07"
+broad_glob_reason = "Kiro configuration is a directory tree of agent prompts and runtime settings."
+created = "2026-08-08"
+review_after = "2026-11-08"
+
+[[allow]]
+id = "non-rust-hermes"
+glob = ".hermes/**"
+kind = "agent_config"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "developer-experience"
+reason = "Hermes configuration directory used by the swarm orchestration."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "Hermes configuration is a directory tree of agent prompts and runtime settings."
+created = "2026-08-08"
+review_after = "2026-11-08"
+
+[[allow]]
+id = "non-rust-jules"
+glob = ".jules/**"
+kind = "agent_config"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "developer-experience"
+reason = "Jules configuration directory used by the swarm orchestration."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "Jules configuration is a directory tree of agent prompts and runtime settings."
+created = "2026-08-08"
+review_after = "2026-11-08"
 
 [[allow]]
 id = "non-rust-aider-conf"
@@ -934,6 +967,26 @@ covered_by = [
 broad_glob_reason = "Homebrew formulas live in a single Formula/ directory."
 created = "2026-05-07"
 review_after = "2026-08-07"
+
+# =============================================================================
+# Release topology contract
+# =============================================================================
+
+[[allow]]
+id = "non-rust-release-topology-schema"
+path = "schemas/release_topology.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Schema for the exact-SHA v0.18 release topology consumed by release, install, integrity, and channel verification."
+covered_by = [
+  "python scripts/generate_release_topology.py --check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-08"
+review_after = "2026-11-08"
 
 # =============================================================================
 # Receipts / status / metrics

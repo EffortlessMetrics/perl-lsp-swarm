@@ -133,13 +133,13 @@ impl Sandbox {
 
     /// Apply sandbox restrictions to a command
     fn apply_sandbox_restrictions(&self, cmd: &mut Command) -> Result<()> {
-        if let Some(ref work_dir) = self.config.working_directory {
-            if !work_dir.exists() {
-                return Err(anyhow!(
-                    "sandbox working directory does not exist: {}",
-                    work_dir.display()
-                ));
-            }
+        if let Some(ref work_dir) = self.config.working_directory
+            && !work_dir.exists()
+        {
+            return Err(anyhow!(
+                "sandbox working directory does not exist: {}",
+                work_dir.display()
+            ));
         }
 
         // Set working directory

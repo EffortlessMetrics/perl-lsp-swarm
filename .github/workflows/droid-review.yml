@@ -1,172 +1,27 @@
 name: Droid PR Review
 
-# External AI reviewer. Advisory: see policy/ci-lane-whitelist.toml entry
-# `droid_auto_review` and docs/ci/labels.md `ai-review`. The job runs on
-# ready_for_review credible PRs only (already filtered by `if:` below).
+# PAUSED — the Factory/Droid review lane has repeatedly failed or produced
+# incomplete review state. It is not part of the repository's merge argument.
 #
-# The job is marked continue-on-error: true so that external-service
-# failures (rate limits, vendor outages) do not break unrelated CI signal
-# on the PR. Any review comments the action manages to post before failing
-# are still visible.
+# The normal Claude/Codex delivery flow still performs serious multi-round
+# issue, proof, candidate, and PR review. Preserve Droid history for reference,
+# but do not spend runner/model capacity or add PR noise until a future bounded
+# experiment proves that the service is stable and adds material review value.
+#
+# Keep the historical job ID while paused so policy and old receipts remain
+# readable. The job is statically skipped and does not access review secrets.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
-concurrency:
-  group: droid-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
-env:
-  MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+permissions:
+  contents: read
 
 jobs:
   droid-review:
-    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review]
-    # Advisory lane: do not break PR signal on external-AI-review failures.
-    # See docs/ci/perl-lsp-rollout-plan.md PR 14.
-    continue-on-error: true
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write
-      actions: read
+    name: Droid review (paused)
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-      - name: Configure MiniMax M3 for Droid BYOK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          droid_home="${RUNNER_TEMP}/droid-home"
-          mkdir -p "${droid_home}/.factory"
-
-          cat > "${droid_home}/.factory/settings.local.json" <<JSON
-          {
-            "customModels": [
-              {
-                "displayName": "MiniMax-M3",
-                "model": "MiniMax-M3",
-                "baseUrl": "https://api.minimax.io/anthropic",
-                "apiKey": "${MINIMAX_API_KEY}",
-                "provider": "anthropic",
-                "maxOutputTokens": 64000,
-                "noImageSupport": true,
-                "extraArgs": {
-                  "temperature": 1
-                }
-              }
-            ]
-          }
-          JSON
-      - name: Install GitHub CLI for self-hosted Droid
-        shell: bash
-        env:
-          GH_CLI_VERSION: "2.93.0"
-          GH_CLI_SHA256: 02d1290eba130e0b896f3709ffff22e1c75a51475ddb70476a85abc6b5807af0
-        run: |
-          set -euo pipefail
-
-          if command -v gh >/dev/null 2>&1; then
-            gh --version
-            exit 0
-          fi
-
-          archive="gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
-          install_dir="${RUNNER_TEMP}/gh-cli"
-          mkdir -p "${install_dir}"
-
-          curl -fsSL \
-            "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/${archive}" \
-            -o "${RUNNER_TEMP}/${archive}"
-          printf '%s  %s\n' "${GH_CLI_SHA256}" "${RUNNER_TEMP}/${archive}" | sha256sum -c -
-
-          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${install_dir}"
-          echo "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
-          "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin/gh" --version
-      - name: Install pinned Droid CLI
-        id: install_droid
-        shell: bash
-        env:
-          DROID_CLI_VERSION: "0.175.0"
-          DROID_CLI_SHA256: dccc99755fbba9a1ef561a8273fb317aa47f750e4721748bd830d2ea8581c12c
-        run: |
-          set -euo pipefail
-
-          install_dir="${RUNNER_TEMP}/droid-cli"
-          partial_path="${install_dir}/droid.partial"
-          droid_path="${install_dir}/droid"
-          mkdir -p "${install_dir}"
-
-          curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL \
-            "https://downloads.factory.ai/factory-cli/releases/${DROID_CLI_VERSION}/linux/x64-baseline/droid" \
-            -o "${partial_path}"
-          printf '%s  %s\n' "${DROID_CLI_SHA256}" "${partial_path}" | sha256sum -c -
-          mv "${partial_path}" "${droid_path}"
-          chmod +x "${droid_path}"
-          "${droid_path}" --version
-          echo "path=${droid_path}" >> "${GITHUB_OUTPUT}"
-      - name: Run Droid Auto Review
-        id: droid_review
-        uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # based on Factory-AI/droid-action v5; raw debug artifact upload disabled
-        env:
-          HOME: ${{ runner.temp }}/droid-home
-          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_AUTH_TOKEN: ""
-          ANTHROPIC_BASE_URL: ""
-        with:
-          factory_api_key: ${{ secrets.FACTORY_API_KEY }}
-          upload_debug_artifacts: false
-          automatic_review: true
-          review_depth: shallow
-          review_model: custom:MiniMax-M3-0
-          automatic_security_review: false
-          path_to_droid_executable: ${{ steps.install_droid.outputs.path }}
-      - name: Write Droid live-run receipt
-        if: always()
-        shell: bash
-        env:
-          DROID_REVIEW_OUTCOME: ${{ steps.droid_review.outcome }}
-        run: |
-          set -euo pipefail
-
-          receipt_dir="${RUNNER_TEMP}/droid-receipts"
-          receipt_path="${receipt_dir}/droid-live-run.json"
-          mkdir -p "${receipt_dir}"
-
-          review_posted=false
-          verdict=warn
-          if [ "${DROID_REVIEW_OUTCOME:-unknown}" = "success" ]; then
-            review_posted=true
-            verdict=pass
-          fi
-
-          cat > "${receipt_path}" <<JSON
-          {
-            "check": "droid-live-run",
-            "schema_version": "1",
-            "event": "pull_request",
-            "verdict": "${verdict}",
-            "workflow": "Droid PR Review",
-            "model": "custom:MiniMax-M3-0",
-            "runner_labels": ["self-hosted", "linux", "x64", "em-ci", "trusted-pr", "review-nano", "droid-review"],
-            "action": "EffortlessMetrics/droid-action-safe",
-            "review_posted": ${review_posted},
-            "debug_artifacts_uploaded": false,
-            "anthropic_env_cleared": true
-          }
-          JSON
-      - name: Upload Droid live-run receipt
-        if: always()
-        uses: ./.github/actions/upload-receipt
-        with:
-          receipt-path: ${{ runner.temp }}/droid-receipts/droid-live-run.json
-          artifact-name: droid-live-run-${{ github.run_id }}-${{ github.run_attempt }}
-          retention-days: "14"
-          generate-summary: "false"
+      - run: echo "Droid review is paused pending a future evidence-backed re-evaluation."

@@ -1,0 +1,12 @@
+{
+  "owner_issue": "#4346",
+  "schema_version": "verified_child_receipt.v1",
+  "receipt_schema_version": "installed_acceptance.v1",
+  "candidate_id": "v0.18.0-rc1",
+  "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
+  "artifact_set_id": "v0.18.0-rc1-primary",
+  "status": "pass",
+  "claim_boundary": "Exact packaged VSIX and binary journey.",
+  "limitation": null,
+  "source_receipt_sha256": null
+}

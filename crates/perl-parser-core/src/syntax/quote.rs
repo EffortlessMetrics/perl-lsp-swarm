@@ -153,14 +153,24 @@ pub fn extract_substitution_parts_strict(
         // for the replacement side (e.g. s{foo}/bar/ and s[foo]{bar}).
         let trimmed = skip_paired_replacement_gap(rest1);
         if let Some(rd) = trimmed.chars().next() {
-            // After a paired pattern delimiter (e.g. `{...}`), the replacement must also
-            // start with a valid non-alphanumeric, non-whitespace delimiter. An
-            // alphanumeric character here (e.g. `s{foo}bar`) is an invalid delimiter,
-            // not merely a missing replacement (mirrors the transliteration path).
-            if !is_valid_delimiter(rd) {
+            // After a paired pattern delimiter (e.g. `{...}`), the replacement
+            // may use any non-whitespace character as a delimiter, INCLUDING
+            // alphanumeric characters (which are self-delimiting: `s{foo}x...x`
+            // is valid Perl). Only reject whitespace as a replacement delimiter.
+            if rd.is_whitespace() {
                 return Err(SubstitutionError::InvalidDelimiter(rd));
             }
-            extract_delimited_content_strict(trimmed, rd, get_closing_delimiter(rd))
+            // For paired replacement delimiters (e.g. `s{foo}{bar}`), use the
+            // paired extraction. For non-paired (including alphanumeric), the
+            // character is its own open+close delimiter.
+            let rd_closing = get_closing_delimiter(rd);
+            if rd == rd_closing {
+                // Self-delimiting: extract until the next occurrence of rd
+                extract_delimited_content_strict(trimmed, rd, rd_closing)
+            } else {
+                // Paired: extract with balanced nesting
+                extract_delimited_content_strict(trimmed, rd, rd_closing)
+            }
         } else {
             // No more content - missing replacement
             return Err(SubstitutionError::MissingReplacement);

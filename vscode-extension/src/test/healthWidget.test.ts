@@ -210,6 +210,17 @@ describe('HealthWidget — $/progress', () => {
     widget.onStateChange(ClientState.Running);
     expect(widget.mode).toBe('indexing');
   });
+
+  test('ready_limited is visible without being presented as fully ready', () => {
+    const { item, widget } = makeWidget();
+    widget.onStateChange(ClientState.Running);
+    widget.onIndexReadinessState('ready_limited', 'resource limit');
+
+    expect(widget.lifecycleState).toBe('ready_limited');
+    expect(widget.readinessState).toBe('ready_limited');
+    expect(item.text).toContain('(limited)');
+    expect(item.tooltip).toContain('resource limit');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -116,21 +116,21 @@ impl LspServer {
                 let doc_info = {
                     let documents = self.documents.lock();
                     self.get_document(&documents, &normalized_uri)
-                        .map(|d| (d.current_generation(), d.text.clone()))
+                        .map(|d| (d.current_generation(), d.text_str().to_string()))
                 };
                 if let Some((doc_gen_val, text)) = doc_info
                     && let Some(coordinator) = self.coordinator()
                 {
                     let index = coordinator.index();
-                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val) {
-                        if let Ok(url) = url::Url::parse(&normalized_uri) {
-                            tracing::debug!(
-                                "Reconciling stale index for {} (doc gen {} > indexed gen)",
-                                normalized_uri,
-                                doc_gen_val
-                            );
-                            let _ = index.index_file(url, text);
-                        }
+                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val)
+                        && let Ok(url) = url::Url::parse(&normalized_uri)
+                    {
+                        tracing::debug!(
+                            "Reconciling stale index for {} (doc gen {} > indexed gen)",
+                            normalized_uri,
+                            doc_gen_val
+                        );
+                        let _ = index.index_file(url, text);
                     }
                 }
             }
@@ -196,7 +196,7 @@ impl LspServer {
             let text = {
                 let documents = self.documents.lock();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text.clone(),
+                    Some(doc) => doc.text_str().to_string(),
                     None => return Ok(Some(json!([]))),
                 }
             };

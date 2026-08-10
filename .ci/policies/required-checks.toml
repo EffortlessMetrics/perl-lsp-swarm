@@ -29,7 +29,7 @@ name = "ripr+ New Gap Gate"
 workflow = ".github/workflows/ripr.yml"
 required = true
 enforcement = "github-branch-protection"
-reason = "Proof lane blocks new RIPR gaps and stale/missing RIPR receipts."
+reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"
