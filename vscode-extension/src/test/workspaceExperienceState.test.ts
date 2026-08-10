@@ -1,6 +1,13 @@
-import { presentWorkspaceExperience } from '../workspaceExperienceState';
+import { presentWorkspaceExperience, projectWorkspaceLifecycle } from '../workspaceExperienceState';
 
 describe('workspace experience presentation', () => {
+  test('preserves environment resolution as a distinct user-facing state', () => {
+    expect(projectWorkspaceLifecycle('resolving')).toBe('resolving_environment');
+    expect(projectWorkspaceLifecycle('starting')).toBe('starting');
+    expect(projectWorkspaceLifecycle('running')).toBe('ready');
+    expect(projectWorkspaceLifecycle('failed')).toBe('failed');
+  });
+
   test('keeps exact current answers quiet in the ready state', () => {
     const presentation = presentWorkspaceExperience(
       { lifecycle: 'ready', providerOutcome: 'exact_current' },

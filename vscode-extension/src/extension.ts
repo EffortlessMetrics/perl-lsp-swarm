@@ -37,6 +37,7 @@ import { generateBoilerplate } from './fileCreation';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
 import { HealthWidgetDataSource } from './healthWidgetDataSource';
+import { projectWorkspaceLifecycle } from './workspaceExperienceState';
 import { registerPodPreview } from './podPreview';
 import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
@@ -1124,6 +1125,7 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
       syncLifecycleProjection();
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
+      healthWidget?.setWorkspaceLifecycleState(projectWorkspaceLifecycle(snapshot.state));
     },
     onClientStateChange: (_activeClient, event) => {
       if (event.newState === LanguageClientState.Starting) {

@@ -17,6 +17,31 @@ export type WorkspaceLifecycleState =
   | 'configuration_action_required'
   | 'failed';
 
+/** Lifecycle states emitted by the language-client composition owner. */
+export type WorkspaceLifecycleInput =
+  | 'stopped'
+  | 'resolving'
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'failed';
+
+/** Preserve environment resolution as a distinct user-facing state. */
+export function projectWorkspaceLifecycle(state: WorkspaceLifecycleInput): WorkspaceLifecycleState {
+  switch (state) {
+    case 'resolving':
+      return 'resolving_environment';
+    case 'running':
+      return 'ready';
+    case 'failed':
+      return 'failed';
+    case 'stopped':
+    case 'starting':
+    case 'stopping':
+      return 'starting';
+  }
+}
+
 /** User-visible semantic result classes. */
 export type ProviderOutcome =
   | 'exact_current'
