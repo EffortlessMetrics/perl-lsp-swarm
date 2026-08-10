@@ -777,6 +777,10 @@ impl LspServer {
                 "version": env!("CARGO_PKG_VERSION")
             }
         })))
+        // Note: the initialize result wrapper is kept as json!() because it
+        // is the final envelope wrapping the dynamically-built capabilities
+        // object — a typed InitializeResult struct would need to own the
+        // capabilities Value, adding indirection without type safety benefit.
     }
 }
 
