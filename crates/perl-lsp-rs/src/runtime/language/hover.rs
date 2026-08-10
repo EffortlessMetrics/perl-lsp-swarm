@@ -269,9 +269,10 @@ impl LspServer {
             && value.get("contents").is_some()
             && value.get("range").is_none()
         // don't overwrite an existing range
-            && let Some(obj) = value.as_object_mut() {
-                obj.insert("range".to_string(), range_val.clone());
-            }
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert("range".to_string(), range_val.clone());
+        }
         Some(value)
     }
 
@@ -301,9 +302,10 @@ impl LspServer {
         // classifies phase block names as Subroutine symbols, which would otherwise
         // produce the misleading "**Subroutine** `sub BEGIN`" card.
         if let Some(phase_name) = Self::find_phase_block_at_offset(ast, offset)
-            && let Some(phase_hover) = hover_cards::phase_block_hover(&phase_name) {
-                return HoverExtracted::Complete(phase_hover);
-            }
+            && let Some(phase_hover) = hover_cards::phase_block_hover(&phase_name)
+        {
+            return HoverExtracted::Complete(phase_hover);
+        }
 
         // `parsed.semantic_analyzer()` is generation-owned (#3760/#3765): it is
         // lazily built from *this* snapshot's own AST and source via a `OnceLock`,
@@ -350,22 +352,23 @@ impl LspServer {
                         return false;
                     }
                     if token == sym.name
-                        && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
-                            let receiver_pkg =
-                                Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
-                            if !receiver_pkg.is_empty()
-                                && analyzer
-                                    .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
-                                    .is_some_and(|hover| {
-                                        hover
-                                            .details
-                                            .iter()
-                                            .any(|detail| detail.starts_with("Decorated with:"))
-                                    })
-                            {
-                                return false;
-                            }
+                        && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                    {
+                        let receiver_pkg =
+                            Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                        if !receiver_pkg.is_empty()
+                            && analyzer
+                                .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
+                                .is_some_and(|hover| {
+                                    hover
+                                        .details
+                                        .iter()
+                                        .any(|detail| detail.starts_with("Decorated with:"))
+                                })
+                        {
+                            return false;
                         }
+                    }
                 }
             }
             // If the token matches the symbol name this IS a direct hover on that
@@ -439,11 +442,12 @@ impl LspServer {
                         }
                     } else if let NodeKind::Method { signature: method_sig, .. } = &sub_node.kind
                         && let Some(sig) = method_sig
-                            && let NodeKind::Signature { parameters } = &sig.kind {
-                                for param in parameters {
-                                    self.extract_signature_params(param, &mut params);
-                                }
-                            }
+                        && let NodeKind::Signature { parameters } = &sig.kind
+                    {
+                        for param in parameters {
+                            self.extract_signature_params(param, &mut params);
+                        }
+                    }
                     complexity = Self::build_complexity_info(sub_node, text);
                 }
                 let name = if params.is_empty() {
@@ -607,26 +611,28 @@ impl LspServer {
         // Check for special/punctuation variables (e.g. $!, $/, $$, $^W)
         // before falling back to the normal tokenizer which misses them.
         if let Some(special_var) = Self::extract_special_variable(text, offset)
-            && let Some(hover) = Self::get_special_variable_hover(&special_var) {
-                return HoverExtracted::Complete(hover);
-            }
+            && let Some(hover) = Self::get_special_variable_hover(&special_var)
+        {
+            return HoverExtracted::Complete(hover);
+        }
 
         // Handle file test operators (`-e`, `-f`, `-M`, etc.) before the
         // general token fallback, because the token scanner does not include
         // the leading `-`.
         if let Some(op) = Self::extract_file_test_operator(text, offset)
-            && let Some(op_doc) = crate::semantic::get_operator_documentation(&op) {
-                return HoverExtracted::Complete(json!({
-                    "contents": {
-                        "kind": "markdown",
-                        "value": format!(
-                            "**File Test Operator**\n\n```\n{}\n```\n\n{}",
-                            op_doc.signature,
-                            op_doc.description
-                        ),
-                    },
-                }));
-            }
+            && let Some(op_doc) = crate::semantic::get_operator_documentation(&op)
+        {
+            return HoverExtracted::Complete(json!({
+                "contents": {
+                    "kind": "markdown",
+                    "value": format!(
+                        "**File Test Operator**\n\n```\n{}\n```\n\n{}",
+                        op_doc.signature,
+                        op_doc.description
+                    ),
+                },
+            }));
+        }
 
         // Fall back to simple token display, with builtin docs.
         let hover_text = {
@@ -662,37 +668,40 @@ impl LspServer {
             // Check Test::More/Test2 function hover when source imports a test framework
             let is_test_source = text.contains("use Test::More") || text.contains("use Test2");
             if is_test_source
-                && let Some((sig, desc)) = crate::completion::get_test_more_documentation(bare) {
-                    return HoverExtracted::Complete(json!({
-                        "contents": {
-                            "kind": "markdown",
-                            "value": format!(
-                                "**Test::More**\n\n```perl\n{}\n```\n\n{}",
-                                sig, desc
-                            ),
-                        },
-                    }));
-                }
+                && let Some((sig, desc)) = crate::completion::get_test_more_documentation(bare)
+            {
+                return HoverExtracted::Complete(json!({
+                    "contents": {
+                        "kind": "markdown",
+                        "value": format!(
+                            "**Test::More**\n\n```perl\n{}\n```\n\n{}",
+                            sig, desc
+                        ),
+                    },
+                }));
+            }
 
             // Check DBI method hover: token preceded by -> in a DBI-importing file.
             // Guard on `use DBI` to avoid false positives for common method names like
             // `execute`, `fetch`, `rows`, `commit`, `rollback` in non-DBI code.
             let is_dbi_source = text.contains("use DBI") || text.contains("use DBIx");
-            if is_dbi_source && !bare.is_empty() && !hover_text.starts_with(['$', '@', '%'])
+            if is_dbi_source
+                && !bare.is_empty()
+                && !hover_text.starts_with(['$', '@', '%'])
                 && let Some(receiver) = Self::extract_arrow_receiver(text, offset)
-                    && let Some((sig, desc)) =
-                        crate::completion::get_dbi_method_documentation(&receiver, bare)
-                    {
-                        return HoverExtracted::Complete(json!({
-                            "contents": {
-                                "kind": "markdown",
-                                "value": format!(
-                                    "**DBI Method**\n\n```perl\n{}\n```\n\n{}",
-                                    sig, desc
-                                ),
-                            },
-                        }));
-                    }
+                && let Some((sig, desc)) =
+                    crate::completion::get_dbi_method_documentation(&receiver, bare)
+            {
+                return HoverExtracted::Complete(json!({
+                    "contents": {
+                        "kind": "markdown",
+                        "value": format!(
+                            "**DBI Method**\n\n```perl\n{}\n```\n\n{}",
+                            sig, desc
+                        ),
+                    },
+                }));
+            }
 
             // Before the bare-token fallback, check if the cursor is on a package name
             // (an identifier that spans `::` separators, e.g. `File::Path`, `DBI`).
@@ -1168,9 +1177,10 @@ impl LspServer {
         }
 
         if let NodeKind::Use { module, .. } = &node.kind
-            && !module.is_empty() {
-                return Some(module.clone());
-            }
+            && !module.is_empty()
+        {
+            return Some(module.clone());
+        }
 
         // Recurse into container nodes
         match &node.kind {
@@ -1183,9 +1193,10 @@ impl LspServer {
             }
             NodeKind::Package { block, .. } => {
                 if let Some(b) = block
-                    && let Some(m) = Self::find_use_module_at_offset(b, offset) {
-                        return Some(m);
-                    }
+                    && let Some(m) = Self::find_use_module_at_offset(b, offset)
+                {
+                    return Some(m);
+                }
             }
             NodeKind::PhaseBlock { block, .. } => {
                 if let Some(m) = Self::find_use_module_at_offset(block, offset) {
@@ -1320,26 +1331,25 @@ impl LspServer {
                     if let NodeKind::ExpressionStatement { expression } = &stmt.kind
                         && let NodeKind::FunctionCall { name, args }
                         | NodeKind::AmperCall { name, args } = &expression.kind
-                            && matches!(name.as_str(), "with" | "extends") {
-                                for arg in args {
-                                    if let Some(role) = Self::role_name_at_offset(arg, offset) {
-                                        return Some(role);
-                                    }
-                                }
+                        && matches!(name.as_str(), "with" | "extends")
+                    {
+                        for arg in args {
+                            if let Some(role) = Self::role_name_at_offset(arg, offset) {
+                                return Some(role);
                             }
+                        }
+                    }
 
                     // Two-statement form: Identifier("with"/"extends") then String/ArrayLiteral
                     if let NodeKind::ExpressionStatement { expression } = &stmt.kind
                         && let NodeKind::Identifier { name } = &expression.kind
-                            && matches!(name.as_str(), "with" | "extends")
-                                && let Some(next) = statements.get(idx + 1)
-                                    && let NodeKind::ExpressionStatement { expression: next_expr } =
-                                        &next.kind
-                                        && let Some(role) =
-                                            Self::role_name_at_offset(next_expr, offset)
-                                        {
-                                            return Some(role);
-                                        }
+                        && matches!(name.as_str(), "with" | "extends")
+                        && let Some(next) = statements.get(idx + 1)
+                        && let NodeKind::ExpressionStatement { expression: next_expr } = &next.kind
+                        && let Some(role) = Self::role_name_at_offset(next_expr, offset)
+                    {
+                        return Some(role);
+                    }
 
                     // Recurse deeper for nested blocks/packages
                     if let Some(m) = Self::find_with_module_at_offset(stmt, offset) {
@@ -1349,9 +1359,10 @@ impl LspServer {
             }
             NodeKind::Package { block, .. } => {
                 if let Some(b) = block
-                    && let Some(m) = Self::find_with_module_at_offset(b, offset) {
-                        return Some(m);
-                    }
+                    && let Some(m) = Self::find_with_module_at_offset(b, offset)
+                {
+                    return Some(m);
+                }
             }
             NodeKind::PhaseBlock { block, .. } => {
                 if let Some(m) = Self::find_with_module_at_offset(block, offset) {

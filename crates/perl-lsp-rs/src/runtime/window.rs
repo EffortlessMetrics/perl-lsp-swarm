@@ -232,9 +232,10 @@ impl LspServer {
         });
 
         if let Some(msg) = message
-            && let Some(obj) = value.as_object_mut() {
-                obj.insert("message".to_string(), json!(msg));
-            }
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert("message".to_string(), json!(msg));
+        }
 
         let params = json!({
             "token": token,
@@ -292,9 +293,10 @@ impl LspServer {
         });
 
         if let Some(msg) = message
-            && let Some(obj) = value.as_object_mut() {
-                obj.insert("message".to_string(), json!(msg));
-            }
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert("message".to_string(), json!(msg));
+        }
 
         let params = json!({
             "token": token,
@@ -362,26 +364,27 @@ impl LspServer {
     /// * `params` - Notification params containing the token
     pub(super) fn handle_progress_cancel(&self, params: Option<Value>) {
         if let Some(params) = params
-            && let Some(token) = params.get("token").and_then(|v| v.as_str()) {
-                // Remove from active tokens
-                let removed = self.progress_tokens.lock().remove(token);
+            && let Some(token) = params.get("token").and_then(|v| v.as_str())
+        {
+            // Remove from active tokens
+            let removed = self.progress_tokens.lock().remove(token);
 
-                if removed {
-                    tracing::debug!(token, "Progress cancelled by client");
+            if removed {
+                tracing::debug!(token, "Progress cancelled by client");
 
-                    // Look up the request ID associated with this progress token
-                    // and signal cancellation via the global registry
-                    let request_id = self.progress_token_to_request.lock().remove(token);
-                    if let Some(req_id) = request_id {
-                        tracing::debug!(request = ?req_id, token, "Signalling cancellation via progress token");
-                        if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&req_id) {
-                            tracing::warn!(error = %e, "Failed to cancel request via registry");
-                        }
+                // Look up the request ID associated with this progress token
+                // and signal cancellation via the global registry
+                let request_id = self.progress_token_to_request.lock().remove(token);
+                if let Some(req_id) = request_id {
+                    tracing::debug!(request = ?req_id, token, "Signalling cancellation via progress token");
+                    if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&req_id) {
+                        tracing::warn!(error = %e, "Failed to cancel request via registry");
                     }
-                } else {
-                    tracing::debug!(token, "Progress cancel for unknown token");
                 }
+            } else {
+                tracing::debug!(token, "Progress cancel for unknown token");
             }
+        }
     }
 
     /// Send a request to the client (internal helper)

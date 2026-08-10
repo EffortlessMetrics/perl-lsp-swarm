@@ -408,9 +408,10 @@ fn build_source_fix_all(code_actions: &[Value], uri: &str) -> Option<Value> {
     });
 
     if !merged_diagnostics.is_empty()
-        && let Some(object) = action.as_object_mut() {
-            object.insert("diagnostics".to_string(), Value::Array(merged_diagnostics));
-        }
+        && let Some(object) = action.as_object_mut()
+    {
+        object.insert("diagnostics".to_string(), Value::Array(merged_diagnostics));
+    }
 
     Some(action)
 }
@@ -785,12 +786,11 @@ impl LspServer {
                 });
 
                 if let Some(action_object) = action_json.as_object_mut()
-                    && !associated_diagnostics.is_empty() {
-                        action_object.insert(
-                            "diagnostics".to_string(),
-                            Value::Array(associated_diagnostics),
-                        );
-                    }
+                    && !associated_diagnostics.is_empty()
+                {
+                    action_object
+                        .insert("diagnostics".to_string(), Value::Array(associated_diagnostics));
+                }
 
                 code_actions.push(action_json);
             }
@@ -1086,19 +1086,20 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(p) = params
-            && let Some(uri) = p["textDocument"]["uri"].as_str() {
-                let documents = self.documents_guard();
-                if let Some(doc) = documents.get(uri) {
-                    let mut actions =
-                        crate::code_actions_pragmas::missing_pragmas_actions(uri, &doc.text);
+            && let Some(uri) = p["textDocument"]["uri"].as_str()
+        {
+            let documents = self.documents_guard();
+            if let Some(doc) = documents.get(uri) {
+                let mut actions =
+                    crate::code_actions_pragmas::missing_pragmas_actions(uri, &doc.text);
 
-                    // Fill in edits with proper ranges
-                    for action in &mut actions {
-                        self.fill_pragma_action_edit(action, doc);
-                    }
-                    return Ok(Some(to_json_array(&actions)));
+                // Fill in edits with proper ranges
+                for action in &mut actions {
+                    self.fill_pragma_action_edit(action, doc);
                 }
+                return Ok(Some(to_json_array(&actions)));
             }
+        }
         Ok(Some(json!([])))
     }
 
@@ -1112,34 +1113,36 @@ impl LspServer {
             // We now need to compute the actual edits
 
             if let Some(kind) = action.get("kind").and_then(|k| k.as_str())
-                && kind == "quickfix" {
-                    // For quickfix actions, compute the workspace edit now
-                    if let Some(data) = action.get("data")
-                        && let Some(uri) = data.get("uri").and_then(|u| u.as_str()) {
-                            let documents = self.documents_guard();
-                            if self.get_document(&documents, uri).is_some() {
-                                // Example: Add "use strict;" at the beginning
-                                if let Some(pragma) = data.get("pragma").and_then(|p| p.as_str()) {
-                                    let text = format!("{}\n", pragma);
-                                    let edit = json!({
-                                        "changes": {
-                                            uri: [{
-                                                "range": {
-                                                    "start": {"line": 0, "character": 0},
-                                                    "end": {"line": 0, "character": 0}
-                                                },
-                                                "newText": text
-                                            }]
-                                        }
-                                    });
-
-                                    if let Some(obj) = action.as_object_mut() {
-                                        obj.insert("edit".to_string(), edit);
-                                    }
+                && kind == "quickfix"
+            {
+                // For quickfix actions, compute the workspace edit now
+                if let Some(data) = action.get("data")
+                    && let Some(uri) = data.get("uri").and_then(|u| u.as_str())
+                {
+                    let documents = self.documents_guard();
+                    if self.get_document(&documents, uri).is_some() {
+                        // Example: Add "use strict;" at the beginning
+                        if let Some(pragma) = data.get("pragma").and_then(|p| p.as_str()) {
+                            let text = format!("{}\n", pragma);
+                            let edit = json!({
+                                "changes": {
+                                    uri: [{
+                                        "range": {
+                                            "start": {"line": 0, "character": 0},
+                                            "end": {"line": 0, "character": 0}
+                                        },
+                                        "newText": text
+                                    }]
                                 }
+                            });
+
+                            if let Some(obj) = action.as_object_mut() {
+                                obj.insert("edit".to_string(), edit);
                             }
                         }
+                    }
                 }
+            }
 
             self.enforce_code_action_tag_capabilities(std::slice::from_mut(&mut action));
             Ok(Some(action))
@@ -1166,31 +1169,32 @@ impl LspServer {
         );
 
         if let (Some(uri), Some(offset), Some(text)) = data_info
-            && let Some(obj) = action.as_object_mut() {
-                let edit_range = if offset as usize >= doc.text.len() {
-                    let end = self.get_document_end_position(&doc.text);
-                    json!({"start": end.clone(), "end": end })
-                } else {
-                    let (line, col) = self.offset_to_pos16(doc, offset as usize);
-                    json!({
-                        "start": {"line": line, "character": col},
-                        "end": {"line": line, "character": col}
-                    })
-                };
+            && let Some(obj) = action.as_object_mut()
+        {
+            let edit_range = if offset as usize >= doc.text.len() {
+                let end = self.get_document_end_position(&doc.text);
+                json!({"start": end.clone(), "end": end })
+            } else {
+                let (line, col) = self.offset_to_pos16(doc, offset as usize);
+                json!({
+                    "start": {"line": line, "character": col},
+                    "end": {"line": line, "character": col}
+                })
+            };
 
-                obj.insert(
-                    "edit".into(),
-                    json!({
-                        "changes": {
-                            uri: [{
-                                "range": edit_range,
-                                "newText": text
-                            }]
-                        }
-                    }),
-                );
-                obj.remove("data");
-            }
+            obj.insert(
+                "edit".into(),
+                json!({
+                    "changes": {
+                        uri: [{
+                            "range": edit_range,
+                            "newText": text
+                        }]
+                    }
+                }),
+            );
+            obj.remove("data");
+        }
     }
 
     fn add_explain_diagnostic_code_actions(
