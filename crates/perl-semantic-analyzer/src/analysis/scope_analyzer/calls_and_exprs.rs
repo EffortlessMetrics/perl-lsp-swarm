@@ -260,7 +260,7 @@ fn check_qualified_call(
         line: context.get_line(node.location.start),
         range: (node.location.start, node.location.end),
         description: format!(
-            "Undefined subroutine '{name}' called under 'use strict' (package '{pkg}' is declared in this file but no sub '{sub}' is defined)"
+            "Undefined subroutine '{name}' called under `use strict 'subs'` (package '{pkg}' is declared in this file but no sub '{sub}' is defined)"
         ),
     });
 }

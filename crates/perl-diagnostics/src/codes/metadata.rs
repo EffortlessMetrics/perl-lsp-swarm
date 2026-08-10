@@ -605,6 +605,7 @@ impl DiagnosticCode {
             "PL302" => Some(Self::InvalidPrototype),
             "PL303" => Some(Self::RoleConflict),
             "PL304" => Some(Self::MissingPodCoverage),
+            "PL305" => Some(Self::UnresolvedQualifiedCall),
             "PL400" => Some(Self::BarewordFilehandle),
             "PL401" => Some(Self::TwoArgOpen),
             "PL402" => Some(Self::ImplicitReturn),
