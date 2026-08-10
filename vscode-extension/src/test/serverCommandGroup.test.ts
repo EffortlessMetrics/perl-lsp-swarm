@@ -8,6 +8,8 @@ const outputChannel = {
 } as unknown as vscode.LogOutputChannel;
 
 function makeDependencies(results: HealthCheckResult[] = []): ServerCommandContext & {
+  currentServerPath: jest.Mock;
+  resolveServerPath: jest.Mock;
   reinstallServerBinary: jest.Mock;
   restartServer: jest.Mock;
   runHealthCheck: jest.Mock;
@@ -46,7 +48,7 @@ describe('registerServerCommandGroup', () => {
     expect(dependencies.restartServer).toHaveBeenCalledTimes(1);
   });
 
-  test('uses the projected path by default and returns structured health results', async () => {
+  test('uses the resolved path by default and returns structured health results', async () => {
     const dependencies = makeDependencies([
       {
         label: 'Perl interpreter',
@@ -65,7 +67,7 @@ describe('registerServerCommandGroup', () => {
 
     const result = await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
 
-    expect(dependencies.currentServerPath).toHaveBeenCalledTimes(1);
+    expect(dependencies.resolveServerPath).toHaveBeenCalledTimes(1);
     expect(dependencies.runHealthCheck).toHaveBeenCalledWith('/configured/perllsp');
     expect(result).toEqual({
       ok: true,
