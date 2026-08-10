@@ -6,6 +6,38 @@ use super::super::{JsonRpcError, LspServer, Ordering};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
+/// Typed TextDocumentSyncOptions for ServerCapabilities construction (#4995).
+///
+/// Replaces inline json!() for the textDocumentSync field of
+/// ServerCapabilities with a typed struct that can be serialized
+/// directly, preventing field name drift.
+#[derive(Debug, Clone, serde::Serialize)]
+struct TextDocumentSyncOptions {
+    open_close: bool,
+    change: i32,
+    will_save: bool,
+    will_save_wait_until: bool,
+    save: SaveOptions,
+}
+
+/// Save options for TextDocumentSyncOptions.
+#[derive(Debug, Clone, serde::Serialize)]
+struct SaveOptions {
+    include_text: bool,
+}
+
+impl TextDocumentSyncOptions {
+    fn new(change: i32) -> Self {
+        Self {
+            open_close: true,
+            change,
+            will_save: true,
+            will_save_wait_until: true,
+            save: SaveOptions { include_text: true },
+        }
+    }
+}
+
 /// The LSP protocol version this server implements.
 ///
 /// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
@@ -692,18 +724,9 @@ impl LspServer {
                 );
             }
         }
-        // Override text document sync with more detailed options
-        capabilities["textDocumentSync"] = json!({
-            "openClose": true,
-            "change": sync_kind,
-            "willSave": true,
-            "willSaveWaitUntil": true,
-            "save": { "includeText": true }
-        });
-        // Note: inline json!() here constructs complex nested ServerCapabilities
-        // objects with conditional fields. Migrating to typed struct definitions
-        // (ServerCapabilities, TextDocumentSyncOptions, SaveOptions,
-        // WorkspaceServerCapabilities, etc.) is tracked as a larger follow-up (#4995).
+        // Override text document sync with typed struct (#4995)
+        capabilities["textDocumentSync"] = serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
+            .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
 
         // Workspace capabilities: folders, file operations, and content schemes
         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
