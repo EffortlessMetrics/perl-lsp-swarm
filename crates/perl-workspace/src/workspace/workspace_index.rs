@@ -82,6 +82,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use url::Url;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static INCREMENTAL_SEARCH_ADD_CALLS: Cell<usize> = const { Cell::new(0) };
+    static REBUILD_SEARCH_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
 use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
 use crate::semantic::imports::ImportExportIndex;
 pub use crate::semantic::invalidation::ShardReplaceResult;
@@ -1481,6 +1490,9 @@ impl WorkspaceIndex {
         files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
     ) {
+        #[cfg(test)]
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         search_index.clear();
         for file_index in files.values() {
             for symbol in &file_index.symbols {
@@ -1497,6 +1509,9 @@ impl WorkspaceIndex {
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
         file_index: &FileIndex,
     ) {
+        #[cfg(test)]
+        INCREMENTAL_SEARCH_ADD_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         for symbol in &file_index.symbols {
             search_index.entry(symbol.name.clone()).or_default().push(symbol.clone());
             if let Some(ref qname) = symbol.qualified_name {
@@ -10311,7 +10326,19 @@ helper_one();
         ));
 
         // Removing the upper package empties Foo::Bar keys but must not disturb foo::bar.
+        INCREMENTAL_SEARCH_ADD_CALLS.with(|calls| calls.set(0));
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(0));
         index.remove_file(upper_uri.as_str());
+        let search_add_calls_after_remove = INCREMENTAL_SEARCH_ADD_CALLS.with(Cell::get);
+        let rebuild_search_calls_after_remove = REBUILD_SEARCH_INDEX_CALLS.with(Cell::get);
+        assert_eq!(
+            search_add_calls_after_remove, 0,
+            "removing one file must not re-add every remaining file to the search index"
+        );
+        assert_eq!(
+            rebuild_search_calls_after_remove, 0,
+            "removing one file must not call rebuild_search_index (O(workspace) full rebuild)"
+        );
 
         assert!(
             index.definition_candidates("Foo::Bar::upper_only").is_empty(),
