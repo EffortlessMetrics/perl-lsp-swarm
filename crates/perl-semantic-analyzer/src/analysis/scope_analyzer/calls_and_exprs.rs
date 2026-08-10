@@ -22,7 +22,18 @@ pub(super) fn handle_function_call<'a>(
     context: &AnalysisContext<'a>,
     pragma_state: &PragmaState,
     strict_vars_mode: bool,
+    strict_subs_mode: bool,
 ) {
+    // Under `use strict 'subs'` (or full strict), validate a package-qualified
+    // call like `Foo::bar()` against the subs defined in the file (#3014).
+    // Only flag when the target package is *itself declared in this file*: for
+    // an external package (loaded via `use`/`require`) we cannot prove the sub
+    // is missing, so we suppress to avoid false positives. This matches the
+    // conservative approach requested in the issue.
+    if strict_subs_mode && name.contains("::") && !name.starts_with("::") {
+        check_qualified_call(analyzer, node, name, issues, context);
+    }
+
     if let Some((sigil, var_name)) = analyzer.extract_name_like_variable(name) {
         analyzer.record_variable_use(
             scope,
@@ -201,4 +212,55 @@ pub(super) fn handle_array_literal<'a>(
         analyzer.analyze_node(element, scope, ancestors, issues, context);
     }
     ancestors.pop();
+}
+
+/// Under strict-subs, emit `UnresolvedQualifiedCall` when a package-qualified
+/// call like `Foo::bar()` targets a package *declared in this file* whose sub
+/// `bar` is not among the file's defined subs (#3014).
+///
+/// Suppression rules (to avoid false positives):
+/// - A leading `::` (e.g. `::main::foo`) resolves against `main` — skip.
+/// - If the package is not declared in this file, it is external (loaded via
+///   `use`/`require`) and we cannot prove the sub is missing — skip.
+/// - If the sub is defined (possibly with an explicit `sub Foo::bar {}` even
+///   from a different package) — skip.
+/// - Method-call-shaped names (`Foo->bar`) never arrive here (they parse as
+///   `NodeKind::MethodCall`) so we do not need to exclude them.
+fn check_qualified_call(
+    analyzer: &ScopeAnalyzer,
+    node: &Node,
+    name: &str,
+    issues: &mut Vec<ScopeIssue>,
+    context: &AnalysisContext<'_>,
+) {
+    // Split `Foo::bar` into package `Foo` and sub `bar`. The last `::` separates
+    // the sub name; everything before it is the package. `Foo::Bar::baz` →
+    // package `Foo::Bar`, sub `baz`.
+    let Some((pkg, sub)) = name.rsplit_once("::") else {
+        return;
+    };
+    if sub.is_empty() {
+        return;
+    }
+    // Only flag when the target package is declared in this file. External
+    // packages are opaque to single-file analysis.
+    if !context.has_defined_package(pkg) {
+        return;
+    }
+    // `has_defined_sub` checks the package-qualified name against all subs
+    // defined in the file (from any package), so an explicitly-qualified
+    // `sub Foo::bar {}` in package `main` still suppresses.
+    if context.has_defined_sub(name) {
+        return;
+    }
+    let _ = analyzer; // reserved for future cross-file resolution
+    issues.push(ScopeIssue {
+        kind: IssueKind::UnresolvedQualifiedCall,
+        variable_name: name.to_string(),
+        line: context.get_line(node.location.start),
+        range: (node.location.start, node.location.end),
+        description: format!(
+            "Undefined subroutine '{name}' called under `use strict 'subs'` (package '{pkg}' is declared in this file but no sub '{sub}' is defined)"
+        ),
+    });
 }

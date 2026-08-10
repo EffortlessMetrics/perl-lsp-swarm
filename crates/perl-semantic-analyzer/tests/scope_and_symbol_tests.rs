@@ -2110,6 +2110,129 @@ print LOAD_CONST;
 }
 
 #[test]
+fn strict_subs_flags_missing_qualified_call_in_defined_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #3014: `Foo::baz()` where package Foo is declared in this file but `baz`
+    // is not a defined sub should produce UnresolvedQualifiedCall under strict.
+    let code = r#"
+use strict;
+package Foo;
+sub bar { 1 }
+
+package main;
+Foo::bar();
+Foo::baz();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall) && i.variable_name == "Foo::bar"
+        }),
+        "Foo::bar() exists — should not be flagged"
+    );
+    assert!(
+        issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall) && i.variable_name == "Foo::baz"
+        }),
+        "Foo::baz() is missing and Foo is in-file — should be flagged under strict"
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_subs_does_not_flag_external_package_qualified_call()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #3014 conservative: a package NOT declared in this file (e.g. loaded via
+    // `use`) must never produce a false-positive UnresolvedQualifiedCall.
+    let code = r#"
+use strict;
+use Some::External::Module;
+Some::External::Module::helper();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| matches!(i.kind, IssueKind::UnresolvedQualifiedCall)),
+        "External packages must not be flagged — we cannot prove the sub is missing"
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_subs_qualified_call_respects_nested_package() -> Result<(), Box<dyn std::error::Error>> {
+    // Nested package `Foo::Bar` declared in-file; `qux` missing.
+    let code = r#"
+use strict;
+package Foo::Bar {
+    sub qux { 1 }
+}
+package main;
+Foo::Bar::qux();
+Foo::Bar::missing();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall)
+                && i.variable_name == "Foo::Bar::qux"
+        }),
+        "Foo::Bar::qux() exists — should not be flagged"
+    );
+    assert!(
+        issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall)
+                && i.variable_name == "Foo::Bar::missing"
+        }),
+        "Foo::Bar::missing() is absent — should be flagged"
+    );
+    Ok(())
+}
+
+#[test]
+fn no_strict_means_no_qualified_call_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+    // Without `use strict`, package-qualified calls are never flagged.
+    let code = r#"
+package Foo;
+sub bar { 1 }
+package main;
+Foo::baz();
+"#;
+    let issues = scope_issues(code);
+
+    assert!(
+        !issues.iter().any(|i| matches!(i.kind, IssueKind::UnresolvedQualifiedCall)),
+        "Without strict, qualified calls should not be flagged"
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_subs_qualified_call_explicit_qualified_sub_definition_suppresses()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `sub Foo::bar {}` declared from package main should suppress the check for
+    // `Foo::bar()` — collect_defined_subs stores the explicit qualified name.
+    let code = r#"
+use strict;
+package main;
+sub Foo::bar { 1 }
+package Foo;
+main::Foo::bar();
+Foo::bar();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall) && i.variable_name == "Foo::bar"
+        }),
+        "Explicitly-qualified sub Foo::bar definition should suppress the call diagnostic"
+    );
+    Ok(())
+}
+
+#[test]
 fn strict_subs_allows_require_path_form_then_manual_import()
 -> Result<(), Box<dyn std::error::Error>> {
     // require "Foo/Bar.pm" path form should normalise to Foo::Bar for the
