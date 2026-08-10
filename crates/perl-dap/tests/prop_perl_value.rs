@@ -15,7 +15,7 @@
 //!    matching variant with the inputs unchanged.
 //!
 //! The `Tied` variant has no constructor; it is exercised in invariant 3 via
-//! struct-literal construction to keep the test complete for all 13 variants.
+//! struct-literal construction to keep the test complete for all 14 variants.
 
 use perl_dap::value::PerlValue;
 use proptest::prelude::*;
@@ -192,7 +192,7 @@ proptest! {
     })]
 
     /// The five named constructors preserve inputs exactly. `Tied` has no
-    /// constructor, so it is built via struct literal to ensure all 13 variants
+    /// constructor, so it is built via struct literal to ensure all 14 variants
     /// participate in preservation checking.
     #[test]
     fn prop_perl_value_constructors_preserve_inputs(
