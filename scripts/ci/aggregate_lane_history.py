@@ -1,35 +1,56 @@
 #!/usr/bin/env python3
-"""Aggregate ci-actuals.json artifacts into a per-lane percentile history.
+"""Aggregate trusted ci-actuals artifacts into per-lane percentile history.
 
-Inputs (one or more):
-  --actuals-dir DIR      Walk DIR for ci-actuals.json files (default: target/ci/actuals/).
-  --window-days N        Only consider receipts newer than N days (default: 14).
-  --output PATH          Write history JSON here (default: .ci/metrics/ci-lane-history.json).
-  --static-lanes PATH    policy/ci-lanes.toml for static_floor reference.
+Inputs:
+  --actuals-dir DIR      Walk DIR for ci-actuals*.json files.
+  --window-days N        Only consider receipts newer than N days.
+  --output PATH          Write the history JSON here.
+  --static-lanes PATH    policy/ci-lanes.toml for the allowed lane set/floors.
 
-Output: .ci/metrics/ci-lane-history.json with per-lane sample counts and
-p50/p90/p95. PR 13's planner can consume this to derive learned estimates
-once enough samples accumulate.
-
-Schema is intentionally tolerant: lanes with fewer than MIN_SAMPLES
-samples are still recorded but flagged with `learned: false` so the
-planner falls back to the static floor.
+Scheduled aggregation should additionally pass --require-trusted-markers,
+--repository, and --default-branch. Each downloaded run directory must then
+contain a run-level trusted-run.json written from verified GitHub workflow-run
+metadata. Downloaded artifacts cannot provide or override that marker.
 """
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime
 import json
 import math
+from pathlib import Path
+import re
+import stat
 import statistics
 import sys
 import time
 import tomllib
-from datetime import date
-from pathlib import Path
+from datetime import date, datetime
 from typing import Any
 
 SCHEMA_VERSION = 1
+EXPECTED_RECEIPT_SCHEMA_VERSION = 1
+EXPECTED_RECEIPT_REPO = "perl-lsp"
 MIN_SAMPLES_FOR_LEARNED = 5
+MAX_ACTUAL_LEM = 125.0
+MAX_RECEIPT_BYTES = 1_048_576
+MAX_MARKER_BYTES = 16_384
+MAX_JOBS_PER_RECEIPT = 100
+MAX_SAMPLES_PER_LANE = 1_000
+TRUSTED_MARKER = "trusted-run.json"
+RUN_DIRECTORY_RE = re.compile(r"run-([1-9][0-9]*)")
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+@dataclass(frozen=True)
+class TrustedRun:
+    """Validated provenance for one downloaded workflow run."""
+
+    run_id: int
+    head_sha: str
+    created_at: float
 
 # Artifacts emitted before `--lane-id` existed carry no `lane_id`, and the
 # aggregator reads a 14-day window, so for a couple of weeks after the #6217
@@ -58,104 +79,298 @@ def percentile(values: list[float], p: float) -> float:
     return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
 
 
+def static_floors(lanes_toml: Path) -> dict[str, float]:
+    """Load and validate the canonical lane allowlist and static floors."""
+    if not lanes_toml.is_file():
+        raise ValueError(f"lane policy not found: {lanes_toml}")
+
+    try:
+        doc = tomllib.loads(lanes_toml.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"could not read lane policy {lanes_toml}: {error}") from error
+
+    lanes = doc.get("lane")
+    if not isinstance(lanes, dict) or not lanes:
+        raise ValueError("lane policy has no [lane.*] entries")
+
+    out: dict[str, float] = {}
+    for lane_id, lane in lanes.items():
+        if not isinstance(lane_id, str) or not lane_id:
+            raise ValueError(f"invalid lane id: {lane_id!r}")
+        if not isinstance(lane, dict):
+            raise ValueError(f"lane {lane_id!r} is not a table")
+        base = lane.get("base_lem")
+        if isinstance(base, bool) or not isinstance(base, (int, float)):
+            raise ValueError(f"lane {lane_id!r} has non-numeric base_lem")
+        floor = float(base)
+        if not math.isfinite(floor) or floor < 0 or floor > MAX_ACTUAL_LEM:
+            raise ValueError(f"lane {lane_id!r} has invalid base_lem {base!r}")
+        out[lane_id] = floor
+    return out
+
+
+def bounded_regular_file(path: Path, *, max_bytes: int) -> tuple[bool, str]:
+    """Check that path is one bounded ordinary file without following symlinks."""
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False, "unreadable_file"
+    if not stat.S_ISREG(metadata.st_mode):
+        return False, "non_regular_file"
+    if metadata.st_size > max_bytes:
+        return False, "oversized_file"
+    return True, "accepted"
+
+
+def trusted_marker_for_receipt(
+    receipt_path: Path, actuals_dir: Path
+) -> tuple[Path, int] | None:
+    """Derive the exact run-level marker; never search inside artifact content."""
+    try:
+        root = actuals_dir.resolve(strict=True)
+        receipt = receipt_path.resolve(strict=True)
+        relative = receipt.relative_to(root)
+    except (OSError, ValueError):
+        return None
+
+    # The workflow extracts only below:
+    #   <actuals_dir>/run-<id>/artifacts/**/ci-actuals*.json
+    # The trusted marker is written afterward at:
+    #   <actuals_dir>/run-<id>/trusted-run.json
+    if len(relative.parts) < 3 or relative.parts[1] != "artifacts":
+        return None
+    run_match = RUN_DIRECTORY_RE.fullmatch(relative.parts[0])
+    if run_match is None:
+        return None
+    run_dir = root / relative.parts[0]
+    try:
+        run_metadata = run_dir.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISDIR(run_metadata.st_mode):
+        return None
+    return run_dir / TRUSTED_MARKER, int(run_match.group(1))
+
+
+def parse_trusted_timestamp(value: Any) -> float | None:
+    """Parse one timezone-aware RFC 3339 timestamp from trusted run metadata."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
+
+
+def validate_trusted_marker(
+    marker_path: Path,
+    *,
+    expected_run_id: int,
+    repository: str,
+    default_branch: str,
+) -> tuple[TrustedRun | None, str]:
+    """Validate run provenance recorded by the trusted workflow shell."""
+    regular, reason = bounded_regular_file(marker_path, max_bytes=MAX_MARKER_BYTES)
+    if not regular:
+        return None, f"marker_{reason}"
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, "invalid_marker"
+    if not isinstance(marker, dict):
+        return None, "invalid_marker"
+
+    run_id = marker.get("run_id")
+    if (
+        isinstance(run_id, bool)
+        or not isinstance(run_id, int)
+        or run_id != expected_run_id
+    ):
+        return None, "run_id_mismatch"
+    if marker.get("repository") != repository:
+        return None, "foreign_repository"
+    if marker.get("conclusion") != "success":
+        return None, "unsuccessful_run"
+
+    event = marker.get("event")
+    branch = marker.get("head_branch")
+    if event == "push":
+        if branch != default_branch:
+            return None, "untrusted_branch"
+    elif event != "merge_group":
+        return None, "untrusted_event"
+
+    head_sha = marker.get("head_sha")
+    if not isinstance(head_sha, str) or FULL_SHA_RE.fullmatch(head_sha) is None:
+        return None, "invalid_marker"
+
+    created_at = parse_trusted_timestamp(marker.get("created_at"))
+    if created_at is None:
+        return None, "invalid_marker"
+    return TrustedRun(run_id=run_id, head_sha=head_sha, created_at=created_at), "accepted"
+
+
+def validate_receipt_identity(
+    doc: dict[str, Any], *, trusted_run: TrustedRun | None, expected_repo: str
+) -> str | None:
+    """Return a rejection reason when receipt identity is missing or contradictory."""
+    if doc.get("schema_version") != EXPECTED_RECEIPT_SCHEMA_VERSION:
+        return "unsupported_receipt_schema"
+    if doc.get("repo") != expected_repo:
+        return "receipt_repo_mismatch"
+    workflow = doc.get("workflow")
+    if not isinstance(workflow, str) or not workflow.strip():
+        return "missing_workflow_identity"
+    pr_number = doc.get("pr")
+    if isinstance(pr_number, bool) or pr_number not in (None, 0):
+        return "pull_request_receipt"
+    sha = doc.get("sha")
+    if not isinstance(sha, str) or FULL_SHA_RE.fullmatch(sha) is None:
+        return "invalid_receipt_sha"
+    if trusted_run is not None and sha != trusted_run.head_sha:
+        return "receipt_sha_mismatch"
+    return None
+
+
 def collect_actuals(
-    *, actuals_dir: Path, window_days: int, known_lanes: set[str]
+    *,
+    actuals_dir: Path,
+    window_days: int,
+    allowed_lanes: set[str],
+    require_trusted_markers: bool = False,
+    repository: str = "",
+    default_branch: str = "",
+    expected_receipt_repo: str = EXPECTED_RECEIPT_REPO,
 ) -> tuple[dict[str, list[float]], dict[str, Any]]:
-    """Walk actuals_dir for ci-actuals.json files, return per-lane LEM samples.
-
-    Only samples that attribute to a lane in ``known_lanes`` are accepted. A
-    job is attributed by its explicit ``lane_id`` (stamped by the emitter from
-    the workflow's own ``--lane-id``), or by ``gate_name`` when that name is
-    *literally* a known lane id.
-
-    A ``gate_name`` that is not a lane id is counted as unmapped and dropped.
-    It is deliberately not minted into a new lane: gate names are N:1 into
-    lanes, so doing that builds a parallel keyspace no planner can read while
-    every real lane stays empty, which is the #6217 defect.
-
-    **One sample per lane execution, not per gate.** A single
-    ``merge_gate_shards`` run spans eight matrix jobs and dozens of gates, all
-    stamped with the same lane. Appending each gate's ``actual_lem``
-    separately would let one workflow run clear the five-sample threshold on
-    its own, and would make p50/p90/p95 describe a typical *gate* rather than
-    the lane's total cost. ``pr_plan.py`` consumes those percentiles as
-    whole-lane actuals, so per-gate samples would sit permanently below the
-    lane's static floor and the lane could never calibrate *upward* — which is
-    the entire purpose of a learned estimate. Jobs are therefore grouped by
-    (run, workflow, lane) across shard artifacts and summed into one sample.
-
-    Returns ``(samples, stats)``; ``stats`` is the validation record the caller
-    uses to decide whether the run learned anything at all.
-    """
+    """Collect bounded samples and return validation/provenance statistics."""
     samples: dict[str, list[float]] = {}
+    rejected: Counter[str] = Counter()
+    source_runs: set[int] = set()
+    executions: dict[tuple[str, str, str], float] = {}
     stats: dict[str, Any] = {
-        "source_files": 0,
+        "files_seen": 0,
+        "files_accepted": 0,
         "jobs_seen": 0,
         "jobs_with_sample": 0,
-        # Jobs carrying a `lane_id` field at all, whether or not it names a
-        # known lane. Zero means every artifact in the window predates the
-        # emitter's --lane-id wiring, which is the rollout state rather than a
-        # mapping failure.
         "jobs_with_lane_id": 0,
         "accepted_samples": 0,
-        # Distinct (run, workflow, lane) groups, i.e. how many samples actually
-        # land in the history. Always <= accepted_samples, and much smaller for
-        # a shard lane.
         "lane_executions": 0,
         "unmapped_samples": 0,
         "unmapped_keys": {},
+        "rejected": rejected,
+        "source_run_ids": source_runs,
     }
-    # (run, workflow, lane) -> summed LEM for that one lane execution.
-    executions: dict[tuple[str, str, str], float] = {}
     if not actuals_dir.exists():
         return samples, stats
+    if not actuals_dir.is_dir() or actuals_dir.is_symlink():
+        raise ValueError(f"actuals directory is not a regular directory: {actuals_dir}")
 
     cutoff = time.time() - window_days * 86400
-    for path in sorted(actuals_dir.rglob("*.json")):
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
+    for path in sorted(actuals_dir.rglob("ci-actuals*.json")):
+        stats["files_seen"] += 1
+        regular, file_reason = bounded_regular_file(path, max_bytes=MAX_RECEIPT_BYTES)
+        if not regular:
+            rejected[
+                "oversized_receipt"
+                if file_reason == "oversized_file"
+                else "non_regular_receipt"
+            ] += 1
             continue
-        if mtime < cutoff:
-            continue
+
+        trusted_run: TrustedRun | None = None
+        if require_trusted_markers:
+            marker = trusted_marker_for_receipt(path, actuals_dir)
+            if marker is None:
+                rejected["missing_marker"] += 1
+                continue
+            marker_path, expected_run_id = marker
+            if not marker_path.exists():
+                rejected["missing_marker"] += 1
+                continue
+            trusted_run, marker_reason = validate_trusted_marker(
+                marker_path,
+                expected_run_id=expected_run_id,
+                repository=repository,
+                default_branch=default_branch,
+            )
+            if trusted_run is None:
+                rejected[marker_reason] += 1
+                continue
+            if trusted_run.created_at < cutoff:
+                rejected["outside_window"] += 1
+                continue
+        else:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                rejected["unreadable_file"] += 1
+                continue
+            if mtime < cutoff:
+                rejected["outside_window"] += 1
+                continue
+
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (OSError, ValueError):
+            rejected["invalid_receipt"] += 1
             continue
         if not isinstance(doc, dict):
+            rejected["invalid_receipt"] += 1
             continue
-        stats["source_files"] += 1
-        # Identity of the workflow run this artifact came from. The eight shard
-        # artifacts of one run share a sha, which is what lets them sum into a
-        # single lane execution. Falling back to the artifact's own directory
-        # keeps unrelated runs apart when sha is absent, which over-counts
-        # rather than merging distinct runs into one inflated sample.
-        run_key = str(doc.get("sha") or path.parent)
+
+        if require_trusted_markers:
+            identity_reason = validate_receipt_identity(
+                doc,
+                trusted_run=trusted_run,
+                expected_repo=expected_receipt_repo,
+            )
+            if identity_reason is not None:
+                rejected[identity_reason] += 1
+                continue
+
+        jobs = doc.get("jobs")
+        if not isinstance(jobs, list):
+            rejected["invalid_jobs"] += 1
+            continue
+        if len(jobs) > MAX_JOBS_PER_RECEIPT:
+            rejected["oversized_receipt"] += 1
+            continue
+
+        stats["files_accepted"] += 1
+        if trusted_run is not None:
+            source_runs.add(trusted_run.run_id)
+            run_key = str(trusted_run.run_id)
+        else:
+            run_key = str(doc.get("sha") or path.parent)
         workflow_key = str(doc.get("workflow") or "")
-        for job in doc.get("jobs", []):
-            if not isinstance(job, dict):
-                continue
+        for job in jobs:
             stats["jobs_seen"] += 1
-            actual = job.get("actual_lem")
-            if not isinstance(actual, (int, float)):
+            if not isinstance(job, dict):
+                rejected["invalid_job"] += 1
                 continue
-            # Reject non-finite or extreme samples that could corrupt the
-            # percentile history (inf, nan, or implausibly large values from
-            # a buggy or malicious ci-actuals artifact) (#5995).
-            actual_float = float(actual)
-            if not math.isfinite(actual_float) or actual_float < 0 or actual_float > 3_600_000:
+
+            actual = job.get("actual_lem")
+            if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+                rejected["invalid_actual"] += 1
+                continue
+            actual_value = float(actual)
+            if not math.isfinite(actual_value):
+                rejected["non_finite_actual"] += 1
+                continue
+            if actual_value < 0 or actual_value > MAX_ACTUAL_LEM:
+                rejected["out_of_range_actual"] += 1
                 continue
             stats["jobs_with_sample"] += 1
 
-            # Explicit lane_id wins. A gate_name counts only on an exact match
-            # against a known lane id — never a prefix, suffix, or fuzzy match
-            # (#6217).
             gate_name = job.get("gate_name")
             lane_id = job.get("lane_id")
             if lane_id:
                 stats["jobs_with_lane_id"] += 1
-            if lane_id not in known_lanes:
-                lane_id = gate_name if gate_name in known_lanes else None
+            if lane_id not in allowed_lanes:
+                lane_id = gate_name if gate_name in allowed_lanes else None
 
             if lane_id is None:
                 stats["unmapped_samples"] += 1
@@ -165,25 +380,40 @@ def collect_actuals(
 
             stats["accepted_samples"] += 1
             key = (run_key, workflow_key, lane_id)
-            executions[key] = executions.get(key, 0.0) + actual_float
+            executions[key] = executions.get(key, 0.0) + actual_value
 
-    # One sample per lane execution, summed across that run's gates and shards.
     for (_run, _workflow, lane_id), total in executions.items():
-        samples.setdefault(lane_id, []).append(total)
+        lane_samples = samples.setdefault(lane_id, [])
+        if len(lane_samples) >= MAX_SAMPLES_PER_LANE:
+            rejected["lane_sample_cap"] += 1
+            continue
+        lane_samples.append(total)
     stats["lane_executions"] = len(executions)
     return samples, stats
 
 
-def static_floors(lanes_toml: Path) -> dict[str, float]:
-    if not lanes_toml.exists():
-        return {}
-    doc = tomllib.loads(lanes_toml.read_text(encoding="utf-8"))
-    out: dict[str, float] = {}
-    for lane_id, lane in doc.get("lane", {}).items():
-        base = lane.get("base_lem")
-        if isinstance(base, (int, float)):
-            out[lane_id] = float(base)
-    return out
+def serializable_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    """Convert counters/sets to deterministic JSON values."""
+    return {
+        "files_seen": int(stats["files_seen"]),
+        "files_accepted": int(stats["files_accepted"]),
+        "jobs_seen": int(stats["jobs_seen"]),
+        "accepted_samples": int(stats["accepted_samples"]),
+        "jobs_with_sample": int(stats["jobs_with_sample"]),
+        "jobs_with_lane_id": int(stats["jobs_with_lane_id"]),
+        "lane_executions": int(stats["lane_executions"]),
+        "unmapped_samples": int(stats["unmapped_samples"]),
+        "unmapped_keys": dict(stats["unmapped_keys"]),
+        "rejected": dict(sorted(stats["rejected"].items())),
+        "source_run_count": len(stats["source_run_ids"]),
+        "source_run_ids": sorted(stats["source_run_ids"]),
+        "limits": {
+            "max_actual_lem": MAX_ACTUAL_LEM,
+            "max_receipt_bytes": MAX_RECEIPT_BYTES,
+            "max_jobs_per_receipt": MAX_JOBS_PER_RECEIPT,
+            "max_samples_per_lane": MAX_SAMPLES_PER_LANE,
+        },
+    }
 
 
 def build_history(
@@ -191,34 +421,31 @@ def build_history(
     samples: dict[str, list[float]],
     floors: dict[str, float],
     window_days: int,
-    stats: dict[str, Any] | None = None,
+    validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Build deterministic per-lane statistics from validated samples."""
     lanes_out: dict[str, Any] = {}
-    # Include every lane known to policy, even when samples are empty: planner
-    # readers can iterate the full keyspace without checking presence.
-    for lane_id in sorted(set(samples.keys()) | set(floors.keys())):
-        s = samples.get(lane_id, [])
-        floor = floors.get(lane_id)
-        learned = len(s) >= MIN_SAMPLES_FOR_LEARNED
+    for lane_id in sorted(floors):
+        lane_samples = samples.get(lane_id, [])
         entry: dict[str, Any] = {
-            "samples": len(s),
-            "static_floor": floor,
-            "learned": learned,
+            "samples": len(lane_samples),
+            "static_floor": floors[lane_id],
+            "learned": len(lane_samples) >= MIN_SAMPLES_FOR_LEARNED,
         }
-        if s:
+        if lane_samples:
             entry.update(
                 {
-                    "p50": percentile(s, 50),
-                    "p90": percentile(s, 90),
-                    "p95": percentile(s, 95),
-                    "min": min(s),
-                    "max": max(s),
-                    "mean": statistics.fmean(s),
+                    "p50": percentile(lane_samples, 50),
+                    "p90": percentile(lane_samples, 90),
+                    "p95": percentile(lane_samples, 95),
+                    "min": min(lane_samples),
+                    "max": max(lane_samples),
+                    "mean": statistics.fmean(lane_samples),
                 }
             )
         lanes_out[lane_id] = entry
 
-    out: dict[str, Any] = {
+    history: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "window_days": window_days,
@@ -226,12 +453,9 @@ def build_history(
         "lane_count": len(lanes_out),
         "lanes": lanes_out,
     }
-    if stats is not None:
-        # Recorded so a reader can tell "no data arrived" apart from "data
-        # arrived and none of it attributed to a lane" — the two states this
-        # file could not previously distinguish (#6217).
-        out["validation"] = dict(stats)
-    return out
+    if validation is not None:
+        history["validation"] = validation
+    return history
 
 
 def attribution_verdict(
@@ -257,7 +481,7 @@ def attribution_verdict(
     """
     if stats["jobs_with_sample"] == 0:
         return 0, None
-    if stats["accepted_samples"] > 0:
+    if stats["lane_executions"] > 0:
         return 0, None
 
     worst = sorted(stats["unmapped_keys"].items(), key=lambda kv: -kv[1])[:10]
@@ -293,37 +517,68 @@ def attribution_verdict(
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--actuals-dir", type=Path, default=Path("target/ci/actuals"),
-        help="Directory to walk for ci-actuals.json artifacts.",
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--actuals-dir",
+        type=Path,
+        default=Path("target/ci/actuals"),
+        help="Directory to walk for ci-actuals artifacts.",
     )
-    p.add_argument("--window-days", type=int, default=14)
-    p.add_argument(
-        "--output", type=Path,
+    parser.add_argument("--window-days", type=int, default=14)
+    parser.add_argument(
+        "--output",
+        type=Path,
         default=Path(".ci/metrics/ci-lane-history.json"),
     )
-    p.add_argument(
-        "--static-lanes", type=Path, default=Path("policy/ci-lanes.toml")
+    parser.add_argument(
+        "--static-lanes",
+        type=Path,
+        default=Path("policy/ci-lanes.toml"),
     )
-    args = p.parse_args()
+    parser.add_argument("--require-trusted-markers", action="store_true")
+    parser.add_argument("--repository", default="")
+    parser.add_argument("--default-branch", default="")
+    parser.add_argument("--receipt-repo", default=EXPECTED_RECEIPT_REPO)
+    args = parser.parse_args()
 
-    floors = static_floors(args.static_lanes)
-    samples, stats = collect_actuals(
-        actuals_dir=args.actuals_dir,
-        window_days=args.window_days,
-        known_lanes=set(floors),
-    )
+    if args.window_days <= 0:
+        parser.error("--window-days must be positive")
+    if args.require_trusted_markers and (
+        not args.repository or not args.default_branch
+    ):
+        parser.error(
+            "--repository and --default-branch are required with "
+            "--require-trusted-markers"
+        )
+
+    try:
+        floors = static_floors(args.static_lanes)
+        samples, raw_stats = collect_actuals(
+            actuals_dir=args.actuals_dir,
+            window_days=args.window_days,
+            allowed_lanes=set(floors),
+            require_trusted_markers=args.require_trusted_markers,
+            repository=args.repository,
+            default_branch=args.default_branch,
+            expected_receipt_repo=args.receipt_repo,
+        )
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    validation = serializable_stats(raw_stats)
     history = build_history(
         samples=samples,
         floors=floors,
         window_days=args.window_days,
-        stats=stats,
+        validation=validation,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
-        json.dumps(history, indent=2) + "\n", encoding="utf-8"
+        json.dumps(history, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
 
     learned = sum(1 for entry in history["lanes"].values() if entry["learned"])
@@ -333,9 +588,12 @@ def main() -> int:
                 "lanes": history["lane_count"],
                 "learned": learned,
                 "window_days": args.window_days,
-                "accepted_samples": stats["accepted_samples"],
-                "unmapped_samples": stats["unmapped_samples"],
-            }
+                "accepted_samples": validation["accepted_samples"],
+                "rejected_samples": sum(validation["rejected"].values()),
+                "source_runs": validation["source_run_count"],
+                "unmapped_samples": validation["unmapped_samples"],
+            },
+            allow_nan=False,
         )
     )
 
@@ -344,7 +602,7 @@ def main() -> int:
     # (error from day one). Collapsing the two would either hide the real
     # defect or emit a chronic red that everyone learns to ignore — the same
     # ignored-signal failure as #6188, #6193, #6202, and #6229.
-    code, message = attribution_verdict(stats, today=date.today())
+    code, message = attribution_verdict(raw_stats, today=date.today())
     if message is not None:
         print(message, file=sys.stderr)
     return code
