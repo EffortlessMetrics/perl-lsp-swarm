@@ -5092,6 +5092,18 @@ sub runtime_caller {
          not the phaser Block scope; got scope_id={}",
         sym.scope_id
     );
+
+    let call_offset = code.find("compile_time_helper()").ok_or("call not found")?;
+    assert!(
+        !table
+            .find_symbol(
+                "compile_time_helper",
+                table.scope_at_offset(call_offset),
+                SymbolKind::Subroutine,
+            )
+            .is_empty(),
+        "compile_time_helper must resolve from runtime_caller"
+    );
     Ok(())
 }
 
@@ -5178,14 +5190,12 @@ package Foo {
     let syms = table.symbols.get("bar").ok_or("bar not found")?;
     let sym = syms.first().ok_or("no symbol entry")?;
 
-    // bar's scope_id must NOT be a Block scope — it must be a Package or Global scope.
-    // Verify by checking the scope kind in the table.
-    if let Some(scope) = table.scopes.get(&sym.scope_id) {
-        assert!(
-            matches!(scope.kind, ScopeKind::Global | ScopeKind::Package),
-            "bar's scope_id must point to a Package or Global scope, got {:?}",
-            scope.kind
-        );
-    }
+    // bar's scope_id must NOT be a Block scope — it must be the enclosing Package scope.
+    let scope = table.scopes.get(&sym.scope_id).ok_or("bar scope not found")?;
+    assert!(
+        matches!(scope.kind, ScopeKind::Package),
+        "bar's scope_id must point to the enclosing Package scope, got {:?}",
+        scope.kind
+    );
     Ok(())
 }
