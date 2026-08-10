@@ -92,6 +92,12 @@ class PublicReleaseClaimsTests(unittest.TestCase):
     def test_not_proven_claim_is_still_explicitly_bounded(self) -> None:
         self.assert_invalid(lambda value: value["claims"][0].update({"status": "not_proven", "limitation": None}), "requires a limitation")
 
+    def test_install_claim_cannot_use_an_unrelated_authority(self) -> None:
+        self.assert_invalid(
+            lambda value: value["claims"][0].update({"authority": "api_audit"}),
+            "authority does not own claim id",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
