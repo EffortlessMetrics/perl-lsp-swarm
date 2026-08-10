@@ -360,8 +360,7 @@ fn validate_journey_cells(receipt: &Receipt) -> Result<()> {
         for evidence in &cell.evidence_refs {
             non_empty(evidence, "journey_cells[].evidence_refs[]")?;
             if let Some((_, candidate_ref)) = evidence.rsplit_once('/') {
-                if candidate_ref.starts_with('v')
-                    && candidate_ref != receipt.candidate.candidate_id
+                if candidate_ref.starts_with('v') && candidate_ref != receipt.candidate.candidate_id
                 {
                     bail!(
                         "journey_cells[].evidence_refs[] must bind to candidate {}",
@@ -556,17 +555,16 @@ fn validate_installed_acceptance_source(
     source: &serde_json::Value,
 ) -> Result<()> {
     let schema_version = source.get("schema_version").ok_or_else(|| {
-        color_eyre::eyre::eyre!("child_receipts.{name} installed-acceptance source lacks schema_version")
+        color_eyre::eyre::eyre!(
+            "child_receipts.{name} installed-acceptance source lacks schema_version"
+        )
     })?;
     if schema_version.as_i64() != Some(1) {
         bail!("child_receipts.{name} installed-acceptance source must use schema_version 1");
     }
-    let outcome = source
-        .get("outcome")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            color_eyre::eyre::eyre!("child_receipts.{name} installed-acceptance source lacks outcome")
-        })?;
+    let outcome = source.get("outcome").and_then(serde_json::Value::as_str).ok_or_else(|| {
+        color_eyre::eyre::eyre!("child_receipts.{name} installed-acceptance source lacks outcome")
+    })?;
     let known_limitations = source
         .get("known_limitations")
         .and_then(serde_json::Value::as_array)
@@ -585,18 +583,20 @@ fn validate_installed_acceptance_source(
         _ => bail!("child_receipts.{name} installed-acceptance source has unknown outcome"),
     };
     if derived_status != child.status {
-        bail!("child_receipts.{name} installed-acceptance source status differs from the declared status");
+        bail!(
+            "child_receipts.{name} installed-acceptance source status differs from the declared status"
+        );
     }
-    let repository_sha = source
-        .get("repository_sha")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
+    let repository_sha =
+        source.get("repository_sha").and_then(serde_json::Value::as_str).ok_or_else(|| {
             color_eyre::eyre::eyre!(
                 "child_receipts.{name} installed-acceptance source lacks repository_sha"
             )
         })?;
     if repository_sha != receipt.candidate.frozen_product_sha {
-        bail!("child_receipts.{name} installed-acceptance source belongs to a different frozen product");
+        bail!(
+            "child_receipts.{name} installed-acceptance source belongs to a different frozen product"
+        );
     }
     Ok(())
 }
@@ -610,27 +610,28 @@ fn validate_release_topology_source(
     if source.get("schema").and_then(serde_json::Value::as_i64) != Some(1) {
         bail!("child_receipts.{name} release-topology source must use schema 1");
     }
-    let frozen_product_sha = source
-        .get("frozen_product_sha")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            color_eyre::eyre::eyre!("child_receipts.{name} release-topology source lacks frozen_product_sha")
+    let frozen_product_sha =
+        source.get("frozen_product_sha").and_then(serde_json::Value::as_str).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} release-topology source lacks frozen_product_sha"
+            )
         })?;
     if frozen_product_sha != receipt.candidate.frozen_product_sha {
-        bail!("child_receipts.{name} release-topology source belongs to a different frozen product");
+        bail!(
+            "child_receipts.{name} release-topology source belongs to a different frozen product"
+        );
     }
     if child.status != InputStatus::Pass {
-        bail!("child_receipts.{name} release-topology source status differs from the declared status");
+        bail!(
+            "child_receipts.{name} release-topology source status differs from the declared status"
+        );
     }
     Ok(())
 }
 
 fn validate_topology_source_binding(receipt: &Receipt) -> Result<()> {
-    let all_have_source = receipt
-        .child_receipts
-        .iter()
-        .into_iter()
-        .all(|(_, child)| child.source_sha256.is_some());
+    let all_have_source =
+        receipt.child_receipts.iter().into_iter().all(|(_, child)| child.source_sha256.is_some());
     if !all_have_source {
         return Ok(());
     }
@@ -643,7 +644,9 @@ fn validate_topology_source_binding(receipt: &Receipt) -> Result<()> {
             color_eyre::eyre::eyre!("release_topology source digest is required once all child receipts carry source provenance")
         })?;
     if topology_source != receipt.candidate.release_topology_sha256 {
-        bail!("candidate.release_topology_sha256 must match release_topology source receipt digest");
+        bail!(
+            "candidate.release_topology_sha256 must match release_topology source receipt digest"
+        );
     }
     Ok(())
 }
