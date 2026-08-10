@@ -19,14 +19,24 @@ def load_targets(path: Path = TARGETS_PATH) -> list[tuple[str, str]]:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read parser integration target manifest: {error}") from error
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1 or not isinstance(payload.get("targets"), list):
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or not isinstance(payload.get("targets"), list)
+    ):
         raise ValueError("unsupported parser integration target manifest")
 
     result: list[tuple[str, str]] = []
     target_names: set[str] = set()
     for item in payload["targets"]:
-        if not isinstance(item, dict) or not isinstance(item.get("package"), str) or not isinstance(item.get("target"), str):
-            raise ValueError("parser integration target must contain string package and target")
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("package"), str)
+            or not item.get("package")
+            or not isinstance(item.get("target"), str)
+            or not item.get("target")
+        ):
+            raise ValueError("parser integration target must contain non-empty string package and target")
         entry = (item["package"], item["target"])
         if entry in result:
             raise ValueError(f"duplicate parser integration target: {entry[0]}:{entry[1]}")
