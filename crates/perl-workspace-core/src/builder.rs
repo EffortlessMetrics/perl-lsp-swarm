@@ -113,11 +113,10 @@ pub fn build_project_model(
         // Distribution-metadata facts: metadata files are not "parsed" as Perl,
         // but when DIST is requested their content is read for name/version/
         // license/prereqs.
-        if role == FileRole::DistMetadata && request.fact_classes.contains(FactClasses::DIST) {
-            if let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content) {
+        if role == FileRole::DistMetadata && request.fact_classes.contains(FactClasses::DIST)
+            && let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content) {
                 model.dist_metadata.push(facts);
             }
-        }
 
         // POD facts are read from raw source (independent of code parsing), so a
         // file whose Perl fails to parse can still yield POD.
@@ -247,11 +246,10 @@ fn extract_facts(
     };
 
     // Test facts: for test-role files, detect the framework + assertion counts.
-    if fact_classes.contains(FactClasses::TESTS) && role == FileRole::Test {
-        if let Some(facts) = crate::test::extract_test_facts(&ast, file_id, &line_index) {
+    if fact_classes.contains(FactClasses::TESTS) && role == FileRole::Test
+        && let Some(facts) = crate::test::extract_test_facts(&ast, file_id, &line_index) {
             model.tests.push(facts);
         }
-    }
 
     // Symbol/package facts are only assembled when requested; a SYNTAX-only
     // request still parses (to set the status) but emits no declarations.
@@ -339,11 +337,10 @@ fn collect_perl_files(root: &Path) -> Vec<String> {
                     continue;
                 }
                 stack.push(path);
-            } else if file_type.is_file() && is_indexable(&path) {
-                if let Ok(relative) = path.strip_prefix(root) {
+            } else if file_type.is_file() && is_indexable(&path)
+                && let Ok(relative) = path.strip_prefix(root) {
                     out.push(relative.to_string_lossy().replace('\\', "/"));
                 }
-            }
         }
     }
     out
