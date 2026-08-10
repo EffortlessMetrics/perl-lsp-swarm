@@ -88,6 +88,7 @@ use std::cell::Cell;
 #[cfg(test)]
 thread_local! {
     static INCREMENTAL_SEARCH_ADD_CALLS: Cell<usize> = const { Cell::new(0) };
+    static REBUILD_SEARCH_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
@@ -1481,6 +1482,9 @@ impl WorkspaceIndex {
         files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
     ) {
+        #[cfg(test)]
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         search_index.clear();
         for file_index in files.values() {
             for symbol in &file_index.symbols {
@@ -10083,11 +10087,17 @@ helper_one();
 
         // Removing the upper package empties Foo::Bar keys but must not disturb foo::bar.
         INCREMENTAL_SEARCH_ADD_CALLS.with(|calls| calls.set(0));
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(0));
         index.remove_file(upper_uri.as_str());
         let search_add_calls_after_remove = INCREMENTAL_SEARCH_ADD_CALLS.with(Cell::get);
+        let rebuild_search_calls_after_remove = REBUILD_SEARCH_INDEX_CALLS.with(Cell::get);
         assert_eq!(
             search_add_calls_after_remove, 0,
-            "removing one file must not rebuild the search index from every remaining file"
+            "removing one file must not re-add every remaining file to the search index"
+        );
+        assert_eq!(
+            rebuild_search_calls_after_remove, 0,
+            "removing one file must not call rebuild_search_index (O(workspace) full rebuild)"
         );
 
         assert!(
