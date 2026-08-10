@@ -1109,6 +1109,7 @@ impl LspServer {
     }
 
     /// Handle textDocument/definition request
+    #[tracing::instrument(skip(self, params), name = "textDocument/definition")]
     pub(crate) fn handle_definition(
         &self,
         params: Option<Value>,
