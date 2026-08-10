@@ -250,10 +250,11 @@ impl CancellationRegistry {
     ) -> Result<Option<ProviderCleanupContext>, CancellationError> {
         // Mark token as cancelled
         if let Ok(tokens) = self.tokens.read()
-            && let Some(token) = tokens.get(request_id) {
-                token.cancel();
-                self.metrics.increment_cancelled();
-            }
+            && let Some(token) = tokens.get(request_id)
+        {
+            token.cancel();
+            self.metrics.increment_cancelled();
+        }
 
         // Execute and return cleanup context
         if let Ok(mut contexts) = self.cleanup_contexts.lock() {
@@ -272,9 +273,10 @@ impl CancellationRegistry {
     pub fn get_token(&self, request_id: &JsonRpcId) -> Option<PerlLspCancellationToken> {
         // Fast path: Check cache first
         if let Ok(cache) = self.token_cache.read()
-            && let Some(token) = cache.get(request_id) {
-                return Some(token.clone());
-            }
+            && let Some(token) = cache.get(request_id)
+        {
+            return Some(token.clone());
+        }
 
         // Slow path: Get from main storage and cache it
         if let Ok(tokens) = self.tokens.read() {
@@ -303,9 +305,10 @@ impl CancellationRegistry {
     pub fn is_cancelled(&self, request_id: &JsonRpcId) -> bool {
         // Fast path: Check cache first with relaxed atomic read
         if let Ok(cache) = self.token_cache.try_read()
-            && let Some(token) = cache.get(request_id) {
-                return token.is_cancelled_relaxed();
-            }
+            && let Some(token) = cache.get(request_id)
+        {
+            return token.is_cancelled_relaxed();
+        }
 
         // Fallback: Check main storage
         if let Ok(tokens) = self.tokens.try_read() {

@@ -232,14 +232,16 @@ impl DocumentHighlightProvider {
 
         // Check for subroutine/method name at cursor position
         if let NodeKind::Subroutine { name: Some(sub_name), name_span: Some(span), .. } = &node.kind
-            && offset >= span.start && offset <= span.end {
-                return Some(SymbolInfo {
-                    name: sub_name.clone(),
-                    sigil: None,
-                    is_method: false,
-                    is_function: true,
-                });
-            }
+            && offset >= span.start
+            && offset <= span.end
+        {
+            return Some(SymbolInfo {
+                name: sub_name.clone(),
+                sigil: None,
+                is_method: false,
+                is_function: true,
+            });
+        }
 
         // Recurse into children
         if let Some(children) = self.get_children(node) {
@@ -518,14 +520,15 @@ impl DocumentHighlightProvider {
 
         // Handle $#array -> normalize to @array
         if let Some(bare_name) = base_info.name.strip_prefix('#')
-            && !bare_name.is_empty() {
-                return Some(SymbolInfo {
-                    name: bare_name.to_string(),
-                    sigil: Some("@".to_string()),
-                    is_method: false,
-                    is_function: false,
-                });
-            }
+            && !bare_name.is_empty()
+        {
+            return Some(SymbolInfo {
+                name: bare_name.to_string(),
+                sigil: Some("@".to_string()),
+                is_method: false,
+                is_function: false,
+            });
+        }
 
         // Check if this $var is the left child of a Binary { op: "[]" | "{}" }
         if let Some(parent_op) = self.find_subscript_parent(ast, byte_offset) {
@@ -568,15 +571,16 @@ impl DocumentHighlightProvider {
         // If this is a Binary subscript and the offset falls inside the left child
         if let NodeKind::Binary { op, left, .. } = &node.kind
             && (op == "[]" || op == "{}")
-                && offset >= left.location.start
-                && offset <= left.location.end
+            && offset >= left.location.start
+            && offset <= left.location.end
+        {
+            // Verify the left child is a Variable with $ sigil
+            if let NodeKind::Variable { sigil, .. } = &left.kind
+                && sigil == "$"
             {
-                // Verify the left child is a Variable with $ sigil
-                if let NodeKind::Variable { sigil, .. } = &left.kind
-                    && sigil == "$" {
-                        return Some(op.clone());
-                    }
+                return Some(op.clone());
             }
+        }
 
         // Recurse into children
         if let Some(children) = self.get_children(node) {
@@ -691,14 +695,15 @@ impl DocumentHighlightProvider {
         //   @array <-> $#array      (array last index)
         if let NodeKind::Variable { sigil, name } = &node.kind
             && !self.node_matches_symbol(node, source, target)
-                && let Some(target_sigil) = &target.sigil {
-                    let cross_match =
-                        self.is_cross_sigil_match(sigil, name, target_sigil, &target.name, parent);
-                    if cross_match {
-                        let kind = self.determine_highlight_kind_with_parent(node, parent);
-                        highlights.push(DocumentHighlight { location: node.location, kind });
-                    }
-                }
+            && let Some(target_sigil) = &target.sigil
+        {
+            let cross_match =
+                self.is_cross_sigil_match(sigil, name, target_sigil, &target.name, parent);
+            if cross_match {
+                let kind = self.determine_highlight_kind_with_parent(node, parent);
+                highlights.push(DocumentHighlight { location: node.location, kind });
+            }
+        }
 
         // Emit highlights for subroutine and method definition name spans.
         match &node.kind {
@@ -730,62 +735,67 @@ impl DocumentHighlightProvider {
 
         // Emit synthetic highlights for Try catch parameter variables
         if let NodeKind::Try { catch_blocks, body, .. } = &node.kind
-            && let Some(target_sigil) = &target.sigil {
-                let expected = format!("{}{}", target_sigil, target.name);
-                let mut search_from = body.location.end;
-                for (param, catch_body) in catch_blocks {
-                    if let Some((var_str, _)) = param
-                        && var_str == &expected {
-                            // Search between previous body/catch end and catch body start
-                            let search_end = catch_body.location.start;
-                            if search_from < search_end && search_end <= source.len()
-                                && let Some(search_area) = source.get(search_from..search_end)
-                                    && let Some(pos) = search_area.find(var_str.as_str()) {
-                                        let var_start = search_from + pos;
-                                        highlights.push(DocumentHighlight {
-                                            location: SourceLocation {
-                                                start: var_start,
-                                                end: var_start + var_str.len(),
-                                            },
-                                            kind: DocumentHighlightKind::Write,
-                                        });
-                                    }
-                        }
-                    search_from = catch_body.location.end;
-                }
-            }
-
-        // Scan interpolated strings for variable references
-        if let NodeKind::String { interpolated: true, .. } = &node.kind
-            && let Some(target_sigil) = &target.sigil {
-                let expected = format!("{}{}", target_sigil, target.name);
-                if let Some(node_text) = source.get(node.location.start..node.location.end) {
-                    for (pos, _) in node_text.match_indices(expected.as_str()) {
-                        // Avoid matching prefixes of longer variable names
-                        let end_pos = pos + expected.len();
-                        if end_pos < node_text.len() {
-                            let next = node_text.as_bytes()[end_pos];
-                            if next.is_ascii_alphanumeric() || next == b'_' {
-                                continue;
-                            }
-                        }
-                        let abs_start = node.location.start + pos;
-                        // Skip if this is the whole node (already matched by normal traversal)
-                        if abs_start == node.location.start
-                            && node.location.end == abs_start + expected.len()
-                        {
-                            continue;
-                        }
+            && let Some(target_sigil) = &target.sigil
+        {
+            let expected = format!("{}{}", target_sigil, target.name);
+            let mut search_from = body.location.end;
+            for (param, catch_body) in catch_blocks {
+                if let Some((var_str, _)) = param
+                    && var_str == &expected
+                {
+                    // Search between previous body/catch end and catch body start
+                    let search_end = catch_body.location.start;
+                    if search_from < search_end
+                        && search_end <= source.len()
+                        && let Some(search_area) = source.get(search_from..search_end)
+                        && let Some(pos) = search_area.find(var_str.as_str())
+                    {
+                        let var_start = search_from + pos;
                         highlights.push(DocumentHighlight {
                             location: SourceLocation {
-                                start: abs_start,
-                                end: abs_start + expected.len(),
+                                start: var_start,
+                                end: var_start + var_str.len(),
                             },
-                            kind: DocumentHighlightKind::Read,
+                            kind: DocumentHighlightKind::Write,
                         });
                     }
                 }
+                search_from = catch_body.location.end;
             }
+        }
+
+        // Scan interpolated strings for variable references
+        if let NodeKind::String { interpolated: true, .. } = &node.kind
+            && let Some(target_sigil) = &target.sigil
+        {
+            let expected = format!("{}{}", target_sigil, target.name);
+            if let Some(node_text) = source.get(node.location.start..node.location.end) {
+                for (pos, _) in node_text.match_indices(expected.as_str()) {
+                    // Avoid matching prefixes of longer variable names
+                    let end_pos = pos + expected.len();
+                    if end_pos < node_text.len() {
+                        let next = node_text.as_bytes()[end_pos];
+                        if next.is_ascii_alphanumeric() || next == b'_' {
+                            continue;
+                        }
+                    }
+                    let abs_start = node.location.start + pos;
+                    // Skip if this is the whole node (already matched by normal traversal)
+                    if abs_start == node.location.start
+                        && node.location.end == abs_start + expected.len()
+                    {
+                        continue;
+                    }
+                    highlights.push(DocumentHighlight {
+                        location: SourceLocation {
+                            start: abs_start,
+                            end: abs_start + expected.len(),
+                        },
+                        kind: DocumentHighlightKind::Read,
+                    });
+                }
+            }
+        }
     }
 
     /// Raw-text fallback scan for variable occurrences the AST cannot see.
@@ -836,9 +846,10 @@ impl DocumentHighlightProvider {
             let end_pos = relative + needle_bytes.len();
             if end_pos < region.len()
                 && let Some(next) = region[end_pos..].chars().next()
-                    && (next.is_alphanumeric() || next == '_') {
-                        continue;
-                    }
+                && (next.is_alphanumeric() || next == '_')
+            {
+                continue;
+            }
             highlights.push(DocumentHighlight {
                 location: SourceLocation { start: abs_start, end: abs_start + needle_bytes.len() },
                 kind: DocumentHighlightKind::Text,
@@ -864,11 +875,13 @@ impl DocumentHighlightProvider {
     ) -> bool {
         // Handle $#array <-> @array
         // $#array is Variable { sigil: "$", name: "#array" }
-        if target_sigil == "@" && sigil == "$"
+        if target_sigil == "@"
+            && sigil == "$"
             && let Some(bare) = name.strip_prefix('#')
-                && bare == target_name {
-                    return true;
-                }
+            && bare == target_name
+        {
+            return true;
+        }
         // Reverse: target is $#array (normalized to @array), node is @array
         // This case is handled by the normal sigil matching since we normalized
         // the target sigil in extract_symbol_info_with_context.
@@ -879,22 +892,23 @@ impl DocumentHighlightProvider {
         }
 
         if let Some(parent_node) = parent
-            && let NodeKind::Binary { op, .. } = &parent_node.kind {
-                // $hash{key} when target is %hash
-                if target_sigil == "%" && sigil == "$" && op == "{}" {
-                    return true;
-                }
-                // @hash{@keys} (hash slice) when target is %hash
-                if target_sigil == "%" && sigil == "@" && op == "{}" {
-                    return true;
-                }
-                // $array[idx] when target is @array
-                if target_sigil == "@" && sigil == "$" && op == "[]" {
-                    return true;
-                }
-                // @array[0,1] (array slice) when target is @array
-                // This is already matched by normal sigil matching since both are @.
+            && let NodeKind::Binary { op, .. } = &parent_node.kind
+        {
+            // $hash{key} when target is %hash
+            if target_sigil == "%" && sigil == "$" && op == "{}" {
+                return true;
             }
+            // @hash{@keys} (hash slice) when target is %hash
+            if target_sigil == "%" && sigil == "@" && op == "{}" {
+                return true;
+            }
+            // $array[idx] when target is @array
+            if target_sigil == "@" && sigil == "$" && op == "[]" {
+                return true;
+            }
+            // @array[0,1] (array slice) when target is @array
+            // This is already matched by normal sigil matching since both are @.
+        }
 
         false
     }

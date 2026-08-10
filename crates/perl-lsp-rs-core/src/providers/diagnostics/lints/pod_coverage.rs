@@ -165,9 +165,10 @@ fn collect_typeglob_names(node: &Node) -> Vec<String> {
     let mut names = Vec::new();
     walk_node(node, &mut |n| {
         if let NodeKind::Assignment { lhs, .. } = &n.kind
-            && let NodeKind::Typeglob { name } = &lhs.kind {
-                names.push(name.clone());
-            }
+            && let NodeKind::Typeglob { name } = &lhs.kind
+        {
+            names.push(name.clone());
+        }
     });
     names
 }
@@ -199,9 +200,10 @@ fn collect_constant_names(node: &Node) -> Vec<String> {
                 // args: ["NAME", "=>", "value", ...]
                 // The first token is the constant name.
                 if let Some(name) = args.first()
-                    && is_valid_identifier(name) {
-                        names.push(name.clone());
-                    }
+                    && is_valid_identifier(name)
+                {
+                    names.push(name.clone());
+                }
             }
         }
     });
