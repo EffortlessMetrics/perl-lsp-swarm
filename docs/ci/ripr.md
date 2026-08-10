@@ -83,9 +83,10 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 - Produces review guidance under `target/ripr/review/`.
 - Runs `cargo xtask quality-gate --mode enforce-new-ripr`, which blocks new
   named severe RIPR gaps in changed production files and stale or missing
-  repo-wide, diff-scoped, or review-guidance receipts. The quality receipt
-  records `pr_head_sha` separately from `evaluated_head_sha`; on a
-  `pull_request` run the former must match `github.event.pull_request.head.sha`.
+  repo-wide, diff-scoped, or review-guidance receipts. Identity attribution
+  lives on the upstream receipts: `ripr_pr.receipt_head_sha` is the PR head,
+  `head` is the evaluated merge-test SHA, and `review_guidance.changed_production_files`
+  records the production scope used for the required-vs-advisory decision.
 - Applies the documented suppression policy to diff-scoped PR evidence as well
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.

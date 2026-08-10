@@ -430,6 +430,7 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
             "base": review.base,
             "base_sha": review.base_sha,
             "production_files_considered": review.production_files_considered,
+            "changed_production_files": review.changed_production_files,
             "top_gaps": review.top_gaps,
             "unavailable_reason": review.unavailable_reason,
         },
@@ -439,6 +440,17 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
     let markdown = render_markdown(&receipt, args)?;
 
     Ok(GateEvaluation { receipt, markdown, failed })
+}
+
+fn parse_changed_production_files(files: &[Value]) -> Option<Vec<String>> {
+    let mut parsed = Vec::with_capacity(files.len());
+    for file in files {
+        let Some(path) = file.as_str() else {
+            return None;
+        };
+        parsed.push(path.to_owned());
+    }
+    Some(parsed)
 }
 
 #[derive(Debug)]
@@ -991,12 +1003,27 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             let production_files_considered = payload
                 .pointer("/analysis_scope/production_files_considered")
                 .and_then(Value::as_u64);
-            let changed_production_files = payload
+            let changed_production_files = match payload
                 .pointer("/analysis_scope/changed_production_files")
                 .and_then(Value::as_array)
-                .map(|files| {
-                    files.iter().filter_map(Value::as_str).map(ToOwned::to_owned).collect()
-                });
+            {
+                None => None,
+                Some(files) => match parse_changed_production_files(files) {
+                    Some(parsed) => Some(parsed),
+                    None => {
+                        return ReviewGuidanceReceipt {
+                            status: "invalid".to_string(),
+                            receipt_head_sha,
+                            base: None,
+                            base_sha: None,
+                            production_files_considered: None,
+                            changed_production_files: None,
+                            top_gaps: Vec::new(),
+                            unavailable_reason: None,
+                        };
+                    }
+                },
+            };
             let producer_status = payload.get("status").and_then(Value::as_str);
             let mut status = if receipt_head_sha.as_deref() != Some(expected_head) {
                 "stale"
