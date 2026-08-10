@@ -58,6 +58,18 @@ fn diagnostic_data(code: &str, category: &str, fixable: bool, tags: &[String]) -
     })
 }
 
+/// Build a publishDiagnostics notification params value (#4995).
+fn publish_diagnostics_params(uri: &str, version: Option<i32>, diagnostics: &[Value]) -> Value {
+    let mut params = json!({
+        "uri": uri,
+        "diagnostics": diagnostics,
+    });
+    if let Some(v) = version {
+        params["version"] = json!(v);
+    }
+    params
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_configured_profile_path(
     configured_profile: &str,
@@ -819,11 +831,7 @@ impl LspServer {
         // This ensures diagnostics are cleared when all errors are fixed.
         if let Err(e) = self.notify(
             "textDocument/publishDiagnostics",
-            json!({
-                "uri": uri,
-                "version": version,
-                "diagnostics": lsp_diagnostics
-            }),
+            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
         ) {
             tracing::error!(uri, error = %e, "Failed to publish diagnostics");
         }
@@ -950,11 +958,7 @@ impl LspServer {
 
         if let Err(e) = self.notify(
             "textDocument/publishDiagnostics",
-            json!({
-                "uri": uri,
-                "version": version,
-                "diagnostics": lsp_diagnostics
-            }),
+            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
         ) {
             tracing::error!(uri, error = %e, "Failed to publish syntax-only diagnostics");
         }
