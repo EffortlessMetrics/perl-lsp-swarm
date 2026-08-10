@@ -343,12 +343,7 @@ fn collect_module_uri_candidates(
             });
             search_order += 1;
             if candidate_limit == Some(candidates.len()) {
-                return candidate_report(
-                    &canonical_module_name,
-                    &relative_path,
-                    candidates,
-                    false,
-                );
+                return candidate_report(&canonical_module_name, &relative_path, candidates, false);
             }
         }
     }

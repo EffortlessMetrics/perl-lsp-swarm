@@ -1278,9 +1278,10 @@ impl LspServer {
         }
 
         if let Some(markup) = message_data.and_then(|data| data.get("messageMarkup"))
-            && Self::is_markup_content_value(markup) {
-                return markup.clone();
-            }
+            && Self::is_markup_content_value(markup)
+        {
+            return markup.clone();
+        }
 
         json!({
             "kind": "markdown",
@@ -1448,12 +1449,7 @@ impl LspServer {
                     InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
                 })
                 .collect();
-            diag["data"] = diagnostic_data(
-                code_str,
-                &category,
-                fixable,
-                &tag_strings,
-            );
+            diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
         }
 
         diag

@@ -308,21 +308,20 @@ impl DebugAdapter {
                 // boundary is known and temp files / explicit user paths are
                 // legitimate pre-launch use cases.
                 if p.is_absolute()
-                    && let Ok(cwd) = std::env::current_dir() {
-                        let canonical_p =
-                            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-                        let canonical_cwd =
-                            std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-                        if !canonical_p.starts_with(&canonical_cwd) {
-                            tracing::warn!(
-                                target = "debug_adapter.security",
-                                path = %resolved,
-                                "Pre-launch absolute path outside current working directory \
-                                 accepted without workspace boundary check"
-                            );
-                            return Ok(PathBuf::from(path));
-                        }
+                    && let Ok(cwd) = std::env::current_dir()
+                {
+                    let canonical_p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                    let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+                    if !canonical_p.starts_with(&canonical_cwd) {
+                        tracing::warn!(
+                            target = "debug_adapter.security",
+                            path = %resolved,
+                            "Pre-launch absolute path outside current working directory \
+                             accepted without workspace boundary check"
+                        );
+                        return Ok(PathBuf::from(path));
                     }
+                }
 
                 tracing::warn!(
                     target = "debug_adapter.security",

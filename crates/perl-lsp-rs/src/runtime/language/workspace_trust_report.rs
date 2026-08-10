@@ -178,9 +178,10 @@ fn path_class_counts_field(value: Option<&Value>, field: &str) -> Value {
     if let Some(object) = value.and_then(|parent| parent.get(field)).and_then(Value::as_object) {
         for (key, count) in object {
             if allowed_launch_path_class(key)
-                && let Some(count) = count.as_u64() {
-                    counts.insert(key.clone(), json!(count));
-                }
+                && let Some(count) = count.as_u64()
+            {
+                counts.insert(key.clone(), json!(count));
+            }
         }
     }
     Value::Object(counts)
@@ -455,9 +456,10 @@ impl LspServer {
             .filter_map(|folder| folder.path.as_ref().map(|path| path.display().to_string()))
             .collect::<Vec<_>>();
         if workspace_roots.is_empty()
-            && let Some(root_path) = root_path.as_ref() {
-                workspace_roots.push(root_path.display().to_string());
-            }
+            && let Some(root_path) = root_path.as_ref()
+        {
+            workspace_roots.push(root_path.display().to_string());
+        }
         let setup_hints = setup_hints_summary(&global_config);
         let client_runtime_state = client_runtime_state_summary(argument);
         let copyable_payload = workspace_trust_copyable_payload(

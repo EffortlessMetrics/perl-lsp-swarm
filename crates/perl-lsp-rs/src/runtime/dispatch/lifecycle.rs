@@ -33,9 +33,10 @@ impl LspServer {
         // dynamic-registration override notice) now that the client has
         // signalled readiness via the `initialized` notification (#4630).
         if let Some(msg) = self.pending_startup_log.lock().take()
-            && let Err(e) = self.log_message(super::super::window::MessageType::Info, &msg) {
-                tracing::warn!(error = %e, "Failed to send pending startup logMessage");
-            }
+            && let Err(e) = self.log_message(super::super::window::MessageType::Info, &msg)
+        {
+            tracing::warn!(error = %e, "Failed to send pending startup logMessage");
+        }
 
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
@@ -127,11 +128,12 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params
-            && let Some(value) = params.get("value").and_then(|v| v.as_str()) {
-                let level = Self::normalize_trace_level(Some(value));
-                tracing::debug!(level, "Trace level set");
-                *self.trace_level.lock() = level.to_string();
-            }
+            && let Some(value) = params.get("value").and_then(|v| v.as_str())
+        {
+            let level = Self::normalize_trace_level(Some(value));
+            tracing::debug!(level, "Trace level set");
+            *self.trace_level.lock() = level.to_string();
+        }
         Ok(None) // Notification, no response
     }
 
@@ -149,9 +151,10 @@ impl LspServer {
             "message": message
         });
         if current_level == TRACE_LEVEL_VERBOSE
-            && let Some(v) = verbose {
-                params["verbose"] = json!(v);
-            }
+            && let Some(v) = verbose
+        {
+            params["verbose"] = json!(v);
+        }
         if let Err(e) = self.notify("$/logTrace", params) {
             tracing::warn!(error = %e, "Failed to send logTrace notification");
         }

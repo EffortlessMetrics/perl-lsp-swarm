@@ -291,33 +291,31 @@ impl BridgeAdapter {
     /// It should be used for cleanup in async contexts.
     pub async fn shutdown(&mut self) -> Result<()> {
         if let Some(mut child) = self.child_process.take()
-            && !Self::wait_for_child_exit(&mut child, Duration::from_millis(0)).await {
-                #[cfg(unix)]
-                {
-                    if let Some(pid) = child.id() {
-                        if let Ok(()) = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
-                            if Self::wait_for_child_exit(
-                                &mut child,
-                                Duration::from_millis(PLS_SHUTDOWN_GRACE_MS),
-                            )
-                            .await
-                            {
-                                return Ok(());
-                            }
+            && !Self::wait_for_child_exit(&mut child, Duration::from_millis(0)).await
+        {
+            #[cfg(unix)]
+            {
+                if let Some(pid) = child.id() {
+                    if let Ok(()) = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+                        if Self::wait_for_child_exit(
+                            &mut child,
+                            Duration::from_millis(PLS_SHUTDOWN_GRACE_MS),
+                        )
+                        .await
+                        {
+                            return Ok(());
                         }
                     }
                 }
-
-                let _ = child.kill().await;
-                if !Self::wait_for_child_exit(
-                    &mut child,
-                    Duration::from_millis(PLS_SHUTDOWN_GRACE_MS),
-                )
-                .await
-                {
-                    let _ = child.wait().await?;
-                }
             }
+
+            let _ = child.kill().await;
+            if !Self::wait_for_child_exit(&mut child, Duration::from_millis(PLS_SHUTDOWN_GRACE_MS))
+                .await
+            {
+                let _ = child.wait().await?;
+            }
+        }
         Ok(())
     }
 

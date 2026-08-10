@@ -138,9 +138,10 @@ pub fn walk_corpora(corpus_roots: &[PathBuf]) -> Vec<FileRecord> {
             }
             // Skip large files
             if let Ok(meta) = path.metadata()
-                && meta.len() > MAX_FILE_BYTES {
-                    continue;
-                }
+                && meta.len() > MAX_FILE_BYTES
+            {
+                continue;
+            }
             let source = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(_) => continue, // Skip unreadable files (binary, encoding issues)
