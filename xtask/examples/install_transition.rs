@@ -9,8 +9,9 @@
 #![allow(clippy::print_stdout)]
 
 use clap::Parser;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,14 @@ struct Args {
     /// Optional verified-child envelope output consumed by the public-beta fan-in.
     #[arg(long)]
     verified_output: Option<PathBuf>,
+
+    /// Exact release_topology.v1 JSON consumed by this receipt.
+    #[arg(long)]
+    topology: PathBuf,
+
+    /// Exact candidate artifact bytes resolved by the transition.
+    #[arg(long)]
+    artifact: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -121,6 +130,7 @@ struct TransitionEvidence {
     outcome: TransitionOutcome,
     observed_release_identity: Option<String>,
     artifact_verified: bool,
+    artifact_sha256: Option<String>,
     known_good_preserved: bool,
     partial_artifact_promoted: bool,
     mixed_version_reported_ready: bool,
@@ -252,6 +262,9 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
     if let Some(identity) = &transition.observed_release_identity {
         non_empty(identity, "transition.observed_release_identity")?;
     }
+    if let Some(digest) = &transition.artifact_sha256 {
+        exact_hex(digest, 32, "transition.artifact_sha256")?;
+    }
     for limitation in transition.limitations.iter().chain(receipt.limitations.iter()) {
         non_empty(limitation, "limitations[]")?;
     }
@@ -274,6 +287,91 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
         | TransitionClass::NormalUpgrade
         | TransitionClass::CachedOldBinary
         | TransitionClass::Rollback => {}
+    }
+    Ok(())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
+    let bytes =
+        fs::read(path).with_context(|| format!("reading release topology {}", path.display()))?;
+    let digest = sha256_bytes(&bytes);
+    if digest != receipt.candidate.release_topology_sha256.to_ascii_lowercase() {
+        bail!(
+            "release topology digest mismatch: receipt={}, actual={digest}",
+            receipt.candidate.release_topology_sha256
+        );
+    }
+    let topology: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing release topology {}", path.display()))?;
+    if topology["schema"] != 1 || topology["track"] != "public-beta" {
+        bail!("release topology is not a public-beta schema v1 manifest");
+    }
+    if topology["release"] != receipt.candidate.candidate_version {
+        bail!("release topology version does not match candidate version");
+    }
+    if topology["frozen_product_sha"] != receipt.candidate.frozen_product_sha {
+        bail!("release topology frozen product SHA does not match candidate");
+    }
+
+    if receipt.transition.path == InstallPath::Vsix {
+        if topology["vsix"]["version"] != receipt.candidate.extension_version
+            || topology["vsix"]["package_path"] != "vscode-extension"
+        {
+            bail!("release topology VS Code package does not match candidate");
+        }
+        return Ok(());
+    }
+
+    let targets = topology["binary_targets"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("release topology has no binary_targets array"))?;
+    let target = targets
+        .iter()
+        .find(|entry| entry["target"] == receipt.candidate.target)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "release topology does not publish candidate target {}",
+                receipt.candidate.target
+            )
+        })?;
+    if target["archive_name"] != receipt.transition.expected_asset {
+        bail!("release topology archive does not match expected asset");
+    }
+    let members = target["required_members"].as_array().ok_or_else(|| {
+        color_eyre::eyre::eyre!("release topology target has no required_members array")
+    })?;
+    for required in [
+        if receipt.candidate.platform.starts_with("windows-") { "perllsp.exe" } else { "perllsp" },
+        if receipt.candidate.platform.starts_with("windows-") {
+            "perl-dap.exe"
+        } else {
+            "perl-dap"
+        },
+    ] {
+        if !members.iter().any(|member| member == required) {
+            bail!("release topology target omits required member {required}");
+        }
+    }
+    Ok(())
+}
+
+fn verify_artifact_binding(receipt: &Receipt, path: &Path) -> Result<()> {
+    if !receipt.transition.artifact_verified {
+        return Ok(());
+    }
+    let expected =
+        receipt.transition.artifact_sha256.as_deref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("verified artifact is missing artifact_sha256")
+        })?;
+    let bytes =
+        fs::read(path).with_context(|| format!("reading candidate artifact {}", path.display()))?;
+    let actual = sha256_bytes(&bytes);
+    if actual != expected.to_ascii_lowercase() {
+        bail!("candidate artifact digest mismatch: receipt={expected}, actual={actual}");
     }
     Ok(())
 }
@@ -380,7 +478,11 @@ fn computed_status(receipt: &Receipt) -> ReceiptStatus {
         Disposition::Rejected => rejected_is_valid(receipt),
         Disposition::RolledBack => rollback_is_valid(receipt),
     };
-    if disposition_valid { ReceiptStatus::Pass } else { ReceiptStatus::Blocked }
+    if disposition_valid {
+        ReceiptStatus::Pass
+    } else {
+        ReceiptStatus::Blocked
+    }
 }
 
 fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
@@ -470,6 +572,14 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let receipt = load(&args.receipt)?;
     let status = validate(&receipt)?;
+    verify_topology_binding(&receipt, &args.topology)?;
+    if receipt.transition.artifact_verified {
+        let artifact = args
+            .artifact
+            .as_deref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("a passing receipt requires --artifact"))?;
+        verify_artifact_binding(&receipt, artifact)?;
+    }
     if let Some(path) = &args.verified_output {
         write_verified_child_artifact(&receipt, status, path)?;
     }
@@ -489,13 +599,72 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Receipt, ReceiptStatus, validate, write_verified_child_artifact};
+    use super::{
+        sha256_bytes, validate, verify_artifact_binding, verify_topology_binding,
+        write_verified_child_artifact, Receipt, ReceiptStatus,
+    };
     use color_eyre::eyre::Result;
     use std::fs;
     use tempfile::tempdir;
 
     fn fixture(content: &str) -> Result<Receipt> {
         Ok(serde_json::from_str(content)?)
+    }
+
+    fn topology_for(receipt: &Receipt) -> serde_json::Value {
+        serde_json::json!({
+            "schema": 1,
+            "release": receipt.candidate.candidate_version,
+            "track": "public-beta",
+            "frozen_product_sha": receipt.candidate.frozen_product_sha,
+            "binary_targets": [{
+                "target": receipt.candidate.target,
+                "archive_name": receipt.transition.expected_asset,
+                "required_members": ["perllsp.exe", "perl-dap.exe"]
+            }],
+            "vsix": {
+                "version": receipt.candidate.extension_version,
+                "package_path": "vscode-extension"
+            }
+        })
+    }
+
+    #[test]
+    fn pass_requires_exact_topology_and_artifact_bytes() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let directory = tempdir()?;
+        let topology = serde_json::to_vec(&topology_for(&receipt))?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &topology)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&topology);
+
+        let artifact_path = directory.path().join(&receipt.transition.expected_asset);
+        let artifact = b"candidate archive bytes";
+        fs::write(&artifact_path, artifact)?;
+        receipt.transition.artifact_sha256 = Some(sha256_bytes(artifact));
+
+        verify_topology_binding(&receipt, &topology_path)?;
+        verify_artifact_binding(&receipt, &artifact_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn topology_digest_mismatch_is_rejected() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let directory = tempdir()?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, br#"{"schema":1,"track":"public-beta"}"#)?;
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("topology digest mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("digest mismatch"));
+            }
+        }
+        Ok(())
     }
 
     #[test]
