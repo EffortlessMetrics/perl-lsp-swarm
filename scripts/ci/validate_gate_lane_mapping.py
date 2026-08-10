@@ -171,6 +171,21 @@ def read_yaml_gate_names(gate_policy_path: Path) -> list[str]:
     return list(read_yaml_gate_specs(gate_policy_path))
 
 
+def _workflow_line_is_metadata(line: str) -> bool:
+    """Return True when a workflow line cannot execute gate commands.
+
+    Only matrix ``gates:`` declarations and shell ``run`` steps are trusted
+    execution contexts. Gate-like substrings in ``name:``, ``env:``, or other
+    YAML metadata are not executable paths.
+    """
+    stripped = line.lstrip()
+    if re.match(r"^(?:-\s*)?gates:\s*", stripped):
+        return False
+    if "run:" in line or stripped.startswith("run "):
+        return False
+    return True
+
+
 def read_workflow_reachable_gates(
     workflow_paths: list[Path], gate_specs: dict[str, dict[str, Any]]
 ) -> set[str]:
@@ -187,6 +202,9 @@ def read_workflow_reachable_gates(
         text = workflow_path.read_text(encoding="utf-8")
         for raw_line in text.splitlines():
             line = raw_line.split("#", 1)[0]
+            if _workflow_line_is_metadata(line):
+                continue
+
             tier_match = re.search(r"\bgates\s+--tier\s+([a-z0-9_-]+)\b", line)
             if tier_match:
                 tier = tier_match.group(1).replace("-", "_")

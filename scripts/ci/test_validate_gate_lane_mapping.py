@@ -161,6 +161,43 @@ jobs:
         assert report is not None
         self.assertEqual([], report["required_unreachable_gates"])
 
+    def test_strict_ignores_gate_like_strings_in_workflow_metadata(self) -> None:
+        status, output, report = self.run_validator(
+            """
+gates:
+  - name: docs_build
+    tier: merge_gate
+    required: true
+  - name: common_corpus_clean
+    tier: merge_gate
+    required: true
+""",
+            """
+[lane.docs_gate]
+[lane.merge_gate_shards]
+""",
+            strict=True,
+            json_out=True,
+            workflow_text="""
+name: "gates --tier merge_gate"
+jobs:
+  test:
+    env:
+      NOTE: "gates --gate common_corpus_clean"
+    run: echo hello
+""",
+        )
+
+        self.assertEqual(1, status)
+        self.assertIn("Required unreachable gates: 2", output)
+        self.assertIn("  - docs_build", output)
+        self.assertIn("  - common_corpus_clean", output)
+        assert report is not None
+        self.assertEqual(
+            ["common_corpus_clean", "docs_build"],
+            report["required_unreachable_gates"],
+        )
+
     def test_strict_fails_on_unmapped_gate_and_missing_lane_reference(self) -> None:
         status, output, report = self.run_validator(
             """
