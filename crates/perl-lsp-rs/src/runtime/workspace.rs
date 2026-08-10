@@ -2552,7 +2552,7 @@ impl LspServer {
                     send_progress_end(&outbound, message);
                 }
                 readiness_receipt.lock().log();
-                send_index_ready_notification(&outbound, false);
+                send_index_ready_notification(&outbound, &coordinator.state());
             } else if work_done_progress
                 && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
             {
@@ -2566,7 +2566,7 @@ impl LspServer {
                 );
                 send_progress_end(&outbound, "Indexing cancelled");
                 readiness_receipt.lock().log();
-                send_index_ready_notification(&outbound, false);
+                send_index_ready_notification(&outbound, &coordinator.state());
             } else {
                 indexing_receipt.log(budget_start.elapsed(), None);
                 let resource_limited = matches!(
@@ -2578,7 +2578,7 @@ impl LspServer {
                     if work_done_progress {
                         send_progress_end(&outbound, "Indexing stopped at resource limit");
                     }
-                    send_index_ready_notification(&outbound, false);
+                    send_index_ready_notification(&outbound, &coordinator.state());
                 } else {
                     let file_count = coordinator.index().file_count();
                     let symbol_count = coordinator.index().symbol_count();
@@ -2590,7 +2590,7 @@ impl LspServer {
                     if work_done_progress {
                         send_progress_end(&outbound, "Indexing complete");
                     }
-                    send_index_ready_notification(&outbound, true);
+                    send_index_ready_notification(&outbound, &coordinator.state());
                 }
             }
         });

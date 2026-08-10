@@ -4,6 +4,8 @@ interface PendingWaiter {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+export type IndexReadinessState = 'building' | 'ready' | 'ready_limited';
+
 function clearPendingTimer(waiter: PendingWaiter): void {
   if (waiter.timer !== undefined) {
     clearTimeout(waiter.timer);
@@ -18,6 +20,8 @@ function clearPendingTimer(waiter: PendingWaiter): void {
 export class ActiveDocumentReadiness {
   private generation = 0;
   private indexReady = false;
+  private indexState: IndexReadinessState = 'building';
+  private indexReason: string | undefined;
   private readyUris = new Set<string>();
   private waiters = new Map<string, Set<PendingWaiter>>();
 
@@ -31,6 +35,8 @@ export class ActiveDocumentReadiness {
     }
     this.waiters.clear();
     this.indexReady = false;
+    this.indexState = 'building';
+    this.indexReason = undefined;
     this.readyUris.clear();
     return this.generation;
   }
@@ -47,15 +53,32 @@ export class ActiveDocumentReadiness {
     this.resolveWaiters(uri);
   }
 
-  public markIndexReady(generation = this.generation): void {
+  public markIndexReady(
+    generation = this.generation,
+    state: IndexReadinessState = 'ready',
+    reason?: string,
+  ): void {
     if (generation !== this.generation) {
       return;
     }
 
-    this.indexReady = true;
+    this.indexState = state;
+    this.indexReason = reason;
+    this.indexReady = state === 'ready';
+    if (!this.indexReady) {
+      return;
+    }
     for (const uri of [...this.waiters.keys()]) {
       this.resolveWaiters(uri);
     }
+  }
+
+  public currentIndexState(): IndexReadinessState {
+    return this.indexState;
+  }
+
+  public currentIndexReason(): string | undefined {
+    return this.indexReason;
   }
 
   private resolveWaiters(uri: string): void {
