@@ -147,9 +147,10 @@ impl ExternalPeerLaunchConfig {
             };
         }
         if let Some(host) = ext.get("host").and_then(Value::as_str)
-            && !host.trim().is_empty() {
-                cfg.host = host.trim().to_string();
-            }
+            && !host.trim().is_empty()
+        {
+            cfg.host = host.trim().to_string();
+        }
         if let Some(port) = ext.get("port").and_then(Value::as_u64) {
             // Ports above u16 range are meaningless; clamp to 0 (allocate).
             cfg.port = u16::try_from(port).unwrap_or(0);

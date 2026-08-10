@@ -349,9 +349,10 @@ impl DebugAdapter {
                 return Vec::new();
             }
             if let Some(caps) = re.captures(line)
-                && let (Some(key), Some(val)) = (caps.get(1), caps.get(2)) {
-                    entries.push((key.as_str().to_string(), val.as_str().to_string()));
-                }
+                && let (Some(key), Some(val)) = (caps.get(1), caps.get(2))
+            {
+                entries.push((key.as_str().to_string(), val.as_str().to_string()));
+            }
         }
         entries
     }

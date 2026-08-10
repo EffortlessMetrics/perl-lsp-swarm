@@ -642,9 +642,7 @@ fn regex_start(
     );
     let is_substitution = matches!(quote_like.as_deref(), Some("s" | "tr" | "y"));
 
-    if is_quote_like
-        && let Some((opener, closer, nesting)) = replacement_delimiter(ch)
-    {
+    if is_quote_like && let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
         return Some((opener, closer, nesting, is_substitution));
     }
 

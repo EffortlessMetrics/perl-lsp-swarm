@@ -72,11 +72,12 @@ pub fn parse_sections(text: &str, path: &Path) -> Vec<Section> {
         let mut body_start_idx = after_title_idx;
         for (idx, line) in lines.iter().enumerate().skip(after_title_idx) {
             if let Some(meta_re) = meta_re
-                && let Some(cap) = meta_re.captures(line) {
-                    meta.insert(cap["k"].to_string(), cap["v"].trim().to_string());
-                    body_start_idx = idx + 1;
-                    continue;
-                }
+                && let Some(cap) = meta_re.captures(line)
+            {
+                meta.insert(cap["k"].to_string(), cap["v"].trim().to_string());
+                body_start_idx = idx + 1;
+                continue;
+            }
 
             if !line.starts_with('#') || line.trim().is_empty() {
                 body_start_idx = idx;
