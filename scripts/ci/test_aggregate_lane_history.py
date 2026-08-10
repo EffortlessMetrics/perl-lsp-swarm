@@ -169,6 +169,31 @@ class AggregateLaneHistoryTests(unittest.TestCase):
         self.assertEqual([1, 2], stats["source_run_ids"])
         self.assertEqual(2, stats["accepted_samples"])
 
+    def test_shared_receipt_sha_keeps_distinct_trusted_runs_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shared_sha = "c" * 40
+            write_run(
+                root,
+                run_id=1,
+                marker_sha=shared_sha,
+                receipt_sha=shared_sha,
+                jobs=[{"lane_id": "meta", "actual_lem": 4.0}],
+            )
+            write_run(
+                root,
+                run_id=2,
+                marker_sha=shared_sha,
+                receipt_sha=shared_sha,
+                jobs=[{"lane_id": "meta", "actual_lem": 6.0}],
+            )
+            samples, stats = collect(root)
+
+        self.assertEqual({"meta": [4.0, 6.0]}, samples)
+        self.assertEqual([1, 2], stats["source_run_ids"])
+        self.assertEqual(2, stats["lane_executions"])
+        self.assertEqual(2, stats["accepted_samples"])
+
     def test_exact_run_marker_cannot_be_forged_inside_downloaded_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

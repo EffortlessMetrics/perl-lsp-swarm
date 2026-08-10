@@ -342,7 +342,9 @@ def collect_actuals(
         stats["files_accepted"] += 1
         if trusted_run is not None:
             source_runs.add(trusted_run.run_id)
-        run_key = str(doc.get("sha") or path.parent)
+            run_key = str(trusted_run.run_id)
+        else:
+            run_key = str(doc.get("sha") or path.parent)
         workflow_key = str(doc.get("workflow") or "")
         for job in jobs:
             stats["jobs_seen"] += 1
