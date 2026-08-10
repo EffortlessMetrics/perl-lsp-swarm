@@ -624,7 +624,7 @@ impl SymbolExtractor {
                 attributes,
                 body,
                 name_span: _,
-                declarator: _,
+                declarator,
             } => {
                 let sub_name =
                     name.as_ref().map(|n| n.to_string()).unwrap_or_else(|| "<anon>".to_string());
@@ -662,21 +662,24 @@ impl SymbolExtractor {
                     } else {
                         documentation
                     };
-                    // Named subroutines in Perl are always package-scoped,
+                    // Named subroutines in Perl are package-scoped by default,
                     // regardless of the lexical block they appear in.  A `sub`
                     // inside a `BEGIN`, `END`, or any bare block is still
                     // callable as a package symbol — it is NOT confined to the
-                    // enclosing `Block` scope.  Use the nearest Package/Global
-                    // scope rather than `current_scope()` so that completions,
-                    // go-to-definition, and workspace indexing resolve the
-                    // symbol correctly.  See issue #1794.
+                    // enclosing `Block` scope.  Lexical `my`/`state` subs are
+                    // the exception and remain bound to the enclosing scope.
+                    // See issue #1794.
+                    let scope_id = match declarator.as_deref() {
+                        Some("my") | Some("state") => self.table.current_scope(),
+                        _ => self.table.nearest_package_scope(),
+                    };
                     let symbol = Symbol {
                         name: sub_name.clone(),
                         qualified_name: format!("{}::{}", self.table.current_package, sub_name),
                         kind: SymbolKind::Subroutine,
                         location: node.location,
-                        scope_id: self.table.nearest_package_scope(),
-                        declaration: None,
+                        scope_id,
+                        declaration: declarator.clone(),
                         documentation,
                         attributes: symbol_attributes,
                     };

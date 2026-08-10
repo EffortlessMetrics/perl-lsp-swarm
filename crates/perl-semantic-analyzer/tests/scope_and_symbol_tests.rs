@@ -5199,3 +5199,34 @@ package Foo {
     );
     Ok(())
 }
+
+#[test]
+fn lexical_my_sub_inside_block_stays_in_enclosing_scope() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+{
+    my sub lexical_helper {
+        return 1;
+    }
+}
+"#;
+    let table = parse_and_extract(code);
+
+    assert!(
+        has_symbol(&table, "lexical_helper", SymbolKind::Subroutine),
+        "lexical_helper must appear in symbol table"
+    );
+
+    let syms = table.symbols.get("lexical_helper").ok_or("lexical_helper not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+    let scope = table.scopes.get(&sym.scope_id).ok_or("lexical_helper scope not found")?;
+    assert!(
+        matches!(scope.kind, ScopeKind::Block | ScopeKind::Global),
+        "my sub must stay in the enclosing lexical scope, not package scope; got {:?}",
+        scope.kind
+    );
+    assert_ne!(
+        sym.scope_id, 0,
+        "my sub inside a block must not be promoted to global/package scope"
+    );
+    Ok(())
+}
