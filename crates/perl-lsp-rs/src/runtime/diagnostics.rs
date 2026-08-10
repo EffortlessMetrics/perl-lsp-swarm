@@ -759,6 +759,58 @@ impl LspServer {
                     if !d.tags.is_empty() {
                         diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                     }
+
+                    // Enrichment fields for push/pull parity (#1773):
+                    // codeDescription, relatedInformation, and data.
+                    if let Some(ref code_str) = d.code {
+                        // codeDescription: link to documentation URL
+                        if let Some(url) = DiagnosticCode::parse_code(code_str)
+                            .and_then(|dc| dc.documentation_url())
+                        {
+                            diag["codeDescription"] = json!({ "href": url });
+                        }
+                    }
+
+                    // relatedInformation: additional context locations
+                    if !d.related_information.is_empty() {
+                        diag["relatedInformation"] = json!(
+                            d.related_information
+                                .iter()
+                                .map(|ri| {
+                                    let (ri_sl, ri_sc) = pos16(ri.location.0);
+                                    let (ri_el, ri_ec) = pos16(ri.location.1);
+                                    json!({
+                                        "location": {
+                                            "uri": uri,
+                                            "range": {
+                                                "start": {"line": ri_sl, "character": ri_sc},
+                                                "end":   {"line": ri_el, "character": ri_ec},
+                                            }
+                                        },
+                                        "message": ri.message
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        );
+                    }
+
+                    // data: structured metadata (category, fixability, tags)
+                    if let Some(ref code_str) = d.code {
+                        let category = DiagnosticCode::parse_code(code_str)
+                            .map(|dc| format!("{:?}", dc.category()))
+                            .unwrap_or_else(|| "Other".to_string());
+                        let fixable = is_fixable_diagnostic(code_str);
+                        let tag_strings: Vec<String> = d
+                            .tags
+                            .iter()
+                            .map(|t| match t {
+                                InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
+                                InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                            })
+                            .collect();
+                        diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
+                    }
+
                     diag
                 })
                 .collect()
@@ -2507,6 +2559,52 @@ mod tests {
             text.contains("publishDiagnostics"),
             "stable generation must produce a publishDiagnostics notification; got: {text:?}"
         );
+    }
+
+    /// #1773: push diagnostics must include enrichment fields (codeDescription,
+    /// data) for parity with the pull-based path. A code like PL103 (undefined
+    /// variable) should produce both a `codeDescription.href` link and a `data`
+    /// object with category/fixable metadata.
+    #[test]
+    fn push_diagnostics_include_enrichment_fields() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///push_enrichment_test.pl";
+        // Code that produces an UndefinedVariable (PL103) diagnostic under strict
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nprint $undeclared_var;\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+
+        // The push path must include codeDescription with an href link
+        assert!(
+            text.contains("codeDescription"),
+            "push diagnostics must include codeDescription (#1773); got: {text:?}"
+        );
+        assert!(
+            text.contains("href"),
+            "codeDescription must include href URL (#1773); got: {text:?}"
+        );
+
+        // The push path must include data with structured metadata
+        assert!(
+            text.contains("\"data\""),
+            "push diagnostics must include data field (#1773); got: {text:?}"
+        );
+        assert!(text.contains("category"), "data must include category (#1773); got: {text:?}");
+        assert!(text.contains("fixable"), "data must include fixable flag (#1773); got: {text:?}");
     }
 
     /// Pending-parse gap (#3396 PR4): bumping the generation counter WITHOUT
