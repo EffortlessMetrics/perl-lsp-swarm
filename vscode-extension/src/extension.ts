@@ -1125,7 +1125,12 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
       syncLifecycleProjection();
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
-      healthWidget?.setWorkspaceLifecycleState(projectWorkspaceLifecycle(snapshot.state));
+      // Only `resolving` needs an explicit projection: onStateChange maps it to
+      // generic Starting, and every other lifecycle state is already owned by
+      // onStateChange (including active indexing tokens and client_stopped detail).
+      if (snapshot.state === 'resolving') {
+        healthWidget?.setWorkspaceLifecycleState(projectWorkspaceLifecycle(snapshot.state));
+      }
     },
     onClientStateChange: (_activeClient, event) => {
       if (event.newState === LanguageClientState.Starting) {
