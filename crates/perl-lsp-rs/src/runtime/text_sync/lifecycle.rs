@@ -123,14 +123,15 @@ impl LspServer {
                 {
                     let index = coordinator.index();
                     if index.is_index_generation_stale(&normalized_uri, doc_gen_val)
-                        && let Ok(url) = url::Url::parse(&normalized_uri) {
-                            tracing::debug!(
-                                "Reconciling stale index for {} (doc gen {} > indexed gen)",
-                                normalized_uri,
-                                doc_gen_val
-                            );
-                            let _ = index.index_file(url, text);
-                        }
+                        && let Ok(url) = url::Url::parse(&normalized_uri)
+                    {
+                        tracing::debug!(
+                            "Reconciling stale index for {} (doc gen {} > indexed gen)",
+                            normalized_uri,
+                            doc_gen_val
+                        );
+                        let _ = index.index_file(url, text);
+                    }
                 }
             }
 

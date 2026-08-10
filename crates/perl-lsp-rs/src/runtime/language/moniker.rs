@@ -53,16 +53,17 @@ impl LspServer {
 
                         // For imported symbols, also add a moniker pointing to the source
                         if kind == "import"
-                            && let Some(source_pkg) = self.find_import_source(ast, &key.name) {
-                                let source_id =
-                                    format!("{}.{}", source_pkg.replace("::", "."), key.name);
-                                monikers.push(json!({
-                                    "scheme": "perl",
-                                    "identifier": source_id,
-                                    "unique": "global",
-                                    "kind": "export"
-                                }));
-                            }
+                            && let Some(source_pkg) = self.find_import_source(ast, &key.name)
+                        {
+                            let source_id =
+                                format!("{}.{}", source_pkg.replace("::", "."), key.name);
+                            monikers.push(json!({
+                                "scheme": "perl",
+                                "identifier": source_id,
+                                "unique": "global",
+                                "kind": "export"
+                            }));
+                        }
 
                         // For package-scoped variables (our), add a bare name alias
                         if key.sigil.is_some() && unique != "document" {
@@ -280,9 +281,10 @@ impl LspServer {
         if let Some(re) = export_re {
             for cap in re.captures_iter(text) {
                 if let Some(content) = cap.get(1)
-                    && content.as_str().split_whitespace().any(|w| w == symbol_name) {
-                        return true;
-                    }
+                    && content.as_str().split_whitespace().any(|w| w == symbol_name)
+                {
+                    return true;
+                }
             }
         }
 
@@ -528,24 +530,26 @@ impl LspServer {
                     if declarator == "our" =>
                 {
                     if let NodeKind::Variable { name: n, sigil: s } = &variable.kind
-                        && n == name {
-                            return match sigil {
-                                None => true,
-                                Some(sig) => s.starts_with(sig),
-                            };
-                        }
+                        && n == name
+                    {
+                        return match sigil {
+                            None => true,
+                            Some(sig) => s.starts_with(sig),
+                        };
+                    }
                 }
                 NodeKind::VariableListDeclaration { declarator, variables, .. }
                     if declarator == "our" =>
                 {
                     for var in variables {
                         if let NodeKind::Variable { name: n, sigil: s } = &var.kind
-                            && n == name {
-                                return match sigil {
-                                    None => true,
-                                    Some(sig) => s.starts_with(sig),
-                                };
-                            }
+                            && n == name
+                        {
+                            return match sigil {
+                                None => true,
+                                Some(sig) => s.starts_with(sig),
+                            };
+                        }
                     }
                 }
                 NodeKind::Program { statements } | NodeKind::Block { statements } => {
