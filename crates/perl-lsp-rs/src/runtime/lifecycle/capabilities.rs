@@ -42,10 +42,8 @@ impl TextDocumentSyncOptions {
 /// extensions (#4995).
 fn workspace_capabilities(workspace_folders_support: bool) -> Value {
     let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<Value> = perl_globs
-        .iter()
-        .map(|glob| json!({ "pattern": { "glob": glob } }))
-        .collect();
+    let filters: Vec<Value> =
+        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
 
     json!({
         "workspaceFolders": {
@@ -754,8 +752,9 @@ impl LspServer {
             }
         }
         // Override text document sync with typed struct (#4995)
-        capabilities["textDocumentSync"] = serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
-            .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
+        capabilities["textDocumentSync"] =
+            serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
+                .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
 
         // Workspace capabilities: typed helper for file operations (#4995)
         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
