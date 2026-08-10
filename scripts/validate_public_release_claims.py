@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -73,15 +74,38 @@ def validate_claims(catalog: dict[str, Any]) -> None:
     _require(ids == sorted(ids), "claims must be sorted by id for deterministic catalogs")
 
 
+def validate_topology_binding(catalog: dict[str, Any], topology_path: Path) -> None:
+    """Require the catalog digest and subject to match exact topology bytes."""
+
+    try:
+        topology_bytes = topology_path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"reading topology: {error}") from error
+    actual_digest = hashlib.sha256(topology_bytes).hexdigest()
+    expected_digest = catalog["topology_digest"].removeprefix("sha256:")
+    _require(actual_digest == expected_digest, "topology_digest does not match topology bytes")
+    try:
+        topology = json.loads(topology_bytes)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"parsing topology: {error}") from error
+    _require(isinstance(topology, dict), "topology must be an object")
+    _require(topology.get("schema") == 1, "topology.schema must be 1")
+    _require(topology.get("release") == catalog["release"], "topology release does not match catalog")
+    _require(topology.get("track") == catalog["track"], "topology track does not match catalog")
+    _require(topology.get("frozen_product_sha") == catalog["subject_sha"], "topology subject does not match catalog")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, required=True)
+    parser.add_argument("--topology", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         catalog = json.loads(args.catalog.read_text(encoding="utf-8"))
         if not isinstance(catalog, dict):
             raise ValueError("catalog must be an object")
         validate_claims(catalog)
+        validate_topology_binding(catalog, args.topology)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         print(f"public-release-claims: invalid: {error}", file=sys.stderr)
         return 1

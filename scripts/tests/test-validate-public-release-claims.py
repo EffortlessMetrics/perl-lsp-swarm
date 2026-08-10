@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import unittest
+import tempfile
+import json
 from pathlib import Path
 
 
@@ -42,6 +45,25 @@ def catalog() -> dict:
 class PublicReleaseClaimsTests(unittest.TestCase):
     def test_valid_candidate_bound_claim_passes(self) -> None:
         MODULE.validate_claims(catalog())
+
+    def test_catalog_binds_to_exact_topology_bytes(self) -> None:
+        value = catalog()
+        topology = {
+            "schema": 1,
+            "release": "0.18.0",
+            "track": "public-beta",
+            "frozen_product_sha": "0" * 40,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release-topology.json"
+            raw = json.dumps(topology, separators=(",", ":")).encode()
+            path.write_bytes(raw)
+            value["topology_digest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+            MODULE.validate_topology_binding(value, path)
+
+            path.write_bytes(raw + b"\n")
+            with self.assertRaisesRegex(ValueError, "does not match topology bytes"):
+                MODULE.validate_topology_binding(value, path)
 
     def assert_invalid(self, mutation, message: str) -> None:
         value = copy.deepcopy(catalog())
