@@ -953,9 +953,9 @@ impl Scheduler {
         mutation_notify: &Arc<Notify>,
     ) {
         // Stale check 1: position dedupe — newer same-position request supersedes.
-        if let Some(ref key) = queued.dedup_key {
-            if let Some(&latest) = latest_seq.get(key) {
-                if queued.arrival_seq < latest {
+        if let Some(ref key) = queued.dedup_key
+            && let Some(&latest) = latest_seq.get(key)
+                && queued.arrival_seq < latest {
                     if let Some(id) = queued.request.id.as_ref() {
                         server.clear_request_pending(id);
                     }
@@ -967,8 +967,6 @@ impl Scheduler {
                     );
                     return;
                 }
-            }
-        }
 
         // Stale check 2: generation freshness — document moved on between
         // ingress and dispatch. This catches the typing-storm case where

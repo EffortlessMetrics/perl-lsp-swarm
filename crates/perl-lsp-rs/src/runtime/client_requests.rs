@@ -22,11 +22,9 @@ impl LspServer {
                 .next_request_id
                 .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
-            {
-                if let Some(id) = ServerRequestId::new(current.max(1)) {
+                && let Some(id) = ServerRequestId::new(current.max(1)) {
                     return id;
                 }
-            }
         }
     }
 

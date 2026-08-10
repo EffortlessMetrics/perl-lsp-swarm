@@ -343,8 +343,8 @@ fn reported_inc_paths(message: &str) -> Vec<String> {
         }
     }
 
-    if paths.is_empty() {
-        if let Some(after_inc) = message.split_once("Searched @INC:").map(|(_, rest)| rest) {
+    if paths.is_empty()
+        && let Some(after_inc) = message.split_once("Searched @INC:").map(|(_, rest)| rest) {
             let before_suggestion =
                 after_inc.split_once("Suggestion:").map(|(search, _)| search).unwrap_or(after_inc);
             let before_sentence = before_suggestion
@@ -360,7 +360,6 @@ fn reported_inc_paths(message: &str) -> Vec<String> {
                     .map(str::to_string),
             );
         }
-    }
 
     paths
 }

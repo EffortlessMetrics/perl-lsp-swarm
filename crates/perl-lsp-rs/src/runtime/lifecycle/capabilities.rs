@@ -559,9 +559,9 @@ impl LspServer {
         // Apply initializationOptions.perl.* as the base config layer.
         // This is parsed before .perl-lsp.toml so project config overrides it,
         // and subsequent workspace/configuration responses override both.
-        if let Some(params) = params.as_ref() {
-            if let Some(init_options) = params.get("initializationOptions") {
-                if let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
+        if let Some(params) = params.as_ref()
+            && let Some(init_options) = params.get("initializationOptions")
+                && let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
                     tracing::debug!("Applying initializationOptions.perl.* as base config layer");
                     {
                         let mut config = self.config.lock();
@@ -576,8 +576,6 @@ impl LspServer {
                     }
                     *self.initialization_options_perl_settings.lock() = Some(perl.clone());
                 }
-            }
-        }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
         self.load_and_apply_project_config();

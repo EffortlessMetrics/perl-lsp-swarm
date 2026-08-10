@@ -851,11 +851,10 @@ impl LspServer {
                                     let mut all_refs = index.find_refs(symbol_key);
 
                                     // Add the definition if includeDeclaration is true
-                                    if include_declaration {
-                                        if let Some(def) = index.find_def(symbol_key) {
+                                    if include_declaration
+                                        && let Some(def) = index.find_def(symbol_key) {
                                             all_refs.push(def);
                                         }
-                                    }
 
                                     let mut workspace_locations: Vec<Value> = Vec::new();
                                     if !all_refs.is_empty() {
@@ -1073,8 +1072,8 @@ impl LspServer {
                                 // Use cached regex to avoid per-request compilation overhead
                                 if let Some(qualified_name_re) = get_qualified_name_regex() {
                                     for captures in qualified_name_re.captures_iter(&text_around) {
-                                        if let Some(m) = captures.get(1) {
-                                            if cursor_in_text >= m.start()
+                                        if let Some(m) = captures.get(1)
+                                            && cursor_in_text >= m.start()
                                                 && cursor_in_text <= m.end()
                                             {
                                                 let parts: Vec<&str> =
@@ -1121,11 +1120,10 @@ impl LspServer {
                                                     all_refs.extend(alt_refs);
 
                                                     // Add definition if includeDeclaration is true
-                                                    if include_declaration {
-                                                        if let Some(def) = index.find_def(&key) {
+                                                    if include_declaration
+                                                        && let Some(def) = index.find_def(&key) {
                                                             all_refs.push(def);
                                                         }
-                                                    }
 
                                                     if !all_refs.is_empty() {
                                                         // Cap results
@@ -1257,7 +1255,6 @@ impl LspServer {
                                                 }
                                                 break;
                                             }
-                                        }
                                     }
                                 }
                             }
@@ -1727,9 +1724,9 @@ impl LspServer {
 
         // Include the declaration location when requested, deduped against the
         // reference set already collected above.
-        if include_declaration {
-            if let Some(anchor_id) = decl_anchor {
-                if let Some(wire_location) =
+        if include_declaration
+            && let Some(anchor_id) = decl_anchor
+                && let Some(wire_location) =
                     workspace_index.semantic_anchor_wire_location(anchor_id)
                 {
                     let decl_location: lsp_types::Location = wire_location.into();
@@ -1743,8 +1740,6 @@ impl LspServer {
                         locations.push(decl_value);
                     }
                 }
-            }
-        }
 
         if locations.is_empty() {
             SourceBackedReferenceAttempt::Declined(SourceBackedReferenceDecline::EmptyExactResult)

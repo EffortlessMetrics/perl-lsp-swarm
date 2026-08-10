@@ -416,11 +416,10 @@ impl LspServer {
                 "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
             }
         });
-        if let Some(shadow_receipt) = semantic_shadow_receipt {
-            if let Some(object) = receipt.as_object_mut() {
+        if let Some(shadow_receipt) = semantic_shadow_receipt
+            && let Some(object) = receipt.as_object_mut() {
                 object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
             }
-        }
         self.record_provider_decision_trace("completion", &receipt);
     }
 
@@ -927,9 +926,9 @@ impl LspServer {
                             | crate::workspace_index::SymbolKind::Class
                             | crate::workspace_index::SymbolKind::Role
                     );
-                    if is_use_module_context && is_module_kind {
-                        if let Some(ctx) = inc_ctx {
-                            if !ctx.symbol_uri_reachable(&symbol.uri) {
+                    if is_use_module_context && is_module_kind
+                        && let Some(ctx) = inc_ctx
+                            && !ctx.symbol_uri_reachable(&symbol.uri) {
                                 tracing::trace!(
                                     symbol = %symbol.name,
                                     uri = %symbol.uri,
@@ -937,17 +936,15 @@ impl LspServer {
                                 );
                                 continue;
                             }
-                        }
-                    }
 
                     // Strategy B: non-module symbols in multi-root workspace — filter
                     // by workspace-folder containment. symbol_uri_reachable is designed
                     // for @INC paths (module files) and would incorrectly drop scripts
                     // and .pm files not on @INC. Folder containment is the right filter
                     // for subroutines, variables, methods, and constants (fixes #970).
-                    if !is_module_kind {
-                        if let Some(ref folder) = doc_folder_filter {
-                            if !workspace_folder_matches_doc_uri(folder, &symbol.uri) {
+                    if !is_module_kind
+                        && let Some(ref folder) = doc_folder_filter
+                            && !workspace_folder_matches_doc_uri(folder, &symbol.uri) {
                                 tracing::trace!(
                                     symbol = %symbol.name,
                                     uri = %symbol.uri,
@@ -956,8 +953,6 @@ impl LspServer {
                                 );
                                 continue;
                             }
-                        }
-                    }
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
@@ -1165,8 +1160,8 @@ impl LspServer {
             item["filterText"] = json!(filter_text);
         }
 
-        if label_details_support {
-            if let Some(ld) = c.label_details {
+        if label_details_support
+            && let Some(ld) = c.label_details {
                 let mut obj = serde_json::Map::new();
                 if let Some(d) = ld.detail {
                     obj.insert("detail".to_string(), json!(d));
@@ -1178,7 +1173,6 @@ impl LspServer {
                     item["labelDetails"] = Value::Object(obj);
                 }
             }
-        }
 
         if !c.additional_edits.is_empty() {
             let edits: Vec<Value> = c
@@ -2154,13 +2148,11 @@ impl LspServer {
                         }),
                     );
                 }
-                if label_details_support {
-                    if let Some(detail) = label_detail {
-                        if obj.get("labelDetails").is_none() {
+                if label_details_support
+                    && let Some(detail) = label_detail
+                        && obj.get("labelDetails").is_none() {
                             obj.insert("labelDetails".to_string(), json!({ "detail": detail }));
                         }
-                    }
-                }
             }
             return Ok(Some(item));
         }
@@ -2196,8 +2188,8 @@ impl LspServer {
                 _ => None,
             };
 
-            if let Some(doc) = keyword_doc {
-                if let Some(obj) = item.as_object_mut() {
+            if let Some(doc) = keyword_doc
+                && let Some(obj) = item.as_object_mut() {
                     obj.insert(
                         "documentation".to_string(),
                         json!({
@@ -2206,7 +2198,6 @@ impl LspServer {
                         }),
                     );
                 }
-            }
         }
 
         Ok(Some(item))

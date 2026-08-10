@@ -602,16 +602,14 @@ impl LspServer {
                 .map(|props| props.contains("label.location"))
                 .unwrap_or(false);
 
-            if hint.get("labelDetails").is_none() && kind == 2 && client_supports_label_location {
-                if let Some(label_location) = self.resolve_hint_label_location(&hint) {
-                    if let Some(obj) = hint.as_object_mut() {
+            if hint.get("labelDetails").is_none() && kind == 2 && client_supports_label_location
+                && let Some(label_location) = self.resolve_hint_label_location(&hint)
+                    && let Some(obj) = hint.as_object_mut() {
                         obj.insert(
                             "labelDetails".to_string(),
                             json!({ "location": label_location }),
                         );
                     }
-                }
-            }
 
             Ok(Some(hint))
         } else {
@@ -972,8 +970,8 @@ impl LspServer {
                 let a = &cfg.ai_completion;
                 (a.enabled, a.fallback, a.max_output_tokens, a.timeout_ms)
             };
-            if ai_enabled {
-                if let Some(context) = provider.prepare_context(&text, line, character) {
+            if ai_enabled
+                && let Some(context) = provider.prepare_context(&text, line, character) {
                     let backend_result = self.try_ai_inline_completion(
                         &context,
                         ai_max_output_tokens,
@@ -1023,7 +1021,6 @@ impl LspServer {
                         }
                     }
                 }
-            }
 
             // Deterministic fallback
             let environment = provider
@@ -1154,11 +1151,10 @@ impl LspServer {
                 if !is_inline_workspace_module_symbol(&symbol) {
                     continue;
                 }
-                if let Some(ref context) = inc_context {
-                    if !context.symbol_uri_reachable(&symbol.uri) {
+                if let Some(ref context) = inc_context
+                    && !context.symbol_uri_reachable(&symbol.uri) {
                         continue;
                     }
-                }
 
                 let module_name = inline_workspace_module_name(&symbol);
                 if !module_name.starts_with(fragment) {
@@ -1634,13 +1630,11 @@ impl LspServer {
             {
                 let folders = self.workspace_folders.lock();
                 for folder in folders.iter() {
-                    if let Ok(parsed) = url::Url::parse(&folder.uri) {
-                        if let Ok(path) = parsed.to_file_path() {
-                            if !workspace_roots.contains(&path) {
+                    if let Ok(parsed) = url::Url::parse(&folder.uri)
+                        && let Ok(path) = parsed.to_file_path()
+                            && !workspace_roots.contains(&path) {
                                 workspace_roots.push(path);
                             }
-                        }
-                    }
                 }
             }
 
@@ -1964,20 +1958,18 @@ impl LspServer {
     pub(crate) fn workspace_roots(&self) -> Vec<url::Url> {
         let mut results = Vec::new();
 
-        if let Some(ref path) = *self.root_path.lock() {
-            if let Ok(url) = url::Url::from_file_path(path) {
+        if let Some(ref path) = *self.root_path.lock()
+            && let Ok(url) = url::Url::from_file_path(path) {
                 results.push(url);
             }
-        }
 
         {
             let folders = self.workspace_folders.lock();
             for folder in folders.iter() {
-                if let Ok(parsed) = url::Url::parse(&folder.uri) {
-                    if !results.contains(&parsed) {
+                if let Ok(parsed) = url::Url::parse(&folder.uri)
+                    && !results.contains(&parsed) {
                         results.push(parsed);
                     }
-                }
             }
         }
 
