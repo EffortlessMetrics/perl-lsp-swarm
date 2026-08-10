@@ -98,6 +98,12 @@ class PublicReleaseClaimsTests(unittest.TestCase):
             "authority does not own claim id",
         )
 
+    def test_unmapped_claim_namespace_fails_closed(self) -> None:
+        self.assert_invalid(
+            lambda value: value["claims"][0].update({"id": "maturity.public_beta"}),
+            "unmapped claim namespace",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

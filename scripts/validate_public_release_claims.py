@@ -66,10 +66,15 @@ def validate_claims(catalog: dict[str, Any]) -> None:
         _string(claim.get("text_or_command"), f"{name}.text_or_command")
         authority = claim.get("authority")
         _require(authority in {"release_topology", "installed_transition", "experience_contract", "api_audit", "release_integrity"}, f"{name}.authority is invalid")
-        for prefix, allowed in AUTHORITY_BY_PREFIX.items():
-            if claim_id.startswith(prefix):
-                _require(authority in allowed, f"{name}.authority does not own claim id {claim_id}")
-                break
+        owner_prefix = next(
+            (prefix for prefix in AUTHORITY_BY_PREFIX if claim_id.startswith(prefix)),
+            None,
+        )
+        _require(owner_prefix is not None, f"{name}.id uses an unmapped claim namespace")
+        _require(
+            authority in AUTHORITY_BY_PREFIX[owner_prefix],
+            f"{name}.authority does not own claim id {claim_id}",
+        )
         evidence_refs = claim.get("evidence_refs")
         _require(isinstance(evidence_refs, list) and evidence_refs, f"{name}.evidence_refs must be non-empty")
         _require(len(evidence_refs) == len(set(evidence_refs)), f"{name}.evidence_refs must be unique")
