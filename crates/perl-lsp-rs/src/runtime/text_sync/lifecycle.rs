@@ -116,7 +116,7 @@ impl LspServer {
                 let doc_info = {
                     let documents = self.documents.lock();
                     self.get_document(&documents, &normalized_uri)
-                        .map(|d| (d.current_generation(), d.text.clone()))
+                        .map(|d| (d.current_generation(), d.text_str().to_string()))
                 };
                 if let Some((doc_gen_val, text)) = doc_info
                     && let Some(coordinator) = self.coordinator()
@@ -196,7 +196,7 @@ impl LspServer {
             let text = {
                 let documents = self.documents.lock();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text.clone(),
+                    Some(doc) => doc.text_str().to_string(),
                     None => return Ok(Some(json!([]))),
                 }
             };
