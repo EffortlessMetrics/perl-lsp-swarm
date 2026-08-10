@@ -256,6 +256,29 @@ impl SymbolTable {
         *self.scope_stack.last().unwrap_or(&0)
     }
 
+    /// Return the nearest enclosing package-level scope ID.
+    ///
+    /// Named Perl subroutines are always package-scoped regardless of the
+    /// lexical block they appear in (`BEGIN { sub foo {} }` still makes `foo`
+    /// available as a package symbol). This method walks the live scope stack
+    /// from innermost to outermost and returns the first scope whose kind is
+    /// `Global` or `Package`, skipping over `Block`, `Subroutine`, and `Eval`
+    /// scopes.  Falls back to `0` (the file-level global scope) when no
+    /// Package scope is found, which is the correct answer for top-level code.
+    fn nearest_package_scope(&self) -> ScopeId {
+        for &scope_id in self.scope_stack.iter().rev() {
+            if let Some(scope) = self.scopes.get(&scope_id) {
+                match scope.kind {
+                    ScopeKind::Global | ScopeKind::Package => return scope_id,
+                    ScopeKind::Block | ScopeKind::Subroutine | ScopeKind::Eval => {
+                        // keep walking up
+                    }
+                }
+            }
+        }
+        0 // fallback: global scope
+    }
+
     /// Push a new scope
     fn push_scope(&mut self, kind: ScopeKind, location: SourceLocation) -> ScopeId {
         let parent = self.current_scope();
@@ -639,12 +662,20 @@ impl SymbolExtractor {
                     } else {
                         documentation
                     };
+                    // Named subroutines in Perl are always package-scoped,
+                    // regardless of the lexical block they appear in.  A `sub`
+                    // inside a `BEGIN`, `END`, or any bare block is still
+                    // callable as a package symbol — it is NOT confined to the
+                    // enclosing `Block` scope.  Use the nearest Package/Global
+                    // scope rather than `current_scope()` so that completions,
+                    // go-to-definition, and workspace indexing resolve the
+                    // symbol correctly.  See issue #1794.
                     let symbol = Symbol {
                         name: sub_name.clone(),
                         qualified_name: format!("{}::{}", self.table.current_package, sub_name),
                         kind: SymbolKind::Subroutine,
                         location: node.location,
-                        scope_id: self.table.current_scope(),
+                        scope_id: self.table.nearest_package_scope(),
                         declaration: None,
                         documentation,
                         attributes: symbol_attributes,

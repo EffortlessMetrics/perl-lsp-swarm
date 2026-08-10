@@ -5051,3 +5051,141 @@ our ($Foo::y, $Foo::y);
     );
     Ok(())
 }
+
+// ===========================================================================
+// Subroutines in phaser blocks have package scope (#1794)
+//
+// Named subroutines are always package-scoped in Perl regardless of the
+// lexical block they appear in.  `BEGIN { sub foo {} }` makes `foo` available
+// as a package symbol, not confined to the phaser block.
+// ===========================================================================
+
+#[test]
+fn subroutine_defined_in_begin_block_has_global_scope() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+BEGIN {
+    sub compile_time_helper {
+        return 42;
+    }
+}
+
+sub runtime_caller {
+    return compile_time_helper();
+}
+"#;
+    let table = parse_and_extract(code);
+
+    // 1. compile_time_helper must appear in the symbol table.
+    assert!(
+        has_symbol(&table, "compile_time_helper", SymbolKind::Subroutine),
+        "compile_time_helper must appear in symbol table; symbols: {:?}",
+        table.symbols.keys().collect::<Vec<_>>()
+    );
+
+    // 2. compile_time_helper must have global scope (scope_id == 0), not the
+    //    phaser block's Block scope.
+    let syms = table.symbols.get("compile_time_helper").ok_or("compile_time_helper not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+    assert_eq!(
+        sym.scope_id, 0,
+        "subroutine defined in BEGIN block must have scope_id == 0 (global/package scope), \
+         not the phaser Block scope; got scope_id={}",
+        sym.scope_id
+    );
+    Ok(())
+}
+
+#[test]
+fn subroutines_in_all_phaser_types_have_global_scope() -> Result<(), Box<dyn std::error::Error>> {
+    for phase in ["BEGIN", "END", "CHECK", "INIT", "UNITCHECK"] {
+        let code = format!(
+            r#"
+{phase} {{
+    sub phaser_helper {{
+        return 1;
+    }}
+}}
+"#
+        );
+        let table = parse_and_extract(&code);
+
+        assert!(
+            has_symbol(&table, "phaser_helper", SymbolKind::Subroutine),
+            "{phase}: phaser_helper must appear in symbol table; symbols: {:?}",
+            table.symbols.keys().collect::<Vec<_>>()
+        );
+
+        let syms = table.symbols.get("phaser_helper").ok_or("phaser_helper not found")?;
+        let sym = syms.first().ok_or("no symbol entry")?;
+        assert_eq!(
+            sym.scope_id, 0,
+            "{phase}: subroutine inside phaser must have scope_id==0, got {}",
+            sym.scope_id
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn subroutine_in_bare_block_has_package_scope() -> Result<(), Box<dyn std::error::Error>> {
+    // In Perl, `{ sub foo {} }` also makes `foo` a package sub (not lexical).
+    let code = r#"
+{
+    sub bare_block_sub {
+        return 1;
+    }
+}
+"#;
+    let table = parse_and_extract(code);
+
+    assert!(
+        has_symbol(&table, "bare_block_sub", SymbolKind::Subroutine),
+        "bare_block_sub must appear in symbol table; symbols: {:?}",
+        table.symbols.keys().collect::<Vec<_>>()
+    );
+
+    let syms = table.symbols.get("bare_block_sub").ok_or("bare_block_sub not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+    assert_eq!(
+        sym.scope_id, 0,
+        "subroutine in bare block must have global scope (scope_id==0), got {}",
+        sym.scope_id
+    );
+    Ok(())
+}
+
+#[test]
+fn subroutine_inside_package_block_has_package_scope() -> Result<(), Box<dyn std::error::Error>> {
+    // `package Foo { BEGIN { sub bar {} } }` — sub should be in the Foo package scope,
+    // not the phaser Block scope.
+    let code = r#"
+package Foo {
+    BEGIN {
+        sub bar {
+            return 1;
+        }
+    }
+}
+"#;
+    let table = parse_and_extract(code);
+
+    assert!(
+        has_symbol(&table, "bar", SymbolKind::Subroutine),
+        "bar must appear in symbol table; symbols: {:?}",
+        table.symbols.keys().collect::<Vec<_>>()
+    );
+
+    let syms = table.symbols.get("bar").ok_or("bar not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+
+    // bar's scope_id must NOT be a Block scope — it must be a Package or Global scope.
+    // Verify by checking the scope kind in the table.
+    if let Some(scope) = table.scopes.get(&sym.scope_id) {
+        assert!(
+            matches!(scope.kind, ScopeKind::Global | ScopeKind::Package),
+            "bar's scope_id must point to a Package or Global scope, got {:?}",
+            scope.kind
+        );
+    }
+    Ok(())
+}
