@@ -77,6 +77,15 @@ class SecurityReconciliationTests(unittest.TestCase):
         row["current_reachability_correction"] = None
         self.assert_invalid(data, "requires an explicit current correction")
 
+    def test_finding_files_must_stay_under_may_2026_findings(self) -> None:
+        data = json.loads(LEDGER.read_text(encoding="utf-8"))
+        data["finding_files"] = ["other.json"]
+        with tempfile.TemporaryDirectory() as raw:
+            ledger = Path(raw) / "ledger.json"
+            ledger.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(MODEL.LedgerError, "may-2026-findings"):
+                IO.load_ledger(ledger)
+
     def test_write_then_check_round_trip_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

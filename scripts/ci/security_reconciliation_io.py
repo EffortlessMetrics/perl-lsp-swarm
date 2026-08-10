@@ -36,7 +36,15 @@ def load_ledger(path: Path) -> dict[str, Any]:
                 isinstance(relative, str) and relative.strip(),
                 "finding_files entries must be non-empty strings",
             )
-            shard_path = path.parent / relative
+            require(
+                relative.replace("\\", "/").startswith("may-2026-findings/"),
+                "finding_files entries must stay under may-2026-findings/",
+            )
+            shard_path = (path.parent / relative).resolve()
+            require(
+                shard_path.is_relative_to(path.parent.resolve()),
+                f"finding shard escapes ledger directory: {relative}",
+            )
             try:
                 shard = json.loads(shard_path.read_text(encoding="utf-8"))
             except FileNotFoundError as exc:
