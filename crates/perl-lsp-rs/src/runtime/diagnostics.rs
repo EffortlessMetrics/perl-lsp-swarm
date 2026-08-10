@@ -48,6 +48,16 @@ fn diagnostic_json(
     })
 }
 
+/// Build the typed `data` field for a diagnostic with explanation metadata (#4995).
+fn diagnostic_data(code: &str, category: &str, fixable: bool, tags: &[String]) -> Value {
+    json!({
+        "code": code,
+        "category": category,
+        "fixable": fixable,
+        "tags": tags,
+    })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_configured_profile_path(
     configured_profile: &str,
@@ -1423,12 +1433,12 @@ impl LspServer {
                     InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
                 })
                 .collect();
-            diag["data"] = json!({
-                "code": code_str,
-                "category": category,
-                "fixable": fixable,
-                "tags": tag_strings,
-            });
+            diag["data"] = diagnostic_data(
+                code_str,
+                &category,
+                fixable,
+                &tag_strings,
+            );
         }
 
         diag
@@ -1760,12 +1770,12 @@ impl LspServer {
                                             InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                             InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
                                         }).collect();
-                                    diag["data"] = json!({
-                                        "code": code_str,
-                                        "category": category,
-                                        "fixable": fixable,
-                                        "tags": tag_strings,
-                                    });
+                                    diag["data"] = diagnostic_data(
+                                        code_str,
+                                        &category,
+                                        fixable,
+                                        &tag_strings,
+                                    );
                                 }
                                 diag
                             })
@@ -1855,12 +1865,12 @@ impl LspServer {
                                         InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                         InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
                                     }).collect();
-                                diag["data"] = json!({
-                                    "code": code_str,
-                                    "category": category,
-                                    "fixable": fixable,
-                                    "tags": tag_strings,
-                                });
+                                diag["data"] = diagnostic_data(
+                                    code_str,
+                                    &category,
+                                    fixable,
+                                    &tag_strings,
+                                );
                             }
                             diag
                         })
