@@ -234,8 +234,8 @@ export function runBoundedProcess(
   });
 }
 
-function configuredProveLimits(): ProveExecutionLimits {
-  const config = vscode.workspace.getConfiguration('perl-lsp');
+function configuredProveLimits(resource?: vscode.Uri): ProveExecutionLimits {
+  const config = vscode.workspace.getConfiguration('perl-lsp', resource);
   const positive = (value: number | undefined, fallback: number): number =>
     Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : fallback;
   return {
@@ -510,7 +510,7 @@ export class PerlTestAdapter implements vscode.Disposable {
       env: { ...process.env, HARNESS_ACTIVE: '1' },
       shell: useShell,
       signal: cancellation.signal,
-      ...configuredProveLimits(),
+      ...configuredProveLimits(fileItem.uri),
     });
     killOnCancel.dispose();
 
