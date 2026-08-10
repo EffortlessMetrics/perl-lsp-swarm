@@ -60,8 +60,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -83,6 +81,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with: { toolchain: 1.95.0 }
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
@@ -111,6 +111,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -292,29 +294,41 @@ jobs:
           echo "CRITICAL=0" >> $GITHUB_OUTPUT
         fi
 
-    - name: Comment on PR (performance alerts)
-      if: github.event_name == 'pull_request' && (steps.compare.outputs.REGRESSION == '1' || steps.alert.outputs.CRITICAL != '')
-      uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
-      with:
-        script: |
-          const fs = require('fs');
-          let body = '';
-
-          if (fs.existsSync('alert.md')) {
-            body = fs.readFileSync('alert.md', 'utf8');
-          } else if (fs.existsSync('comparison.txt')) {
-            const comparison = fs.readFileSync('comparison.txt', 'utf8');
-            body = `## Performance Regression Detected\n\n\`\`\`\n${comparison}\n\`\`\`\n\nPlease review the benchmark results and address any performance regressions.`;
-          }
-
-          if (body) {
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            });
-          }
+    - name: Summarize performance evidence
+      if: always()
+      run: |
+        # This replaces the PR comment removed by #6028. That comment was the
+        # only inline surface for these alerts, and it was the sole reason this
+        # workflow held issue and pull-request write scopes while also executing
+        # candidate code. A step summary restores the same visibility at zero
+        # permission cost.
+        #
+        # Keyed off file presence rather than the `compare`/`alert` step
+        # outputs: those are computed through a `tee` pipeline without
+        # `pipefail`, so they do not carry the real exit status. That is a
+        # pre-existing defect and is deliberately not depended on here.
+        {
+          echo "## Performance Benchmarks"
+          echo
+          if [ -s alert.md ]; then
+            cat alert.md
+            echo
+          fi
+          if [ -s comparison.txt ]; then
+            echo "<details><summary>Baseline comparison</summary>"
+            echo
+            echo '```text'
+            cat comparison.txt
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+          fi
+          if [ ! -s alert.md ] && [ ! -s comparison.txt ]; then
+            echo "No baseline comparison or alert output was produced."
+          fi
+          echo "Full benchmark artifacts are attached to this run."
+        } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload benchmark artifacts
       if: always()
@@ -346,6 +360,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -387,6 +403,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -426,6 +444,8 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:memory'))
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -720,6 +740,8 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Check for tautological assertions
         run: |
@@ -755,6 +777,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Install Rust
@@ -835,6 +858,8 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:public-api'))
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -870,6 +895,8 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -902,6 +929,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -934,6 +963,8 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -1060,6 +1091,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain (nightly)
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # nightly (master)
