@@ -630,9 +630,10 @@ fn extract_package_name(content: &str) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("package ")
-            && let Some(name_end) = rest.find(';') {
-                return rest[..name_end].trim().to_string();
-            }
+            && let Some(name_end) = rest.find(';')
+        {
+            return rest[..name_end].trim().to_string();
+        }
     }
     String::new()
 }

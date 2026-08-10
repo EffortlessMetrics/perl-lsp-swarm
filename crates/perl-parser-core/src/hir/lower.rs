@@ -3842,8 +3842,7 @@ impl<'a> BodyBuilder2<'a> {
             // NestedVariableList (#5043): `my ($a, ($b, $c)) = ...`
             // Lower all items so variable reads are captured.
             NodeKind::NestedVariableList { items } => {
-                let arg_ids: Vec<HirExprId> =
-                    items.iter().map(|i| self.lower_expr(i)).collect();
+                let arg_ids: Vec<HirExprId> = items.iter().map(|i| self.lower_expr(i)).collect();
                 self.alloc_expr(
                     HirExpr::Call {
                         args: arg_ids,
