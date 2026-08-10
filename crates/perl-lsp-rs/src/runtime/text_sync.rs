@@ -330,9 +330,11 @@ impl LspServer {
                             }
                             match workspace_index.index_file_with_generation(url, text_owned, 0) {
                                 Ok(()) => {
-                                    workspace_progress::send_active_document_ready_notification(
-                                        &outbound, &uri_owned, 0,
-                                    );
+                                    if generation.load(Ordering::Acquire) == 0 {
+                                        workspace_progress::send_active_document_ready_notification(
+                                            &outbound, &uri_owned, 0,
+                                        );
+                                    }
                                     if matches!(
                                         coordinator_clone.state(),
                                         IndexState::Building { phase: IndexPhase::Idle, .. }
