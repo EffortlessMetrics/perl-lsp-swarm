@@ -29,7 +29,7 @@ jobs:
       - name: Checkout trusted source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Setup Rust
@@ -179,7 +179,7 @@ jobs:
       - name: Checkout trusted base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download generated payload outside the checkout
@@ -207,6 +207,9 @@ jobs:
           payload_root = Path(os.environ["PAYLOAD_ROOT"])
           payload = payload_root / "badges"
           manifest_path = payload_root / "manifest.json"
+          max_files = 200
+          max_file_bytes = 1_048_576
+          max_total_bytes = 5_242_880
           if not payload.is_dir() or payload.is_symlink():
               raise SystemExit("downloaded badges payload is missing or not a regular directory")
           if not manifest_path.is_file() or manifest_path.is_symlink():
@@ -244,6 +247,13 @@ jobs:
               if relative in expected:
                   raise SystemExit(f"duplicate badge manifest path: {relative}")
               expected[relative] = (size, digest)
+
+          if len(expected) > max_files:
+              raise SystemExit("badge payload exceeds file-count limit")
+          if any(size > max_file_bytes for size, _ in expected.values()):
+              raise SystemExit("badge payload contains a file exceeding byte limit")
+          if sum(size for size, _ in expected.values()) > max_total_bytes:
+              raise SystemExit("badge payload exceeds aggregate byte limit")
 
           observed: set[str] = set()
           for path in sorted(payload.rglob("*")):
