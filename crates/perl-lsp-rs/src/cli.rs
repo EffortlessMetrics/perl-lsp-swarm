@@ -353,6 +353,24 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
     }
     startup_timer.checkpoint("logging_init");
 
+    // Install a panic hook that logs version + backtrace so panics in
+    // providers, dispatcher, or transport leave diagnostic evidence (#5013).
+    // Only parse-worker jobs have catch_unwind; everything else would show
+    // Rust's default message with no server context.
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(
+            panic.info = %info,
+            server.version = %version,
+            backtrace = %backtrace,
+            "perl-lsp server panic"
+        );
+        // Also write to stderr so the message is visible even without logging
+        eprintln!("perl-lsp v{version} panic: {info}");
+        eprintln!("{backtrace}");
+    }));
+
     if std::env::var("PERL_LSP_QUIET").is_err() {
         eprintln!(
             "{}",
