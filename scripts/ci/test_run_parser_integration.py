@@ -41,6 +41,22 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
         for _, target in targets:
             self.assertIn(target, command)
 
+    def test_manifest_rejects_empty_target_fields(self) -> None:
+        for key in ("package", "target"):
+            manifest = self.write_manifest(
+                {
+                    "schema_version": 1,
+                    "targets": [
+                        {
+                            "package": "" if key == "package" else "perl-parser",
+                            "target": "" if key == "target" else "semantic_smoke_tests",
+                        }
+                    ],
+                }
+            )
+            with self.assertRaisesRegex(ValueError, "non-empty string"):
+                runner.load_targets(manifest)
+
     def test_manifest_rejects_duplicate_target(self) -> None:
         manifest = self.write_manifest(
             {"schema_version": 1, "targets": [{"package": "perl-parser", "target": "semantic_smoke_tests"}] * 7}
