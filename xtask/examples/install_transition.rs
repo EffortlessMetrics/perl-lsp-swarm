@@ -9,7 +9,7 @@
 #![allow(clippy::print_stdout)]
 
 use clap::Parser;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -292,7 +292,7 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
@@ -483,11 +483,7 @@ fn computed_status(receipt: &Receipt) -> ReceiptStatus {
         Disposition::Rejected => rejected_is_valid(receipt),
         Disposition::RolledBack => rollback_is_valid(receipt),
     };
-    if disposition_valid {
-        ReceiptStatus::Pass
-    } else {
-        ReceiptStatus::Blocked
-    }
+    if disposition_valid { ReceiptStatus::Pass } else { ReceiptStatus::Blocked }
 }
 
 fn validate(receipt: &Receipt) -> Result<ReceiptStatus> {
@@ -605,8 +601,8 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        sha256_bytes, validate, verify_artifact_binding, verify_topology_binding,
-        write_verified_child_artifact, Receipt, ReceiptStatus,
+        Receipt, ReceiptStatus, sha256_bytes, validate, verify_artifact_binding,
+        verify_topology_binding, write_verified_child_artifact,
     };
     use color_eyre::eyre::Result;
     use std::fs;
