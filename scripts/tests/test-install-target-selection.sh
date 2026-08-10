@@ -180,9 +180,10 @@ reachable_windows_targets() {
 # the x64 build for five days, telling users no native ARM64 build was
 # published and refusing Windows 10 ARM64 outright — and every gate stayed
 # green the whole time, because ignoring a built target is invisible to
-# containment. Together the two directions make the mapping a bijection: every
-# built Windows target is reachable from some surface, and no surface requests
-# one that is not built.
+# containment. Together the two directions make the mapping a bijection per
+# install surface: each surface must name every built Windows target, and no
+# surface may request one that is not built. Merging targets across surfaces
+# would let one broken path hide behind the other.
 #
 # Scoped to Windows because that is where the matrix and the surfaces are both
 # enumerable statically; the POSIX targets are selected by uname at runtime.
@@ -190,7 +191,7 @@ assert_every_built_windows_target_is_reachable() {
     local label="$1"
     shift
 
-    local built reachable missing file
+    local built file reachable missing surface_label
     built="$(built_windows_targets)"
 
     if [[ -z "$built" ]]; then
@@ -203,28 +204,29 @@ assert_every_built_windows_target_is_reachable() {
             fail "$label" "missing $file"
             return
         fi
+
+        surface_label="${label} ($(basename "$file"))"
+
+        # Count only target-bearing assignments/constants. A target string in a
+        # diagnostic or explanatory comment is not a requestable release asset and
+        # must not make the reverse-direction contract pass.
+        reachable="$(reachable_windows_targets "$file" | sort -u || true)"
+        reachable="$(printf '%s' "$reachable" | grep -E '\S' | sort -u || true)"
+
+        if [[ -z "$reachable" ]]; then
+            fail "$surface_label" "names no Windows target literally; the contract cannot be checked"
+            return
+        fi
+
+        missing="$(comm -23 <(printf '%s\n' "$built") <(printf '%s\n' "$reachable"))"
+
+        if [[ -n "$missing" ]]; then
+            fail "$surface_label" "the release matrix builds Windows target(s) this surface cannot request: $(printf '%s' "$missing" | tr '\n' ' ') -- wire them into this surface or stop building them"
+            return
+        fi
+
+        pass "$surface_label"
     done
-
-    # Count only target-bearing assignments/constants. A target string in a
-    # diagnostic or explanatory comment is not a requestable release asset and
-    # must not make the reverse-direction contract pass.
-    reachable="$(reachable_windows_targets "$@" | sort -u || true)"
-
-    reachable="$(printf '%s' "$reachable" | grep -E '\S' | sort -u || true)"
-
-    if [[ -z "$reachable" ]]; then
-        fail "$label" "no surface names any Windows target literally; the contract cannot be checked"
-        return
-    fi
-
-    missing="$(comm -23 <(printf '%s\n' "$built") <(printf '%s\n' "$reachable"))"
-
-    if [[ -n "$missing" ]]; then
-        fail "$label" "the release matrix builds Windows target(s) no install surface can ever request: $(printf '%s' "$missing" | tr '\n' ' ') -- either wire them into a surface or stop building them"
-        return
-    fi
-
-    pass "$label"
 }
 
 host_arch() {
