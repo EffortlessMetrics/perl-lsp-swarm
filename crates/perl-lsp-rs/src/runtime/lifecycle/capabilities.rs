@@ -700,6 +700,10 @@ impl LspServer {
             "willSaveWaitUntil": true,
             "save": { "includeText": true }
         });
+        // Note: inline json!() here constructs complex nested ServerCapabilities
+        // objects with conditional fields. Migrating to typed struct definitions
+        // (ServerCapabilities, TextDocumentSyncOptions, SaveOptions,
+        // WorkspaceServerCapabilities, etc.) is tracked as a larger follow-up (#4995).
 
         // Workspace capabilities: folders, file operations, and content schemes
         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
