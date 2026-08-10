@@ -414,6 +414,9 @@ unnecessary_trailing_comma = "warn"
 wildcard_imports = "warn"
 print_stderr = "deny"
 print_stdout = "deny"
+# disallowed_fields: architectural seam protection (#6114).
+# The actual field denylist lives in clippy.toml `disallowed-fields = []`.
+disallowed_fields = "deny"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(feature, values("slow_tests"))'] }
