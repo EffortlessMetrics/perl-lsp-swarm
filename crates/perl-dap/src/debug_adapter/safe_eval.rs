@@ -212,25 +212,23 @@ pub(super) fn validate_safe_expression(expression: &str) -> Option<String> {
 
     // Check for dynamic subroutine calls &{...}
     // This blocks tricks like &{"sys"."tem"}("ls")
-    if let Some(re) = deref_re() {
-        if re.is_match(expression) {
+    if let Some(re) = deref_re()
+        && re.is_match(expression) {
             return Some(
                 "Safe evaluation mode: dynamic subroutine calls (&{...}) not allowed (use allowSideEffects: true)"
                     .to_string(),
             );
         }
-    }
 
     // Check for glob operations <*...> (anywhere in expression)
     // This blocks filesystem access via globs
-    if let Some(re) = glob_re() {
-        if re.is_match(expression) {
+    if let Some(re) = glob_re()
+        && re.is_match(expression) {
             return Some(
                 "Safe evaluation mode: glob operations (<*...>) not allowed (use allowSideEffects: true)"
                     .to_string(),
             );
         }
-    }
 
     // Check for file handle reads <$fh> or globs at start of expression
     // This blocks state changes via reads like <STDIN> or <$fh>
@@ -278,8 +276,8 @@ pub(super) fn validate_safe_expression(expression: &str) -> Option<String> {
 
     // Check for regex mutation operators (s///, tr///, y///)
     // Handled separately to avoid false positives with escape sequences like \s in /\s+/
-    if let Some(re) = regex_mutation_re() {
-        if let Some(mat) = re.find(expression) {
+    if let Some(re) = regex_mutation_re()
+        && let Some(mat) = re.find(expression) {
             let op = mat.as_str();
             let start = mat.start();
 
@@ -295,7 +293,6 @@ pub(super) fn validate_safe_expression(expression: &str) -> Option<String> {
                 ));
             }
         }
-    }
 
     // Check for increment/decrement operators
     if expression.contains("++") || expression.contains("--") {

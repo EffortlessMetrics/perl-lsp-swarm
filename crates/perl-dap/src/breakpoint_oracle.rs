@@ -70,8 +70,8 @@ impl AstBreakpointOracle {
     }
 
     fn collect_subs(&self, node: &Node, out: &mut Vec<DebugFunctionSymbol>) {
-        if let NodeKind::Subroutine { name, .. } = &node.kind {
-            if let Some(name) = name {
+        if let NodeKind::Subroutine { name, .. } = &node.kind
+            && let Some(name) = name {
                 out.push(DebugFunctionSymbol {
                     name: name.clone(),
                     source: self.source.clone(),
@@ -79,7 +79,6 @@ impl AstBreakpointOracle {
                     end_line: self.line_of(node.location.end),
                 });
             }
-        }
         node.for_each_child(|child| self.collect_subs(child, out));
     }
 }

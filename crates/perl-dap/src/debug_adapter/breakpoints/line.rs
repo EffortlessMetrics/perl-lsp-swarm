@@ -57,8 +57,7 @@ impl DebugAdapter {
         // If a session is active, also sync the breakpoints to the Perl debugger
         if let Ok(mut guard) = self.session.lock()
             && let Some(ref mut session) = *guard
-        {
-            if let Some(stdin) = session.process.stdin.as_mut() {
+            && let Some(stdin) = session.process.stdin.as_mut() {
                 let mut command_batch = String::new();
 
                 // Clear only the old breakpoints for this specific file
@@ -86,7 +85,6 @@ impl DebugAdapter {
                     let _ = stdin.flush();
                 }
             }
-        }
 
         // Keep function breakpoints active after line-breakpoint synchronization.
         self.apply_stored_function_breakpoints();
