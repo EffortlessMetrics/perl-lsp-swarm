@@ -484,6 +484,24 @@ fn validate_source_receipt(
     }
     let source: serde_json::Value = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing source receipt {name}: {}", path.display()))?;
+    match child.schema_version.as_str() {
+        "installed_acceptance.v1" => {
+            validate_installed_acceptance_source(name, child, receipt, &source)?;
+        }
+        "release_topology.v1" => {
+            validate_release_topology_source(name, child, receipt, &source)?;
+        }
+        _ => validate_canonical_source_receipt(name, child, receipt, &source)?,
+    }
+    Ok(())
+}
+
+fn validate_canonical_source_receipt(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    source: &serde_json::Value,
+) -> Result<()> {
     if source.get("schema_version").and_then(serde_json::Value::as_str)
         != Some(child.schema_version.as_str())
     {
@@ -505,11 +523,111 @@ fn validate_source_receipt(
     Ok(())
 }
 
+fn validate_installed_acceptance_source(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    source: &serde_json::Value,
+) -> Result<()> {
+    let schema_version = source.get("schema_version").ok_or_else(|| {
+        color_eyre::eyre::eyre!("child_receipts.{name} installed-acceptance source lacks schema_version")
+    })?;
+    if schema_version.as_i64() != Some(1) {
+        bail!("child_receipts.{name} installed-acceptance source must use schema_version 1");
+    }
+    let outcome = source
+        .get("outcome")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("child_receipts.{name} installed-acceptance source lacks outcome")
+        })?;
+    let known_limitations = source
+        .get("known_limitations")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    let derived_status = match outcome {
+        "failed" => InputStatus::Blocked,
+        "completed" if known_limitations > 0 => InputStatus::Limited,
+        "completed" => InputStatus::Pass,
+        _ => bail!("child_receipts.{name} installed-acceptance source has unknown outcome"),
+    };
+    if derived_status != child.status {
+        bail!("child_receipts.{name} installed-acceptance source status differs from the declared status");
+    }
+    let repository_sha = source
+        .get("repository_sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} installed-acceptance source lacks repository_sha"
+            )
+        })?;
+    if repository_sha != receipt.candidate.frozen_product_sha {
+        bail!("child_receipts.{name} installed-acceptance source belongs to a different frozen product");
+    }
+    Ok(())
+}
+
+fn validate_release_topology_source(
+    name: &str,
+    child: &ReceiptRef,
+    receipt: &Receipt,
+    source: &serde_json::Value,
+) -> Result<()> {
+    if source.get("schema").and_then(serde_json::Value::as_i64) != Some(1) {
+        bail!("child_receipts.{name} release-topology source must use schema 1");
+    }
+    let frozen_product_sha = source
+        .get("frozen_product_sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("child_receipts.{name} release-topology source lacks frozen_product_sha")
+        })?;
+    if frozen_product_sha != receipt.candidate.frozen_product_sha {
+        bail!("child_receipts.{name} release-topology source belongs to a different frozen product");
+    }
+    if child.status != InputStatus::Pass {
+        bail!("child_receipts.{name} release-topology source status differs from the declared status");
+    }
+    Ok(())
+}
+
+fn validate_topology_source_binding(receipt: &Receipt) -> Result<()> {
+    let all_have_source = receipt
+        .child_receipts
+        .iter()
+        .into_iter()
+        .all(|(_, child)| child.source_sha256.is_some());
+    if !all_have_source {
+        return Ok(());
+    }
+    let topology_source = receipt
+        .child_receipts
+        .release_topology
+        .source_sha256
+        .as_deref()
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("release_topology source digest is required once all child receipts carry source provenance")
+        })?;
+    if topology_source != receipt.candidate.release_topology_sha256 {
+        bail!("candidate.release_topology_sha256 must match release_topology source receipt digest");
+    }
+    Ok(())
+}
+
 fn validate_child_artifacts(receipt: &Receipt, artifact_root: &Path) -> Result<()> {
     for (name, child) in receipt.child_receipts.iter() {
         load_verified_child_artifact(name, child, receipt, artifact_root)?;
         validate_source_receipt(name, child, receipt, artifact_root)?;
     }
+    validate_topology_source_binding(receipt)?;
     Ok(())
 }
 
@@ -717,6 +835,39 @@ mod tests {
             fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         receipt.child_receipts.install_transition.candidate_id = "another-candidate".to_string();
         assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn release_topology_source_digest_binds_candidate_topology_sha() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let digest = "a".repeat(64);
+        receipt.child_receipts.user_state_presentation.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.first_ten_minutes.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.install_transition.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.installed_acceptance.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.first_useful_answer.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.representative_workload.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.release_topology.source_sha256 = Some(digest.clone());
+        receipt.child_receipts.release_integrity.source_sha256 = Some(digest.clone());
+        receipt.candidate.release_topology_sha256 = digest;
+        super::validate_topology_source_binding(&receipt)?;
+        receipt.candidate.release_topology_sha256 = "b".repeat(64);
+        assert!(super::validate_topology_source_binding(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_source_uses_runtime_receipt_shape() -> Result<()> {
+        let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let source: serde_json::Value = serde_json::from_slice(br#"{"schema_version":1,"outcome":"completed","repository_sha":"0123456789abcdef0123456789abcdef01234567","known_limitations":[]}"#)?;
+        super::validate_installed_acceptance_source(
+            "installed_acceptance",
+            &receipt.child_receipts.installed_acceptance,
+            &receipt,
+            &source,
+        )?;
         Ok(())
     }
 

@@ -12,6 +12,7 @@
     "candidate_id",
     "frozen_product_sha",
     "artifact_set_id",
+    "source_receipt_sha256",
     "status",
     "claim_boundary",
     "limitation"

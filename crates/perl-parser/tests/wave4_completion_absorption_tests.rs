@@ -95,31 +95,31 @@ fn test_incremental_submodules_accessible() -> TestResult {
 // Section 2: Cargo.toml Publish Flag Tests
 // =============================================================================
 
-/// Test that perl-dead-code has publish = false set
+/// Test that perl-dead-code has been fully absorbed (directory deleted)
 #[test]
 fn test_perl_dead_code_publish_false() -> TestResult {
     let cargo_toml_path = ws("crates/perl-dead-code/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml_path)?;
 
-    // After absorption, this file should be marked as not publishable
-    if content.contains("publish = false") {
+    // After complete absorption, the crate directory is deleted entirely.
+    if !cargo_toml_path.exists() {
         Ok(())
     } else {
-        Err("perl-dead-code/Cargo.toml must have publish = false".into())
+        Err("perl-dead-code/Cargo.toml still exists — absorption should have deleted the crate"
+            .into())
     }
 }
 
-/// Test that perl-refactoring has publish = false set
+/// Test that perl-refactoring has been fully absorbed (directory deleted)
 #[test]
 fn test_perl_refactoring_publish_false() -> TestResult {
     let cargo_toml_path = ws("crates/perl-refactoring/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml_path)?;
 
-    // After absorption, this file should be marked as not publishable
-    if content.contains("publish = false") {
+    // After complete absorption, the crate directory is deleted entirely.
+    if !cargo_toml_path.exists() {
         Ok(())
     } else {
-        Err("perl-refactoring/Cargo.toml must have publish = false".into())
+        Err("perl-refactoring/Cargo.toml still exists — absorption should have deleted the crate"
+            .into())
     }
 }
 

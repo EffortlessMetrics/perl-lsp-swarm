@@ -307,15 +307,13 @@ impl LspServer {
                 // immediately without blocking on file I/O or symbol extraction.
                 // `notify_parse_complete` is called inside the background task.
                 #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator() {
-                    if let Ok(url) = url::Url::parse(uri) {
+                if let Some(coordinator) = self.coordinator()
+                    && let Ok(url) = url::Url::parse(uri) {
                         let workspace_index = Arc::clone(coordinator.index());
                         let coordinator_clone = Arc::clone(coordinator);
                         let text_owned = text.to_string();
                         let uri_owned = uri.to_string();
                         let generation = Arc::clone(&generation);
-                        let active_document_readiness = self.runtime_tuning().runtime_mode
-                            == perl_lsp_rs_core::runtime::tuning::RuntimeMode::E2e;
                         let outbound = self.outbound.clone();
                         let task_counter = Arc::clone(&self.pending_index_task_count);
                         task_counter.fetch_add(1, Ordering::SeqCst);
@@ -332,7 +330,7 @@ impl LspServer {
                             }
                             match workspace_index.index_file_with_generation(url, text_owned, 0) {
                                 Ok(()) => {
-                                    if active_document_readiness {
+                                    if generation.load(Ordering::Acquire) == 0 {
                                         workspace_progress::send_active_document_ready_notification(
                                             &outbound, &uri_owned, 0,
                                         );
@@ -379,7 +377,6 @@ impl LspServer {
                         self.publish_diagnostics_debounced(uri);
                         return Ok(());
                     }
-                }
             } else {
                 self.clear_document_symbols(uri);
             }
@@ -521,9 +518,9 @@ impl LspServer {
                 // Ignore stale didChange notifications that arrive out of order.
                 // We only gate on explicit client-provided versions; if a client omits
                 // the version field we preserve legacy behavior and treat the change as new.
-                if let Some(version) = incoming_version {
-                    if version < doc_state.version
-                        || (!allow_same_version && version == doc_state.version)
+                if let Some(version) = incoming_version
+                    && (version < doc_state.version
+                        || (!allow_same_version && version == doc_state.version))
                     {
                         tracing::debug!(
                             "Ignoring stale didChange for {} (incoming version {} <= current {})",
@@ -533,7 +530,6 @@ impl LspServer {
                         );
                         return Ok(());
                     }
-                }
 
                 // didChange version is required by LSP, but keep a fallback for tolerant
                 // handling of non-conforming clients in tests/custom integrations.
@@ -590,6 +586,7 @@ impl LspServer {
 
                 let t_rope_start = std::time::Instant::now();
                 let text = doc.rope.to_string();
+                let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
@@ -713,8 +710,8 @@ impl LspServer {
                 // hundreds of existing unit tests that assert
                 // `current_parsed()` is available immediately after
                 // `handle_did_change` returns) is unaffected.
-                if !self.incremental_eager_enabled() {
-                    if let Some(worker) = self.parse_worker() {
+                if !self.incremental_eager_enabled()
+                    && let Some(worker) = self.parse_worker() {
                         // Commit the text-only mutation now; the parse +
                         // parent-map + publish happen off this lock, in the
                         // worker. `current_parsed()` reports `None` for
@@ -725,7 +722,11 @@ impl LspServer {
                         // meantime -- see `state::DocumentState` module
                         // docs and the #3589 pending-parse provider
                         // policies.
-                        doc_state.replace_text_state(doc.rope.clone(), text.clone(), version);
+                        doc_state.replace_text_state(
+                            doc.rope.clone(),
+                            text_arc.to_string(),
+                            version,
+                        );
                         #[cfg(feature = "incremental")]
                         {
                             doc_state.incremental_doc = None;
@@ -775,12 +776,11 @@ impl LspServer {
                             normalized_uri,
                             next_gen,
                             generation_handle,
-                            Arc::from(text.as_str()),
+                            Arc::clone(&text_arc),
                         );
 
                         return Ok(());
                     }
-                }
 
                 // ---- Synchronous fallback path (unchanged behavior) ----
                 // Active when no worker is installed, or `incremental_eager`
@@ -996,7 +996,7 @@ impl LspServer {
                 // pre-edit snapshot until the `publish_parsed_if_current`
                 // call below lands the new one -- see
                 // `state::DocumentState::replace_text_state`.
-                doc_state.replace_text_state(doc.rope.clone(), text.to_string(), version);
+                doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
                 #[cfg(feature = "incremental")]
                 {
                     doc_state.incremental_doc = incremental_doc;
@@ -1012,9 +1012,9 @@ impl LspServer {
                 doc_state.publish_parsed_if_current(next_gen, Arc::clone(&snapshot));
 
                 // Check if a newer change arrived while we were parsing
-                if let Some(existing_doc) = self.get_document(&documents, uri) {
-                    if existing_doc.generation.load(Ordering::SeqCst) != next_gen
-                        || existing_doc.version > target_version
+                if let Some(existing_doc) = self.get_document(&documents, uri)
+                    && (existing_doc.generation.load(Ordering::SeqCst) != next_gen
+                        || existing_doc.version > target_version)
                     {
                         tracing::debug!(
                             "Discarding stale parse result for {} (gen {} != {} or version {} > {})",
@@ -1031,7 +1031,6 @@ impl LspServer {
                         }
                         return Ok(());
                     }
-                }
 
                 let generation_for_index_task = doc_state.generation.clone();
                 let t_commit_start = std::time::Instant::now();
@@ -1166,8 +1165,8 @@ impl LspServer {
         // not defense-in-depth.
         if ast_arc.is_some() {
             #[cfg(feature = "workspace")]
-            if let Some(coordinator) = self.coordinator() {
-                if let Ok(url) = url::Url::parse(&ticket.uri) {
+            if let Some(coordinator) = self.coordinator()
+                && let Ok(url) = url::Url::parse(&ticket.uri) {
                     let workspace_index = Arc::clone(coordinator.index());
                     let coordinator_clone = Arc::clone(coordinator);
                     let doc_content = ticket.text.to_string();
@@ -1237,7 +1236,6 @@ impl LspServer {
                     });
                     return;
                 }
-            }
         }
 
         // Notify coordinator synchronously when no coordinator/URL/workspace

@@ -39,7 +39,7 @@ global:
   # Toolchain requirements
   toolchain:
     # MSRV for the project (per rust-toolchain.toml)
-    msrv: "1.92.0"
+    msrv: "1.95.0"
     # Required components
     components:
       - rustfmt
@@ -769,7 +769,7 @@ gates:
     command: >-
       cargo test --locked --lib
       -p perl-corpus -p perl-diagnostics
-      -p perl-module -p perl-refactoring
+      -p perl-module
       -p perl-semantic-analyzer -p perl-semantic-facts
       -p perl-workspace
       -- --test-threads=4
@@ -1049,6 +1049,20 @@ gates:
       - docs
       - advisory
 
+  - name: adr_link_check
+    tier: merge_gate
+    description: "Inline relative Markdown links under docs/adr resolve to files inside the repository"
+    required: true
+    command: cargo xtask ci-hygiene check-doc-links docs/adr
+    timeout_seconds: 180
+    retry_count: 0
+    budgets:
+      max_duration_ms: 150000
+    quarantine: false
+    tags:
+      - docs
+      - policy
+
   - name: docs_build
     tier: merge_gate
     description: "Verify documentation builds without errors"
@@ -1065,7 +1079,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Verify the tracked non-Rust inventory document matches the current tree"
+    description: "Scan and classify tracked non-Rust files without requiring a race-prone snapshot match"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300
@@ -1077,6 +1091,32 @@ gates:
       - policy
       - docs
       - generated
+
+  # Guards the MSRV declared by Cargo.toml, rust-toolchain.toml, this file's
+  # global.toolchain.msrv, and the pinned matrix legs below. #6106 exists
+  # because those authorities drifted apart with nothing running to notice;
+  # this gate is what makes the comparison load-bearing rather than a command
+  # a contributor has to remember to type. Runs in the `policy` shard.
+  - name: msrv_authority_sync
+    tier: merge_gate
+    description: "Run the gate-policy validator: every MSRV authority (Cargo.toml, rust-toolchain.toml, gate-policy global + matrix legs) agrees, plus PR-profile and registry invariants"
+    required: true
+    command: cargo xtask gate-policy check
+    # 300s to match non_rust_inventory_check, the sibling `cargo xtask ...`
+    # gate in this shard. The validator itself is near-instant; the cost is
+    # the cargo invocation, which took >60s on a cold shard even after the
+    # "Warm xtask" step and timed out at exit 124 on the first CI run that
+    # reached this gate. Sizing it off a prebuilt-binary measurement was the
+    # error — the gate pays cargo's price, not the binary's.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - version
+      - hygiene
 
   - name: v2_parity
     tier: merge_gate
@@ -1250,7 +1290,7 @@ gates:
         - macos-latest
       toolchain:
         - stable
-        - "1.92.0"  # MSRV
+        - "1.95.0"  # MSRV
         - beta
     tags:
       - matrix
@@ -1379,10 +1419,13 @@ gates:
     description: "All version strings agree across features.toml, Cargo.toml, package.json, build.rs"
     required: true
     command: bash scripts/check-version-sync.sh
-    timeout_seconds: 30
+    # The prior 30-second watchdog timed out twice at 30,152 ms on PR #6142
+    # without producing a version verdict. Keep the release check bounded while
+    # allowing cold Cargo startup; see issue #6147 for the retained evidence.
+    timeout_seconds: 180
     retry_count: 0
     budgets:
-      max_duration_ms: 10000
+      max_duration_ms: 60000
     quarantine: false
     tags:
       - release

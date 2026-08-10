@@ -10,6 +10,7 @@ use super::super::{
     cancelled_response_with_method, enhanced_error,
 };
 use super::response::RoutedResponse;
+use crate::cancellation::GLOBAL_CANCELLATION_REGISTRY;
 
 impl LspServer {
     pub(super) fn route_request(
@@ -20,6 +21,25 @@ impl LspServer {
     ) -> RoutedResponse {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
+
+        // LSP spec: after shutdown, the server must reject all requests except
+        // `exit` with -32600 InvalidRequest (#6103).
+        if method != "exit"
+            && method != "shutdown"
+            && self.shutdown_received.load(Ordering::Acquire)
+        {
+            return RoutedResponse::Handler {
+                id,
+                method: method.clone(),
+                should_respond,
+                result: Err(JsonRpcError {
+                    code: -32600, // InvalidRequest per JSON-RPC 2.0 spec
+                    message: "Server has been shutdown".to_string(),
+                    data: None,
+                }),
+            };
+        }
+
         let result = match method.as_str() {
             "initialize" => self.handle_initialize_dispatch(request.params),
             "initialized" => self.handle_initialized_dispatch(),
@@ -273,6 +293,7 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
@@ -312,6 +333,10 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            // Remove the token registered by check_cancellation_before_dispatch
+            // so it is not orphaned when the Immediate path bypasses the
+            // RequestCleanupGuard below (#5944).
+            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }

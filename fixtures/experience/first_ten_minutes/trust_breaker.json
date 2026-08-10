@@ -1,0 +1,83 @@
+{
+  "check": "first-ten-minutes",
+  "schema_version": "first_ten_minutes.v1",
+  "status": "blocked",
+  "claim_boundary": "Negative control proving a stale exact answer blocks the packaged first-ten-minutes disposition.",
+  "study_pass": "exact_candidate_confirmation",
+  "candidate": {
+    "candidate_id": "v0.18.0-rc1",
+    "repository_sha": "0123456789abcdef0123456789abcdef01234567",
+    "artifact_set_id": "v0.18.0-rc1-linux-x86_64",
+    "vsix_version": "0.18.0",
+    "vsix_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "perllsp_version": "0.18.0",
+    "perllsp_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "perl_dap_version": "0.18.0",
+    "perl_dap_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "vscode_version": "1.131.0",
+    "platform": "linux-x86_64",
+    "clean_profile_id": "first-ten-minutes-stale-exact-negative"
+  },
+  "project": {
+    "fixture_id": "stale-exact-negative-v1",
+    "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "family": "dynamic_boundary_control"
+  },
+  "steps": [
+    {
+      "id": "install_startup",
+      "status": "completed",
+      "evidence_ref": "receipt://startup/stale-exact-negative-v1",
+      "limitations": []
+    },
+    {
+      "id": "understand_project",
+      "status": "completed",
+      "evidence_ref": "receipt://providers/stale-exact-negative-v1",
+      "limitations": []
+    },
+    {
+      "id": "change_project",
+      "status": "failed",
+      "evidence_ref": "receipt://freshness/stale-exact-negative-v1",
+      "limitations": [
+        "A pre-edit exact definition result remained visible after the declaration moved."
+      ]
+    },
+    {
+      "id": "diagnose_recover",
+      "status": "completed",
+      "evidence_ref": "receipt://recovery/stale-exact-negative-v1",
+      "limitations": []
+    }
+  ],
+  "first_useful_ms": 430,
+  "first_correct_ms": 660,
+  "counts": {
+    "false_exact": 0,
+    "stale_exact": 1,
+    "unsafe_edit": 0,
+    "unexplained_empty": 0,
+    "silent_startup_failure": 0,
+    "broken_documented_install": 0,
+    "wrong_binary_or_version": 0,
+    "orphaned_server_or_debuggee": 0,
+    "notifications": 0,
+    "interventions": 1
+  },
+  "findings": [
+    {
+      "id": "stale-definition-after-edit",
+      "class": "trust_breaker",
+      "summary": "Definition returned an exact pre-edit location after the declaration moved.",
+      "evidence_ref": "receipt://freshness/stale-exact-negative-v1",
+      "linked_issue": "#5902"
+    }
+  ],
+  "expected_beta_boundaries": [],
+  "linked_issues": [
+    "#5900",
+    "#5902"
+  ],
+  "limitations": []
+}

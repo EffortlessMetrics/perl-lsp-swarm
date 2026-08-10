@@ -205,7 +205,7 @@ impl LspServer {
             let (text, parsed) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => (doc.text.clone(), doc.current_parsed()),
+                    Some(doc) => (doc.text_arc.to_string(), doc.current_parsed()),
                     None => return Ok(Some(json!([]))),
                 }
             };
@@ -338,8 +338,8 @@ impl LspServer {
 
         for (line_num, line) in lines.iter().enumerate() {
             // Check for subroutines
-            if let Some(captures) = sub_regex.captures(line) {
-                if let Some(name_match) = captures.get(1) {
+            if let Some(captures) = sub_regex.captures(line)
+                && let Some(name_match) = captures.get(1) {
                     let name = name_match.as_str().to_string();
                     // Convert byte positions to UTF-16 code units for LSP compliance
                     let start_char = byte_to_utf16_col(line, name_match.start());
@@ -359,11 +359,10 @@ impl LspServer {
                         }
                     }));
                 }
-            }
 
             // Check for packages
-            if let Some(captures) = package_regex.captures(line) {
-                if let Some(name_match) = captures.get(1) {
+            if let Some(captures) = package_regex.captures(line)
+                && let Some(name_match) = captures.get(1) {
                     let name = name_match.as_str().to_string();
                     // Convert byte positions to UTF-16 code units for LSP compliance
                     let start_char = byte_to_utf16_col(line, name_match.start());
@@ -383,7 +382,6 @@ impl LspServer {
                         }
                     }));
                 }
-            }
         }
 
         symbols

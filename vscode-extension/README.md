@@ -169,8 +169,12 @@ If you prefer to manage the binary yourself:
 # Homebrew via the EffortlessMetrics tap (macOS/Linux)
 brew install effortlessmetrics/tap/perllsp
 
-# One-liner (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+# Identity-bound remote bootstrap once release closeout publishes ref+digest
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 
 # From source
 cargo install --git https://github.com/EffortlessMetrics/perl-lsp --package perllsp

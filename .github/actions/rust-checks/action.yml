@@ -20,7 +20,7 @@ inputs:
     required: false
     default: 'true'
   clippy-args:
-    description: 'Additional arguments for clippy'
+    description: 'Additional POSIX shell-like arguments for clippy; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --locked -- -D warnings -A missing_docs'
   clippy-prod:
@@ -28,7 +28,7 @@ inputs:
     required: false
     default: 'false'
   clippy-prod-args:
-    description: 'Arguments for production clippy checks'
+    description: 'POSIX shell-like arguments for production clippy; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --bins --no-deps -- -D clippy::unwrap_used -D clippy::expect_used'
   test:
@@ -36,7 +36,7 @@ inputs:
     required: false
     default: 'true'
   test-args:
-    description: 'Additional arguments for test'
+    description: 'Additional POSIX shell-like arguments for test; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --locked'
   test-threads:
@@ -75,10 +75,12 @@ runs:
       if: inputs.check-fmt == 'true'
       shell: bash
       run: |
+        set +e
         echo "::group::Format Check"
-        cargo xtask fmt --check
-        echo "status=$?" >> $GITHUB_OUTPUT
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind fmt
+        status=$?
         echo "::endgroup::"
+        exit "$status"
 
     - name: Run clippy
       id: clippy
@@ -87,11 +89,14 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
+        CLIPPY_ARGS: ${{ inputs.clippy-args }}
       run: |
+        set +e
         echo "::group::Clippy Lint"
-        cargo clippy ${{ inputs.clippy-args }}
-        echo "status=$?" >> $GITHUB_OUTPUT
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind clippy
+        status=$?
         echo "::endgroup::"
+        exit "$status"
 
     - name: Run production clippy (no unwrap/expect)
       id: clippy-prod
@@ -100,10 +105,14 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
+        CLIPPY_PROD_ARGS: ${{ inputs.clippy-prod-args }}
       run: |
+        set +e
         echo "::group::Production Clippy (no unwrap/expect)"
-        cargo clippy ${{ inputs.clippy-prod-args }}
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind clippy-prod
+        status=$?
         echo "::endgroup::"
+        exit "$status"
 
     - name: Run tests
       id: test
@@ -114,8 +123,11 @@ runs:
         RUST_TEST_THREADS: ${{ inputs.test-threads }}
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
         RUST_BACKTRACE: '1'
+        TEST_ARGS: ${{ inputs.test-args }}
       run: |
+        set +e
         echo "::group::Tests"
-        cargo test ${{ inputs.test-args }}
-        echo "status=$?" >> $GITHUB_OUTPUT
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind test
+        status=$?
         echo "::endgroup::"
+        exit "$status"

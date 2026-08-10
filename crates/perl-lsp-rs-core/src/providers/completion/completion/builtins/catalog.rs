@@ -258,3 +258,32 @@ pub fn all_names() -> impl Iterator<Item = &'static str> {
     ]
     .into_iter()
 }
+
+/// Returns the names of `use builtin` functions that require an explicit
+/// `use builtin 'name'` (or `use builtin qw(...)`) import to be in scope.
+///
+/// These names overlap with `all_names()` and are also gated behind
+/// `has_builtin_import`. `all_names()` is kept unfiltered so the
+/// `could_be_function` probe remains accurate.
+pub fn builtin_import_names() -> &'static [&'static str] {
+    &[
+        "true",
+        "false",
+        "is_bool",
+        "weaken",
+        "unweaken",
+        "is_weak",
+        "refaddr",
+        "reftype",
+        "blessed",
+        "ceil",
+        "floor",
+        "inf",
+        "nan",
+        "trim",
+        "indexed",
+        "is_tainted",
+        "load_module",
+        "export_lexically",
+    ]
+}

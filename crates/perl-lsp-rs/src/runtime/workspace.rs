@@ -42,6 +42,11 @@ use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
 use std::collections::{HashMap, HashSet};
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
 #[cfg(feature = "workspace")]
 use std::path::Path;
 use std::sync::Arc;
@@ -127,11 +132,10 @@ impl Drop for IndexingGuard {
             &self.indexing_rescan_pending,
             &self.indexing_transition_lock,
         );
-        if should_restart {
-            if let Some(restart) = self.restart.take() {
+        if should_restart
+            && let Some(restart) = self.restart.take() {
                 restart();
             }
-        }
     }
 }
 
@@ -182,11 +186,9 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
         if next_request_id
             .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
-        {
-            if let Some(id) = ServerRequestId::new(current.max(1)) {
+            && let Some(id) = ServerRequestId::new(current.max(1)) {
                 return id;
             }
-        }
     }
 }
 
@@ -405,6 +407,13 @@ impl LspServer {
             // that occurs when workspace/symbol arrives right after `initialized`.
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
 
+            if self.workspace_index_stale_for_any_open_document() {
+                tracing::debug!(
+                    "Workspace symbol: skipping stale workspace index tier, using open-doc fallback"
+                );
+                return self.search_open_documents_for_symbols(query, cap);
+            }
+
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -451,7 +460,7 @@ impl LspServer {
                             WorkspaceSymbolsTraceKind::SourceBackedReadyIndex,
                             generated_pilot_count,
                         );
-                        return Ok(Some(json!(lsp_symbols)));
+                        return Ok(Some(to_json_array(&lsp_symbols)));
                     }
                     // If index is empty, fall through to open-doc search
                 }
@@ -483,7 +492,7 @@ impl LspServer {
                                 WorkspaceSymbolsTraceKind::PartialIndexFallback,
                                 0,
                             );
-                            return Ok(Some(json!(lsp_symbols)));
+                            return Ok(Some(to_json_array(&lsp_symbols)));
                         }
                     }
                     tracing::debug!(
@@ -561,11 +570,10 @@ impl LspServer {
                     .and_then(|u| u.as_str())
                     .unwrap_or("")
                     .to_string();
-                if !file_uri.is_empty() {
-                    if let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
+                if !file_uri.is_empty()
+                    && let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
                         obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
                     }
-                }
             }
         }
     }
@@ -588,7 +596,11 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (
+                        k.clone(),
+                        v.text_arc.to_string(),
+                        v.current_parsed().and_then(|p| p.ast().cloned()),
+                    )
                 })
                 .collect()
         };
@@ -644,7 +656,7 @@ impl LspServer {
             WorkspaceSymbolsTraceKind::OpenDocumentFallback,
             0,
         );
-        Ok(Some(json!(all_symbols)))
+        Ok(Some(to_json_array(&all_symbols)))
     }
 
     /// Workspace symbol runtime quality receipt for staged trust proof.
@@ -920,6 +932,38 @@ impl LspServer {
 
         tracing::debug!(query, "Workspace symbol search");
 
+        // Try the prebuilt workspace index first to avoid re-indexing every
+        // open document on each workspace/symbol request (#4999 claim 1).
+        // Only fall back to the expensive per-document re-index when the
+        // index is genuinely unavailable or returned no results.
+        #[cfg(feature = "workspace")]
+        {
+            let _ = self.check_index_readiness(IndexReadinessPolicy::NoWait);
+            if !self.workspace_index_stale_for_any_open_document() {
+                let access_mode = route_index_access(self.coordinator());
+                if let IndexAccessMode::Full(coordinator) = access_mode {
+                    let cap = workspace_symbol_cap();
+                    let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                    symbols.extend(
+                        coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
+                    );
+                    if !symbols.is_empty() {
+                        let lsp_symbols: Vec<Value> = symbols
+                            .iter()
+                            .map(|sym| serde_json::to_value(sym).unwrap_or_else(|_| json!({})))
+                            .collect();
+                        tracing::debug!(
+                            count = lsp_symbols.len(),
+                            "Workspace symbol: served from prebuilt index (v1 fast path)"
+                        );
+                        return Ok(Some(to_json_array(&lsp_symbols)));
+                    }
+                    // Index returned empty — fall through to re-index fallback.
+                }
+            }
+        }
+
+        // Fallback: re-index open documents (expensive, O(docs × size)).
         // Lightweight snapshot: only clone fields needed for symbol extraction,
         // avoiding expensive Rope, ParentMap, LineStartsCache, and parse_errors clones.
         let docs_snapshot: Vec<(String, String, Option<Arc<perl_parser::ast::Node>>)> = {
@@ -927,7 +971,11 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (
+                        k.clone(),
+                        v.text_arc.to_string(),
+                        v.current_parsed().and_then(|p| p.ast().cloned()),
+                    )
                 })
                 .collect()
         };
@@ -1217,11 +1265,10 @@ impl LspServer {
 /// Accepts both the standard wrapped form `{"perl": {...}}` and the unwrapped form `{...}` used
 /// by clients such as Sublime Text's LSP package that omit the outer `"perl"` key.
 pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
-    if let Some(perl) = settings.get("perl") {
-        if perl.is_object() {
+    if let Some(perl) = settings.get("perl")
+        && perl.is_object() {
             return Some(perl);
         }
-    }
     // Unwrapped: the settings object itself contains perl config keys directly.
     if settings.is_object() { Some(settings) } else { None }
 }
@@ -1264,8 +1311,8 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
-        if let Some(params) = params {
-            if let Some(settings) = params.get("settings") {
+        if let Some(params) = params
+            && let Some(settings) = params.get("settings") {
                 tracing::debug!("Configuration changed, updating server settings");
 
                 // Read perl settings once and update both configs.
@@ -1424,7 +1471,6 @@ impl LspServer {
                     }
                 }
             }
-        }
 
         // Invalidate client-provided workspace/configuration values and re-fetch.
         self.pending_workspace_configuration_requests.lock().clear();
@@ -1523,15 +1569,15 @@ impl LspServer {
 
         // Re-index the file if it is a Perl source file.
         #[cfg(feature = "workspace")]
-        if let Some(coordinator) = self.coordinator() {
-            if is_perl_source_uri(uri) {
+        if let Some(coordinator) = self.coordinator()
+            && is_perl_source_uri(uri) {
                 if loaded_content.is_none() {
                     loaded_content = read_watched_file_content(uri, "re-indexing");
                 }
 
                 let workspace_index = coordinator.index();
-                if let Ok(url) = url::Url::parse(uri) {
-                    if let Some(content) = loaded_content.as_ref() {
+                if let Ok(url) = url::Url::parse(uri)
+                    && let Some(content) = loaded_content.as_ref() {
                         // Clear old index data before re-indexing
                         workspace_index.clear_file(uri);
                         match workspace_index.index_file(url, content.clone()) {
@@ -1541,9 +1587,7 @@ impl LspServer {
                             }
                         }
                     }
-                }
             }
-        }
 
         // For open documents, do NOT overwrite doc.text or bump doc.version.
         // The document map is authoritative for open files — the editor's
@@ -1582,8 +1626,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 let mut workspace_edit = json!({
                     "changes": {}
                 });
@@ -1607,12 +1651,11 @@ impl LspServer {
                     let new_module = path_to_module_name(new_uri);
 
                     if !old_module.is_empty() && !new_module.is_empty() {
-                        if !planned_workspace_texts.contains_key(old_uri) {
-                            if let Some(text) = self.read_workspace_text(old_uri) {
+                        if !planned_workspace_texts.contains_key(old_uri)
+                            && let Some(text) = self.read_workspace_text(old_uri) {
                                 planned_workspace_texts
                                     .insert(old_uri.to_string(), (text.clone(), text));
                             }
-                        }
                         if let Some((_, current_text)) = planned_workspace_texts.get_mut(old_uri) {
                             let planned =
                                 plan_module_rename_edits(current_text, &old_module, &new_module);
@@ -1666,10 +1709,10 @@ impl LspServer {
                         coordinator.notify_change(new_uri);
                         let workspace_index = coordinator.index();
                         workspace_index.remove_file(old_uri);
-                        if let Some(path) = uri_to_fs_path(new_uri) {
-                            if let Ok(content) = read_text_file_with_encoding(&path) {
-                                if let Ok(url) = url::Url::parse(new_uri) {
-                                    if let Err(e) = workspace_index.index_file(url, content.clone())
+                        if let Some(path) = uri_to_fs_path(new_uri)
+                            && let Ok(content) = read_text_file_with_encoding(&path)
+                                && let Ok(url) = url::Url::parse(new_uri)
+                                    && let Err(e) = workspace_index.index_file(url, content.clone())
                                     {
                                         tracing::warn!(
                                             "Failed to index renamed file {}: {}",
@@ -1677,9 +1720,6 @@ impl LspServer {
                                             e
                                         );
                                     }
-                                }
-                            }
-                        }
                         coordinator.notify_parse_complete(old_uri);
                         coordinator.notify_parse_complete(new_uri);
                     }
@@ -1741,7 +1781,6 @@ impl LspServer {
 
                 return Ok(Some(workspace_edit));
             }
-        }
 
         // Return empty edit if no changes needed
         Ok(Some(json!({"changes": {}})))
@@ -1752,8 +1791,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(uri) = file["uri"].as_str() else {
                         continue;
@@ -1777,7 +1816,6 @@ impl LspServer {
                     tracing::warn!(error = %e, "Failed to refresh client after file deletions");
                 }
             }
-        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -1788,14 +1826,17 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
                     let idx = coordinator.index();
                     let open_documents: Vec<(String, String)> = {
                         let documents = self.documents.lock();
-                        documents.iter().map(|(uri, doc)| (uri.clone(), doc.text.clone())).collect()
+                        documents
+                            .iter()
+                            .map(|(uri, doc)| (uri.clone(), doc.text_arc.to_string()))
+                            .collect()
                     };
                     let deleting_uris: std::collections::HashSet<String> = files
                         .iter()
@@ -1866,7 +1907,6 @@ impl LspServer {
                     }
                 }
             }
-        }
 
         // Return empty edit - no cleanup edits needed for now
         Ok(Some(json!({"changes": {}})))
@@ -1877,8 +1917,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(uri) = file["uri"].as_str() else {
                         continue;
@@ -1887,7 +1927,6 @@ impl LspServer {
                     tracing::debug!("File will be created: {}", uri);
                 }
             }
-        }
 
         // Return empty edit - no setup edits needed for now
         Ok(Some(json!({"changes": {}})))
@@ -1898,8 +1937,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(uri) = file["uri"].as_str() else {
                         continue;
@@ -1910,9 +1949,9 @@ impl LspServer {
                     // Index the new file if it's a Perl file
                     // Note: Mutation operation - use coordinator with lifecycle tracking
                     #[cfg(feature = "workspace")]
-                    if let Some(coordinator) = self.coordinator() {
-                        if is_perl_source_uri(uri) {
-                            if let Some(path) = uri_to_fs_path(uri) {
+                    if let Some(coordinator) = self.coordinator()
+                        && is_perl_source_uri(uri)
+                            && let Some(path) = uri_to_fs_path(uri) {
                                 match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         coordinator.notify_change(uri);
@@ -1941,8 +1980,6 @@ impl LspServer {
                                     }
                                 }
                             }
-                        }
-                    }
                 }
 
                 // Trigger client refresh after file creations
@@ -1950,7 +1987,6 @@ impl LspServer {
                     tracing::warn!("Failed to refresh client after file creations: {}", e);
                 }
             }
-        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -1961,8 +1997,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array() {
                 for file in files {
                     let Some(old_uri) = file["oldUri"].as_str() else {
                         continue;
@@ -1991,8 +2027,8 @@ impl LspServer {
                         coordinator.index().remove_file(&old_uri);
 
                         // Index new file if it's a Perl file
-                        if is_perl_source_uri(&new_uri) {
-                            if let Some(path) = uri_to_fs_path(&new_uri) {
+                        if is_perl_source_uri(&new_uri)
+                            && let Some(path) = uri_to_fs_path(&new_uri) {
                                 match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         if let Ok(url) = url::Url::parse(&new_uri) {
@@ -2020,7 +2056,6 @@ impl LspServer {
                                     }
                                 }
                             }
-                        }
 
                         coordinator.notify_parse_complete(&old_uri);
                         coordinator.notify_parse_complete(&new_uri);
@@ -2040,7 +2075,6 @@ impl LspServer {
                     tracing::warn!(error = %e, "Failed to refresh client after file renames");
                 }
             }
-        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -2051,8 +2085,8 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(event) = params.get("event") {
+        if let Some(params) = params
+            && let Some(event) = params.get("event") {
                 let change = extract_workspace_folder_change(event);
                 if change.added.is_empty() && change.removed.is_empty() {
                     tracing::debug!("Ignoring empty workspace folder change notification");
@@ -2123,7 +2157,6 @@ impl LspServer {
                 #[cfg(feature = "workspace")]
                 self.start_workspace_indexing();
             }
-        }
 
         Ok(())
     }
@@ -2497,7 +2530,7 @@ impl LspServer {
                     send_progress_end(&outbound, message);
                 }
                 readiness_receipt.lock().log();
-                send_index_ready_notification(&outbound, false);
+                send_index_ready_notification(&outbound, &coordinator.state());
             } else if work_done_progress
                 && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
             {
@@ -2511,7 +2544,7 @@ impl LspServer {
                 );
                 send_progress_end(&outbound, "Indexing cancelled");
                 readiness_receipt.lock().log();
-                send_index_ready_notification(&outbound, false);
+                send_index_ready_notification(&outbound, &coordinator.state());
             } else {
                 indexing_receipt.log(budget_start.elapsed(), None);
                 let resource_limited = matches!(
@@ -2523,7 +2556,7 @@ impl LspServer {
                     if work_done_progress {
                         send_progress_end(&outbound, "Indexing stopped at resource limit");
                     }
-                    send_index_ready_notification(&outbound, false);
+                    send_index_ready_notification(&outbound, &coordinator.state());
                 } else {
                     let file_count = coordinator.index().file_count();
                     let symbol_count = coordinator.index().symbol_count();
@@ -2535,7 +2568,7 @@ impl LspServer {
                     if work_done_progress {
                         send_progress_end(&outbound, "Indexing complete");
                     }
-                    send_index_ready_notification(&outbound, true);
+                    send_index_ready_notification(&outbound, &coordinator.state());
                 }
             }
         });
@@ -2631,13 +2664,13 @@ impl LspServer {
                             #[cfg(feature = "workspace")]
                             if let Some(coordinator) = self.coordinator() {
                                 coordinator.notify_change(uri);
-                                if let Ok(url) = url::Url::parse(uri) {
-                                    if let Err(e) =
-                                        coordinator.index().index_file(url, doc.text.clone())
+                                if let Ok(url) = url::Url::parse(uri)
+                                    && let Err(e) = coordinator
+                                        .index()
+                                        .index_file(url, doc.text_arc.to_string())
                                     {
                                         tracing::warn!("Failed to re-index file {}: {}", uri, e);
                                     }
-                                }
                                 coordinator.notify_parse_complete(uri);
                             }
 
@@ -2801,17 +2834,16 @@ impl LspServer {
     fn read_workspace_text(&self, uri: &str) -> Option<String> {
         // Priority 1: actively-open document (editor is authoritative).
         if let Some(doc) = self.documents.lock().get(uri) {
-            return Some(doc.text.clone());
+            return Some(doc.text_arc.to_string());
         }
 
         // Priority 2: workspace index document store (content from the last
         // time the file was indexed; avoids a synchronous disk read for files
         // that were open and then closed within the session).
-        if let Some(coordinator) = self.coordinator() {
-            if let Some(doc) = coordinator.index().document_store().get(uri) {
+        if let Some(coordinator) = self.coordinator()
+            && let Some(doc) = coordinator.index().document_store().get(uri) {
                 return Some(doc.text().to_string());
             }
-        }
 
         // Priority 3: read from disk.  `workspace/willRenameFiles` is a
         // workspace-wide refactoring operation; returning edits for files not
@@ -2872,15 +2904,14 @@ fn collect_delete_target_module_names(
     }
 
     for symbol in index.file_symbols(uri) {
-        if matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role) {
-            if let Some(module_name) = symbol
+        if matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role)
+            && let Some(module_name) = symbol
                 .qualified_name
                 .clone()
                 .or_else(|| (!symbol.name.is_empty()).then_some(symbol.name.clone()))
             {
                 module_names.insert(module_name);
             }
-        }
     }
 
     module_names
@@ -2947,11 +2978,10 @@ fn collect_symbol_reference_delete_dependents(
         if !symbol.name.is_empty() {
             names.insert(symbol.name.clone());
         }
-        if let Some(qualified_name) = symbol.qualified_name {
-            if !qualified_name.is_empty() {
+        if let Some(qualified_name) = symbol.qualified_name
+            && !qualified_name.is_empty() {
                 names.insert(qualified_name);
             }
-        }
 
         for symbol_name in names {
             for reference in index.find_references(&symbol_name) {
@@ -4197,6 +4227,52 @@ mod tests {
         let folder_state = folders.first().ok_or("workspace folder should exist")?;
         assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["lib", "local"]);
         assert_eq!(folder_state.effective_workspace_config.resolution_timeout_ms, 123);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_symbol_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/stale_ws_symbol_source.pl";
+        let source_v1 = "package StaleWs::Source;\nsub stale_symbol { return 1; }\n1;\n";
+        let source_v2 = "package StaleWs::Source;\nsub fresh_only { return 2; }\n1;\n";
+
+        server.test_apply_did_open(source_uri, source_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh = server.handle_workspace_symbols_v2(Some(json!({"query": "stale_symbol"})))?;
+        let fresh_symbols = fresh.and_then(|value| value.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_symbols
+                .iter()
+                .any(|symbol| symbol.get("name").and_then(|name| name.as_str())
+                    == Some("stale_symbol")),
+            "fresh workspace index should return stale_symbol: {fresh_symbols:?}"
+        );
+
+        server
+            .test_replace_document_without_index(source_uri, source_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_workspace_symbols_v2(Some(json!({"query": "stale_symbol"})))?;
+        let stale_symbols = stale.and_then(|value| value.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_symbols
+                .iter()
+                .any(|symbol| symbol.get("name").and_then(|name| name.as_str())
+                    == Some("stale_symbol")),
+            "stale workspace index must not return removed symbol: {stale_symbols:?}"
+        );
+
         Ok(())
     }
 }

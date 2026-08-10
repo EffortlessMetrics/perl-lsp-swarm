@@ -788,7 +788,7 @@ pub fn dap_breakpoint_to_byte_offset(
     // DAP uses 0-based line/column (same as LSP)
     let pos = Position { line, character: column };
 
-    // Reuse LSP infrastructure (PR #153 symmetric conversion)
+    // Reuse the LSP UTF-16 position-mapping infrastructure
     lsp_pos_to_byte(rope, pos, PosEnc::Utf16)
 }
 
@@ -808,7 +808,7 @@ pub fn render_variable_value(value: &str, rope: &Rope) -> String {
     if value.len() > 1024 {
         let truncated = &value[..1024];
 
-        // UTF-16 safe truncation (reuse PR #153 infrastructure)
+        // UTF-16 safe truncation using the shared boundary helper
         let safe_truncate = ensure_utf16_boundary(truncated, rope);
         format!("{}…", safe_truncate)
     } else {
@@ -1202,7 +1202,7 @@ sub render_value {
 - Path traversal prevention (reuse enterprise framework)
 - Safe eval enforcement (non-mutating default)
 - Timeout enforcement (5s default)
-- Unicode boundary safety (PR #153 symmetric conversion)
+- Unicode boundary safety through the shared position-mapping helpers
 
 **Test Validation**: `cargo test -p perl-dap --test security_validation`
 
@@ -1373,7 +1373,7 @@ pub async fn evaluate_expression(
 
 ### 6.4 Unicode Boundary Safety
 
-**Requirement**: Reuse PR #153 symmetric position conversion for variable rendering
+**Requirement**: Reuse the shared UTF-16 position conversion for variable rendering
 
 **Implementation**:
 ```rust
@@ -1384,7 +1384,7 @@ pub fn render_variable_value(value: &str, rope: &Rope) -> String {
     if value.len() > 1024 {
         let truncated = &value[..1024];
 
-        // UTF-16 safe truncation (PR #153 infrastructure)
+        // UTF-16 safe truncation using the shared boundary helper
         let safe_truncate = ensure_utf16_boundary(truncated, rope);
         format!("{}…", safe_truncate)
     } else {

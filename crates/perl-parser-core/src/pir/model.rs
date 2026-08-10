@@ -838,6 +838,22 @@ pub struct PirReceipt {
     /// Dynamic-boundary counts, keyed by boundary-kind name.
     pub dynamic_boundary_counts: BTreeMap<&'static str, usize>,
     /// HIR constructs PIR v0 did not lower, keyed by HIR kind name.
+    ///
+    /// **The key family depends on which lowering entry point produced the
+    /// receipt, and the two are not interchangeable.** [`lower_hir`] walks flat
+    /// HIR items and keys by *HIR kind* name (`"HeredocMigrationAdapter"`),
+    /// while [`lower_hir_bodies`] walks the body arena and keys by *AST kind*
+    /// name (`"Heredoc"`). Both describe the same Perl construct.
+    ///
+    /// This follows from each path reporting the kind it actually saw, and the
+    /// two layers naming things differently: flat HIR carries migration
+    /// adapters, body HIR carries the construct. A consumer that aggregates
+    /// counts across both entry points will therefore see two key families for
+    /// one construct, and must map between them rather than assume a shared
+    /// namespace.
+    ///
+    /// [`lower_hir`]: crate::pir::lower_hir
+    /// [`lower_hir_bodies`]: crate::pir::lower_hir_bodies
     pub unsupported_construct_counts: BTreeMap<&'static str, usize>,
     /// Stale or ambient inputs that affected lowering.
     pub ambient_inputs: Vec<String>,

@@ -538,10 +538,10 @@ impl DiagnosticCode {
             || contains_diagnostic_phrase(&msg_lower, "prototype mismatch")
         {
             Some(Self::InvalidPrototype)
-        } else if contains_diagnostic_phrase(&msg_lower, "parse error")
-            || contains_diagnostic_phrase(&msg_lower, "syntax error")
-        {
+        } else if contains_diagnostic_phrase(&msg_lower, "parse error") {
             Some(Self::ParseError)
+        } else if contains_diagnostic_phrase(&msg_lower, "syntax error") {
+            Some(Self::SyntaxError)
         // Real Perl: "Use of uninitialized value $x in string at file.pl line N."
         // Also: "Use of uninitialized value in concatenation (.) or string at file.pl line N."
         } else if contains_diagnostic_phrase(&msg_lower, "uninitialized value") {
@@ -702,5 +702,27 @@ mod tests {
         assert_eq!(DiagnosticCode::from_message("Can't locate Foo/Bar.pmx in @INC"), None,);
         assert_eq!(DiagnosticCode::from_message("Can't locate Foo/Bar.pm2 in @INC"), None,);
         assert_eq!(DiagnosticCode::from_message("Can't locate Foo/Bar.pm.bak in @INC"), None,);
+    }
+
+    #[test]
+    fn from_message_parse_error_maps_to_pl001() {
+        assert_eq!(
+            DiagnosticCode::from_message("parse error at file.pl line 5"),
+            Some(DiagnosticCode::ParseError),
+        );
+    }
+
+    #[test]
+    fn from_message_syntax_error_maps_to_pl002() {
+        // Regression guard for issue #2218: "syntax error" was mis-classified
+        // as ParseError (PL001) instead of SyntaxError (PL002).
+        assert_eq!(
+            DiagnosticCode::from_message("syntax error at file.pl line 5"),
+            Some(DiagnosticCode::SyntaxError),
+        );
+        assert_eq!(
+            DiagnosticCode::from_message("Bareword found where operator expected (syntax error)"),
+            Some(DiagnosticCode::SyntaxError),
+        );
     }
 }

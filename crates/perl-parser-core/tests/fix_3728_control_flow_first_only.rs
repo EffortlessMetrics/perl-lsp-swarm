@@ -204,7 +204,7 @@ fn parenthesized_declaration_in_condition_still_declares_both() -> Result<(), St
     let source = "if (my ($a, $b) = (1, 2)) { $a = $b; }";
     assert_clean_parse(source);
 
-    let ast = parse_program(&source)?;
+    let ast = parse_program(source)?;
     let stmt = first_statement(&ast)?;
     let condition = match &stmt.kind {
         NodeKind::If { condition, .. } => condition,
@@ -230,7 +230,7 @@ fn declaration_followed_by_binary_operator_in_condition_still_works() -> Result<
     let source = "if (our $can_haz_xs && $ok) { }";
     assert_clean_parse(source);
 
-    let ast = parse_program(&source)?;
+    let ast = parse_program(source)?;
     let stmt = first_statement(&ast)?;
     let condition = match &stmt.kind {
         NodeKind::If { condition, .. } => condition,

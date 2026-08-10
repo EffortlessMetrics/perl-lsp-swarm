@@ -4,15 +4,20 @@ This guide gets you from zero to a working Perl language server in your editor.
 
 ## First Success
 
-The fastest validation path is:
+For VS Code, the fastest validation path is:
 
-1. Install `perllsp`
-2. Run `perllsp --health`
-3. Open a Perl file in your editor
-4. Confirm you get diagnostics and hover text
+1. Install the `perl-lsp` extension
+2. Open a `.pl` or `.pm` file
+3. Run **Perl: Run Health Check** from the Command Palette
+4. Confirm the LSP binary check passes, then verify diagnostics and hover text
 
-If those four steps work, your install is good and the rest of this guide is
-just editor-specific setup and feature discovery.
+For other editors or a manually installed server, put `perllsp` on your
+`PATH` and run `perllsp --health` before opening a Perl file.
+
+If the LSP binary check and diagnostics/hover work, your core install is good.
+The health check may warn that Perl is unavailable; Perl is optional for the
+core language server and is only needed for the test runner and debugger.
+The rest of this guide is editor-specific setup and feature discovery.
 
 ## What is a Language Server?
 
@@ -37,8 +42,17 @@ The extension downloads the matching server binary for your platform.
 
 ### Option 2: Installer script, macOS and Linux (Recommended for other editors)
 
+Prefer a [release archive](https://github.com/EffortlessMetrics/perl-lsp/releases) until
+release closeout publishes an immutable installer ref and the reviewed SHA-256 digest
+of `scripts/install.sh`. From a clone, run `bash install.sh --help`. Once those
+values exist, the identity-bound remote bootstrap has this shape:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 ```
 
 This is the project's own installer ([`scripts/install.sh`](../../scripts/install.sh)).
@@ -72,7 +86,7 @@ cd perl-lsp
 cargo install --path crates/perllsp
 ```
 
-## Verify Installation
+## Verify a Manual Installation
 
 ```bash
 # Check binary is available
