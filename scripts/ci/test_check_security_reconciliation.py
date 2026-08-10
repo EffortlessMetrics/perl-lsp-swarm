@@ -86,6 +86,15 @@ class SecurityReconciliationTests(unittest.TestCase):
             with self.assertRaisesRegex(MODEL.LedgerError, "may-2026-findings"):
                 IO.load_ledger(ledger)
 
+    def test_finding_files_reject_parent_directory_segments(self) -> None:
+        data = json.loads(LEDGER.read_text(encoding="utf-8"))
+        data["finding_files"] = ["may-2026-findings/../may-2026-findings/high-1.json"]
+        with tempfile.TemporaryDirectory() as raw:
+            ledger = Path(raw) / "ledger.json"
+            ledger.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(MODEL.LedgerError, "parent-directory segments"):
+                IO.load_ledger(ledger)
+
     def test_write_then_check_round_trip_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

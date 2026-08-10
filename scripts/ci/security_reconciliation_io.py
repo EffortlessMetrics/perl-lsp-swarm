@@ -31,19 +31,25 @@ def load_ledger(path: Path) -> dict[str, Any]:
             "finding_files must be a non-empty array",
         )
         combined: list[Any] = []
+        shard_root = (path.parent / "may-2026-findings").resolve()
         for relative in finding_files:
             require(
                 isinstance(relative, str) and relative.strip(),
                 "finding_files entries must be non-empty strings",
             )
+            normalized = relative.replace("\\", "/")
             require(
-                relative.replace("\\", "/").startswith("may-2026-findings/"),
+                normalized.startswith("may-2026-findings/"),
                 "finding_files entries must stay under may-2026-findings/",
+            )
+            require(
+                ".." not in Path(normalized).parts,
+                "finding_files entries must not contain parent-directory segments",
             )
             shard_path = (path.parent / relative).resolve()
             require(
-                shard_path.is_relative_to(path.parent.resolve()),
-                f"finding shard escapes ledger directory: {relative}",
+                shard_path.is_relative_to(shard_root),
+                f"finding shard must resolve under may-2026-findings/: {relative}",
             )
             try:
                 shard = json.loads(shard_path.read_text(encoding="utf-8"))
