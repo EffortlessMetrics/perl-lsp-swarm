@@ -316,6 +316,9 @@ fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
     if topology["frozen_product_sha"] != receipt.candidate.frozen_product_sha {
         bail!("release topology frozen product SHA does not match candidate");
     }
+    if topology["prepared_swarm_sha"] != receipt.candidate.prepared_swarm_sha {
+        bail!("release topology prepared swarm SHA does not match candidate");
+    }
 
     if receipt.transition.path == InstallPath::Vsix {
         if topology["vsix"]["version"] != receipt.candidate.extension_version
@@ -619,6 +622,7 @@ mod tests {
             "release": receipt.candidate.candidate_version,
             "track": "public-beta",
             "frozen_product_sha": receipt.candidate.frozen_product_sha,
+            "prepared_swarm_sha": receipt.candidate.prepared_swarm_sha,
             "binary_targets": [{
                 "target": receipt.candidate.target,
                 "archive_name": receipt.transition.expected_asset,
@@ -665,6 +669,28 @@ mod tests {
             Ok(()) => bail!("topology digest mismatch unexpectedly passed"),
             Err(error) => {
                 assert!(format!("{error:#}").contains("digest mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_swarm_identity_mismatch_is_rejected() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let directory = tempdir()?;
+        let mut topology = topology_for(&receipt);
+        topology["prepared_swarm_sha"] = serde_json::Value::String("4".repeat(40));
+        let bytes = serde_json::to_vec(&topology)?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &bytes)?;
+        let mut receipt = receipt;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("prepared swarm identity mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("prepared swarm SHA"));
             }
         }
         Ok(())
