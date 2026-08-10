@@ -1614,6 +1614,27 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_restart_frame_capability_is_not_advertised()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #5045: supportsRestartFrame is not advertised because the handler
+        // unconditionally returns failure ("Perl does not support restarting
+        // execution from a specific stack frame").
+        let mut adapter = DebugAdapter::new();
+        let init = adapter.handle_request(1, "initialize", None);
+        let capabilities = match init {
+            DapMessage::Response { success: true, body: Some(body), .. } => body,
+            _ => return Err("Expected successful initialize response".into()),
+        };
+        let cap_map = capabilities.as_object().ok_or("body must be object")?;
+        assert_eq!(
+            cap_map.get("supportsRestartFrame").and_then(|v| v.as_bool()),
+            Some(false),
+            "supportsRestartFrame must not be advertised (handler always fails)"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_goto_targets_then_goto_flow() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
 
