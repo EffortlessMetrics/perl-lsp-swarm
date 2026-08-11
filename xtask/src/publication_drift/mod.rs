@@ -4,6 +4,8 @@ mod model;
 mod path;
 
 #[cfg(test)]
+mod schema_tests;
+#[cfg(test)]
 mod tests;
 
 use authority::load_authority;

@@ -1,8 +1,5 @@
-//! Compatibility entry point for the canonical publication-drift classifier.
-
-#[path = "../src/bin/publication-drift.rs"]
-mod classifier;
+//! Compatibility example delegating to the canonical publication-drift classifier.
 
 fn main() -> color_eyre::eyre::Result<()> {
-    classifier::run()
+    xtask::publication_drift::run_from_env()
 }

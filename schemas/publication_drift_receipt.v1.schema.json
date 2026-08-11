@@ -6,9 +6,11 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "comparison_version",
     "swarm",
     "public",
     "manifest",
+    "manifest_verification",
     "differences",
     "invariants",
     "authority_valid",
@@ -18,6 +20,13 @@
   "properties": {
     "schema_version": {
       "const": 1
+    },
+    "comparison_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
     },
     "swarm": {
       "$ref": "#/$defs/subject"
@@ -34,6 +43,9 @@
           "$ref": "#/$defs/manifest"
         }
       ]
+    },
+    "manifest_verification": {
+      "$ref": "#/$defs/manifest_verification"
     },
     "differences": {
       "type": "array",
@@ -125,6 +137,38 @@
         }
       }
     },
+    "manifest_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "actual_sha256",
+        "schema_version"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "verified",
+            "missing",
+            "invalid"
+          ]
+        },
+        "actual_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
+    },
     "classified_difference": {
       "type": "object",
       "additionalProperties": false,
@@ -146,6 +190,19 @@
             "pattern": "(^|/)\\.\\.?(/|$)"
           }
         },
+        "declared_classification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effective_classification": {
+          "enum": [
+            "expected_publication_translation",
+            "approved_lineage_exclusion",
+            "release_metadata_only",
+            "product_drift",
+            "unknown_or_not_proven"
+          ]
+        },
         "behavior_changed": {
           "type": "boolean"
         },
@@ -166,19 +223,6 @@
             "type": "string",
             "minLength": 1
           }
-        },
-        "declared_classification": {
-          "type": "string",
-          "minLength": 1
-        },
-        "effective_classification": {
-          "enum": [
-            "expected_publication_translation",
-            "approved_lineage_exclusion",
-            "release_metadata_only",
-            "product_drift",
-            "unknown_or_not_proven"
-          ]
         }
       }
     },
