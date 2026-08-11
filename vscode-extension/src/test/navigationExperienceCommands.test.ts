@@ -20,7 +20,7 @@ describe('workspace experience status-menu routes', () => {
       expect.arrayContaining([
         expect.objectContaining({
           label: expect.stringContaining('Show Workspace Status'),
-          command: 'perl-lsp.showWorkspaceTrustReport',
+          command: 'perl-lsp.showWorkspaceStatus',
         }),
         expect.objectContaining({
           label: expect.stringContaining('Explain Provider Result'),
