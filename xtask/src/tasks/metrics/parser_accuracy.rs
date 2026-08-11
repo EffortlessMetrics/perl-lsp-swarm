@@ -3673,6 +3673,7 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::VariableDeclaration { .. }
             | NodeKind::VariableListDeclaration { .. }
             | NodeKind::FunctionCall { .. }
+            | NodeKind::Return { .. }
             | NodeKind::MethodCall { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Match { .. }
