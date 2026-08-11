@@ -13,7 +13,7 @@ mod tests {
         match ast.kind {
             NodeKind::Program { mut statements } => {
                 statements.drain(..).next().expect("expected one statement")
-            },
+            }
             other => panic!("Expected Program node, got {other:?}"),
         }
     }
@@ -78,7 +78,7 @@ mod tests {
             }
             other => {
                 panic!("Unknown lowercase names must remain FunctionCall nodes, got {other:?}")
-            },
+            }
         }
     }
 
