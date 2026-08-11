@@ -4,6 +4,8 @@ mod model;
 mod path;
 
 #[cfg(test)]
+mod authorization_tests;
+#[cfg(test)]
 mod schema_tests;
 #[cfg(test)]
 mod tests;

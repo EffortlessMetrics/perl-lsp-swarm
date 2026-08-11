@@ -171,7 +171,10 @@ fn classify_differences(
             );
         }
 
-        validate_manifest_rule(&difference, authority, state);
+        let rule_authorized = validate_manifest_rule(&difference, authority, state);
+        if requires_manifest_rule(&difference.classification) && !rule_authorized {
+            effective = NOT_PROVEN_CLASS.to_string();
+        }
 
         if difference.behavior_changed && effective != PRODUCT_DRIFT {
             effective = PRODUCT_DRIFT.to_string();
@@ -219,7 +222,7 @@ fn validate_manifest_rule(
     difference: &super::model::ObservedDifference,
     authority: Option<&ValidatedAuthority>,
     state: &mut ClassificationState,
-) {
+) -> bool {
     if requires_manifest_rule(&difference.classification) {
         let Some(rule_id) = difference
             .manifest_rule
@@ -234,7 +237,7 @@ fn validate_manifest_rule(
                 ),
                 owner_or_default(&difference.owner),
             );
-            return;
+            return false;
         };
 
         let Some(authority) = authority else {
@@ -246,7 +249,7 @@ fn validate_manifest_rule(
                 ),
                 owner_or_default(&difference.owner),
             );
-            return;
+            return false;
         };
         let Some(rule) = authority.rules.get(rule_id) else {
             state.mark_not_proven(
@@ -257,10 +260,12 @@ fn validate_manifest_rule(
                 ),
                 owner_or_default(&difference.owner),
             );
-            return;
+            return false;
         };
-        validate_rule_match(difference, rule, state);
-    } else if difference
+        return validate_rule_match(difference, rule, state);
+    }
+
+    if difference
         .manifest_rule
         .as_deref()
         .is_some_and(|rule| !rule.trim().is_empty())
@@ -273,15 +278,19 @@ fn validate_manifest_rule(
             ),
             owner_or_default(&difference.owner),
         );
+        return false;
     }
+    true
 }
 
 fn validate_rule_match(
     difference: &super::model::ObservedDifference,
     rule: &ManifestRule,
     state: &mut ClassificationState,
-) {
+) -> bool {
+    let mut authorized = true;
     if rule.path != difference.path {
+        authorized = false;
         state.mark_not_proven(
             "manifest_rule_path_mismatch",
             format!(
@@ -292,6 +301,7 @@ fn validate_rule_match(
         );
     }
     if rule.classification != difference.classification {
+        authorized = false;
         state.mark_not_proven(
             "manifest_rule_classification_mismatch",
             format!(
@@ -302,6 +312,7 @@ fn validate_rule_match(
         );
     }
     if rule.owner != difference.owner {
+        authorized = false;
         state.mark_not_proven(
             "manifest_rule_owner_mismatch",
             format!(
@@ -311,6 +322,7 @@ fn validate_rule_match(
             owner_or_default(&difference.owner),
         );
     }
+    authorized
 }
 
 fn classify_invariants(
