@@ -962,6 +962,10 @@ impl SemanticAnalyzer {
             NodeKind::Error { .. } | NodeKind::UnknownRest => {
                 // No semantic tokens for error nodes
             }
+
+            _ => {
+                node.for_each_child(|child| self.analyze_node(child, scope_id));
+            }
         }
     }
 

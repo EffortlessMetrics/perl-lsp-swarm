@@ -295,17 +295,15 @@ impl BridgeAdapter {
         {
             #[cfg(unix)]
             {
-                if let Some(pid) = child.id() {
-                    if let Ok(()) = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
-                        if Self::wait_for_child_exit(
-                            &mut child,
-                            Duration::from_millis(PLS_SHUTDOWN_GRACE_MS),
-                        )
-                        .await
-                        {
-                            return Ok(());
-                        }
-                    }
+                if let Some(pid) = child.id()
+                    && let Ok(()) = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
+                    && Self::wait_for_child_exit(
+                        &mut child,
+                        Duration::from_millis(PLS_SHUTDOWN_GRACE_MS),
+                    )
+                    .await
+                {
+                    return Ok(());
                 }
             }
 

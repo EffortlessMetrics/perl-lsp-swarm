@@ -29,41 +29,38 @@ fn loc(start: usize, end: usize) -> SourceLocation {
 }
 
 fn use_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Use {
+    Node::new(
+        NodeKind::Use {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn no_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::No {
+    Node::new(
+        NodeKind::No {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn function_call(name: &str, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::FunctionCall { name: name.to_string(), args: vec![] },
-        location: loc(start, end),
-    }
+    Node::new(NodeKind::FunctionCall { name: name.to_string(), args: vec![] }, loc(start, end))
 }
 
 fn block(stmts: Vec<Node>, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Block { statements: stmts }, location: loc(start, end) }
+    Node::new(NodeKind::Block { statements: stmts }, loc(start, end))
 }
 
 fn program(stmts: Vec<Node>) -> Node {
     let end = stmts.last().map_or(0, |n| n.location.end);
-    Node { kind: NodeKind::Program { statements: stmts }, location: loc(0, end) }
+    Node::new(NodeKind::Program { statements: stmts }, loc(0, end))
 }
 
 /// Effective state after the last statement in the program.

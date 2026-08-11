@@ -367,6 +367,13 @@ fn walk_security_node(
         | NodeKind::MissingBlock
         | NodeKind::Error { .. }
         | NodeKind::UnknownRest => signal_shadowed,
+        _ => {
+            let mut current_shadowed = signal_shadowed;
+            node.for_each_child(|child| {
+                current_shadowed = walk_security_node(child, diagnostics, current_shadowed);
+            });
+            current_shadowed
+        }
     }
 }
 
