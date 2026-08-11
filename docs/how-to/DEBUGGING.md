@@ -5,8 +5,8 @@ Perl debugging is available via the `perl-dap` Debug Adapter Protocol (DAP) serv
 ## Current Status (Native Adapter)
 
 - **Launch debugging**: supported
-- **TCP attach**: supported by the native adapter
-- **Variables/evaluate**: supported by the native adapter; scorecard receipts remain a separate verification gap
+- **TCP attach**: transport handshake is present, but interactive attach is not supported by the native adapter yet
+- **Variables/evaluate**: parsed values are used when available; placeholder fallback remains when parsing provides no value, and scorecard receipts are a separate verification gap
 - **Legacy bridge**: compatibility-only; native launch and TCP attach use the built-in runtime
 
 ## Features
@@ -15,8 +15,8 @@ Perl debugging is available via the `perl-dap` Debug Adapter Protocol (DAP) serv
 - **Breakpoints**: Set breakpoints in your Perl code (best-effort)
 - **Step Controls**: Step over, step into, step out
 - **Call Stack**: Navigate through the call stack (best-effort)
-- **Variable Inspection**: Native adapter values are rendered for the Variables panel
-- **Evaluate**: Native adapter evaluation is available where supported by the active session
+- **Variable Inspection**: Parsed native-adapter values are rendered when available; placeholder fallback remains for unavailable values
+- **Evaluate**: Native-adapter evaluation is available where the active session routes the request
 - **Conditional Breakpoints**: Best-effort conditions via Perl debugger
 
 ### Test Debugging
@@ -123,7 +123,7 @@ The Perl Language Server extension automatically detects and uses the debug adap
 | `env` | object | Environment variables | `{}` |
 | `perlPath` | string | Path to Perl interpreter | `perl` |
 
-`launch` and TCP `attach` are native adapter modes. See the crate README for the stdio and socket commands.
+`launch` is supported by the native adapter. TCP attach has a transport handshake, but ordinary control and evaluation requests are not routed yet; do not treat it as a supported interactive mode.
 
 ## Troubleshooting
 
@@ -181,8 +181,8 @@ cargo install --path crates/perl-dap --force
 3. Verify Perl syntax is correct
 
 ### Variables not showing
-- Variables/evaluate output is placeholder in the native adapter
-- Use `my` declarations for clearer variable names once parsing is added
+- Parsed values are shown when the native adapter returns them; placeholder values remain when parsing returns no value.
+- Scorecard coverage for session correctness and evaluate remains incomplete.
 
 ## Architecture
 
