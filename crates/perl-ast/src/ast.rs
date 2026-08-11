@@ -155,6 +155,7 @@ impl Drop for ToSexpDepthGuard {
 /// This enum is always populated at parse time (never `None`); the parser detects the form
 /// by examining the first token of the target expression before consuming the full target.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum GotoTargetForm {
     /// `goto LABEL` — transfer control to a named label (plain identifier).
     Label,
@@ -301,6 +302,7 @@ define_field_ids! {
 /// println!("AST: {}", ast.to_sexp());
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Node {
     /// The specific type and semantic content of this AST node
     pub kind: NodeKind,
@@ -1843,6 +1845,7 @@ impl Node {
 /// - Clone operations optimized for concurrent analysis workflows
 /// - Pattern matching performance tuned for common Perl constructs
 #[derive(Debug, Clone, PartialEq, strum::VariantNames)]
+#[non_exhaustive]
 pub enum NodeKind {
     /// Top-level program containing all statements in an Perl script
     ///
