@@ -22,6 +22,12 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
     }
 }
 
+fn source_text(source: &str, node: &Node) -> Option<String> {
+    source
+        .get(node.location.start..node.location.end)
+        .map(str::to_owned)
+}
+
 #[test]
 fn nested_lexical_declaration_retains_group_identity_and_span() -> Result<(), String> {
     let source = "my ($head, ($middle, $tail)) = @values;";
@@ -52,23 +58,58 @@ fn nested_lexical_declaration_retains_group_identity_and_span() -> Result<(), St
 fn array_hash_and_key_value_slices_remain_distinct() -> Result<(), String> {
     let source = "@items[0, 2]; @lookup{qw(alpha beta)}; %lookup{qw(alpha beta)};";
     let ast = parse_clean(source)?;
-    let mut array_slices = 0usize;
-    let mut hash_slices = 0usize;
-    let mut key_value_slices = 0usize;
+    let mut array_slices = Vec::new();
+    let mut hash_slices = Vec::new();
+    let mut key_value_slices = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::ArraySlice { .. } => array_slices += 1,
-        NodeKind::HashSlice { .. } => hash_slices += 1,
-        NodeKind::KeyValueSlice { .. } => key_value_slices += 1,
+        NodeKind::ArraySlice { .. } => {
+            if let Some(text) = source_text(source, node) {
+                array_slices.push(text);
+            }
+        }
+        NodeKind::HashSlice { .. } => {
+            if let Some(text) = source_text(source, node) {
+                hash_slices.push(text);
+            }
+        }
+        NodeKind::KeyValueSlice { .. } => {
+            if let Some(text) = source_text(source, node) {
+                key_value_slices.push(text);
+            }
+        }
         _ => {}
     });
 
-    assert_eq!(array_slices, 1, "@array[...] must retain ArraySlice identity");
-    assert_eq!(hash_slices, 1, "@hash{...} must retain HashSlice identity");
-    assert_eq!(
-        key_value_slices, 1,
-        "%hash{...} must retain KeyValueSlice identity rather than collapsing into HashSlice"
-    );
+    assert_eq!(array_slices, vec!["@items[0, 2]"]);
+    assert_eq!(hash_slices, vec!["@lookup{qw(alpha beta)}"]);
+    assert_eq!(key_value_slices, vec!["%lookup{qw(alpha beta)}"]);
+    Ok(())
+}
+
+#[test]
+fn typeglob_alias_keeps_both_storage_and_coderef_identity() -> Result<(), String> {
+    let source = "sub original { 1 }\n*alias = \\&original;\n";
+    let ast = parse_clean(source)?;
+    let mut typeglobs = Vec::new();
+    let mut coderefs = Vec::new();
+
+    walk(&ast, &mut |node| match &node.kind {
+        NodeKind::TypeGlob { .. } => {
+            if let Some(text) = source_text(source, node) {
+                typeglobs.push(text);
+            }
+        }
+        NodeKind::AmperCall { name, .. } if name == "original" => {
+            if let Some(text) = source_text(source, node) {
+                coderefs.push(text);
+            }
+        }
+        _ => {}
+    });
+
+    assert_eq!(typeglobs, vec!["*alias"]);
+    assert_eq!(coderefs, vec!["&original"]);
     Ok(())
 }
 
