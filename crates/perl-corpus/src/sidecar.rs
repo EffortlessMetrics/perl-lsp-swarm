@@ -3,8 +3,11 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const SIDECAR_SUFFIX: &[u8] = b".meta.toml";
 
 /// Canonical schema identity for fixture-expectation sidecars.
 pub const FIXTURE_EXPECTATION_SCHEMA: &str = "fixture_expectation.v1";
@@ -181,13 +184,24 @@ pub fn validate_sidecar(
     let mut validation = SidecarValidation::default();
 
     match expected_fixture_path(sidecar_path) {
-        Ok(fixture_path) => {
-            if !fixture_path.is_file() {
-                validation
-                    .errors
-                    .push(format!("fixture file does not exist: {}", fixture_path.display()));
-            }
-        }
+        Ok(fixture_path) => match fs::symlink_metadata(&fixture_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => validation.errors.push(format!(
+                "fixture file symlink is unsupported: {}",
+                fixture_path.display()
+            )),
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => validation.errors.push(format!(
+                "fixture file is not a regular file: {}",
+                fixture_path.display()
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => validation
+                .errors
+                .push(format!("fixture file does not exist: {}", fixture_path.display())),
+            Err(error) => validation.errors.push(format!(
+                "failed to inspect fixture file {}: {error}",
+                fixture_path.display()
+            )),
+        },
         Err(error) => validation.errors.push(error.to_string()),
     }
 
@@ -238,6 +252,8 @@ pub fn discover_sidecars(root: &Path) -> Result<Vec<PathBuf>> {
             let entry =
                 entry.with_context(|| format!("reading entry in {}", directory.display()))?;
             let path = entry.path();
+            let file_name = entry.file_name();
+            let is_sidecar = has_sidecar_suffix(&file_name);
             let file_type = entry
                 .file_type()
                 .with_context(|| format!("getting file type for {}", path.display()))?;
@@ -247,12 +263,13 @@ pub fn discover_sidecars(root: &Path) -> Result<Vec<PathBuf>> {
             }
             if file_type.is_dir() {
                 stack.push(path);
-            } else if file_type.is_file()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.ends_with(".meta.toml"))
-            {
+            } else if is_sidecar {
+                if !file_type.is_file() {
+                    bail!("sidecar is not a regular file: {}", path.display());
+                }
+                if file_name.to_str().is_none() {
+                    bail!("sidecar filename is not valid UTF-8: {}", path.display());
+                }
                 sidecars.push(path);
             }
         }
@@ -260,6 +277,10 @@ pub fn discover_sidecars(root: &Path) -> Result<Vec<PathBuf>> {
 
     sidecars.sort();
     Ok(sidecars)
+}
+
+fn has_sidecar_suffix(file_name: &OsStr) -> bool {
+    file_name.as_encoded_bytes().ends_with(SIDECAR_SUFFIX)
 }
 
 fn collect_concept_ids(value: &toml::Value, concept_ids: &mut HashSet<String>) {
@@ -404,6 +425,30 @@ mode = "parse_clean"
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn validation_rejects_paired_fixture_symlink() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::symlink;
+
+        let corpus = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let target = outside.path().join("case.pl");
+        fs::write(&target, "1;")?;
+        let fixture_link = corpus.path().join("case.pl");
+        symlink(&target, &fixture_link)?;
+        let sidecar_path = corpus.path().join("case.meta.toml");
+        fs::write(
+            &sidecar_path,
+            minimal_sidecar_toml("parser.example", "parse_clean"),
+        )?;
+        let parsed = parse_sidecar(&sidecar_path)?;
+
+        let validation = validate_sidecar(&sidecar_path, &parsed, None);
+        assert!(!validation.is_ok());
+        assert!(validation.errors.iter().any(|error| error.contains("symlink")));
+        Ok(())
+    }
+
     #[test]
     fn discovery_is_recursive_and_sorted() -> Result<(), Box<dyn Error>> {
         let temporary = tempfile::tempdir()?;
@@ -421,6 +466,40 @@ mode = "parse_clean"
                 temporary.path().join("z/second.meta.toml"),
             ]
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_rejects_non_utf8_sidecar_names() -> Result<(), Box<dyn Error>> {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let temporary = tempfile::tempdir()?;
+        let mut bytes = vec![b'c', b'a', b's', b'e', 0xff];
+        bytes.extend_from_slice(SIDECAR_SUFFIX);
+        let path = temporary.path().join(OsString::from_vec(bytes));
+        fs::write(&path, "")?;
+
+        let error = discover_sidecars(temporary.path())
+            .expect_err("selected non-UTF-8 sidecar names must fail closed");
+        assert!(error.to_string().contains("not valid UTF-8"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_ignores_unselected_non_utf8_metadata() -> Result<(), Box<dyn Error>> {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let temporary = tempfile::tempdir()?;
+        let path = temporary
+            .path()
+            .join(OsString::from_vec(vec![b'n', b'o', b't', b'e', 0xff, b'.', b't', b'x', b't']));
+        fs::write(path, "")?;
+
+        assert!(discover_sidecars(temporary.path())?.is_empty());
         Ok(())
     }
 
