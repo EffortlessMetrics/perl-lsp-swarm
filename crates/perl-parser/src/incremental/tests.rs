@@ -20,7 +20,8 @@ fn test_incremental_state_small_edit_uses_checkpoint() -> Result<()> {
     let doc_len = source.len();
     let mut state = IncrementalState::new(source.clone());
     assert!(state.lex_checkpoints.len() > 1);
-    let edit_start = source.find("10;").ok_or_else(|| anyhow::anyhow!("test source is missing edit target"))?;
+    let edit_start =
+        source.find("10;").ok_or_else(|| anyhow::anyhow!("test source is missing edit target"))?;
     let edit = Edit {
         start_byte: edit_start,
         old_end_byte: edit_start + 2,
@@ -65,10 +66,13 @@ proptest! {
 
 #[test]
 fn incremental_state_records_lex_and_parse_restart_points() {
-    let source = "package Example;\nmy ($scalar, @items);\nsub run { my $local = 1; }\n".to_string();
+    let source =
+        "package Example;\nmy ($scalar, @items);\nsub run { my $local = 1; }\n".to_string();
     let state = IncrementalState::new(source.clone());
 
-    let first_lex = state.find_lex_checkpoint(0).expect("the lexer always has an origin checkpoint");
+    let first_lex = state
+        .find_lex_checkpoint(0)
+        .expect("the lexer always has an origin checkpoint");
     assert_eq!(first_lex.byte, 0);
     assert!(state.find_lex_checkpoint(source.len()).is_some());
 
@@ -92,7 +96,10 @@ fn expression_only_trees_have_no_parse_restart_checkpoint() {
     assert!(state.find_parse_checkpoint(0).is_none());
 }
 
-#[expect(deprecated, reason = "the test verifies the legacy AST error fallback used by IncrementalState::new")]
+#[expect(
+    deprecated,
+    reason = "the test verifies the legacy AST error fallback used by IncrementalState::new"
+)]
 #[test]
 fn incremental_state_retains_error_ast_when_initial_parse_fails() {
     let state = IncrementalState::new("sub {".to_string());
