@@ -40,23 +40,14 @@ print "x=$x\n";
         _ => return Err("Expected initialize response".into()),
     }
 
-    // Try to wait for initialized event, but don't fail if timing issues
-    loop {
-        match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(msg) => {
-                if let DapMessage::Event { ref event, .. } = msg
-                    && event == "initialized"
-                {
-                    eprintln!("Received initialized event");
-                    break;
-                }
-            }
-            Err(_) => {
-                eprintln!("Timeout waiting for initialized event - continuing anyway");
-                break;
-            }
-        }
-    }
+    // The adapter must complete the protocol lifecycle before launch is considered valid.
+    let initialized = rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "Timed out waiting for initialized event")?;
+    assert!(
+        matches!(initialized, DapMessage::Event { event, .. } if event == "initialized"),
+        "Expected initialized event, got {initialized:?}"
+    );
 
     // Launch
     let launch_args = json!({
@@ -67,29 +58,15 @@ print "x=$x\n";
     let launch_response = adapter.handle_request(2, "launch", Some(launch_args));
     match launch_response {
         DapMessage::Response { success, message, .. } => {
-            if success {
-                eprintln!("Launch succeeded");
-                // Try to wait for stopped event, but don't require it
-                loop {
-                    match rx.recv_timeout(Duration::from_secs(3)) {
-                        Ok(msg) => {
-                            if let DapMessage::Event { ref event, .. } = msg {
-                                eprintln!("Received event: {}", event);
-                                if event == "stopped" {
-                                    eprintln!("Received stopped event");
-                                    break;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            eprintln!("Timeout waiting for stopped event - continuing");
-                            break;
-                        }
-                    }
-                }
-            } else {
-                eprintln!("Launch failed (expected on some systems): {:?}", message);
-            }
+            assert!(success, "Launch should succeed, got: {message:?}");
+
+            let stopped = rx
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(|_| "Timed out waiting for stopped event")?;
+            assert!(
+                matches!(stopped, DapMessage::Event { event, .. } if event == "stopped"),
+                "Expected stopped event, got {stopped:?}"
+            );
         }
         _ => return Err("Expected launch response".into()),
     }
