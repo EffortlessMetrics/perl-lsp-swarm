@@ -100,9 +100,7 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
     transliterations.sort();
     quote_spans.sort();
     if substitution_count != 1 {
-        return Err(format!(
-            "expected exactly one substitution node, got {substitution_count}"
-        ));
+        return Err(format!("expected exactly one substitution node, got {substitution_count}"));
     }
     let expected_transliterations = vec![
         (
