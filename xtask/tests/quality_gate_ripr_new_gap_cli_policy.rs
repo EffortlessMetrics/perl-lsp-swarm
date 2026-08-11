@@ -146,7 +146,10 @@ fn quality_gate_cli_rejects_malformed_changed_production_files() -> TestResult {
     );
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    assert_eq!(payload.pointer("/review_guidance/status").and_then(Value::as_str), Some("invalid"));
+    assert_eq!(
+        payload.pointer("/review_guidance/status").and_then(Value::as_str),
+        Some("invalid")
+    );
     next_action(&payload, "ripr_review_receipt_not_current")?;
     Ok(())
 }
