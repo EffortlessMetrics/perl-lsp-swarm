@@ -22,6 +22,12 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
     }
 }
 
+fn source_text(source: &str, node: &Node) -> Option<String> {
+    source
+        .get(node.location.start..node.location.end)
+        .map(str::to_owned)
+}
+
 #[test]
 fn multiplication_binds_inside_addition() -> Result<(), String> {
     let ast = parse_clean("my $value = 1 + 2 * 3;")?;
@@ -102,26 +108,54 @@ fn slash_and_brace_ambiguities_keep_distinct_shapes() -> Result<(), String> {
         "map { $_ + 1 } @items;\n",
     );
     let ast = parse_clean(source)?;
-    let mut division = 0usize;
-    let mut matches = 0usize;
-    let mut hash_literals = 0usize;
-    let mut map_blocks = 0usize;
+    let mut divisions = Vec::new();
+    let mut matches = Vec::new();
+    let mut hash_literals = Vec::new();
+    let mut map_blocks = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Binary { op, .. } if op == "/" => division += 1,
-        NodeKind::Match { .. } => matches += 1,
-        NodeKind::HashLiteral { .. } => hash_literals += 1,
+        NodeKind::Binary { op, .. } if op == "/" => {
+            if let Some(text) = source_text(source, node) {
+                divisions.push(text);
+            }
+        }
+        NodeKind::Match {
+            expr,
+            pattern,
+            modifiers,
+            has_embedded_code,
+            negated,
+        } => {
+            assert!(matches!(
+                &expr.kind,
+                NodeKind::Variable { sigil, name } if sigil == "$" && name == "value"
+            ));
+            assert_eq!(pattern, "pattern");
+            assert!(modifiers.is_empty());
+            assert!(!has_embedded_code);
+            assert!(!negated);
+            if let Some(text) = source_text(source, node) {
+                matches.push(text);
+            }
+        }
+        NodeKind::HashLiteral { .. } => {
+            if let Some(text) = source_text(source, node) {
+                hash_literals.push(text);
+            }
+        }
         NodeKind::FunctionCall { name, args }
             if name == "map" && args.iter().any(|arg| matches!(&arg.kind, NodeKind::Block { .. })) =>
         {
-            map_blocks += 1;
+            if let Some(text) = source_text(source, node) {
+                map_blocks.push(text);
+            }
         }
         _ => {}
     });
 
-    assert_eq!(division, 1, "division must remain a Binary '/' expression");
-    assert_eq!(matches, 1, "=~ /.../ must remain a Match expression");
-    assert_eq!(hash_literals, 1, "expression braces must retain HashLiteral identity");
-    assert_eq!(map_blocks, 1, "map braces must retain block-argument identity");
+    assert_eq!(divisions, vec!["$value / 2"]);
+    assert_eq!(matches, vec!["$value =~ /pattern/"]);
+    assert_eq!(hash_literals, vec!["{ key => 1 }"]);
+    assert_eq!(map_blocks, vec!["map { $_ + 1 } @items"]);
     Ok(())
 }
