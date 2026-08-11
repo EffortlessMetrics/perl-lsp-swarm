@@ -36,7 +36,7 @@ Choose the path that matches what you are trying to do:
 | Troubleshoot startup, indexing, or editor issues | [Troubleshooting](how-to/TROUBLESHOOTING.md) |
 | Troubleshoot Perl binary, `@INC`, `PERL5LIB`, perldoc, or DAP setup | [Perl Setup Troubleshooting](how-to/PERL_SETUP_TROUBLESHOOTING.md) |
 | Understand editor trust, fallbacks, and receipts | [Editor Trust](how-to/EDITOR_TRUST.md) |
-| Understand the server architecture | [Architecture Overview](reference/ARCHITECTURE_OVERVIEW.md) |
+| Understand the server architecture | [Architecture Reference](reference/ARCHITECTURE.md) |
 | Understand measured editor trust and the Rust Perl replacement path | [Measured Perl Editor Trust](explanation/MEASURED_PERL_EDITOR_TRUST.md) |
 | Understand the compiler-backed LSP direction | [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md) |
 | Work on LSP features as a contributor | [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md) |
@@ -84,7 +84,7 @@ Authoritative descriptions of commands, options, data, and feature contracts (in
 
 - [Commands Reference](reference/COMMANDS_REFERENCE.md)
 - [Configuration Reference](reference/CONFIG.md)
-- [Architecture Overview](reference/ARCHITECTURE_OVERVIEW.md)
+- [Architecture Reference](reference/ARCHITECTURE.md)
 - [LSP Features](reference/LSP_FEATURES.md)
 - [Missing Documentation Guide](reference/MISSING_DOCUMENTATION_GUIDE.md)
 - [API Documentation Standards](reference/API_DOCUMENTATION_STANDARDS.md)
@@ -156,7 +156,7 @@ Resources for contributors working on the codebase itself.
 1. [Getting Started](tutorials/GETTING_STARTED.md)
 2. [Installation Guide](how-to/INSTALLATION.md)
 3. [Commands Reference](reference/COMMANDS_REFERENCE.md)
-4. [Architecture Overview](reference/ARCHITECTURE_OVERVIEW.md)
+4. [Architecture Reference](reference/ARCHITECTURE.md)
 5. [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md)
 
 ## CLI Quick Reference
