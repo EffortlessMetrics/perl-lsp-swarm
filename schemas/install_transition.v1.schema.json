@@ -269,7 +269,25 @@
         "limitations": {
           "$ref": "#/$defs/non_empty_strings"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "artifact_verified": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "artifact_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }
