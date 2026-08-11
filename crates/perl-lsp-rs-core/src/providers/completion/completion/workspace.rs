@@ -2258,7 +2258,9 @@ fn collect_all_package_members_with_source(
                                 .and_then(|path| std::fs::read_to_string(path).ok())
                         })
                     })
-                    .or_else(|| (!source.is_empty()).then_some(source.to_string()));
+                    .or_else(|| {
+                        (pkg == package_name && !source.is_empty()).then_some(source.to_string())
+                    });
 
                 let Some(text) = text else {
                     return (
