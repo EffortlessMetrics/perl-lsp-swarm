@@ -16,10 +16,10 @@ Welcome to the perl-lsp project! This guide will get you up to speed quickly.
 ### What Is This Project?
 
 perl-lsp is a comprehensive Perl parsing + LSP/DAP ecosystem:
-- Fast native Rust parser with near-complete Perl 5 coverage
+- Fast native Rust parser; coverage and corpus evidence are tracked in `CURRENT_STATUS.md`
 - LSP server with broad feature support (tracked in `features.toml`)
 - DAP support with native preview adapter + BridgeAdapter compatibility path
-- Quality gates: tests, fuzzing/mutation hardening, missing_docs enforcement (see `CURRENT_STATUS.md`)
+- Quality gates: tests, fuzzing/mutation hardening, and documented API/example contracts (see `CURRENT_STATUS.md`)
 
 ### Current Focus
 
@@ -47,9 +47,9 @@ compliance, and broader distribution packaging.
 6. **[LSP Missing Features](../reference/LSP_MISSING_FEATURES_REPORT.md)** - Non-advertised capabilities (derived from `features.toml`)
 
 ### Development
-5. **[CLAUDE.md](../../CLAUDE.md)** - Project guidance for AI assistants
-6. **[CONTRIBUTING.md](../../CONTRIBUTING.md)** - How to contribute
-7. **[COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md)** - Build/test commands
+1. **[CLAUDE.md](../../CLAUDE.md)** - Project guidance for AI assistants
+2. **[CONTRIBUTING.md](../../CONTRIBUTING.md)** - How to contribute
+3. **[COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md)** - Build/test commands
 
 ## 🚨 What Needs Attention RIGHT NOW
 
@@ -66,8 +66,10 @@ For what actually needs attention right now:
 ```
 perl-lsp/
 ├── crates/
-│   ├── perl-parser/      ⭐ Main crate - Parser
-│   ├── perl-lsp/          LSP server binary + LSP logic
+│   ├── perl-parser/      ⭐ Published parser facade
+│   ├── perl-parser-core/ Syntax and parser-core support
+│   ├── perl-lsp-rs/     Installable LSP server facade
+│   ├── perl-lsp-rs-core/ LSP runtime and providers
 │   ├── perl-dap/          Debug Adapter Protocol (native preview + bridge fallback)
 │   ├── perl-lexer/        Context-aware tokenizer
 │   ├── perl-corpus/       Test corpus (see CURRENT_STATUS for counts)
@@ -121,7 +123,7 @@ Run `just status-check` for live numbers.
 ## 🔍 Understanding the Codebase
 
 ### Parser Architecture
-- **v3 Native Parser** ⭐ RECOMMENDED: near-complete Perl 5 coverage with strong performance (see CURRENT_STATUS)
+- **v3 Native Parser** ⭐ RECOMMENDED: coverage and performance tracked in CURRENT_STATUS
 - **v2 Pest Parser**: Legacy but stable; maintained for compatibility
 - **Incremental Parsing**: Sub-millisecond updates with high node reuse (see CURRENT_STATUS)
 
@@ -134,7 +136,7 @@ Run `just status-check` for live numbers.
 ### Key Innovations
 - **Dual Indexing** (PR #122): Functions indexed as both `Package::function` and `function`
 - **Adaptive Threading** (PR #140): Thread-aware timeout scaling for CI
-- **API Documentation** (PR #160/SPEC-149): `#![warn(missing_docs)]` enforcement
+- **API Documentation**: public API and example guidance is maintained in the documentation contract guides
 - **Mutation Testing** (PR #153): Comprehensive mutation hardening suite
 
 ## 🎓 Learning Path
@@ -186,6 +188,6 @@ The perl-lsp project has clear paths forward. Your contributions will help make 
 
 ---
 
-*This guide is kept up-to-date as the project evolves. Last updated: 2026-07-17*
+*This guide is a stable orientation snapshot. Last reviewed: 2026-08-10*
 
 *For detailed status, see: [CURRENT_STATUS.md](CURRENT_STATUS.md)*

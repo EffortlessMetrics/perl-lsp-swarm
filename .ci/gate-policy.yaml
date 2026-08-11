@@ -762,6 +762,24 @@ gates:
       - unit
       - workspace
 
+  - name: parser_integration
+    tier: merge_gate
+    description: "Bounded parser integration proof with a non-shrinking target manifest (#6107)"
+    required: true
+    command: python3 scripts/ci/run_parser_integration.py
+    timeout_seconds: 900
+    retry_count: 0
+    budgets:
+      max_duration_ms: 780000
+    quarantine: false
+    tags:
+      - test
+      - integration
+      - parser
+      - ratchet
+    planning:
+      role: always_on
+
   - name: unit_analysis_full
     tier: merge_gate
     description: "Semantic analysis, workspace, diagnostics, and refactoring library tests"
@@ -1606,6 +1624,7 @@ escape_hatches:
       - unit_core
       - unit_foundation_full
       - unit_parser_stack_full
+      - parser_integration
       - unit_analysis_full
       - unit_lsp_core_full
       - unit_lsp_full

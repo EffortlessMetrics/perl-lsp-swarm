@@ -1,7 +1,7 @@
 {
   "check": "install-transition",
   "schema_version": "install_transition.v1",
-  "status": "pass",
+  "status": "not_proven",
   "claim_boundary": "Isolated VSIX upgrade from the prior public beta to one topology-bound candidate; does not establish public-channel availability.",
   "candidate": {
     "artifact_set_id": "v0.18.0-rc1-primary",
@@ -27,9 +27,10 @@
     "resolved_asset": "perl-lsp-rs-0.18.0.vsix",
     "intended_disposition": "applied",
     "observed_disposition": "applied",
-    "outcome": "completed",
+    "outcome": "not_proven",
     "observed_release_identity": "0.18.0",
-    "artifact_verified": true,
+    "artifact_verified": false,
+    "artifact_sha256": null,
     "known_good_preserved": true,
     "partial_artifact_promoted": false,
     "mixed_version_reported_ready": false,

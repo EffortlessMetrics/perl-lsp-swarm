@@ -350,6 +350,7 @@ def build_manifest(
         "archive_count": len(targets),
         "vsix": {
             "version": package["version"],
+            "asset_name": f"{package['name']}-{package['version']}.vsix",
             "package_path": "vscode-extension",
             "managed_targets": sorted(downloader_targets),
             "bundled_targets": [],
@@ -459,6 +460,9 @@ def validate_manifest(
         raise TopologyError(
             "VSIX version does not match the release or current extension manifest"
         )
+    expected_vsix_asset = f"{package.get('name')}-{package.get('version')}.vsix"
+    if manifest.get("vsix", {}).get("asset_name") != expected_vsix_asset:
+        raise TopologyError("VSIX asset name does not match the extension manifest")
     if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(
         downloader_targets
     ):

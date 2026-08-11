@@ -94,8 +94,8 @@ fn parser_corpus_pr_policy_is_unambiguous() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn release_history_pr_gates_have_realistic_timeout_headroom()
--> Result<(), Box<dyn std::error::Error>> {
+fn release_history_pr_gates_have_realistic_timeout_headroom(
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let policy_path = root.join(".ci/gate-policy.yaml");
     let content = fs::read_to_string(policy_path)?;
@@ -217,6 +217,49 @@ fn parser_stack_gate_stays_required_merge_gate() -> Result<(), Box<dyn std::erro
             "unit_parser_stack_full must keep {flag} as an exact argument"
         );
     }
+
+    Ok(())
+}
+
+/// Contract guard for issue #6107: the bounded parser integration proof stays
+/// required, manifest-driven, and above its initial denominator.
+#[test]
+fn parser_integration_gate_is_required_and_manifest_driven(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    let gate = parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "parser_integration")
+        .ok_or("missing parser_integration gate — #6107 proof is not wired")?;
+
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "parser integration proof must be required");
+    assert!(!gate.quarantine, "parser integration proof must not be quarantined");
+    assert!(
+        gate.command.contains("scripts/ci/run_parser_integration.py"),
+        "parser integration gate must use the manifest-driven runner; current command: {}",
+        gate.command
+    );
+    assert!(
+        gate.timeout_seconds.unwrap_or_default() >= 900,
+        "parser integration gate needs cold-build headroom"
+    );
+
+    let manifest = root.join(".ci/parser-integration-targets.json");
+    let manifest_content = fs::read_to_string(manifest)?;
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest_content)?;
+    let targets = manifest_json
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("parser integration manifest must contain targets")?;
+    assert!(
+        targets.len() >= 7,
+        "parser integration manifest must not shrink below its initial proof set"
+    );
 
     Ok(())
 }

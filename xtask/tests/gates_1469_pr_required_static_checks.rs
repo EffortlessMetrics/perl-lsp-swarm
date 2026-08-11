@@ -370,6 +370,10 @@ fn ci_workflow_includes_unit_parser_stack_full_in_matrix() -> Result<(), Box<dyn
          perl-parser/perl-lexer/perl-parser-core lib tests and was declared required in \
          gate-policy.yaml but wired into zero workflows (#5934)"
     );
+    assert!(
+        shards_section.contains("parser_integration"),
+        "merge-gate-shards matrix must include parser_integration: #6107's required bounded proof must be wired into CI"
+    );
 
     Ok(())
 }
