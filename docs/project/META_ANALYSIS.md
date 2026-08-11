@@ -288,8 +288,7 @@ Seven of eleven articles discuss the microcrate architecture:
 - **CLEAN_CODE_SHOWCASE** shows how microcrates enforce API boundaries.
 - **CUSTOM_LSP_RUNTIME** shows how microcrates enable code sharing
   (the `perl-content-length-framing` crate shared between LSP and DAP).
-- **LSP_IMPLEMENTATION_STORY** documents the feature governance
-  subsystem as 7 focused microcrates.
+- **LSP_IMPLEMENTATION_STORY** historically described the feature-governance subsystem; its current compatibility pointer is not evidence for the old crate count or architecture.
 
 The microcrate strategy emerges as simultaneously the project's most
 distinctive architectural feature and its most debatable one. The
