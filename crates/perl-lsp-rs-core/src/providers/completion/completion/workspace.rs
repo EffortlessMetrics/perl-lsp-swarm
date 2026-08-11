@@ -2293,10 +2293,11 @@ fn collect_all_package_members_with_source(
                         continue;
                     };
 
-                    if let Some(model) = perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-                        .build(&ast)
-                        .into_iter()
-                        .find(|model| model.name == pkg)
+                    if let Some(model) =
+                        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+                            .build(&ast)
+                            .into_iter()
+                            .find(|model| model.name == pkg)
                     {
                         return (model.parents.clone(), model.roles.clone(), model.mro);
                     }
