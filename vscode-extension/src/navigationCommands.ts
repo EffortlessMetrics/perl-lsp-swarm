@@ -96,7 +96,9 @@ export async function showWorkspaceStatusCommand(dependencies: {
   if (status.lifecycle) {
     lines.push(`Lifecycle: ${status.lifecycle}`);
   }
-  if (status.readinessState) {
+  if (status.readinessState === 'legacy') {
+    lines.push('Workspace index: legacy server (enhanced readiness unavailable)');
+  } else if (status.readinessState) {
     lines.push(`Workspace index: ${status.readinessState}`);
   } else if (hasLiveServer) {
     lines.push('Workspace index: legacy server (enhanced readiness unavailable)');
