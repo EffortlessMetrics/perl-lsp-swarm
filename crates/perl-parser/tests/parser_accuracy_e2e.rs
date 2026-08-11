@@ -44,6 +44,7 @@ const E2E_FIXTURES: &[&str] = &[
     "imports_exports",
     "qualified_refs",
     "same_bare_subs",
+    "role_method",
     "operator_precedence",
     "quote_like",
     "regex_match",
