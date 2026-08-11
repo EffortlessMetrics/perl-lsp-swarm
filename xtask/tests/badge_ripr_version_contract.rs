@@ -4,6 +4,11 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use serde_yaml_ng::Value;
 
+const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] =
+    &["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback"];
+const VARIABLE_INSTALL_COMMAND: &str =
+    "cargo install ripr --version \"$RIPR_VERSION\" --locked";
+
 fn project_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
@@ -37,14 +42,13 @@ fn collect_named_strings(
     Ok(())
 }
 
-fn job_consumes_ripr_version(job: &Value) -> bool {
-    job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
-        steps.iter().any(|step| {
-            step.get("run")
-                .and_then(Value::as_str)
-                .is_some_and(|run| run.contains("RIPR_VERSION"))
-        })
-    })
+fn job_run_steps(job: &Value) -> Vec<&str> {
+    job.get("steps")
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|step| step.get("run").and_then(Value::as_str))
+        .collect()
 }
 
 #[test]
@@ -63,12 +67,27 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
         .get("jobs")
         .and_then(Value::as_mapping)
         .ok_or("ripr.yml must declare jobs")?;
+    let expected_jobs: BTreeSet<_> = EXPECTED_RIPR_EXECUTION_JOBS.iter().copied().collect();
+    let installer_jobs: BTreeSet<_> = ripr_jobs
+        .iter()
+        .filter_map(|(job_name, job)| {
+            job_run_steps(job)
+                .iter()
+                .any(|run| run.contains("cargo install ripr --version"))
+                .then(|| job_name.as_str())
+                .flatten()
+        })
+        .collect();
+    assert_eq!(
+        installer_jobs, expected_jobs,
+        "the reviewed RIPR execution-lane set changed; update the contract with the workflow"
+    );
+
     let mut lane_versions = Vec::new();
-    for (job_name, job) in ripr_jobs {
-        if !job_consumes_ripr_version(job) {
-            continue;
-        }
-        let job_name = job_name.as_str().ok_or("RIPR job names must be strings")?;
+    for job_name in EXPECTED_RIPR_EXECUTION_JOBS {
+        let job = ripr_jobs
+            .get(*job_name)
+            .ok_or_else(|| format!("ripr.yml is missing execution job `{job_name}`"))?;
         let version = job
             .get("env")
             .and_then(Value::as_mapping)
@@ -77,12 +96,22 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
             .ok_or_else(|| {
                 format!("RIPR execution job `{job_name}` must declare env.RIPR_VERSION")
             })?;
-        lane_versions.push((job_name.to_string(), version.to_string()));
+
+        let install_steps: Vec<_> = job_run_steps(job)
+            .into_iter()
+            .filter(|run| run.contains("cargo install ripr --version"))
+            .collect();
+        assert_eq!(
+            install_steps.len(),
+            1,
+            "RIPR execution job `{job_name}` must have one explicit installer"
+        );
+        assert!(
+            install_steps[0].contains(VARIABLE_INSTALL_COMMAND),
+            "RIPR execution job `{job_name}` must install through its canonical RIPR_VERSION"
+        );
+        lane_versions.push(((*job_name).to_string(), version.to_string()));
     }
-    assert!(
-        !lane_versions.is_empty(),
-        "the routed RIPR workflow must have an execution job consuming its reviewed release"
-    );
 
     let distinct_versions: BTreeSet<_> =
         lane_versions.iter().map(|(_, version)| version.as_str()).collect();
