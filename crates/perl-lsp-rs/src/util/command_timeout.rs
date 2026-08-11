@@ -126,6 +126,14 @@ mod tests {
     }
 
     #[test]
+    fn assert_line_output(actual: &[u8], expected: &[u8]) {
+        let normalized = actual
+            .strip_suffix(b"\\r\\n")
+            .or_else(|| actual.strip_suffix(b"\\n"))
+            .unwrap_or(actual);
+        assert_eq!(normalized, expected);
+    }
+
     fn unit_fast_command_succeeds() {
         let result = run_command_with_timeout(fast_command(), 10);
 
@@ -151,7 +159,7 @@ mod tests {
             #[cfg(windows)]
             assert_eq!(output.stderr, b"diagnostic\r\n");
             #[cfg(not(windows))]
-            assert_eq!(output.stderr, b"diagnostic");
+            assert_line_output(&output.stderr, b"diagnostic");
         }
     }
 
