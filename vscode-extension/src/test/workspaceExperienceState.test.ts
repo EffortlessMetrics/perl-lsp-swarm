@@ -102,7 +102,7 @@ describe('workspace experience presentation', () => {
 
     expect(presentation.tooltip).toContain('The server exited during startup.');
     expect(presentation.tooltip).toContain('Reason: startup_exit');
-    expect(presentation.tooltip.endsWith('(click to restart)')).toBe(true);
+    expect(presentation.tooltip.endsWith('(click for restart options)')).toBe(true);
   });
 
   test('leaves non-failure states on the generic options affordance', () => {
