@@ -189,7 +189,14 @@ fn classify_differences(
                 owner_or_default(&difference.owner),
             ),
             EXPECTED_TRANSLATION | APPROVED_EXCLUSION | RELEASE_METADATA => {}
-            _ => state.not_proven = true,
+            other => state.mark_not_proven(
+                "unclassifiable_difference",
+                format!(
+                    "difference {:?} resolved to unrecognized effective classification {other:?}",
+                    difference.path
+                ),
+                owner_or_default(&difference.owner),
+            ),
         }
 
         classified.push(ClassifiedDifference {
@@ -388,12 +395,12 @@ fn classify_invariants(
         });
     }
 
-    for required_id in required.keys() {
+    for (required_id, required_owner) in &required {
         if !seen.contains(required_id) {
             state.mark_not_proven(
                 "required_invariant_missing",
                 format!("required publication invariant {required_id:?} is absent"),
-                required.get(required_id).map(String::as_str).unwrap_or("release-engineering"),
+                required_owner.as_str(),
             );
         }
     }
