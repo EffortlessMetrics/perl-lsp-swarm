@@ -17,10 +17,10 @@ mod common;
 // Include the exact-process contracts here so shipped-binary lifecycle,
 // framing, and document-generation regressions are merge-blocking rather than
 // advisory-only.
-#[path = "lsp_stdio_process_contract.rs"]
-mod exact_process_contract;
 #[path = "lsp_document_lifecycle_process.rs"]
 mod document_lifecycle_process;
+#[path = "lsp_stdio_process_contract.rs"]
+mod exact_process_contract;
 
 #[cfg(test)]
 mod semantic_definition_tests {

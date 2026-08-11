@@ -28,14 +28,8 @@ fn assert_success_response(response: &Value, id: &Value, method: &str) -> Result
         response.get("jsonrpc") == Some(&json!("2.0")),
         "{method} response omitted JSON-RPC 2.0: {response}"
     );
-    ensure!(
-        response.get("id") == Some(id),
-        "{method} response ID mismatch: {response}"
-    );
-    ensure!(
-        response.get("error").is_none(),
-        "{method} returned an error: {response}"
-    );
+    ensure!(response.get("id") == Some(id), "{method} response ID mismatch: {response}");
+    ensure!(response.get("error").is_none(), "{method} returned an error: {response}");
     response
         .get("result")
         .cloned()
@@ -188,20 +182,10 @@ fn wait_for_current_parse_tokens(
                 "textDocument": { "uri": URI }
             }),
         )?;
-        let has_live_result = result
-            .get("resultId")
-            .and_then(Value::as_str)
-            .is_some();
-        let data = result
-            .get("data")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let has_live_result = result.get("resultId").and_then(Value::as_str).is_some();
+        let data = result.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
         if has_live_result && !data.is_empty() {
-            ensure!(
-                data.len() % 5 == 0,
-                "semantic-token data must use five-u32 tuples: {result}"
-            );
+            ensure!(data.len() % 5 == 0, "semantic-token data must use five-u32 tuples: {result}");
             return data
                 .iter()
                 .map(|value| {
@@ -260,10 +244,7 @@ fn diagnostic_fingerprint(item: &Value) -> Result<String> {
 }
 
 fn diagnostic_fingerprints(items: &[Value]) -> Result<Vec<String>> {
-    let mut fingerprints = items
-        .iter()
-        .map(diagnostic_fingerprint)
-        .collect::<Result<Vec<_>>>()?;
+    let mut fingerprints = items.iter().map(diagnostic_fingerprint).collect::<Result<Vec<_>>>()?;
     fingerprints.sort();
     Ok(fingerprints)
 }
@@ -290,21 +271,12 @@ fn increasing_change_publishes_current_parse_and_stale_change_is_ignored() -> Re
     let mut client = RealProcessClient::spawn_exact()?;
     initialize(&mut client)?;
 
-    did_open(
-        &mut client,
-        1,
-        "package Initial;\nsub initial_symbol { return 1; }\n",
-    )?;
+    did_open(&mut client, 1, "package Initial;\nsub initial_symbol { return 1; }\n")?;
     let initial_tokens = wait_for_current_parse_tokens(&mut client, "tokens-v1")?;
-    ensure!(
-        !initial_tokens.is_empty(),
-        "version 1 current parse produced no semantic tokens"
-    );
+    ensure!(!initial_tokens.is_empty(), "version 1 current parse produced no semantic tokens");
     let initial_names = document_symbol_names(&mut client, "symbols-v1")?;
     ensure!(
-        initial_names
-            .iter()
-            .any(|name| name.contains("initial_symbol")),
+        initial_names.iter().any(|name| name.contains("initial_symbol")),
         "version 1 symbol was not visible: {initial_names:?}"
     );
 
@@ -316,15 +288,11 @@ fn increasing_change_publishes_current_parse_and_stale_change_is_ignored() -> Re
     let current_tokens = wait_for_current_parse_tokens(&mut client, "tokens-v2")?;
     let current_names = document_symbol_names(&mut client, "symbols-v2")?;
     ensure!(
-        current_names
-            .iter()
-            .any(|name| name.contains("current_symbol")),
+        current_names.iter().any(|name| name.contains("current_symbol")),
         "version 2 symbol was not published: {current_names:?}"
     );
     ensure!(
-        !current_names
-            .iter()
-            .any(|name| name.contains("initial_symbol")),
+        !current_names.iter().any(|name| name.contains("initial_symbol")),
         "version 1 symbol survived version 2 publication: {current_names:?}"
     );
     let current_diagnostics = diagnostic_items(&mut client, "diagnostics-v2")?;
@@ -334,34 +302,23 @@ fn increasing_change_publishes_current_parse_and_stale_change_is_ignored() -> Re
     );
     let current_fingerprints = diagnostic_fingerprints(&current_diagnostics)?;
 
-    did_change(
-        &mut client,
-        1,
-        "package Stale;\nsub stale_symbol { return 3; }\n",
-    )?;
-    let after_stale_tokens =
-        wait_for_current_parse_tokens(&mut client, "tokens-after-stale")?;
+    did_change(&mut client, 1, "package Stale;\nsub stale_symbol { return 3; }\n")?;
+    let after_stale_tokens = wait_for_current_parse_tokens(&mut client, "tokens-after-stale")?;
     ensure!(
         after_stale_tokens == current_tokens,
         "stale change altered current-generation semantic tokens"
     );
     let after_stale_names = document_symbol_names(&mut client, "symbols-after-stale")?;
     ensure!(
-        after_stale_names
-            .iter()
-            .any(|name| name.contains("current_symbol")),
+        after_stale_names.iter().any(|name| name.contains("current_symbol")),
         "stale change displaced the current symbol generation: {after_stale_names:?}"
     );
     ensure!(
-        !after_stale_names
-            .iter()
-            .any(|name| name.contains("stale_symbol")),
+        !after_stale_names.iter().any(|name| name.contains("stale_symbol")),
         "stale version 1 change became authoritative: {after_stale_names:?}"
     );
-    let after_stale_fingerprints = diagnostic_fingerprints(&diagnostic_items(
-        &mut client,
-        "diagnostics-after-stale",
-    )?)?;
+    let after_stale_fingerprints =
+        diagnostic_fingerprints(&diagnostic_items(&mut client, "diagnostics-after-stale")?)?;
     ensure!(
         after_stale_fingerprints == current_fingerprints,
         "stale clean text changed current diagnostics: before={current_fingerprints:?} after={after_stale_fingerprints:?}"
@@ -375,11 +332,7 @@ fn close_removes_open_document_authority_and_reopen_starts_fresh() -> Result<()>
     let mut client = RealProcessClient::spawn_exact()?;
     initialize(&mut client)?;
 
-    did_open(
-        &mut client,
-        7,
-        "package BeforeClose;\nsub before_close { return 1; }\n",
-    )?;
+    did_open(&mut client, 7, "package BeforeClose;\nsub before_close { return 1; }\n")?;
     let _clean_tokens = wait_for_current_parse_tokens(&mut client, "tokens-clean")?;
 
     did_change(
@@ -387,13 +340,10 @@ fn close_removes_open_document_authority_and_reopen_starts_fresh() -> Result<()>
         8,
         "package BeforeClose;\nsub before_close { return 1; }\nsub broken {\n",
     )?;
-    let _before_close_tokens =
-        wait_for_current_parse_tokens(&mut client, "tokens-before-close")?;
+    let _before_close_tokens = wait_for_current_parse_tokens(&mut client, "tokens-before-close")?;
     let before_close = document_symbol_names(&mut client, "symbols-before-close")?;
     ensure!(
-        before_close
-            .iter()
-            .any(|name| name.contains("before_close")),
+        before_close.iter().any(|name| name.contains("before_close")),
         "pre-close symbol was not visible: {before_close:?}"
     );
     let before_close_diagnostics = diagnostic_items(&mut client, "diagnostics-before-close")?;
@@ -418,10 +368,7 @@ fn close_removes_open_document_authority_and_reopen_starts_fresh() -> Result<()>
         closed.get("jsonrpc") == Some(&json!("2.0")),
         "closed-document response omitted JSON-RPC 2.0: {closed}"
     );
-    ensure!(
-        closed.get("id") == Some(&closed_id),
-        "closed-document ID mismatch: {closed}"
-    );
+    ensure!(closed.get("id") == Some(&closed_id), "closed-document ID mismatch: {closed}");
     ensure!(
         closed.pointer("/error/code") == Some(&json!(-32600)),
         "closed semantic-token request must return InvalidRequest: {closed}"
@@ -432,17 +379,11 @@ fn close_removes_open_document_authority_and_reopen_starts_fresh() -> Result<()>
         "closed semantic-token error message drifted: {closed}"
     );
 
-    did_open(
-        &mut client,
-        1,
-        "package Reopened;\nsub reopened_symbol { return 4; }\n",
-    )?;
+    did_open(&mut client, 1, "package Reopened;\nsub reopened_symbol { return 4; }\n")?;
     let _reopened_tokens = wait_for_current_parse_tokens(&mut client, "tokens-reopened")?;
     let reopened = document_symbol_names(&mut client, "symbols-reopened")?;
     ensure!(
-        reopened
-            .iter()
-            .any(|name| name.contains("reopened_symbol")),
+        reopened.iter().any(|name| name.contains("reopened_symbol")),
         "reopened document did not publish fresh symbols: {reopened:?}"
     );
     ensure!(
