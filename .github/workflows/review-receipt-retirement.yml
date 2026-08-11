@@ -1,0 +1,47 @@
+name: Review Receipt Retirement
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/ci/check-pr-claim-currentness'
+      - 'scripts/reviews/claim-digest'
+      - 'scripts/reviews/claim_digest.py'
+      - 'tests/test_review_claim_currentness.py'
+      - 'tests/test_review_claim_fail_closed.py'
+      - 'tests/test_retired_review_receipt_commands.py'
+      - '.github/workflows/review-receipt-retirement.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ci/check-pr-claim-currentness'
+      - 'scripts/reviews/claim-digest'
+      - 'scripts/reviews/claim_digest.py'
+      - 'tests/test_review_claim_currentness.py'
+      - 'tests/test_review_claim_fail_closed.py'
+      - 'tests/test_retired_review_receipt_commands.py'
+      - '.github/workflows/review-receipt-retirement.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-receipt-retirement-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check retired review receipt commands
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check command retirement and fixture compatibility
+        run: |
+          python3 -m unittest \
+            tests/test_retired_review_receipt_commands.py \
+            tests/test_review_claim_currentness.py \
+            tests/test_review_claim_fail_closed.py
