@@ -313,6 +313,14 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
     if let Some(raw_output) = config.raw_output.as_ref() {
         write_discovery_raw_output(raw_output, &output)?;
     }
+    if !output.status.success() {
+        bail!(
+            "upstream harness --dumptests failed with status {}\\nstdout:\\n{}\\nstderr:\\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     let tests = parse_dumptests_output(&output.stdout)?;
     let perl_ref = config.perl_ref.clone().unwrap_or_else(|| perl_tree_ref(&perl_tree));
@@ -1498,14 +1506,6 @@ fn invoke_dumptests(
 
     let output =
         command.output().with_context(|| format!("spawning host Perl: {}", host_perl.display()))?;
-    if !output.status.success() {
-        bail!(
-            "upstream harness --dumptests failed with status {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
     Ok(output)
 }
 
@@ -5637,17 +5637,30 @@ mod tests {
             runner_records_output: None,
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
-        let records = vec![RunnerRecord {
-            schema_version: "perl_core_harness.runner_record.v1".into(),
-            mode: "parse".into(),
-            path: "base/if.t".into(),
-            status: RunnerStatus::Pass,
-            assertions_passed: 1,
-            assertions_total: 1,
-            bucket: None,
-            first_diagnostic: None,
-            semantic_boundaries: Vec::new(),
-        }];
+        let records = vec![
+            RunnerRecord {
+                schema_version: "perl_core_harness.runner_record.v1".into(),
+                mode: "compile".into(),
+                path: "base/if.t".into(),
+                status: RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+                bucket: None,
+                first_diagnostic: None,
+                semantic_boundaries: Vec::new(),
+            },
+            RunnerRecord {
+                schema_version: "perl_core_harness.runner_record.v1".into(),
+                mode: "parse".into(),
+                path: "base/if.t".into(),
+                status: RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+                bucket: None,
+                first_diagnostic: None,
+                semantic_boundaries: Vec::new(),
+            },
+        ];
         let records_path = temp.path().join("nested").join("records").join("runner.jsonl");
         write_runner_records(&records_path, &records)?;
         assert_eq!(read_runner_records(&records_path)?, records);
