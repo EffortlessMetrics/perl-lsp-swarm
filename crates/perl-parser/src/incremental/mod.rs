@@ -91,6 +91,17 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
     Ok(total_changed)
 }
 
+fn unchanged_result(state: &IncrementalState) -> ReparseResult {
+    ReparseResult {
+        changed_ranges: Vec::new(),
+        parse_output: state.parse_output.clone(),
+        diagnostics: Vec::new(),
+        reparsed_bytes: 0,
+        reused_tokens: state.tokens.len(),
+        token_count: state.tokens.len(),
+    }
+}
+
 fn apply_text_edits(state: &mut IncrementalState, edits_descending: &[Edit]) -> Result<()> {
     for edit in edits_descending {
         apply_text_edit_to_state(state, edit)?;
@@ -112,6 +123,9 @@ fn full_reparse_after_edits(
 /// Apply edits incrementally.
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
     let total_changed = validate_edits(&state.source, edits)?;
+    if edits.is_empty() {
+        return Ok(unchanged_result(state));
+    }
 
     // Edits use coordinates from the same old source generation. Applying them
     // from the end preserves every earlier coordinate without offset adjustment.
