@@ -721,7 +721,7 @@ impl LspServer {
             // reach publish even if the earlier readiness sample was current.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             if workspace_index_tier_enabled
-                && !self.workspace_index_stale_for_document(uri)
+                && !self.workspace_index_stale_for_any_open_document()
                 && let Some(workspace_index) = self.workspace_index()
             {
                 let dead_code_diags = perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
