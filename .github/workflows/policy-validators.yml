@@ -17,6 +17,7 @@ on:
       - '.github/workflows/**'
       - 'scripts/ci/validate_risk_packs.py'
       - 'scripts/ci/validate_gate_lane_mapping.py'
+      - 'scripts/ci/validate_provider_fact_reads.py'
       # validate_gate_lane_mapping.py --strict also checks this doc's lane
       # enumeration against the mapping, so a docs-only edit must trigger the
       # workflow -- otherwise the drift check is not load-bearing on its own
@@ -26,6 +27,9 @@ on:
       - 'scripts/ci/check_bounded_result_overflow.py'
       - 'docs/agents/bounded-subagent-result-v1.schema.json'
       - 'docs/agents/bounded-subagent-result-v1.fixtures.json'
+      - 'docs/project/status/provider_fact_reads.md'
+      - 'xtask/src/tasks/update_status/provider_fact_reads.rs'
+      - 'xtask/src/tasks/update_status/mod.rs'
       - '.github/workflows/policy-validators.yml'
   workflow_dispatch: {}
 
@@ -85,6 +89,10 @@ jobs:
                   print(f"FAIL: {p}: {e}")
           sys.exit(1 if failed else 0)
           EOF
+
+      - name: Validate provider fact-read inventory
+        run: |
+          python3 scripts/ci/validate_provider_fact_reads.py
 
       - name: Validate bounded-result overflow invariants
         run: |
