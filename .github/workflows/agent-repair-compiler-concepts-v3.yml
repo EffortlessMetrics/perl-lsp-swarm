@@ -38,14 +38,14 @@ jobs:
         run: python3 -m json.tool schemas/perl_compiler_concepts.v1.schema.json >/dev/null
 
       - name: Format candidate
-        run: cargo fmt -p xtask --bin compiler-concepts
+        run: rustfmt --edition 2024 xtask/src/bin/compiler-concepts.rs
 
       - name: Regenerate status
         run: cargo run -p xtask --bin compiler-concepts -- --write-status
 
       - name: Verify candidate
         run: |
-          cargo fmt -p xtask --bin compiler-concepts -- --check
+          rustfmt --edition 2024 --check xtask/src/bin/compiler-concepts.rs
           cargo test -p xtask --bin compiler-concepts
           cargo clippy -p xtask --bin compiler-concepts -- -D warnings
           cargo run -p xtask --bin compiler-concepts -- --check
