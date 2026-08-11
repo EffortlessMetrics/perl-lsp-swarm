@@ -325,6 +325,16 @@ impl TargetTopologyDrift {
             validate_nonempty(path, "observed topology source path")?;
             validate_git_sha(digest, "observed topology source blob SHA")?;
         }
+        let pinned_source_paths = pinned.topology_sources.keys().collect::<BTreeSet<_>>();
+        let observed_source_paths = self
+            .observed_topology_sources
+            .keys()
+            .collect::<BTreeSet<_>>();
+        if observed_source_paths != pinned_source_paths {
+            return Err(format!(
+                "topology drift source set differs from pinned authorities: expected {pinned_source_paths:?}, observed {observed_source_paths:?}"
+            ));
+        }
         validate_nonempty(&self.claim_boundary, "topology drift claim boundary")?;
         validate_sorted_unique_strings(&self.added_target_ids, "added target ID")?;
         validate_sorted_unique_strings(&self.removed_target_ids, "removed target ID")?;
