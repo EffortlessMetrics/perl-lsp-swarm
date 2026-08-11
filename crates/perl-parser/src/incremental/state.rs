@@ -6,6 +6,18 @@ use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::error::ParseOutput;
 use perl_parser_core::parser::Parser;
 use ropey::Rope;
+use std::ops::Deref;
+
+/// Read-only compatibility view for legacy field-style source access.
+///
+/// `IncrementalState` intentionally implements `Deref` but not `DerefMut` for
+/// this view. Existing consumers may continue to read `state.source`, while
+/// source replacement remains private to the committed-generation machinery.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct IncrementalStateReadView {
+    pub source: String,
+}
 
 /// One internally consistent incremental parser generation.
 ///
@@ -13,6 +25,25 @@ use ropey::Rope;
 /// mutate source, tokens, checkpoints, AST, or parser output independently.
 /// Use [`IncrementalState::new`], read-only accessors, and [`super::apply_edits`]
 /// to move between committed generations.
+///
+/// Legacy field-style source reads remain available through an immutable
+/// compatibility view:
+///
+/// ```
+/// use perl_parser::incremental::IncrementalState;
+///
+/// let state = IncrementalState::new("my $x = 1;".to_string());
+/// assert_eq!(state.source.len(), state.source().len());
+/// ```
+///
+/// The view does not grant mutation authority:
+///
+/// ```compile_fail
+/// use perl_parser::incremental::IncrementalState;
+///
+/// let mut state = IncrementalState::new("my $x = 1;".to_string());
+/// state.source.push_str("\n");
+/// ```
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct IncrementalState {
@@ -26,7 +57,15 @@ pub struct IncrementalState {
     #[deprecated(note = "Use parse_output(); this compatibility mirror will be removed.")]
     pub(super) ast: Node,
     pub(super) tokens: Vec<Token>,
-    pub(super) source: String,
+    pub(super) read_view: IncrementalStateReadView,
+}
+
+impl Deref for IncrementalState {
+    type Target = IncrementalStateReadView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read_view
+    }
 }
 
 impl IncrementalState {
@@ -57,14 +96,14 @@ impl IncrementalState {
             parse_output,
             ast,
             tokens,
-            source,
+            read_view: IncrementalStateReadView { source },
         }
     }
 
     /// Current committed source text.
     #[must_use]
     pub fn source(&self) -> &str {
-        &self.source
+        &self.read_view.source
     }
 
     /// Rope view for the current committed source.
@@ -122,13 +161,24 @@ impl IncrementalState {
         self.parse_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
     }
 
+    /// Replace the text-bearing portion of a staged generation.
+    ///
+    /// This remains crate-private so source, rope, and line-index identity cannot
+    /// be changed independently by consumers. Callers finish rebuilding tokens,
+    /// checkpoints, and parser output before publishing the staged state.
+    pub(super) fn replace_source_text(&mut self, source: String) {
+        self.rope = Rope::from_str(&source);
+        self.line_index = LineIndex::new(&source);
+        self.read_view.source = source;
+    }
+
     /// Refresh the authoritative parser output from the current source.
     ///
     /// The compatibility AST and parse checkpoints are updated from the same
     /// recovered parse so the state cannot expose mixed parse generations.
     #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
     pub(crate) fn refresh_parse_output(&mut self) {
-        let mut parser = Parser::new(&self.source);
+        let mut parser = Parser::new(self.source());
         let parse_output = parser.parse_with_recovery();
         self.parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
         self.ast = parse_output.ast.clone();
