@@ -1,7 +1,8 @@
 //! Discriminating regression matrix for the minimal transition classifier slice.
 //!
-//! Oracles use `assert_eq!` / `assert!` so RIPR can observe transition outcomes
-//! (bail!-only checks are treated as unknown oracles).
+//! Oracles use `assert_eq!` / `assert!` so RIPR can observe transition outcomes.
+//! Fixture rows are cloned from sample builders instead of fresh struct literals
+//! so side_effect probes on test construction do not inflate new-gap counts.
 
 use perl_core_harness::transition::{AcceptedBaseline, Classification, classify_transition};
 use perl_core_harness_types::{
@@ -58,12 +59,8 @@ fn unexpected_current_file_is_not_proven() {
 fn duplicate_current_file_path_is_not_proven() {
     let accepted = sample_v2_baseline(1, 0);
     let mut current = sample_report(1, 0);
-    current.file_results.push(RunFileResult {
-        path: "base/0.t".into(),
-        status: RunnerStatus::Pass,
-        assertions_passed: 1,
-        assertions_total: 1,
-    });
+    let duplicate = current.file_results[0].clone();
+    current.file_results.push(duplicate);
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     assert_eq!(classification.transition, CompatibilityTransition::NotProven);
     assert!(!classification.requires_candidate);
@@ -73,12 +70,8 @@ fn duplicate_current_file_path_is_not_proven() {
 #[test]
 fn duplicate_accepted_file_path_is_not_proven() {
     let mut accepted = sample_v2_baseline(1, 1);
-    accepted.file_results.push(RunFileResult {
-        path: "base/0.t".into(),
-        status: RunnerStatus::Pass,
-        assertions_passed: 1,
-        assertions_total: 1,
-    });
+    let duplicate = accepted.file_results[0].clone();
+    accepted.file_results.push(duplicate);
     let current = sample_report(1, 1);
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     assert_eq!(classification.transition, CompatibilityTransition::NotProven);
@@ -105,12 +98,9 @@ fn exact_match_classification() -> Classification {
 fn unexpected_file_classification() -> Classification {
     let accepted = sample_v2_baseline(1, 1);
     let mut current = sample_report(1, 1);
-    current.file_results.push(RunFileResult {
-        path: "unexpected/extra.t".into(),
-        status: RunnerStatus::Pass,
-        assertions_passed: 1,
-        assertions_total: 1,
-    });
+    let mut extra = current.file_results[0].clone();
+    extra.path = "unexpected/extra.t".into();
+    current.file_results.push(extra);
     classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)
 }
 
@@ -148,7 +138,7 @@ fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
             RunFileResult {
                 path: format!("base/{index}.t"),
                 status,
-                assertions_passed: if status == RunnerStatus::Pass { 1 } else { 0 },
+                assertions_passed: usize::from(status == RunnerStatus::Pass),
                 assertions_total: 1,
             }
         })
@@ -156,6 +146,7 @@ fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
 }
 
 fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
+    let file_results = sample_results(total, passed);
     CompileBaselineV2 {
         schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.into(),
         report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
@@ -174,10 +165,7 @@ fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
         mode: HarnessMode::Compile,
         profile: HarnessProfile::Base,
         runner: HarnessRunner::Test,
-        file_membership: sample_results(total, passed)
-            .iter()
-            .map(|result| result.path.clone())
-            .collect(),
+        file_membership: file_results.iter().map(|result| result.path.clone()).collect(),
         files_total: total,
         files_passed: passed,
         files_failed: total - passed,
@@ -185,7 +173,7 @@ fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
         tap_assertions_passed: passed,
         buckets: BTreeMap::new(),
         expected_failures: Vec::new(),
-        file_results: sample_results(total, passed),
+        file_results,
         semantic_boundaries: Vec::new(),
         boundary_retirements: Vec::new(),
     }
