@@ -2091,8 +2091,7 @@
           "operator": "//",
           "parent_operator": null
         }
-      ]
-,
+      ],
       "forbidden_nodes": [
         {
           "id": "slash_ambiguity_match_no_division_binary",
@@ -3339,8 +3338,7 @@
           "operator": null,
           "parent_operator": null
         }
-      ]
-,
+      ],
       "forbidden_nodes": [
         {
           "id": "quote_like_no_block_at_q",
