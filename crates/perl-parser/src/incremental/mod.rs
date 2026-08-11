@@ -11,8 +11,6 @@ mod state;
 mod strategy;
 
 use anyhow::Result;
-use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
-use perl_parser_core::parser::Parser;
 
 pub use perl_line_index::LineIndex;
 
@@ -34,7 +32,7 @@ pub mod incremental_integration;
 pub mod incremental_simple;
 pub mod incremental_v2;
 
-/// Apply edits incrementally
+/// Apply edits incrementally.
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
     let mut sorted_edits = edits.to_vec();
     sorted_edits.sort_by_key(|e| e.start_byte);
@@ -60,14 +58,14 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         };
         let reparsed_bytes = reparse.range.end - reparse.range.start;
 
-        // Re-parse the AST from the updated source so that state.ast reflects
-        // the edit (#5036). apply_single_edit only re-lexes tokens; without
-        // this write-back, any consumer reading state.ast after apply_edits
-        // gets the pre-edit tree.
-        reparse_ast(state);
+        // The token fast path does not define a second parser-output contract.
+        // Refresh from the same recovery-aware parser entry point used by a
+        // fresh parse, then return that exact current-generation output.
+        state.refresh_parse_output();
 
         Ok(ReparseResult {
             changed_ranges: vec![reparse.range],
+            parse_output: state.parse_output.clone(),
             diagnostics: vec![],
             reparsed_bytes,
             reused_tokens: reparse.reused_tokens,
@@ -81,33 +79,6 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         }
         full_reparse(state)
     }
-}
-
-/// Re-parse the AST from the current source text without re-lexing.
-///
-/// This is the AST write-back that `apply_single_edit` was missing (#5036).
-/// After `apply_single_edit` updates `state.source` and `state.tokens`, this
-/// function re-parses the full source to produce a fresh AST, so consumers
-/// reading `state.ast` after `apply_edits` get the post-edit tree.
-#[expect(
-    deprecated,
-    reason = "AST write-back is the legacy field's supported refresh boundary (#5036)"
-)]
-fn reparse_ast(state: &mut IncrementalState) {
-    let mut parser = Parser::new(&state.source);
-    state.ast = match parser.parse() {
-        Ok(ast) => ast,
-        Err(e) => Node::new(
-            NodeKind::Error {
-                message: e.to_string(),
-                expected: vec![],
-                found: None,
-                partial: None,
-            },
-            SourceLocation { start: 0, end: state.source.len() },
-        ),
-    };
-    state.parse_checkpoints = IncrementalState::create_parse_checkpoints(&state.ast);
 }
 
 #[cfg(test)]
