@@ -39,6 +39,19 @@ use std::fmt;
 /// be regenerated before comparison.
 pub const HIR_SCHEMA_VERSION: &str = "hir.v1";
 
+/// Wire-schema discriminator for portable source digests and path-relative fixture IDs.
+pub const SNAPSHOT_SCHEMA: &str = "semantic_snapshot.v2";
+
+/// KPI discriminator for the semantic snapshot stability rail.
+pub const SNAPSHOT_KPI: &str = "semantic_snapshot_stability_rate";
+
+/// Canonical claim boundary accepted by generation and check mode.
+pub const SNAPSHOT_CLAIM_BOUNDARY: &str = concat!(
+    "Snapshot proves deterministic HIR stability only. ",
+    "This is NOT curated-gold correctness. ",
+    "Curated gold (independent human labeling) is a separate, future schema.",
+);
+
 /// Stable source-digest algorithm recorded by snapshot manifests.
 pub const SOURCE_HASH_ALGORITHM: &str = "fnv1a-128.v1";
 
@@ -158,11 +171,11 @@ impl std::error::Error for SnapshotSetError {}
 /// mode, and read in check mode to detect HIR drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotManifest {
-    /// Schema discriminator — always `"semantic_snapshot.v1"`.
+    /// Schema discriminator — always [`SNAPSHOT_SCHEMA`].
     pub schema: String,
     /// KPI name for this stability rail.
     ///
-    /// Always `"semantic_snapshot_stability_rate"`. NOT `"semantic_gold_pass_rate"`.
+    /// Always [`SNAPSHOT_KPI`]. NOT `"semantic_gold_pass_rate"`.
     pub kpi: String,
     /// Claim boundary: this proves stability, not correctness.
     pub claim_boundary: String,
@@ -180,14 +193,9 @@ impl SnapshotManifest {
     /// Create a new manifest with the correct schema discriminators.
     pub fn new(generated_on: String) -> Self {
         Self {
-            schema: "semantic_snapshot.v1".to_string(),
-            kpi: "semantic_snapshot_stability_rate".to_string(),
-            claim_boundary: concat!(
-                "Snapshot proves deterministic HIR stability only. ",
-                "This is NOT curated-gold correctness. ",
-                "Curated gold (independent human labeling) is a separate, future schema.",
-            )
-            .to_string(),
+            schema: SNAPSHOT_SCHEMA.to_string(),
+            kpi: SNAPSHOT_KPI.to_string(),
+            claim_boundary: SNAPSHOT_CLAIM_BOUNDARY.to_string(),
             hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
             source_hash_algorithm: SOURCE_HASH_ALGORITHM.to_string(),
             generated_on,
@@ -340,18 +348,11 @@ mod tests {
     #[test]
     fn manifest_schema_discriminators() {
         let manifest = SnapshotManifest::new("2026-06-21".to_string());
-        assert_eq!(manifest.schema, "semantic_snapshot.v1");
-        assert_eq!(manifest.kpi, "semantic_snapshot_stability_rate");
+        assert_eq!(manifest.schema, SNAPSHOT_SCHEMA);
+        assert_eq!(manifest.kpi, SNAPSHOT_KPI);
+        assert_eq!(manifest.claim_boundary, SNAPSHOT_CLAIM_BOUNDARY);
         assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
         assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);
-        assert!(
-            manifest.claim_boundary.contains("stability"),
-            "claim boundary must mention stability"
-        );
-        assert!(
-            manifest.claim_boundary.contains("NOT"),
-            "claim boundary must disclaim gold/correctness"
-        );
     }
 
     #[test]
