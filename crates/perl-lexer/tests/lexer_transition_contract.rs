@@ -1,9 +1,9 @@
 //! Public transition and invariant contract for the mode-aware lexer.
 //!
 //! The lexer has a richer state machine than `ExpectTerm`/`ExpectOperator`, but
-//! callers observe that state through token classification, source geometry,
-//! checkpoint replay, recovery, and terminal behavior. These tests lock those
-//! observable transitions without exposing private implementation fields.
+//! callers observe that state through token identity, source geometry, peek/reset
+//! behavior, checkpoint replay, recovery, and terminal behavior. These tests pin
+//! those public transitions without exposing private fields.
 
 use std::sync::Arc;
 
@@ -46,8 +46,15 @@ fn collect(input: &str) -> Vec<TokenView> {
     collect_remaining(&mut PerlLexer::new(input))
 }
 
-fn missing(message: &'static str) -> Box<dyn std::error::Error> {
-    std::io::Error::other(message).into()
+fn missing(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    std::io::Error::other(message.into()).into()
+}
+
+fn token_with_text<'a>(tokens: &'a [TokenView], text: &str) -> R<&'a TokenView> {
+    tokens
+        .iter()
+        .find(|token| token.text.as_ref() == text)
+        .ok_or_else(|| missing(format!("missing token text {text:?}")))
 }
 
 #[test]
@@ -68,8 +75,7 @@ fn eof_is_emitted_once_and_every_ordinary_token_advances() {
 
         if matches!(&token.token_type, TokenType::EOF) {
             eof_count += 1;
-            assert_eq!(token.start, input.len());
-            assert_eq!(token.end, input.len());
+            assert_eq!((token.start, token.end), (input.len(), input.len()));
         } else {
             assert!(token.end > token.start, "non-EOF token made no progress: {token:?}");
             previous_end = token.end;
@@ -81,36 +87,65 @@ fn eof_is_emitted_once_and_every_ordinary_token_advances() {
 }
 
 #[test]
-fn slash_transition_distinguishes_division_regex_and_defined_or() {
+fn slash_transition_distinguishes_division_regex_and_defined_or() -> R {
     let division = collect("my $x = 10 / 2;");
-    assert!(division.iter().any(|token| matches!(&token.token_type, TokenType::Division)));
+    let division_token = token_with_text(&division, "/")?;
+    assert!(matches!(&division_token.token_type, TokenType::Division));
+    assert_eq!((division_token.start, division_token.end), (11, 12));
     assert!(!division.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
 
     let regex = collect("/answer/;");
-    assert!(regex.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
+    let regex_token = token_with_text(&regex, "/answer/")?;
+    assert!(matches!(&regex_token.token_type, TokenType::RegexMatch));
+    assert_eq!((regex_token.start, regex_token.end), (0, 8));
     assert!(!regex.iter().any(|token| matches!(&token.token_type, TokenType::Division)));
 
     let defined_or = collect("$left // $right;");
-    assert!(defined_or.iter().any(|token| token.text.as_ref() == "//"));
-    assert!(!defined_or.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
+    let defined_or_token = token_with_text(&defined_or, "//")?;
+    assert!(
+        matches!(&defined_or_token.token_type, TokenType::Operator(operator) if operator.as_ref() == "//")
+    );
+    assert_eq!((defined_or_token.start, defined_or_token.end), (6, 8));
+    assert!(!defined_or_token.token_type.is_recovery_token());
+    assert!(!defined_or.iter().any(|token| {
+        matches!(&token.token_type, TokenType::Division | TokenType::RegexMatch)
+    }));
+    Ok(())
 }
 
 #[test]
-fn quote_looking_hash_keys_and_method_names_do_not_leak_operator_state() {
-    let hash_key = collect("$h{s} + $h{tr} + $h{m};");
-    assert!(hash_key.iter().any(|token| token.text.as_ref() == "s"));
-    assert!(!hash_key.iter().any(|token| {
+fn quote_looking_hash_keys_and_method_names_have_exact_non_operator_identity() -> R {
+    let hash_source = "$h{s} + $h{tr} + $h{m};";
+    let hash_tokens = collect(hash_source);
+    for name in ["s", "tr", "m"] {
+        let token = token_with_text(&hash_tokens, name)?;
+        assert!(
+            matches!(&token.token_type, TokenType::Keyword(keyword) if keyword.as_ref() == name),
+            "hash key {name:?} had unexpected type {:?}",
+            token.token_type
+        );
+        assert_eq!(hash_source.get(token.start..token.end), Some(name));
+    }
+    assert!(!hash_tokens.iter().any(|token| {
         matches!(
             &token.token_type,
             TokenType::Substitution | TokenType::Transliteration | TokenType::RegexMatch
         )
     }));
 
-    let method = collect("$obj->m('arg'); $obj->s('arg');");
-    assert!(method.iter().any(|token| token.text.as_ref() == "->"));
-    assert!(method.iter().any(|token| token.text.as_ref() == "m"));
-    assert!(method.iter().any(|token| token.text.as_ref() == "s"));
-    assert!(!method.iter().any(|token| {
+    let method_source = "$obj->m('arg'); $obj->s('arg');";
+    let method_tokens = collect(method_source);
+    for name in ["m", "s"] {
+        let token = token_with_text(&method_tokens, name)?;
+        assert!(
+            matches!(&token.token_type, TokenType::Keyword(keyword) if keyword.as_ref() == name),
+            "method name {name:?} had unexpected type {:?}",
+            token.token_type
+        );
+        assert_eq!(method_source.get(token.start..token.end), Some(name));
+    }
+    assert_eq!(method_tokens.iter().filter(|token| token.text.as_ref() == "->").count(), 2);
+    assert!(!method_tokens.iter().any(|token| {
         matches!(
             &token.token_type,
             TokenType::Substitution | TokenType::Transliteration | TokenType::RegexMatch
@@ -118,22 +153,38 @@ fn quote_looking_hash_keys_and_method_names_do_not_leak_operator_state() {
     }));
 
     let operators = collect("m/pat/; s/a/b/; tr/a-z/A-Z/;");
-    assert!(operators.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
-    assert!(operators.iter().any(|token| matches!(&token.token_type, TokenType::Substitution)));
-    assert!(operators.iter().any(|token| matches!(&token.token_type, TokenType::Transliteration)));
+    assert!(matches!(
+        &token_with_text(&operators, "m/pat/")?.token_type,
+        TokenType::RegexMatch
+    ));
+    assert!(matches!(
+        &token_with_text(&operators, "s/a/b/")?.token_type,
+        TokenType::Substitution
+    ));
+    assert!(matches!(
+        &token_with_text(&operators, "tr/a-z/A-Z/")?.token_type,
+        TokenType::Transliteration
+    ));
+    Ok(())
 }
 
 #[test]
-fn quote_operator_and_fat_arrow_take_opposite_transitions() {
+fn quote_operator_and_fat_arrow_take_opposite_transitions() -> R {
     let quote = collect("q{value};");
-    assert!(quote.iter().any(|token| matches!(&token.token_type, TokenType::QuoteSingle)));
+    let quote_token = token_with_text(&quote, "q{value}")?;
+    assert!(matches!(&quote_token.token_type, TokenType::QuoteSingle));
+    assert_eq!((quote_token.start, quote_token.end), (0, 8));
 
     let fat_arrow = collect("q => 1;");
-    assert!(fat_arrow.iter().any(|token| {
-        matches!(&token.token_type, TokenType::Identifier(name) if name.as_ref() == "q")
-    }));
-    assert!(fat_arrow.iter().any(|token| matches!(&token.token_type, TokenType::FatComma)));
+    let q = token_with_text(&fat_arrow, "q")?;
+    assert!(matches!(&q.token_type, TokenType::Identifier(name) if name.as_ref() == "q"));
+    let arrow = token_with_text(&fat_arrow, "=>")?;
+    assert!(
+        matches!(&arrow.token_type, TokenType::Operator(operator) if operator.as_ref() == "=>")
+    );
+    assert_eq!((arrow.start, arrow.end), (2, 4));
     assert!(!fat_arrow.iter().any(|token| matches!(&token.token_type, TokenType::QuoteSingle)));
+    Ok(())
 }
 
 #[test]
@@ -158,13 +209,15 @@ fn heredoc_body_event_precedes_the_resumed_statement() -> R {
     assert!(start_index < body_index);
     assert!(body_index < resumed_index);
     let body = &tokens[body_index];
+    assert!(body.text.is_empty());
     assert_eq!(input.get(body.start..body.end), Some("body\n"));
+    assert!(!tokens.iter().any(|token| token.token_type.is_recovery_token()));
     assert!(matches!(tokens.last().map(|token| &token.token_type), Some(TokenType::EOF)));
     Ok(())
 }
 
 #[test]
-fn data_section_is_terminal_code_state_with_a_separate_body() -> R {
+fn data_section_is_terminal_code_state_with_one_body_and_one_eof() -> R {
     let input = "my $x = 1;\n__DATA__\nsub not_code { 1 }\n";
     let tokens = collect(input);
 
@@ -179,9 +232,27 @@ fn data_section_is_terminal_code_state_with_a_separate_body() -> R {
 
     assert!(marker_index < body_index);
     assert_eq!(tokens[body_index].text.as_ref(), "sub not_code { 1 }\n");
-    assert!(tokens[body_index + 1..]
+    assert_eq!(tokens.len(), body_index + 2);
+    assert!(matches!(&tokens[body_index + 1].token_type, TokenType::EOF));
+    assert!(!tokens[body_index + 1..]
         .iter()
-        .all(|token| matches!(&token.token_type, TokenType::EOF)));
+        .any(|token| token.text.as_ref() == "sub" || token.text.as_ref() == "not_code"));
+    Ok(())
+}
+
+#[test]
+fn peek_and_reset_preserve_the_exact_public_stream() -> R {
+    let input = "$obj->m('arg'); q{value};";
+    let expected = collect(input);
+    let mut lexer = PerlLexer::new(input);
+
+    let peeked = lexer.peek_token().ok_or_else(|| missing("missing peeked token"))?;
+    let next = lexer.next_token().ok_or_else(|| missing("missing token after peek"))?;
+    assert_eq!(TokenView::from(peeked), TokenView::from(next));
+
+    let _ = lexer.next_token();
+    lexer.reset();
+    assert_eq!(collect_remaining(&mut lexer), expected);
     Ok(())
 }
 
@@ -208,7 +279,8 @@ fn checkpoint_after_arrow_replays_the_exact_method_suffix() -> R {
     let restored_suffix = collect_remaining(&mut lexer);
 
     assert_eq!(first_suffix, restored_suffix);
-    assert!(restored_suffix.iter().any(|token| token.text.as_ref() == "m"));
+    let method = token_with_text(&restored_suffix, "m")?;
+    assert!(matches!(&method.token_type, TokenType::Keyword(name) if name.as_ref() == "m"));
     assert!(!restored_suffix.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
     Ok(())
 }
