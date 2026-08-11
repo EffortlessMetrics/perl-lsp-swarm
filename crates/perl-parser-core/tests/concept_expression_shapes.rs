@@ -49,32 +49,76 @@ fn multiplication_binds_inside_addition() -> Result<(), String> {
 
 #[test]
 fn assignment_and_ternary_remain_right_associative() -> Result<(), String> {
-    let ast = parse_clean("$a = $b = $c; $a ? $b : $c ? $d : $e;")?;
-    let mut right_nested_assignment = false;
-    let mut left_nested_assignment = false;
-    let mut right_nested_ternary = false;
-    let mut condition_nested_ternary = false;
+    let source = "$a = $b = $c; $a ? $b : $c ? $d : $e;";
+    let ast = parse_clean(source)?;
+    let mut assignment_shape = None;
+    let mut ternary_shape = None;
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Assignment { op, lhs, rhs }
-            if op == "=" && matches!(&rhs.kind, NodeKind::Assignment { op, .. } if op == "=") =>
-        {
-            right_nested_assignment = true;
-            left_nested_assignment = matches!(&lhs.kind, NodeKind::Assignment { .. });
+        NodeKind::Assignment { op, lhs, rhs } if op == "=" => {
+            if let NodeKind::Assignment { op: nested_op, lhs: nested_lhs, rhs: nested_rhs } =
+                &rhs.kind
+                && nested_op == "="
+            {
+                assignment_shape = Some((
+                    source_text(source, node),
+                    source_text(source, lhs),
+                    source_text(source, nested_lhs),
+                    source_text(source, nested_rhs),
+                    matches!(&lhs.kind, NodeKind::Assignment { .. }),
+                ));
+            }
         }
-        NodeKind::Ternary { condition, else_expr, .. }
-            if matches!(&else_expr.kind, NodeKind::Ternary { .. }) =>
+        NodeKind::Ternary { condition, then_expr, else_expr }
+            if source_text(source, node).as_deref() == Some("$a ? $b : $c ? $d : $e") =>
         {
-            right_nested_ternary = true;
-            condition_nested_ternary = matches!(&condition.kind, NodeKind::Ternary { .. });
+            if let NodeKind::Ternary {
+                condition: nested_condition,
+                then_expr: nested_then,
+                else_expr: nested_else,
+            } = &else_expr.kind
+            {
+                ternary_shape = Some((
+                    source_text(source, condition),
+                    source_text(source, then_expr),
+                    source_text(source, else_expr),
+                    source_text(source, nested_condition),
+                    source_text(source, nested_then),
+                    source_text(source, nested_else),
+                    matches!(&condition.kind, NodeKind::Ternary { .. }),
+                    matches!(&then_expr.kind, NodeKind::Ternary { .. }),
+                ));
+            }
         }
         _ => {}
     });
 
-    assert!(right_nested_assignment, "assignment must nest on the right");
-    assert!(!left_nested_assignment, "assignment must not fabricate left nesting");
-    assert!(right_nested_ternary, "chained ternary must nest in the else branch");
-    assert!(!condition_nested_ternary, "chained ternary must not nest in the condition branch");
+    let (assignment, outer_lhs, inner_lhs, inner_rhs, lhs_nested) = assignment_shape
+        .ok_or_else(|| "assignment chain did not retain right nesting".to_string())?;
+    assert_eq!(assignment.as_deref(), Some("$a = $b = $c"));
+    assert_eq!(outer_lhs.as_deref(), Some("$a"));
+    assert_eq!(inner_lhs.as_deref(), Some("$b"));
+    assert_eq!(inner_rhs.as_deref(), Some("$c"));
+    assert!(!lhs_nested, "assignment must not fabricate left nesting");
+
+    let (
+        outer_condition,
+        outer_then,
+        outer_else,
+        inner_condition,
+        inner_then,
+        inner_else,
+        condition_nested,
+        then_nested,
+    ) = ternary_shape.ok_or_else(|| "ternary chain did not retain right nesting".to_string())?;
+    assert_eq!(outer_condition.as_deref(), Some("$a"));
+    assert_eq!(outer_then.as_deref(), Some("$b"));
+    assert_eq!(outer_else.as_deref(), Some("$c ? $d : $e"));
+    assert_eq!(inner_condition.as_deref(), Some("$c"));
+    assert_eq!(inner_then.as_deref(), Some("$d"));
+    assert_eq!(inner_else.as_deref(), Some("$e"));
+    assert!(!condition_nested, "ternary must not nest in the condition branch");
+    assert!(!then_nested, "ternary must not nest in the then branch");
     Ok(())
 }
 
