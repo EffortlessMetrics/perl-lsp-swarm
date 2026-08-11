@@ -1,6 +1,37 @@
-import { presentWorkspaceExperience, projectWorkspaceLifecycle } from '../workspaceExperienceState';
+import {
+  presentIndexReadinessReason,
+  presentWorkspaceExperience,
+  projectWorkspaceLifecycle,
+} from '../workspaceExperienceState';
 
 describe('workspace experience presentation', () => {
+  test.each([
+    ['ParseStorm { pending_parses: 4 }', 'Frequent changes limited workspace coverage'],
+    ['IoError { message: \"permission denied\" }', 'Some workspace files could not be read'],
+    ['ScanTimeout { elapsed_ms: 30000 }', 'Workspace indexing reached its time budget'],
+    ['ResourceLimit { kind: MaxFiles }', 'Workspace file limit reached'],
+    ['ResourceLimit { kind: MaxSymbols }', 'Workspace symbol limit reached'],
+    ['ResourceLimit { kind: MaxCacheBytes }', 'Workspace cache limit reached'],
+    ['Cancelled', 'Workspace indexing was cancelled'],
+  ])('maps known readiness reason %s to bounded text', (reason, expected) => {
+    expect(presentIndexReadinessReason(reason)).toBe(expected);
+  });
+
+  test('maps unknown readiness reasons to a generic bounded label', () => {
+    expect(presentIndexReadinessReason('FutureReason { private: \"value\" }')).toBe(
+      'Limited workspace coverage',
+    );
+  });
+
+  test('does not classify known tokens nested inside unknown reasons', () => {
+    expect(presentIndexReadinessReason('FutureReason { detail: MaxFiles, note: ParseStorm }')).toBe(
+      'Limited workspace coverage',
+    );
+    expect(presentIndexReadinessReason('IoError { message: \"ParseStorm\" }')).toBe(
+      'Some workspace files could not be read',
+    );
+  });
+
   test('preserves environment resolution as a distinct user-facing state', () => {
     expect(projectWorkspaceLifecycle('resolving')).toBe('resolving_environment');
     expect(projectWorkspaceLifecycle('starting')).toBe('starting');
