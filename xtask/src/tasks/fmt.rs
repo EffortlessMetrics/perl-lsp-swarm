@@ -18,6 +18,20 @@ struct CargoPackage {
     id: String,
     name: String,
     manifest_path: String,
+    edition: String,
+}
+
+/// One workspace member, reduced to what staged formatting needs.
+///
+/// `dir` is repository-relative so it can be prefix-matched against
+/// `git diff --name-only` output. `edition` is carried because `rustfmt`
+/// defaults to edition 2015 when invoked directly, which is *not* what
+/// `cargo fmt` does — see [`run_staged`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspacePackage {
+    pub(crate) name: String,
+    pub(crate) dir: String,
+    pub(crate) edition: String,
 }
 
 /// One crate's failure record collected during the per-crate iteration.
@@ -97,12 +111,14 @@ fn git_lines(args: &[&str]) -> Result<Vec<String>> {
 /// manifest today, so that case is latent rather than live — but a helper that
 /// silently attributed root-package files to no package would skip formatting
 /// them, which is the failure this whole task exists to prevent.
-pub(crate) fn owning_package<'a>(path: &str, packages: &'a [(String, String)]) -> Option<&'a str> {
+pub(crate) fn owning_package<'a>(
+    path: &str,
+    packages: &'a [WorkspacePackage],
+) -> Option<&'a WorkspacePackage> {
     packages
         .iter()
-        .filter(|(_, dir)| dir.is_empty() || path.starts_with(&format!("{dir}/")))
-        .max_by_key(|(_, dir)| dir.len())
-        .map(|(name, _)| name.as_str())
+        .filter(|package| package.dir.is_empty() || path.starts_with(&format!("{}/", package.dir)))
+        .max_by_key(|package| package.dir.len())
 }
 
 /// Formats the staged Rust diff and re-stages it.
@@ -113,19 +129,29 @@ pub(crate) fn owning_package<'a>(path: &str, packages: &'a [(String, String)]) -
 /// narrows that to the packages actually being committed, which is what makes
 /// it cheap enough to run from the pre-commit hook on every commit.
 ///
-/// Formatting goes through `cargo fmt -p <package>` — the same command the
-/// `fmt` gate runs — rather than invoking `rustfmt` on individual files.
-/// Measured, not assumed: bare `rustfmt` on 40 already-gate-clean files in this
-/// workspace rewrote 9 of them, and `cargo fmt --check` accepted the file both
-/// before and after. Those edits are changes the gate does not require, so
-/// per-file `rustfmt` would quietly enlarge every commit's diff with unrelated
-/// reflowing. Delegating guarantees this produces exactly what the gate wants
-/// and nothing more.
+/// Formatting invokes `rustfmt` on exactly the staged files, never
+/// `cargo fmt -p <package>`. That distinction is a safety property, not a
+/// performance one: `cargo fmt -p` formats every file in the package against
+/// the live worktree, so a staged file with an unstaged sibling in the same
+/// package would silently rewrite that sibling's uncommitted work. Re-staging
+/// only the staged paths keeps the *commit* narrow but cannot undo the
+/// worktree mutation, so the package-wide call is not usable here at all.
 ///
-/// The cost of that choice is package granularity: other files in the same
-/// package may be reformatted in the worktree. Only staged files are re-staged,
-/// so the commit itself stays narrow, and any other file it touches was already
-/// failing the gate.
+/// The reason to reach for `cargo fmt` in the first place was that bare
+/// `rustfmt` disagreed with it: on 40 already-gate-clean files, bare `rustfmt`
+/// rewrote 9. That disagreement was entirely the **edition**. `rustfmt`
+/// invoked directly defaults to edition 2015; `cargo fmt` passes each
+/// package's actual edition. Re-measured over 80 gate-clean files:
+///
+/// | invocation | files rewritten |
+/// | --- | --- |
+/// | `rustfmt --check` (defaults to 2015) | 29 / 80 |
+/// | `rustfmt --edition 2024 --check` | **0 / 80** |
+///
+/// So each file is formatted with its owning package's declared edition, which
+/// reproduces `cargo fmt`'s output while touching nothing but the staged paths.
+/// `rustfmt` discovers `rustfmt.toml` by walking up from each file, so the
+/// workspace style config applies unchanged.
 ///
 /// Only fully staged files are re-staged — see [`StagedFormatAction`].
 pub fn run_staged() -> Result<()> {
@@ -156,27 +182,54 @@ pub fn run_staged() -> Result<()> {
 
     if !to_format.is_empty() {
         let metadata = load_workspace_metadata()?;
-        let package_dirs = workspace_package_dirs(&metadata);
-        let mut packages: Vec<String> = to_format
-            .iter()
-            .filter_map(|path| owning_package(path, &package_dirs).map(ToString::to_string))
-            .collect();
-        packages.sort();
-        packages.dedup();
+        let packages = workspace_packages(&metadata);
 
-        if packages.is_empty() {
+        // Group by edition so one `rustfmt` process covers every staged file
+        // sharing an edition. This runs on every commit, and a process per file
+        // is a noticeable cost on Windows in particular. Files whose owning
+        // package cannot be determined get no edition and are left to the gate
+        // rather than formatted under a guessed one.
+        let mut by_edition: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut unowned: Vec<&str> = Vec::new();
+        for path in &to_format {
+            match owning_package(path, &packages) {
+                Some(package) => {
+                    by_edition.entry(package.edition.as_str()).or_default().push(path.as_str());
+                }
+                None => unowned.push(path.as_str()),
+            }
+        }
+
+        let mut formatted: Vec<&str> = Vec::new();
+        let mut editions: Vec<&&str> = by_edition.keys().collect();
+        editions.sort_unstable();
+        for edition in editions {
+            let files = &by_edition[*edition];
+            let mut args = vec!["--edition", edition];
+            args.extend(files.iter().copied());
+            cmd("rustfmt", &args).run().with_context(|| {
+                format!("rustfmt failed on staged edition-{edition} file(s): {}", files.join(", "))
+            })?;
+            formatted.extend(files.iter().copied());
+        }
+
+        if formatted.is_empty() {
             println!(
                 "Staged Rust files are outside every workspace package; leaving them to the gate."
             );
         } else {
-            // Apply mode, scoped to the owning packages.
-            run(false, Some(packages))?;
-            // One `git add` for the whole set: this runs on every commit, and a
-            // process per file is a noticeable cost on Windows in particular.
+            formatted.sort_unstable();
             let mut add_args = vec!["add", "--"];
-            add_args.extend(to_format.iter().map(|path| path.as_str()));
+            add_args.extend(formatted.iter().copied());
             cmd("git", &add_args).run().context("failed to re-stage formatted files")?;
-            println!("Formatted and re-staged {} staged Rust file(s).", to_format.len());
+            println!("Formatted and re-staged {} staged Rust file(s).", formatted.len());
+        }
+
+        if !unowned.is_empty() {
+            println!(
+                "Left {} staged Rust file(s) outside every workspace package to the gate.",
+                unowned.len()
+            );
         }
     }
 
@@ -356,11 +409,11 @@ fn load_workspace_metadata() -> Result<CargoMetadata> {
     serde_json::from_str(&metadata_json).context("Failed to parse cargo metadata JSON")
 }
 
-/// Workspace members as `(package name, repository-relative package directory)`.
+/// Workspace members reduced to name, repository-relative directory, and edition.
 ///
 /// The directory is the manifest's parent, relative to the workspace root, so
 /// it can be prefix-matched against `git diff --name-only` output.
-fn workspace_package_dirs(metadata: &CargoMetadata) -> Vec<(String, String)> {
+fn workspace_packages(metadata: &CargoMetadata) -> Vec<WorkspacePackage> {
     let root = std::env::current_dir().ok();
     metadata
         .packages
@@ -373,7 +426,11 @@ fn workspace_package_dirs(metadata: &CargoMetadata) -> Vec<(String, String)> {
                 Some(root) => dir.strip_prefix(root).unwrap_or(dir),
                 None => dir,
             };
-            Some((package.name.clone(), relative.to_string_lossy().replace('\\', "/")))
+            Some(WorkspacePackage {
+                name: package.name.clone(),
+                dir: relative.to_string_lossy().replace('\\', "/"),
+                edition: package.edition.clone(),
+            })
         })
         .collect()
 }
@@ -443,8 +500,9 @@ fn dedup_preserve_order(paths: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CargoMetadata, CargoPackage, CrateFailure, StagedFormatAction, classify_staged_paths,
-        collect_workspace_manifest_paths, format_failure_report, parse_unformatted_files,
+        CargoMetadata, CargoPackage, CrateFailure, StagedFormatAction, WorkspacePackage,
+        classify_staged_paths, collect_workspace_manifest_paths, format_failure_report,
+        parse_unformatted_files,
     };
     use color_eyre::eyre::Result;
     use std::collections::HashSet;
@@ -489,21 +547,33 @@ mod tests {
         );
     }
 
-    fn package_dirs() -> Vec<(String, String)> {
+    fn package(name: &str, dir: &str, edition: &str) -> WorkspacePackage {
+        WorkspacePackage {
+            name: name.to_string(),
+            dir: dir.to_string(),
+            edition: edition.to_string(),
+        }
+    }
+
+    fn package_dirs() -> Vec<WorkspacePackage> {
         vec![
-            ("perl-parser".to_string(), "crates/perl-parser".to_string()),
-            ("perl-parser-core".to_string(), "crates/perl-parser-core".to_string()),
-            ("xtask".to_string(), "xtask".to_string()),
+            package("perl-parser", "crates/perl-parser", "2024"),
+            package("perl-parser-core", "crates/perl-parser-core", "2024"),
+            package("xtask", "xtask", "2024"),
         ]
+    }
+
+    fn owner_name(path: &str, packages: &[WorkspacePackage]) -> Option<String> {
+        super::owning_package(path, packages).map(|package| package.name.clone())
     }
 
     #[test]
     fn a_staged_path_maps_to_its_owning_package() {
         assert_eq!(
-            super::owning_package("crates/perl-parser-core/src/lib.rs", &package_dirs()),
+            owner_name("crates/perl-parser-core/src/lib.rs", &package_dirs()).as_deref(),
             Some("perl-parser-core")
         );
-        assert_eq!(super::owning_package("xtask/src/main.rs", &package_dirs()), Some("xtask"));
+        assert_eq!(owner_name("xtask/src/main.rs", &package_dirs()).as_deref(), Some("xtask"));
     }
 
     #[test]
@@ -511,11 +581,11 @@ mod tests {
         // "crates/perl-parser" is a prefix of "crates/perl-parser-core" as a
         // string; only a full path-segment match may win.
         assert_eq!(
-            super::owning_package("crates/perl-parser-core/src/lib.rs", &package_dirs()),
+            owner_name("crates/perl-parser-core/src/lib.rs", &package_dirs()).as_deref(),
             Some("perl-parser-core"),
         );
         assert_eq!(
-            super::owning_package("crates/perl-parser/src/lib.rs", &package_dirs()),
+            owner_name("crates/perl-parser/src/lib.rs", &package_dirs()).as_deref(),
             Some("perl-parser"),
         );
     }
@@ -524,19 +594,29 @@ mod tests {
     fn a_workspace_root_package_owns_paths_no_subpackage_claims() {
         // A root package's relative directory is "", for which "{dir}/" would
         // be "/" and match nothing. It must still own its own files.
-        let dirs = vec![
-            ("root-crate".to_string(), String::new()),
-            ("xtask".to_string(), "xtask".to_string()),
-        ];
-        assert_eq!(super::owning_package("src/lib.rs", &dirs), Some("root-crate"));
+        let dirs = vec![package("root-crate", "", "2024"), package("xtask", "xtask", "2024")];
+        assert_eq!(owner_name("src/lib.rs", &dirs).as_deref(), Some("root-crate"));
         // ...and must not shadow a more specific package.
-        assert_eq!(super::owning_package("xtask/src/main.rs", &dirs), Some("xtask"));
+        assert_eq!(owner_name("xtask/src/main.rs", &dirs).as_deref(), Some("xtask"));
     }
 
     #[test]
     fn a_path_outside_every_package_maps_to_nothing() {
         // Falls through to the gate rather than guessing a package.
-        assert_eq!(super::owning_package("docs/notes.rs", &package_dirs()), None);
+        assert_eq!(owner_name("docs/notes.rs", &package_dirs()), None);
+    }
+
+    #[test]
+    fn the_owning_package_carries_the_edition_rustfmt_must_be_given() {
+        // The whole reason `owning_package` returns the package rather than its
+        // name: bare `rustfmt` defaults to edition 2015 and reformats
+        // gate-clean edition-2024 files. Measured on this workspace over 80
+        // gate-clean files: `rustfmt --check` rewrote 29, `rustfmt --edition
+        // 2024 --check` rewrote 0.
+        let packages = vec![package("legacy-crate", "crates/legacy", "2021")];
+        let owner = super::owning_package("crates/legacy/src/lib.rs", &packages)
+            .expect("legacy path must resolve to its package");
+        assert_eq!(owner.edition, "2021", "each file must be formatted at its own package edition");
     }
 
     #[test]
@@ -553,11 +633,13 @@ mod tests {
                     id: "path+file:///repo/xtask#0.1.0".to_string(),
                     name: "xtask".to_string(),
                     manifest_path: "/repo/xtask/Cargo.toml".to_string(),
+                    edition: "2024".to_string(),
                 },
                 CargoPackage {
                     id: "path+file:///repo/crates/perl-parser#0.1.0".to_string(),
                     name: "perl-parser".to_string(),
                     manifest_path: "/repo/crates/perl-parser/Cargo.toml".to_string(),
+                    edition: "2024".to_string(),
                 },
             ],
             workspace_members: vec![
