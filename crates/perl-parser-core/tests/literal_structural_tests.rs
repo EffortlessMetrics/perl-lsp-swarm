@@ -51,11 +51,11 @@ fn strings_preserve_kind_value_and_span() {
 
     visit(&ast, &mut |node| {
         if let NodeKind::String { value, interpolated } = &node.kind {
-            if value == "text" && !*interpolated {
+            if value == "'text'" && !*interpolated {
                 single = true;
                 single_span = node.location.start == 13 && node.location.end == 19;
             }
-            if value == "text" && *interpolated {
+            if value == "\"text\"" && *interpolated {
                 double = true;
                 double_span = node.location.start == 34 && node.location.end == 40;
             }
@@ -82,7 +82,7 @@ fn array_and_hash_literals_retain_structural_children() {
         NodeKind::HashLiteral { pairs } => {
             hash_pairs = Some(pairs.len());
         }
-        NodeKind::String { value, interpolated } if value == "beta" && *interpolated => {
+        NodeKind::String { value, interpolated } if value == "\"beta\"" && *interpolated => {
             hash_value = true;
         }
         _ => {}
