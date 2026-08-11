@@ -66,14 +66,14 @@ mod tests {
         #[cfg(windows)]
         {
             let mut cmd = Command::new("cmd");
-            cmd.args(["/C", "echo", "hello"]);
+            cmd.args(["-NoProfile", "-Command", "[Console]::Out.Write('hello')"]);
             cmd
         }
 
         #[cfg(not(windows))]
         {
-            let mut cmd = Command::new("echo");
-            cmd.arg("hello");
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "printf hello"]);
             cmd
         }
     }
@@ -98,7 +98,7 @@ mod tests {
         #[cfg(windows)]
         {
             let mut cmd = Command::new("cmd");
-            cmd.args(["/C", "echo", "diagnostic", "1>&2"]);
+            cmd.args(["-NoProfile", "-Command", "[Console]::Error.Write('diagnostic')"]);
             cmd
         }
 
@@ -132,7 +132,7 @@ mod tests {
         assert!(result.is_ok(), "expected success, got: {:?}", result.err());
         if let Ok(output) = result {
             assert!(output.status.success());
-            assert_eq!(output.stdout, b"hello\n");
+            assert_eq!(output.stdout, b"hello");
             assert!(output.stderr.is_empty());
         }
     }
