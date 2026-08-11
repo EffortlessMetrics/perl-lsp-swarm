@@ -253,7 +253,6 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
             "recovery fixture '{fixture_id}' first error boundary drifted ({})",
             expectation.id
         );
-        let expected_region = expectation.error_region.start..=expectation.error_region.end;
         let spillover: Vec<_> = error_lines
             .iter()
             .filter(|line| !expected_region.contains(line))
