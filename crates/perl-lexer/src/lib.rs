@@ -3573,12 +3573,25 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
-        if remaining
-            .strip_prefix("print")
-            .is_some_and(|after| after.starts_with(char::is_whitespace))
-            && self.qw_statement_terminates(position)
-        {
-            return true;
+        for keyword in ["print", "warn", "say"] {
+            if remaining
+                .strip_prefix(keyword)
+                .is_some_and(|after| after.startsWith(char::is_whitespace))
+                && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        if let Some(symbol_table) = &self.config.symbol_table {
+            if remaining.split_whitespace().next().is_some_and(|keyword| {
+                symbol_table.is_known_sub(keyword)
+                    && remaining
+                        .strip_prefix(keyword)
+                        .is_some_and(|after| after.startsWith(char::is_whitespace))
+            }) && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
         }
         self.qw_block_statement_boundary_at(position)
     }
@@ -4004,7 +4017,7 @@ impl<'a> PerlLexer<'a> {
                 self.parse_regex_modifiers(&quote_handler::M_SPEC);
                 body_closed
             }
-            "qw" if delimiter == '(' && self.qw_recovery_enabled => {
+            "qw" if self.qw_recovery_enabled => {
                 let (_body, body_closed) = self.read_qw_body(delimiter);
                 body_closed
             }
