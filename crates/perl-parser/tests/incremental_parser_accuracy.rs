@@ -133,6 +133,75 @@ fn assert_ast_equivalent(incremental: &Node, fresh: &Node, context: &str) -> Tes
     Ok(())
 }
 
+fn assert_incremental_outcome(
+    incremental: &IncrementalParserV2,
+    root: &Node,
+    context: &str,
+) -> TestResult {
+    if !incremental.incremental_path_attempted() {
+        return Err(format!("{context}: edit was not accepted by the incremental path").into());
+    }
+
+    let mut actual_spans = Vec::new();
+    collect_span_fingerprint(root, &mut actual_spans);
+    let actual_node_count = actual_spans.len();
+    if incremental.reused_nodes > actual_node_count {
+        return Err(format!(
+            "{context}: reuse count {} exceeds produced node count {actual_node_count}",
+            incremental.reused_nodes
+        )
+        .into());
+    }
+    let accounted_nodes = incremental
+        .reused_nodes
+        .checked_add(incremental.reparsed_nodes)
+        .ok_or_else(|| format!("{context}: reuse counters overflowed"))?;
+    if accounted_nodes != actual_node_count {
+        return Err(format!(
+            "{context}: reuse accounting {accounted_nodes} does not equal produced node count {actual_node_count}"
+        )
+        .into());
+    }
+
+    match incremental.get_last_reuse_analysis() {
+        Some(analysis) => {
+            if analysis.reused_nodes > analysis.total_new_nodes {
+                return Err(format!(
+                    "{context}: reuse analysis reported {} reused nodes for only {} new nodes",
+                    analysis.reused_nodes, analysis.total_new_nodes
+                )
+                .into());
+            }
+            if incremental.used_advanced_reuse() {
+                if incremental.reused_nodes != analysis.reused_nodes {
+                    return Err(format!(
+                        "{context}: selected advanced reuse reported {} reused nodes but exposed {}",
+                        analysis.reused_nodes, incremental.reused_nodes
+                    )
+                    .into());
+                }
+                let advanced_accounted_nodes = incremental.reused_nodes + incremental.reparsed_nodes;
+                if advanced_accounted_nodes != analysis.total_new_nodes {
+                    return Err(format!(
+                        "{context}: selected advanced reuse accounted for {advanced_accounted_nodes} nodes, expected {}",
+                        analysis.total_new_nodes,
+                    )
+                    .into());
+                }
+            }
+        }
+        None if incremental.used_advanced_reuse() => {
+            return Err(format!(
+                "{context}: advanced reuse was selected without an accepted analysis"
+            )
+            .into());
+        }
+        None => {}
+    }
+
+    Ok(())
+}
+
 fn assert_incremental_edit_matches_fresh(
     source: &str,
     old_text: &str,
@@ -145,31 +214,7 @@ fn assert_incremental_edit_matches_fresh(
     let new_source =
         apply_incremental_edit(&mut incremental, source, old_text, new_text, expectation_id)?;
     let incremental_ast = incremental.parse(&new_source)?;
-
-    if !incremental.incremental_path_attempted() {
-        return Err(format!(
-            "{expectation_id}: edit did not produce an accepted incremental parse"
-        )
-        .into());
-    }
-
-    let mut actual_spans = Vec::new();
-    collect_span_fingerprint(&incremental_ast, &mut actual_spans);
-    let actual_node_count = actual_spans.len();
-    if incremental.reused_nodes > actual_node_count {
-        return Err(format!(
-            "{expectation_id}: reuse count {} exceeds produced node count {actual_node_count}",
-            incremental.reused_nodes
-        )
-        .into());
-    }
-    if incremental.reused_nodes + incremental.reparsed_nodes != actual_node_count {
-        return Err(format!(
-            "{expectation_id}: reuse accounting {} + {} does not equal produced node count {actual_node_count}",
-            incremental.reused_nodes, incremental.reparsed_nodes
-        )
-        .into());
-    }
+    assert_incremental_outcome(&incremental, &incremental_ast, expectation_id)?;
 
     if require_reuse {
         if incremental.reused_nodes == 0 {
@@ -314,6 +359,11 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
         "insert_match_operator_before_existing_slash",
     )?;
     let intermediate_incremental_ast = incremental.parse(&with_match_operator)?;
+    assert_incremental_outcome(
+        &incremental,
+        &intermediate_incremental_ast,
+        "intermediate division-to-regex edit",
+    )?;
     let intermediate_fresh_ast = Parser::new(&with_match_operator).parse()?;
     assert_ast_equivalent(
         &intermediate_incremental_ast,
@@ -339,6 +389,7 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
     }
 
     let incremental_ast = incremental.parse(&final_source)?;
+    assert_incremental_outcome(&incremental, &incremental_ast, "final slash-preserving edit")?;
     let fresh_ast = Parser::new(&final_source).parse()?;
     assert_ast_equivalent(
         &incremental_ast,
