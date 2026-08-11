@@ -95,6 +95,10 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         incremental.reused_nodes > 0,
         "literal edit should exercise incremental reuse rather than a full fallback"
     );
+    assert!(
+        incremental.last_reuse_analysis.is_some(),
+        "literal edit must take the advanced incremental-reuse path"
+    );
 
     let fresh_ast = Parser::new(&new_source).parse()?;
 
