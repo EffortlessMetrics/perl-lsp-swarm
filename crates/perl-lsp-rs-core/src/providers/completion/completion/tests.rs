@@ -8368,21 +8368,6 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
     Ok(())
 }
 
-fn moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
-    let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
-        Url::parse("file:///workspace/Parent.pm")?,
-        r#"package Parent;
-use Moo;
-has 'name' => (is => 'ro', isa => 'Str');
-1;
-"#
-        .to_string(),
-    )?;
-    Ok(index)
-}
-
-
 /// Index the parent package separately so these tests prove the workspace
 /// inheritance edge rather than merely finding declarations in one AST.
 fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
