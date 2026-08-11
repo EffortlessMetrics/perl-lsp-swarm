@@ -180,7 +180,8 @@ fn assert_incremental_outcome(
                     )
                     .into());
                 }
-                let advanced_accounted_nodes = incremental.reused_nodes + incremental.reparsed_nodes;
+                let advanced_accounted_nodes =
+                    incremental.reused_nodes + incremental.reparsed_nodes;
                 if advanced_accounted_nodes != analysis.total_new_nodes {
                     return Err(format!(
                         "{context}: selected advanced reuse accounted for {advanced_accounted_nodes} nodes, expected {}",
