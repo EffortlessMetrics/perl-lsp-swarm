@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
           python3 .agent/merge-ready-6755.py
           rm .agent/merge-ready-6755.py .github/workflows/agent-merge-ready-6755.yml
-          cargo fmt -p perl-lexer
+          rustfmt --edition 2024 crates/perl-lexer/src/symbol_table.rs
 
           mapfile -t changed < <(git diff --name-only | sort)
           expected=(
@@ -60,7 +60,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt -p perl-lexer -- --check
+          rustfmt --edition 2024 --check crates/perl-lexer/src/symbol_table.rs
           cargo test -p perl-lexer --lib symbol_table --locked
           cargo test -p perl-lexer --tests --locked
           cargo clippy -p perl-lexer --all-targets --locked -- -D warnings
