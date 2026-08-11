@@ -6,8 +6,8 @@ use crate::contract::{
 use crate::model::{
     TARGET_MATRIX_INDEX_SCHEMA_VERSION, TARGET_MATRIX_PART_SCHEMA_VERSION,
     TARGET_MATRIX_SCHEMA_VERSION, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetDisposition,
-    TargetKind, TargetMatrixEntry, TargetMatrixIndex, TargetMatrixPart, TargetTopologyDrift,
-    UpstreamTargetMatrix,
+    TargetKind, TargetMatrixEntry, TargetMatrixIndex, TargetMatrixPart, TargetSelectionContract,
+    TargetTopologyDrift, TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -251,8 +251,17 @@ impl UpstreamTargetMatrix {
                     ));
                 }
             }
+            if let Some(predecessor) = entry.contract.replaces_target_id.as_deref()
+                && (!ids.contains(predecessor) || predecessor == entry.contract.target_id)
+            {
+                return Err(format!(
+                    "target {} references missing or self replacement predecessor {}",
+                    entry.contract.target_id, predecessor
+                ));
+            }
         }
 
+        validate_variant_base_kinds(&self.targets)?;
         validate_reference_graph(&self.targets)?;
         self.validate_pinned_5422_inventory()?;
         Ok(())
@@ -302,6 +311,7 @@ impl TargetTopologyDrift {
         &self,
         pinned: &UpstreamTargetMatrix,
         pinned_fingerprint: &str,
+        observed: Option<&UpstreamTargetMatrix>,
     ) -> Result<(), String> {
         if self.schema_version != TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION {
             return Err(format!("unsupported topology drift schema {}", self.schema_version));
@@ -339,40 +349,154 @@ impl TargetTopologyDrift {
         validate_sorted_unique_strings(&self.added_target_ids, "added target ID")?;
         validate_sorted_unique_strings(&self.removed_target_ids, "removed target ID")?;
         validate_sorted_unique_strings(&self.changed_target_ids, "changed target ID")?;
+        validate_disjoint_drift_lists(self)?;
 
-        let pinned_ids = pinned
-            .targets
-            .iter()
-            .map(|entry| entry.contract.target_id.as_str())
-            .collect::<BTreeSet<_>>();
-        for id in &self.added_target_ids {
-            validate_stable_id(id, "added target ID")?;
-            if pinned_ids.contains(id.as_str()) {
-                return Err(format!("added target {id} already exists in the pinned matrix"));
+        match self.status {
+            TargetTopologyDriftStatus::NotProven => {
+                if observed.is_some()
+                    || self.observed_matrix_fingerprint.is_some()
+                    || !self.added_target_ids.is_empty()
+                    || !self.removed_target_ids.is_empty()
+                    || !self.changed_target_ids.is_empty()
+                {
+                    return Err(
+                        "not-proven topology drift cannot carry observed-matrix or classification claims"
+                            .to_string(),
+                    );
+                }
+                let reason = self
+                    .not_proven_reason
+                    .as_deref()
+                    .ok_or_else(|| "not-proven topology drift requires a reason".to_string())?;
+                validate_nonempty(reason, "not-proven reason")?;
+            }
+            TargetTopologyDriftStatus::Compared => {
+                let observed = observed.ok_or_else(|| {
+                    "compared topology drift requires an observed target matrix".to_string()
+                })?;
+                observed.validate()?;
+                let observed_fingerprint = observed.fingerprint()?;
+                validate_sha256(
+                    self.observed_matrix_fingerprint.as_deref().ok_or_else(|| {
+                        "compared topology drift requires an observed matrix fingerprint"
+                            .to_string()
+                    })?,
+                    "observed matrix fingerprint",
+                )?;
+                if self.observed_matrix_fingerprint.as_deref()
+                    != Some(observed_fingerprint.as_str())
+                {
+                    return Err(
+                        "topology drift references a different observed target matrix".to_string(),
+                    );
+                }
+                if self.observed_perl_ref != observed.perl_requested_ref
+                    || self.observed_perl_resolved_ref != observed.perl_resolved_ref
+                    || self.observed_topology_sources != observed.topology_sources
+                {
+                    return Err(
+                        "topology drift observed identity differs from the observed target matrix"
+                            .to_string(),
+                    );
+                }
+                if self.not_proven_reason.is_some() {
+                    return Err(
+                        "compared topology drift cannot retain a not-proven reason".to_string(),
+                    );
+                }
+                let (added, removed, changed) = compute_topology_drift(pinned, observed)?;
+                if self.added_target_ids != added
+                    || self.removed_target_ids != removed
+                    || self.changed_target_ids != changed
+                {
+                    return Err(format!(
+                        "topology drift classifications disagree with observed matrix; expected added={added:?}, removed={removed:?}, changed={changed:?}"
+                    ));
+                }
             }
         }
-        for id in self
-            .removed_target_ids
-            .iter()
-            .chain(self.changed_target_ids.iter())
-        {
-            validate_stable_id(id, "removed or changed target ID")?;
-            if !pinned_ids.contains(id.as_str()) {
+        Ok(())
+    }
+}
+
+fn validate_variant_base_kinds(entries: &[TargetMatrixEntry]) -> Result<(), String> {
+    let by_id = entries
+        .iter()
+        .map(|entry| (entry.contract.target_id.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    for entry in entries {
+        let Some(base_id) = entry.contract.variant_of.as_deref() else {
+            continue;
+        };
+        let base = by_id.get(base_id).ok_or_else(|| {
+            format!(
+                "target {} references missing base target {base_id}",
+                entry.contract.target_id
+            )
+        })?;
+        let direct_allowed = match entry.contract.target_kind {
+            TargetKind::SelectorVariant => base.contract.target_kind == TargetKind::PhysicalSeries,
+            TargetKind::EnvironmentVariant | TargetKind::InstrumentationOnly => matches!(
+                base.contract.target_kind,
+                TargetKind::PhysicalSeries
+                    | TargetKind::SelectorVariant
+                    | TargetKind::EnvironmentVariant
+            ),
+            _ => true,
+        };
+        if !direct_allowed {
+            return Err(format!(
+                "target {} cannot inherit from {:?} target {base_id}",
+                entry.contract.target_id, base.contract.target_kind
+            ));
+        }
+        if matches!(
+            entry.contract.target_kind,
+            TargetKind::EnvironmentVariant | TargetKind::InstrumentationOnly
+        ) {
+            let root = resolve_executable_root(&by_id, base_id)?;
+            if !matches!(
+                root.contract.target_kind,
+                TargetKind::PhysicalSeries | TargetKind::SelectorVariant
+            ) {
                 return Err(format!(
-                    "removed or changed target {id} is absent from the pinned matrix"
+                    "target {} does not resolve to an executable physical target",
+                    entry.contract.target_id
                 ));
             }
         }
-        let added = self.added_target_ids.iter().collect::<BTreeSet<_>>();
-        let removed = self.removed_target_ids.iter().collect::<BTreeSet<_>>();
-        let changed = self.changed_target_ids.iter().collect::<BTreeSet<_>>();
-        if !added.is_disjoint(&removed)
-            || !added.is_disjoint(&changed)
-            || !removed.is_disjoint(&changed)
-        {
-            return Err("topology drift classifications must be disjoint".to_string());
+    }
+    Ok(())
+}
+
+fn resolve_executable_root<'a>(
+    by_id: &BTreeMap<&str, &'a TargetMatrixEntry>,
+    start: &str,
+) -> Result<&'a TargetMatrixEntry, String> {
+    let mut current = start;
+    let mut seen = BTreeSet::new();
+    loop {
+        if !seen.insert(current) {
+            return Err(format!("variant chain contains a cycle at {current}"));
         }
-        Ok(())
+        let entry = by_id
+            .get(current)
+            .copied()
+            .ok_or_else(|| format!("variant chain references missing target {current}"))?;
+        match entry.contract.target_kind {
+            TargetKind::PhysicalSeries | TargetKind::SelectorVariant => return Ok(entry),
+            TargetKind::EnvironmentVariant => {
+                current = entry.contract.variant_of.as_deref().ok_or_else(|| {
+                    format!("environment variant {current} has no base target")
+                })?;
+            }
+            other => {
+                return Err(format!(
+                    "variant chain reaches incompatible {:?} target {current}",
+                    other
+                ));
+            }
+        }
     }
 }
 
@@ -383,6 +507,9 @@ fn validate_reference_graph(entries: &[TargetMatrixEntry]) -> Result<(), String>
             let mut references = entry.contract.composite_members.clone();
             if let Some(base) = &entry.contract.variant_of {
                 references.push(base.clone());
+            }
+            if let Some(predecessor) = &entry.contract.replaces_target_id {
+                references.push(predecessor.clone());
             }
             references.sort();
             references.dedup();
@@ -416,6 +543,64 @@ fn visit_target(
     }
     visiting.remove(target_id);
     visited.insert(target_id.to_string());
+    Ok(())
+}
+
+fn compute_topology_drift(
+    pinned: &UpstreamTargetMatrix,
+    observed: &UpstreamTargetMatrix,
+) -> Result<(Vec<String>, Vec<String>, Vec<String>), String> {
+    let pinned_contracts = pinned
+        .targets
+        .iter()
+        .map(|entry| {
+            Ok((
+                entry.contract.target_id.clone(),
+                target_topology_digest(&entry.contract)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let observed_contracts = observed
+        .targets
+        .iter()
+        .map(|entry| {
+            Ok((
+                entry.contract.target_id.clone(),
+                target_topology_digest(&entry.contract)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let pinned_ids = pinned_contracts.keys().cloned().collect::<BTreeSet<_>>();
+    let observed_ids = observed_contracts.keys().cloned().collect::<BTreeSet<_>>();
+    let added = observed_ids.difference(&pinned_ids).cloned().collect::<Vec<_>>();
+    let removed = pinned_ids.difference(&observed_ids).cloned().collect::<Vec<_>>();
+    let changed = pinned_ids
+        .intersection(&observed_ids)
+        .filter(|target_id| pinned_contracts.get(*target_id) != observed_contracts.get(*target_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok((added, removed, changed))
+}
+
+fn target_topology_digest(contract: &TargetSelectionContract) -> Result<String, String> {
+    let mut normalized = contract.clone();
+    normalized.perl_version_row = "<version-row>".to_string();
+    normalized.change_reason = None;
+    let bytes = serde_json::to_vec(&normalized)
+        .map_err(|error| format!("serializing target topology: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn validate_disjoint_drift_lists(drift: &TargetTopologyDrift) -> Result<(), String> {
+    let added = drift.added_target_ids.iter().collect::<BTreeSet<_>>();
+    let removed = drift.removed_target_ids.iter().collect::<BTreeSet<_>>();
+    let changed = drift.changed_target_ids.iter().collect::<BTreeSet<_>>();
+    if !added.is_disjoint(&removed)
+        || !added.is_disjoint(&changed)
+        || !removed.is_disjoint(&changed)
+    {
+        return Err("topology drift classifications must be disjoint".to_string());
+    }
     Ok(())
 }
 
