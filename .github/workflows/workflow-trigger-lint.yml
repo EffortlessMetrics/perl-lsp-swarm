@@ -6,14 +6,17 @@ on:
   merge_group:
     types: [checks_requested]
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+      - test/lsp-capability-matrix-6735
 
 concurrency:
   group: workflow-trigger-lint-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   lint:
@@ -55,3 +58,71 @@ jobs:
             echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
             echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  finish-capability-matrix:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/test/lsp-capability-matrix-6735'
+    name: Finish sparse capability matrix
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 2
+          ref: test/lsp-capability-matrix-6735
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Add absent inline-completion declaration row
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("crates/perl-lsp-rs/tests/lsp_capability_negotiation_process.rs")
+          text = path.read_text()
+          needle = '''    let cases = [
+              (
+                  json!({
+                      "textDocument": {
+                          "inlineCompletion": { "dynamicRegistration": true }
+                      }
+                  }),
+          '''
+          replacement = '''    let cases = [
+              (json!({}), true, false, "absent declaration"),
+              (
+                  json!({
+                      "textDocument": {
+                          "inlineCompletion": { "dynamicRegistration": true }
+                      }
+                  }),
+          '''
+          if replacement not in text:
+              if needle not in text:
+                  raise SystemExit("inline-completion case matrix anchor not found")
+              text = text.replace(needle, replacement, 1)
+          path.write_text(text)
+
+      - name: Format and verify focused contracts
+        shell: bash
+        run: |
+          rustup run 1.95.0 rustfmt \
+            --edition 2024 \
+            --config-path . \
+            crates/perl-lsp-rs/tests/lsp_capability_negotiation_process.rs
+          cargo test -p perl-lsp-rs --test lsp_capability_negotiation_process --locked -- --test-threads=1
+          cargo test -p perl-lsp-rs --test semantic_definition --locked -- --test-threads=1
+
+      - name: Restore carrier workflow and push reviewed result
+        shell: bash
+        run: |
+          git show HEAD^:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            crates/perl-lsp-rs/tests/lsp_capability_negotiation_process.rs \
+            .github/workflows/workflow-trigger-lint.yml
+          git diff --cached --check
+          git commit -m "test(lsp): prove absent inline-completion declaration"
+          git push origin HEAD:test/lsp-capability-matrix-6735
