@@ -79,7 +79,7 @@ pub struct CorpusTopology {
     /// Assets in stable ID order.
     pub assets: Vec<CorpusAsset>,
     /// Runtime checkout root. Absolute host paths are excluded from serialization.
-    #[serde(skip)]
+    #[serde(skip, default)]
     root: PathBuf,
 }
 
@@ -105,13 +105,19 @@ impl CorpusTopology {
         );
 
         assets.sort_by(|left, right| left.id.cmp(&right.id));
-        assets.dedup_by(|left, right| left.id == right.id);
 
         Self {
             schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION,
             assets,
             root: paths.root.clone(),
         }
+    }
+
+    /// Bind a runtime checkout root after loading a serialized topology.
+    #[must_use]
+    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = root.into();
+        self
     }
 
     /// Return the runtime checkout root used to resolve assets.
@@ -193,7 +199,10 @@ fn collect_additional_fuzz_assets(root: &Path) -> Vec<PathBuf> {
 
 fn is_additional_fuzz_asset(path: &Path) -> bool {
     match path.extension().and_then(|extension| extension.to_str()) {
-        None => true,
+        None => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("crash-")),
         Some(extension) => extension.eq_ignore_ascii_case("txt"),
     }
 }
@@ -218,12 +227,14 @@ mod tests {
         let fuzz_perl = root.path().join("crates/perl-corpus/fuzz/seed.pl");
         let fuzz_text = root.path().join("crates/perl-corpus/fuzz/heredoc_validation.txt");
         let fuzz_crash = root.path().join("crates/perl-corpus/fuzz/crash-deadbeef");
+        let fuzz_unclassified = root.path().join("crates/perl-corpus/fuzz/notes");
         let fuzz_readme = root.path().join("crates/perl-corpus/fuzz/README.md");
 
         write_fixture(&test_file, "my $x = 1;");
         write_fixture(&fuzz_perl, "my $y = 2;");
         write_fixture(&fuzz_text, "xqN<<\"");
         write_fixture(&fuzz_crash, "xqN<<\"");
+        write_fixture(&fuzz_unclassified, "metadata without a declared kind");
         write_fixture(&fuzz_readme, "metadata only");
 
         let topology = CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf()));
@@ -239,6 +250,7 @@ mod tests {
             ]
         );
         assert!(!ids.iter().any(|id| id.ends_with("README.md")));
+        assert!(!ids.iter().any(|id| id.ends_with("/notes")));
 
         let text = topology
             .assets
@@ -280,10 +292,18 @@ mod tests {
             first.assets.iter().map(|asset| asset.id.as_str()).collect::<Vec<_>>(),
             vec!["test_corpus/a.pl", "test_corpus/z.pl"]
         );
+
+        let loaded: CorpusTopology = serde_json::from_str(&first_json).expect("load topology");
+        assert_eq!(loaded.root(), Path::new(""));
+        let rebound = loaded.with_root(first_root.path());
+        assert!(rebound.assets.iter().all(|asset| rebound.asset_path(asset).is_file()));
     }
 
     #[test]
     fn normalized_ids_use_forward_slashes() {
-        assert_eq!(normalize_relative_path(Path::new("test_corpus\\nested\\case.pl")), "test_corpus/nested/case.pl");
+        assert_eq!(
+            normalize_relative_path(Path::new("test_corpus\\nested\\case.pl")),
+            "test_corpus/nested/case.pl"
+        );
     }
 }
