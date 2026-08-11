@@ -55,9 +55,9 @@ jobs:
       - name: Run protocol-authority falsifiers
         run: python3 scripts/tests/test_dap_protocol_authority.py
 
-      - name: Observe exact upstream authority
+      - name: Enforce exact upstream authority
         run: |
-          python3 scripts/ci/dap_protocol_authority.py observe \
+          python3 scripts/ci/dap_protocol_authority.py check \
             --root . \
             --manifest .ci/dap/protocol-authority.json \
             --receipt target/receipts/dap-protocol-authority.json
