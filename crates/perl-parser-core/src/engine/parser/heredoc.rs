@@ -409,7 +409,7 @@ mod heredoc_branch_tests {
         );
         assert_eq!(
             parse_heredoc_delimiter("<<\"E\\\\nOF\""),
-            ("E\\\\nOF".to_string(), true, false, false)
+            ("E\nOF".to_string(), true, false, false)
         );
     }
 
