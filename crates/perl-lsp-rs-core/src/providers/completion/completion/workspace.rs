@@ -2330,7 +2330,10 @@ fn collect_all_package_members_with_source(
         }
 
         // Collect direct members for this package
-        let members = index.get_package_members(pkg);
+        let members = index
+            .get_package_members(pkg)
+            .into_iter()
+            .chain(index.get_generated_package_members(pkg));
         for symbol in members {
             match symbol.kind {
                 WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
