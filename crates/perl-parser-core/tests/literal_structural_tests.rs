@@ -55,7 +55,7 @@ fn strings_preserve_kind_value_and_span() {
                 single = true;
                 single_span = node.location.start == 13 && node.location.end == 19;
             }
-            if value == "\"text\"" && *interpolated {
+            if value == "\"hello $name\"" && *interpolated {
                 double = true;
                 double_span = node.location.start == 34 && node.location.end == 47;
             }
