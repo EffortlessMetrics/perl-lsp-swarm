@@ -261,6 +261,7 @@ impl UpstreamTargetMatrix {
             }
         }
 
+        validate_global_target_namespace(&self.targets)?;
         validate_variant_base_kinds(&self.targets)?;
         validate_reference_graph(&self.targets)?;
         self.validate_pinned_5422_inventory()?;
@@ -417,6 +418,28 @@ impl TargetTopologyDrift {
         }
         Ok(())
     }
+}
+
+fn validate_global_target_namespace(entries: &[TargetMatrixEntry]) -> Result<(), String> {
+    let mut owners = BTreeMap::<&str, &str>::new();
+    for entry in entries {
+        let owner = entry.contract.target_id.as_str();
+        let names = std::iter::once(owner)
+            .chain(std::iter::once(entry.contract.upstream_name.as_str()))
+            .chain(entry.contract.aliases.iter().map(String::as_str));
+        for name in names {
+            if let Some(existing_owner) = owners.get(name) {
+                if *existing_owner != owner {
+                    return Err(format!(
+                        "target name {name} is ambiguous between {existing_owner} and {owner}"
+                    ));
+                }
+            } else {
+                owners.insert(name, owner);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_variant_base_kinds(entries: &[TargetMatrixEntry]) -> Result<(), String> {
@@ -584,6 +607,7 @@ fn compute_topology_drift(
 
 fn target_topology_digest(contract: &TargetSelectionContract) -> Result<String, String> {
     let mut normalized = contract.clone();
+    normalized.display_name = "<display-name>".to_string();
     normalized.perl_version_row = "<version-row>".to_string();
     normalized.change_reason = None;
     let bytes = serde_json::to_vec(&normalized)
