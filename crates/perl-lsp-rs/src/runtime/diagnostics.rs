@@ -716,7 +716,10 @@ impl LspServer {
 
             // Add dead code diagnostics from workspace-wide symbol analysis
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+            if workspace_index_tier_enabled
+                && !self.workspace_index_stale_for_any_open_document()
+                && let Some(workspace_index) = self.workspace_index()
+            {
                 let dead_code_diags = perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
                     &workspace_index,
                     uri,
