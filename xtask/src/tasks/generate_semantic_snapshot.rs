@@ -149,10 +149,7 @@ fn validate_output_separation(root: &Path, fixtures: &[PathBuf], output: &Path) 
     let normalized_output = normalize_output_path(output, output_metadata.is_some())?;
 
     if normalized_output.starts_with(&canonical_root) && is_perl_fixture_path(&normalized_output) {
-        bail!(
-            "Snapshot output would enter the .pl fixture population: {}",
-            output.display()
-        );
+        bail!("Snapshot output would enter the .pl fixture population: {}", output.display());
     }
 
     for fixture in fixtures {
@@ -183,9 +180,7 @@ fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .context("reading current directory for snapshot output")?
-            .join(path)
+        std::env::current_dir().context("reading current directory for snapshot output")?.join(path)
     };
     let mut cursor = absolute.as_path();
     let mut missing_tail = Vec::<OsString>::new();
@@ -302,22 +297,15 @@ fn lower_source(source: &str) -> HirFile {
 /// Excludes raw source offsets (which change on whitespace edits) so that
 /// semantics-preserving formatting changes do not cause snapshot drift.
 fn summarize_hir(file: &HirFile) -> HirSummary {
-    let item_kind_sequence: Vec<String> = file
-        .items
-        .iter()
-        .map(|item| item_kind_name(&item.kind).to_string())
-        .collect();
+    let item_kind_sequence: Vec<String> =
+        file.items.iter().map(|item| item_kind_name(&item.kind).to_string()).collect();
 
     let item_count = item_kind_sequence.len();
     let scope_count = file.scope_graph.scopes.len();
     let binding_count = file.scope_graph.bindings.len();
     let package_count = file.stash_graph.packages.len();
-    let slot_count: usize = file
-        .stash_graph
-        .packages
-        .iter()
-        .map(|package| package.slots.len())
-        .sum();
+    let slot_count: usize =
+        file.stash_graph.packages.iter().map(|package| package.slots.len()).sum();
     let directive_count = file.compile_environment.directives.len();
     let module_request_count = file.compile_environment.module_requests.len();
     let dynamic_boundary_count = file.compile_environment.dynamic_boundaries.len();
@@ -829,10 +817,7 @@ mod tests {
 
         let error = check_snapshot(temporary.path(), &output)
             .expect_err("check must reject a non-canonical claim boundary");
-        assert!(
-            error.to_string().contains("claim boundary mismatch"),
-            "unexpected error: {error}"
-        );
+        assert!(error.to_string().contains("claim boundary mismatch"), "unexpected error: {error}");
     }
 
     #[test]
