@@ -3,6 +3,7 @@ use std::fmt;
 /// Diagnostic tags for additional classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DiagnosticTag {
     /// Code that can be safely removed (unused variables, imports).
     Unnecessary = 1,

@@ -132,6 +132,8 @@ fn diagnostic_severity_value(severity: crate::features::diagnostics::DiagnosticS
         crate::features::diagnostics::DiagnosticSeverity::Warning => 2,
         crate::features::diagnostics::DiagnosticSeverity::Information => 3,
         crate::features::diagnostics::DiagnosticSeverity::Hint => 4,
+        // Forward-compatible fallback for future variants (#2898)
+        _ => 1,
     }
 }
 
@@ -763,6 +765,8 @@ impl LspServer {
                                 crate::features::diagnostics::DiagnosticSeverity::Warning => 2,
                                 crate::features::diagnostics::DiagnosticSeverity::Information => 3,
                                 crate::features::diagnostics::DiagnosticSeverity::Hint => 4,
+                                // Forward-compatible fallback for future variants (#2898)
+                                _ => 1,
                             },
                             "code": diagnostic.code.clone(),
                             "source": "perl-lsp",
