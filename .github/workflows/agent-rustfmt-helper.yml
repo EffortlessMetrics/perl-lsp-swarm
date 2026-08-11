@@ -3,6 +3,9 @@ name: Agent rustfmt helper
 on:
   push:
     branches: [agent/rustfmt-helper-20260811]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
