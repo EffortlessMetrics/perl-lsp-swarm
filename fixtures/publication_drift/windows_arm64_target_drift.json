@@ -13,8 +13,8 @@
     "version": "0.17.0"
   },
   "manifest": {
-    "path": "release_topology.v1.json",
-    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "path": "fixtures/publication_drift/publication_manifest.v1.json",
+    "sha256": "50ed27f85a91f1e7bcbb8967c8e0aef7eaa044224644a64c17c744cf6aab14c1",
     "swarm_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "public_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
@@ -23,7 +23,7 @@
       "path": "vscode-extension/src/downloader.ts",
       "classification": "product_drift",
       "behavior_changed": true,
-      "manifest_rule": "managed_downloader.target_matrix",
+      "manifest_rule": null,
       "owner": "vscode-extension",
       "evidence": [
         "The public v0.17 VSIX requested aarch64-pc-windows-msvc while the release produced only x86_64-pc-windows-msvc."
