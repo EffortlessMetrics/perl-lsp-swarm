@@ -4523,10 +4523,10 @@
       "recovery_expectations": [
         {
           "id": "unterminated_heredoc_reports_recovery",
-          "first_error_line": 3,
+          "first_error_line": 4,
           "error_region": {
-            "start": 3,
-            "end": 3
+            "start": 4,
+            "end": 4
           },
           "recovery_line": 3
         }
