@@ -146,8 +146,9 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
             if !starts_heredoc_label(after) {
                 return None;
             }
-            let end =
-                after.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(after.len());
+            let end = after
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after.len());
             after[..end].to_string()
         }
         // An *unquoted* heredoc label is an identifier, so it must start with an
@@ -155,8 +156,9 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
         // parse as a heredoc opener whose body then swallowed the rest of the
         // file.
         _ if starts_heredoc_label(rest) => {
-            let end =
-                rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
             rest[..end].to_string()
         }
         _ => return None,
@@ -166,7 +168,7 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
 
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
 fn starts_heredoc_label(rest: &str) -> bool {
-    rest.starts_with(|character: char| character.is_ascii_alphabetic() || character == '_')
+    rest.starts_with(|character: char| character.is_alphabetic() || character == '_')
 }
 
 /// Whether `prefix` (the text before a candidate `<<` heredoc opener) contains
@@ -1026,8 +1028,8 @@ mod tests {
         );
         assert_eq!(
             heredoc_opener_on_line("my $x = <<é;"),
-            None,
-            "a non-ASCII character cannot start an unquoted label"
+            Some(("é".to_string(), false)),
+            "a Unicode identifier can start an unquoted label"
         );
     }
 
