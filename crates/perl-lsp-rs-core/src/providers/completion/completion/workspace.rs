@@ -18,6 +18,7 @@ use perl_semantic_analyzer::{
         ReceiverFact, ReceiverFactContext, ReceiverFactFreshness, ReceiverFallbackState,
         ReceiverKind, receiver_fact_for_method_call,
     },
+    symbol::{ScopeKind, SymbolKind},
     semantic::SemanticModel,
     type_facts::TypeEvidence,
     type_inference::{PerlType, TypeInferenceEngine},
@@ -1225,7 +1226,7 @@ fn type_engine_receiver(
     }
 }
 
-fn receiver_package_from_context_or_source(
+pub(super) fn receiver_package_from_context_or_source(
     context: &CompletionContext,
     source: &str,
 ) -> Option<String> {
@@ -1233,12 +1234,56 @@ fn receiver_package_from_context_or_source(
         return Some(context.current_package.clone());
     }
 
-    source.get(..context.position.min(source.len()))?.lines().rev().find_map(|line| {
-        let declaration = line.trim_start().strip_prefix("package ")?;
-        let package =
-            declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace()).next()?;
-        (!package.is_empty()).then(|| package.to_string())
-    })
+    let mut parser = Parser::new(source);
+    let ast = parser.parse().ok()?;
+    let analyzer = perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
+    let table = analyzer.symbol_table();
+    let position = context.position.min(source.len());
+
+    let mut scope_id = table.scope_at_offset(position);
+    loop {
+        let scope = table.scopes.get(&scope_id)?;
+        if scope.kind == ScopeKind::Package
+            && let Some(package) = table
+                .symbols
+                .values()
+                .flat_map(|symbols| symbols.iter())
+                .find(|symbol| {
+                    symbol.kind == SymbolKind::Package && symbol.location.start == scope.location.start
+                })
+        {
+            return Some(package.name.clone());
+        }
+
+        let Some(parent) = scope.parent else {
+            break;
+        };
+        scope_id = parent;
+    }
+
+    let mut current = "main".to_string();
+    let mut packages: Vec<_> = table
+        .symbols
+        .values()
+        .flat_map(|symbols| symbols.iter())
+        .filter(|symbol| symbol.kind == SymbolKind::Package)
+        .collect();
+    packages.sort_by_key(|symbol| symbol.location.start);
+
+    for package in packages {
+        if package.location.start > position {
+            break;
+        }
+
+        let has_scope = table.scopes.values().any(|scope| {
+            scope.kind == ScopeKind::Package && scope.location.start == package.location.start
+        });
+        if !has_scope {
+            current = package.name.clone();
+        }
+    }
+
+    (current != "main").then_some(current)
 }
 
 /// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
