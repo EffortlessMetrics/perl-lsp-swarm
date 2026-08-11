@@ -84,9 +84,17 @@ class DapScorecardPacketTests(unittest.TestCase):
                 ],
             }
 
+        ended_unix_ms = time.time_ns() // 1_000_000
+        started_unix_ms = ended_unix_ms - 100
         return {
             "schema_version": MODULE.RUNTIME_SCHEMA_VERSION,
-            "created_unix_seconds": int(time.time()),
+            "created_unix_seconds": ended_unix_ms // 1000,
+            "timing": {
+                "started_unix_ms": started_unix_ms,
+                "ended_unix_ms": ended_unix_ms,
+                "duration_ms": 100,
+                "max_duration_ms": 180_000,
+            },
             "subject": {
                 "transport": "stdio",
                 "binary_path": str(self.binary.resolve()),
@@ -111,10 +119,14 @@ class DapScorecardPacketTests(unittest.TestCase):
         self.status.write_text(
             "# DAP\n"
             "<!-- BEGIN: DAP_LAUNCH_SCORECARD -->\n"
-            f"| Metric | Value | Target | Status |\n|---|---|---|---|\n| Launch | 5/5 | 80% | {verdict} |\n"
+            f"| Metric | Value | Target | Status |\n"
+            f"|---|---|---|---|\n"
+            f"| Launch | 5/5 | 80% | {verdict} |\n"
             "<!-- END: DAP_LAUNCH_SCORECARD -->\n"
             "<!-- BEGIN: DAP_SESSION_SCORECARD -->\n"
-            f"| Metric | Value | Target | Status |\n|---|---|---|---|\n| Session | proven | proven | {verdict} |\n"
+            f"| Metric | Value | Target | Status |\n"
+            f"|---|---|---|---|\n"
+            f"| Session | proven | proven | {verdict} |\n"
             "<!-- END: DAP_SESSION_SCORECARD -->\n",
             encoding="utf-8",
         )
@@ -177,6 +189,23 @@ class DapScorecardPacketTests(unittest.TestCase):
                     "details": scorecard["attach"]["details"][:1],
                 }
             ),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                scorecard = self._scorecard()
+                mutate(scorecard)
+                self._write_scorecard(scorecard)
+                self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
+    def test_timing_and_invocation_policy_is_fixed(self) -> None:
+        mutations = (
+            lambda scorecard: scorecard["timing"].__setitem__("max_duration_ms", 0),
+            lambda scorecard: scorecard["timing"].__setitem__("duration_ms", 180_001),
+            lambda scorecard: scorecard["timing"].__setitem__(
+                "ended_unix_ms", scorecard["timing"]["started_unix_ms"] - 1
+            ),
+            lambda scorecard: scorecard["timing"].__setitem__("duration_ms", 20_000),
+            lambda scorecard: scorecard["subject"].__setitem__("process_invocations", 10),
         )
         for mutate in mutations:
             with self.subTest(mutate=mutate):

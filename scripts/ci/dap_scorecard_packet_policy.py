@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from dap_scorecard_model import MAX_SCORECARD_DURATION_MS, TIMING_WALL_CLOCK_TOLERANCE_MS
 from dap_scorecard_packet_common import (
     REQUIRED_ATTACH_NAMES,
     REQUIRED_BINARY_STATUSES,
@@ -93,6 +94,38 @@ def _validate_rate(
             raise PacketError(f"scorecard.launch p95 exceeds 5000 ms: {expected_p95!r}")
 
 
+def _validate_timing(scorecard: Mapping[str, Any]) -> None:
+    timing = as_object(scorecard.get("timing"), "scorecard.timing")
+    started = as_nonnegative_int(timing.get("started_unix_ms"), "scorecard.timing.started_unix_ms")
+    ended = as_nonnegative_int(timing.get("ended_unix_ms"), "scorecard.timing.ended_unix_ms")
+    duration = as_nonnegative_int(timing.get("duration_ms"), "scorecard.timing.duration_ms")
+    maximum = as_nonnegative_int(
+        timing.get("max_duration_ms"), "scorecard.timing.max_duration_ms"
+    )
+    if ended < started:
+        raise PacketError("scorecard timing end precedes start")
+    if maximum != MAX_SCORECARD_DURATION_MS:
+        raise PacketError(
+            "scorecard timing envelope differs from policy: "
+            f"expected {MAX_SCORECARD_DURATION_MS}, got {maximum}"
+        )
+    if duration > maximum:
+        raise PacketError(
+            f"scorecard duration exceeds its bounded envelope: {duration} ms > {maximum} ms"
+        )
+    wall_elapsed = ended - started
+    if abs(wall_elapsed - duration) > TIMING_WALL_CLOCK_TOLERANCE_MS:
+        raise PacketError(
+            "scorecard wall-clock and monotonic durations disagree: "
+            f"wall={wall_elapsed} ms, monotonic={duration} ms"
+        )
+    created = as_nonnegative_int(
+        scorecard.get("created_unix_seconds"), "scorecard.created_unix_seconds"
+    )
+    if created != ended // 1000:
+        raise PacketError("scorecard.created_unix_seconds does not identify timing.ended_unix_ms")
+
+
 def validate_scorecard(raw: Any) -> Mapping[str, Any]:
     scorecard = as_object(raw, "scorecard receipt")
     if scorecard.get("schema_version") != RUNTIME_SCHEMA_VERSION:
@@ -100,6 +133,7 @@ def validate_scorecard(raw: Any) -> Mapping[str, Any]:
             f"scorecard receipt schema must be {RUNTIME_SCHEMA_VERSION!r}, "
             f"got {scorecard.get('schema_version')!r}"
         )
+    _validate_timing(scorecard)
     subject = as_object(scorecard.get("subject"), "scorecard.subject")
     if subject.get("transport") != "stdio":
         raise PacketError("scorecard subject must use the real stdio transport")
@@ -109,7 +143,9 @@ def validate_scorecard(raw: Any) -> Mapping[str, Any]:
         raise PacketError("scorecard.subject.binary_sha256 is missing or malformed")
     if not isinstance(subject.get("version_output"), str) or not subject.get("version_output"):
         raise PacketError("scorecard.subject.version_output is missing")
-    invocations = as_int(subject.get("process_invocations"), "scorecard.subject.process_invocations")
+    invocations = as_int(
+        subject.get("process_invocations"), "scorecard.subject.process_invocations"
+    )
     if invocations != REQUIRED_PROCESS_INVOCATIONS:
         raise PacketError(
             f"scorecard must record {REQUIRED_PROCESS_INVOCATIONS} exact-binary invocations, "

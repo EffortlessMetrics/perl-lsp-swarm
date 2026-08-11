@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from dap_scorecard_model import DEFAULT_TIMEOUT_SECONDS, ScorecardError
-from dap_scorecard_transport import DapProcess, frame_message
+from dap_scorecard_model import DEFAULT_TIMEOUT_SECONDS, ScorecardError, metric_failure
+from dap_scorecard_transport import DapProcess, InvocationCounter, frame_message
 
 
 def _launch_arguments(script: Path, *, stop_on_entry: bool) -> dict[str, Any]:
@@ -28,8 +28,13 @@ def _launch_arguments(script: Path, *, stop_on_entry: bool) -> dict[str, Any]:
     }
 
 
-def probe_launch(binary: Path, script: Path, timeout_seconds: float) -> int:
-    with DapProcess(binary, timeout_seconds) as dap:
+def probe_launch(
+    binary: Path,
+    script: Path,
+    timeout_seconds: float,
+    invocations: InvocationCounter,
+) -> int:
+    with DapProcess(binary, timeout_seconds, invocations) as dap:
         dap.initialize()
         started = time.monotonic()
         dap.request("launch", _launch_arguments(script, stop_on_entry=True))
@@ -71,7 +76,11 @@ def _serve_attach(listener: socket.socket, errors: queue.Queue[BaseException]) -
         listener.close()
 
 
-def probe_attach(binary: Path, timeout_seconds: float) -> int:
+def probe_attach(
+    binary: Path,
+    timeout_seconds: float,
+    invocations: InvocationCounter,
+) -> int:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -81,7 +90,7 @@ def probe_attach(binary: Path, timeout_seconds: float) -> int:
     server = threading.Thread(target=_serve_attach, args=(listener, errors), daemon=True)
     server.start()
 
-    with DapProcess(binary, timeout_seconds) as dap:
+    with DapProcess(binary, timeout_seconds, invocations) as dap:
         dap.initialize()
         started = time.monotonic()
         dap.request("attach", {"host": "127.0.0.1", "port": port, "timeout": 2000})
@@ -110,8 +119,57 @@ def _require_array(value: Any, context: str) -> list[Any]:
     return value
 
 
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _fixture_name_matches(name: str, sigil: str, bare_name: str) -> bool:
+    return name == f"{sigil}{bare_name}" or name.endswith(f"::{bare_name}")
+
+
+def _query_scope_variables(
+    dap: DapProcess,
+    scopes: list[Any],
+) -> tuple[dict[str, list[Mapping[str, Any]]], dict[str, str]]:
+    scope_variables: dict[str, list[Mapping[str, Any]]] = {}
+    scope_errors: dict[str, str] = {}
+    for raw_scope in scopes:
+        scope = _require_object(raw_scope, "scope")
+        name = str(scope.get("name", ""))
+        if name not in {"Package", "Globals", "Locals"}:
+            continue
+        variables_ref = _positive_int(scope.get("variablesReference"))
+        if variables_ref is None:
+            scope_errors[name] = "missing positive variablesReference"
+            continue
+        try:
+            body = _require_object(
+                dap.request("variables", {"variablesReference": variables_ref}),
+                f"{name} variables body",
+            )
+            rows = _require_array(body.get("variables"), f"{name} variables")
+            scope_variables[name] = [
+                _require_object(row, f"{name} variable") for row in rows
+            ]
+        except ScorecardError as exc:
+            scope_errors[name] = str(exc)
+    return scope_variables, scope_errors
+
+
+def _variable_samples(scope_variables: Mapping[str, list[Mapping[str, Any]]]) -> str:
+    samples: list[str] = []
+    for scope_name, rows in scope_variables.items():
+        names = [str(row.get("name", "")) for row in rows[:8]]
+        samples.append(f"{scope_name}={names!r}")
+    return "; ".join(samples) or "<no scope rows>"
+
+
 def probe_session_metrics(
-    binary: Path, timeout_seconds: float
+    binary: Path,
+    timeout_seconds: float,
+    invocations: InvocationCounter,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     script_text = """use strict;
 use warnings;
@@ -124,7 +182,7 @@ print \"marker=$marker\\n\";
     with tempfile.TemporaryDirectory(prefix="dap-scorecard-") as temp_dir:
         script = Path(temp_dir) / "scorecard_session.pl"
         script.write_text(script_text, encoding="utf-8")
-        with DapProcess(binary, timeout_seconds) as dap:
+        with DapProcess(binary, timeout_seconds, invocations) as dap:
             dap.initialize()
             dap.request("launch", _launch_arguments(script, stop_on_entry=False))
             breakpoints = dap.request(
@@ -160,62 +218,66 @@ print \"marker=$marker\\n\";
                 ),
                 "scopes.scopes",
             )
-            globals_scope = next(
-                (
-                    _require_object(scope, "scope")
-                    for scope in scopes
-                    if isinstance(scope, dict)
-                    and str(scope.get("name", "")).lower() == "globals"
-                ),
-                None,
-            )
-            if globals_scope is None:
-                raise ScorecardError(f"Globals scope was absent: {scopes!r}")
-            globals_ref = globals_scope.get("variablesReference")
-            if isinstance(globals_ref, bool) or not isinstance(globals_ref, int) or globals_ref <= 0:
-                raise ScorecardError("Globals scope omitted a positive variablesReference")
-
-            variables = _require_array(
-                _require_object(
-                    dap.request("variables", {"variablesReference": globals_ref}),
-                    "variables body",
-                ).get("variables"),
-                "variables.variables",
-            )
-            names = [str(_require_object(variable, "variable").get("name", "")) for variable in variables]
-            if not variables or any(not name for name in names):
-                raise ScorecardError(f"Globals variables were empty or unnamed: {names!r}")
-            variables_metric = {
-                "status": "PASS",
-                "detail": f"stdio Globals scope returned {len(variables)} named variables",
+            scope_variables, scope_errors = _query_scope_variables(dap, scopes)
+            all_variables = [row for rows in scope_variables.values() for row in rows]
+            names = [str(row.get("name", "")) for row in all_variables]
+            expected = {
+                "$x": any(_fixture_name_matches(name, "$", "x") for name in names),
+                "@big": any(_fixture_name_matches(name, "@", "big") for name in names),
+                "%meta": any(_fixture_name_matches(name, "%", "meta") for name in names),
             }
+            missing = [name for name, present in expected.items() if not present]
+            if missing:
+                variables_metric = metric_failure(
+                    "stdio variable scopes did not expose fixture package variables "
+                    f"{missing!r}; samples={_variable_samples(scope_variables)}; "
+                    f"scope_errors={scope_errors!r}"
+                )
+            elif any(not name for name in names):
+                variables_metric = metric_failure(
+                    "stdio variable scopes contained unnamed rows; "
+                    f"samples={_variable_samples(scope_variables)}"
+                )
+            else:
+                variables_metric = {
+                    "status": "PASS",
+                    "detail": (
+                        "stdio Package/Globals/Locals scopes exposed $x, @big, and %meta "
+                        f"across {len(all_variables)} named variables"
+                    ),
+                }
 
-            evaluate = _require_object(
-                dap.request(
-                    "evaluate",
-                    {
-                        "expression": "$x + 1",
-                        "frameId": frame_id,
-                        "context": "watch",
-                        "allowSideEffects": False,
-                    },
-                ),
-                "evaluate body",
-            )
-            result = str(evaluate.get("result", ""))
-            if "42" not in result:
-                raise ScorecardError(f"stdio evaluate result did not contain 42: {result!r}")
-            evaluate_metric = {"status": "PASS", "detail": "stdio evaluate($x + 1) returns 42"}
+            try:
+                evaluate = _require_object(
+                    dap.request(
+                        "evaluate",
+                        {
+                            "expression": "$x + 1",
+                            "frameId": frame_id,
+                            "context": "watch",
+                            "allowSideEffects": False,
+                        },
+                    ),
+                    "evaluate body",
+                )
+                result = str(evaluate.get("result", ""))
+                if "42" not in result:
+                    raise ScorecardError(
+                        f"stdio evaluate result did not contain 42: {result!r}"
+                    )
+                evaluate_metric = {
+                    "status": "PASS",
+                    "detail": "stdio evaluate($x + 1) returns 42",
+                }
+            except ScorecardError as exc:
+                evaluate_metric = metric_failure(str(exc))
 
             expandable: Mapping[str, Any] | None = None
-            for variable in variables:
-                row = _require_object(variable, "variable")
-                variables_ref = row.get("variablesReference")
+            for row in all_variables:
+                variables_ref = _positive_int(row.get("variablesReference"))
                 indexed = row.get("indexedVariables")
                 if (
-                    isinstance(variables_ref, int)
-                    and not isinstance(variables_ref, bool)
-                    and variables_ref > 0
+                    variables_ref is not None
                     and isinstance(indexed, int)
                     and not isinstance(indexed, bool)
                     and indexed >= 200
@@ -223,37 +285,62 @@ print \"marker=$marker\\n\";
                     expandable = row
                     break
             if expandable is None:
-                raise ScorecardError(
-                    "stdio Globals scope exposed no indexed variable with indexedVariables >= 200"
+                deep_metric = metric_failure(
+                    "stdio package-aware scopes exposed no indexed variable with "
+                    "indexedVariables >= 200; "
+                    f"samples={_variable_samples(scope_variables)}; scope_errors={scope_errors!r}"
                 )
-            indexed_ref = int(expandable["variablesReference"])
-            indexed_count = int(expandable["indexedVariables"])
-            page = _require_array(
-                _require_object(
-                    dap.request(
-                        "variables",
-                        {"variablesReference": indexed_ref, "start": 250, "count": 25},
-                    ),
-                    "paged variables body",
-                ).get("variables"),
-                "paged variables",
-            )
-            if len(page) != 25:
-                raise ScorecardError(f"expected 25 paged variables, got {len(page)}")
-            first = str(_require_object(page[0], "paged variable[0]").get("name", ""))
-            last = str(_require_object(page[-1], "paged variable[-1]").get("name", ""))
-            if first != "[250]" or last != "[274]":
-                raise ScorecardError(f"unexpected stdio page bounds: first={first!r}, last={last!r}")
-            deep_metric = {
-                "status": "PASS",
-                "detail": (
-                    "stdio pagination returned [250]..[274] over "
-                    f"indexedVariables={indexed_count}"
-                ),
-            }
-            memory_metric = {
-                "status": "MEASURED",
-                "detail": f"exact perl-dap stdio process VmRSS={dap.rss_kb()} KiB",
-            }
+            else:
+                try:
+                    indexed_ref = int(expandable["variablesReference"])
+                    indexed_count = int(expandable["indexedVariables"])
+                    page = _require_array(
+                        _require_object(
+                            dap.request(
+                                "variables",
+                                {
+                                    "variablesReference": indexed_ref,
+                                    "start": 250,
+                                    "count": 25,
+                                },
+                            ),
+                            "paged variables body",
+                        ).get("variables"),
+                        "paged variables",
+                    )
+                    if len(page) != 25:
+                        raise ScorecardError(
+                            f"expected 25 paged variables, got {len(page)}"
+                        )
+                    first = str(
+                        _require_object(page[0], "paged variable[0]").get("name", "")
+                    )
+                    last = str(
+                        _require_object(page[-1], "paged variable[-1]").get("name", "")
+                    )
+                    if first != "[250]" or last != "[274]":
+                        raise ScorecardError(
+                            f"unexpected stdio page bounds: first={first!r}, last={last!r}"
+                        )
+                    deep_metric = {
+                        "status": "PASS",
+                        "detail": (
+                            "stdio pagination returned [250]..[274] over "
+                            f"indexedVariables={indexed_count}"
+                        ),
+                    }
+                except ScorecardError as exc:
+                    deep_metric = metric_failure(str(exc))
+
+            try:
+                memory_metric = {
+                    "status": "MEASURED",
+                    "detail": f"exact perl-dap stdio process VmRSS={dap.rss_kb()} KiB",
+                }
+            except ScorecardError as exc:
+                memory_metric = metric_failure(str(exc))
+
+            # A probe is not successful until the disconnect response, terminated
+            # event, stdin closure, and clean adapter exit are all observed.
             dap.disconnect()
             return variables_metric, evaluate_metric, deep_metric, memory_metric

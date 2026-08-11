@@ -18,6 +18,8 @@ LAUNCH_FIXTURES = ("hello", "loops", "eval", "args", "begin_end")
 ATTACH_ATTEMPTS = 5
 DEFAULT_TIMEOUT_SECONDS = 12.0
 REQUIRED_PROCESS_INVOCATIONS = len(LAUNCH_FIXTURES) + ATTACH_ATTEMPTS + 1
+MAX_SCORECARD_DURATION_MS = 180_000
+TIMING_WALL_CLOCK_TOLERANCE_MS = 5_000
 
 
 class ScorecardError(RuntimeError):
@@ -93,8 +95,55 @@ def validate_runtime_inputs(binary: Path, perl: Path, fixtures: Mapping[str, Pat
         raise ScorecardError(f"Perl runtime is missing or not executable: {perl}")
 
 
-def scorecard_failures(scorecard: Mapping[str, Any]) -> list[str]:
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _timing_failures(scorecard: Mapping[str, Any]) -> list[str]:
+    timing = scorecard.get("timing")
+    if not isinstance(timing, dict):
+        return ["timing metric missing"]
+
+    fields = ("started_unix_ms", "ended_unix_ms", "duration_ms", "max_duration_ms")
+    if any(not _is_int(timing.get(field)) for field in fields):
+        return ["timing metric malformed"]
+
+    started = int(timing["started_unix_ms"])
+    ended = int(timing["ended_unix_ms"])
+    duration = int(timing["duration_ms"])
+    maximum = int(timing["max_duration_ms"])
     failures: list[str] = []
+    if started < 0 or ended < started or duration < 0:
+        failures.append("timing values are negative or reversed")
+    if maximum != MAX_SCORECARD_DURATION_MS:
+        failures.append(
+            f"timing max duration must be {MAX_SCORECARD_DURATION_MS} ms, got {maximum}"
+        )
+    if duration > maximum:
+        failures.append(f"scorecard duration exceeded envelope: {duration} ms > {maximum} ms")
+    wall_elapsed = ended - started
+    if abs(wall_elapsed - duration) > TIMING_WALL_CLOCK_TOLERANCE_MS:
+        failures.append(
+            "scorecard wall-clock and monotonic durations disagree: "
+            f"wall={wall_elapsed} ms, monotonic={duration} ms"
+        )
+    created = scorecard.get("created_unix_seconds")
+    if not _is_int(created) or int(created) != ended // 1000:
+        failures.append("created_unix_seconds does not identify the timing end")
+    return failures
+
+
+def scorecard_failures(scorecard: Mapping[str, Any]) -> list[str]:
+    failures = _timing_failures(scorecard)
+
+    subject = scorecard.get("subject")
+    invocations = subject.get("process_invocations") if isinstance(subject, dict) else None
+    if invocations != REQUIRED_PROCESS_INVOCATIONS:
+        failures.append(
+            "exact-binary invocation count mismatch: "
+            f"expected {REQUIRED_PROCESS_INVOCATIONS}, got {invocations!r}"
+        )
+
     for name in ("launch", "attach"):
         metric = scorecard.get(name)
         if not isinstance(metric, dict):
@@ -102,19 +151,19 @@ def scorecard_failures(scorecard: Mapping[str, Any]) -> list[str]:
             continue
         passed = metric.get("passed")
         total = metric.get("total")
-        if not isinstance(passed, int) or not isinstance(total, int) or total <= 0:
+        if not _is_int(passed) or not _is_int(total) or int(total) <= 0:
             failures.append(f"{name} rate malformed")
             continue
-        required = math.ceil(total * THRESHOLD_PCT / 100)
-        if passed < required:
+        required = math.ceil(int(total) * THRESHOLD_PCT / 100)
+        if int(passed) < required:
             failures.append(f"{name} below threshold: {passed}/{total}, need {required}")
     launch = scorecard.get("launch")
     if isinstance(launch, dict):
         p50 = launch.get("p50_ms")
         p95 = launch.get("p95_ms")
-        if not isinstance(p50, int) or p50 > 2_000:
+        if not _is_int(p50) or int(p50) > 2_000:
             failures.append(f"launch p50 exceeded 2000 ms or was absent: {p50!r}")
-        if not isinstance(p95, int) or p95 > 5_000:
+        if not _is_int(p95) or int(p95) > 5_000:
             failures.append(f"launch p95 exceeded 5000 ms or was absent: {p95!r}")
     for name, expected in (
         ("variables", "PASS"),

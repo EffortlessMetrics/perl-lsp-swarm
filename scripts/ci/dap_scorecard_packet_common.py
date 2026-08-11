@@ -9,18 +9,23 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from dap_scorecard_model import (
+    ATTACH_ATTEMPTS,
+    LAUNCH_FIXTURES,
+    REQUIRED_PROCESS_INVOCATIONS,
+    SCHEMA_VERSION as RUNTIME_SCHEMA_VERSION,
+    THRESHOLD_PCT as REQUIRED_THRESHOLD_PCT,
+)
+
 SCHEMA_VERSION = "dap_scorecard_packet.v2"
-RUNTIME_SCHEMA_VERSION = "dap_runtime_scorecard.v2"
-REQUIRED_THRESHOLD_PCT = 80
-REQUIRED_PROCESS_INVOCATIONS = 11
 REQUIRED_BINARY_STATUSES = {
     "variables": "PASS",
     "evaluate": "PASS",
     "deep_pagination": "PASS",
     "memory": "MEASURED",
 }
-REQUIRED_LAUNCH_FIXTURE_NAMES = ("hello", "loops", "eval", "args", "begin_end")
-REQUIRED_ATTACH_NAMES = ("tcp_loopback",) * 5
+REQUIRED_LAUNCH_FIXTURE_NAMES = LAUNCH_FIXTURES
+REQUIRED_ATTACH_NAMES = ("tcp_loopback",) * ATTACH_ATTEMPTS
 REQUIRED_FIXTURES = (
     "crates/perl-dap/tests/fixtures/hello.pl",
     "crates/perl-dap/tests/fixtures/loops.pl",
