@@ -35,23 +35,23 @@ Recurring work may include parser corpus coverage, LSP conformance, DAP preview 
 
 The maintained workspace includes, among other packages:
 
-- \`perl-ast\` — AST types and methods
-- \`perl-parser-core\` — parsing, position/trivia infrastructure, and recovery
-- \`perl-parser\` — public parser facade
-- \`perl-semantic-analyzer\` and \`perl-workspace\` — semantic and workspace analysis
-- \`perl-lsp-rs-core\` — consolidated LSP protocol, transport, runtime, governance, and providers
-- \`perl-lsp-rs\` and \`perllsp\` — server and public binary surfaces
-- \`perl-dap\` — native Debug Adapter Protocol surface
-- \`perl-corpus\` — corpus fixtures and parser-accuracy evidence
-- \`xtask\` — repository automation
+- `perl-ast` — AST types and methods
+- `perl-parser-core` — parsing, position/trivia infrastructure, and recovery
+- `perl-parser` — public parser facade
+- `perl-semantic-analyzer` and `perl-workspace` — semantic and workspace analysis
+- `perl-lsp-rs-core` — consolidated LSP protocol, transport, runtime, governance, and providers
+- `perl-lsp-rs` and `perllsp` — server and public binary surfaces
+- `perl-dap` — native Debug Adapter Protocol surface
+- `perl-corpus` — corpus fixtures and parser-accuracy evidence
+- `xtask` — repository automation
 
-The root manifest also records absorbed crates and excludes the legacy \`tree-sitter-perl\`, \`fuzz\`, and \`archive\` trees. Do not treat historical crate inventories as current workspace topology.
+The root manifest also records absorbed crates and excludes the legacy `tree-sitter-perl`, `fuzz`, and `archive` trees. Do not treat historical crate inventories as current workspace topology.
 
 ## Quick Commands
 
 Use the narrowest command that matches the question:
 
-\`\`\`bash
+```bash
 # Workspace validation
 cargo check --workspace
 cargo test --workspace
@@ -70,20 +70,20 @@ cargo run -p perl-lsp-rs -- --stdio
 # Repository formatting and governed checks
 cargo fmt --all -- --check
 cargo xtask fmt --check
-\`\`\`
+```
 
 Check the [Commands Reference](../reference/COMMANDS_REFERENCE.md) and repository contribution instructions before using broader or release-specific gates.
 
 ## Where to Start a Change
 
-- AST structure or methods: \`crates/perl-ast\`
-- Syntax, parsing, or recovery: \`crates/perl-parser-core\`
-- Public parser behavior: \`crates/perl-parser\`
-- Semantic or workspace behavior: \`crates/perl-semantic-analyzer\` and \`crates/perl-workspace\`
-- LSP providers, protocol, transport, or runtime: \`crates/perl-lsp-rs-core\`
-- Server startup or binary packaging: \`crates/perl-lsp-rs\` and \`crates/perllsp\`
-- DAP behavior: \`crates/perl-dap\`
-- Corpus fixtures and accuracy manifests: \`crates/perl-corpus\`
+- AST structure or methods: `crates/perl-ast`
+- Syntax, parsing, or recovery: `crates/perl-parser-core`
+- Public parser behavior: `crates/perl-parser`
+- Semantic or workspace behavior: `crates/perl-semantic-analyzer` and `crates/perl-workspace`
+- LSP providers, protocol, transport, or runtime: `crates/perl-lsp-rs-core`
+- Server startup or binary packaging: `crates/perl-lsp-rs` and `crates/perllsp`
+- DAP behavior: `crates/perl-dap`
+- Corpus fixtures and accuracy manifests: `crates/perl-corpus`
 
 Use the package README and the relevant issue/spec as the local contract before editing.
 
