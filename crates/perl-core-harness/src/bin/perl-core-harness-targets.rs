@@ -2,17 +2,15 @@
 
 //! Validate the versioned upstream Perl target matrix without executing Perl.
 
-#[path = "perl-core-harness-targets/model.rs"]
+#[path = "../target_contracts/model.rs"]
 mod model;
-#[path = "perl-core-harness-targets/contract.rs"]
+#[path = "../target_contracts/contract.rs"]
 mod contract;
-#[path = "perl-core-harness-targets/matrix.rs"]
+#[path = "../target_contracts/matrix.rs"]
 mod matrix;
 
 use color_eyre::eyre::{Context, Result, bail};
-use model::{
-    TargetMatrixIndex, TargetMatrixPart, TargetTopologyDrift, UpstreamTargetMatrix,
-};
+use model::{TargetMatrixIndex, TargetMatrixPart, TargetTopologyDrift, UpstreamTargetMatrix};
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
@@ -119,5 +117,5 @@ fn read_drift(path: &Path) -> Result<TargetTopologyDrift> {
 }
 
 #[cfg(test)]
-#[path = "perl-core-harness-targets/tests.rs"]
+#[path = "../target_contracts/tests.rs"]
 mod tests;
