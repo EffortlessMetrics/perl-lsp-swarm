@@ -20,6 +20,20 @@ struct ParserAccuracyFixture {
     source_path: PathBuf,
     #[serde(default)]
     ast_expectations: Vec<AstExpectation>,
+    #[serde(default)]
+    forbidden_nodes: Vec<ForbiddenNode>,
+}
+
+/// A node shape that must not appear at a given position.
+#[derive(Debug, Deserialize)]
+struct ForbiddenNode {
+    id: String,
+    kind: String,
+    line: usize,
+    #[serde(default)]
+    parent_kind: Option<String>,
+    #[serde(default)]
+    depth: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,8 +110,20 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
         })?;
         let observed = collect_observed_nodes(&ast, &source);
 
+        let contributed = fixture.ast_expectations.len() + fixture.forbidden_nodes.len();
+        assert!(
+            contributed > 0,
+            "fixture {} is selected but contributes no AST assertion",
+            fixture.id
+        );
+
         for expectation in &fixture.ast_expectations {
             assert_observed_expectation(&fixture.id, expectation, &observed);
+            exercised += 1;
+        }
+
+        for forbidden in &fixture.forbidden_nodes {
+            assert_node_absent(&fixture.id, forbidden, &observed);
             exercised += 1;
         }
     }
@@ -195,6 +221,23 @@ fn assert_observed_expectation(
         matched,
         "fixture `{fixture_id}` missing AST expectation `{}`: expected kind `{}` on line {} containing {:?}",
         expectation.id, expectation.kind, expectation.line, expectation.span_text
+    );
+}
+
+fn assert_node_absent(fixture_id: &str, forbidden: &ForbiddenNode, observed: &[ObservedNode<'_>]) {
+    let offender = observed.iter().find(|node| {
+        node.kind == forbidden.kind
+            && node.line == forbidden.line
+            && forbidden.parent_kind.as_deref().is_none_or(|parent| node.parent_kind == Some(parent))
+            && forbidden.depth.is_none_or(|depth| node.depth == depth)
+    });
+    assert!(
+        offender.is_none(),
+        "fixture {} violates forbidden node {}: found kind {} on line {}",
+        fixture_id,
+        forbidden.id,
+        forbidden.kind,
+        forbidden.line,
     );
 }
 
