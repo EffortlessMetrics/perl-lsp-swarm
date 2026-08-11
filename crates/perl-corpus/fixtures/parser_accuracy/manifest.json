@@ -2016,6 +2016,18 @@
             "do_while"
           ]
         }
+      ],
+      "ast_expectations": [
+        {
+          "id": "control_do_until_node",
+          "kind": "LoopControl",
+          "line": 6,
+          "span_text": "until",
+          "parent_kind": "Do",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -2051,6 +2063,18 @@
           "expected_tags": [
             "sub_decl"
           ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "format_decl_node",
+          "kind": "Format",
+          "line": 3,
+          "span_text": "format STDOUT",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -3380,6 +3404,46 @@
           "depth": 1,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "continue_redo_redo",
+          "kind": "LoopControl",
+          "line": 6,
+          "span_text": "redo OUTER",
+          "parent_kind": "ExpressionStatement",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "continue_redo_next",
+          "kind": "LoopControl",
+          "line": 7,
+          "span_text": "next OUTER",
+          "parent_kind": "ExpressionStatement",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "continue_redo_last",
+          "kind": "LoopControl",
+          "line": 8,
+          "span_text": "last OUTER",
+          "parent_kind": "ExpressionStatement",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "continue_redo_continue",
+          "kind": "LoopControl",
+          "line": 9,
+          "span_text": "continue",
+          "parent_kind": "While",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -3442,6 +3506,26 @@
           "span_text": "sub collect",
           "parent_kind": "Program",
           "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "glob_function",
+          "kind": "Glob",
+          "line": 5,
+          "span_text": "glob($pattern)",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "glob_diamond",
+          "kind": "Glob",
+          "line": 6,
+          "span_text": "<$pattern>",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
           "operator": null,
           "parent_operator": null
         }
@@ -3511,6 +3595,26 @@
           "span_text": "sub configure",
           "parent_kind": "Program",
           "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "tie_operation",
+          "kind": "Tie",
+          "line": 4,
+          "span_text": "tie my %cache",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "untie_operation",
+          "kind": "Untie",
+          "line": 7,
+          "span_text": "untie %cache",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
           "operator": null,
           "parent_operator": null
         }
