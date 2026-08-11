@@ -1,0 +1,133 @@
+name: One-shot merge-ready symbol prepass repair
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: >-
+      github.event.pull_request.number == 6755 &&
+      github.event.pull_request.head.ref == 'agent/lexer-symbol-prepass-6732'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      patch_b64: ${{ steps.patch.outputs.patch_b64 }}
+      patch_sha256: ${{ steps.patch.outputs.patch_sha256 }}
+      expected_head: ${{ steps.head.outputs.expected_head }}
+      head_ref: ${{ steps.head.outputs.head_ref }}
+    steps:
+      - name: Check out the exact reviewed head without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind the candidate identity
+        id: head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "expected_head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          echo "head_ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply the bounded source transformation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .agent/merge-ready-6755.py
+          rm .agent/merge-ready-6755.py .github/workflows/agent-merge-ready-6755.yml
+          cargo fmt -p perl-lexer
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          expected=(
+            .agent/merge-ready-6755.py
+            .github/workflows/agent-merge-ready-6755.yml
+            crates/perl-lexer/src/symbol_table.rs
+          )
+          printf '%s\n' "${expected[@]}" | sort > /tmp/expected-files
+          printf '%s\n' "${changed[@]}" | sort > /tmp/changed-files
+          diff -u /tmp/expected-files /tmp/changed-files
+          git diff --check
+
+      - name: Verify the repaired candidate without write credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt -p perl-lexer -- --check
+          cargo test -p perl-lexer --lib symbol_table --locked
+          cargo test -p perl-lexer --tests --locked
+          cargo clippy -p perl-lexer --all-targets --locked -- -D warnings
+
+      - name: Export the exact verified patch
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --binary > /tmp/merge-ready.patch
+          test -s /tmp/merge-ready.patch
+          echo "patch_sha256=$(sha256sum /tmp/merge-ready.patch | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "patch_b64=$(base64 -w0 /tmp/merge-ready.patch)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the same exact head without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.prepare.outputs.expected_head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Apply only the verified allowlisted patch
+        shell: bash
+        env:
+          PATCH_B64: ${{ needs.prepare.outputs.patch_b64 }}
+          PATCH_SHA256: ${{ needs.prepare.outputs.patch_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.expected_head }}"
+          printf '%s' "$PATCH_B64" | base64 -d > /tmp/merge-ready.patch
+          test "$(sha256sum /tmp/merge-ready.patch | cut -d' ' -f1)" = "$PATCH_SHA256"
+          git apply --check /tmp/merge-ready.patch
+          git apply /tmp/merge-ready.patch
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          expected=(
+            .agent/merge-ready-6755.py
+            .github/workflows/agent-merge-ready-6755.yml
+            crates/perl-lexer/src/symbol_table.rs
+          )
+          printf '%s\n' "${expected[@]}" | sort > /tmp/expected-files
+          printf '%s\n' "${changed[@]}" | sort > /tmp/changed-files
+          diff -u /tmp/expected-files /tmp/changed-files
+          test ! -e .agent/merge-ready-6755.py
+          test ! -e .github/workflows/agent-merge-ready-6755.yml
+          git diff --check
+
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git config core.hooksPath /dev/null
+          git add crates/perl-lexer/src/symbol_table.rs
+          git add -u .agent/merge-ready-6755.py .github/workflows/agent-merge-ready-6755.yml
+          git commit --no-verify -m 'fix(lexer): complete source-aware local sub scanning (#6732)'
+
+      - name: Publish only if the reviewed branch has not advanced
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ needs.prepare.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push "$remote" "HEAD:refs/heads/${HEAD_REF}"
