@@ -3699,7 +3699,8 @@ fn is_ast_scored_node(node: &Node) -> bool {
 
 fn node_operator(node: &Node) -> Option<&str> {
     match &node.kind {
-        NodeKind::Binary { op, .. } => Some(op.as_str()),
+        NodeKind::Binary { op, .. } | NodeKind::Assignment { op, .. } => Some(op.as_str()),
+        NodeKind::Match { negated, .. } => Some(if *negated { "!~" } else { "=~" }),
         _ => None,
     }
 }
@@ -3765,11 +3766,19 @@ fn score_ast_expectations(
                 score.tree_depth_correct_count += 1;
             }
         }
-        if let Some(operator) = &expectation.operator {
+        if expectation.operator.is_some() || expectation.parent_operator.is_some() {
             score.operator_precedence_expected_count += 1;
-            if prediction.operator.as_ref() == Some(operator)
-                && prediction.parent_operator.as_ref() == expectation.parent_operator.as_ref()
-            {
+            let operator_matches = expectation
+                .operator
+                .as_ref()
+                .is_none_or(|operator| prediction.operator.as_ref() == Some(operator));
+            let parent_operator_matches = expectation
+                .parent_operator
+                .as_ref()
+                .is_none_or(|parent_operator| {
+                    prediction.parent_operator.as_ref() == Some(parent_operator)
+                });
+            if operator_matches && parent_operator_matches {
                 score.operator_precedence_correct_count += 1;
             }
         }
