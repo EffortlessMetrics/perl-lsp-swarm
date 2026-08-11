@@ -1290,7 +1290,7 @@ pub(super) fn receiver_package_from_context_or_source(
     source_package_fallback(source, position)
 }
 
-fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+pub(super) fn source_package_fallback(source: &str, position: usize) -> Option<String> {
     let prefix = source.get(..position)?;
     let mut lexer = PerlLexer::new(prefix);
     let mut current = "main".to_string();
