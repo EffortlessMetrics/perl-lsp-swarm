@@ -36,6 +36,19 @@ describe('support command implementations', () => {
     );
   });
 
+  test('preserves a compatibility binary instead of relabeling it as perllsp', () => {
+    const packet = formatIssueDiagnosticInfo({
+      serverVersion: 'perl-lsp 0.17.0',
+      extensionVersion: '0.17.0',
+      editorVersion: '1.128.1',
+      platform: 'linux',
+      arch: 'x64',
+    });
+
+    expect(packet).toContain('Server: perl-lsp 0.17.0 (expected perllsp)');
+    expect(packet).not.toContain('Server: perllsp 0.17.0');
+  });
+
   test('keeps an unavailable server attached to the expected executable identity', () => {
     expect(
       formatIssueDiagnosticInfo({
@@ -46,6 +59,32 @@ describe('support command implementations', () => {
         arch: 'arm64',
       }),
     ).toContain('Server: perllsp unavailable');
+  });
+
+  test('keeps every interpolated field on one bounded printable line', () => {
+    const packet = formatIssueDiagnosticInfo({
+      serverVersion: 'perllsp 0.17.0\nExtension: forged',
+      extensionVersion: '0.17.0\nProduct: forged',
+      editorVersion: '1.128.1\rPlatform: forged',
+      platform: 'win32\nArch: forged',
+      arch: 'x64\u0000oops',
+      editorName: 'Visual\u001b[31m Studio Code\nServer: forged',
+    });
+
+    expect(packet).toBe(
+      'Product: perl-lsp\n' +
+        'Server: perllsp 0.17.0\n' +
+        'Extension: EffortlessMetrics.perl-lsp-rs 0.17.0\n' +
+        'Visual\\u001b[31m Studio Code: 1.128.1\n' +
+        'Platform: win32/x64\\u0000oops',
+    );
+    expect(packet).not.toContain('Extension: forged');
+    expect(packet).not.toContain('Product: forged');
+    expect(packet).not.toContain('Server: forged');
+    expect(packet).not.toContain('Platform: forged');
+    expect(packet).not.toContain('Arch: forged');
+    expect(packet).not.toContain('\u001b');
+    expect(packet).not.toContain('\u0000');
   });
 
   test('opens the issue form with current diagnostic context', async () => {
