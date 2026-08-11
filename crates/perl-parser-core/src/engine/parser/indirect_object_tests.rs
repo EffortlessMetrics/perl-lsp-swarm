@@ -29,6 +29,18 @@ mod tests {
     }
 
     #[test]
+    fn unknown_qualified_name_is_regular_function_call() {
+        match first_statement("Package::render $renderer;").kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "Package::render");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0].kind, NodeKind::Variable { .. }));
+            }
+            other => panic!("qualified unknown names must remain FunctionCall nodes, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn unknown_lowercase_name_preserves_nested_arguments() {
         match first_statement(
             "my_custom_method $obj ($title // 'Untitled'), $options->{limit};",
@@ -69,7 +81,7 @@ mod tests {
         match first_statement("render $renderer, @parts;").kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "render");
-                assert_eq!(args.len(), 3);
+                assert_eq!(args.len(), 2);
             }
             other => panic!("expected FunctionCall node, got {other:?}"),
         }
