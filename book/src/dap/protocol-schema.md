@@ -26,12 +26,14 @@ DAP uses its own base protocol over **Content-Length framed JSON**. It is **not 
 
 The standard envelope families are:
 
-| Family | Required upstream fields |
+| Family | Required upstream fields after inheritance |
 |---|---|
 | `ProtocolMessage` | `seq`, `type` |
-| `Request` | `type`, `command` |
-| `Response` | `type`, `request_seq`, `success`, `command` |
-| `Event` | `type`, `event` |
+| `Request` | `seq`, `type`, `command` |
+| `Response` | `seq`, `type`, `request_seq`, `success`, `command` |
+| `Event` | `seq`, `type`, `event` |
+
+`Request`, `Response`, and `Event` inherit `seq` and `type` from `ProtocolMessage`. The authority gate resolves those references rather than validating only inline `required` arrays, so an upstream pin that drops the inheritance cannot pass by accident.
 
 The adapter currently uses the shared `ContentLengthFramer` for incremental reads and serializes `DapMessage` envelopes for responses and events. That implementation remains subject to protocol and transport proof; the existence of a Rust type or dispatch arm is not a compatibility verdict.
 
@@ -56,9 +58,18 @@ The machine-readable request and event matrix will classify each production surf
 - `extension` — project-specific wire surface outside standard DAP;
 - `not_proven` — implementation may exist, but current evidence is insufficient.
 
+<a id="4-breakpoint-requests"></a>
+## Breakpoint requests
+
+This compatibility anchor is retained for existing Rustdoc links. Standard breakpoint request and response shapes are owned by the pinned upstream schema. Repository behavior, backend support, identity lifetimes, and verification status remain row-specific; this document does not reproduce a second hand-written breakpoint schema.
+
 ## Standard versus project extension
 
-The repository has project-specific behavior that must not receive standard-conformance credit.
+The repository has project-specific behavior that must not receive standard-conformance credit. The authority gate compares the exact production request/event inventory with these rows and rejects both unclassified production names and stale manifest entries.
+
+| Wire name | Kind | Classification | Version | Owner |
+|---|---|---|---|---|
+| `inlineValues` | `request` | `extension` | `unversioned-current` | `#2374` |
 
 ### `inlineValues`
 
@@ -66,7 +77,11 @@ The repository has project-specific behavior that must not receive standard-conf
 
 The current implementation mixes source-derived variable discovery with optional runtime lookup. #2374 owns the decision between an explicitly static source-hint contract and a stopped-frame runtime-value contract. Either can be useful; silently blending them is not an honest protocol.
 
-### Launch and attach configuration
+### Adapter configuration
+
+| Surface | Classification | Owner |
+|---|---|---|
+| `launch/attach arguments` | `adapter-configuration` | `#4754` |
 
 Keys such as Perl executable selection, include paths, environment, workspace roots, external-peer mode, and adapter-specific timeouts are adapter configuration carried in DAP launch or attach arguments. They are not additions to the standard DAP schema merely because they cross the request boundary.
 
@@ -136,7 +151,9 @@ python3 scripts/ci/dap_protocol_authority.py check \
   --receipt target/receipts/dap-protocol-authority.json
 ```
 
-`check` additionally requires the manifest SHA-256 and fails when the downloaded bytes, schema identity, base definitions, documentation, or extension classification disagree.
+`check` additionally requires the manifest SHA-256 and fails when the downloaded bytes, schema identity, inherited base definitions, production wire inventory, documentation, or extension classification disagree.
+
+The receipt records the canonical manifest SHA-256, complete extension and adapter-configuration rows, upstream content identity, standard request/event inventory, and the exact production command/event inventory. A receipt from before an authority metadata change is therefore distinguishable from one produced after it.
 
 Offline or hermetic verification can pass an already-fetched exact schema:
 
@@ -163,9 +180,10 @@ An upstream update is intentional work, not an automatic dependency bump:
 3. Fetch the exact commit URL, calculate SHA-256, and validate the schema.
 4. Review the upstream schema and changelog delta.
 5. Update the project wire matrix for added, removed, or changed definitions.
-6. Update Rust types, dispatch, capabilities, fixtures, docs, and explicit unsupported rows as needed.
-7. Run schema-derived serde fixtures, adversarial framing tests, the real-session matrix, and installed-adapter proof where affected.
-8. Commit the manifest, generated projection or fixtures, documentation, and evidence changes together.
+6. Reconcile the production `SUPPORTED_COMMANDS` and emitted-event inventory with standard and extension rows.
+7. Update Rust types, dispatch, capabilities, fixtures, docs, and explicit unsupported rows as needed.
+8. Run schema-derived serde fixtures, adversarial framing tests, the real-session matrix, and installed-adapter proof where affected.
+9. Commit the manifest, generated projection or fixtures, documentation, and evidence changes together.
 
 A new upstream revision does not make newly added requests supported. It changes the authority against which support and explicit non-support are classified.
 

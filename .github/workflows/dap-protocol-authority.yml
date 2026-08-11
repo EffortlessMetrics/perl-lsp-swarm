@@ -5,7 +5,9 @@ on:
     branches: [main, master]
     paths:
       - '.ci/dap/protocol-authority.json'
+      - 'crates/perl-dap/**'
       - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_authority_*.py'
       - 'scripts/tests/test_dap_protocol_authority.py'
       - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
       - 'book/src/dap/protocol-schema.md'
@@ -14,7 +16,9 @@ on:
     branches: [main, master]
     paths:
       - '.ci/dap/protocol-authority.json'
+      - 'crates/perl-dap/**'
       - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_authority_*.py'
       - 'scripts/tests/test_dap_protocol_authority.py'
       - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
       - 'book/src/dap/protocol-schema.md'
@@ -55,7 +59,7 @@ jobs:
       - name: Run protocol-authority falsifiers
         run: python3 scripts/tests/test_dap_protocol_authority.py
 
-      - name: Enforce exact upstream authority
+      - name: Enforce exact upstream and production authority
         run: |
           python3 scripts/ci/dap_protocol_authority.py check \
             --root . \
@@ -82,5 +86,5 @@ jobs:
         with:
           name: dap-protocol-authority-${{ env.DAP_AUTHORITY_CANDIDATE_SHA }}
           path: target/receipts/dap-protocol-authority.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
