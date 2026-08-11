@@ -1,0 +1,41 @@
+name: Refresh product identity non-Rust inventory
+
+on:
+  push:
+    branches:
+      - agent/product-identity-contract-6744
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-product-identity-non-rust-inventory
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          ref: agent/product-identity-contract-6744
+
+      - name: Regenerate and verify the governed projection
+        shell: bash
+        run: |
+          cargo xtask non-rust inventory
+          cargo xtask non-rust inventory --check
+          git diff --check
+
+      - name: Commit projection and remove executor
+        shell: bash
+        run: |
+          git rm .github/workflows/refresh-product-identity-non-rust-inventory.yml
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add docs/policy/NON_RUST_INVENTORY.md
+          git commit -m "docs(policy): refresh product identity inventory (#6744)"
+          git push origin HEAD:agent/product-identity-contract-6744
