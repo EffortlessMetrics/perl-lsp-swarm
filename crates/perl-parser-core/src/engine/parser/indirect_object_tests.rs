@@ -76,4 +76,114 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_user_defined_indirect_call_with_array_argument() {
+        let ast = parse_code("render $renderer @parts;").expect("source should parse");
+        let statements = match &ast.kind {
+            NodeKind::Program { statements } => statements,
+            other => panic!("Expected Program node, got {other:?}"),
+        };
+        let statement = statements.first().expect("expected one statement");
+
+        match &statement.kind {
+            NodeKind::IndirectCall { method, object, args } => {
+                assert_eq!(method, "render");
+                assert!(matches!(
+                    object.kind,
+                    NodeKind::Variable { ref sigil, ref name } if sigil == "$" && name == "renderer"
+                ));
+                assert_eq!(args.len(), 1);
+                assert!(matches!(
+                    args[0].kind,
+                    NodeKind::Variable { ref sigil, ref name } if sigil == "@" && name == "parts"
+                ));
+            }
+            other => panic!("Expected IndirectCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_user_defined_indirect_call_preserves_multiple_arguments() {
+        let ast = parse_code("render $renderer ($title // 'Untitled'), @parts;")
+            .expect("source should parse");
+        let statements = match &ast.kind {
+            NodeKind::Program { statements } => statements,
+            other => panic!("Expected Program node, got {other:?}"),
+        };
+        let statement = statements.first().expect("expected one statement");
+
+        match &statement.kind {
+            NodeKind::IndirectCall { method, object, args } => {
+                assert_eq!(method, "render");
+                assert!(matches!(object.kind, NodeKind::Variable { .. }));
+                assert_eq!(args.len(), 2);
+            }
+            other => panic!("Expected IndirectCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comma_separated_user_call_is_not_indirect() {
+        let ast = parse_code("render $renderer, @parts;").expect("source should parse");
+        let statements = match &ast.kind {
+            NodeKind::Program { statements } => statements,
+            other => panic!("Expected Program node, got {other:?}"),
+        };
+        let statement = statements.first().expect("expected one statement");
+
+        assert!(
+            !matches!(statement.kind, NodeKind::IndirectCall { .. }),
+            "comma-separated call must not be classified as indirect: {:?}",
+            statement.kind
+        );
+    }
+
+    #[test]
+    fn test_indirect_call_inside_control_flow_block() {
+        let ast = parse_code("if ($enabled) { render $renderer @parts; }")
+            .expect("source should parse");
+        let statements = match &ast.kind {
+            NodeKind::Program { statements } => statements,
+            other => panic!("Expected Program node, got {other:?}"),
+        };
+        let statement = statements.first().expect("expected one statement");
+
+        let consequence = match &statement.kind {
+            NodeKind::If { consequence, .. } => consequence,
+            other => panic!("Expected If node, got {other:?}"),
+        };
+        let body_statement = consequence
+            .first()
+            .expect("expected one statement in the if body");
+
+        assert!(
+            matches!(body_statement.kind, NodeKind::IndirectCall { ref method, .. } if method == "render"),
+            "expected indirect call in block, got {:?}",
+            body_statement.kind
+        );
+    }
+
+    #[test]
+    fn test_common_list_builtins_remain_regular_calls() {
+        for source in [
+            "push @items, $item;",
+            "defined $object->method;",
+            "sort @items;",
+        ] {
+            let ast = parse_code(source).expect("source should parse");
+            let statements = match &ast.kind {
+                NodeKind::Program { statements } => statements,
+                other => panic!("Expected Program node, got {other:?}"),
+            };
+            let statement = statements.first().expect("expected one statement");
+
+            assert!(
+                !matches!(statement.kind, NodeKind::IndirectCall { .. }),
+                "{source:?} must not be classified as indirect: {:?}",
+                statement.kind
+            );
+        }
+    }
+}
 }
