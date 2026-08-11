@@ -1,8 +1,8 @@
 # Upstream Perl runner membership parity
 
-The target matrix defines what an upstream Perl target means. A runner plan records what one exact runner actually selected for that target.
+The target matrix defines what an upstream Perl target means. A runner plan records what one exact runner selected from one exact raw-discovery stream for that target.
 
-This first runner slice proves normalized membership and preserves runner order and scheduling as separate facts. It does **not** yet capture the effective per-file invocation produced by upstream `_scan_test`; every plan and comparison therefore reports `invocation_capture: not_proven`.
+This slice proves normalized membership and preserves runner order and scheduling as separate facts. It does **not** capture the effective per-file invocation produced by upstream `_scan_test`; every plan and comparison therefore reports `invocation_capture: not_proven`.
 
 ## Build a runner plan
 
@@ -35,35 +35,64 @@ The plan binds:
 
 - target-matrix fingerprint and target-contract digest;
 - requested runner and canonical selection entrypoint;
-- raw discovery digest;
+- exact raw-discovery digest;
 - raw-to-canonical source mapping;
-- source form and path class;
+- source form, path class, and invocation-context class recomputed from every raw path;
 - order-preserving normalized discovery;
 - sorted unique membership;
 - scheduling inputs;
 - direct-fallback and alternate-runner limitations;
 - the explicit per-file invocation claim boundary.
 
-Local `t/` paths, root `lib`, `dist`, `ext`, and `cpan` paths remain distinct. `.t` and `test.pl` are first-class script forms. A single leading `../` from the upstream `t/` working directory is normalized into repository source identity; traversal beyond that boundary fails.
+Local `t/` paths and root `lib`, `dist`, `ext`, and `cpan` paths remain distinct. `.t` and `test.pl` are first-class script forms. One leading `../` from the upstream `t/` working directory is normalized into repository source identity; traversal beyond that boundary fails. The filtered `core_root_lib` population does not accept the ordinary root-lib population wholesale.
 
-## Compare two plans
+## Authority-check one plan
+
+A plan is not trusted merely because its digests look hexadecimal. Checking rebuilds it from the supplied matrix, target contract, raw discovery, and serialized scheduling inputs, then requires byte-equivalent typed state:
+
+```bash
+cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
+  check-plan \
+  .ci/perl-core-harness/upstream-targets-5.42.2.v1/ \
+  target/perl-core/raw/base-test.txt \
+  target/perl-core/runner-plans/base-test.json
+```
+
+Changing a selector, runner entrypoint, source item, source form, raw-discovery bytes, scheduling field, limitation, contract digest, or matrix fingerprint fails this check.
+
+## Compare two authoritative plans
 
 ```bash
 cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   compare \
+  .ci/perl-core-harness/upstream-targets-5.42.2.v1/ \
   target/perl-core/runner-plans/base-test.json \
+  target/perl-core/raw/base-test.txt \
   target/perl-core/runner-plans/base-harness.json \
+  target/perl-core/raw/base-harness.txt \
   target/perl-core/runner-plans/base-parity.json
 ```
 
-`membership_status: parity` requires exact set equality. Runner order and scheduling may differ and remain visible through `order_equal` and `scheduling_equal`. A missing or extra file produces `mismatch`; one direct-fallback input produces `not_proven` even when the visible file set happens to match.
+The command authority-checks both plans before comparing them. The parity receipt retains SHA-256 digests for the exact left and right plan bytes and both raw-discovery streams.
 
-Validate either receipt offline with:
+`membership_status: parity` requires exact set equality between two **distinct non-fallback upstream runner kinds**, normally `test` and `harness`. A missing or extra file produces `mismatch`. A direct-fallback input or same-runner comparison produces `not_proven`, even when the visible file sets match. The corresponding limitation is mandatory and a forged `parity` or `mismatch` report fails validation.
+
+Runner order and scheduling may differ and remain visible through `order_equal` and `scheduling_equal`.
+
+## Authority-check a parity receipt
 
 ```bash
 cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
-  check target/perl-core/runner-plans/base-parity.json
+  check-parity \
+  .ci/perl-core-harness/upstream-targets-5.42.2.v1/ \
+  target/perl-core/runner-plans/base-test.json \
+  target/perl-core/raw/base-test.txt \
+  target/perl-core/runner-plans/base-harness.json \
+  target/perl-core/raw/base-harness.txt \
+  target/perl-core/runner-plans/base-parity.json
 ```
+
+This rebuilds both plans from their authorities, recomputes the comparison, and requires the serialized parity report to equal that result exactly. A detached report cannot survive plan, discovery, order, scheduling, runner, or limitation changes.
 
 ## Current claim boundary
 
@@ -79,4 +108,4 @@ The next runner slice must capture or derive upstream `_scan_test` facts for eve
 - UTF/deparse source transformation identity;
 - direct-fallback missing context.
 
-Until that evidence exists, membership parity is useful but insufficient for runner-equivalence or compiler-result movement.
+Until that evidence exists, membership parity is useful but insufficient for runner equivalence or compiler-result movement.
