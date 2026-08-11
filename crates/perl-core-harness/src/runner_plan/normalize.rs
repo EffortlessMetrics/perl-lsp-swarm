@@ -137,13 +137,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_local_and_root_external_paths() {
-        let local = normalize_source_item("base/if.t").expect("local path");
+    fn normalizes_local_and_root_external_paths() -> Result<(), String> {
+        let local = normalize_source_item("base/if.t")?;
         assert_eq!(local.canonical_path, "t/base/if.t");
-        let external = normalize_source_item("../ext/re/t/basic.t").expect("external path");
+        let external = normalize_source_item("../ext/re/t/basic.t")?;
         assert_eq!(external.canonical_path, "ext/re/t/basic.t");
-        let root_lib = normalize_source_item("lib/Foo/test.pl").expect("root lib path");
+        let root_lib = normalize_source_item("lib/Foo/test.pl")?;
         assert_eq!(root_lib.source_form, SourceForm::TestPl);
+        Ok(())
     }
 
     #[test]
