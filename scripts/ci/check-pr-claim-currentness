@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Verify that a trusted completed review receipt matches current head and material claim."""
+"""Read historical review-run receipts in fixture mode only.
+
+This compatibility parser no longer has live review-convergence authority. Direct
+pull-request evaluation is retired; use scripts/ci/check-pr-review-convergence and the
+provider-native review flow for current decisions.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +28,16 @@ REQUIRED_RECEIPT_FIELDS = {"v", "kind", "head", "reviewer", "status"}
 ALLOWED_RECEIPT_FIELDS = REQUIRED_RECEIPT_FIELDS | {"claim_digest", "comment_id"}
 REVIEW_KINDS = {"deep", "standard"}
 REVIEW_STATUSES = {"running", "done"}
+
+RETIREMENT_MESSAGE = """RETIRED: live exact-head and claim-digest review verdicts are disabled.
+
+Use the provider-native review flow and the public convergence wrapper:
+  scripts/ci/check-pr-review-convergence <pr-number> [owner/repo]
+
+Historical review-run.v1 markers remain readable only through explicit fixture inputs
+for compatibility tests and incident analysis. A SHA may identify machine evidence or
+protect the merge race; it is not the semantic review verdict.
+"""
 
 
 def _run(command: list[str]) -> str:
@@ -78,6 +93,8 @@ def _fixture_pr() -> tuple[str, str, list[dict[str, Any]]] | None:
 
 
 def _read_pr_snapshot(pr: str, repo: str) -> tuple[str, str]:
+    """Historical helper retained for compatibility-unit coverage only."""
+
     raw = _run(["gh", "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body"])
     document = json.loads(raw)
     if not isinstance(document, dict) or not document.get("headRefOid"):
@@ -86,6 +103,12 @@ def _read_pr_snapshot(pr: str, repo: str) -> tuple[str, str]:
 
 
 def _live_pr(pr: str, repo: str | None) -> tuple[str, str, list[dict[str, Any]]]:
+    """Historical helper retained for compatibility-unit coverage only.
+
+    The executable entry point never calls this function. It remains importable so the
+    old snapshot-race parser can be tested without making it current authority.
+    """
+
     fixture = _fixture_pr()
     if fixture is not None:
         return fixture
@@ -123,7 +146,7 @@ def _author_metadata(comment: dict[str, Any]) -> tuple[str, str]:
 
 
 def _valid_review_marker(value: dict[str, Any]) -> bool:
-    """Apply the checked-in review-run.v1 wire contract without extra dependencies."""
+    """Apply the historical review-run.v1 wire contract."""
 
     keys = set(value)
     if not REQUIRED_RECEIPT_FIELDS.issubset(keys) or not keys.issubset(ALLOWED_RECEIPT_FIELDS):
@@ -198,73 +221,67 @@ def _fixture_comments(path: Path) -> list[dict[str, Any]]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pr", nargs="?", help="Pull-request number for live mode")
-    parser.add_argument("--repo", help="owner/repo for live mode")
-    parser.add_argument("--head", help="Current head for fixture mode")
+    parser.add_argument(
+        "pr",
+        nargs="?",
+        help="retired live-mode argument; direct PR evaluation always fails closed",
+    )
+    parser.add_argument("--repo", help="retired live-mode argument")
+    parser.add_argument("--head", help="historical fixture candidate head")
     parser.add_argument(
         "--expected-head",
-        help="Fail NOT_PROVEN unless the fetched candidate still matches this full head SHA",
+        help="fixture-only expected head for historical race-protection tests",
     )
-    parser.add_argument("--body-file", type=Path, help="PR-body fixture")
+    parser.add_argument("--body-file", type=Path, help="historical PR-body fixture")
     parser.add_argument(
-        "--comments-file", type=Path, help="Structured PR-comments JSON fixture"
+        "--comments-file",
+        type=Path,
+        help="historical structured PR-comments fixture",
     )
     parser.add_argument("--json", action="store_true")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    fixture_mode = (
-        args.body_file is not None or args.comments_file is not None or args.head is not None
-    )
+def _evaluate_fixture(args: argparse.Namespace) -> int:
+    if not (args.body_file and args.comments_file and args.head):
+        raise RuntimeError("fixture mode requires --head, --body-file, and --comments-file")
 
-    try:
-        if fixture_mode:
-            if not (args.body_file and args.comments_file and args.head):
-                raise RuntimeError(
-                    "fixture mode requires --head, --body-file, and --comments-file"
-                )
-            head = args.head
-            body = args.body_file.read_text(encoding="utf-8")
-            comments = _fixture_comments(args.comments_file)
+    head = args.head
+    body = args.body_file.read_text(encoding="utf-8")
+    comments = _fixture_comments(args.comments_file)
+
+    if args.expected_head and head != args.expected_head:
+        raise RuntimeError(
+            "candidate moved while historical review receipts were being checked: "
+            f"expected {args.expected_head}, observed {head}"
+        )
+
+    records, invalid_trusted_receipts, invalid_untrusted_receipts = _markers(comments)
+    if not records and invalid_trusted_receipts == 0:
+        result = {
+            "result": "not_applicable",
+            "authority": "historical_fixture_only",
+            "head": head,
+            "claim_digest": None,
+            "matching_receipts": 0,
+            "completed_receipts": 0,
+            "trusted_receipts": 0,
+            "untrusted_receipts": 0,
+            "invalid_receipts": invalid_untrusted_receipts,
+            "invalid_trusted_receipts": 0,
+            "invalid_untrusted_receipts": invalid_untrusted_receipts,
+            "matching_authors": [],
+        }
+        if args.json:
+            print(json.dumps(result, sort_keys=True))
         else:
-            if not args.pr:
-                raise RuntimeError("live mode requires a pull-request number")
-            head, body, comments = _live_pr(args.pr, args.repo)
-
-        if args.expected_head and head != args.expected_head:
-            raise RuntimeError(
-                "candidate moved while review convergence was being checked: "
-                f"expected {args.expected_head}, observed {head}"
+            print(
+                "historical claim review not applicable: "
+                f"no review-run receipt exists at head={head}"
             )
+        return 0
 
-        records, invalid_trusted_receipts, invalid_untrusted_receipts = _markers(comments)
-        if not records and invalid_trusted_receipts == 0:
-            result = {
-                "result": "not_applicable",
-                "head": head,
-                "claim_digest": None,
-                "matching_receipts": 0,
-                "completed_receipts": 0,
-                "trusted_receipts": 0,
-                "untrusted_receipts": 0,
-                "invalid_receipts": invalid_untrusted_receipts,
-                "invalid_trusted_receipts": 0,
-                "invalid_untrusted_receipts": invalid_untrusted_receipts,
-                "matching_authors": [],
-            }
-            if args.json:
-                print(json.dumps(result, sort_keys=True))
-            else:
-                print(f"claim review not applicable: no review-run receipt exists at head={head}")
-            return 0
-
-        digest = str(claim_digest(body)["digest"])
-    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
-        print(f"NOT_PROVEN: {error}", file=sys.stderr)
-        return 2
-
+    digest = str(claim_digest(body)["digest"])
     trusted = [record for record in records if record["trusted"]]
     matching = [
         record
@@ -277,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     result = {
-        "result": "current" if matching and invalid_trusted_receipts == 0 else "not_proven",
+        "result": "historical_match" if matching and invalid_trusted_receipts == 0 else "not_proven",
+        "authority": "historical_fixture_only",
         "head": head,
         "claim_digest": digest,
         "matching_receipts": len(matching),
@@ -294,26 +312,44 @@ def main(argv: list[str] | None = None) -> int:
         ),
     }
 
-    current = bool(matching) and invalid_trusted_receipts == 0
+    matched = bool(matching) and invalid_trusted_receipts == 0
     if args.json:
         print(json.dumps(result, sort_keys=True))
-    elif current:
+    elif matched:
         print(
-            f"claim review current: head={head} claim_digest={digest} "
+            "historical claim receipt match: "
+            f"head={head} claim_digest={digest} "
             f"trusted_authors={','.join(result['matching_authors'])}"
         )
     else:
         reason = (
             f"{invalid_trusted_receipts} invalid trusted review-run receipt(s) present"
             if invalid_trusted_receipts
-            else "no trusted completed review receipt matches"
+            else "no trusted completed historical review receipt matches"
         )
         print(
             f"NOT_PROVEN: {reason} head={head} claim_digest={digest}",
             file=sys.stderr,
         )
 
-    return 0 if current else 1
+    return 0 if matched else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    fixture_mode = (
+        args.body_file is not None or args.comments_file is not None or args.head is not None
+    )
+
+    if not fixture_mode:
+        print(RETIREMENT_MESSAGE, file=sys.stderr)
+        return 2
+
+    try:
+        return _evaluate_fixture(args)
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+        print(f"NOT_PROVEN: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
