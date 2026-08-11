@@ -4,33 +4,24 @@ on:
   push:
     branches:
       - codex/6776-text-document-sync-shape-contract
-  pull_request:
-    branches: [main]
-    types: [synchronize]
 
 permissions:
   contents: write
 
 concurrency:
-  group: agent-6808-${{ github.event.pull_request.number || github.ref }}
+  group: agent-6808-consolidate-lsp-contract
   cancel-in-progress: false
-
-env:
-  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
 jobs:
   consolidate:
-    if: >-
-      github.ref == 'refs/heads/codex/6776-text-document-sync-shape-contract' ||
-      github.event.pull_request.head.ref == 'codex/6776-text-document-sync-shape-contract'
+    if: github.ref == 'refs/heads/codex/6776-text-document-sync-shape-contract'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Check out exact branch head
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ env.TARGET_SHA }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: true
 
@@ -38,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 - <<'PY'
           from pathlib import Path
 
@@ -132,4 +123,4 @@ jobs:
           git config user.name "EffortlessSteven"
           git config user.email "git@effortlesssteven.com"
           git commit -m "test(lsp): consolidate exact textDocumentSync contract (#6776)"
-          git push origin "HEAD:$TARGET_BRANCH"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
