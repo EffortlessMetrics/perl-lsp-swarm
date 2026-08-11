@@ -51,6 +51,7 @@ const E2E_FIXTURES: &[&str] = &[
     "slash_ambiguity",
     "control_flow_core",
     "dynamic_require_boundary",
+    "typeglob_alias",
     "heredoc_basic",
     "post_error_package_sub_recovery",
 ];
