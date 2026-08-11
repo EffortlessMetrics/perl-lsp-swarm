@@ -29,8 +29,8 @@
 - [ ] Verify docs references to the current shipped line (see `docs/project/CURRENT_STATUS.md`) remain consistent after each release PR.
 - [ ] Track any channel split explicitly in release docs until crates.io catches up.
 - [x] Add a short stability statement in `docs/README.md` describing the compatibility policy for CLI flags, LSP capability advertising, and DAP preview boundaries. (Implemented in #6446.)
-- [x] Expand `docs/how-to/UPGRADING.md` with compatibility promises, patch/minor expectations, deprecation notice windows, emergency-break guidance, and rollback/stale-state guidance. (Implemented in #6446.)
-- [x] Add a `Distribution Matrix` doc under `docs/project/` covering published crates, prebuilt artifacts, source-build-only paths, support tiers by OS/arch, and editor install-path expectations. (Implemented in #6446.)
+- [ ] Expand `docs/how-to/UPGRADING.md` with deprecation notice windows and emergency-break guidance. Compatibility, patch/minor, and rollback/stale-state guidance are implemented in #6446.
+- [ ] Complete the `Distribution Matrix` doc under `docs/project/` with supported OS/architecture combinations and their support tiers. Channel and editor-install guidance are implemented in #6446.
 - [x] Add a receipt template in `benchmarks/results/README.md` that records command, machine/runtime metadata, before/after SHAs, and artifact location. (Implemented in #6446.)
 - [ ] Ensure committed benchmark results link back to the initiating change or issue.
 - [ ] Document config key renames/removals and migration steps for release-to-release upgrade paths.
