@@ -3445,7 +3445,8 @@
           "operator": null,
           "parent_operator": null
         }
-      ]
+      ],
+      "label_mode": "partial"
     },
     {
       "id": "glob_expression",
@@ -3529,7 +3530,8 @@
           "operator": null,
           "parent_operator": null
         }
-      ]
+      ],
+      "label_mode": "partial"
     },
     {
       "id": "tie_interface",
@@ -3618,7 +3620,8 @@
           "operator": null,
           "parent_operator": null
         }
-      ]
+      ],
+      "label_mode": "partial"
     }
   ]
 }
