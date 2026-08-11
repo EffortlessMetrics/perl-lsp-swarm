@@ -1,318 +1,135 @@
+//! Minimal transition classifier core.
+//!
+//! This slice only settles three discriminating outcomes against an accepted
+//! ratchet:
+//! - incomparable observations → [`CompatibilityTransition::NotProven`]
+//! - any accepted pass that becomes a fail → [`CompatibilityTransition::Regression`]
+//! - exact V2 file-result identity → [`CompatibilityTransition::NoChange`]
+//!
+//! Bucket inventory, typed failures, assertion deltas, improvements, and V1
+//! migration remain follow-up classifier slices. Aggregate `summary` fields are
+//! ignored so forged totals cannot manufacture a transition.
+
 use crate::transition::model::AcceptedBaseline;
-use color_eyre::eyre::Result;
 use perl_core_harness_types::{
-    CompatibilityTransition, ObservedSemanticBoundary, RunFailure, RunReport, RunnerStatus,
+    CompatibilityTransition, CompileBaselineV2, RunFileResult, RunReport, RunnerStatus,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Classification result for one accepted/current observation pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Classification {
+    /// Measured transition relative to the accepted ratchet.
     pub transition: CompatibilityTransition,
+    /// Human-readable classification rationale.
     pub reason: String,
+    /// Whether landing this observation requires an explicit candidate review.
     pub requires_candidate: bool,
+    /// Whether semantic-boundary evidence changed (always false in this slice).
     pub semantic_boundary_change: bool,
 }
 
-pub fn classify_transition(
-    accepted: &AcceptedBaseline,
-    current: &RunReport,
-) -> Result<Classification> {
-    let mut identity_mismatches = Vec::new();
+/// Classify `current` against `accepted` for the minimal core outcomes above.
+pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> Classification {
     if let Some(path) = first_duplicate_path(accepted.file_results()) {
-        identity_mismatches.push(format!("accepted observation repeats file-result path {path}"));
+        return not_proven(format!(
+            "accepted and current observations are not comparable: accepted observation repeats file-result path {path}"
+        ));
     }
     if let Some(path) = first_duplicate_path(&current.file_results) {
-        identity_mismatches.push(format!("current observation repeats file-result path {path}"));
-    }
-    if !identity_mismatches.is_empty() {
-        return Ok(Classification {
-            transition: CompatibilityTransition::NotProven,
-            reason: format!(
-                "accepted and current observations are not comparable: {}",
-                identity_mismatches.join("; ")
-            ),
-            requires_candidate: false,
-            semantic_boundary_change: false,
-        });
+        return not_proven(format!(
+            "accepted and current observations are not comparable: current observation repeats file-result path {path}"
+        ));
     }
 
-    let accepted_by_path = accepted
-        .file_results()
-        .iter()
-        .map(|result| (result.path.as_str(), result))
-        .collect::<BTreeMap<_, _>>();
-    let current_by_path = current
-        .file_results
-        .iter()
-        .map(|result| (result.path.as_str(), result))
-        .collect::<BTreeMap<_, _>>();
-
-    match accepted {
-        AcceptedBaseline::V1(value) => {
-            if current.schema_version != value.report_schema_version {
-                identity_mismatches.push(format!(
-                    "report schema differs (accepted {}, current {})",
-                    value.report_schema_version, current.schema_version
-                ));
-            }
-            if current.mode != value.mode {
-                identity_mismatches.push(format!(
-                    "mode differs (accepted {}, current {})",
-                    value.mode, current.mode
-                ));
-            }
-            if current.profile != value.profile {
-                identity_mismatches.push(format!(
-                    "profile differs (accepted {}, current {})",
-                    value.profile, current.profile
-                ));
-            }
-        }
-        AcceptedBaseline::V2(value) => {
-            if current.schema_version != value.report_schema_version {
-                identity_mismatches.push(format!(
-                    "report schema differs (accepted {}, current {})",
-                    value.report_schema_version, current.schema_version
-                ));
-            }
-            if current.mode != value.mode {
-                identity_mismatches.push(format!(
-                    "mode differs (accepted {}, current {})",
-                    value.mode, current.mode
-                ));
-            }
-            if current.profile != value.profile {
-                identity_mismatches.push(format!(
-                    "profile differs (accepted {}, current {})",
-                    value.profile, current.profile
-                ));
-            }
-            if current.runner != value.runner {
-                identity_mismatches.push(format!(
-                    "runner differs (accepted {}, current {})",
-                    value.runner, current.runner
-                ));
-            }
-            if current.perl_ref != value.perl_resolved_ref {
-                identity_mismatches.push(format!(
-                    "Perl reference differs (accepted {}, current {})",
-                    value.perl_resolved_ref, current.perl_ref
-                ));
-            }
-            // Do not require current.commit == accepted.repository_commit: a
-            // transition measures a later implementation SHA against the
-            // accepted observation. Bind the measured SHA in receipts, not as
-            // a classifier identity gate.
-            let expected_membership =
-                value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
-            let observed_membership = current
-                .file_results
-                .iter()
-                .map(|result| result.path.as_str())
-                .collect::<BTreeSet<_>>();
-            if expected_membership != observed_membership {
-                identity_mismatches
-                    .push("file membership differs from the immutable v2 denominator".into());
-            }
-        }
-    }
-    if !identity_mismatches.is_empty() {
-        return Ok(Classification {
-            transition: CompatibilityTransition::NotProven,
-            reason: format!(
-                "accepted and current observations are not comparable: {}",
-                identity_mismatches.join("; ")
-            ),
-            requires_candidate: false,
-            semantic_boundary_change: false,
-        });
+    if let AcceptedBaseline::V2(value) = accepted
+        && let Some(reason) = v2_incomparable(value, current)
+    {
+        return not_proven(reason);
     }
 
-    let accepted_paths =
-        accepted_by_path.keys().copied().collect::<std::collections::BTreeSet<_>>();
+    let accepted_by_path = index_by_path(accepted.file_results());
+    let current_by_path = index_by_path(&current.file_results);
     let mut regressions = Vec::new();
-    let mut improvements = Vec::new();
-    let mut other_result_change = false;
-    for (bucket, current_count) in &current.buckets {
-        let baseline_count = accepted.buckets().get(bucket).copied().unwrap_or(0);
-        if *current_count > baseline_count {
-            regressions.push(format!(
-                "bucket {bucket} increased from {baseline_count} to {current_count}"
-            ));
-        }
-    }
-    for (path, accepted_result) in accepted_by_path {
+    for (path, accepted_result) in &accepted_by_path {
         let Some(current_result) = current_by_path.get(path).copied() else {
-            // V2 membership identity already returned NotProven above. V1 has no
-            // immutable denominator, so a missing accepted path is incomparable
-            // evidence — classify NotProven rather than hard-erroring.
-            return Ok(Classification {
-                transition: CompatibilityTransition::NotProven,
-                reason: format!(
-                    "accepted and current observations are not comparable: current observation is missing accepted file {path}"
-                ),
-                requires_candidate: false,
-                semantic_boundary_change: false,
-            });
+            return not_proven(format!(
+                "accepted and current observations are not comparable: current observation is missing accepted file {path}"
+            ));
         };
         if accepted_result.status == RunnerStatus::Pass
             && current_result.status == RunnerStatus::Fail
         {
             regressions.push(format!("{path} changed from pass to fail"));
         }
-        if current_result.assertions_passed < accepted_result.assertions_passed {
-            regressions.push(format!(
-                "{path} passed fewer assertions ({}/{})",
-                current_result.assertions_passed, accepted_result.assertions_passed
-            ));
-        }
-        if current_result.assertions_total < accepted_result.assertions_total {
-            regressions.push(format!(
-                "{path} declared fewer assertions ({}/{})",
-                current_result.assertions_total, accepted_result.assertions_total
-            ));
-        }
-        let accepted_failed =
-            accepted_result.assertions_total.saturating_sub(accepted_result.assertions_passed);
-        let current_failed =
-            current_result.assertions_total.saturating_sub(current_result.assertions_passed);
-        if current_failed > accepted_failed {
-            regressions.push(format!(
-                "{path} failed more assertions ({current_failed}/{accepted_failed} previously failed)"
-            ));
-        }
-        if accepted_result.status == RunnerStatus::Fail
-            && current_result.status == RunnerStatus::Pass
-        {
-            improvements.push(format!("{path} changed from fail to pass"));
-        }
-        if current_result.assertions_passed > accepted_result.assertions_passed {
-            improvements.push(format!(
-                "{path} passed more assertions ({}/{})",
-                current_result.assertions_passed, accepted_result.assertions_passed
-            ));
-        }
-        if current_result != accepted_result {
-            other_result_change = true;
-        }
     }
-
-    for path in current_by_path.keys() {
-        if !accepted_paths.contains(path) {
-            other_result_change = true;
-        }
-    }
-
-    let accepted_boundaries = accepted.semantic_boundaries().map(sorted_boundaries);
-    let current_boundaries = sorted_boundaries(&current.semantic_boundaries);
-    let semantic_boundary_change =
-        accepted_boundaries.as_ref().is_some_and(|boundaries| boundaries != &current_boundaries);
-    let failure_inventory_change =
-        sorted_failures(accepted.failures()) != sorted_failures(&current.failures);
-    // Increases are regressions (handled above). Any remaining bucket-map delta is a
-    // ratchet-view change that must not fall through to exact v2 no-change acceptance.
-    let bucket_inventory_change = accepted.buckets() != &current.buckets;
-
     if !regressions.is_empty() {
-        return Ok(Classification {
+        return Classification {
             transition: CompatibilityTransition::Regression,
             reason: format!(
                 "complete observation regresses the accepted ratchet: {}",
                 regressions.join("; ")
             ),
             requires_candidate: false,
-            semantic_boundary_change,
-        });
+            semantic_boundary_change: false,
+        };
     }
 
-    let accepted_state = accepted.state();
-    let current_state = run_state(current);
-    if current_state.files_passed < accepted_state.files_passed
-        || current_state.tap_assertions_passed < accepted_state.tap_assertions_passed
+    if matches!(accepted, AcceptedBaseline::V2(_))
+        && accepted.file_results() == current.file_results.as_slice()
     {
-        return Ok(Classification {
-            transition: CompatibilityTransition::Regression,
-            reason: format!(
-                "complete observation regressed from {}/{} files and {}/{} assertions to {}/{} files and {}/{} assertions",
-                accepted_state.files_passed,
-                accepted_state.files_total,
-                accepted_state.tap_assertions_passed,
-                accepted_state.tap_assertions_total,
-                current_state.files_passed,
-                current_state.files_total,
-                current_state.tap_assertions_passed,
-                current_state.tap_assertions_total,
-            ),
+        return Classification {
+            transition: CompatibilityTransition::NoChange,
+            reason: "complete observation exactly matches the accepted v2 ratchet".into(),
             requires_candidate: false,
-            semantic_boundary_change,
-        });
+            semantic_boundary_change: false,
+        };
     }
 
-    if !improvements.is_empty()
-        || current_state.files_passed > accepted_state.files_passed
-        || current_state.tap_assertions_passed > accepted_state.tap_assertions_passed
-    {
-        return Ok(Classification {
-            transition: CompatibilityTransition::ImprovementCandidate,
-            reason: format!(
-                "complete observation may improve the accepted ratchet: {}",
-                if improvements.is_empty() {
-                    format!(
-                        "aggregate result changed from {}/{} to {}/{} files",
-                        accepted_state.files_passed,
-                        accepted_state.files_total,
-                        current_state.files_passed,
-                        current_state.files_total,
-                    )
-                } else {
-                    improvements.join("; ")
-                }
-            ),
-            requires_candidate: true,
-            semantic_boundary_change,
-        });
-    }
-
-    if matches!(accepted, AcceptedBaseline::V1(_)) {
-        return Ok(Classification {
-            transition: CompatibilityTransition::ContractCorrectionCandidate,
-            reason: "observation matches the legacy score, but the accepted v1 ratchet lacks immutable series and typed authority identity; migration requires explicit review".into(),
-            requires_candidate: true,
-            semantic_boundary_change,
-        });
-    }
-
-    if semantic_boundary_change
-        || other_result_change
-        || failure_inventory_change
-        || bucket_inventory_change
-    {
-        return Ok(Classification {
-            transition: CompatibilityTransition::ContractCorrectionCandidate,
-            reason: if failure_inventory_change {
-                "compile score did not regress, but typed failure inventory changed relative to the accepted v2 ratchet"
-                    .into()
-            } else if bucket_inventory_change {
-                "compile score did not regress, but bucket inventory changed relative to the accepted v2 ratchet"
-                    .into()
-            } else {
-                "compile score did not regress, but file-result or semantic-boundary evidence changed relative to the accepted v2 ratchet"
-                    .into()
-            },
-            requires_candidate: true,
-            semantic_boundary_change,
-        });
-    }
-
-    Ok(Classification {
-        transition: CompatibilityTransition::NoChange,
-        reason: "complete observation exactly matches the accepted v2 ratchet".into(),
-        requires_candidate: false,
-        semantic_boundary_change: false,
-    })
+    not_proven(
+        "observation is comparable but outside the minimal classifier slice; defer to a later transition arm"
+            .into(),
+    )
 }
 
-fn first_duplicate_path(results: &[perl_core_harness_types::RunFileResult]) -> Option<&str> {
+fn v2_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<String> {
+    let accepted_subject = (
+        value.report_schema_version.as_str(),
+        value.mode,
+        value.profile,
+        value.runner,
+        value.perl_resolved_ref.as_str(),
+    );
+    let current_subject = (
+        current.schema_version.as_str(),
+        current.mode,
+        current.profile,
+        current.runner,
+        current.perl_ref.as_str(),
+    );
+    let expected_membership =
+        value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let observed_membership =
+        current.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
+    if accepted_subject == current_subject && expected_membership == observed_membership {
+        return None;
+    }
+    Some(
+        "accepted and current observations are not comparable: V2 subject identity or immutable file membership differs"
+            .into(),
+    )
+}
+
+fn not_proven(reason: String) -> Classification {
+    Classification {
+        transition: CompatibilityTransition::NotProven,
+        reason,
+        requires_candidate: false,
+        semantic_boundary_change: false,
+    }
+}
+
+fn first_duplicate_path(results: &[RunFileResult]) -> Option<&str> {
     let mut seen = BTreeSet::new();
     for result in results {
         if !seen.insert(result.path.as_str()) {
@@ -322,46 +139,6 @@ fn first_duplicate_path(results: &[perl_core_harness_types::RunFileResult]) -> O
     None
 }
 
-fn run_state(report: &RunReport) -> crate::transition::model::TransitionRunState {
-    crate::transition::model::TransitionRunState {
-        files_total: report.summary.files_total,
-        files_passed: report.summary.files_passed,
-        files_failed: report.summary.files_failed,
-        tap_assertions_total: report.summary.tap_assertions_total,
-        tap_assertions_passed: report.summary.tap_assertions_passed,
-    }
-}
-
-fn sorted_failures(failures: &[RunFailure]) -> Vec<RunFailure> {
-    let mut values = failures
-        .iter()
-        .map(|failure| {
-            let mut canonical = failure.clone();
-            canonical.lsp_impact.sort();
-            canonical
-        })
-        .collect::<Vec<_>>();
-    values.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.bucket.cmp(&right.bucket))
-            .then_with(|| left.phase.cmp(&right.phase))
-            .then_with(|| left.first_diagnostic.cmp(&right.first_diagnostic))
-            .then_with(|| left.workstream.cmp(&right.workstream))
-            .then_with(|| left.lsp_impact.cmp(&right.lsp_impact))
-    });
-    values
-}
-
-fn sorted_boundaries(boundaries: &[ObservedSemanticBoundary]) -> Vec<ObservedSemanticBoundary> {
-    let mut values = boundaries.to_vec();
-    values.sort_by_key(|boundary| {
-        (
-            boundary.path.clone(),
-            boundary.id.clone(),
-            boundary.source_span.start,
-            boundary.source_span.end,
-        )
-    });
-    values
+fn index_by_path(results: &[RunFileResult]) -> BTreeMap<&str, &RunFileResult> {
+    results.iter().map(|result| (result.path.as_str(), result)).collect()
 }
