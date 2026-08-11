@@ -13,6 +13,10 @@ def replace_once(old: str, new: str) -> None:
 
 
 replace_once(
+    "    let Some(first) = line[offset..].chars().next() else {\n        return None;\n    };\n",
+    "    let first = line[offset..].chars().next()?;\n",
+)
+replace_once(
     "            scan_code_line(line, &mut state, &mut known_subs);\n",
     "            scan_code_line(input, line_start, line, &mut state, &mut known_subs);\n",
 )
