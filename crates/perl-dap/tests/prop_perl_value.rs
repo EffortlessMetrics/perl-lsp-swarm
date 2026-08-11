@@ -223,7 +223,7 @@ proptest! {
         );
         prop_assert_eq!(
             PerlValue::object(class.clone(), object_val.clone()),
-            PerlValue::Object { class, value: Box::new(object_val) },
+            PerlValue::Object { class: class.clone(), value: Box::new(object_val) },
         );
         // Tied has no named constructor. Destructure the constructed value
         // and compare each field with the generated inputs so this remains
