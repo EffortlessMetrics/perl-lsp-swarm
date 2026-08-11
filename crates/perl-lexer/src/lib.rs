@@ -4012,7 +4012,7 @@ impl<'a> PerlLexer<'a> {
             }
             if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
-                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                let line_start = prefix.rfind(['\n', '\r']).map_or(0, |index| index + 1);
                 if prefix[line_start..].chars().all(char::is_whitespace)
                     && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
                 {
