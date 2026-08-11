@@ -4,7 +4,7 @@
 //! fixture files and their manifest expectations so parser regressions are
 //! caught at the same fixture boundary used by downstream accuracy tooling.
 
-use perl_parser::{Node, Parser};
+use perl_parser::{Node, NodeKind, Parser};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,10 @@ struct AstExpectation {
     parent_kind: Option<String>,
     #[serde(default)]
     depth: Option<usize>,
+    #[serde(default)]
+    operator: Option<String>,
+    #[serde(default)]
+    parent_operator: Option<String>,
 }
 
 #[derive(Debug)]
@@ -41,6 +45,8 @@ struct ObservedNode<'a> {
     span_text: &'a str,
     parent_kind: Option<&'static str>,
     depth: usize,
+    operator: Option<String>,
+    parent_operator: Option<String>,
 }
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -113,7 +119,7 @@ fn find_fixture<'a>(
 
 fn collect_observed_nodes<'a>(node: &'a Node, source: &'a str) -> Vec<ObservedNode<'a>> {
     let mut nodes = Vec::new();
-    collect_observed_nodes_rec(node, source, &mut nodes, None, 0);
+    collect_observed_nodes_rec(node, source, &mut nodes, None, 0, None);
     nodes
 }
 
@@ -123,20 +129,39 @@ fn collect_observed_nodes_rec<'a>(
     nodes: &mut Vec<ObservedNode<'a>>,
     parent_kind: Option<&'static str>,
     depth: usize,
+    parent_operator: Option<&str>,
 ) {
     let span_text = source.get(node.location.start..node.location.end).unwrap_or_default();
+    let operator = node_operator(node).map(str::to_owned);
     nodes.push(ObservedNode {
         kind: node.kind.kind_name(),
         line: byte_offset_to_line(source, node.location.start),
         span_text,
         parent_kind,
         depth,
+        operator: operator.clone(),
+        parent_operator: parent_operator.map(str::to_owned),
     });
 
     let current_kind = node.kind.kind_name();
     node.for_each_child(|child| {
-        collect_observed_nodes_rec(child, source, nodes, Some(current_kind), depth + 1)
+        collect_observed_nodes_rec(
+            child,
+            source,
+            nodes,
+            Some(current_kind),
+            depth + 1,
+            operator.as_deref(),
+        )
     });
+}
+
+fn node_operator(node: &Node) -> Option<&str> {
+    match &node.kind {
+        NodeKind::Binary { op, .. } | NodeKind::Assignment { op, .. } => Some(op.as_str()),
+        NodeKind::Match { negated, .. } => Some(if *negated { "!~" } else { "=~" }),
+        _ => None,
+    }
 }
 
 fn assert_observed_expectation(
@@ -153,6 +178,17 @@ fn assert_observed_expectation(
                 .as_deref()
                 .is_none_or(|parent| node.parent_kind == Some(parent))
             && expectation.depth.is_none_or(|depth| node.depth == depth)
+            && expectation
+                .operator
+                .as_deref()
+                .is_none_or(|operator| node.operator.as_deref() == Some(operator))
+            && match expectation.operator.as_deref() {
+                Some(_) => node.parent_operator.as_deref() == expectation.parent_operator.as_deref(),
+                None => expectation
+                    .parent_operator
+                    .as_deref()
+                    .is_none_or(|operator| node.parent_operator.as_deref() == Some(operator)),
+            }
     });
 
     assert!(
