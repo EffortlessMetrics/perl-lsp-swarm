@@ -12,7 +12,7 @@ fail() {
 assert_pass() {
   local description="$1"
   shift
-  "$@" >/dev/null || fail "$description should pass"
+  bash "$@" >/dev/null || fail "$description should pass"
 }
 
 assert_blocked() {
@@ -20,7 +20,7 @@ assert_blocked() {
   local expected="$2"
   shift 2
   local output
-  if output=$("$@" 2>&1); then
+  if output=$(bash "$@" 2>&1); then
     fail "$description should block"
   fi
   [[ "$output" == *"$expected"* ]] || fail "$description omitted '$expected': $output"
