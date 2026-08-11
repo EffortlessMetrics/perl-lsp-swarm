@@ -114,6 +114,8 @@ struct FixtureMetadata {
     #[serde(default)]
     ast_expectations: Vec<AstExpectation>,
     #[serde(default)]
+    forbidden_nodes: Vec<ForbiddenNode>,
+    #[serde(default)]
     symbol_expectations: SymbolExpectations,
     #[serde(default)]
     symbol_safety_regions: Vec<SymbolSafetyRegion>,
@@ -152,6 +154,17 @@ struct AstExpectation {
     depth: Option<u64>,
     operator: Option<String>,
     parent_operator: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ForbiddenNode {
+    id: String,
+    kind: String,
+    line: u64,
+    #[serde(default)]
+    parent_kind: Option<String>,
+    #[serde(default)]
+    depth: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3305,6 +3318,9 @@ fn collect_fixture_gold_signatures(fixture: &FixtureMetadata, signatures: &mut B
     for expectation in &fixture.ast_expectations {
         signatures.insert(format!("{fixture_id}::ast::{}", expectation.id));
     }
+    for expectation in &fixture.forbidden_nodes {
+        signatures.insert(format!("{fixture_id}::forbidden_ast::{}", expectation.id));
+    }
     for expectation in &fixture.symbol_expectations.entities {
         signatures.insert(format!("{fixture_id}::symbol_entity::{}", expectation.id));
     }
@@ -3620,7 +3636,9 @@ fn score_manifest_ast(
             // Keeping them out of unrelated partially labelled lines prevents correct
             // parser output from becoming a false positive.
             .filter(|prediction| {
-                prediction.kind != "String" || string_expectation_lines.contains(&prediction.line)
+                fixture.label_mode == LabelMode::Full
+                    || prediction.kind != "String"
+                    || string_expectation_lines.contains(&prediction.line)
             })
             .collect::<Vec<_>>();
         score_ast_expectations(&fixture.ast_expectations, &predictions, &mut score);
@@ -3697,6 +3715,11 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::Transliteration { .. }
             | NodeKind::Heredoc { .. }
             | NodeKind::String { .. }
+            | NodeKind::Use { .. }
+            | NodeKind::Signature { .. }
+            | NodeKind::MandatoryParameter { .. }
+            | NodeKind::Do { .. }
+            | NodeKind::HashLiteral { .. }
             | NodeKind::Format { .. }
             | NodeKind::Binary { .. }
             | NodeKind::Error { .. }
