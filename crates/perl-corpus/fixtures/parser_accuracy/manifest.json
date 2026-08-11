@@ -2044,6 +2044,88 @@
           }
         ]
       }
+      "ast_expectations": [
+        {
+          "id": "method_call_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::MethodCall",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_invoke",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub invoke",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_variable",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $object",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_shift",
+          "kind": "FunctionCall",
+          "line": 4,
+          "span_text": "shift",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_receiver",
+          "kind": "MethodCall",
+          "line": 5,
+          "span_text": "$object->run",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_qualified",
+          "kind": "MethodCall",
+          "line": 6,
+          "span_text": "Accuracy::MethodCall->run()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_run",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_return",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ],
     },
     {
       "id": "method_decl",
