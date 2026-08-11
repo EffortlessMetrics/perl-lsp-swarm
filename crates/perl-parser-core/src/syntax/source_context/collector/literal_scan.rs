@@ -151,8 +151,8 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
                 .unwrap_or(after.len());
             after[..end].to_string()
         }
-        // An *unquoted* heredoc label is an identifier, so it must start with an
-        // ASCII letter or `_`. Accepting a leading digit made `my $y = $x << 2;`
+        // An *unquoted* heredoc label is an identifier, so it must start with a
+        // Unicode letter or `_`. Accepting a leading digit made `my $y = $x << 2;`
         // parse as a heredoc opener whose body then swallowed the rest of the
         // file.
         _ if starts_heredoc_label(rest) => {
