@@ -121,7 +121,10 @@ running anything:
   not whatever `main` looks like now. Ask whether the repair is an ancestor of this
   candidate's merge base — `git merge-base --is-ancestor <repair> <pr-merge-base>` —
   rather than whether `main` is currently green. A red that predates the merge base is
-  base-owned, and refreshing the branch is the repair, not more proof;
+  only a candidate for base ownership: require matching check identity and failure
+  evidence at that merge base before assigning `base-owned`; otherwise retain
+  `NOT_PROVEN`. Refreshing the branch may be the repair, but ancestry alone is not
+  more proof;
 - **by construction.** A gate derived from a property the candidate cannot affect is not candidate-owned. For path-based gates, compare against the full changed-path set, including modified and renamed paths, not only additions and deletions; the changed paths can settle the question without a build.
 
 State which discriminator was used. An unclassified red is `NOT_PROVEN`, not someone
