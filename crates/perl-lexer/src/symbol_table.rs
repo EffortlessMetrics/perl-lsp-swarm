@@ -1,129 +1,96 @@
 //! File-local symbol table for bareword/regex disambiguation.
 //!
-//! Enables the lexer to correctly identify known subroutine names so that
-//! `identifier /regex/` is lexed as a function call with a regex argument
-//! rather than `identifier / expr` (division).
+//! Enables the lexer to identify known subroutine names so that
+//! `identifier /regex/` can be lexed as a function call with a regex argument
+//! rather than `identifier / expr` division.
 //!
 //! # How it works
 //!
-//! Before lexing begins, the parser performs a lightweight pre-pass over the
-//! source text to collect all `sub NAME` declarations into a `LocalSymbolTable`.
-//! That table is then attached to the [`LexerConfig`][crate::LexerConfig] so
-//! that the lexer can consult it when resolving bareword/slash ambiguity.
+//! Before context-sensitive lexing begins, a bounded phase-0 scan collects
+//! source-level `sub NAME` declarations. The scanner deliberately has no symbol
+//! table dependency, so it cannot recurse back into the lexer whose ambiguity it
+//! helps resolve.
 //!
-//! # Limitations (v1)
-//!
-//! - ASCII identifiers only; Unicode sub names are not recognized.
-//! - No imported symbols (workspace symbol table is a follow-up).
-//! - Dynamic subs (`eval "sub foo { }"`, `AUTOLOAD`) are not tracked.
+//! The phase-0 scan shares the lexer's Unicode identifier policy and excludes
+//! line comments, ordinary quoted strings, POD, heredoc bodies, and data
+//! sections. Quote-like operators, regex bodies, formats, imports, generated
+//! code, and source filters remain explicit follow-up boundaries under #6732.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-/// File-local subroutine symbol table built from a pre-pass scan.
+use crate::unicode::{is_perl_identifier_continue, is_perl_identifier_start};
+
+/// File-local subroutine symbol table built from a source pre-pass.
 ///
 /// # Forward references
 ///
 /// Because this is a whole-file pre-pass, subroutines declared *after* their
-/// first call site are recognized correctly.  A forward reference like:
+/// first call site are recognized correctly. A forward reference like:
 ///
 /// ```text
 /// builder /pattern/;
 /// sub builder { ... }
 /// ```
 ///
-/// will be parsed as a function call with a regex argument.
+/// can therefore take the known-sub/regex path.
+///
+/// Qualified declarations are stored using their exact source spelling. For
+/// example, `sub Foo::bar` records `Foo::bar`, not the unqualified alias `bar`.
 #[derive(Debug, Clone, Default)]
 pub struct LocalSymbolTable {
     known_subs: Arc<HashSet<Box<str>>>,
 }
 
 impl LocalSymbolTable {
-    /// Scan Perl source for `sub NAME` declarations and build a symbol table.
+    /// Scan Perl source for statically declared `sub NAME` forms.
     ///
-    /// This is a best-effort O(n) pre-pass. It skips line comments (`#…`) and
-    /// simple single- and double-quoted string literals so that `# sub foo` or
-    /// `"sub foo"` patterns do not produce false positives.  POD sections and
-    /// heredocs are *not* specially handled; declarations inside them are a
-    /// known (harmless) false-positive class.
+    /// The scanner is O(n) over source bytes and deliberately source-only. It
+    /// recognizes the same Unicode identifier starts/continuations as the
+    /// native lexer, including `::` and legacy apostrophe package separators.
+    /// It excludes declarations spelled inside line comments, ordinary quoted
+    /// strings, POD, recognized heredoc bodies, and `__DATA__`/`__END__`.
+    ///
+    /// Imported symbols, dynamic declarations, quote-like/regex/format bodies,
+    /// `eval`, `AUTOLOAD`, source filters, and workspace symbols are not inferred.
     pub fn scan_subs(input: &str) -> Self {
         let mut known_subs = HashSet::new();
+        let mut state = ScanState::default();
         let bytes = input.as_bytes();
-        let len = bytes.len();
-        let mut i = 0;
+        let mut line_start = 0usize;
 
-        while i < len {
-            match bytes[i] {
-                // Line comments: skip to end of line.
-                b'#' => {
-                    while i < len && bytes[i] != b'\n' {
-                        i += 1;
-                    }
+        while line_start < bytes.len() {
+            let (line_end, next_line_start) = line_bounds(bytes, line_start);
+            let line = &input[line_start..line_end];
+
+            if let Some(pending) = state.pending_heredocs.front() {
+                if pending.matches_terminator(line) {
+                    state.pending_heredocs.pop_front();
                 }
-
-                // Single-quoted strings: skip contents verbatim (backslash only
-                // escapes `\'` and `\\` inside `'...'`).
-                b'\'' => {
-                    i += 1;
-                    while i < len {
-                        if bytes[i] == b'\\' && i + 1 < len {
-                            i += 2; // skip backslash + next char
-                        } else if bytes[i] == b'\'' {
-                            i += 1;
-                            break;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                }
-
-                // Double-quoted strings: skip contents (backslash escapes).
-                b'"' => {
-                    i += 1;
-                    while i < len {
-                        if bytes[i] == b'\\' && i + 1 < len {
-                            i += 2;
-                        } else if bytes[i] == b'"' {
-                            i += 1;
-                            break;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                }
-
-                // Potential `sub` keyword.
-                b's' if i + 3 <= len && bytes[i..i + 3] == *b"sub" => {
-                    // Word-boundary guard: the char before must not be an ident char.
-                    let prev_ident = i > 0 && is_ident_byte(bytes[i - 1]);
-                    // The char immediately after "sub" must not be an ident char.
-                    let next_ident = i + 3 < len && is_ident_byte(bytes[i + 3]);
-
-                    if !prev_ident && !next_ident {
-                        let mut j = i + 3;
-                        // Skip horizontal whitespace and newlines.
-                        while j < len && matches!(bytes[j], b' ' | b'\t' | b'\r' | b'\n') {
-                            j += 1;
-                        }
-                        // Collect ASCII identifier (must start with letter or `_`).
-                        if j < len && (bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
-                            let start = j;
-                            while j < len && is_ident_byte(bytes[j]) {
-                                j += 1;
-                            }
-                            // All bytes in start..j are ASCII, so this is valid UTF-8.
-                            known_subs.insert(input[start..j].into());
-                        }
-                        i = j;
-                    } else {
-                        i += 1;
-                    }
-                }
-
-                _ => {
-                    i += 1;
-                }
+                line_start = next_line_start;
+                continue;
             }
+
+            if state.in_pod {
+                if line.starts_with("=cut") {
+                    state.in_pod = false;
+                }
+                line_start = next_line_start;
+                continue;
+            }
+
+            if state.quote == QuoteState::Code && starts_pod(line) {
+                state.in_pod = true;
+                line_start = next_line_start;
+                continue;
+            }
+
+            if state.quote == QuoteState::Code && is_data_marker(line) {
+                break;
+            }
+
+            scan_code_line(line, &mut state, &mut known_subs);
+            line_start = next_line_start;
         }
 
         Self { known_subs: Arc::new(known_subs) }
@@ -145,132 +112,540 @@ impl LocalSymbolTable {
     }
 }
 
-/// Return `true` if byte `b` can appear inside a Perl identifier (`[A-Za-z0-9_]`).
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum QuoteState {
+    #[default]
+    Code,
+    Single,
+    Double,
+    Backtick,
+}
+
+impl QuoteState {
+    fn delimiter(self) -> Option<char> {
+        match self {
+            Self::Code => None,
+            Self::Single => Some('\''),
+            Self::Double => Some('"'),
+            Self::Backtick => Some('`'),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ScanState {
+    quote: QuoteState,
+    awaiting_sub_name: bool,
+    in_pod: bool,
+    pending_heredocs: VecDeque<PendingHeredoc>,
+}
+
+#[derive(Debug)]
+struct PendingHeredoc {
+    label: Box<str>,
+    allow_indent: bool,
+}
+
+impl PendingHeredoc {
+    fn matches_terminator(&self, line: &str) -> bool {
+        let line = line.trim_end_matches([' ', '\t']);
+        if self.allow_indent {
+            line.trim_start_matches([' ', '\t']) == self.label.as_ref()
+        } else {
+            line == self.label.as_ref()
+        }
+    }
+}
+
+fn line_bounds(bytes: &[u8], start: usize) -> (usize, usize) {
+    let mut end = start;
+    while end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r') {
+        end += 1;
+    }
+
+    let mut next = end;
+    if next < bytes.len() {
+        if bytes[next] == b'\r' {
+            next += 1;
+            if next < bytes.len() && bytes[next] == b'\n' {
+                next += 1;
+            }
+        } else {
+            next += 1;
+        }
+    }
+    (end, next)
+}
+
+fn starts_pod(line: &str) -> bool {
+    [
+        "=pod",
+        "=head",
+        "=over",
+        "=item",
+        "=back",
+        "=begin",
+        "=end",
+        "=for",
+        "=encoding",
+    ]
+    .iter()
+    .any(|directive| line.starts_with(directive))
+}
+
+fn is_data_marker(line: &str) -> bool {
+    matches!(line.trim_end_matches([' ', '\t']), "__DATA__" | "__END__")
+}
+
+fn scan_code_line(line: &str, state: &mut ScanState, known_subs: &mut HashSet<Box<str>>) {
+    let mut offset = 0usize;
+
+    while offset < line.len() {
+        if state.quote != QuoteState::Code {
+            offset = scan_quoted_character(line, offset, state);
+            continue;
+        }
+
+        if state.awaiting_sub_name {
+            offset = skip_horizontal_whitespace(line, offset);
+            if offset >= line.len() || line[offset..].starts_with('#') {
+                return;
+            }
+
+            if let Some((name, end)) = parse_qualified_name(line, offset) {
+                known_subs.insert(name.into());
+                state.awaiting_sub_name = false;
+                offset = end;
+                continue;
+            }
+
+            state.awaiting_sub_name = false;
+        }
+
+        let Some(ch) = line[offset..].chars().next() else {
+            return;
+        };
+
+        if ch == '#' {
+            return;
+        }
+
+        if ch == '\'' {
+            if apostrophe_is_package_separator(line, offset) {
+                offset += ch.len_utf8();
+            } else {
+                state.quote = QuoteState::Single;
+                offset += ch.len_utf8();
+            }
+            continue;
+        }
+        if ch == '"' {
+            state.quote = QuoteState::Double;
+            offset += ch.len_utf8();
+            continue;
+        }
+        if ch == '`' {
+            state.quote = QuoteState::Backtick;
+            offset += ch.len_utf8();
+            continue;
+        }
+
+        if line[offset..].starts_with("<<")
+            && heredoc_allowed_before(line, offset)
+            && let Some((pending, end)) = parse_heredoc_opener(line, offset)
+        {
+            state.pending_heredocs.push_back(pending);
+            offset = end;
+            continue;
+        }
+
+        if line[offset..].starts_with("sub") && is_sub_keyword_boundary(line, offset) {
+            state.awaiting_sub_name = true;
+            offset += "sub".len();
+            continue;
+        }
+
+        offset += ch.len_utf8();
+    }
+}
+
+fn scan_quoted_character(line: &str, offset: usize, state: &mut ScanState) -> usize {
+    let Some(ch) = line[offset..].chars().next() else {
+        return line.len();
+    };
+
+    if ch == '\\' {
+        let after_slash = offset + ch.len_utf8();
+        return line[after_slash..]
+            .chars()
+            .next()
+            .map_or(after_slash, |escaped| after_slash + escaped.len_utf8());
+    }
+
+    if state.quote.delimiter() == Some(ch) {
+        state.quote = QuoteState::Code;
+    }
+    offset + ch.len_utf8()
+}
+
+fn skip_horizontal_whitespace(line: &str, mut offset: usize) -> usize {
+    while let Some(ch) = line[offset..].chars().next() {
+        if matches!(ch, ' ' | '\t') {
+            offset += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    offset
+}
+
+fn apostrophe_is_package_separator(line: &str, offset: usize) -> bool {
+    let before = line[..offset].chars().next_back();
+    let after = line[offset + '\''.len_utf8()..].chars().next();
+    before.is_some_and(is_name_segment_continue) && after.is_some_and(is_perl_identifier_start)
+}
+
+fn is_sub_keyword_boundary(line: &str, offset: usize) -> bool {
+    if line[..offset].ends_with("->") {
+        return false;
+    }
+
+    let before = line[..offset].chars().next_back();
+    if before.is_some_and(|ch| {
+        is_perl_identifier_continue(ch) || matches!(ch, '$' | '@' | '%' | '&' | '*' | ':' | '\'')
+    }) {
+        return false;
+    }
+
+    let after_offset = offset + "sub".len();
+    let after = line[after_offset..].chars().next();
+    !after.is_some_and(|ch| {
+        is_perl_identifier_continue(ch) || matches!(ch, ':' | '\'')
+    })
+}
+
+fn parse_qualified_name(text: &str, start: usize) -> Option<(&str, usize)> {
+    let mut offset = start;
+    if text[offset..].starts_with("::") {
+        offset += 2;
+    }
+
+    let first = text[offset..].chars().next()?;
+    if !is_perl_identifier_start(first) {
+        return None;
+    }
+    offset += first.len_utf8();
+    offset = consume_name_segment(text, offset);
+
+    loop {
+        if text[offset..].starts_with("::") {
+            let segment_start = offset + 2;
+            let Some(first) = text[segment_start..].chars().next() else {
+                break;
+            };
+            if !is_perl_identifier_start(first) {
+                break;
+            }
+            offset = consume_name_segment(text, segment_start + first.len_utf8());
+            continue;
+        }
+
+        if text[offset..].starts_with('\'') {
+            let segment_start = offset + '\''.len_utf8();
+            let Some(first) = text[segment_start..].chars().next() else {
+                break;
+            };
+            if !is_perl_identifier_start(first) {
+                break;
+            }
+            offset = consume_name_segment(text, segment_start + first.len_utf8());
+            continue;
+        }
+        break;
+    }
+
+    Some((&text[start..offset], offset))
+}
+
+fn consume_name_segment(text: &str, mut offset: usize) -> usize {
+    while let Some(ch) = text[offset..].chars().next() {
+        if is_name_segment_continue(ch) {
+            offset += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    offset
+}
+
+fn is_name_segment_continue(ch: char) -> bool {
+    ch != '\'' && is_perl_identifier_continue(ch)
+}
+
+fn heredoc_allowed_before(line: &str, offset: usize) -> bool {
+    let prefix = line[..offset].trim_end_matches([' ', '\t']);
+    if prefix.is_empty() {
+        return true;
+    }
+
+    if prefix
+        .chars()
+        .next_back()
+        .is_some_and(|ch| matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | ':' | '?'))
+    {
+        return true;
+    }
+
+    prefix
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'))
+        .next_back()
+        .is_some_and(|word| matches!(word, "print" | "say" | "warn" | "die" | "return"))
+}
+
+fn parse_heredoc_opener(line: &str, start: usize) -> Option<(PendingHeredoc, usize)> {
+    let mut offset = start + 2;
+    let allow_indent = if line[offset..].starts_with('~') {
+        offset += '~'.len_utf8();
+        true
+    } else {
+        false
+    };
+    offset = skip_horizontal_whitespace(line, offset);
+
+    if line[offset..].starts_with('\\') {
+        offset += '\\'.len_utf8();
+    }
+
+    let Some(first) = line[offset..].chars().next() else {
+        return None;
+    };
+
+    let (label, end) = if matches!(first, '\'' | '"' | '`') {
+        parse_quoted_heredoc_label(line, offset, first)?
+    } else {
+        if !is_perl_identifier_start(first) {
+            return None;
+        }
+        let label_start = offset;
+        offset += first.len_utf8();
+        while let Some(ch) = line[offset..].chars().next() {
+            if is_name_segment_continue(ch) {
+                offset += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        (line[label_start..offset].to_string(), offset)
+    };
+
+    if label.is_empty() {
+        return None;
+    }
+
+    Some((PendingHeredoc { label: label.into_boxed_str(), allow_indent }, end))
+}
+
+fn parse_quoted_heredoc_label(
+    line: &str,
+    start: usize,
+    quote: char,
+) -> Option<(String, usize)> {
+    let mut offset = start + quote.len_utf8();
+    let mut label = String::new();
+
+    while let Some(ch) = line[offset..].chars().next() {
+        if ch == quote {
+            return Some((label, offset + ch.len_utf8()));
+        }
+        if ch == '\\' {
+            offset += ch.len_utf8();
+            let escaped = line[offset..].chars().next()?;
+            label.push(escaped);
+            offset += escaped.len_utf8();
+            continue;
+        }
+        label.push(ch);
+        offset += ch.len_utf8();
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::LocalSymbolTable;
+    use crate::{LexerConfig, PerlLexer, TokenType};
 
-    // --- scan_subs: basic recognition ---
+    fn tokens_with_table(source: &str, table: LocalSymbolTable) -> Vec<crate::Token> {
+        let config = LexerConfig { symbol_table: Some(table), ..LexerConfig::default() };
+        PerlLexer::with_config(source, config).collect_tokens()
+    }
 
     #[test]
-    fn scan_subs_empty_source_gives_empty_table() {
+    fn empty_and_default_tables_are_empty() {
         assert!(LocalSymbolTable::scan_subs("").is_empty());
+        assert!(LocalSymbolTable::default().is_empty());
     }
 
     #[test]
-    fn scan_subs_single_declaration_is_recognized() {
-        let st = LocalSymbolTable::scan_subs("sub foo { }");
-        assert!(st.is_known_sub("foo"));
-        assert_eq!(st.len(), 1);
+    fn ordinary_forward_and_prototyped_declarations_are_recognized() {
+        let source = "sub alpha { }\nsub beta;\nsub transform ($$) { }\nsub _private { }\nsub process2 { }";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        for name in ["alpha", "beta", "transform", "_private", "process2"] {
+            assert!(table.is_known_sub(name), "missing {name:?}");
+        }
+        assert_eq!(table.len(), 5);
     }
 
     #[test]
-    fn scan_subs_multiple_declarations_are_all_recognized() {
-        let src = "sub alpha { }\nsub beta { }\nsub gamma { }";
-        let st = LocalSymbolTable::scan_subs(src);
-        assert!(st.is_known_sub("alpha"));
-        assert!(st.is_known_sub("beta"));
-        assert!(st.is_known_sub("gamma"));
-        assert_eq!(st.len(), 3);
+    fn unicode_qualified_legacy_and_keyword_names_use_exact_spelling() {
+        let source = "sub café { }\nsub Foo::bar { }\nsub Foo'legacy { }\nsub ::root { }\nsub q { }";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        for name in ["café", "Foo::bar", "Foo'legacy", "::root", "q"] {
+            assert!(table.is_known_sub(name), "missing exact declaration key {name:?}");
+        }
+        assert!(!table.is_known_sub("bar"));
+        assert!(!table.is_known_sub("legacy"));
+        assert!(!table.is_known_sub("root"));
     }
 
     #[test]
-    fn scan_subs_forward_declaration_with_semicolon() {
-        let st = LocalSymbolTable::scan_subs("sub builder;");
-        assert!(st.is_known_sub("builder"));
+    fn comments_and_ordinary_strings_cannot_create_known_subs() {
+        let source = concat!(
+            "# sub commented_out { }\n",
+            "my $a = 'sub single_quoted { }';\n",
+            "my $b = \"sub double_quoted { }\";\n",
+            "my $c = `echo sub backtick { }`;\n",
+            "sub real { } # sub inline_comment { }\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
+        for name in ["commented_out", "single_quoted", "double_quoted", "backtick", "inline_comment"] {
+            assert!(!table.is_known_sub(name), "non-code name leaked: {name:?}");
+        }
     }
 
     #[test]
-    fn scan_subs_prototype_declaration() {
-        let st = LocalSymbolTable::scan_subs("sub transform ($$) { }");
-        assert!(st.is_known_sub("transform"));
+    fn multiline_ordinary_string_state_is_preserved_between_lines() {
+        let source = "my $text = \"sub first_fake { }\nstill text with sub second_fake { }\";\nsub real { }";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
+        assert!(!table.is_known_sub("first_fake"));
+        assert!(!table.is_known_sub("second_fake"));
     }
 
     #[test]
-    fn scan_subs_underscore_prefix() {
-        let st = LocalSymbolTable::scan_subs("sub _private { }");
-        assert!(st.is_known_sub("_private"));
+    fn pod_sections_cannot_create_known_subs() {
+        let source = "=pod\nsub documented { }\n=cut\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
+        assert!(!table.is_known_sub("documented"));
     }
 
     #[test]
-    fn scan_subs_alphanumeric_name_with_digits() {
-        let st = LocalSymbolTable::scan_subs("sub process2 { }");
-        assert!(st.is_known_sub("process2"));
-    }
+    fn quoted_and_indented_heredoc_bodies_cannot_create_known_subs() {
+        let source = concat!(
+            "my $a = <<'ONE';\n",
+            "sub first_fake { }\n",
+            "ONE\n",
+            "my $b = <<~TWO;\n",
+            "  sub second_fake { }\n",
+            "  TWO\n",
+            "sub real { }\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
 
-    // --- scan_subs: comment filtering ---
-
-    #[test]
-    fn scan_subs_skips_line_comment() {
-        let src = "# sub commented_out { }\nsub real_sub { }";
-        let st = LocalSymbolTable::scan_subs(src);
-        assert!(!st.is_known_sub("commented_out"), "should not register commented-out subs");
-        assert!(st.is_known_sub("real_sub"));
-    }
-
-    #[test]
-    fn scan_subs_inline_comment_after_declaration() {
-        let src = "sub real { } # sub fake { }";
-        let st = LocalSymbolTable::scan_subs(src);
-        assert!(st.is_known_sub("real"));
-        assert!(!st.is_known_sub("fake"));
-    }
-
-    // --- scan_subs: string filtering ---
-
-    #[test]
-    fn scan_subs_skips_single_quoted_string() {
-        let src = r#"my $x = 'sub in_string { }'; sub real { }"#;
-        let st = LocalSymbolTable::scan_subs(src);
-        assert!(!st.is_known_sub("in_string"), "should not register subs in string literals");
-        assert!(st.is_known_sub("real"));
+        assert!(table.is_known_sub("real"));
+        assert!(!table.is_known_sub("first_fake"));
+        assert!(!table.is_known_sub("second_fake"));
     }
 
     #[test]
-    fn scan_subs_skips_double_quoted_string() {
-        let src = r#"my $x = "sub in_string { }"; sub real { }"#;
-        let st = LocalSymbolTable::scan_subs(src);
-        assert!(!st.is_known_sub("in_string"));
-        assert!(st.is_known_sub("real"));
-    }
+    fn multiple_heredocs_are_excluded_in_fifo_order() {
+        let source = concat!(
+            "my ($a, $b) = (<<A, <<'B');\n",
+            "sub first_fake { }\n",
+            "A\n",
+            "sub second_fake { }\n",
+            "B\n",
+            "sub real { }\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
 
-    // --- scan_subs: word-boundary checks ---
-
-    #[test]
-    fn scan_subs_does_not_match_substring() {
-        // "substring" contains "sub" but is NOT a sub declaration
-        let src = "my $x = substring(1, 2);";
-        let st = LocalSymbolTable::scan_subs(src);
-        assert!(!st.is_known_sub("string"), "should not match 'sub' inside 'substring'");
-        assert!(st.is_empty());
+        assert!(table.is_known_sub("real"));
+        assert!(!table.is_known_sub("first_fake"));
+        assert!(!table.is_known_sub("second_fake"));
     }
 
     #[test]
-    fn scan_subs_does_not_match_sub_suffix() {
-        let src = "my $x = foosubfoo;";
-        let st = LocalSymbolTable::scan_subs(src);
-        assert!(st.is_empty());
+    fn data_and_end_markers_stop_declaration_collection() {
+        for marker in ["__DATA__", "__END__"] {
+            let source = format!("sub before {{ }}\n{marker}\nsub after {{ }}\n");
+            let table = LocalSymbolTable::scan_subs(&source);
+            assert!(table.is_known_sub("before"));
+            assert!(!table.is_known_sub("after"));
+        }
     }
 
-    // --- is_known_sub: negative cases ---
-
     #[test]
-    fn is_known_sub_unknown_name_returns_false() {
-        let st = LocalSymbolTable::scan_subs("sub foo { }");
-        assert!(!st.is_known_sub("bar"));
-        assert!(!st.is_known_sub(""));
+    fn substrings_variables_methods_and_anonymous_subs_do_not_invent_names() {
+        let source = concat!(
+            "my $sub = 1;\n",
+            "my $x = substring(1, 2);\n",
+            "$obj->sub();\n",
+            "my $code = sub { 1 };\n",
+            "sub real { }\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert_eq!(table.len(), 1);
+        assert!(table.is_known_sub("real"));
+        for name in ["string", "anonymous", "obj"] {
+            assert!(!table.is_known_sub(name));
+        }
     }
 
-    // --- default ---
+    #[test]
+    fn fake_heredoc_declaration_cannot_change_slash_disambiguation() {
+        let source = concat!(
+            "my $doc = <<'END';\n",
+            "sub builder { }\n",
+            "END\n",
+            "builder /pattern/;\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("builder"));
+
+        let tokens = tokens_with_table(source, table);
+        assert!(tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)));
+        assert!(!tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
+    }
 
     #[test]
-    fn default_produces_empty_table() {
-        let st = LocalSymbolTable::default();
-        assert!(st.is_empty());
-        assert!(!st.is_known_sub("anything"));
+    fn real_forward_and_unicode_declarations_change_only_the_known_sub_path() {
+        for source in [
+            "builder /pattern/; sub builder { 1 }",
+            "café /pattern/; sub café { 1 }",
+        ] {
+            let table = LocalSymbolTable::scan_subs(source);
+            let tokens = tokens_with_table(source, table);
+            assert!(tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
+        }
+    }
+
+    #[test]
+    fn crlf_and_cr_only_lines_preserve_boundaries() {
+        for source in [
+            "=pod\r\nsub fake { }\r\n=cut\r\nsub real { }\r\n",
+            "=pod\rsub fake { }\r=cut\rsub real { }\r",
+        ] {
+            let table = LocalSymbolTable::scan_subs(source);
+            assert!(table.is_known_sub("real"));
+            assert!(!table.is_known_sub("fake"));
+        }
     }
 }
