@@ -3338,7 +3338,11 @@ sub bark { }
 // ordering — they assert on the evidence variant and confidence level.
 // -------------------------------------------------------------------------
 
-use super::workspace::{ReceiverEvidence, classify_receiver, classify_text_pattern_receiver};
+use super::workspace::{
+    ReceiverEvidence, classify_receiver, classify_text_pattern_receiver,
+    receiver_package_from_context_or_source, receiver_package_from_symbol_table_or_source,
+    source_package_fallback,
+};
 use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 use perl_semantic_facts::Confidence;
 
@@ -3355,6 +3359,82 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         prefix_start: source_position.saturating_sub(prefix.len()),
         cursor_scope_id: 0,
     }
+}
+
+#[test]
+fn source_package_fallback_respects_closed_package_block() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+sub inspect {
+    my $self = shift;
+    $self->"#;
+    let context = ctx_for("$self->", "main", source.len());
+
+    assert_eq!(
+        receiver_package_from_context_or_source(&context, source).as_deref(),
+        Some("Outer"),
+        "a closed block-form package must not leak as the active source package"
+    );
+}
+
+#[test]
+fn receiver_package_reuses_prebuilt_symbol_table() {
+    let valid_source = "package Child;\nsub inspect {\n    my $self = shift;\n    $self->\n}\n";
+    let mut parser = perl_semantic_analyzer::Parser::new(valid_source);
+    let ast = must(parser.parse());
+    let analyzer =
+        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, valid_source);
+
+    let incomplete_source = "package Child;\nsub inspect {\n    my $self = shift;\n    $self->";
+    let context = ctx_for("$self->", "main", incomplete_source.len());
+
+    assert_eq!(
+        receiver_package_from_symbol_table_or_source(
+            &context,
+            incomplete_source,
+            analyzer.symbol_table(),
+        )
+        .as_deref(),
+        Some("Child"),
+        "the prebuilt symbol table should resolve the package before source fallback"
+    );
+}
+
+#[test]
+fn source_package_fallback_ignores_non_code_braces() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+my $literal = "}";
+my $pattern = qr/\{ \}/;
+# {
+my $body = <<'EOF';
+}
+{
+EOF
+sub inspect {
+    my $self = shift;
+    $self->"#;
+
+    assert_eq!(
+        source_package_fallback(source, source.len()).as_deref(),
+        Some("Outer"),
+        "strings, regexes, comments, and heredocs must not change package scope"
+    );
+}
+
+#[test]
+fn source_package_fallback_restores_main_after_delayed_block_brace() {
+    let source = "package Foo\n{\n    sub inner {}\n}\nmy $self = shift;\n$self->";
+
+    assert_eq!(
+        source_package_fallback(source, source.len()),
+        None,
+        "a block package whose opening brace is delayed must end at its closing brace"
+    );
 }
 
 #[test]
@@ -8513,4 +8593,36 @@ sub inspect {
             labels
         );
     }
+}
+
+#[test]
+fn test_inherited_moo_open_package_survives_unrelated_bare_symbol_match() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub inspect {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    must(index.index_file(
+        must(Url::parse("file:///workspace/Unrelated.pm")),
+        "package Other; sub Child { 1 }".to_string(),
+    ));
+
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let labels: Vec<_> =
+        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+
+    assert!(
+        labels.iter().any(|label| label == "name"),
+        "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
+    );
 }
