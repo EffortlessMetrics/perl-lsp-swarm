@@ -3337,7 +3337,10 @@ sub bark { }
 // ordering — they assert on the evidence variant and confidence level.
 // -------------------------------------------------------------------------
 
-use super::workspace::{ReceiverEvidence, classify_receiver, classify_text_pattern_receiver};
+use super::workspace::{
+    ReceiverEvidence, classify_receiver, classify_text_pattern_receiver,
+    receiver_package_from_context_or_source,
+};
 use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 use perl_semantic_facts::Confidence;
 
@@ -3354,6 +3357,24 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         prefix_start: source_position.saturating_sub(prefix.len()),
         cursor_scope_id: 0,
     }
+}
+
+#[test]
+fn source_package_fallback_respects_closed_package_block() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+sub inspect {
+    my $self = shift;
+    $self->"#;
+    let context = ctx_for("$self->", "main", source.len());
+
+    assert_eq!(
+        receiver_package_from_context_or_source(&context, source).as_deref(),
+        Some("Outer"),
+        "a closed block-form package must not leak as the active source package"
+    );
 }
 
 #[test]
