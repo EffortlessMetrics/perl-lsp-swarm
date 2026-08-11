@@ -39,7 +39,8 @@ pub fn classify_transition(
             }
             if current.mode != value.mode {
                 identity_mismatches.push(format!(
-                    "mode differs (accepted {}, current {})", value.mode, current.mode
+                    "mode differs (accepted {}, current {})",
+                    value.mode, current.mode
                 ));
             }
             if current.profile != value.profile {
@@ -85,20 +86,16 @@ pub fn classify_transition(
                     value.perl_resolved_ref, current.perl_ref
                 ));
             }
-            let expected_membership = value
-                .file_membership
-                .iter()
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>();
+            let expected_membership =
+                value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
             let observed_membership = current
                 .file_results
                 .iter()
                 .map(|result| result.path.as_str())
                 .collect::<BTreeSet<_>>();
             if expected_membership != observed_membership {
-                identity_mismatches.push(
-                    "file membership differs from the immutable v2 denominator".into(),
-                );
+                identity_mismatches
+                    .push("file membership differs from the immutable v2 denominator".into());
             }
         }
     }
@@ -172,9 +169,8 @@ pub fn classify_transition(
 
     let accepted_boundaries = accepted.semantic_boundaries().map(sorted_boundaries);
     let current_boundaries = sorted_boundaries(&current.semantic_boundaries);
-    let semantic_boundary_change = accepted_boundaries
-        .as_ref()
-        .is_some_and(|boundaries| boundaries != &current_boundaries);
+    let semantic_boundary_change =
+        accepted_boundaries.as_ref().is_some_and(|boundaries| boundaries != &current_boundaries);
     let failure_inventory_change =
         sorted_failures(accepted.failures()) != sorted_failures(&current.failures);
     // Increases are regressions (handled above). Any remaining bucket-map delta is a
