@@ -1,6 +1,4 @@
-use crate::incremental::{
-    IncrementalState, diagnostics::ReparseResult, edit::Edit, lex::create_lex_checkpoints,
-};
+use crate::incremental::{IncrementalState, diagnostics::ReparseResult, edit::Edit};
 use anyhow::Result;
 use perl_lexer::{PerlLexer, TokenType};
 use ropey::Rope;
@@ -111,7 +109,7 @@ pub(crate) fn apply_single_edit(
         }
     }
     state.tokens.splice(start_idx.., new_tokens);
-    state.lex_checkpoints = create_lex_checkpoints(&state.tokens, &state.line_index);
+    state.refresh_lex_checkpoints();
     Ok(SingleEditReparse { range: cp.byte..last, reused_tokens, token_count: state.tokens.len() })
 }
 
@@ -129,7 +127,7 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
     state.tokens = tokens;
     state.rope = Rope::from_str(&source);
     state.line_index = perl_line_index::LineIndex::new(&source);
-    state.lex_checkpoints = create_lex_checkpoints(&state.tokens, &state.line_index);
+    state.refresh_lex_checkpoints();
     Ok(ReparseResult {
         changed_ranges: vec![0..source.len()],
         parse_output: state.parse_output.clone(),

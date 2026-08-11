@@ -8,15 +8,17 @@ use perl_parser_core::parser::Parser;
 use ropey::Rope;
 use std::ops::Deref;
 
-/// Read-only compatibility view for legacy field-style source access.
+/// Read-only compatibility view for legacy field-style access.
 ///
 /// `IncrementalState` intentionally implements `Deref` but not `DerefMut` for
-/// this view. Existing consumers may continue to read `state.source`, while
-/// source replacement remains private to the committed-generation machinery.
+/// this view. Existing consumers may continue to read `state.source` and
+/// `state.lex_checkpoints`, while generation replacement remains private to the
+/// committed-state machinery.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct IncrementalStateReadView {
     pub source: String,
+    pub lex_checkpoints: Vec<LexCheckpoint>,
 }
 
 /// One internally consistent incremental parser generation.
@@ -26,14 +28,15 @@ pub struct IncrementalStateReadView {
 /// Use [`IncrementalState::new`], read-only accessors, and [`super::apply_edits`]
 /// to move between committed generations.
 ///
-/// Legacy field-style source reads remain available through an immutable
-/// compatibility view:
+/// Legacy field-style reads remain available through an immutable compatibility
+/// view:
 ///
 /// ```
 /// use perl_parser::incremental::IncrementalState;
 ///
 /// let state = IncrementalState::new("my $x = 1;".to_string());
 /// assert_eq!(state.source.len(), state.source().len());
+/// assert_eq!(state.lex_checkpoints.len(), state.lex_checkpoints().len());
 /// ```
 ///
 /// The view does not grant mutation authority:
@@ -44,12 +47,18 @@ pub struct IncrementalStateReadView {
 /// let mut state = IncrementalState::new("my $x = 1;".to_string());
 /// state.source.push_str("\n");
 /// ```
+///
+/// ```compile_fail
+/// use perl_parser::incremental::IncrementalState;
+///
+/// let mut state = IncrementalState::new("my $x = 1;".to_string());
+/// state.lex_checkpoints.clear();
+/// ```
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct IncrementalState {
     pub(super) rope: Rope,
     pub(super) line_index: LineIndex,
-    pub(super) lex_checkpoints: Vec<LexCheckpoint>,
     pub(super) parse_checkpoints: Vec<ParseCheckpoint>,
     /// Authoritative native parser output for the current source.
     pub(super) parse_output: ParseOutput,
@@ -91,12 +100,11 @@ impl IncrementalState {
         Self {
             rope,
             line_index,
-            lex_checkpoints,
             parse_checkpoints,
             parse_output,
             ast,
             tokens,
-            read_view: IncrementalStateReadView { source },
+            read_view: IncrementalStateReadView { source, lex_checkpoints },
         }
     }
 
@@ -121,7 +129,7 @@ impl IncrementalState {
     /// Lexer restart summaries for the current committed token stream.
     #[must_use]
     pub fn lex_checkpoints(&self) -> &[LexCheckpoint] {
-        &self.lex_checkpoints
+        &self.read_view.lex_checkpoints
     }
 
     /// Parser restart summaries for the current committed parse output.
@@ -152,7 +160,7 @@ impl IncrementalState {
     /// Find the nearest lexer checkpoint at or before `byte`.
     #[must_use]
     pub fn find_lex_checkpoint(&self, byte: usize) -> Option<&LexCheckpoint> {
-        self.lex_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
+        self.read_view.lex_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
     }
 
     /// Find the nearest parser checkpoint at or before `byte`.
@@ -170,6 +178,11 @@ impl IncrementalState {
         self.rope = Rope::from_str(&source);
         self.line_index = LineIndex::new(&source);
         self.read_view.source = source;
+    }
+
+    /// Rebuild lexer checkpoints from the staged token stream and line index.
+    pub(super) fn refresh_lex_checkpoints(&mut self) {
+        self.read_view.lex_checkpoints = create_lex_checkpoints(&self.tokens, &self.line_index);
     }
 
     /// Refresh the authoritative parser output from the current source.
