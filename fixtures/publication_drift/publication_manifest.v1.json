@@ -1,7 +1,11 @@
 {
   "schema_version": 1,
+  "swarm_repository": "EffortlessMetrics/perl-lsp-swarm",
+  "public_repository": "EffortlessMetrics/perl-lsp",
   "swarm_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "public_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "swarm_tree_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "public_tree_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "version": "0.17.0",
   "rules": [
     {

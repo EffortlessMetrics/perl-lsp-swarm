@@ -10,7 +10,11 @@
     "public_sha",
     "version",
     "rules",
-    "required_invariants"
+    "required_invariants",
+    "swarm_repository",
+    "public_repository",
+    "swarm_tree_digest",
+    "public_tree_digest"
   ],
   "properties": {
     "schema_version": {
@@ -40,6 +44,22 @@
       "items": {
         "$ref": "#/$defs/invariant"
       }
+    },
+    "swarm_repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "public_repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "swarm_tree_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "public_tree_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   },
   "$defs": {

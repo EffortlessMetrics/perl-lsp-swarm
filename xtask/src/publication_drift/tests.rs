@@ -16,17 +16,10 @@ const AUTHORITY: &[u8] =
 fn clean_translation_fixture_passes() -> Result<()> {
     let receipt = classify_fixture(CLEAN)?;
     if receipt.verdict != Verdict::Clean || !receipt.authority_valid {
-        bail!(
-            "clean fixture returned {:?}: {:?}",
-            receipt.verdict,
-            receipt.blockers
-        );
+        bail!("clean fixture returned {:?}: {:?}", receipt.verdict, receipt.blockers);
     }
     if receipt.comparison_version.as_deref() != Some("0.17.0") {
-        bail!(
-            "unexpected comparison version: {:?}",
-            receipt.comparison_version
-        );
+        bail!("unexpected comparison version: {:?}", receipt.comparison_version);
     }
     if receipt.manifest_verification.status != ManifestVerificationStatus::Verified {
         bail!("manifest was not verified");
@@ -40,11 +33,7 @@ fn windows_arm64_incident_is_product_drift() -> Result<()> {
         "../../../fixtures/publication_drift/windows_arm64_target_drift.json"
     ))?;
     if receipt.verdict != Verdict::Drift {
-        bail!(
-            "incident fixture returned {:?}: {:?}",
-            receipt.verdict,
-            receipt.blockers
-        );
+        bail!("incident fixture returned {:?}: {:?}", receipt.verdict, receipt.blockers);
     }
     assert_blocker(&receipt, "same_version_divergent_product")?;
     assert_blocker(&receipt, "product_drift")
@@ -89,9 +78,8 @@ fn invalid_authority_dominates_observed_drift() -> Result<()> {
 
 #[test]
 fn windows_paths_are_rejected_on_every_host() -> Result<()> {
-    let receipt = classify_fixture(include_str!(
-        "../../../fixtures/publication_drift/windows_path.json"
-    ))?;
+    let receipt =
+        classify_fixture(include_str!("../../../fixtures/publication_drift/windows_path.json"))?;
     if receipt.verdict != Verdict::NotProven {
         bail!("Windows path returned {:?}", receipt.verdict);
     }
@@ -128,17 +116,10 @@ fn optional_tag_prefix_normalizes_to_same_release() -> Result<()> {
     observation.swarm.version = "v0.17.0".to_string();
     let receipt = classify(observation, fixture_authority()?);
     if receipt.verdict != Verdict::Clean {
-        bail!(
-            "tag-prefixed version returned {:?}: {:?}",
-            receipt.verdict,
-            receipt.blockers
-        );
+        bail!("tag-prefixed version returned {:?}: {:?}", receipt.verdict, receipt.blockers);
     }
     if receipt.comparison_version.as_deref() != Some("0.17.0") {
-        bail!(
-            "tag-prefixed comparison did not normalize: {:?}",
-            receipt.comparison_version
-        );
+        bail!("tag-prefixed comparison did not normalize: {:?}", receipt.comparison_version);
     }
     Ok(())
 }
@@ -169,8 +150,7 @@ fn manifest_rule_cannot_authorize_another_path() -> Result<()> {
 #[test]
 fn manifest_rule_cannot_authorize_another_classification() -> Result<()> {
     let mut observation = clean_observation()?;
-    first_difference_mut(&mut observation)?.classification =
-        "release_metadata_only".to_string();
+    first_difference_mut(&mut observation)?.classification = "release_metadata_only".to_string();
     let receipt = classify(observation, fixture_authority()?);
     if receipt.verdict != Verdict::NotProven {
         bail!("rule classification mismatch returned {:?}", receipt.verdict);
@@ -192,11 +172,8 @@ fn manifest_rule_cannot_authorize_another_owner() -> Result<()> {
 #[test]
 fn digest_mismatch_is_not_proven() -> Result<()> {
     let mut observation = clean_observation()?;
-    observation
-        .manifest
-        .as_mut()
-        .ok_or_else(|| eyre!("clean fixture manifest missing"))?
-        .sha256 = "f".repeat(64);
+    observation.manifest.as_mut().ok_or_else(|| eyre!("clean fixture manifest missing"))?.sha256 =
+        "f".repeat(64);
     let receipt = classify(observation, fixture_authority()?);
     if receipt.verdict != Verdict::NotProven {
         bail!("digest mismatch returned {:?}", receipt.verdict);
@@ -205,14 +182,40 @@ fn digest_mismatch_is_not_proven() -> Result<()> {
 }
 
 #[test]
+fn manifest_repository_identity_must_match_subjects() -> Result<()> {
+    let observation = clean_observation()?;
+    let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
+    document.swarm_repository = "other/repository".to_string();
+    let source =
+        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
+    let receipt = classify(observation, source);
+    if receipt.verdict != Verdict::NotProven {
+        bail!("manifest repository mismatch returned {:?}", receipt.verdict);
+    }
+    assert_blocker(&receipt, "manifest_swarm_repository_mismatch")
+}
+
+#[test]
+fn manifest_tree_digest_must_match_subjects() -> Result<()> {
+    let observation = clean_observation()?;
+    let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
+    document.public_tree_digest = "f".repeat(64);
+    let source =
+        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
+    let receipt = classify(observation, source);
+    if receipt.verdict != Verdict::NotProven {
+        bail!("manifest tree mismatch returned {:?}", receipt.verdict);
+    }
+    assert_blocker(&receipt, "manifest_public_tree_digest_mismatch")
+}
+
+#[test]
 fn manifest_version_must_match_comparison_version() -> Result<()> {
     let observation = clean_observation()?;
     let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
     document.version = "0.18.0".to_string();
-    let source = AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256: manifest_digest(),
-    });
+    let source =
+        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
     let receipt = classify(observation, source);
     if receipt.verdict != Verdict::NotProven {
         bail!("manifest version mismatch returned {:?}", receipt.verdict);
@@ -227,16 +230,11 @@ fn manifest_cannot_omit_minimum_invariant_authority() -> Result<()> {
     document
         .required_invariants
         .retain(|invariant| invariant.id != "artifact_traceable_to_public_sha");
-    let source = AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256: manifest_digest(),
-    });
+    let source =
+        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
     let receipt = classify(observation, source);
     if receipt.verdict != Verdict::NotProven {
-        bail!(
-            "incomplete manifest invariants returned {:?}",
-            receipt.verdict
-        );
+        bail!("incomplete manifest invariants returned {:?}", receipt.verdict);
     }
     assert_blocker(&receipt, "manifest_required_invariant_missing")
 }
@@ -288,11 +286,7 @@ fn receipt_collections_are_deterministically_ordered() -> Result<()> {
         .ok_or_else(|| eyre!("clean fixture invariants missing"))?
         .reverse();
     let receipt = classify(observation, fixture_authority()?);
-    if !receipt
-        .invariants
-        .windows(2)
-        .all(|window| window[0].id <= window[1].id)
-    {
+    if !receipt.invariants.windows(2).all(|window| window[0].id <= window[1].id) {
         bail!("invariants were not sorted in the receipt");
     }
     Ok(())
@@ -304,10 +298,8 @@ fn file_loader_hashes_and_parses_manifest_bytes() -> Result<()> {
     let relative = "authority.json";
     fs::write(temp.path().join(relative), AUTHORITY)?;
     let mut observation = clean_observation()?;
-    let manifest = observation
-        .manifest
-        .as_mut()
-        .ok_or_else(|| eyre!("clean fixture manifest missing"))?;
+    let manifest =
+        observation.manifest.as_mut().ok_or_else(|| eyre!("clean fixture manifest missing"))?;
     manifest.path = relative.to_string();
 
     match load_authority(temp.path(), Some(manifest)) {
@@ -349,10 +341,7 @@ fn first_difference_mut(
 
 fn fixture_authority() -> Result<AuthoritySource> {
     let document = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256: manifest_digest(),
-    }))
+    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() }))
 }
 
 fn manifest_digest() -> String {
@@ -365,11 +354,7 @@ fn classify_fixture(raw: &str) -> Result<super::model::Receipt> {
 }
 
 fn assert_blocker(receipt: &super::model::Receipt, code: &str) -> Result<()> {
-    if !receipt
-        .blockers
-        .iter()
-        .any(|blocker| blocker.code == code)
-    {
+    if !receipt.blockers.iter().any(|blocker| blocker.code == code) {
         bail!("missing blocker {code:?}: {:?}", receipt.blockers);
     }
     Ok(())

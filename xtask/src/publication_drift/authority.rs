@@ -1,6 +1,6 @@
 use super::model::{
-    AuthoritySource, ClassificationState, LoadedManifest, ManifestIdentity,
-    ManifestVerification, ManifestVerificationStatus, PublicationManifest, REQUIRED_INVARIANTS,
+    AuthoritySource, ClassificationState, LoadedManifest, ManifestIdentity, ManifestVerification,
+    ManifestVerificationStatus, PublicationManifest, REQUIRED_INVARIANTS,
     SUPPORTED_MANIFEST_SCHEMA_VERSION, SubjectIdentity, ValidatedAuthority,
 };
 use super::path::{
@@ -49,17 +49,11 @@ pub(crate) fn load_authority(
         }
     };
 
-    AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256,
-    })
+    AuthoritySource::Loaded(LoadedManifest { document, actual_sha256 })
 }
 
 pub(crate) fn sha256_hex(raw: &[u8]) -> String {
-    Sha256::digest(raw)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    Sha256::digest(raw).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub(crate) fn validate_subject(
@@ -80,20 +74,14 @@ pub(crate) fn validate_subject(
     if !is_lower_hex(&subject.sha, 40) {
         state.mark_not_proven(
             "invalid_subject_sha",
-            format!(
-                "{label} SHA is not a 40-character lowercase commit id: {:?}",
-                subject.sha
-            ),
+            format!("{label} SHA is not a 40-character lowercase commit id: {:?}", subject.sha),
             "release-engineering",
         );
     }
     if !is_lower_hex(&subject.tree_digest, 64) {
         state.mark_not_proven(
             "invalid_subject_tree_digest",
-            format!(
-                "{label} tree digest is not a lowercase SHA-256: {:?}",
-                subject.tree_digest
-            ),
+            format!("{label} tree digest is not a lowercase SHA-256: {:?}", subject.tree_digest),
             "release-engineering",
         );
     }
@@ -174,10 +162,7 @@ pub(crate) fn validate_authority(
         valid = false;
         state.mark_not_proven(
             "invalid_manifest_digest",
-            format!(
-                "comparison manifest digest is not a lowercase SHA-256: {:?}",
-                identity.sha256
-            ),
+            format!("comparison manifest digest is not a lowercase SHA-256: {:?}", identity.sha256),
             "release-engineering",
         );
     }
@@ -223,10 +208,7 @@ pub(crate) fn validate_authority(
                 },
             );
         }
-        AuthoritySource::Invalid {
-            message,
-            actual_sha256,
-        } => {
+        AuthoritySource::Invalid { message, actual_sha256 } => {
             state.mark_not_proven(
                 "comparison_manifest_invalid",
                 message.clone(),
@@ -264,6 +246,58 @@ pub(crate) fn validate_authority(
             format!(
                 "unsupported comparison manifest schema version {}; expected {}",
                 document.schema_version, SUPPORTED_MANIFEST_SCHEMA_VERSION
+            ),
+            "release-engineering",
+        );
+    }
+    if !valid_repository_slug(&document.swarm_repository)
+        || document.swarm_repository != swarm.repository
+    {
+        valid = false;
+        state.mark_not_proven(
+            "manifest_swarm_repository_mismatch",
+            format!(
+                "comparison manifest swarm repository {:?} does not match {:?}",
+                document.swarm_repository, swarm.repository
+            ),
+            "release-engineering",
+        );
+    }
+    if !valid_repository_slug(&document.public_repository)
+        || document.public_repository != public.repository
+    {
+        valid = false;
+        state.mark_not_proven(
+            "manifest_public_repository_mismatch",
+            format!(
+                "comparison manifest public repository {:?} does not match {:?}",
+                document.public_repository, public.repository
+            ),
+            "release-engineering",
+        );
+    }
+    if !is_lower_hex(&document.swarm_tree_digest, 64)
+        || document.swarm_tree_digest != swarm.tree_digest
+    {
+        valid = false;
+        state.mark_not_proven(
+            "manifest_swarm_tree_digest_mismatch",
+            format!(
+                "comparison manifest swarm tree digest {:?} does not match {:?}",
+                document.swarm_tree_digest, swarm.tree_digest
+            ),
+            "release-engineering",
+        );
+    }
+    if !is_lower_hex(&document.public_tree_digest, 64)
+        || document.public_tree_digest != public.tree_digest
+    {
+        valid = false;
+        state.mark_not_proven(
+            "manifest_public_tree_digest_mismatch",
+            format!(
+                "comparison manifest public tree digest {:?} does not match {:?}",
+                document.public_tree_digest, public.tree_digest
             ),
             "release-engineering",
         );
@@ -341,10 +375,7 @@ pub(crate) fn validate_authority(
             rule_valid = false;
             state.mark_not_proven(
                 "invalid_manifest_rule_path",
-                format!(
-                    "comparison manifest rule {:?} has invalid path {:?}",
-                    rule.id, rule.path
-                ),
+                format!("comparison manifest rule {:?} has invalid path {:?}", rule.id, rule.path),
                 owner_or_release(&rule.owner),
             );
         }
@@ -397,10 +428,7 @@ pub(crate) fn validate_authority(
             invariant_valid = false;
             state.mark_not_proven(
                 "manifest_invariant_owner_missing",
-                format!(
-                    "comparison manifest invariant {:?} has no owner",
-                    invariant.id
-                ),
+                format!("comparison manifest invariant {:?} has no owner", invariant.id),
                 "release-engineering",
             );
         }
@@ -408,10 +436,7 @@ pub(crate) fn validate_authority(
             invariant_valid = false;
             state.mark_not_proven(
                 "duplicate_manifest_invariant",
-                format!(
-                    "comparison manifest invariant appears more than once: {:?}",
-                    invariant.id
-                ),
+                format!("comparison manifest invariant appears more than once: {:?}", invariant.id),
                 owner_or_release(&invariant.owner),
             );
         }
@@ -427,9 +452,7 @@ pub(crate) fn validate_authority(
             valid = false;
             state.mark_not_proven(
                 "manifest_required_invariant_missing",
-                format!(
-                    "comparison manifest omits minimum required invariant {required:?}"
-                ),
+                format!("comparison manifest omits minimum required invariant {required:?}"),
                 "release-engineering",
             );
         }
@@ -446,13 +469,7 @@ pub(crate) fn validate_authority(
     };
 
     if valid {
-        (
-            Some(ValidatedAuthority {
-                rules,
-                required_invariants,
-            }),
-            verification,
-        )
+        (Some(ValidatedAuthority { rules, required_invariants }), verification)
     } else {
         (None, verification)
     }
@@ -475,11 +492,7 @@ fn is_clean_classification(classification: &str) -> bool {
 }
 
 fn owner_or_release(owner: &str) -> &str {
-    if owner.trim().is_empty() {
-        "release-engineering"
-    } else {
-        owner
-    }
+    if owner.trim().is_empty() { "release-engineering" } else { owner }
 }
 
 #[cfg(test)]

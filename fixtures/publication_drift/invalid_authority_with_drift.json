@@ -14,7 +14,7 @@
   },
   "manifest": {
     "path": "fixtures/publication_drift/publication_manifest.v1.json",
-    "sha256": "50ed27f85a91f1e7bcbb8967c8e0aef7eaa044224644a64c17c744cf6aab14c1",
+    "sha256": "f308d3152ad057c21a49e3bbc74e1bd1e48a08c293ee2a58aa547c1f23a48aad",
     "swarm_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "public_sha": "ffffffffffffffffffffffffffffffffffffffff"
   },

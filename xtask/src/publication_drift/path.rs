@@ -23,16 +23,12 @@ pub(super) fn valid_repository_path(raw: &str) -> bool {
         && !raw.contains('\\')
         && !raw.contains(':')
         && !raw.contains('\0')
-        && raw
-            .split('/')
-            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+        && raw.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 pub(super) fn is_lower_hex(value: &str, expected_len: usize) -> bool {
     value.len() == expected_len
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub(super) fn normalize_release_version(raw: &str) -> Option<String> {
@@ -124,10 +120,7 @@ mod tests {
 
     #[test]
     fn normalizes_optional_tag_prefix() {
-        assert_eq!(
-            normalize_release_version("v0.17.0").as_deref(),
-            Some("0.17.0")
-        );
+        assert_eq!(normalize_release_version("v0.17.0").as_deref(), Some("0.17.0"));
         assert_eq!(
             normalize_release_version("0.17.0-beta.1+build.7").as_deref(),
             Some("0.17.0-beta.1+build.7")

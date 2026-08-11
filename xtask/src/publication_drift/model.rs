@@ -73,8 +73,12 @@ pub(crate) struct ObservedInvariant {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PublicationManifest {
     pub(crate) schema_version: u32,
+    pub(crate) swarm_repository: String,
+    pub(crate) public_repository: String,
     pub(crate) swarm_sha: String,
     pub(crate) public_sha: String,
+    pub(crate) swarm_tree_digest: String,
+    pub(crate) public_tree_digest: String,
     pub(crate) version: String,
     pub(crate) rules: Vec<ManifestRule>,
     pub(crate) required_invariants: Vec<ManifestInvariant>,
@@ -105,10 +109,7 @@ pub(crate) struct LoadedManifest {
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoritySource {
     Missing,
-    Invalid {
-        message: String,
-        actual_sha256: Option<String>,
-    },
+    Invalid { message: String, actual_sha256: Option<String> },
     Loaded(LoadedManifest),
 }
 

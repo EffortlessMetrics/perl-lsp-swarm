@@ -44,10 +44,7 @@ fn first_difference_mut(
 
 fn fixture_authority() -> Result<AuthoritySource> {
     let document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256: sha256_hex(AUTHORITY),
-    }))
+    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: sha256_hex(AUTHORITY) }))
 }
 
 fn assert_not_proven_difference(receipt: &super::model::Receipt, case: &str) -> Result<()> {

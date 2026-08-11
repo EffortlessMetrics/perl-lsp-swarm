@@ -4,20 +4,15 @@ use super::authority::{
 use super::model::{
     APPROVED_EXCLUSION, AuthoritySource, ClassificationState, ClassifiedDifference,
     ClassifiedInvariant, EXPECTED_TRANSLATION, ManifestRule, NOT_PROVEN_CLASS, Observation,
-    PRODUCT_DRIFT, RELEASE_METADATA, Receipt, SUPPORTED_SCHEMA_VERSION, ValidatedAuthority, Verdict,
+    PRODUCT_DRIFT, RELEASE_METADATA, Receipt, SUPPORTED_SCHEMA_VERSION, ValidatedAuthority,
+    Verdict,
 };
 use super::path::valid_repository_path;
 use std::collections::BTreeSet;
 
 pub(crate) fn classify(observation: Observation, authority_source: AuthoritySource) -> Receipt {
-    let Observation {
-        schema_version,
-        swarm,
-        public,
-        manifest,
-        differences,
-        invariants,
-    } = observation;
+    let Observation { schema_version, swarm, public, manifest, differences, invariants } =
+        observation;
     let mut state = ClassificationState::default();
 
     if schema_version != SUPPORTED_SCHEMA_VERSION {
@@ -93,8 +88,7 @@ pub(crate) fn classify(observation: Observation, authority_source: AuthoritySour
 
     state.blockers.sort();
     state.blockers.dedup();
-    let authority_valid =
-        authority.is_some() && comparison_version.is_some() && !state.not_proven;
+    let authority_valid = authority.is_some() && comparison_version.is_some() && !state.not_proven;
     let verdict = if state.not_proven {
         Verdict::NotProven
     } else if state.drift {
@@ -127,12 +121,7 @@ fn classify_differences(
     let mut classified = Vec::new();
 
     for difference in observed {
-        validate_owner(
-            "difference",
-            &difference.path,
-            &difference.owner,
-            state,
-        );
+        validate_owner("difference", &difference.path, &difference.owner, state);
         if !valid_repository_path(&difference.path) {
             state.mark_not_proven(
                 "invalid_difference_path",
@@ -224,10 +213,8 @@ fn validate_manifest_rule(
     state: &mut ClassificationState,
 ) -> bool {
     if requires_manifest_rule(&difference.classification) {
-        let Some(rule_id) = difference
-            .manifest_rule
-            .as_deref()
-            .filter(|rule| !rule.trim().is_empty())
+        let Some(rule_id) =
+            difference.manifest_rule.as_deref().filter(|rule| !rule.trim().is_empty())
         else {
             state.mark_not_proven(
                 "manifest_rule_missing",
@@ -265,11 +252,7 @@ fn validate_manifest_rule(
         return validate_rule_match(difference, rule, state);
     }
 
-    if difference
-        .manifest_rule
-        .as_deref()
-        .is_some_and(|rule| !rule.trim().is_empty())
-    {
+    if difference.manifest_rule.as_deref().is_some_and(|rule| !rule.trim().is_empty()) {
         state.mark_not_proven(
             "manifest_rule_not_applicable",
             format!(
@@ -352,13 +335,7 @@ fn classify_invariants(
                 owner_or_default(&invariant.owner),
             );
         }
-        validate_evidence(
-            "invariant",
-            &invariant.id,
-            &invariant.evidence,
-            &invariant.owner,
-            state,
-        );
+        validate_evidence("invariant", &invariant.id, &invariant.evidence, &invariant.owner, state);
 
         match required.get(&invariant.id) {
             Some(expected_owner) if expected_owner != &invariant.owner => {
@@ -398,10 +375,7 @@ fn classify_invariants(
             ),
             other => state.mark_not_proven(
                 "unknown_invariant_status",
-                format!(
-                    "invariant {:?} has unknown status {:?}",
-                    invariant.id, other
-                ),
+                format!("invariant {:?} has unknown status {:?}", invariant.id, other),
                 owner_or_default(&invariant.owner),
             ),
         }
@@ -419,10 +393,7 @@ fn classify_invariants(
             state.mark_not_proven(
                 "required_invariant_missing",
                 format!("required publication invariant {required_id:?} is absent"),
-                required
-                    .get(required_id)
-                    .map(String::as_str)
-                    .unwrap_or("release-engineering"),
+                required.get(required_id).map(String::as_str).unwrap_or("release-engineering"),
             );
         }
     }
@@ -431,12 +402,7 @@ fn classify_invariants(
     classified
 }
 
-fn validate_owner(
-    kind: &str,
-    identity: &str,
-    owner: &str,
-    state: &mut ClassificationState,
-) {
+fn validate_owner(kind: &str, identity: &str, owner: &str, state: &mut ClassificationState) {
     if owner.trim().is_empty() {
         state.mark_not_proven(
             "owner_missing",
@@ -462,10 +428,7 @@ fn validate_evidence(
         return;
     }
 
-    let unique = evidence
-        .iter()
-        .map(|entry| entry.trim())
-        .collect::<BTreeSet<_>>();
+    let unique = evidence.iter().map(|entry| entry.trim()).collect::<BTreeSet<_>>();
     if unique.len() != evidence.len() {
         state.mark_not_proven(
             "duplicate_evidence",
@@ -476,11 +439,7 @@ fn validate_evidence(
 }
 
 fn owner_or_default(owner: &str) -> &str {
-    if owner.trim().is_empty() {
-        "release-engineering"
-    } else {
-        owner
-    }
+    if owner.trim().is_empty() { "release-engineering" } else { owner }
 }
 
 fn allowed_classification(classification: &str) -> bool {
@@ -495,8 +454,5 @@ fn allowed_classification(classification: &str) -> bool {
 }
 
 fn requires_manifest_rule(classification: &str) -> bool {
-    matches!(
-        classification,
-        EXPECTED_TRANSLATION | APPROVED_EXCLUSION | RELEASE_METADATA
-    )
+    matches!(classification, EXPECTED_TRANSLATION | APPROVED_EXCLUSION | RELEASE_METADATA)
 }

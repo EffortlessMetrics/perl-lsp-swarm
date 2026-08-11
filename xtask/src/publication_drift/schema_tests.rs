@@ -8,12 +8,10 @@ use serde_json::Value;
 const CLEAN: &str = include_str!("../../../fixtures/publication_drift/clean.json");
 const DRIFT: &str =
     include_str!("../../../fixtures/publication_drift/windows_arm64_target_drift.json");
-const NOT_PROVEN: &str =
-    include_str!("../../../fixtures/publication_drift/missing_manifest.json");
+const NOT_PROVEN: &str = include_str!("../../../fixtures/publication_drift/missing_manifest.json");
 const AUTHORITY: &[u8] =
     include_bytes!("../../../fixtures/publication_drift/publication_manifest.v1.json");
-const MANIFEST_SCHEMA: &str =
-    include_str!("../../../schemas/publication_manifest.v1.schema.json");
+const MANIFEST_SCHEMA: &str = include_str!("../../../schemas/publication_manifest.v1.schema.json");
 const RECEIPT_SCHEMA: &str =
     include_str!("../../../schemas/publication_drift_receipt.v1.schema.json");
 
@@ -30,11 +28,7 @@ fn emitted_clean_drift_and_not_proven_receipts_conform_to_schema() -> Result<()>
     let cases = [
         ("clean", receipt_value(CLEAN, fixture_authority()?)?, "clean"),
         ("drift", receipt_value(DRIFT, fixture_authority()?)?, "drift"),
-        (
-            "not_proven",
-            receipt_value(NOT_PROVEN, AuthoritySource::Missing)?,
-            "not_proven",
-        ),
+        ("not_proven", receipt_value(NOT_PROVEN, AuthoritySource::Missing)?, "not_proven"),
     ];
 
     for (name, receipt, expected_verdict) in cases {
@@ -81,17 +75,14 @@ fn receipt_value(raw: &str, authority: AuthoritySource) -> Result<Value> {
 
 fn fixture_authority() -> Result<AuthoritySource> {
     let document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256: sha256_hex(AUTHORITY),
-    }))
+    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: sha256_hex(AUTHORITY) }))
 }
 
 fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -> Result<()> {
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        let pointer = reference
-            .strip_prefix('#')
-            .ok_or_else(|| eyre!("{context}: unsupported external schema reference {reference:?}"))?;
+        let pointer = reference.strip_prefix('#').ok_or_else(|| {
+            eyre!("{context}: unsupported external schema reference {reference:?}")
+        })?;
         let target = root
             .pointer(pointer)
             .ok_or_else(|| eyre!("{context}: unresolved schema reference {reference:?}"))?;
@@ -147,12 +138,7 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
             }
             for (key, property_schema) in properties {
                 if let Some(property) = object.get(key) {
-                    validate_schema(
-                        property,
-                        property_schema,
-                        root,
-                        &format!("{context}.{key}"),
-                    )?;
+                    validate_schema(property, property_schema, root, &format!("{context}.{key}"))?;
                 }
             }
         }
