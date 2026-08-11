@@ -111,7 +111,7 @@ fn checked_in_target_matrix_is_valid_and_stable() -> Result<()> {
     assert_eq!(first, second);
     assert_eq!(
         first,
-        "ab82e039399866251f6831913ce7869f7d553b9a08c6dbe7395997f25e429c83"
+        "00dec1e0847ad8bcf7c37d842d700338e85853430d3b621724f3a6aa0e142a78"
     );
     Ok(())
 }
