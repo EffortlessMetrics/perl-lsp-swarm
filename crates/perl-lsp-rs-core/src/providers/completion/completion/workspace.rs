@@ -1315,7 +1315,10 @@ fn source_package_fallback(source: &str, position: usize) -> Option<String> {
         brace_depth = brace_depth.saturating_add(line.chars().filter(|&ch| ch == '{').count());
         brace_depth = brace_depth.saturating_sub(line.chars().filter(|&ch| ch == '}').count());
 
-        while package_blocks.last().is_some_and(|(depth, _)| *depth > brace_depth) {
+        while let Some((depth, _)) = package_blocks.last() {
+            if *depth <= brace_depth {
+                break;
+            }
             let Some((_, previous)) = package_blocks.pop() else {
                 break;
             };
