@@ -2098,7 +2098,8 @@
           "kind": "Binary",
           "line": 7
         }
-      ]    },
+      ]
+    },
     {
       "id": "method_call",
       "family": "method_call",
@@ -3350,7 +3351,8 @@
           "kind": "Block",
           "line": 5
         }
-      ]    },
+      ]
+    },
     {
       "id": "unterminated_heredoc",
       "family": "recovery",
