@@ -53,11 +53,15 @@ producer = "workspace_index"
 proof_class = "mixed"
 readiness_input = "index readiness and workspace root"
 fallback = "local and imported candidates remain available after bounded readiness handling"
-duplicate_interpretation = "completion reads and ranks workspace candidates inside the request handler"
+duplicate_interpretation = "completion reads and ranks workspace candidates inside both request handlers"
 migration_disposition = "port_candidate"
 replacement_owner = "#6816/#6817"
 [[read.source]]
 path = "crates/perl-lsp-rs/src/runtime/language/completion.rs"
+[[read.source.anchor]]
+kind = "rust_fn"
+value = "handle_completion"
+count = 1
 [[read.source.anchor]]
 kind = "rust_fn"
 value = "handle_completion_cancellable"
@@ -65,7 +69,7 @@ count = 1
 [[read.source.anchor]]
 kind = "rust_call"
 value = "route_index_access"
-count = 1
+count = 2
 
 [[read]]
 id = "completion.receiver_shadow"
