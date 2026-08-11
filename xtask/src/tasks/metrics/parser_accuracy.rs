@@ -3693,7 +3693,8 @@ fn is_ast_scored_node(node: &Node) -> bool {
 
 fn node_operator(node: &Node) -> Option<&str> {
     match &node.kind {
-        NodeKind::Binary { op, .. } => Some(op.as_str()),
+        NodeKind::Binary { op, .. } | NodeKind::Assignment { op, .. } => Some(op.as_str()),
+        NodeKind::Match { negated, .. } => Some(if *negated { "!~" } else { "=~" }),
         _ => None,
     }
 }
