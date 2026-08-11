@@ -664,5 +664,7 @@ pub fn build_parse_error_hint(error: &ParseError, base_message: &str) -> Option<
         // Recovered errors: the parser inserted a synthetic node and continued.
         // No user-facing suggestion is needed — the partial AST is still usable.
         ParseError::Recovered { .. } => None,
+        // Forward-compatible fallback for future variants (#2898)
+        _ => None,
     }
 }
