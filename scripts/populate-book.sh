@@ -79,13 +79,13 @@ copy_doc "$DOCS_DIR/reference/KNOWN_LIMITATIONS.md" "$BOOK_SRC/user-guides/known
 
 # Architecture section
 echo "Setting up Architecture..."
-copy_doc "$DOCS_DIR/reference/ARCHITECTURE_OVERVIEW.md" "$BOOK_SRC/architecture/overview.md"
+copy_doc "$DOCS_DIR/reference/ARCHITECTURE.md" "$BOOK_SRC/architecture/overview.md"
 copy_doc "$DOCS_DIR/reference/CRATE_ARCHITECTURE_GUIDE.md" "$BOOK_SRC/architecture/crate-structure.md"
 copy_doc "$DOCS_DIR/reference/MODERN_ARCHITECTURE.md" "$BOOK_SRC/architecture/modern-architecture.md"
 
-copy_doc "$DOCS_DIR/reference/ARCHITECTURE_OVERVIEW.md" "$BOOK_SRC/architecture/parser-design.md"
+copy_doc "$DOCS_DIR/reference/ARCHITECTURE.md" "$BOOK_SRC/architecture/parser-design.md"
 
-copy_doc "$DOCS_DIR/reference/LSP_IMPLEMENTATION_GUIDE.md" "$BOOK_SRC/architecture/lsp-implementation.md"
+copy_doc "$DOCS_DIR/tutorials/LSP_DEVELOPMENT_GUIDE.md" "$BOOK_SRC/architecture/lsp-implementation.md"
 copy_doc "$DOCS_DIR/reference/CRATE_ARCHITECTURE_DAP.md" "$BOOK_SRC/architecture/dap-implementation.md"
 
 # Developer Guides section
@@ -99,7 +99,7 @@ copy_doc "$DOCS_DIR/project/DEVELOPMENT.md" "$BOOK_SRC/developer/development-wor
 
 # LSP Development section
 echo "Setting up LSP Development..."
-copy_doc "$DOCS_DIR/reference/LSP_IMPLEMENTATION_GUIDE.md" "$BOOK_SRC/lsp/implementation-guide.md"
+copy_doc "$DOCS_DIR/tutorials/LSP_DEVELOPMENT_GUIDE.md" "$BOOK_SRC/lsp/implementation-guide.md"
 copy_doc "$DOCS_DIR/reference/LSP_PROVIDERS_REFERENCE.md" "$BOOK_SRC/lsp/providers-reference.md"
 copy_doc "$DOCS_DIR/reference/LSP_FEATURE_IMPLEMENTATION_BEST_PRACTICES.md" "$BOOK_SRC/lsp/feature-implementation.md"
 copy_doc "$DOCS_DIR/reference/LSP_CANCELLATION_PROTOCOL.md" "$BOOK_SRC/lsp/cancellation-system.md"
