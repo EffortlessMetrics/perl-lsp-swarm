@@ -87,6 +87,12 @@ fn test_and_harness_membership_can_match_with_different_order() -> Result<()> {
             .iter()
             .any(|value| value == "alternate_runner_requires_membership_parity_evidence")
     );
+    assert!(test_plan.limitations.iter().any(|value| {
+        value == "scheduling_inputs_are_declared_not_observed"
+    }));
+    assert!(parity.limitations.iter().any(|value| {
+        value == "scheduling_equality_compares_declared_inputs_not_observed_runner_state"
+    }));
     Ok(())
 }
 
@@ -248,6 +254,28 @@ fn plan_check_rebuilds_from_matrix_and_raw_discovery() -> Result<()> {
     assert!(
         validate_runner_plan_against(&matrix, b"t/base/cond.t\n", &plan).is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn scheduling_limitations_are_mandatory() -> Result<()> {
+    let matrix = matrix()?;
+    let raw = b"t/base/if.t\n";
+    let left = base_plan(&matrix, RunnerKind::Test, raw)?;
+    let right = base_plan(&matrix, RunnerKind::Harness, raw)?;
+
+    let mut plan_without_boundary = left.clone();
+    plan_without_boundary
+        .limitations
+        .retain(|value| value != "scheduling_inputs_are_declared_not_observed");
+    assert!(validate_runner_plan(&plan_without_boundary).is_err());
+
+    let mut parity_without_boundary = compare_runner_plans(&left, &right)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    parity_without_boundary.limitations.retain(|value| {
+        value != "scheduling_equality_compares_declared_inputs_not_observed_runner_state"
+    });
+    assert!(validate_runner_parity(&parity_without_boundary).is_err());
     Ok(())
 }
 
