@@ -3607,21 +3607,9 @@ fn score_manifest_ast(
             .iter()
             .map(|expectation| expectation.line)
             .collect::<BTreeSet<_>>();
-        let string_expectation_lines = fixture
-            .ast_expectations
-            .iter()
-            .filter(|expectation| expectation.kind == "String")
-            .map(|expectation| expectation.line)
-            .collect::<BTreeSet<_>>();
         let predictions = extract_ast_predictions(source)
             .into_iter()
             .filter(|prediction| expected_lines.contains(&prediction.line))
-            // String nodes are scored only where the fixture explicitly labels them.
-            // Keeping them out of unrelated partially labelled lines prevents correct
-            // parser output from becoming a false positive.
-            .filter(|prediction| {
-                prediction.kind != "String" || string_expectation_lines.contains(&prediction.line)
-            })
             .collect::<Vec<_>>();
         score_ast_expectations(&fixture.ast_expectations, &predictions, &mut score);
     }
@@ -3696,7 +3684,6 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::Substitution { .. }
             | NodeKind::Transliteration { .. }
             | NodeKind::Heredoc { .. }
-            | NodeKind::String { .. }
             | NodeKind::Format { .. }
             | NodeKind::Binary { .. }
             | NodeKind::Error { .. }
