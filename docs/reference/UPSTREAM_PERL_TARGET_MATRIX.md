@@ -34,6 +34,7 @@ The validator fails closed on:
 
 - unknown fields in target, selector, preparation, exclusion, matrix, and drift payloads;
 - malformed local or root-external selectors;
+- target IDs, upstream names, or aliases owned by more than one target;
 - missing, self-referential, incompatible, or cyclic variant bases;
 - instrumentation chains that do not resolve directly to a physical or selector denominator;
 - missing, self-referential, or cyclic replacement lineage;
@@ -50,11 +51,13 @@ Each physical or selector target records two authorities separately. `authority`
 - **Physical series** own immutable source membership, such as `t/base`, `t/mro`, `test_reonly`, or one MANIFEST population.
 - **Selector variants** change membership through upstream authority, such as the actual `t/TEST --core` selection. Its `core_root_lib` population is not ordinary root `lib`.
 - **Environment variants** inherit membership while changing source interpretation, terminal policy, switches, parameters, or environment.
-- **Generated composites** join independently identified targets. The historical repository core and full views require `reject_overlap`; direct `op/*.t` and nested `op/hook` are separate, disjoint members.
+- **Generated composites** join independently identified targets. The historical repository core and full views require `reject_overlap` and are split by runner: `t/harness` admits direct `op/*.t` only, while `t/TEST` recursively reaches the separate nested `op/hook` member.
 - **Preparation-only targets** describe build state without creating a compiler denominator.
 - **Instrumentation-only targets** add process instrumentation without raising compatibility.
 
-The historical `HarnessProfile::Core` and `HarnessProfile::Full` rows remain visible so they cannot be confused with upstream `t/TEST --core` or Perl's default test target.
+The four historical repository rows—core and full through `HarnessRunner::Harness`, and core and full through `HarnessRunner::Test`—remain visible so neither runner-dependent denominator can be confused with upstream `t/TEST --core` or Perl's default test target. The old runner-agnostic `legacy_custom_core` and `legacy_custom_full` identities are intentionally absent because no single membership set represents both execution paths.
+
+Presentation fields such as `display_name` remain part of the matrix artifact and full matrix fingerprint, but they are excluded from per-target topology classification. A label edit does not become topology drift; a selector, preparation, variant, switch, environment, exclusion, or other invocation-contract edit still does.
 
 ## Claim boundary
 
