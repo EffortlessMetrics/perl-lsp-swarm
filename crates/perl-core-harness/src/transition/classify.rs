@@ -7,10 +7,11 @@
 //! - exact V2 observation identity → [`CompatibilityTransition::NoChange`]
 //!
 //! Assertion deltas, improvements, and V1 migration remain follow-up classifier
-//! slices. Aggregate `summary` fields are ignored so forged totals cannot
-//! manufacture a transition. Compiler/invocation/capability/environment subject
-//! ids are retained on the V2 ratchet but are not present on [`RunReport`]; they
-//! are bound in receipts by a later slice rather than compared here.
+//! slices. Aggregate `summary` fields cannot manufacture a transition: they are
+//! ignored for Regression/Improvement scoring and must reconcile with detailed
+//! `file_results` before `NoChange`. Compiler/invocation/capability/environment
+//! subject ids are retained on the V2 ratchet but are not present on
+//! [`RunReport`]; they are bound in receipts by a later slice.
 
 use crate::transition::model::AcceptedBaseline;
 use perl_core_harness_types::{
@@ -34,6 +35,12 @@ pub struct Classification {
 
 /// Classify `current` against `accepted` for the minimal core outcomes above.
 pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> Classification {
+    if current.harness_status.is_some_and(|status| status != 0) {
+        return not_proven(format!(
+            "accepted and current observations are not comparable: current harness_status {:?} is not a complete successful run",
+            current.harness_status
+        ));
+    }
     if let Some(path) = first_duplicate_path(accepted.file_results()) {
         return not_proven(format!(
             "accepted and current observations are not comparable: accepted observation repeats file-result path {path}"
@@ -84,6 +91,7 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
         && accepted.failures() == current.failures.as_slice()
         && value.semantic_boundaries == current.semantic_boundaries
         && current.harness_status == Some(0)
+        && summary_matches_file_results(current)
     {
         return Classification {
             transition: CompatibilityTransition::NoChange,
@@ -119,21 +127,44 @@ fn v2_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<Str
             "accepted and current observations are not comparable: accepted V2 file_membership repeats path {path}"
         ));
     }
+    let membership = value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let accepted_paths =
+        value.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
+    if membership != accepted_paths {
+        return Some(
+            "accepted and current observations are not comparable: accepted V2 file_results do not match immutable file_membership"
+                .into(),
+        );
+    }
     let accepted_subject =
         (value.mode, value.profile, value.runner, value.perl_resolved_ref.as_str());
     let current_subject =
         (current.mode, current.profile, current.runner, current.perl_ref.as_str());
-    let expected_membership =
-        value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let observed_membership =
         current.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
-    if accepted_subject == current_subject && expected_membership == observed_membership {
+    if accepted_subject == current_subject && membership == observed_membership {
         return None;
     }
     Some(
         "accepted and current observations are not comparable: V2 subject identity or immutable file membership differs"
             .into(),
     )
+}
+
+fn summary_matches_file_results(current: &RunReport) -> bool {
+    let files_total = current.file_results.len();
+    let files_passed =
+        current.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
+    let files_failed = files_total.saturating_sub(files_passed);
+    let tap_assertions_total =
+        current.file_results.iter().map(|result| result.assertions_total).sum::<usize>();
+    let tap_assertions_passed =
+        current.file_results.iter().map(|result| result.assertions_passed).sum::<usize>();
+    current.summary.files_total == files_total
+        && current.summary.files_passed == files_passed
+        && current.summary.files_failed == files_failed
+        && current.summary.tap_assertions_total == tap_assertions_total
+        && current.summary.tap_assertions_passed == tap_assertions_passed
 }
 
 fn not_proven(reason: String) -> Classification {

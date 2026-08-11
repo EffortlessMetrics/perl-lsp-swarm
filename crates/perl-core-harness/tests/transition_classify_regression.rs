@@ -99,6 +99,37 @@ fn duplicate_file_membership_is_not_proven() {
     assert!(classification.reason.contains("file_membership repeats"));
 }
 
+#[test]
+fn failed_harness_status_is_not_proven() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.harness_status = Some(1);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("harness_status"));
+}
+
+#[test]
+fn forged_summary_blocks_no_change() {
+    let accepted = sample_v2_baseline(2, 2);
+    let mut current = sample_report(2, 2);
+    current.summary.files_passed = 0;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+}
+
+#[test]
+fn accepted_membership_mismatch_is_not_proven() {
+    let mut accepted = sample_v2_baseline(2, 2);
+    accepted.file_membership.pop();
+    let current = sample_report(2, 2);
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("file_results do not match immutable file_membership"));
+}
+
 fn compensated_swap_classification() -> Classification {
     let accepted = sample_v2_baseline(2, 1);
     let mut current = sample_report(2, 1);
