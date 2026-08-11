@@ -484,6 +484,8 @@ impl LspServer {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => 1,
                 InternalDiagnosticTag::Deprecated => 2,
+                // Forward-compatible fallback for future variants (#2898)
+                _ => 1,
             })
             .collect()
     }
@@ -744,6 +746,8 @@ impl LspServer {
                         InternalDiagnosticSeverity::Warning => 2,
                         InternalDiagnosticSeverity::Information => 3,
                         InternalDiagnosticSeverity::Hint => 4,
+                        // Forward-compatible fallback for future variants (#2898)
+                        _ => 1,
                     };
                     let code_str = d.code.as_deref().unwrap_or("");
                     let mut diag = diagnostic_json(
@@ -806,6 +810,8 @@ impl LspServer {
                             .map(|t| match t {
                                 InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                 InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                                // Forward-compatible fallback for future variants (#2898)
+                                _ => "Unnecessary".to_string(),
                             })
                             .collect();
                         diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
@@ -1445,6 +1451,8 @@ impl LspServer {
             InternalDiagnosticSeverity::Warning => 2,
             InternalDiagnosticSeverity::Information => 3,
             InternalDiagnosticSeverity::Hint => 4,
+            // Forward-compatible fallback for future variants (#2898)
+            _ => 1,
         };
         let code_str = d.code.as_deref().unwrap_or("");
         let message_val = Self::diagnostic_message_value(&d.message, None, markup_message_support);
@@ -1499,6 +1507,8 @@ impl LspServer {
                 .map(|t| match t {
                     InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                     InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                    // Forward-compatible fallback for future variants (#2898)
+                    _ => "Unnecessary".to_string(),
                 })
                 .collect();
             diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
@@ -1793,6 +1803,8 @@ impl LspServer {
                                         InternalDiagnosticSeverity::Warning => 2,
                                         InternalDiagnosticSeverity::Information => 3,
                                         InternalDiagnosticSeverity::Hint => 4,
+                                        // Forward-compatible fallback for future variants (#2898)
+                                        _ => 1,
                                     },
                                     "code": d.code.clone(),
                                     "source": diagnostic_source(d.code.as_deref()),
@@ -1832,6 +1844,8 @@ impl LspServer {
                                         d.tags.iter().map(|t| match t {
                                             InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                             InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                                            // Forward-compatible fallback for future variants (#2898)
+                                            _ => "Unnecessary".to_string(),
                                         }).collect();
                                     diag["data"] = diagnostic_data(
                                         code_str,
@@ -1888,6 +1902,8 @@ impl LspServer {
                                     InternalDiagnosticSeverity::Warning => 2,
                                     InternalDiagnosticSeverity::Information => 3,
                                     InternalDiagnosticSeverity::Hint => 4,
+                                    // Forward-compatible fallback for future variants (#2898)
+                                    _ => 1,
                                 },
                                 "code": d.code.clone(),
                                 "source": diagnostic_source(d.code.as_deref()),
@@ -1927,6 +1943,8 @@ impl LspServer {
                                     d.tags.iter().map(|t| match t {
                                         InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                         InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                                        // Forward-compatible fallback for future variants (#2898)
+                                        _ => "Unnecessary".to_string(),
                                     }).collect();
                                 diag["data"] = diagnostic_data(
                                     code_str,
