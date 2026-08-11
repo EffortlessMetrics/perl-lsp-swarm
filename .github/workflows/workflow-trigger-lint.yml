@@ -2,7 +2,7 @@ name: Workflow Trigger Lint
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main, master, test/lsp-real-process-6720]
 
 permissions:
   contents: write
