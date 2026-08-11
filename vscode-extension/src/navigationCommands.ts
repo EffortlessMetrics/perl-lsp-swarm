@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { PRODUCT_NAME, SERVER_EXECUTABLE } from './supportCommands';
+import { PRODUCT_NAME } from './supportCommands';
 
 type NavigationOutputChannel = Pick<vscode.OutputChannel, 'show'>;
 
@@ -87,11 +87,11 @@ export async function showWorkspaceStatusCommand(dependencies: {
   const lines = [
     'Perl LSP workspace status',
     `Product: ${PRODUCT_NAME}`,
-    `Server: ${SERVER_EXECUTABLE} (${modeLabel})`,
+    `Server state: ${modeLabel}`,
   ];
   const hasLiveServer = status.mode === 'running' || status.mode === 'indexing';
   if (hasLiveServer && status.version) {
-    lines.push(`Server version: ${status.version}`);
+    lines.push(`Observed server: ${status.version}`);
   }
   if (status.fileCount !== undefined) {
     lines.push(`Workspace files: ${status.fileCount}`);
