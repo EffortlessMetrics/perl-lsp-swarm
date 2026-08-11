@@ -6210,6 +6210,10 @@ mod tests {
         ] {
             assert!(output_dir.join(file).is_file(), "{file} should be written");
         }
+        let records = read_runner_records(&output_dir.join("runner-records.jsonl"))?;
+        let modes = records.iter().map(|record| record.mode.as_str()).collect::<BTreeSet<_>>();
+        assert_eq!(modes, BTreeSet::from(["compile", "parse"]));
+        assert_eq!(records.len(), 4);
         let raw = fs::read_to_string(output_dir.join("smoke.json"))?;
         let report: SmokeReport = serde_json::from_str(&raw)?;
         assert_eq!(report.schema_version, SMOKE_SCHEMA_VERSION);
