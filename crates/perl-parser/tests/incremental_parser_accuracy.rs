@@ -138,7 +138,7 @@ fn assert_incremental_outcome(
     root: &Node,
     context: &str,
 ) -> TestResult {
-    if !incremental.incremental_path_attempted() {
+    if !incremental.used_incremental_path() {
         return Err(format!("{context}: edit was not accepted by the incremental path").into());
     }
 
@@ -328,6 +328,39 @@ fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
         if !contains_variable_declaration(&fresh_ast, name) {
             return Err(format!("fresh parse lost variable declaration {name}").into());
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn reuse_analysis_is_scoped_to_the_last_parse() -> TestResult {
+    let source = concat!("my $before = 1;\n", "my $value = 20;\n", "my $after = 3;\n",);
+    let mut incremental = IncrementalParserV2::new();
+    incremental.parse(source)?;
+    let edited_source = apply_incremental_edit(
+        &mut incremental,
+        source,
+        "$value = 20",
+        "$value = 200",
+        "analysis_scope_edit",
+    )?;
+    let edited_ast = incremental.parse(&edited_source)?;
+    assert_incremental_outcome(&incremental, &edited_ast, "analysis_scope_edit")?;
+    if incremental.get_last_reuse_analysis().is_none() {
+        return Err("analysis_scope_edit: expected current edit analysis".into());
+    }
+
+    let repeated_ast = incremental.parse(&edited_source)?;
+    let fresh_ast = Parser::new(&edited_source).parse()?;
+    assert_ast_equivalent(&repeated_ast, &fresh_ast, "analysis_scope_no_edit_reparse")?;
+    if incremental.used_incremental_path() {
+        return Err("no-edit reparse must not report an accepted incremental path".into());
+    }
+    if incremental.used_advanced_reuse() {
+        return Err("no-edit reparse must not report advanced reuse selection".into());
+    }
+    if incremental.get_last_reuse_analysis().is_some() {
+        return Err("no-edit reparse exposed stale reuse analysis from the prior edit".into());
     }
     Ok(())
 }
