@@ -962,6 +962,10 @@ impl SemanticAnalyzer {
             NodeKind::Error { .. } | NodeKind::UnknownRest => {
                 // No semantic tokens for error nodes
             }
+
+            _ => {
+                // Preserve forward compatibility with future public AST variants.
+            }
         }
     }
 
