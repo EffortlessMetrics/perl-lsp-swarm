@@ -186,7 +186,7 @@ fn slash_reclassification_edit_matches_fresh_parse() -> TestResult {
         "$left / 2",
         "$left =~ /two/",
         "division_to_regex_match",
-        true,
+        false,
     )?;
 
     assert!(
