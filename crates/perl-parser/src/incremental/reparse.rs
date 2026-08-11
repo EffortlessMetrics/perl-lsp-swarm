@@ -3,8 +3,6 @@ use crate::incremental::{
 };
 use anyhow::Result;
 use perl_lexer::{PerlLexer, TokenType};
-use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
-use perl_parser_core::parser::Parser;
 use ropey::Rope;
 use std::ops::Range;
 
@@ -119,21 +117,8 @@ pub(crate) fn apply_single_edit(
     Ok(SingleEditReparse { range: cp.byte..last, reused_tokens, token_count: state.tokens.len() })
 }
 
-#[expect(deprecated, reason = "full reparse is the legacy AST field's supported refresh boundary")]
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
-    let mut parser = Parser::new(&state.source);
-    state.ast = match parser.parse() {
-        Ok(ast) => ast,
-        Err(e) => Node::new(
-            NodeKind::Error {
-                message: e.to_string(),
-                expected: vec![],
-                found: None,
-                partial: None,
-            },
-            SourceLocation { start: 0, end: state.source.len() },
-        ),
-    };
+    state.refresh_parse_output();
     let mut lexer = PerlLexer::new(&state.source);
     let mut tokens = Vec::new();
     while let Some(token) = lexer.next_token() {
@@ -146,9 +131,9 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
     state.rope = Rope::from_str(&state.source);
     state.line_index = perl_line_index::LineIndex::new(&state.source);
     state.lex_checkpoints = create_lex_checkpoints(&state.tokens, &state.line_index);
-    state.parse_checkpoints = IncrementalState::create_parse_checkpoints(&state.ast);
     Ok(ReparseResult {
         changed_ranges: vec![0..state.source.len()],
+        parse_output: state.parse_output.clone(),
         diagnostics: vec![],
         reparsed_bytes: state.source.len(),
         reused_tokens: 0,
