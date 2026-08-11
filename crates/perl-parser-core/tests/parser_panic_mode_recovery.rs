@@ -15,10 +15,6 @@ fn parser_ac1_sync_point_detection_semicolon() -> ParseResult<()> {
     let mut parser = Parser::new(code);
     let ast = parser.parse()?;
 
-    assert!(
-        matches!(&ast.kind, NodeKind::Program { .. }),
-        "panic-mode recovery must return a Program node"
-    );
     if let NodeKind::Program { statements } = &ast.kind {
         // Should have 2 statements: 1 recovered decl (Phase 2: VariableDeclaration
         // with MissingExpression, not a raw Error node) + 1 valid
@@ -242,6 +238,10 @@ fn parser_ac8_error_location_accuracy() -> ParseResult<()> {
     let mut parser = Parser::new(code);
     let ast = parser.parse()?;
 
+    assert!(
+        matches!(&ast.kind, NodeKind::Program { .. }),
+        "panic-mode recovery must return a Program node"
+    );
     if let NodeKind::Program { statements } = &ast.kind {
         assert_eq!(
             statements.len(),
