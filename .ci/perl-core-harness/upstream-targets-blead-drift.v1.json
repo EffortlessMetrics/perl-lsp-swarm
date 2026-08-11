@@ -1,6 +1,6 @@
 {
   "schema_version": "perl_core_harness.target_topology_drift.v1",
-  "pinned_matrix_fingerprint": "ab82e039399866251f6831913ce7869f7d553b9a08c6dbe7395997f25e429c83",
+  "pinned_matrix_fingerprint": "00dec1e0847ad8bcf7c37d842d700338e85853430d3b621724f3a6aa0e142a78",
   "observed_perl_ref": "blead",
   "observed_perl_resolved_ref": "5355a72c746fa5146541d790aece53b22737afee",
   "observed_topology_sources": {
