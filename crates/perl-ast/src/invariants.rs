@@ -24,7 +24,7 @@ pub enum AstInvariantCode {
     ChildOutsideParent,
     /// Direct children were emitted in decreasing source-start order.
     ChildOrderRegression,
-    /// Traversal reached a depth greater than the configured structural budget.
+    /// Traversal suppressed a child beyond the configured structural depth budget.
     DepthLimitExceeded,
     /// Traversal discovered more nodes than the configured structural budget.
     NodeLimitExceeded,
@@ -218,24 +218,6 @@ pub fn validate_ast(
         report.nodes_visited = report.nodes_visited.saturating_add(1);
         report.max_depth_reached = report.max_depth_reached.max(current.depth);
 
-        if current.depth > options.max_depth {
-            report.truncated = true;
-            if !push_finding(
-                &mut report,
-                options.max_findings,
-                AstInvariantFinding {
-                    code: AstInvariantCode::DepthLimitExceeded,
-                    node_kind: current.node.kind.kind_name().to_string(),
-                    path: current.path,
-                    range: current.node.location,
-                    related_range: None,
-                },
-            ) {
-                break;
-            }
-            continue;
-        }
-
         let range = current.node.location;
         if range.start > range.end
             && !push_finding(
@@ -296,6 +278,32 @@ pub fn validate_ast(
             )
         {
             break;
+        }
+
+        if current.depth == options.max_depth {
+            let mut first_suppressed_child = None;
+            let _ = current.node.try_for_each_child_with_field(|field, child| {
+                first_suppressed_child = Some((field, child));
+                ControlFlow::Break(())
+            });
+
+            if let Some((field, child)) = first_suppressed_child {
+                report.truncated = true;
+                if !push_finding(
+                    &mut report,
+                    options.max_findings,
+                    AstInvariantFinding {
+                        code: AstInvariantCode::DepthLimitExceeded,
+                        node_kind: child.kind.kind_name().to_string(),
+                        path: child_path(&current.path, field, 0, child),
+                        range: child.location,
+                        related_range: Some(range),
+                    },
+                ) {
+                    break;
+                }
+            }
+            continue;
         }
 
         let reserved = report.nodes_visited.saturating_add(pending.len());
