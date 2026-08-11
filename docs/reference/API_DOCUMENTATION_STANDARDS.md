@@ -274,7 +274,7 @@ pub enum ParseError {
 
 ### Automated Testing
 
-The comprehensive test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` validates:
+The historical acceptance-test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` was intended to validate:
 
 - **AC1**: `#![warn(missing_docs)]` enabled and compiles successfully
 - **AC2**: All public structs/enums have comprehensive documentation including workflow role
@@ -287,7 +287,7 @@ The comprehensive test suite at `/crates/perl-parser/tests/missing_docs_ac_tests
 - **AC9**: Related functions include cross-references using Rust documentation linking
 - **AC10**: Documentation follows Rust best practices with consistent style
 - **AC11**: `cargo doc` generates complete documentation without warnings
-- **AC12**: CI checks enforce missing_docs warnings for new public APIs
+- **AC12**: the historical CI design checked missing_docs warnings for new public APIs
 
 ### Edge Case Detection
 
