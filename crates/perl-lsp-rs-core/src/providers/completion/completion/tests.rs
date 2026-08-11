@@ -3339,7 +3339,7 @@ sub bark { }
 
 use super::workspace::{
     ReceiverEvidence, classify_receiver, classify_text_pattern_receiver,
-    receiver_package_from_context_or_source,
+    receiver_package_from_context_or_source, source_package_fallback,
 };
 use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 use perl_semantic_facts::Confidence;
@@ -3374,6 +3374,30 @@ sub inspect {
         receiver_package_from_context_or_source(&context, source).as_deref(),
         Some("Outer"),
         "a closed block-form package must not leak as the active source package"
+    );
+}
+
+#[test]
+fn source_package_fallback_ignores_non_code_braces() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+my $literal = "}";
+my $pattern = qr/\{ \}/;
+# {
+my $body = <<'EOF';
+}
+{
+EOF
+sub inspect {
+    my $self = shift;
+    $self->"#;
+
+    assert_eq!(
+        source_package_fallback(source, source.len()).as_deref(),
+        Some("Outer"),
+        "strings, regexes, comments, and heredocs must not change package scope"
     );
 }
 
