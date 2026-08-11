@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   base-smoke:
-    name: Real upstream base+comp+run parse+compile smoke
+    name: Real upstream base+comp+run+core parse+compile smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
@@ -93,6 +93,21 @@ jobs:
               --check
           done
 
+      - name: Run core parse+compile smoke (advisory)
+        continue-on-error: true
+        env:
+          PERL_REF: ${{ steps.upstream.outputs.ref }}
+          PERL_MODES: ${{ steps.upstream.outputs.modes }}
+          PERL_TREE: target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5
+        run: |
+          cargo run -p xtask -- perl-core-harness smoke \
+            --perl-tree "$PERL_TREE" \
+            --host-perl perl \
+            --profile core \
+            --modes "$PERL_MODES" \
+            --perl-ref "$PERL_REF" \
+            --output-dir target/perl-core/smoke/core
+
       - name: Summarize receipts
         if: always()
         shell: bash
@@ -107,7 +122,7 @@ jobs:
           import json
           from pathlib import Path
 
-          for profile in ("base", "comp", "run"):
+          for profile in ("base", "comp", "run", "core"):
               path = Path(f"target/perl-core/smoke/{profile}/smoke.json")
               print(f"### `{profile}`")
               if not path.exists():
