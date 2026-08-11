@@ -28,6 +28,14 @@ fn source_text(source: &str, node: &Node) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn subtree_contains(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> bool {
+    predicate(&node.kind)
+        || node
+            .children()
+            .into_iter()
+            .any(|child| subtree_contains(child, predicate))
+}
+
 #[test]
 fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
     let source = concat!(
@@ -115,19 +123,40 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
         if let NodeKind::IndirectCall { method, object, args } = &node.kind {
             match method.as_str() {
                 "print" if matches!(&object.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh") => {
+                    assert_eq!(source_text(source, object).as_deref(), Some("$fh"));
                     assert_eq!(args.len(), 1, "print scalar handle must retain one output argument");
+                    assert!(matches!(&args[0].kind, NodeKind::String { .. }));
+                    assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
                     if let Some(text) = source_text(source, node) {
                         scalar_handle_print.push(text);
                     }
                 }
                 "print" if matches!(&object.kind, NodeKind::Block { .. }) => {
+                    assert_eq!(source_text(source, object).as_deref(), Some("{ $fh }"));
+                    assert!(
+                        subtree_contains(object, &|kind| matches!(
+                            kind,
+                            NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh"
+                        )),
+                        "braced print handle lost the $fh expression"
+                    );
                     assert_eq!(args.len(), 1, "print braced handle must retain one output argument");
+                    assert!(matches!(&args[0].kind, NodeKind::String { .. }));
+                    assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
                     if let Some(text) = source_text(source, node) {
                         braced_handle_print.push(text);
                     }
                 }
                 "printf" if matches!(&object.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh") => {
+                    assert_eq!(source_text(source, object).as_deref(), Some("$fh"));
                     assert_eq!(args.len(), 2, "printf must retain format and value arguments");
+                    assert!(matches!(&args[0].kind, NodeKind::String { .. }));
+                    assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"%s\""));
+                    assert!(matches!(
+                        &args[1].kind,
+                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "value"
+                    ));
+                    assert_eq!(source_text(source, &args[1]).as_deref(), Some("$value"));
                     if let Some(text) = source_text(source, node) {
                         scalar_handle_printf.push(text);
                     }
