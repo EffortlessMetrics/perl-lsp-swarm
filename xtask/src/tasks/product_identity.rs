@@ -85,7 +85,10 @@ fn check_with_repository_context(
 
     let context = repository_context.unwrap_or("unbound-local-checkout");
     println!(
-        "Product identity check: {} -> {} (development {}, server {}, extension {}, DAP {}, context {})",
+        concat!(
+            "Product identity check: {} -> {} (development {}, server {}, ",
+            "extension {}, DAP {}, context {})"
+        ),
         contract.product.name,
         contract.product.public_repository,
         contract.product.development_repository,
@@ -192,7 +195,10 @@ fn validate_contract(
 
     if contract.debug_adapter.maturity != "preview" {
         bail!(
-            "debug adapter maturity must remain \"preview\" until behavior-backed promotion; found {:?}",
+            concat!(
+                "debug adapter maturity must remain \"preview\" until behavior-backed ",
+                "promotion; found {:?}"
+            ),
             contract.debug_adapter.maturity
         );
     }
@@ -276,14 +282,12 @@ fn validate_facade_dependency(
         })?;
 
     let has_implementation = dependencies.iter().any(|(alias, value)| {
-        if alias == implementation_crate {
-            return true;
-        }
-        value
+        let effective_package = value
             .as_table()
             .and_then(|table| table.get("package"))
             .and_then(toml::Value::as_str)
-            == Some(implementation_crate)
+            .unwrap_or(alias);
+        effective_package == implementation_crate
     });
     if !has_implementation {
         bail!(
@@ -320,7 +324,10 @@ fn effective_package_repository<'a>(
     }
 
     bail!(
-        "Cargo package repository must be a string or inherit workspace.repository; found {repository:?}"
+        concat!(
+            "Cargo package repository must be a string or inherit workspace.repository; ",
+            "found {repository:?}"
+        )
     )
 }
 
@@ -369,7 +376,9 @@ fn cargo_binary_names(
             {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("rs") {
+                if path.is_file()
+                    && path.extension().and_then(|value| value.to_str()) == Some("rs")
+                {
                     if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
                         names.insert(stem.to_string());
                     }
@@ -531,6 +540,8 @@ fn validate_repository_slug(label: &str, value: &str) -> Result<()> {
 
 fn valid_repository_segment(value: &str) -> bool {
     !value.is_empty()
+        && value != "."
+        && value != ".."
         && value
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
@@ -741,6 +752,30 @@ name = "perllsp"
 
 [dependencies]
 serde = "1"
+"#,
+        )?;
+
+        expect_failure(
+            repo.path(),
+            "does not depend on declared implementation crate",
+        )
+    }
+
+    #[test]
+    fn same_named_dependency_alias_cannot_hide_another_package() -> Result<()> {
+        let repo = fixture_repo()?;
+        write(
+            repo.path(),
+            "crates/perllsp/Cargo.toml",
+            r#"[package]
+name = "perllsp"
+repository.workspace = true
+
+[[bin]]
+name = "perllsp"
+
+[dependencies]
+perl-lsp-rs = { package = "different-project", version = "1" }
 "#,
         )?;
 
