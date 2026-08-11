@@ -33,18 +33,34 @@ fn push_summary(
     }
 }
 
+fn update_pending_heredocs(pending: &mut usize, token: &Token) {
+    match &token.token_type {
+        TokenType::HeredocStart => *pending = pending.saturating_add(1),
+        TokenType::HeredocBody(_) => *pending = pending.saturating_sub(1),
+        _ => {}
+    }
+}
+
 /// Lex one complete source and capture restart candidates from the lexer's
-/// actual live state before every emitted token and before terminal EOF.
+/// actual live state before emitted tokens and terminal EOF.
+///
+/// The current lexer checkpoint contract does not carry the queued-heredoc
+/// collection. Restart summaries are therefore suppressed from a heredoc
+/// introducer until its body has been emitted; an edit in that region restarts
+/// from the last earlier boundary instead of reconstructing missing state.
 pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) -> LexedSource {
     let mut lexer = PerlLexer::new(source);
     let mut tokens = Vec::new();
     let mut checkpoints = Vec::new();
     #[cfg(test)]
     let mut live_checkpoints = Vec::new();
+    let mut pending_heredocs = 0usize;
 
     loop {
         let live = lexer.checkpoint();
-        push_summary(&mut checkpoints, &live, line_index);
+        if pending_heredocs == 0 {
+            push_summary(&mut checkpoints, &live, line_index);
+        }
         #[cfg(test)]
         live_checkpoints.push(live);
 
@@ -54,6 +70,7 @@ pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) 
         if token.token_type == TokenType::EOF {
             break;
         }
+        update_pending_heredocs(&mut pending_heredocs, &token);
         tokens.push(token);
     }
 
@@ -66,10 +83,11 @@ pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) 
 }
 
 /// Replay the old source to one previously captured token boundary and return
-/// the complete live lexer checkpoint for that exact boundary.
+/// the complete current `Checkpointable` state for that exact boundary.
 ///
 /// The public `LexCheckpoint` remains a compact compatibility summary. Restart
-/// correctness is authorized only by this full `Checkpointable` state.
+/// correctness is authorized only by the full state returned here. Boundaries
+/// inside pending heredocs are never entered into the summary set.
 pub(crate) fn capture_live_checkpoint(
     source: &str,
     boundary: usize,
@@ -92,9 +110,9 @@ pub(crate) fn capture_live_checkpoint(
     }
 }
 
-/// Restore a complete live checkpoint into the edited source and re-lex from
-/// that boundary to EOF. No old suffix is reused in this correctness-first
-/// strategy.
+/// Restore the complete current checkpoint contract into the edited source and
+/// re-lex from that boundary to EOF. No old suffix is reused in this
+/// correctness-first strategy.
 pub(crate) fn lex_from_live_checkpoint(
     source: &str,
     line_index: &LineIndex,
@@ -111,10 +129,13 @@ pub(crate) fn lex_from_live_checkpoint(
     #[cfg(test)]
     let mut live_checkpoints = Vec::new();
     let mut last_position = checkpoint.position;
+    let mut pending_heredocs = 0usize;
 
     loop {
         let live = lexer.checkpoint();
-        push_summary(&mut checkpoints, &live, line_index);
+        if pending_heredocs == 0 {
+            push_summary(&mut checkpoints, &live, line_index);
+        }
         #[cfg(test)]
         live_checkpoints.push(live);
 
@@ -128,6 +149,7 @@ pub(crate) fn lex_from_live_checkpoint(
             anyhow::bail!("incremental lexer did not advance at byte {}", token.start);
         }
         last_position = token.end;
+        update_pending_heredocs(&mut pending_heredocs, &token);
         tokens.push(token);
     }
 
@@ -191,6 +213,32 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("live checkpoint replay failed"))?;
 
         assert_eq!(&replayed, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn restart_summaries_skip_pending_heredoc_interior() -> Result<()> {
+        let source = "my $value = <<EOF;\nbody\nEOF\nprint $value;\n";
+        let line_index = LineIndex::new(source);
+        let lexed = lex_source_with_checkpoints(source, &line_index);
+        let start = lexed
+            .tokens
+            .iter()
+            .find(|token| token.token_type == TokenType::HeredocStart)
+            .ok_or_else(|| anyhow::anyhow!("heredoc start token is missing"))?;
+        let body = lexed
+            .tokens
+            .iter()
+            .find(|token| matches!(token.token_type, TokenType::HeredocBody(_)))
+            .ok_or_else(|| anyhow::anyhow!("heredoc body token is missing"))?;
+
+        assert!(
+            lexed
+                .checkpoints
+                .iter()
+                .all(|checkpoint| checkpoint.byte <= start.start || checkpoint.byte >= body.end),
+            "no restart boundary may depend on an unrecorded pending-heredoc queue"
+        );
         Ok(())
     }
 }
