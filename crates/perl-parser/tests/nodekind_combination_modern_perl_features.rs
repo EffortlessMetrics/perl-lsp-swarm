@@ -733,7 +733,7 @@ where
         | NodeKind::MissingBlock => {} // No children
         NodeKind::UnknownRest => {} // No children
         // Keep this test exhaustive when new public AST variants are added.
-        _ => {}
+        _ => {},
         NodeKind::NestedVariableList { items } => {
             for item in items {
                 find_nodes_recursive(item, predicate, results);
