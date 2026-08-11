@@ -37,6 +37,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  DAP_SCORECARD_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  DAP_SCORECARD_RUN_ID: ${{ github.run_id }}
+  DAP_SCORECARD_RUN_ATTEMPT: ${{ github.run_attempt }}
 
 jobs:
   scorecard:
@@ -47,7 +50,7 @@ jobs:
       - name: Check out exact candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.DAP_SCORECARD_CANDIDATE_SHA }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -55,9 +58,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected='${{ github.event.pull_request.head.sha || github.sha }}'
           actual="$(git rev-parse HEAD)"
-          test "$actual" = "$expected"
+          test "$actual" = "$DAP_SCORECARD_CANDIDATE_SHA"
           test -z "$(git status --porcelain)"
           echo "DAP_SCORECARD_REPOSITORY_SHA=$actual" >> "$GITHUB_ENV"
 
@@ -109,8 +111,8 @@ jobs:
           python3 scripts/ci/dap_scorecard_packet.py build \
             --repository-root . \
             --repository-sha "$DAP_SCORECARD_REPOSITORY_SHA" \
-            --run-id '${{ github.run_id }}' \
-            --run-attempt '${{ github.run_attempt }}' \
+            --run-id "$DAP_SCORECARD_RUN_ID" \
+            --run-attempt "$DAP_SCORECARD_RUN_ATTEMPT" \
             --binary target/debug/perl-dap \
             --perl "$DAP_SCORECARD_PERL" \
             --raw-receipt target/dap_scorecard_receipt.json \
@@ -129,8 +131,8 @@ jobs:
             --packet target/receipts/dap-scorecard/packet.json \
             --expected-repository-sha "$DAP_SCORECARD_REPOSITORY_SHA" \
             --expected-binary-sha256 "$DAP_SCORECARD_BINARY_SHA256" \
-            --expected-run-id '${{ github.run_id }}' \
-            --expected-run-attempt '${{ github.run_attempt }}'
+            --expected-run-id "$DAP_SCORECARD_RUN_ID" \
+            --expected-run-attempt "$DAP_SCORECARD_RUN_ATTEMPT"
 
       - name: Publish scorecard summary
         shell: bash
@@ -149,7 +151,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: dap-scorecard-${{ github.event.pull_request.head.sha || github.sha }}
+          name: dap-scorecard-${{ env.DAP_SCORECARD_CANDIDATE_SHA }}
           path: |
             target/dap_scorecard_receipt.json
             target/receipts/dap-scorecard/packet.json
