@@ -1,6 +1,6 @@
 # Native parser incremental authority
 
-Issue: [#6701](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6701)  
+Issue: [#6701](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6701)
 Controller: [#6698](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6698)
 
 ## Ruling
