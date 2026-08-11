@@ -84,13 +84,16 @@ fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {
             .file_type()
             .with_context(|| format!("reading fixture type for {}", entry.path().display()))?;
         let path = entry.path();
+        let is_perl_fixture = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"));
 
-        if file_type.is_file()
-            && path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"))
-        {
+        if file_type.is_symlink() && is_perl_fixture {
+            bail!("Snapshot fixture symlink is unsupported: {}", path.display());
+        }
+
+        if file_type.is_file() && is_perl_fixture {
             paths.push(path);
         }
     }
@@ -483,6 +486,24 @@ mod tests {
         assert!(
             check_snapshot(temporary.path(), &output).is_err(),
             "check must reject duplicate recorded fixture IDs"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fixture_collection_rejects_perl_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TempDir::new().expect("tempdir");
+        let target = write_fixture(temporary.path(), "target.pl", "1;");
+        let link = temporary.path().join("linked.pl");
+        symlink(&target, &link).expect("create fixture symlink");
+
+        let error = collect_fixtures(temporary.path())
+            .expect_err("symlinked Perl fixtures must fail closed");
+        assert!(
+            error.to_string().contains("symlink is unsupported"),
+            "unexpected error: {error}"
         );
     }
 
