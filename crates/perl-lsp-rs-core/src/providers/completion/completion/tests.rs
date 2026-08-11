@@ -8427,6 +8427,13 @@ sub greet {
     );
     assert_eq!(child_model.parents, vec!["Parent"], "open Child model must retain use parent");
     let index = must(inherited_moo_parent_index());
+    let inherited_members =
+        super::collect_all_package_members_with_source(index.as_ref(), "Child", code);
+    assert!(
+        inherited_members.iter().any(|member| member.name == "name"),
+        "collector must traverse indexed Parent members, got {:?}",
+        inherited_members.iter().map(|member| &member.name).collect::<Vec<_>>()
+    );
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
     let completions = provider.get_completions(code, pos);
