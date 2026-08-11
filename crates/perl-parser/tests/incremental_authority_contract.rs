@@ -13,6 +13,7 @@ struct AuthorityManifest {
     owner_issue: u64,
     canonical: CanonicalSurface,
     compatibility: CompatibilitySurface,
+    lower_tier: Vec<LowerTierSurface>,
     modules: Vec<ModuleSurface>,
 }
 
@@ -33,6 +34,21 @@ struct CompatibilitySurface {
     implementation_owner: String,
     behavior_authority: bool,
     exit_issue: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct LowerTierSurface {
+    package: String,
+    module: String,
+    path: String,
+    status: String,
+    entry_points: Vec<String>,
+    behavior_authority: bool,
+    production_eligible: bool,
+    allowed_consumers: Vec<String>,
+    next_action: String,
+    owner_issue: u64,
+    decision: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,7 +108,7 @@ fn facade_incremental_reexports(source: &str) -> BTreeSet<String> {
 fn ledger_names_one_canonical_candidate_without_claiming_readiness() -> TestResult {
     let manifest = load_manifest()?;
 
-    assert_eq!(manifest.schema_version, 1);
+    assert_eq!(manifest.schema_version, 2);
     assert_eq!(manifest.owner_issue, 6701);
     assert_eq!(manifest.canonical.module, "incremental");
     assert_eq!(manifest.canonical.path, "perl_parser::incremental");
@@ -173,6 +189,71 @@ fn every_public_incremental_generation_has_one_non_production_disposition() -> T
     assert!(
         compact_facade.contains("pubuseincremental::{Edit,IncrementalState,apply_edits};"),
         "the canonical state/edit/apply_edits facade re-export is missing"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResult {
+    let manifest = load_manifest()?;
+    assert_eq!(
+        manifest.lower_tier.len(),
+        1,
+        "every active lower-tier incremental implementation needs one disposition"
+    );
+
+    let kernel = &manifest.lower_tier[0];
+    assert_eq!(kernel.package, "perl-parser-core");
+    assert_eq!(kernel.module, "incremental");
+    assert_eq!(kernel.path, "perl_parser_core::incremental");
+    assert_eq!(kernel.status, "lower_tier_kernel");
+    assert_eq!(
+        kernel.entry_points.iter().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "IncrementalEdit".to_string(),
+            "IncrementalState".to_string(),
+            "IncrementalState::reparse".to_string(),
+        ])
+    );
+    assert!(!kernel.behavior_authority);
+    assert!(!kernel.production_eligible);
+    assert_eq!(
+        kernel.allowed_consumers,
+        vec!["tree_sitter_perl_rs::Parser::parse_with_old_tree".to_string()]
+    );
+    assert!(!kernel.next_action.trim().is_empty());
+    assert_eq!(kernel.owner_issue, 6707);
+    assert!(!kernel.decision.trim().is_empty());
+
+    let core_facade = compact_whitespace(&read(
+        crate_root().join("../perl-parser-core/src/lib.rs"),
+    )?);
+    let kernel_source = compact_whitespace(&read(
+        crate_root().join("../perl-parser-core/src/incremental.rs"),
+    )?);
+    let tree_sitter_facade = compact_whitespace(&read(
+        crate_root().join("../tree-sitter-perl-rs/src/lib.rs"),
+    )?);
+
+    assert!(
+        core_facade.contains("pubmodincremental;"),
+        "the classified lower-tier kernel is no longer publicly exported"
+    );
+    assert!(kernel_source.contains("pubstructIncrementalEdit"));
+    assert!(kernel_source.contains("pubstructIncrementalState"));
+    assert!(
+        kernel_source.contains("pubfnreparse(&mutself,new_source:&str,edit:&IncrementalEdit)"),
+        "the classified lower-tier reparse entry point changed"
+    );
+    assert!(
+        tree_sitter_facade
+            .contains("pubfnparse_with_old_tree(&mutself,source:&str,old_tree:&Tree)->Option<Tree>"),
+        "the classified tree-sitter consumer changed or disappeared"
+    );
+    assert!(
+        tree_sitter_facade.contains("state.reparse(source,&incremental_edit)"),
+        "the classified consumer no longer calls the lower-tier kernel"
     );
 
     Ok(())
