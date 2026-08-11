@@ -38,10 +38,7 @@ function hasUnboundedQuantifier(source: string, index: number): boolean {
   }
 
   const closingBrace = source.indexOf('}', index + 1);
-  return (
-    closingBrace > index &&
-    /^\\{\\d+,\\}$/.test(source.slice(index, closingBrace + 1))
-  );
+  return closingBrace > index && /^\{\d+,\}$/.test(source.slice(index, closingBrace + 1));
 }
 
 function hasOverlappingQuantifiedAlternation(source: string): boolean {
