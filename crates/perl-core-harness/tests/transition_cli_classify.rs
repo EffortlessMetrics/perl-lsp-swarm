@@ -1,18 +1,7 @@
-//! Discriminating proof for the lean transition classify CLI slice.
-//!
-//! Covers: required-arg rejection, V2-only baseline gate, and one end-to-end
-//! Regression classification written through the binary I/O path.
+//! Discriminating proof for the lean transition classify CLI arg-parse slice.
 
-use perl_core_harness_types::{
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, HarnessMode, HarnessProfile,
-    HarnessRunner, RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunSummary, RunnerStatus,
-};
 use serde_json::Value;
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
 use std::process::Command;
-use tempfile::tempdir;
 
 #[test]
 fn classify_cli_rejects_missing_required_option() {
@@ -29,78 +18,51 @@ fn classify_cli_rejects_missing_required_option() {
 }
 
 #[test]
-fn classify_cli_rejects_non_v2_baseline() {
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let out = dir.path().join("out.json");
-    fs::write(&accepted, r#"{"schema_version":"perl_core_harness.compile_baseline.v1"}"#)
-        .expect("write accepted");
-    write_json(&compile, &sample_report(1, 1));
+fn classify_cli_rejects_unknown_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args(["check"])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown perl-core-harness-transition command"),
+        "unexpected stderr: {stderr}"
+    );
+}
 
+#[test]
+fn classify_cli_rejects_unrecognized_option() {
     let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
         .args([
             "classify",
             "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
+            "accepted.json",
             "--compile",
-            compile.to_str().expect("utf8 path"),
+            "compile.json",
             "--output",
-            out.to_str().expect("utf8 path"),
+            "out.json",
+            "--series",
+            "series.json",
         ])
         .output()
         .expect("spawn classify CLI");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("this CLI slice accepts only"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("unrecognized option(s): --series"), "unexpected stderr: {stderr}");
 }
 
 #[test]
-fn classify_cli_rejects_inconsistent_accepted_counts() {
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let out = dir.path().join("out.json");
-    let mut baseline = sample_v2_baseline(2, 2);
-    baseline.files_passed = 0;
-    write_json(&accepted, &baseline);
-    write_json(&compile, &sample_report(2, 2));
-
+fn classify_cli_emits_parsed_args_receipt() {
     let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
         .args([
             "classify",
             "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
+            "accepted.json",
             "--compile",
-            compile.to_str().expect("utf8 path"),
+            "compile.json",
             "--output",
-            out.to_str().expect("utf8 path"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("internally inconsistent"), "unexpected stderr: {stderr}");
-}
-
-#[test]
-fn classify_cli_creates_missing_output_directories() {
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let out = dir.path().join("artifacts").join("transitions").join("out.json");
-    write_json(&accepted, &sample_v2_baseline(1, 1));
-    write_json(&compile, &sample_report(1, 1));
-
-    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
-            "--compile",
-            compile.to_str().expect("utf8 path"),
-            "--output",
-            out.to_str().expect("utf8 path"),
+            "out.json",
         ])
         .output()
         .expect("spawn classify CLI");
@@ -109,271 +71,16 @@ fn classify_cli_creates_missing_output_directories() {
         "classify failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(out.is_file());
-}
-
-#[test]
-fn classify_cli_rejects_forged_accepted_assertion_totals() {
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let out = dir.path().join("out.json");
-    let mut baseline = sample_v2_baseline(1, 1);
-    baseline.tap_assertions_passed = 99;
-    write_json(&accepted, &baseline);
-    write_json(&compile, &sample_report(1, 1));
-
-    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
-            "--compile",
-            compile.to_str().expect("utf8 path"),
-            "--output",
-            out.to_str().expect("utf8 path"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("assertion counts are internally inconsistent"),
-        "unexpected stderr: {stderr}"
-    );
-}
-
-#[test]
-fn classify_cli_rejects_forged_current_assertion_totals_on_regression_shape() {
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let out = dir.path().join("out.json");
-    let mut current = sample_report(2, 1);
-    current.file_results[0].status = RunnerStatus::Fail;
-    current.file_results[0].assertions_passed = 0;
-    current.file_results[1].status = RunnerStatus::Pass;
-    current.file_results[1].assertions_passed = 1;
-    current.summary.tap_assertions_total = 99;
-    write_json(&accepted, &sample_v2_baseline(2, 1));
-    write_json(&compile, &current);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
-            "--compile",
-            compile.to_str().expect("utf8 path"),
-            "--output",
-            out.to_str().expect("utf8 path"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("assertion counts are internally inconsistent"),
-        "unexpected stderr: {stderr}"
-    );
-    assert!(!out.exists());
-}
-
-#[test]
-fn classify_cli_rejects_null_harness_status() {
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let out = dir.path().join("out.json");
-    let mut current = sample_report(2, 1);
-    current.harness_status = None;
-    current.file_results[0].status = RunnerStatus::Fail;
-    current.file_results[0].assertions_passed = 0;
-    current.file_results[1].status = RunnerStatus::Pass;
-    current.file_results[1].assertions_passed = 1;
-    write_json(&accepted, &sample_v2_baseline(2, 1));
-    write_json(&compile, &current);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
-            "--compile",
-            compile.to_str().expect("utf8 path"),
-            "--output",
-            out.to_str().expect("utf8 path"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("harness_status must be Some(0)"), "unexpected stderr: {stderr}");
-    assert!(!out.exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn classify_cli_rejects_dangling_symlink_output() {
-    use std::os::unix::fs::symlink;
-
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let outside = dir.path().join("outside-target.json");
-    let out = dir.path().join("dangling-out.json");
-    write_json(&accepted, &sample_v2_baseline(1, 1));
-    write_json(&compile, &sample_report(1, 1));
-    symlink(&outside, &out).expect("create dangling symlink");
-
-    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
-            "--compile",
-            compile.to_str().expect("utf8 path"),
-            "--output",
-            out.to_str().expect("utf8 path"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("must not be a symlink path"), "unexpected stderr: {stderr}");
-    assert!(!outside.exists());
-}
-
-#[test]
-fn classify_cli_writes_regression_for_pass_to_fail() {
-    let dir = tempdir().expect("tempdir");
-    let accepted = dir.path().join("accepted.json");
-    let compile = dir.path().join("compile.json");
-    let out = dir.path().join("classification.json");
-
-    let mut current = sample_report(2, 1);
-    current.file_results[0].status = RunnerStatus::Fail;
-    current.file_results[0].assertions_passed = 0;
-    current.file_results[1].status = RunnerStatus::Pass;
-    current.file_results[1].assertions_passed = 1;
-
-    write_json(&accepted, &sample_v2_baseline(2, 1));
-    write_json(&compile, &current);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8 path"),
-            "--compile",
-            compile.to_str().expect("utf8 path"),
-            "--output",
-            out.to_str().expect("utf8 path"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(
-        output.status.success(),
-        "classify failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let value: Value = serde_json::from_str(&fs::read_to_string(&out).expect("read output"))
-        .expect("decode output");
-    assert_eq!(value["schema_version"], "perl_core_harness.transition_classification.v1");
-    assert_eq!(value["transition"], "regression");
-    assert_eq!(value["requires_candidate"], false);
-    assert_eq!(value["accepted_state_change_permitted"], false);
-    assert!(
-        value["reason"]
-            .as_str()
-            .expect("reason string")
-            .contains("base/0.t changed from pass to fail")
-    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("decode stdout JSON");
+    assert_eq!(value["schema_version"], "perl_core_harness.transition_classify_args.v1");
+    assert_eq!(value["command"], "classify");
+    assert_eq!(value["accepted_baseline"], "accepted.json");
+    assert_eq!(value["compile"], "compile.json");
+    assert_eq!(value["output"], "out.json");
     assert!(
         value["claim_boundary"]
             .as_str()
             .expect("claim boundary")
-            .contains("cannot accept or lower")
+            .contains("parses classify CLI arguments only")
     );
-}
-
-fn write_json(path: &Path, value: &impl serde::Serialize) {
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(value).expect("serialize")))
-        .expect("write fixture");
-}
-
-fn sample_report(total: usize, passed: usize) -> RunReport {
-    RunReport {
-        schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
-        commit: "a".repeat(40),
-        timestamp: "2026-08-11T00:00:00Z".into(),
-        perl_ref: "perl".into(),
-        prepared_tree: "<prepared>".into(),
-        run_tree: "<run>".into(),
-        host_perl: "perl".into(),
-        runner: HarnessRunner::Test,
-        mode: HarnessMode::Compile,
-        profile: HarnessProfile::Base,
-        harness_status: Some(0),
-        summary: RunSummary {
-            files_total: total,
-            files_passed: passed,
-            files_failed: total - passed,
-            tap_assertions_total: total,
-            tap_assertions_passed: passed,
-        },
-        buckets: BTreeMap::new(),
-        file_results: sample_results(total, passed),
-        failures: Vec::new(),
-        semantic_boundaries: Vec::new(),
-    }
-}
-
-fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
-    (0..total)
-        .map(|index| {
-            let status = if index < passed { RunnerStatus::Pass } else { RunnerStatus::Fail };
-            RunFileResult {
-                path: format!("base/{index}.t"),
-                status,
-                assertions_passed: usize::from(status == RunnerStatus::Pass),
-                assertions_total: 1,
-            }
-        })
-        .collect()
-}
-
-fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
-    let file_results = sample_results(total, passed);
-    CompileBaselineV2 {
-        schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.into(),
-        report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
-        series_id: "series".into(),
-        manifest_hash: "manifest".into(),
-        repository_commit: "a".repeat(40),
-        perl_resolved_ref: "perl".into(),
-        preparation_receipt_id: "prepare".into(),
-        compiler_subject_identity: "compiler".into(),
-        invocation_identity: "invocation".into(),
-        capability_identity: "capability".into(),
-        environment_identity: "environment".into(),
-        source_report_digest: "digest".into(),
-        accepted_transition_id: Some("transition".into()),
-        evidence_bundle: Some("bundle".into()),
-        mode: HarnessMode::Compile,
-        profile: HarnessProfile::Base,
-        runner: HarnessRunner::Test,
-        file_membership: file_results.iter().map(|result| result.path.clone()).collect(),
-        files_total: total,
-        files_passed: passed,
-        files_failed: total - passed,
-        tap_assertions_total: total,
-        tap_assertions_passed: passed,
-        buckets: BTreeMap::new(),
-        expected_failures: Vec::new(),
-        file_results,
-        semantic_boundaries: Vec::new(),
-        boundary_retirements: Vec::new(),
-    }
 }

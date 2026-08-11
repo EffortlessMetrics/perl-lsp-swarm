@@ -1,18 +1,3 @@
-fn main() -> Result<()> {
-    color_eyre::install()?;
-    let mut args = std::env::args().skip(1);
-    let command = args.next().ok_or_else(|| {
-        color_eyre::eyre::eyre!(
-            "usage: perl-core-harness-transition classify --accepted-baseline <path> --compile <path> --output <path>"
-        )
-    })?;
-    let options = Options::parse(args)?;
-    match command.as_str() {
-        "classify" => classify_command(ClassifyConfig::from_options(options)?),
-        _ => bail!("unknown perl-core-harness-transition command: {command}"),
-    }
-}
-
 #[derive(Debug, Default)]
 struct Options {
     values: BTreeMap<String, VecDeque<String>>,
