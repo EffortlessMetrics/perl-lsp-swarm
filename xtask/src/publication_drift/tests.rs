@@ -1,16 +1,15 @@
-use super::authority::{load_authority, sha256_hex};
+use super::authority::load_authority;
 use super::classify::classify;
 use super::model::{
     AuthoritySource, LoadedManifest, ManifestVerificationStatus, Observation, PublicationManifest,
     Verdict,
 };
+use super::test_support::{
+    AUTHORITY, CLEAN, clean_observation, first_difference_mut, fixture_authority, manifest_digest,
+};
 use color_eyre::eyre::{Result, bail, eyre};
 use std::fs;
 use tempfile::TempDir;
-
-const CLEAN: &str = include_str!("../../../fixtures/publication_drift/clean.json");
-const AUTHORITY: &[u8] =
-    include_bytes!("../../../fixtures/publication_drift/publication_manifest.v1.json");
 
 #[test]
 fn clean_translation_fixture_passes() -> Result<()> {
@@ -177,8 +176,11 @@ fn manifest_rule_cannot_authorize_another_owner() -> Result<()> {
 #[test]
 fn digest_mismatch_is_not_proven() -> Result<()> {
     let mut observation = clean_observation()?;
-    observation.manifest.as_mut().ok_or_else(|| eyre!("clean fixture manifest missing"))?.sha256 =
-        "f".repeat(64);
+    observation
+        .manifest
+        .as_mut()
+        .ok_or_else(|| eyre!("clean fixture manifest missing"))?
+        .sha256 = "f".repeat(64);
     let receipt = classify(observation, fixture_authority()?);
     if receipt.verdict != Verdict::NotProven {
         bail!("digest mismatch returned {:?}", receipt.verdict);
@@ -191,8 +193,10 @@ fn manifest_repository_identity_must_match_subjects() -> Result<()> {
     let observation = clean_observation()?;
     let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
     document.swarm_repository = "other/repository".to_string();
-    let source =
-        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
+    let source = AuthoritySource::Loaded(LoadedManifest {
+        document,
+        actual_sha256: manifest_digest(),
+    });
     let receipt = classify(observation, source);
     if receipt.verdict != Verdict::NotProven {
         bail!("manifest repository mismatch returned {:?}", receipt.verdict);
@@ -205,8 +209,10 @@ fn manifest_tree_digest_must_match_subjects() -> Result<()> {
     let observation = clean_observation()?;
     let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
     document.public_tree_digest = "f".repeat(64);
-    let source =
-        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
+    let source = AuthoritySource::Loaded(LoadedManifest {
+        document,
+        actual_sha256: manifest_digest(),
+    });
     let receipt = classify(observation, source);
     if receipt.verdict != Verdict::NotProven {
         bail!("manifest tree mismatch returned {:?}", receipt.verdict);
@@ -219,8 +225,10 @@ fn manifest_version_must_match_comparison_version() -> Result<()> {
     let observation = clean_observation()?;
     let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
     document.version = "0.18.0".to_string();
-    let source =
-        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
+    let source = AuthoritySource::Loaded(LoadedManifest {
+        document,
+        actual_sha256: manifest_digest(),
+    });
     let receipt = classify(observation, source);
     if receipt.verdict != Verdict::NotProven {
         bail!("manifest version mismatch returned {:?}", receipt.verdict);
@@ -235,8 +243,10 @@ fn manifest_cannot_omit_minimum_invariant_authority() -> Result<()> {
     document
         .required_invariants
         .retain(|invariant| invariant.id != "artifact_traceable_to_public_sha");
-    let source =
-        AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() });
+    let source = AuthoritySource::Loaded(LoadedManifest {
+        document,
+        actual_sha256: manifest_digest(),
+    });
     let receipt = classify(observation, source);
     if receipt.verdict != Verdict::NotProven {
         bail!("incomplete manifest invariants returned {:?}", receipt.verdict);
@@ -308,10 +318,18 @@ fn receipt_collections_are_deterministically_ordered() -> Result<()> {
         .reverse();
 
     let receipt = classify(observation, fixture_authority()?);
-    if !receipt.differences.windows(2).all(|window| window[0].path <= window[1].path) {
+    if !receipt
+        .differences
+        .windows(2)
+        .all(|window| window[0].path <= window[1].path)
+    {
         bail!("differences were not sorted in the receipt");
     }
-    if !receipt.invariants.windows(2).all(|window| window[0].id <= window[1].id) {
+    if !receipt
+        .invariants
+        .windows(2)
+        .all(|window| window[0].id <= window[1].id)
+    {
         bail!("invariants were not sorted in the receipt");
     }
 
@@ -332,8 +350,10 @@ fn file_loader_hashes_and_parses_manifest_bytes() -> Result<()> {
     let relative = "authority.json";
     fs::write(temp.path().join(relative), AUTHORITY)?;
     let mut observation = clean_observation()?;
-    let manifest =
-        observation.manifest.as_mut().ok_or_else(|| eyre!("clean fixture manifest missing"))?;
+    let manifest = observation
+        .manifest
+        .as_mut()
+        .ok_or_else(|| eyre!("clean fixture manifest missing"))?;
     manifest.path = relative.to_string();
 
     match load_authority(temp.path(), Some(manifest)) {
@@ -360,16 +380,17 @@ fn manifest_symlink_cannot_escape_repository_root() -> Result<()> {
     symlink(&outside_manifest, repo.path().join(relative))?;
 
     let mut observation = clean_observation()?;
-    let manifest =
-        observation.manifest.as_mut().ok_or_else(|| eyre!("clean fixture manifest missing"))?;
+    let manifest = observation
+        .manifest
+        .as_mut()
+        .ok_or_else(|| eyre!("clean fixture manifest missing"))?;
     manifest.path = relative.to_string();
 
     match load_authority(repo.path(), Some(manifest)) {
-        AuthoritySource::Invalid { message, actual_sha256: None }
-            if message.contains("resolves outside repository root") =>
-        {
-            Ok(())
-        }
+        AuthoritySource::Invalid {
+            message,
+            actual_sha256: None,
+        } if message.contains("resolves outside repository root") => Ok(()),
         other => bail!("escaping manifest symlink was accepted: {other:?}"),
     }
 }
@@ -384,29 +405,6 @@ fn schemas_are_well_formed_json_documents() -> Result<()> {
         let _: serde_json::Value = serde_json::from_str(raw)?;
     }
     Ok(())
-}
-
-fn clean_observation() -> Result<Observation> {
-    Ok(serde_json::from_str(CLEAN)?)
-}
-
-fn first_difference_mut(
-    observation: &mut Observation,
-) -> Result<&mut super::model::ObservedDifference> {
-    observation
-        .differences
-        .as_mut()
-        .and_then(|differences| differences.first_mut())
-        .ok_or_else(|| eyre!("clean fixture difference missing"))
-}
-
-fn fixture_authority() -> Result<AuthoritySource> {
-    let document = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() }))
-}
-
-fn manifest_digest() -> String {
-    sha256_hex(AUTHORITY)
 }
 
 fn classify_fixture(raw: &str) -> Result<super::model::Receipt> {
