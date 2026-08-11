@@ -47,9 +47,9 @@ compliance, and broader distribution packaging.
 6. **[LSP Missing Features](../reference/LSP_MISSING_FEATURES_REPORT.md)** - Non-advertised capabilities (derived from `features.toml`)
 
 ### Development
-4. **[CLAUDE.md](../../CLAUDE.md)** - Project guidance for AI assistants
-5. **[CONTRIBUTING.md](../../CONTRIBUTING.md)** - How to contribute
-6. **[COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md)** - Build/test commands
+1. **[CLAUDE.md](../../CLAUDE.md)** - Project guidance for AI assistants
+2. **[CONTRIBUTING.md](../../CONTRIBUTING.md)** - How to contribute
+3. **[COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md)** - Build/test commands
 
 ## 🚨 What Needs Attention RIGHT NOW
 
@@ -68,6 +68,7 @@ perl-lsp/
 ├── crates/
 │   ├── perl-parser/      ⭐ Published parser facade
 │   ├── perl-parser-core/ Syntax and parser-core support
+│   ├── perl-lsp-rs/     Installable LSP server facade
 │   ├── perl-lsp-rs-core/ LSP runtime and providers
 │   ├── perl-dap/          Debug Adapter Protocol (native preview + bridge fallback)
 │   ├── perl-lexer/        Context-aware tokenizer
