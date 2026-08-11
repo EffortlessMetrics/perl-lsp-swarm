@@ -29,6 +29,39 @@ fn assert_tokens_equal(actual: &[Token], expected: &[Token]) {
     }
 }
 
+fn replacing_edit(source: &str, needle: &str, replacement: &str) -> Result<Edit, std::io::Error> {
+    let start = source
+        .find(needle)
+        .ok_or_else(|| std::io::Error::other(format!("fixture needle {needle:?} is missing")))?;
+    Ok(Edit {
+        start_byte: start,
+        old_end_byte: start + needle.len(),
+        new_end_byte: start + replacement.len(),
+        new_text: replacement.to_string(),
+    })
+}
+
+#[test]
+fn empty_edit_batch_reports_unchanged_without_lexer_or_parser_work() -> TestResult {
+    let source = "my $before = 1; my $after = 2;";
+    let mut state = IncrementalState::new(source.to_string());
+    let token_count = state.tokens.len();
+
+    let result = apply_edits(&mut state, &[])?;
+
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::Unchanged);
+    assert_eq!(result.lex_restart.restart_byte, source.len());
+    assert_eq!(result.lex_restart.relexed_bytes, 0);
+    assert_eq!(result.lex_restart.reused_prefix_tokens, token_count);
+    assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+    assert_eq!(result.reused_tokens, token_count);
+    assert_eq!(result.reparsed_bytes, 0);
+    assert!(result.changed_ranges.is_empty());
+    assert_eq!(state.source, source);
+    assert_tokens_equal(&state.tokens, &fresh_tokens(source));
+    Ok(())
+}
+
 #[test]
 fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> TestResult {
     let source = "my $before = 1; my $target = 2; my $after = 3;";
@@ -52,6 +85,44 @@ fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> Tes
     );
     assert_eq!(result.reused_tokens, result.lex_restart.reused_tokens());
     assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+    Ok(())
+}
+
+#[test]
+fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
+    let fixtures = [
+        ("division", "my $x = 10 / 2; my $after = 1;", "/ 2", "/ 3"),
+        ("regex", "my $ok = /foo/; my $after = 1;", "foo", "bar"),
+        ("quote-single", "my $x = q{foo}; my $after = 1;", "foo", "bar"),
+        ("quote-double", "my $x = qq{foo}; my $after = 1;", "foo", "bar"),
+        ("quote-words", "my @x = qw(foo bar); my $after = 1;", "foo", "baz"),
+        ("quote-command", "my $x = qx{echo foo}; my $after = 1;", "foo", "bar"),
+        ("substitution", "$x =~ s/foo/bar/; my $after = 1;", "foo", "baz"),
+        ("transliteration", "$x =~ tr/a-z/A-Z/; my $after = 1;", "a-z", "b-z"),
+        ("prototype", "sub f($$) { return 1; } my $after = 1;", "return 1", "return 2"),
+        ("unicode", "my $x = \"café\"; my $after = 1;", "é", "ø"),
+        ("crlf", "my $x = 1;\r\nmy $y = 2;\r\n", "= 2", "= 3"),
+        (
+            "heredoc-body",
+            "my $value = <<EOF;\nbody\nEOF\nprint $value;\n",
+            "body",
+            "changed",
+        ),
+    ];
+
+    for (name, source, needle, replacement) in fixtures {
+        let edit = replacing_edit(source, needle, replacement)?;
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_edits(&mut state, &[edit])?;
+
+        assert_eq!(
+            result.lex_restart.strategy,
+            LexRestartStrategy::LiveCheckpointToEof,
+            "{name} unexpectedly abandoned the live checkpoint path"
+        );
+        assert_eq!(result.lex_restart.reused_suffix_tokens, 0, "{name}");
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+    }
     Ok(())
 }
 
