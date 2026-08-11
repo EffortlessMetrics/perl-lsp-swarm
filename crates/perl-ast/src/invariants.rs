@@ -194,7 +194,7 @@ pub fn validate_ast(
                 },
             );
         }
-        if range.end > source.len() {
+        if range.start > source.len() || range.end > source.len() {
             push_finding(
                 &mut report,
                 finding_limit,
