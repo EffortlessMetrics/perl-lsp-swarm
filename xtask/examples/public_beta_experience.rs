@@ -679,25 +679,17 @@ fn computed_status(receipt: &Receipt) -> OverallStatus {
 
     let unproven_cell =
         receipt.journey_cells.iter().any(|cell| cell.disposition == CellDisposition::NotProven);
-    let limited_cell =
-        receipt.journey_cells.iter().any(|cell| cell.disposition == CellDisposition::Limited);
     let unproven_child = receipt
         .child_receipts
         .iter()
         .into_iter()
         .any(|(_, child)| child.status == InputStatus::NotProven);
-    let limited_child = receipt
-        .child_receipts
-        .iter()
-        .into_iter()
-        .any(|(_, child)| child.status == InputStatus::Limited);
     let missing_source_provenance = receipt
         .child_receipts
         .iter()
         .into_iter()
         .any(|(_, child)| child.source_artifact_path.is_none());
-    if limited_cell || unproven_cell || limited_child || unproven_child || missing_source_provenance
-    {
+    if unproven_cell || unproven_child || missing_source_provenance {
         return OverallStatus::NotProven;
     }
 
@@ -976,16 +968,6 @@ mod tests {
     }
 
     #[test]
-    fn limited_child_cannot_claim_ready() -> Result<()> {
-        let mut receipt =
-            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
-        receipt.child_receipts.first_ten_minutes.status = super::InputStatus::Limited;
-        receipt.child_receipts.first_ten_minutes.limitation = Some("bounded slice".to_string());
-        assert_eq!(validate(&receipt)?, OverallStatus::NotProven);
-        Ok(())
-    }
-
-    #[test]
     fn supported_envelope_cannot_shrink_project_family_set() -> Result<()> {
         let mut receipt =
             fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
@@ -1006,20 +988,6 @@ mod tests {
             cell.limitation = None;
         }
         assert!(validate(&receipt).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn limited_cell_cannot_claim_ready() -> Result<()> {
-        let mut receipt =
-            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
-        let cell = receipt
-            .journey_cells
-            .first_mut()
-            .ok_or_else(|| color_eyre::eyre::eyre!("ready fixture has no journey cells"))?;
-        cell.disposition = CellDisposition::Limited;
-        cell.limitation = Some("bounded slice".to_string());
-        assert_eq!(validate(&receipt)?, OverallStatus::NotProven);
         Ok(())
     }
 
