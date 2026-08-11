@@ -495,7 +495,7 @@ mod tests {
         server
             .test_apply_did_open(
                 uri,
-                "package Base;\\nsub base {}\\npackage Child;\\nuse parent 'Base';\\nsub child {}\\n",
+                "package Base;\nsub base {}\npackage Child;\nuse parent 'Base';\nsub child {}\n",
                 1,
             )
             .map_err(|error| {
