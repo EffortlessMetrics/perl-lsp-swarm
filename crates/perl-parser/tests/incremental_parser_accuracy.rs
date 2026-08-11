@@ -66,14 +66,16 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
     let statement_start = source
         .find(&edit.old_text)
         .ok_or("incremental edit old_text is absent from fixture source")?;
-    let literal_offset = edit
-        .old_text
-        .find('1')
-        .ok_or("incremental edit old_text has no numeric literal")?;
-    let start = statement_start + literal_offset;
-    let old_end = start + 1;
+    if edit.old_text.contains(['\n', '\r']) || edit.new_text.contains(['\n', '\r']) {
+        return Err("the first incremental slice expects a single-line edit".into());
+    }
+    let start = statement_start;
+    let old_end = start + edit.old_text.len();
     let new_source = source.replacen(&edit.old_text, &edit.new_text, 1);
-    let new_end = start + 1;
+    if new_source == source {
+        return Err("incremental edit did not change the fixture source".into());
+    }
+    let new_end = start + edit.new_text.len();
 
     let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
     let line = (source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1) as u32;
@@ -86,8 +88,8 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         old_end,
         new_end,
         Position::new(start, line, character),
-        Position::new(old_end, line, character + 1),
-        Position::new(new_end, line, character + 1),
+        Position::new(old_end, line, character + edit.old_text.chars().count() as u32),
+        Position::new(new_end, line, character + edit.new_text.chars().count() as u32),
     ));
     let incremental_ast = incremental.parse(&new_source)?;
 
