@@ -20,4 +20,4 @@ Primary project docs:
 - Contributor workflow: `CONTRIBUTING.md`
 - AI implementation workflow: `AGENTS.md`
 - Command reference: `docs/reference/COMMANDS_REFERENCE.md`
-- LSP implementation patterns: `docs/reference/LSP_IMPLEMENTATION_GUIDE.md`
+- LSP implementation patterns: `docs/tutorials/LSP_DEVELOPMENT_GUIDE.md`
