@@ -1144,8 +1144,13 @@ fn load_compatibility_series(
     };
     let accepted_baseline = read_compile_baseline_v2(accepted_path)?;
     validate_accepted_ratchet_identity(&accepted_baseline, &series)?;
-    let (transition, transition_reason, requires_acceptance) =
-        classify_compatibility_transition(&accepted_baseline, &compile_report);
+    let classification = transition::classify_transition(
+        &transition::AcceptedBaseline::V2(Box::new(accepted_baseline.clone())),
+        &compile_report,
+    )?;
+    let transition = classification.transition;
+    let transition_reason = classification.reason;
+    let requires_acceptance = classification.requires_candidate;
     if let Some(index) = &authority {
         let current = index
             .entries
@@ -1361,54 +1366,6 @@ fn validate_accepted_ratchet_identity(
         );
     }
     Ok(())
-}
-
-fn classify_compatibility_transition(
-    accepted: &CompileBaselineV2,
-    current: &RunReport,
-) -> (CompatibilityTransition, String, bool) {
-    if current.summary.files_passed > accepted.files_passed {
-        return (
-            CompatibilityTransition::ImprovementCandidate,
-            format!(
-                "current compile observation improved from {}/{} to {}/{}",
-                accepted.files_passed,
-                accepted.files_total,
-                current.summary.files_passed,
-                current.summary.files_total
-            ),
-            true,
-        );
-    }
-    if current.summary.files_passed < accepted.files_passed {
-        return (
-            CompatibilityTransition::Regression,
-            format!(
-                "current compile observation regressed from {}/{} to {}/{}",
-                accepted.files_passed,
-                accepted.files_total,
-                current.summary.files_passed,
-                current.summary.files_total
-            ),
-            false,
-        );
-    }
-    let mut accepted_boundaries = accepted.semantic_boundaries.clone();
-    let mut current_boundaries = current.semantic_boundaries.clone();
-    accepted_boundaries.sort_by_key(semantic_boundary_key);
-    current_boundaries.sort_by_key(semantic_boundary_key);
-    if accepted_boundaries != current_boundaries {
-        return (
-            CompatibilityTransition::ContractCorrectionCandidate,
-            "compile score is unchanged but semantic-boundary evidence changed".into(),
-            true,
-        );
-    }
-    (
-        CompatibilityTransition::NoChange,
-        "current compile observation matches the accepted ratchet".into(),
-        false,
-    )
 }
 
 fn validate_report_for_compatibility(
@@ -7988,8 +7945,13 @@ mod tests {
         current.summary.files_passed = 24;
         current.summary.files_failed = 1;
 
-        let (transition, reason, requires_acceptance) =
-            classify_compatibility_transition(&accepted, &current);
+        let classification = transition::classify_transition(
+            &transition::AcceptedBaseline::V2(Box::new(accepted.clone())),
+            &current,
+        )?;
+        let transition = classification.transition;
+        let reason = classification.reason;
+        let requires_acceptance = classification.requires_candidate;
         assert_eq!(transition, CompatibilityTransition::Regression);
         assert!(reason.contains("regressed"));
         assert!(!requires_acceptance);
@@ -8018,8 +7980,13 @@ mod tests {
         current.summary.files_passed = 25;
         current.summary.files_failed = 0;
 
-        let (transition, reason, requires_acceptance) =
-            classify_compatibility_transition(&accepted, &current);
+        let classification = transition::classify_transition(
+            &transition::AcceptedBaseline::V2(Box::new(accepted.clone())),
+            &current,
+        )?;
+        let transition = classification.transition;
+        let reason = classification.reason;
+        let requires_acceptance = classification.requires_candidate;
         assert_eq!(transition, CompatibilityTransition::ImprovementCandidate);
         assert!(reason.contains("improved"));
         assert!(requires_acceptance);
