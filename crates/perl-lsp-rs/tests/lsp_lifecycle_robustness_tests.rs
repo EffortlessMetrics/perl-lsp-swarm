@@ -9,14 +9,21 @@ use serde_json::{Value, json};
 mod common;
 use common::{initialize_lsp, send_notification, send_request, start_lsp_server};
 
-fn assert_error_code(response: &Value, expected: i64, context: &str) {
-    let error = response
+fn error_code(response: &Value, context: &str) -> Result<i64, String> {
+    response
         .get("error")
         .and_then(Value::as_object)
-        .unwrap_or_else(|| panic!("{context}: expected an error response, got {response:?}"));
+        .ok_or_else(|| format!("{context}: expected an error response, got {response:?}"))?
+        .get("code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{context}: error response has no numeric code: {response:?}"))
+}
+
+fn assert_error_code(response: &Value, expected: i64, context: &str) {
+    let actual = error_code(response, context);
     assert_eq!(
-        error.get("code").and_then(Value::as_i64),
-        Some(expected),
+        actual,
+        Ok(expected),
         "{context}: unexpected error response {response:?}"
     );
 }
