@@ -60,6 +60,16 @@ proptest! {
             };
             prop_assert!(apply_edits(&mut state, &[edit]).is_ok());
             prop_assert_eq!(&state.source, &expected);
+
+            let mut cold_parser = Parser::new(&expected);
+            let cold_ast = cold_parser.parse().map_err(|err| {
+                TestCaseError::fail(format!("cold parse failed after edit: {err}"))
+            })?;
+            prop_assert_eq!(
+                state.ast.to_sexp(),
+                cold_ast.to_sexp(),
+                "incremental AST diverged from a fresh cold parse"
+            );
         }
     }
 }
