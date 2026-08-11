@@ -225,17 +225,18 @@ proptest! {
             PerlValue::object(class.clone(), object_val.clone()),
             PerlValue::Object { class, value: Box::new(object_val) },
         );
-        // Tied: struct literal on both sides — confirms variant shape is stable
-        // and value is preserved through the struct fields (no constructor exists).
-        prop_assert_eq!(
-            PerlValue::Tied {
-                class: "Tie::Example".to_string(),
-                value: tied_val.clone().map(Box::new),
-            },
-            PerlValue::Tied {
-                class: "Tie::Example".to_string(),
-                value: tied_val.map(Box::new),
-            },
-        );
+        // Tied has no named constructor. Destructure the constructed value
+        // and compare each field with the generated inputs so this remains
+        // discriminating rather than comparing two identical literals.
+        let tied = PerlValue::Tied {
+            class: class.clone(),
+            value: tied_val.clone().map(Box::new),
+        };
+        if let PerlValue::Tied { class: actual_class, value: actual_value } = tied {
+            prop_assert_eq!(actual_class, class);
+            prop_assert_eq!(actual_value.as_deref(), tied_val.as_ref());
+        } else {
+            prop_assert!(false, "Tied construction produced the wrong variant");
+        }
     }
 }
