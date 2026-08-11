@@ -67,9 +67,22 @@ fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
                 globs.push(text);
             }
         }
-        NodeKind::Binary { op, .. } if op == "<<" => {
-            if let Some(text) = source_text(source, node) {
-                shifts.push(text);
+        NodeKind::Binary { op, left, right } if op == "<<" => {
+            if let (Some(text), Some(left_text), Some(right_text)) = (
+                source_text(source, node),
+                source_text(source, left),
+                source_text(source, right),
+            ) {
+                shifts.push((
+                    text,
+                    left_text,
+                    right_text,
+                    matches!(
+                        &left.kind,
+                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "value"
+                    ),
+                    matches!(&right.kind, NodeKind::Number { value } if value == "2"),
+                ));
             }
         }
         _ => {}
@@ -79,7 +92,16 @@ fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
     assert_eq!(stdin_readlines, vec!["<STDIN>"]);
     assert_eq!(diamonds, vec!["<<>>", "<>"]);
     assert_eq!(globs, vec!["<*.pl>"]);
-    assert_eq!(shifts, vec!["$value << 2"]);
+    assert_eq!(
+        shifts,
+        vec![(
+            "$value << 2".to_string(),
+            "$value".to_string(),
+            "2".to_string(),
+            true,
+            true,
+        )]
+    );
     Ok(())
 }
 
