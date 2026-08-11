@@ -125,9 +125,19 @@ pub fn classify_transition(
         }
     }
     for (path, accepted_result) in accepted_by_path {
-        let current_result = *current_by_path.get(path).ok_or_else(|| {
-            color_eyre::eyre::eyre!("current observation is missing accepted file {path}")
-        })?;
+        let Some(current_result) = current_by_path.get(path).copied() else {
+            // V2 membership identity already returned NotProven above. V1 has no
+            // immutable denominator, so a missing accepted path is incomparable
+            // evidence — classify NotProven rather than hard-erroring.
+            return Ok(Classification {
+                transition: CompatibilityTransition::NotProven,
+                reason: format!(
+                    "accepted and current observations are not comparable: current observation is missing accepted file {path}"
+                ),
+                requires_candidate: false,
+                semantic_boundary_change: false,
+            });
+        };
         if accepted_result.status == RunnerStatus::Pass
             && current_result.status == RunnerStatus::Fail
         {

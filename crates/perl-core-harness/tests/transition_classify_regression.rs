@@ -189,6 +189,21 @@ fn unexpected_current_file_is_not_no_change() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn v1_missing_accepted_file_is_not_proven() -> TestResult {
+    let mut accepted = sample_v1_baseline(2, 2);
+    accepted.file_results = sample_results(2, 2);
+    let mut current = sample_report(1, 1);
+    current.file_results = sample_results(1, 1);
+    let classification = classify_transition(&AcceptedBaseline::V1(accepted), &current)?;
+    if classification.transition != CompatibilityTransition::NotProven
+        || classification.requires_candidate
+    {
+        bail!("a V1 observation missing an accepted file must classify as NotProven, not Err or NoChange");
+    }
+    Ok(())
+}
+
 fn sample_report(total: usize, passed: usize) -> RunReport {
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
