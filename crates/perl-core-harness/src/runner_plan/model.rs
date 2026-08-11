@@ -82,7 +82,12 @@ pub struct RunnerScheduling {
 
 impl Default for RunnerScheduling {
     fn default() -> Self {
-        Self { jobs: None, asap: false, state_ordering: false, properties: BTreeMap::new() }
+        Self {
+            jobs: None,
+            asap: false,
+            state_ordering: false,
+            properties: BTreeMap::new(),
+        }
     }
 }
 
@@ -127,6 +132,10 @@ pub struct RunnerParityReport {
     pub matrix_fingerprint: String,
     pub target_id: String,
     pub target_contract_digest: String,
+    pub left_plan_digest: String,
+    pub right_plan_digest: String,
+    pub left_raw_discovery_digest: String,
+    pub right_raw_discovery_digest: String,
     pub left_runner: RunnerKind,
     pub right_runner: RunnerKind,
     pub membership_status: MembershipParityStatus,
