@@ -580,7 +580,7 @@ fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
                 loc(24, 37),
             )),
         },
-        loc(23, 37),
+        loc(23, 38),
     );
     let goto_deep = Node::new(
         NodeKind::Goto {
