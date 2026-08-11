@@ -150,6 +150,9 @@ fn depth_and_finding_budgets_bound_adversarial_trees() {
     assert_eq!(depth_report.findings.len(), 1);
     assert_eq!(depth_report.findings[0].code, AstInvariantCode::DepthLimitExceeded);
     assert_eq!(depth_report.findings[0].path, "root:Program/statements[0]:Unary/operand[0]:Number");
+    assert_eq!(depth_report.findings[0].related_range, Some(location(0, 1)));
+    assert_eq!(depth_report.nodes_visited, 2);
+    assert_eq!(depth_report.max_depth_reached, 1);
     assert!(depth_report.truncated);
 
     let invalid_root = Node::new(
@@ -163,6 +166,28 @@ fn depth_and_finding_budgets_bound_adversarial_trees() {
     );
     assert_eq!(bounded.findings.len(), 1);
     assert!(bounded.truncated);
+}
+
+#[test]
+fn zero_depth_budget_never_visits_or_buffers_root_children() {
+    let root = Node::new(
+        NodeKind::Program {
+            statements: (0..256).map(|_| number("1", 0, 1)).collect(),
+        },
+        location(0, 1),
+    );
+    let report = validate_ast(
+        "1",
+        &root,
+        AstInvariantOptions::default().with_max_depth(0).with_max_nodes(256),
+    );
+
+    assert_eq!(report.nodes_visited, 1);
+    assert_eq!(report.max_depth_reached, 0);
+    assert!(report.truncated);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].code, AstInvariantCode::DepthLimitExceeded);
+    assert_eq!(report.findings[0].path, "root:Program/statements[0]:Number");
 }
 
 #[test]
