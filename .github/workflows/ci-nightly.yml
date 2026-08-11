@@ -85,7 +85,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with: { toolchain: 1.95.0 }
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           key: ${{ runner.os }}-mutation-${{ hashFiles('Cargo.lock') }}
@@ -120,13 +120,13 @@ jobs:
         toolchain: stable
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-bench-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+      uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
       with:
         tool: just
 
@@ -369,7 +369,7 @@ jobs:
         toolchain: stable
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-real-repo-latency-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
@@ -412,7 +412,7 @@ jobs:
         toolchain: stable
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-corpus-differential-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
@@ -453,7 +453,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -637,14 +637,14 @@ jobs:
           components: llvm-tools-preview
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}
           cache-targets: false
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
@@ -786,7 +786,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -867,7 +867,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -876,7 +876,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
@@ -904,13 +904,13 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: scorecard-ratchet-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
@@ -938,7 +938,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ runner.os }}-clippy-strict-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -972,7 +972,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ runner.os }}-kwalitee-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -1101,7 +1101,7 @@ jobs:
         components: rust-src
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-fuzz-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
