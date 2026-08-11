@@ -30,7 +30,10 @@ function healthyInput(overrides = {}) {
     },
     installedVersion: '7.0.2',
     binaryVersionOutput: 'Version 7.0.2\n',
-    binShimPresent: true,
+    binShim: {
+      resolved: '/ext/node_modules/typescript/bin/tsc',
+      expected: '/ext/node_modules/typescript/bin/tsc',
+    },
     tsconfigs: [{ file: 'tsconfig.json', ignoreDeprecations: undefined }],
     ...overrides,
   };
@@ -204,8 +207,52 @@ void test('an unreadable tsc --version is red, never assumed green', () => {
 
 void test('a missing .bin/tsc shim is red', () => {
   assertFailedWith(
-    evaluateTypeScriptAuthority(healthyInput({ binShimPresent: false })),
+    evaluateTypeScriptAuthority(healthyInput({ binShim: undefined })),
     /node_modules\/\.bin\/tsc is missing/,
+  );
+});
+
+void test('a .bin/tsc shim pointing at a different tsc is red', () => {
+  // The hole this closes: every other invariant inspects
+  // node_modules/typescript, but `npm run typecheck` resolves `tsc` through
+  // node_modules/.bin. A stale shim left by a removed package, or one
+  // redirected at a hoisted or globally-linked install, executes a compiler
+  // this gate never looked at. Presence alone cannot detect that.
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        binShim: {
+          resolved: '/usr/lib/node_modules/typescript/bin/tsc',
+          expected: '/ext/node_modules/typescript/bin/tsc',
+        },
+      }),
+    ),
+    /resolves to \/usr\/lib\/node_modules\/typescript\/bin\/tsc, not the pinned package/,
+  );
+});
+
+void test('a .bin/tsc shim that cannot be resolved is red, not silently accepted', () => {
+  // A dangling symlink or an unreadable generated wrapper leaves the executing
+  // compiler unproven. "Could not determine" must never read as "fine".
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        binShim: {
+          expected: '/ext/node_modules/typescript/bin/tsc',
+          error: 'ENOENT: no such file or directory',
+        },
+      }),
+    ),
+    /could not be resolved to a real target .*ENOENT.*unproven/,
+  );
+});
+
+void test('a correctly bound shim is reported as evidence on a green run', () => {
+  const result = evaluateTypeScriptAuthority(healthyInput());
+  assert.ok(result.ok, `expected green, got: ${result.failures.join('; ')}`);
+  assert.ok(
+    result.facts.some((fact) => /\.bin\/tsc resolves to the pinned package/.test(fact)),
+    `expected the shim binding among the facts, got: ${result.facts.join('; ')}`,
   );
 });
 

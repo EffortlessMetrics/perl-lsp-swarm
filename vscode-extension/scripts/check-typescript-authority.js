@@ -72,7 +72,10 @@ const TSCONFIG_FILES = [
  *   The `node_modules/typescript` entry from package-lock.json.
  * @property {string | undefined} installedVersion node_modules/typescript's own version.
  * @property {string | undefined} binaryVersionOutput Raw `tsc --version` stdout.
- * @property {boolean} binShimPresent Whether node_modules/.bin/tsc exists.
+ * @property {{resolved?: string, expected?: string, error?: string} | undefined} binShim
+ *   Where `node_modules/.bin/tsc` actually leads, and where it must lead.
+ *   `resolved` is the shim's real target; `expected` is the pinned package's
+ *   own `bin/tsc`. `error` records why the shim could not be resolved.
  * @property {Array<{file: string, ignoreDeprecations: unknown, error?: string}>} tsconfigs
  *   One entry per authority tsconfig. `error` is set when the file could not be
  *   read or parsed, in which case its `ignoreDeprecations` state is unknown.
@@ -231,10 +234,32 @@ function evaluateTypeScriptAuthority(input) {
       facts.push(`\`tsc --version\` reports ${String(binaryVersion[1])} from the pinned package`);
     }
   }
-  if (!input.binShimPresent) {
+  // 4b. The shim the npm scripts actually resolve.
+  //
+  // Invariant 4 proves the *package's own* bin/tsc. But `npm run typecheck`
+  // does not invoke that path — it puts `node_modules/.bin` on PATH and
+  // resolves `tsc` there. Asserting only that the shim exists leaves a real
+  // hole: a stale shim left behind by a removed package, or one redirected at
+  // a hoisted or globally-linked TypeScript, would execute TS6 while every
+  // other invariant here reported TS7 against the package it never runs.
+  //
+  // So resolve the shim to its real target and require that it is the very
+  // file invariant 4 executed. That closes the chain: shim -> pinned package's
+  // bin/tsc -> `--version` -> authority major.
+  if (!input.binShim) {
     failures.push(
       'node_modules/.bin/tsc is missing — the npm typecheck scripts would resolve some other tsc',
     );
+  } else if (typeof input.binShim.error === 'string') {
+    failures.push(
+      `node_modules/.bin/tsc could not be resolved to a real target (${input.binShim.error}) — the compiler the npm scripts run is unproven`,
+    );
+  } else if (input.binShim.resolved !== input.binShim.expected) {
+    failures.push(
+      `node_modules/.bin/tsc resolves to ${String(input.binShim.resolved)}, not the pinned package's ${String(input.binShim.expected)} — the npm typecheck scripts would run a different compiler than the one verified above`,
+    );
+  } else {
+    facts.push("node_modules/.bin/tsc resolves to the pinned package's own bin/tsc");
   }
 
   // 5. No TS6-era deprecation escape hatch.
@@ -262,6 +287,79 @@ function evaluateTypeScriptAuthority(input) {
   }
 
   return { ok: failures.length === 0, facts, failures };
+}
+
+/**
+ * Resolves `node_modules/.bin/tsc` to the file it actually executes.
+ *
+ * Two shim shapes exist and neither reads the same way:
+ *
+ * - POSIX: `.bin/tsc` is a symlink (`../typescript/bin/tsc`), so `realpathSync`
+ *   gives the true target and collapses any chain of links.
+ * - Windows: npm writes generated `tsc.cmd`/`tsc.ps1` text wrappers embedding a
+ *   relative path instead. `realpathSync` on those returns the wrapper itself,
+ *   so the embedded path is extracted and resolved.
+ *
+ * Both are compared against `realpathSync` of the pinned package's own
+ * `bin/tsc`, so symlinked stores (pnpm, nix) compare equal on identity rather
+ * than on spelling.
+ *
+ * @param {string} extensionRoot
+ * @param {string} typescriptDir
+ * @returns {{resolved?: string, expected?: string, error?: string} | undefined}
+ */
+function resolveBinShim(extensionRoot, typescriptDir) {
+  const binDir = path.join(extensionRoot, 'node_modules', '.bin');
+  const posixShim = path.join(binDir, 'tsc');
+  const windowsShim = path.join(binDir, 'tsc.cmd');
+
+  // Absence is its own, clearer diagnosis — check it before anything else, so
+  // a tree with no node_modules at all reports "missing" rather than an
+  // incidental failure to resolve the package's bin/tsc.
+  const shim = fs.existsSync(posixShim)
+    ? posixShim
+    : fs.existsSync(windowsShim)
+      ? windowsShim
+      : undefined;
+  if (shim === undefined) {
+    return undefined;
+  }
+
+  /** @type {string | undefined} */
+  let expected;
+  try {
+    expected = fs.realpathSync(path.join(typescriptDir, 'bin', 'tsc'));
+  } catch (error) {
+    return {
+      error: `the pinned package has no readable bin/tsc (${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+
+  if (shim === posixShim) {
+    try {
+      return { resolved: fs.realpathSync(posixShim), expected };
+    } catch (error) {
+      return { expected, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (shim === windowsShim) {
+    // The generated wrapper references its target as a relative path; take the
+    // first typescript/bin/tsc mention and resolve it against .bin.
+    try {
+      const script = fs.readFileSync(windowsShim, 'utf8');
+      const match = /[\w.\\/-]*typescript[\\/]bin[\\/]tsc/i.exec(script);
+      if (!match) {
+        return { expected, error: 'the generated tsc.cmd names no typescript/bin/tsc target' };
+      }
+      const target = path.resolve(binDir, match[0].replace(/\\/g, path.sep));
+      return { resolved: fs.realpathSync(target), expected };
+    } catch (error) {
+      return { expected, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -343,9 +441,7 @@ function checkTypeScriptAuthority(extensionRoot) {
     lockEntry: lockJson.packages?.['node_modules/typescript'],
     installedVersion,
     binaryVersionOutput,
-    binShimPresent:
-      fs.existsSync(path.join(extensionRoot, 'node_modules', '.bin', 'tsc')) ||
-      fs.existsSync(path.join(extensionRoot, 'node_modules', '.bin', 'tsc.cmd')),
+    binShim: resolveBinShim(extensionRoot, typescriptDir),
     tsconfigs,
   });
 }
