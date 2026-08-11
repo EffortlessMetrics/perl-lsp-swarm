@@ -3494,7 +3494,7 @@ impl<'a> PerlLexer<'a> {
     fn read_qw_body(&mut self, delim: char) -> (String, bool) {
         let recover_at_statement = !self.qw_has_closing_delimiter(delim);
         self.read_delimited_body_with_recovery(delim, |lexer, position| {
-            recover_at_statement && lexer.qw_statement_boundary_at(position)
+            recover_at_statement && lexer.qw_recovery_boundary_at(delim, position)
         })
     }
 
@@ -3507,7 +3507,10 @@ impl<'a> PerlLexer<'a> {
 
         for (offset, ch) in self.input[self.position..].char_indices() {
             let position = self.position.saturating_add(offset);
-            if at_line_prefix && !ch.is_whitespace() && self.qw_statement_boundary_at(position) {
+            if at_line_prefix
+                && !ch.is_whitespace()
+                && self.qw_recovery_boundary_at(delim, position)
+            {
                 return self.qw_has_top_level_closer_after(position, close);
             }
             if ch == '\n' {
@@ -3563,7 +3566,7 @@ impl<'a> PerlLexer<'a> {
 
     fn qw_statement_boundary_at(&self, position: usize) -> bool {
         let consumed = &self.input[..position];
-        let line_start = consumed.rfind('\n').map_or(0, |index| index + 1);
+        let line_start = consumed.rfind(['\n', '\r']).map_or(0, |index| index + 1);
         if !consumed[line_start..].chars().all(char::is_whitespace) {
             return false;
         }
@@ -3580,6 +3583,51 @@ impl<'a> PerlLexer<'a> {
             }
         }
         for keyword in ["print", "warn", "say"] {
+            if remaining
+                .strip_prefix(keyword)
+                .is_some_and(|after| after.starts_with(char::is_whitespace))
+                && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        if let Some(symbol_table) = &self.config.symbol_table
+            && remaining.split_whitespace().next().is_some_and(|keyword| {
+                symbol_table.is_known_sub(keyword)
+                    && remaining
+                        .strip_prefix(keyword)
+                        .is_some_and(|after| after.starts_with(char::is_whitespace))
+            })
+            && self.qw_statement_terminates(position)
+        {
+            return true;
+        }
+        self.qw_block_statement_boundary_at(position)
+    }
+
+    fn qw_recovery_boundary_at(&self, delim: char, position: usize) -> bool {
+        match quote_handler::paired_close(delim) {
+            // qw( ... ) and same-character delimiters (qw/.../, qw!...!) keep broad recovery.
+            Some(')') | None => self.qw_statement_boundary_at(position),
+            // Bracket-style paired delimiters use the narrowed #4499 policy.
+            Some(_) => self.qw_self_delimited_statement_boundary_at(position),
+        }
+    }
+
+    /// Recovery boundaries for unclosed self-delimited `qw[...]` / `qw{...}` bodies.
+    ///
+    /// Narrower than [`Self::qw_statement_boundary_at`]: keeps declaration keywords
+    /// (`my`, `our`, …) and bare `print` as quote-word content, but still stops before
+    /// `warn`/`say`, known user subs, and block-form statement starters (#4499).
+    fn qw_self_delimited_statement_boundary_at(&self, position: usize) -> bool {
+        let consumed = &self.input[..position];
+        let line_start = consumed.rfind(['\n', '\r']).map_or(0, |index| index + 1);
+        if !consumed[line_start..].chars().all(char::is_whitespace) {
+            return false;
+        }
+
+        let remaining = &self.input[position..];
+        for keyword in ["warn", "say"] {
             if remaining
                 .strip_prefix(keyword)
                 .is_some_and(|after| after.starts_with(char::is_whitespace))
@@ -3964,7 +4012,7 @@ impl<'a> PerlLexer<'a> {
             }
             if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
-                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                let line_start = prefix.rfind(['\n', '\r']).map_or(0, |index| index + 1);
                 if prefix[line_start..].chars().all(char::is_whitespace)
                     && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
                 {

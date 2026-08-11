@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "source_sha": "56b4499c95687f7e18aca4eaf8b72cef23cd4968",
+    "topology_digest": null,
+    "observed_at": "2026-08-08",
+    "observer": "not_proven"
+  },
+  "channel_dispositions": [
+    {"channel":"github_release","disposition":"required","owner":"#4145","limitation":null},
+    {"channel":"crates_io","disposition":"required","owner":"#4145","limitation":null},
+    {"channel":"vscode_marketplace","disposition":"required","owner":"#4145","limitation":null},
+    {"channel":"open_vsx","disposition":"required","owner":"#4145","limitation":null},
+    {"channel":"containers","disposition":"not_proven","owner":"#5889","limitation":"Release topology has not yet classified container publication as required or deferred for v0.18."},
+    {"channel":"homebrew","disposition":"not_proven","owner":"#5889","limitation":"Release topology has not yet classified Homebrew publication as required or deferred for v0.18."},
+    {"channel":"windows_metadata","disposition":"deferred","owner":"#5977","limitation":"Repository-local metadata preparation is retained; upstream package-manager submission remains a maintainer action."}
+  ],
+  "settings": {
+    "immutable_releases": {
+      "state": "not_proven",
+      "enabled": null,
+      "evidence_refs": [],
+      "limitation": "The live repository release setting has not been inspected."
+    },
+    "tag_ruleset": {
+      "state": "not_proven",
+      "pattern": "v*",
+      "enforcement": null,
+      "bypass_actors": [],
+      "administrator_bypass_reviewed": false,
+      "evidence_refs": [],
+      "limitation": "No live v* tag-ruleset receipt is attached."
+    },
+    "branch_ruleset": {
+      "state": "not_proven",
+      "required_contexts": [],
+      "bypass_actors": [],
+      "administrator_bypass_reviewed": false,
+      "evidence_refs": [],
+      "limitation": "Required contexts and bypass actors have not been read from the effective main ruleset."
+    },
+    "actions_policy": {
+      "state": "not_proven",
+      "default_workflow_permissions": null,
+      "fork_pull_request_write_tokens": null,
+      "workflow_pr_creation_and_approval": null,
+      "evidence_refs": [],
+      "limitation": "Effective Actions token, fork, and pull-request creation settings are not proven."
+    },
+    "codeowners": {
+      "state": "not_proven",
+      "covered_surfaces": [],
+      "evidence_refs": [],
+      "limitation": "Current CODEOWNERS coverage has not been checked against the required release surface list."
+    },
+    "environments": [
+      {"channel":"github_release","name":"github-release","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
+      {"channel":"crates_io","name":"crates-io","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
+      {"channel":"vscode_marketplace","name":"vscode-marketplace","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
+      {"channel":"open_vsx","name":"open-vsx","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."}
+    ]
+  },
+  "declared_overall_state": "not_proven",
+  "limitations": [
+    "This packet is an evidence instrument, not evidence that GitHub settings are active.",
+    "Container and Homebrew channel requirements remain owned by release topology.",
+    "No public publication is authorized by this packet."
+  ]
+}

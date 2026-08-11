@@ -1065,15 +1065,22 @@ pub(super) fn detail_with_evidence(base: String, evidence: &ReceiverEvidence) ->
 
 /// Classify the receiver of a `->` method-completion call site.
 ///
-/// Tries exact source-backed receiver facts first, then falls back to the
-/// historical type-engine and text-pattern receiver inference paths. Returns
-/// [`ReceiverEvidence::Unknown`] when no evidence is found.
+/// Uses exact source-backed receiver facts first, except that `$self`/`$this`
+/// retains an established type-engine package when one is available for
+/// inherited workspace resolution. Finally falls back to text-pattern
+/// inference. This keeps literal bless and hash-slot evidence authoritative
+/// while preserving the inherited receiver path.
 pub(super) fn classify_receiver(
     context: &CompletionContext,
     source: &str,
     type_engine: Option<&TypeInferenceEngine>,
 ) -> ReceiverEvidence {
     if let Some(evidence) = source_backed_receiver_fact_evidence(context, source, type_engine) {
+        if matches!(evidence, ReceiverEvidence::SelfOrThis(_))
+            && let Some(pkg) = type_engine_receiver(context, type_engine)
+        {
+            return ReceiverEvidence::TypeEngine(pkg);
+        }
         return evidence;
     }
     if let Some(pkg) = type_engine_receiver(context, type_engine) {
