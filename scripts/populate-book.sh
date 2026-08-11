@@ -24,6 +24,16 @@ mkdir -p "$BOOK_SRC/process"
 mkdir -p "$BOOK_SRC/resources"
 
 # Function to copy and adapt a doc file
+
+# Apply sed edits through a temporary file so the helper works with both GNU and BSD sed.
+sed_in_place() {
+    local file="$1"
+    shift
+    local tmp="${file}.tmp"
+    sed "$@" "$file" > "$tmp"
+    mv "$tmp" "$file"
+}
+
 copy_doc() {
     local source="$1"
     local dest="$2"
@@ -43,7 +53,7 @@ copy_lsp_doc() {
 
     copy_doc "$source" "$dest"
     if [ -f "$dest" ]; then
-        sed -i \
+        sed_in_place "$dest" \
             -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
             -e 's#../reference/ARCHITECTURE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md#g' \
             -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
@@ -51,7 +61,6 @@ copy_lsp_doc() {
             -e 's#../project/CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
             -e 's#../reference/LSP_FEATURES.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/LSP_FEATURES.md#g' \
             -e 's#../project/protocols/verification.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/protocols/verification.md#g' \
-            "$dest"
     fi
 }
 
@@ -61,7 +70,7 @@ copy_development_doc() {
 
     copy_doc "$source" "$dest"
     if [ -f "$dest" ]; then
-        sed -i \
+        sed_in_place "$dest" \
             -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
             -e 's#ORIENTATION.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ORIENTATION.md#g' \
             -e 's#../reference/ARCHITECTURE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md#g' \
@@ -69,7 +78,6 @@ copy_development_doc() {
             -e 's#../tutorials/LSP_DEVELOPMENT_GUIDE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md#g' \
             -e 's#CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
             -e 's#ROADMAP.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md#g' \
-            "$dest"
     fi
 }
 
@@ -79,11 +87,10 @@ copy_testing_doc() {
 
     copy_doc "$source" "$dest"
     if [ -f "$dest" ]; then
-        sed -i \
+        sed_in_place "$dest" \
             -e 's#../../crates/perl-corpus/#https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/main/crates/perl-corpus/#g' \
             -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
             -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
-            "$dest"
     fi
 }
 
@@ -95,7 +102,7 @@ copy_config_doc() {
 
     copy_doc "$source" "$dest"
     if [ -f "$dest" ]; then
-        sed -i \
+        sed_in_place "$dest" \
             -e 's#NATIVE_CRITIC_RULE_MATRIX.md#native-critic-rule-matrix.md#g' \
             -e 's#../tutorials/DAP_USER_GUIDE.md#../dap/user-guide.md#g' \
             -e 's#../how-to/EDITOR_SETUP.md#editor-setup-canonical.md#g' \
@@ -104,7 +111,6 @@ copy_config_doc() {
             -e 's#LSP_FEATURES.md#../user-guides/lsp-features.md#g' \
             -e 's#../how-to/THREADING_CONFIGURATION_GUIDE.md#../advanced/threading-configuration.md#g' \
             -e 's#CONFIGURATION_SCHEMA.md#configuration-schema.md#g' \
-            "$dest"
     fi
 }
 
