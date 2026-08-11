@@ -1,251 +1,57 @@
 #!/usr/bin/env python3
-"""Build and validate a candidate-bound DAP scorecard proof packet.
-
-The Rust scorecard harness owns runtime measurements. This wrapper binds those
-measurements to the exact repository revision, candidate ``perl-dap`` binary,
-Perl runtime, fixture content, generated status page, and CI run that produced
-them. It uses only the Python standard library so the proof lane does not add a
-second dependency environment.
-"""
+"""Build and validate a candidate-bound exact-binary DAP scorecard packet."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-import math
 import platform
-import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
-SCHEMA_VERSION = "dap_scorecard_packet.v1"
-REQUIRED_BINARY_STATUSES = {
-    "variables": "PASS",
-    "evaluate": "PASS",
-    "deep_pagination": "PASS",
-    "memory": "MEASURED",
-}
-REQUIRED_LAUNCH_FIXTURE_NAMES = ("hello", "loops", "eval", "args", "begin_end")
-REQUIRED_FIXTURES = (
-    "crates/perl-dap/tests/fixtures/hello.pl",
-    "crates/perl-dap/tests/fixtures/loops.pl",
-    "crates/perl-dap/tests/fixtures/eval.pl",
-    "crates/perl-dap/tests/fixtures/args.pl",
-    "crates/perl-dap/tests/fixtures/breakpoints_begin_end.pl",
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from dap_scorecard_packet_common import (  # noqa: E402
+    GENERATED_STATUS_PATH,
+    REQUIRED_ATTACH_NAMES,
+    REQUIRED_FIXTURES,
+    REQUIRED_LAUNCH_FIXTURE_NAMES,
+    REQUIRED_PROCESS_INVOCATIONS,
+    REQUIRED_SOURCE_SUBJECTS,
+    REQUIRED_THRESHOLD_PCT,
+    RUNTIME_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    PacketError,
+    as_int,
+    as_object,
+    expect_equal,
+    read_json,
+    relative_path,
+    run_text,
+    sha256,
+    validate_generated_status,
+    validate_subject_hash,
+    write_json,
 )
-STATUS_MARKERS = (
-    ("<!-- BEGIN: DAP_LAUNCH_SCORECARD -->", "<!-- END: DAP_LAUNCH_SCORECARD -->"),
-    ("<!-- BEGIN: DAP_SESSION_SCORECARD -->", "<!-- END: DAP_SESSION_SCORECARD -->"),
+from dap_scorecard_packet_git import (  # noqa: E402
+    assert_repository_state,
+    tracked_record,
+    tracked_records,
+    validate_tracked_packet_records,
+    verify_head,
+)
+from dap_scorecard_packet_policy import (  # noqa: E402
+    validate_exact_binary_subject,
+    validate_scorecard,
 )
 
-
-class PacketError(RuntimeError):
-    """A fail-closed scorecard packet validation error."""
-
-
-def _read_json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise PacketError(f"missing JSON input: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise PacketError(f"malformed JSON in {path}: {exc}") from exc
-    except OSError as exc:
-        raise PacketError(f"cannot read {path}: {exc}") from exc
-
-
-def _write_json(path: Path, value: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
-    path.write_text(payload, encoding="utf-8")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except FileNotFoundError as exc:
-        raise PacketError(f"missing evidence subject: {path}") from exc
-    except OSError as exc:
-        raise PacketError(f"cannot hash {path}: {exc}") from exc
-    return digest.hexdigest()
-
-
-def _run_text(argv: Sequence[str]) -> str:
-    try:
-        result = subprocess.run(
-            list(argv),
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PacketError(f"cannot execute {' '.join(argv)!r}: {exc}") from exc
-    output = result.stdout.strip()
-    if result.returncode != 0:
-        raise PacketError(
-            f"command {' '.join(argv)!r} failed with exit {result.returncode}: {output or '<no output>'}"
-        )
-    return output
-
-
-def _as_object(value: Any, context: str) -> Mapping[str, Any]:
-    if not isinstance(value, dict):
-        raise PacketError(f"{context} must be a JSON object")
-    return value
-
-
-def _as_int(value: Any, context: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise PacketError(f"{context} must be an integer")
-    return value
-
-
-def _validate_rate(
-    scorecard: Mapping[str, Any],
-    name: str,
-    *,
-    expected_names: Sequence[str] | None = None,
-) -> None:
-    metric = _as_object(scorecard.get(name), f"scorecard.{name}")
-    passed = _as_int(metric.get("passed"), f"scorecard.{name}.passed")
-    total = _as_int(metric.get("total"), f"scorecard.{name}.total")
-    threshold = _as_int(metric.get("threshold_pct"), f"scorecard.{name}.threshold_pct")
-    if total <= 0:
-        raise PacketError(f"scorecard.{name} has no executed samples")
-    if passed < 0 or passed > total:
-        raise PacketError(f"scorecard.{name} has impossible passed/total values: {passed}/{total}")
-    if not 0 <= threshold <= 100:
-        raise PacketError(f"scorecard.{name}.threshold_pct is outside 0..100: {threshold}")
-
-    details = metric.get("details")
-    if not isinstance(details, list):
-        raise PacketError(f"scorecard.{name}.details must be an array")
-    if len(details) != total:
-        raise PacketError(
-            f"scorecard.{name} row count does not match total: {len(details)} != {total}"
-        )
-
-    observed_names: list[str] = []
-    observed_passed = 0
-    for index, raw_detail in enumerate(details):
-        detail = _as_object(raw_detail, f"scorecard.{name}.details[{index}]")
-        detail_name = detail.get("name")
-        if not isinstance(detail_name, str) or not detail_name:
-            raise PacketError(f"scorecard.{name}.details[{index}].name is missing")
-        observed_names.append(detail_name)
-
-        error = detail.get("error")
-        elapsed = detail.get("elapsed_ms")
-        if error is None:
-            observed_passed += 1
-            if name == "launch" and (isinstance(elapsed, bool) or not isinstance(elapsed, int)):
-                raise PacketError(
-                    f"scorecard.launch.details[{index}] passed without an elapsed_ms measurement"
-                )
-        elif not isinstance(error, str) or not error:
-            raise PacketError(f"scorecard.{name}.details[{index}].error is invalid")
-
-    if observed_passed != passed:
-        raise PacketError(
-            f"scorecard.{name} pass count contradicts its rows: {passed} != {observed_passed}"
-        )
-    if expected_names is not None and observed_names != list(expected_names):
-        raise PacketError(
-            f"scorecard.{name} fixture rows differ from the required ordered set: "
-            f"{observed_names!r}"
-        )
-
-    required = math.ceil(total * threshold / 100)
-    if passed < required:
-        raise PacketError(
-            f"scorecard.{name} is below threshold: {passed}/{total} passed, need at least {required}"
-        )
-
-
-def validate_scorecard(raw: Any) -> Mapping[str, Any]:
-    scorecard = _as_object(raw, "scorecard receipt")
-    if scorecard.get("perl_available") is not True:
-        raise PacketError("scorecard receipt does not prove a usable Perl runtime")
-    _validate_rate(scorecard, "launch", expected_names=REQUIRED_LAUNCH_FIXTURE_NAMES)
-    _validate_rate(scorecard, "attach")
-
-    for name, expected in REQUIRED_BINARY_STATUSES.items():
-        metric = _as_object(scorecard.get(name), f"scorecard.{name}")
-        actual = metric.get("status")
-        if actual != expected:
-            detail = metric.get("detail", "<no detail>")
-            raise PacketError(
-                f"scorecard.{name} must be {expected}, got {actual!r}: {detail}"
-            )
-    return scorecard
-
-
-def _relative_path(root: Path, path: Path) -> str:
-    try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError as exc:
-        raise PacketError(f"evidence path escapes repository root: {path}") from exc
-
-
-def _status_blocks(status_text: str) -> list[str]:
-    blocks: list[str] = []
-    for begin, end in STATUS_MARKERS:
-        start = status_text.find(begin)
-        stop = status_text.find(end)
-        if start < 0 or stop < 0 or stop <= start:
-            raise PacketError(f"generated status is missing marker pair {begin!r} / {end!r}")
-        blocks.append(status_text[start : stop + len(end)])
-    return blocks
-
-
-def validate_generated_status(status_path: Path) -> None:
-    try:
-        text = status_path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise PacketError(f"missing generated DAP status: {status_path}") from exc
-    except OSError as exc:
-        raise PacketError(f"cannot read generated DAP status {status_path}: {exc}") from exc
-
-    for block in _status_blocks(text):
-        if "receipt missing" in block:
-            raise PacketError("generated DAP status still reports a missing receipt")
-        if "| SKIP |" in block:
-            raise PacketError(
-                "generated DAP status contains a SKIP verdict in a required scorecard block"
-            )
-        if "| FAIL |" in block:
-            raise PacketError(
-                "generated DAP status contains a FAIL verdict in a required scorecard block"
-            )
-
-
-def _fixture_records(root: Path, fixture_paths: Iterable[str]) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for raw_path in fixture_paths:
-        path = root / raw_path
-        relative = _relative_path(root, path)
-        if relative in seen:
-            raise PacketError(f"duplicate fixture identity: {relative}")
-        seen.add(relative)
-        records.append({"path": relative, "sha256": _sha256(path)})
-
-    expected = set(REQUIRED_FIXTURES)
-    actual = {record["path"] for record in records}
-    if actual != expected:
-        missing = sorted(expected - actual)
-        extra = sorted(actual - expected)
-        raise PacketError(f"fixture set mismatch; missing={missing}, extra={extra}")
-    records.sort(key=lambda record: record["path"])
-    return records
+# Compatibility aliases for focused tests and downstream imports.
+_read_json = read_json
+_write_json = write_json
+_sha256 = sha256
 
 
 def build_packet(args: argparse.Namespace) -> dict[str, Any]:
@@ -254,27 +60,35 @@ def build_packet(args: argparse.Namespace) -> dict[str, Any]:
     status_path = (root / args.status).resolve()
     binary_path = (root / args.binary).resolve()
     perl_path = Path(args.perl).resolve()
-
-    scorecard = validate_scorecard(_read_json(raw_path))
-    validate_generated_status(status_path)
-
     if args.repository_dirty:
-        raise PacketError("candidate repository was dirty before the scorecard run")
-    if not args.repository_sha or len(args.repository_sha) < 7:
-        raise PacketError("repository SHA is missing or implausibly short")
+        raise PacketError("caller reported a dirty candidate before the scorecard run")
+    if len(args.repository_sha) != 40:
+        raise PacketError("repository SHA must be a full 40-character commit identity")
     if not args.run_id:
         raise PacketError("CI run identity is required")
 
-    binary_version = _run_text([str(binary_path), "--version"])
-    perl_version = _run_text([str(perl_path), "-e", "print $^V"])
-    created = int(time.time())
+    verify_head(root, args.repository_sha)
+    status_lines = assert_repository_state(root)
+    scorecard = validate_scorecard(read_json(raw_path))
+    validate_generated_status(status_path)
+    binary_sha256 = sha256(binary_path)
+    validate_exact_binary_subject(scorecard, binary_path, binary_sha256)
+    binary_version = run_text([str(binary_path), "--version"])
+    perl_version = run_text([str(perl_path), "-e", "print $^V"])
+    scorecard_perl = as_object(scorecard.get("perl"), "scorecard.perl")
+    if Path(str(scorecard_perl.get("path"))).resolve() != perl_path:
+        raise PacketError("runtime receipt Perl path differs from packet Perl path")
+    if scorecard_perl.get("version") != perl_version:
+        raise PacketError("runtime receipt Perl version differs from packet Perl runtime")
 
-    packet: dict[str, Any] = {
+    return {
         "schema_version": SCHEMA_VERSION,
-        "created_unix_seconds": created,
+        "created_unix_seconds": int(time.time()),
         "repository": {
             "sha": args.repository_sha,
-            "dirty": False,
+            "tracked_inputs_match_candidate": True,
+            "allowed_generated_diff": GENERATED_STATUS_PATH,
+            "status_porcelain": status_lines,
         },
         "run": {
             "id": str(args.run_id),
@@ -283,39 +97,36 @@ def build_packet(args: argparse.Namespace) -> dict[str, Any]:
             "architecture": platform.machine(),
         },
         "binary": {
-            "path": _relative_path(root, binary_path),
-            "sha256": _sha256(binary_path),
+            "path": relative_path(root, binary_path),
+            "sha256": binary_sha256,
             "version_output": binary_version,
+            "transport": "stdio",
         },
-        "perl": {
-            "path": str(perl_path),
-            "version": perl_version,
-        },
-        "fixtures": _fixture_records(root, args.fixture),
+        "perl": {"path": str(perl_path), "version": perl_version},
+        "fixtures": tracked_records(
+            root,
+            args.fixture,
+            args.repository_sha,
+            expected=REQUIRED_FIXTURES,
+            context="fixture",
+        ),
+        "sources": tracked_records(
+            root,
+            REQUIRED_SOURCE_SUBJECTS,
+            args.repository_sha,
+            expected=REQUIRED_SOURCE_SUBJECTS,
+            context="scorecard source",
+        ),
         "raw_receipt": {
-            "path": _relative_path(root, raw_path),
-            "sha256": _sha256(raw_path),
+            "path": relative_path(root, raw_path),
+            "sha256": sha256(raw_path),
         },
         "generated_status": {
-            "path": _relative_path(root, status_path),
-            "sha256": _sha256(status_path),
+            "path": relative_path(root, status_path),
+            "sha256": sha256(status_path),
         },
         "scorecard": scorecard,
     }
-    return packet
-
-
-def _expect_equal(actual: Any, expected: Any, context: str) -> None:
-    if actual != expected:
-        raise PacketError(f"{context} mismatch: expected {expected!r}, got {actual!r}")
-
-
-def _validate_subject_hash(root: Path, subject: Mapping[str, Any], context: str) -> None:
-    path_value = subject.get("path")
-    digest_value = subject.get("sha256")
-    if not isinstance(path_value, str) or not isinstance(digest_value, str):
-        raise PacketError(f"{context} path/hash fields are missing")
-    _expect_equal(_sha256(root / path_value), digest_value, f"{context} SHA-256")
 
 
 def validate_packet(args: argparse.Namespace) -> Mapping[str, Any]:
@@ -323,81 +134,83 @@ def validate_packet(args: argparse.Namespace) -> Mapping[str, Any]:
     packet_path = Path(args.packet)
     if not packet_path.is_absolute():
         packet_path = root / packet_path
-    packet = _as_object(_read_json(packet_path), "scorecard packet")
-    _expect_equal(packet.get("schema_version"), SCHEMA_VERSION, "packet schema")
+    packet = as_object(read_json(packet_path), "scorecard packet")
+    expect_equal(packet.get("schema_version"), SCHEMA_VERSION, "packet schema")
+    verify_head(root, args.expected_repository_sha)
+    current_status = assert_repository_state(root)
 
-    repository = _as_object(packet.get("repository"), "packet.repository")
-    _expect_equal(repository.get("sha"), args.expected_repository_sha, "repository SHA")
-    _expect_equal(repository.get("dirty"), False, "repository dirty flag")
+    repository = as_object(packet.get("repository"), "packet.repository")
+    expect_equal(repository.get("sha"), args.expected_repository_sha, "repository SHA")
+    expect_equal(
+        repository.get("tracked_inputs_match_candidate"), True, "tracked input candidate binding"
+    )
+    expect_equal(
+        repository.get("allowed_generated_diff"), GENERATED_STATUS_PATH, "generated status path"
+    )
+    expect_equal(repository.get("status_porcelain"), current_status, "repository status")
 
-    run = _as_object(packet.get("run"), "packet.run")
-    _expect_equal(str(run.get("id")), str(args.expected_run_id), "CI run ID")
-    _expect_equal(str(run.get("attempt")), str(args.expected_run_attempt), "CI run attempt")
-
-    created = _as_int(packet.get("created_unix_seconds"), "packet.created_unix_seconds")
+    run = as_object(packet.get("run"), "packet.run")
+    expect_equal(str(run.get("id")), str(args.expected_run_id), "CI run ID")
+    expect_equal(str(run.get("attempt")), str(args.expected_run_attempt), "CI run attempt")
+    created = as_int(packet.get("created_unix_seconds"), "packet.created_unix_seconds")
     age = int(time.time()) - created
     if age < 0 or age > args.max_age_seconds:
         raise PacketError(
             f"scorecard packet is stale or future-dated: age={age}s, max={args.max_age_seconds}s"
         )
 
-    binary = _as_object(packet.get("binary"), "packet.binary")
-    _validate_subject_hash(root, binary, "candidate binary")
-    _expect_equal(binary.get("sha256"), args.expected_binary_sha256, "candidate binary SHA-256")
+    binary = as_object(packet.get("binary"), "packet.binary")
+    validate_subject_hash(root, binary, "candidate binary")
+    expect_equal(binary.get("sha256"), args.expected_binary_sha256, "candidate binary SHA-256")
+    expect_equal(binary.get("transport"), "stdio", "candidate binary transport")
     binary_path = root / str(binary.get("path"))
-    _expect_equal(
+    expect_equal(
         binary.get("version_output"),
-        _run_text([str(binary_path), "--version"]),
+        run_text([str(binary_path), "--version"]),
         "candidate binary version output",
     )
 
-    perl = _as_object(packet.get("perl"), "packet.perl")
+    perl = as_object(packet.get("perl"), "packet.perl")
     perl_path = perl.get("path")
     if not isinstance(perl_path, str) or not perl_path:
         raise PacketError("packet.perl.path is missing")
-    _expect_equal(
+    expect_equal(
         perl.get("version"),
-        _run_text([perl_path, "-e", "print $^V"]),
+        run_text([perl_path, "-e", "print $^V"]),
         "Perl runtime version",
     )
 
-    raw_receipt = _as_object(packet.get("raw_receipt"), "packet.raw_receipt")
-    _validate_subject_hash(root, raw_receipt, "raw scorecard receipt")
-    raw_receipt_path = root / str(raw_receipt.get("path"))
-    raw_scorecard = validate_scorecard(_read_json(raw_receipt_path))
+    raw_receipt = as_object(packet.get("raw_receipt"), "packet.raw_receipt")
+    validate_subject_hash(root, raw_receipt, "raw scorecard receipt")
+    raw_scorecard = validate_scorecard(read_json(root / str(raw_receipt.get("path"))))
+    validate_exact_binary_subject(raw_scorecard, binary_path, str(binary.get("sha256")))
 
-    generated_status = _as_object(packet.get("generated_status"), "packet.generated_status")
-    _validate_subject_hash(root, generated_status, "generated DAP status")
-    status_path = root / str(generated_status.get("path"))
-    validate_generated_status(status_path)
-
-    fixtures = packet.get("fixtures")
-    if not isinstance(fixtures, list):
-        raise PacketError("packet.fixtures must be an array")
-    seen: set[str] = set()
-    fixture_paths: set[str] = set()
-    for index, item in enumerate(fixtures):
-        record = _as_object(item, f"packet.fixtures[{index}]")
-        path_value = record.get("path")
-        if not isinstance(path_value, str):
-            raise PacketError(f"packet.fixtures[{index}].path is missing")
-        if path_value in seen:
-            raise PacketError(f"duplicate fixture identity: {path_value}")
-        seen.add(path_value)
-        fixture_paths.add(path_value)
-        _validate_subject_hash(root, record, f"fixture {path_value}")
-    _expect_equal(fixture_paths, set(REQUIRED_FIXTURES), "fixture identity set")
-
+    generated_status = as_object(packet.get("generated_status"), "packet.generated_status")
+    validate_subject_hash(root, generated_status, "generated DAP status")
+    validate_generated_status(root / str(generated_status.get("path")))
+    validate_tracked_packet_records(
+        root,
+        packet.get("fixtures"),
+        args.expected_repository_sha,
+        REQUIRED_FIXTURES,
+        "fixtures",
+    )
+    validate_tracked_packet_records(
+        root,
+        packet.get("sources"),
+        args.expected_repository_sha,
+        REQUIRED_SOURCE_SUBJECTS,
+        "sources",
+    )
     embedded_scorecard = validate_scorecard(packet.get("scorecard"))
-    _expect_equal(embedded_scorecard, raw_scorecard, "embedded scorecard")
+    expect_equal(embedded_scorecard, raw_scorecard, "embedded scorecard")
     return packet
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    build = subparsers.add_parser("build", help="build a candidate-bound scorecard packet")
+    build = subparsers.add_parser("build")
     build.add_argument("--repository-root", default=".")
     build.add_argument("--repository-sha", required=True)
     build.add_argument("--repository-dirty", action="store_true")
@@ -409,8 +222,7 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--status", required=True)
     build.add_argument("--fixture", action="append", default=[])
     build.add_argument("--output", required=True)
-
-    validate = subparsers.add_parser("validate", help="validate packet identity and evidence")
+    validate = subparsers.add_parser("validate")
     validate.add_argument("--repository-root", default=".")
     validate.add_argument("--packet", required=True)
     validate.add_argument("--expected-repository-sha", required=True)
@@ -425,8 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "build":
-            packet = build_packet(args)
-            _write_json(Path(args.output), packet)
+            write_json(Path(args.output), build_packet(args))
             print(f"DAP scorecard packet: {args.output}")
         else:
             validate_packet(args)

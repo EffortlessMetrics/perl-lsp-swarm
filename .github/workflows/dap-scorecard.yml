@@ -8,8 +8,8 @@ on:
       - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
       - 'xtask/src/tasks/update_status/dap.rs'
       - 'docs/project/status/dap.md'
-      - 'scripts/ci/dap_scorecard_packet.py'
-      - 'scripts/tests/test_dap_scorecard_packet.py'
+      - 'scripts/ci/dap_scorecard_*.py'
+      - 'scripts/tests/test_dap_scorecard_*.py'
       - '.github/workflows/dap-scorecard.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -20,8 +20,8 @@ on:
       - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
       - 'xtask/src/tasks/update_status/dap.rs'
       - 'docs/project/status/dap.md'
-      - 'scripts/ci/dap_scorecard_packet.py'
-      - 'scripts/tests/test_dap_scorecard_packet.py'
+      - 'scripts/ci/dap_scorecard_*.py'
+      - 'scripts/tests/test_dap_scorecard_*.py'
       - '.github/workflows/dap-scorecard.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
           test "$actual" = "$DAP_SCORECARD_CANDIDATE_SHA"
-          test -z "$(git status --porcelain)"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
           echo "DAP_SCORECARD_REPOSITORY_SHA=$actual" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
@@ -79,13 +79,15 @@ jobs:
           shared-key: dap-scorecard-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
 
-      - name: Test packet builder negative controls
-        run: python3 scripts/tests/test_dap_scorecard_packet.py
+      - name: Test runtime driver and packet falsifiers
+        run: |
+          python3 scripts/tests/test_dap_scorecard_runtime.py
+          python3 scripts/tests/test_dap_scorecard_packet.py
 
       - name: Build exact perl-dap candidate
         run: cargo build -p perl-dap --bin perl-dap --locked
 
-      - name: Capture candidate and Perl identities
+      - name: Capture exact candidate and Perl identities
         shell: bash
         run: |
           set -euo pipefail
@@ -107,23 +109,46 @@ jobs:
           test ! -e "$DAP_SCORECARD_RAW_RECEIPT"
           echo "DAP_SCORECARD_RECEIPT_NOT_BEFORE=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Run real-session scorecard harness
-        run: cargo test -p perl-dap --test dap_scorecard_harness --locked -- --nocapture
+      - name: Drive the exact binary over real stdio sessions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/dap_scorecard_runtime.py \
+            --binary "$DAP_SCORECARD_BINARY" \
+            --perl "$DAP_SCORECARD_PERL" \
+            --fixture hello=crates/perl-dap/tests/fixtures/hello.pl \
+            --fixture loops=crates/perl-dap/tests/fixtures/loops.pl \
+            --fixture eval=crates/perl-dap/tests/fixtures/eval.pl \
+            --fixture args=crates/perl-dap/tests/fixtures/args.pl \
+            --fixture begin_end=crates/perl-dap/tests/fixtures/breakpoints_begin_end.pl \
+            --receipt "$DAP_SCORECARD_RAW_RECEIPT"
 
-      - name: Verify the harness produced this run's receipt
+      - name: Verify this run produced the exact-binary receipt
         shell: bash
         run: |
           set -euo pipefail
           test -s "$DAP_SCORECARD_RAW_RECEIPT"
           modified="$(stat -c %Y "$DAP_SCORECARD_RAW_RECEIPT")"
           test "$modified" -ge "$DAP_SCORECARD_RECEIPT_NOT_BEFORE"
-          grep -q '"perl_available": true' "$DAP_SCORECARD_RAW_RECEIPT"
+          grep -q '"schema_version": "dap_runtime_scorecard.v2"' "$DAP_SCORECARD_RAW_RECEIPT"
+          grep -q '"transport": "stdio"' "$DAP_SCORECARD_RAW_RECEIPT"
           grep -q '"status": "PASS"' "$DAP_SCORECARD_RAW_RECEIPT"
 
       - name: Generate status from the required receipt
         env:
           XTASK_UPDATE_STATUS_REQUIRE_DAP_RECEIPT: '1'
         run: cargo run -p xtask --locked -- update-status --write --only dap
+
+      - name: Reconcile post-run tree with the candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --cached --exit-code
+          git diff --exit-code HEAD -- . ':(exclude)docs/project/status/dap.md'
+          test -z "$(git ls-files --others --exclude-standard)"
+          while IFS= read -r changed; do
+            test "$changed" = 'docs/project/status/dap.md'
+          done < <(git diff --name-only HEAD)
 
       - name: Build candidate-bound proof packet
         shell: bash
@@ -155,6 +180,14 @@ jobs:
             --expected-run-id "$DAP_SCORECARD_RUN_ID" \
             --expected-run-attempt "$DAP_SCORECARD_RUN_ATTEMPT"
 
+      - name: Reconcile final source state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --cached --exit-code
+          git diff --exit-code HEAD -- . ':(exclude)docs/project/status/dap.md'
+          test -z "$(git ls-files --others --exclude-standard)"
+
       - name: Publish scorecard summary
         shell: bash
         run: |
@@ -162,7 +195,8 @@ jobs:
             echo '### DAP runtime scorecard'
             echo
             echo '- Candidate: `'$DAP_SCORECARD_REPOSITORY_SHA'`'
-            echo '- Binary SHA-256: `'$DAP_SCORECARD_BINARY_SHA256'`'
+            echo '- Exact binary SHA-256: `'$DAP_SCORECARD_BINARY_SHA256'`'
+            echo '- Transport: `stdio`'
             echo '- Packet: `target/receipts/dap-scorecard/packet.json`'
             echo
             sed -n '/<!-- BEGIN: DAP_LAUNCH_SCORECARD -->/,/<!-- END: DAP_SESSION_SCORECARD -->/p' docs/project/status/dap.md
@@ -177,5 +211,5 @@ jobs:
             target/dap_scorecard_receipt.json
             target/receipts/dap-scorecard/packet.json
             docs/project/status/dap.md
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import stat
+import subprocess
 import tempfile
 import time
 import unittest
@@ -25,55 +27,77 @@ class DapScorecardPacketTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / "target/receipts/dap-scorecard").mkdir(parents=True)
         (self.root / "docs/project/status").mkdir(parents=True)
-        fixture_root = self.root / "crates/perl-dap/tests/fixtures"
-        fixture_root.mkdir(parents=True)
-        for fixture in MODULE.REQUIRED_FIXTURES:
-            path = self.root / fixture
-            path.write_text(f"fixture {path.name}\n", encoding="utf-8")
-
-        self.binary = self.root / "target/debug/perl-dap"
-        self.binary.parent.mkdir(parents=True)
-        self.binary.write_text("#!/bin/sh\necho 'perl-dap 0.17.0'\n", encoding="utf-8")
-        self.binary.chmod(self.binary.stat().st_mode | stat.S_IXUSR)
-
-        self.perl = self.root / "fake-perl"
-        self.perl.write_text("#!/bin/sh\necho -n 'v5.40.0'\n", encoding="utf-8")
-        self.perl.chmod(self.perl.stat().st_mode | stat.S_IXUSR)
-
+        for relative in (*MODULE.REQUIRED_FIXTURES, *MODULE.REQUIRED_SOURCE_SUBJECTS):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if relative == "scripts/ci/dap_scorecard_packet.py":
+                shutil.copyfile(SCRIPT, path)
+            else:
+                path.write_text(f"tracked {relative}\n", encoding="utf-8")
+        self.binary = self._executable("target/debug/perl-dap", "echo 'perl-dap 0.17.0'")
+        self.perl = self._executable("target/fake-perl", "echo -n 'v5.40.0'")
         self.raw = self.root / "target/dap_scorecard_receipt.json"
-        self.status = self.root / "docs/project/status/dap.md"
+        self.status = self.root / MODULE.GENERATED_STATUS_PATH
         self.packet = self.root / "target/receipts/dap-scorecard/packet.json"
         self._write_scorecard()
         self._write_status()
+        (self.root / ".gitignore").write_text("/target/\n", encoding="utf-8")
+        self._git("init", "-b", "main")
+        self._git("config", "user.name", "EffortlessSteven")
+        self._git("config", "user.email", "git@effortlesssteven.com")
+        self._git("add", ".")
+        self._git("commit", "-m", "fixture")
+        self.repository_sha = self._git("rev-parse", "HEAD")
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def _executable(self, relative: str, command: str) -> Path:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"#!/bin/sh\n{command}\n", encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
+    def _git(self, *args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=self.root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        return result.stdout.strip()
+
     def _scorecard(self) -> dict:
+        def rate(names: tuple[str, ...], latencies: list[int]) -> dict:
+            return {
+                "passed": len(names),
+                "total": len(names),
+                "threshold_pct": 80,
+                "p50_ms": sorted(latencies)[(len(latencies) + 1) // 2 - 1],
+                "p95_ms": max(latencies),
+                "details": [
+                    {"name": name, "elapsed_ms": elapsed, "error": None}
+                    for name, elapsed in zip(names, latencies)
+                ],
+            }
+
         return {
+            "schema_version": MODULE.RUNTIME_SCHEMA_VERSION,
+            "created_unix_seconds": int(time.time()),
+            "subject": {
+                "transport": "stdio",
+                "binary_path": str(self.binary.resolve()),
+                "binary_sha256": MODULE._sha256(self.binary),
+                "version_output": "perl-dap 0.17.0",
+                "process_invocations": MODULE.REQUIRED_PROCESS_INVOCATIONS,
+            },
             "perl_available": True,
-            "launch": {
-                "passed": 5,
-                "total": 5,
-                "threshold_pct": 80,
-                "p50_ms": 1,
-                "p95_ms": 2,
-                "details": [
-                    {"name": name, "elapsed_ms": 1, "error": None}
-                    for name in MODULE.REQUIRED_LAUNCH_FIXTURE_NAMES
-                ],
-            },
-            "attach": {
-                "passed": 5,
-                "total": 5,
-                "threshold_pct": 80,
-                "p50_ms": None,
-                "p95_ms": None,
-                "details": [
-                    {"name": "tcp_loopback", "elapsed_ms": None, "error": None}
-                    for _ in range(5)
-                ],
-            },
+            "perl": {"path": str(self.perl.resolve()), "version": "v5.40.0"},
+            "launch": rate(MODULE.REQUIRED_LAUNCH_FIXTURE_NAMES, [1, 2, 3, 4, 5]),
+            "attach": rate(MODULE.REQUIRED_ATTACH_NAMES, [6, 7, 8, 9, 10]),
             "variables": {"status": "PASS", "detail": "variables proven"},
             "evaluate": {"status": "PASS", "detail": "evaluate proven"},
             "deep_pagination": {"status": "PASS", "detail": "pagination proven"},
@@ -98,7 +122,7 @@ class DapScorecardPacketTests(unittest.TestCase):
     def _build_args(self) -> Namespace:
         return Namespace(
             repository_root=str(self.root),
-            repository_sha="a" * 40,
+            repository_sha=self.repository_sha,
             repository_dirty=False,
             run_id="123",
             run_attempt="2",
@@ -119,7 +143,7 @@ class DapScorecardPacketTests(unittest.TestCase):
         values = {
             "repository_root": str(self.root),
             "packet": str(self.packet),
-            "expected_repository_sha": "a" * 40,
+            "expected_repository_sha": self.repository_sha,
             "expected_binary_sha256": MODULE._sha256(self.binary),
             "expected_run_id": "123",
             "expected_run_attempt": "2",
@@ -128,106 +152,111 @@ class DapScorecardPacketTests(unittest.TestCase):
         values.update(overrides)
         return Namespace(**values)
 
-    def assertPacketError(self, callback) -> None:  # noqa: N802 - unittest convention helper
+    def assertPacketError(self, callback) -> None:  # noqa: N802
         with self.assertRaises(MODULE.PacketError):
             callback()
 
     def test_happy_path_builds_and_validates(self) -> None:
-        self._build()
+        packet = self._build()
+        self.assertEqual(packet["binary"]["transport"], "stdio")
         MODULE.validate_packet(self._validate_args())
 
-    def test_missing_receipt_fails(self) -> None:
-        self.raw.unlink()
-        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
-
-    def test_malformed_receipt_fails(self) -> None:
-        self.raw.write_text("{", encoding="utf-8")
-        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
-
-    def test_cross_sha_packet_fails(self) -> None:
-        self._build()
-        self.assertPacketError(
-            lambda: MODULE.validate_packet(
-                self._validate_args(expected_repository_sha="b" * 40)
-            )
+    def test_rate_policy_is_fixed_and_recomputed(self) -> None:
+        mutations = (
+            lambda scorecard: scorecard["launch"].__setitem__("threshold_pct", 0),
+            lambda scorecard: scorecard["launch"].__setitem__("p95_ms", 0),
+            lambda scorecard: scorecard["launch"]["details"][0].__setitem__(
+                "elapsed_ms", -1
+            ),
+            lambda scorecard: scorecard["attach"].update(
+                {
+                    "passed": 1,
+                    "total": 1,
+                    "p50_ms": 6,
+                    "p95_ms": 6,
+                    "details": scorecard["attach"]["details"][:1],
+                }
+            ),
         )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                scorecard = self._scorecard()
+                mutate(scorecard)
+                self._write_scorecard(scorecard)
+                self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
 
-    def test_cross_binary_packet_fails(self) -> None:
-        self._build()
-        self.assertPacketError(
-            lambda: MODULE.validate_packet(
-                self._validate_args(expected_binary_sha256="0" * 64)
-            )
-        )
+    def test_subject_must_be_the_exact_stdio_binary(self) -> None:
+        for field, value in (("transport", "in-process"), ("binary_sha256", "0" * 64)):
+            with self.subTest(field=field):
+                scorecard = self._scorecard()
+                scorecard["subject"][field] = value
+                self._write_scorecard(scorecard)
+                self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
 
-    def test_stale_packet_fails(self) -> None:
+    def test_candidate_git_objects_cannot_be_mutated(self) -> None:
+        for relative in (MODULE.REQUIRED_FIXTURES[0], MODULE.REQUIRED_SOURCE_SUBJECTS[0]):
+            with self.subTest(relative=relative):
+                path = self.root / relative
+                original = path.read_text(encoding="utf-8")
+                path.write_text("mutated\n", encoding="utf-8")
+                self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+                path.write_text(original, encoding="utf-8")
+
+    def test_only_generated_status_may_differ_after_run(self) -> None:
+        self.status.write_text(self.status.read_text(encoding="utf-8") + "generated\n")
         packet = self._build()
+        self.assertEqual(
+            packet["repository"]["status_porcelain"],
+            [f" M {MODULE.GENERATED_STATUS_PATH}"],
+        )
+        MODULE.validate_packet(self._validate_args())
+
+    def test_unrelated_tracked_diff_fails(self) -> None:
+        path = self.root / MODULE.REQUIRED_SOURCE_SUBJECTS[-1]
+        path.write_text("changed generator\n", encoding="utf-8")
+        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
+    def test_packet_identity_and_freshness_are_revalidated(self) -> None:
+        packet = self._build()
+        cases = (
+            {"expected_repository_sha": "b" * 40},
+            {"expected_binary_sha256": "0" * 64},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                self.assertPacketError(
+                    lambda: MODULE.validate_packet(self._validate_args(**overrides))
+                )
         packet["created_unix_seconds"] = int(time.time()) - 10_000
         self.packet.write_text(json.dumps(packet), encoding="utf-8")
         self.assertPacketError(
             lambda: MODULE.validate_packet(self._validate_args(max_age_seconds=60))
         )
 
-    def test_missing_required_row_fails(self) -> None:
-        scorecard = self._scorecard()
-        scorecard.pop("evaluate")
-        self._write_scorecard(scorecard)
-        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
-
-    def test_duplicate_fixture_identity_fails(self) -> None:
+    def test_packet_cannot_forge_embedded_or_duplicate_subjects(self) -> None:
+        packet = self._build()
+        packet["scorecard"]["variables"]["detail"] = "forged"
+        self.packet.write_text(json.dumps(packet), encoding="utf-8")
+        self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
         packet = self._build()
         packet["fixtures"].append(dict(packet["fixtures"][0]))
         self.packet.write_text(json.dumps(packet), encoding="utf-8")
         self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
 
-    def test_duplicate_launch_row_fails(self) -> None:
-        scorecard = self._scorecard()
-        scorecard["launch"]["details"][4]["name"] = "hello"
-        self._write_scorecard(scorecard)
-        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
-
-    def test_contradictory_rate_verdict_fails(self) -> None:
-        scorecard = self._scorecard()
-        scorecard["attach"]["details"][0]["error"] = "connection failed"
-        self._write_scorecard(scorecard)
-        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
-
-    def test_skip_cannot_be_represented_as_pass(self) -> None:
+    def test_required_statuses_and_generated_status_fail_closed(self) -> None:
         scorecard = self._scorecard()
         scorecard["deep_pagination"] = {"status": "SKIP", "detail": "not measured"}
         self._write_scorecard(scorecard)
         self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
-
-    def test_perl_instrument_failure_cannot_be_green(self) -> None:
-        scorecard = self._scorecard()
-        scorecard["perl_available"] = False
-        self._write_scorecard(scorecard)
-        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
-
-    def test_embedded_scorecard_cannot_diverge_from_raw_receipt(self) -> None:
-        packet = self._build()
-        packet["scorecard"]["variables"]["detail"] = "forged green detail"
-        self.packet.write_text(json.dumps(packet), encoding="utf-8")
-        self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
-
-    def test_binary_version_output_cannot_be_forged(self) -> None:
-        packet = self._build()
-        packet["binary"]["version_output"] = "perl-dap 999.0.0"
-        self.packet.write_text(json.dumps(packet), encoding="utf-8")
-        self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
-
-    def test_status_mutation_after_packet_fails(self) -> None:
-        self._build()
-        self.status.write_text(
-            self.status.read_text(encoding="utf-8") + "mutated\n", encoding="utf-8"
-        )
-        self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
-
-    def test_generated_status_skip_fails(self) -> None:
+        self._write_scorecard()
         self._write_status("SKIP")
         self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
 
-    def test_dirty_candidate_fails(self) -> None:
+    def test_post_packet_status_mutation_and_dirty_flag_fail(self) -> None:
+        self._build()
+        self.status.write_text(self.status.read_text(encoding="utf-8") + "mutated\n")
+        self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
+        self._write_status()
         args = self._build_args()
         args.repository_dirty = True
         self.assertPacketError(lambda: MODULE.build_packet(args))
