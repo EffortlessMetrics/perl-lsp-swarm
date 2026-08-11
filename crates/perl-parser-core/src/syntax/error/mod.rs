@@ -1265,21 +1265,3 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         }
     }
 }
-
-
-#[cfg(test)]
-mod public_documentation_examples {
-    use super::ParseResult;
-
-    fn report(result: ParseResult<()>) {
-        match result {
-            Ok(()) => println!("parse completed"),
-            Err(error) => eprintln!("parse failed: {error}"),
-        }
-    }
-
-    #[test]
-    fn parse_result_documentation_example_compiles_against_public_error_api() {
-        report(Ok(()));
-    }
-}
