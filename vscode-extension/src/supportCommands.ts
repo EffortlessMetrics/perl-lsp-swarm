@@ -4,6 +4,8 @@ export const PRODUCT_NAME = 'perl-lsp';
 export const SERVER_EXECUTABLE = 'perllsp';
 export const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
 
+const MAX_DIAGNOSTIC_FIELD_LENGTH = 200;
+
 export interface SupportCommandDependencies {
   readonly getServerVersion: () => Promise<string>;
   readonly extensionVersion: string;
@@ -13,10 +15,27 @@ export interface SupportCommandDependencies {
   readonly editorName?: string | undefined;
 }
 
-function normalizeServerVersion(serverVersion: string): string {
-  const trimmed = serverVersion.trim();
-  const match = /^(?:perllsp|perl-lsp)\s+(.+)$/.exec(trimmed);
-  return match?.[1]?.trim() || trimmed || 'unavailable';
+function sanitizeDiagnosticField(value: string | undefined, fallback: string): string {
+  const firstLine = (value ?? '').split(/\r\n|[\n\r\u2028\u2029]/, 1)[0] ?? '';
+  const printable = firstLine.replace(/[\u0000-\u001f\u007f-\u009f]/g, (character) => {
+    const codePoint = character.charCodeAt(0).toString(16).padStart(4, '0');
+    return `\\u${codePoint}`;
+  });
+  const normalized = printable.trim() || fallback;
+  return normalized.length <= MAX_DIAGNOSTIC_FIELD_LENGTH
+    ? normalized
+    : `${normalized.slice(0, MAX_DIAGNOSTIC_FIELD_LENGTH - 3)}...`;
+}
+
+function formatServerIdentity(serverVersion: string): string {
+  const observed = sanitizeDiagnosticField(serverVersion, 'unavailable');
+  if (observed === 'unavailable') {
+    return `${SERVER_EXECUTABLE} unavailable`;
+  }
+  if (observed === SERVER_EXECUTABLE || observed.startsWith(`${SERVER_EXECUTABLE} `)) {
+    return observed;
+  }
+  return `${observed} (expected ${SERVER_EXECUTABLE})`;
 }
 
 export function formatIssueDiagnosticInfo(params: {
@@ -27,14 +46,18 @@ export function formatIssueDiagnosticInfo(params: {
   arch: string;
   editorName?: string | undefined;
 }): string {
-  const editorName = (params.editorName ?? 'VS Code').trim() || 'VS Code';
-  const serverVersion = normalizeServerVersion(params.serverVersion);
+  const serverIdentity = formatServerIdentity(params.serverVersion);
+  const extensionVersion = sanitizeDiagnosticField(params.extensionVersion, 'unknown');
+  const editorName = sanitizeDiagnosticField(params.editorName ?? 'VS Code', 'VS Code');
+  const editorVersion = sanitizeDiagnosticField(params.editorVersion, 'unknown');
+  const platform = sanitizeDiagnosticField(params.platform, 'unknown');
+  const arch = sanitizeDiagnosticField(params.arch, 'unknown');
   return [
     `Product: ${PRODUCT_NAME}`,
-    `Server: ${SERVER_EXECUTABLE} ${serverVersion}`,
-    `Extension: ${EXTENSION_ID} ${params.extensionVersion}`,
-    `${editorName}: ${params.editorVersion}`,
-    `Platform: ${params.platform}/${params.arch}`,
+    `Server: ${serverIdentity}`,
+    `Extension: ${EXTENSION_ID} ${extensionVersion}`,
+    `${editorName}: ${editorVersion}`,
+    `Platform: ${platform}/${arch}`,
   ].join('\n');
 }
 
