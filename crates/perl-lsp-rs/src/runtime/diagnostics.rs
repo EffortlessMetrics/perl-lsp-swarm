@@ -4072,6 +4072,10 @@ print \"unreachable\\n\";\n";
             server.workspace_index_stale_for_document(uri),
             "test setup must leave the open document newer than the workspace index"
         );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave at least one edited open document stale"
+        );
 
         Ok(())
     }
