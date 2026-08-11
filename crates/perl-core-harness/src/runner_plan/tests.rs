@@ -30,7 +30,7 @@ fn test_and_harness_membership_can_match_with_different_order() -> Result<()> {
         b"t/base/cond.t\nt/base/if.t\n",
         RunnerScheduling::default(),
     )
-    .map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let harness_plan = build_runner_plan(
         &matrix,
         "component_base",
@@ -43,9 +43,9 @@ fn test_and_harness_membership_can_match_with_different_order() -> Result<()> {
             properties: BTreeMap::new(),
         },
     )
-    .map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let parity = compare_runner_plans(&test_plan, &harness_plan)
-        .map_err(color_eyre::eyre::eyre)?;
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::Parity);
     assert!(!parity.order_equal);
     assert!(!parity.scheduling_equal);
@@ -95,7 +95,7 @@ fn reonly_keeps_local_and_root_external_members() -> Result<()> {
             properties: BTreeMap::new(),
         },
     )
-    .map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(
         plan.normalized_membership,
         vec!["ext/re/t/qr.t".to_string(), "t/re/basic.t".to_string()]
@@ -113,7 +113,7 @@ fn manifest_population_accepts_dot_t_and_test_pl() -> Result<()> {
         b"cpan/Foo/t/basic.t\ncpan/Foo/test.pl\n",
         RunnerScheduling::default(),
     )
-    .map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(plan.source_items[0].source_form, SourceForm::DotT);
     assert_eq!(plan.source_items[1].source_form, SourceForm::TestPl);
     Ok(())
@@ -129,7 +129,7 @@ fn real_membership_difference_is_not_hidden_by_order_normalization() -> Result<(
         b"t/base/cond.t\nt/base/if.t\n",
         RunnerScheduling::default(),
     )
-    .map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let right = build_runner_plan(
         &matrix,
         "component_base",
@@ -137,8 +137,9 @@ fn real_membership_difference_is_not_hidden_by_order_normalization() -> Result<(
         b"t/base/if.t\n",
         RunnerScheduling::default(),
     )
-    .map_err(color_eyre::eyre::eyre)?;
-    let parity = compare_runner_plans(&left, &right).map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let parity = compare_runner_plans(&left, &right)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::Mismatch);
     assert_eq!(parity.missing_from_right, vec!["t/base/cond.t".to_string()]);
     Ok(())
@@ -154,7 +155,7 @@ fn direct_fallback_cannot_claim_upstream_runner_parity() -> Result<()> {
         b"t/base/if.t\n",
         RunnerScheduling::default(),
     )
-    .map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let fallback = build_runner_plan(
         &matrix,
         "component_base",
@@ -162,9 +163,9 @@ fn direct_fallback_cannot_claim_upstream_runner_parity() -> Result<()> {
         b"t/base/if.t\n",
         RunnerScheduling::default(),
     )
-    .map_err(color_eyre::eyre::eyre)?;
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let parity = compare_runner_plans(&upstream, &fallback)
-        .map_err(color_eyre::eyre::eyre)?;
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::NotProven);
     Ok(())
 }
