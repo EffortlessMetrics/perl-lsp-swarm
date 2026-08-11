@@ -1,5 +1,7 @@
 use super::*;
+use crate::Parser;
 use anyhow::Result;
+use perl_ast::NodeKind;
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
