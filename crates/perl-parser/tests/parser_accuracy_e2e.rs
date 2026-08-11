@@ -119,7 +119,7 @@ fn find_fixture<'a>(
 
 fn collect_observed_nodes<'a>(node: &'a Node, source: &'a str) -> Vec<ObservedNode<'a>> {
     let mut nodes = Vec::new();
-    collect_observed_nodes_rec(node, source, &mut nodes, None, 0, None, None);
+    collect_observed_nodes_rec(node, source, &mut nodes, None, 0, None);
     nodes
 }
 
