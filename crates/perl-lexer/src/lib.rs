@@ -3576,7 +3576,7 @@ impl<'a> PerlLexer<'a> {
         for keyword in ["print", "warn", "say"] {
             if remaining
                 .strip_prefix(keyword)
-                .is_some_and(|after| after.startsWith(char::is_whitespace))
+                .is_some_and(|after| after.starts_with(char::is_whitespace))
                 && self.qw_statement_terminates(position)
             {
                 return true;
@@ -3587,7 +3587,7 @@ impl<'a> PerlLexer<'a> {
                 symbol_table.is_known_sub(keyword)
                     && remaining
                         .strip_prefix(keyword)
-                        .is_some_and(|after| after.startsWith(char::is_whitespace))
+                        .is_some_and(|after| after.starts_with(char::is_whitespace))
             }) && self.qw_statement_terminates(position)
             {
                 return true;
