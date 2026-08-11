@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use perl_lexer::{Checkpointable, PerlLexer, Token, TokenType};
 
+type R<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
 #[derive(Debug, Clone, PartialEq)]
 struct TokenView {
     token_type: TokenType,
@@ -42,6 +44,10 @@ fn collect_remaining(lexer: &mut PerlLexer<'_>) -> Vec<TokenView> {
 
 fn collect(input: &str) -> Vec<TokenView> {
     collect_remaining(&mut PerlLexer::new(input))
+}
+
+fn missing(message: &'static str) -> Box<dyn std::error::Error> {
+    std::io::Error::other(message).into()
 }
 
 #[test]
@@ -131,7 +137,7 @@ fn quote_operator_and_fat_arrow_take_opposite_transitions() {
 }
 
 #[test]
-fn heredoc_body_event_precedes_the_resumed_statement() {
+fn heredoc_body_event_precedes_the_resumed_statement() -> R {
     let input = "print <<EOF;\nbody\nEOF\nmy $x = 1;\n";
     let mut lexer = PerlLexer::with_body_tokens(input);
     let tokens = collect_remaining(&mut lexer);
@@ -139,55 +145,59 @@ fn heredoc_body_event_precedes_the_resumed_statement() {
     let start_index = tokens
         .iter()
         .position(|token| matches!(&token.token_type, TokenType::HeredocStart))
-        .expect("heredoc opener token");
+        .ok_or_else(|| missing("missing heredoc opener token"))?;
     let body_index = tokens
         .iter()
         .position(|token| matches!(&token.token_type, TokenType::HeredocBody(_)))
-        .expect("heredoc body token");
+        .ok_or_else(|| missing("missing heredoc body token"))?;
     let resumed_index = tokens
         .iter()
         .position(|token| token.text.as_ref() == "my")
-        .expect("statement following the heredoc");
+        .ok_or_else(|| missing("missing statement following heredoc"))?;
 
     assert!(start_index < body_index);
     assert!(body_index < resumed_index);
     let body = &tokens[body_index];
     assert_eq!(input.get(body.start..body.end), Some("body\n"));
     assert!(matches!(tokens.last().map(|token| &token.token_type), Some(TokenType::EOF)));
+    Ok(())
 }
 
 #[test]
-fn data_section_is_terminal_code_state_with_a_separate_body() {
+fn data_section_is_terminal_code_state_with_a_separate_body() -> R {
     let input = "my $x = 1;\n__DATA__\nsub not_code { 1 }\n";
     let tokens = collect(input);
 
     let marker_index = tokens
         .iter()
         .position(|token| matches!(&token.token_type, TokenType::DataMarker(_)))
-        .expect("data marker token");
+        .ok_or_else(|| missing("missing data marker token"))?;
     let body_index = tokens
         .iter()
         .position(|token| matches!(&token.token_type, TokenType::DataBody(_)))
-        .expect("data body token");
+        .ok_or_else(|| missing("missing data body token"))?;
 
     assert!(marker_index < body_index);
     assert_eq!(tokens[body_index].text.as_ref(), "sub not_code { 1 }\n");
     assert!(tokens[body_index + 1..]
         .iter()
         .all(|token| matches!(&token.token_type, TokenType::EOF)));
+    Ok(())
 }
 
 #[test]
-fn checkpoint_after_arrow_replays_the_exact_method_suffix() {
+fn checkpoint_after_arrow_replays_the_exact_method_suffix() -> R {
     let input = "$obj->m('arg')->s('next');";
     let mut lexer = PerlLexer::new(input);
 
     loop {
-        let token = lexer.next_token().expect("arrow before EOF");
+        let token = lexer.next_token().ok_or_else(|| missing("arrow before EOF"))?;
         if token.text.as_ref() == "->" {
             break;
         }
-        assert!(!matches!(&token.token_type, TokenType::EOF));
+        if matches!(&token.token_type, TokenType::EOF) {
+            return Err(missing("arrow before EOF"));
+        }
     }
 
     let checkpoint = lexer.checkpoint();
@@ -200,4 +210,5 @@ fn checkpoint_after_arrow_replays_the_exact_method_suffix() {
     assert_eq!(first_suffix, restored_suffix);
     assert!(restored_suffix.iter().any(|token| token.text.as_ref() == "m"));
     assert!(!restored_suffix.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
+    Ok(())
 }
