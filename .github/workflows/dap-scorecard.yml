@@ -36,10 +36,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
   RUST_BACKTRACE: 1
   DAP_SCORECARD_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   DAP_SCORECARD_RUN_ID: ${{ github.run_id }}
   DAP_SCORECARD_RUN_ATTEMPT: ${{ github.run_attempt }}
+  DAP_SCORECARD_RAW_RECEIPT: target/dap_scorecard_receipt.json
 
 jobs:
   scorecard:
@@ -96,8 +98,27 @@ jobs:
           echo "DAP_SCORECARD_BINARY_SHA256=$binary_sha256" >> "$GITHUB_ENV"
           echo "DAP_SCORECARD_PERL=$perl_path" >> "$GITHUB_ENV"
 
+      - name: Remove any restored scorecard receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$DAP_SCORECARD_RAW_RECEIPT")"
+          rm -f "$DAP_SCORECARD_RAW_RECEIPT"
+          test ! -e "$DAP_SCORECARD_RAW_RECEIPT"
+          echo "DAP_SCORECARD_RECEIPT_NOT_BEFORE=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Run real-session scorecard harness
         run: cargo test -p perl-dap --test dap_scorecard_harness --locked -- --nocapture
+
+      - name: Verify the harness produced this run's receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$DAP_SCORECARD_RAW_RECEIPT"
+          modified="$(stat -c %Y "$DAP_SCORECARD_RAW_RECEIPT")"
+          test "$modified" -ge "$DAP_SCORECARD_RECEIPT_NOT_BEFORE"
+          grep -q '"perl_available": true' "$DAP_SCORECARD_RAW_RECEIPT"
+          grep -q '"status": "PASS"' "$DAP_SCORECARD_RAW_RECEIPT"
 
       - name: Generate status from the required receipt
         env:
@@ -115,7 +136,7 @@ jobs:
             --run-attempt "$DAP_SCORECARD_RUN_ATTEMPT" \
             --binary target/debug/perl-dap \
             --perl "$DAP_SCORECARD_PERL" \
-            --raw-receipt target/dap_scorecard_receipt.json \
+            --raw-receipt "$DAP_SCORECARD_RAW_RECEIPT" \
             --status docs/project/status/dap.md \
             --fixture crates/perl-dap/tests/fixtures/hello.pl \
             --fixture crates/perl-dap/tests/fixtures/loops.pl \
