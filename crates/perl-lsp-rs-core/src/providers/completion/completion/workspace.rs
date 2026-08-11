@@ -1225,10 +1225,7 @@ fn type_engine_receiver(
     }
 }
 
-/// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
-/// (static), `$self->` / `$this->` (self), `my $x = Foo->new` (constructor
-/// assignment), and `my $x = bless ..., "Foo"` (literal bless).
-pub(super) fn receiver_package_from_context_or_source(
+fn receiver_package_from_context_or_source(
     context: &CompletionContext,
     source: &str,
 ) -> Option<String> {
@@ -1236,19 +1233,17 @@ pub(super) fn receiver_package_from_context_or_source(
         return Some(context.current_package.clone());
     }
 
-    source
-        .get(..context.position.min(source.len()))?
-        .lines()
-        .rev()
-        .find_map(|line| {
-            let declaration = line.trim_start().strip_prefix("package ")?;
-            let package = declaration
-                .split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace())
-                .next()?;
-            (!package.is_empty()).then(|| package.to_string())
-        })
+    source.get(..context.position.min(source.len()))?.lines().rev().find_map(|line| {
+        let declaration = line.trim_start().strip_prefix("package ")?;
+        let package =
+            declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace()).next()?;
+        (!package.is_empty()).then(|| package.to_string())
+    })
 }
 
+/// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
+/// (static), `$self->` / `$this->` (self), `my $x = Foo->new` (constructor
+/// assignment), and `my $x = bless ..., "Foo"` (literal bless).
 pub(super) fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
@@ -2298,11 +2293,10 @@ fn collect_all_package_members_with_source(
                         continue;
                     };
 
-                    if let Some(model) =
-                        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-                            .build(&ast)
-                            .into_iter()
-                            .find(|model| model.name == pkg)
+                    if let Some(model) = perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+                        .build(&ast)
+                        .into_iter()
+                        .find(|model| model.name == pkg)
                     {
                         return (model.parents.clone(), model.roles.clone(), model.mro);
                     }
