@@ -132,10 +132,17 @@ impl LexerCheckpoint {
         }
     }
 
-    /// Create a default-state checkpoint at a specific position.
+    /// Create a default-state checkpoint at a specific byte position.
+    ///
+    /// Line and column remain the default summary values; the byte component is
+    /// aligned so the checkpoint remains structurally valid for compatibility
+    /// callers that only model a byte boundary.
     #[must_use]
     pub fn at_position(position: usize) -> Self {
-        Self { position, ..Self::new() }
+        let mut checkpoint = Self::new();
+        checkpoint.position = position;
+        checkpoint.current_pos.byte = position;
+        checkpoint
     }
 
     /// Check whether this checkpoint is at the start of input.
@@ -171,20 +178,22 @@ impl LexerCheckpoint {
 
     /// Apply an edit to source-relative checkpoint offsets.
     ///
-    /// Invalidated checkpoints retain the historical behavior of rewinding to
-    /// `start`. Call [`Self::try_apply_edit`] when the caller must distinguish a
-    /// transformed checkpoint from a conservative reset.
+    /// This compatibility method retains transformed offsets for inspection,
+    /// but any edit that cannot preserve complete replay state leaves an
+    /// explicitly unrestorable checkpoint. Call [`Self::try_apply_edit`] when
+    /// the caller must branch on that result.
     pub fn apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
         let _ = self.try_apply_edit(start, old_len, new_len);
     }
 
     /// Apply an edit and report whether all required replay state survived.
     ///
-    /// An edit overlapping the replay position or another required state offset
-    /// invalidates the checkpoint and rewinds it to `start`, returning `false`.
-    /// Offsets after the replaced range are shifted. An edit beginning exactly
-    /// at an offset leaves it anchored before the replacement so the new text is
-    /// re-lexed.
+    /// An edit overlapping a required state offset invalidates the checkpoint.
+    /// A shift of the replay position also fails closed because byte counts do
+    /// not contain enough information to recompute line and column. Offsets are
+    /// still transformed for compatibility inspection, but [`Self::is_valid_for`]
+    /// rejects the result. An edit beginning exactly at an offset leaves it
+    /// anchored before the replacement so the new text is re-lexed.
     #[must_use]
     pub fn try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool {
         let original_position = self.position;
@@ -248,15 +257,17 @@ impl LexerCheckpoint {
         self.context = context;
         self.eof_emitted = false;
         if self.position != original_position {
-            self.current_pos = Position::start();
+            self.mark_unrestorable();
+            return false;
         }
         true
     }
 
-    /// Validate all source-relative checkpoint offsets for an input.
+    /// Validate all source-relative checkpoint offsets and replay identity for an input.
     #[must_use]
     pub fn is_valid_for(&self, input: &str) -> bool {
-        offset_is_valid(input, self.position)
+        self.current_pos.byte == self.position
+            && offset_is_valid(input, self.position)
             && offset_is_valid(input, self.line_start_offset)
             && self.line_start_offset <= self.position
             && self
@@ -280,9 +291,16 @@ impl LexerCheckpoint {
     }
 
     fn invalidate_at(&mut self, start: usize) {
-        let mut reset = Self::new();
-        reset.position = start;
+        let mut reset = Self::at_position(start);
+        reset.mark_unrestorable();
         *self = reset;
+    }
+
+    fn mark_unrestorable(&mut self) {
+        self.current_pos = Position::start();
+        if self.position == 0 {
+            self.current_pos.byte = usize::MAX;
+        }
     }
 }
 
