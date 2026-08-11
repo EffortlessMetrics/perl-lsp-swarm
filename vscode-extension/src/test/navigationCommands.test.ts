@@ -90,6 +90,7 @@ describe('navigation command implementations', () => {
       'Perl LSP workspace status\nServer: running\nVersion: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors\nWorkspace index: legacy server (enhanced readiness unavailable)',
       'Run Health Check',
       'Show Output',
+      'Open Actions',
     );
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.showOutput');
   });
@@ -130,6 +131,7 @@ describe('navigation command implementations', () => {
       'Perl LSP workspace status\nServer: running\nWorkspace index: legacy server (enhanced readiness unavailable)',
       'Run Health Check',
       'Show Output',
+      'Open Actions',
     );
   });
 
@@ -168,6 +170,7 @@ describe('navigation command implementations', () => {
       'Restart Server',
       'Run Health Check',
       'Show Output',
+      'Open Actions',
     );
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.restart');
   });
