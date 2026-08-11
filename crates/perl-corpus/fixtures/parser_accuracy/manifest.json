@@ -3622,6 +3622,138 @@
           "parent_operator": null
         }
       ]
+    },
+    {
+      "id": "expression_statement",
+      "family": "expressions_statements",
+      "label_mode": "partial",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/expression_statement.pl",
+      "scored_lines": 2,
+      "scored_symbols": 2,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        {
+          "line": 1,
+          "expected_tags": [
+            "package_decl"
+          ]
+        },
+        {
+          "line": 3,
+          "expected_tags": [
+            "sub_decl"
+          ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "expression_statement_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::ExpressionStatement",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub transform",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_unary",
+          "kind": "Unary",
+          "line": 4,
+          "span_text": "-1",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_assignment",
+          "kind": "Assignment",
+          "line": 5,
+          "span_text": "$value += 2",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_array_literal",
+          "kind": "ArrayLiteral",
+          "line": 6,
+          "span_text": "(1, 2, 3)",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_hash_literal",
+          "kind": "HashLiteral",
+          "line": 7,
+          "span_text": "(alpha => 1, beta => 2)",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_array_slice",
+          "kind": "ArraySlice",
+          "line": 8,
+          "span_text": "@values[0, 2]",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_hash_slice",
+          "kind": "HashSlice",
+          "line": 9,
+          "span_text": "@map{qw(alpha beta)}",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_key_value_slice",
+          "kind": "KeyValueSlice",
+          "line": 10,
+          "span_text": "%map{qw(alpha beta)}",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "expression_statement_ternary",
+          "kind": "Ternary",
+          "line": 11,
+          "span_text": "$value ? @selected : @named",
+          "parent_kind": "Return",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     }
   ]
 }
