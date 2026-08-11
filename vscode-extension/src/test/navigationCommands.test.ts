@@ -94,6 +94,27 @@ describe('navigation command implementations', () => {
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.showOutput');
   });
 
+  test('shows lifecycle, readiness, and active-document status', async () => {
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'running',
+        lifecycle: 'ready_limited',
+        readinessState: 'ready_limited',
+        readinessReason: 'Workspace file limit reached',
+        activeDocumentReady: false,
+        nextAction: 'Wait for the active document to become ready.',
+      }),
+    });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\\nServer: running\\nLifecycle: ready_limited\\nWorkspace index: ready_limited\\nActive document: not ready\\nCoverage: Workspace file limit reached\\nNext: Wait for the active document to become ready.',
+      'Run Health Check',
+      'Show Output',
+    );
+  });
+
   test('offers restart for a stopped workspace', async () => {
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Restart Server');
 
