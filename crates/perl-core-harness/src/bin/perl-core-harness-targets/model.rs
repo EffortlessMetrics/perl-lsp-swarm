@@ -3,9 +3,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const TARGET_SELECTION_SCHEMA_VERSION: &str =
-    "perl_core_harness.target_selection.v1";
+pub const TARGET_SELECTION_SCHEMA_VERSION: &str = "perl_core_harness.target_selection.v1";
 pub const TARGET_MATRIX_SCHEMA_VERSION: &str = "perl_core_harness.target_matrix.v1";
+pub const TARGET_MATRIX_INDEX_SCHEMA_VERSION: &str =
+    "perl_core_harness.target_matrix_index.v1";
+pub const TARGET_MATRIX_PART_SCHEMA_VERSION: &str =
+    "perl_core_harness.target_matrix_part.v1";
 pub const TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION: &str =
     "perl_core_harness.target_topology_drift.v1";
 
@@ -40,6 +43,7 @@ pub struct TargetAuthority {
 #[serde(rename_all = "snake_case")]
 pub enum ManifestPopulation {
     RootLib,
+    CoreRootLib,
     Dist,
     Ext,
     Cpan,
@@ -81,6 +85,13 @@ pub enum TargetTerminalPolicy {
     Inherited,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositeOverlapPolicy {
+    RejectOverlap,
+    DeduplicateByLogicalSource,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetPreparation {
@@ -103,6 +114,7 @@ pub struct TargetSelectionContract {
     pub schema_version: String,
     pub target_id: String,
     pub upstream_name: String,
+    pub aliases: Vec<String>,
     pub display_name: String,
     pub perl_version_row: String,
     pub target_kind: TargetKind,
@@ -112,7 +124,9 @@ pub struct TargetSelectionContract {
     pub preparation: TargetPreparation,
     pub variant_of: Option<String>,
     pub composite_members: Vec<String>,
+    pub composite_overlap_policy: Option<CompositeOverlapPolicy>,
     pub runner_switches: Vec<String>,
+    pub variant_parameters: BTreeMap<String, String>,
     pub environment: BTreeMap<String, String>,
     pub terminal_policy: TargetTerminalPolicy,
     pub capability_predicates: Vec<String>,
@@ -144,6 +158,25 @@ pub struct TargetMatrixEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TargetMatrixIndex {
+    pub schema_version: String,
+    pub perl_version_row: String,
+    pub perl_requested_ref: String,
+    pub perl_resolved_ref: String,
+    pub topology_sources: BTreeMap<String, String>,
+    pub target_files: Vec<String>,
+    pub claim_boundary: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetMatrixPart {
+    pub schema_version: String,
+    pub targets: Vec<TargetMatrixEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpstreamTargetMatrix {
     pub schema_version: String,
     pub perl_version_row: String,
@@ -161,6 +194,7 @@ pub struct TargetTopologyDrift {
     pub pinned_matrix_fingerprint: String,
     pub observed_perl_ref: String,
     pub observed_perl_resolved_ref: String,
+    pub observed_topology_sources: BTreeMap<String, String>,
     pub added_target_ids: Vec<String>,
     pub removed_target_ids: Vec<String>,
     pub changed_target_ids: Vec<String>,
