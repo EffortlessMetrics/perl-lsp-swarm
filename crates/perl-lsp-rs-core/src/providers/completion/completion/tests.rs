@@ -8447,10 +8447,8 @@ sub inspect {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let index = must(inherited_moo_parent_index());
-    let child_model = ClassModelBuilder::new()
-        .build(&ast)
-        .into_iter()
-        .find(|model| model.name == "Child");
+    let child_model =
+        ClassModelBuilder::new().build(&ast).into_iter().find(|model| model.name == "Child");
     assert_eq!(
         child_model.as_ref().map(|model| model.parents.as_slice()),
         Some(["Parent".to_string()].as_slice()),
