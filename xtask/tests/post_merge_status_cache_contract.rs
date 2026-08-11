@@ -12,8 +12,7 @@ fn project_root() -> PathBuf {
 
 #[test]
 fn status_generator_keeps_target_artifacts_out_of_the_shared_cache()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+-> Result<(), Box<dyn std::error::Error>> {
     let workflow_path = project_root().join(".github/workflows/post-merge-status.yml");
     let source = fs::read_to_string(&workflow_path)?;
     let workflow: Value = serde_yaml_ng::from_str(&source)?;
