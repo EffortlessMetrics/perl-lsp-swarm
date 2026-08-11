@@ -40,6 +40,12 @@ fi
 #
 # Non-fatal on its own: if rustfmt is unavailable the gate below still blocks,
 # so a missing formatter cannot turn into a silently unformatted commit.
+#
+# A failed run leaves nothing half-done. Files are formatted in memory first,
+# and any write or re-stage failure restores the original bytes, so the
+# worktree and the index stay in step and the gate below judges the same tree
+# you started with. The one exception — a rollback that itself fails — is
+# reported by name in the command's own output above this warning.
 echo "Formatting staged Rust diff: cargo xtask fmt --staged"
 cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the commit gate below still applies"
 
