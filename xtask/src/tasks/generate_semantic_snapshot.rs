@@ -24,15 +24,12 @@
 
 use color_eyre::eyre::{Context, Result, bail};
 use perl_corpus::snapshot::{
-    HIR_SCHEMA_VERSION, HirSummary, SOURCE_HASH_ALGORITHM, SnapshotEntry, SnapshotManifest,
-    source_hash,
+    HIR_SCHEMA_VERSION, HirSummary, SNAPSHOT_CLAIM_BOUNDARY, SNAPSHOT_KPI, SNAPSHOT_SCHEMA,
+    SOURCE_HASH_ALGORITHM, SnapshotEntry, SnapshotManifest, source_hash,
 };
 use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-const SNAPSHOT_SCHEMA: &str = "semantic_snapshot.v1";
-const SNAPSHOT_KPI: &str = "semantic_snapshot_stability_rate";
 
 // ---------------------------------------------------------------------------
 // Public API (called from main.rs)
@@ -280,6 +277,21 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
 
     let json = fs::read_to_string(snapshot_path)
         .with_context(|| format!("reading snapshot manifest {}", snapshot_path.display()))?;
+    let header: serde_json::Value =
+        serde_json::from_str(&json).context("parsing snapshot schema header")?;
+    let Some(recorded_schema) =
+        header.get("schema").and_then(serde_json::Value::as_str)
+    else {
+        bail!("Snapshot manifest is missing a string schema discriminator");
+    };
+    if recorded_schema != SNAPSHOT_SCHEMA {
+        bail!(
+            "Snapshot schema mismatch: recorded={recorded_schema} current={SNAPSHOT_SCHEMA}; \
+             semantic_snapshot.v1 used filename-stem fixture IDs and a non-portable source hash; \
+             regenerate the snapshot"
+        );
+    }
+
     let recorded: SnapshotManifest =
         serde_json::from_str(&json).context("parsing snapshot manifest")?;
 
@@ -288,6 +300,13 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
     }
     if recorded.kpi != SNAPSHOT_KPI {
         bail!("Snapshot KPI mismatch: recorded={} current={}", recorded.kpi, SNAPSHOT_KPI);
+    }
+    if recorded.claim_boundary != SNAPSHOT_CLAIM_BOUNDARY {
+        bail!(
+            "Snapshot claim boundary mismatch: recorded={:?} current={:?}; regenerate snapshot",
+            recorded.claim_boundary,
+            SNAPSHOT_CLAIM_BOUNDARY,
+        );
     }
     if recorded.source_hash_algorithm != SOURCE_HASH_ALGORITHM {
         bail!(
@@ -411,6 +430,7 @@ mod tests {
 
         assert_eq!(manifest.schema, SNAPSHOT_SCHEMA);
         assert_eq!(manifest.kpi, SNAPSHOT_KPI);
+        assert_eq!(manifest.claim_boundary, SNAPSHOT_CLAIM_BOUNDARY);
         assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
         assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);
         assert_eq!(manifest.entries.len(), 1);
@@ -564,6 +584,57 @@ mod tests {
         let error = collect_fixtures(temporary.path())
             .expect_err("non-regular Perl fixtures must fail closed");
         assert!(error.to_string().contains("not a regular file"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn check_mode_rejects_legacy_v1_before_payload_deserialization() {
+        let temporary = TempDir::new().expect("tempdir");
+        write_fixture(temporary.path(), "fixture.pl", "1;");
+        let output = temporary.path().join("snapshot.json");
+        let legacy = serde_json::json!({
+            "schema": "semantic_snapshot.v1",
+            "kpi": SNAPSHOT_KPI,
+            "claim_boundary": SNAPSHOT_CLAIM_BOUNDARY,
+            "hir_schema_version": HIR_SCHEMA_VERSION,
+            "generated_on": "2026-08-11",
+            "entries": []
+        });
+        fs::write(
+            &output,
+            serde_json::to_string_pretty(&legacy).expect("serialize legacy snapshot"),
+        )
+        .expect("write legacy snapshot");
+
+        let error = check_snapshot(temporary.path(), &output)
+            .expect_err("legacy schema must be rejected before v2 payload parsing");
+        let message = error.to_string();
+        assert!(message.contains("Snapshot schema mismatch"), "unexpected error: {error}");
+        assert!(message.contains("semantic_snapshot.v1"), "unexpected error: {error}");
+        assert!(message.contains(SNAPSHOT_SCHEMA), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn check_mode_rejects_claim_boundary_mismatch() {
+        let temporary = TempDir::new().expect("tempdir");
+        write_fixture(temporary.path(), "fixture.pl", "1;");
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
+
+        let json = fs::read_to_string(&output).expect("read snapshot");
+        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
+        manifest.claim_boundary = "Snapshot proves semantic correctness.".to_string();
+        fs::write(
+            &output,
+            serde_json::to_string_pretty(&manifest).expect("serialize strengthened claim"),
+        )
+        .expect("write strengthened claim");
+
+        let error = check_snapshot(temporary.path(), &output)
+            .expect_err("check must reject a non-canonical claim boundary");
+        assert!(
+            error.to_string().contains("claim boundary mismatch"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
