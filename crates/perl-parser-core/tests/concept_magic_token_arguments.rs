@@ -60,19 +60,33 @@ fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result
 }
 
 #[test]
-fn quoted_magic_token_spellings_do_not_become_nullary_calls() -> Result<(), String> {
+fn quoted_magic_token_spellings_remain_literals_not_nullary_calls() -> Result<(), String> {
     let source = "my @labels = (\"__FILE__\", q{__LINE__}, '__PACKAGE__');";
     let ast = parse_clean(source)?;
     let mut fabricated = Vec::new();
+    let mut literals = Vec::new();
 
-    walk(&ast, &mut |node| {
-        if let NodeKind::FunctionCall { name, .. } = &node.kind
-            && MAGIC_TOKENS.contains(&name.as_str())
-        {
+    walk(&ast, &mut |node| match &node.kind {
+        NodeKind::FunctionCall { name, .. } if MAGIC_TOKENS.contains(&name.as_str()) => {
             fabricated.push(name.clone());
         }
+        NodeKind::String { value, .. } if MAGIC_TOKENS.contains(&value.as_str()) => {
+            if let Some(text) = source.get(node.location.start..node.location.end) {
+                literals.push((text.to_owned(), value.clone()));
+            }
+        }
+        _ => {}
     });
+    literals.sort();
 
+    assert_eq!(
+        literals,
+        vec![
+            ("\"__FILE__\"".to_string(), "__FILE__".to_string()),
+            ("'__PACKAGE__'".to_string(), "__PACKAGE__".to_string()),
+            ("q{__LINE__}".to_string(), "__LINE__".to_string()),
+        ]
+    );
     assert!(fabricated.is_empty(), "quoted spellings fabricated magic-token calls: {fabricated:?}");
     Ok(())
 }
