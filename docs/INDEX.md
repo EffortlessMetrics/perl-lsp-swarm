@@ -145,6 +145,7 @@ Resources for contributors working on the codebase itself.
 - [CLAUDE.md](../CLAUDE.md) — architecture overview, crate map, agent pipeline, key commands
 - [VS Code Extension Dev Guide](../vscode-extension/DEVELOPMENT.md) — build, test, and point at a local binary
 - [Scripts Directory Index](../scripts/README.md) — categorized guide to the 89 helper scripts
+- [Worked lanes](agents/README.md) — optional calibration examples grounded in durable repository artifacts
 - [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md) — how to implement and test LSP features
 - [ADR Index](adr/README.md) — design decisions and rationale
 
