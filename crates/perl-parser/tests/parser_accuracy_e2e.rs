@@ -130,7 +130,10 @@ fn span_fixtures_preserve_the_bytes_they_measure() -> TestResult {
 
     let mixed = fs::read(fixture_root.join("span_mixed_newlines.pl"))?;
     assert!(
-        mixed.contains(&b'\n') && mixed.windows(2).any(|window| window == b"\r\n"),
+        mixed.windows(2).any(|window| window == b"\r\n")
+            && mixed.iter().enumerate().any(|(index, byte)| {
+                *byte == b'\n' && mixed.get(index.saturating_sub(1)) != Some(&b'\r')
+            }),
         "span_mixed_newlines must contain both LF and CRLF line endings"
     );
 
