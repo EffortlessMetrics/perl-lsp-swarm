@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "owner_issue": 6701,
   "canonical": {
     "module": "incremental",
@@ -25,6 +25,27 @@
     "behavior_authority": false,
     "exit_issue": 6701
   },
+  "lower_tier": [
+    {
+      "package": "perl-parser-core",
+      "module": "incremental",
+      "path": "perl_parser_core::incremental",
+      "status": "lower_tier_kernel",
+      "entry_points": [
+        "IncrementalEdit",
+        "IncrementalState",
+        "IncrementalState::reparse"
+      ],
+      "behavior_authority": false,
+      "production_eligible": false,
+      "allowed_consumers": [
+        "tree_sitter_perl_rs::Parser::parse_with_old_tree"
+      ],
+      "next_action": "route_behind_canonical_or_retire_after_differential_proof",
+      "owner_issue": 6707,
+      "decision": "This active public token-replay kernel is explicitly inventoried because the tree-sitter compatibility facade consumes it. It may supply an implementation technique, but it cannot independently establish native parser-incremental behavior or production eligibility."
+    }
+  ],
   "modules": [
     {
       "module": "incremental_advanced_reuse",
