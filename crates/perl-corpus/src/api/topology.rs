@@ -370,15 +370,11 @@ fn validate_resolved_asset(
 ) -> Result<(), CorpusTopologyError> {
     match fs::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(CorpusTopologyError::SymlinkUnsupported {
-                path: root.to_path_buf(),
-            });
+            return Err(CorpusTopologyError::SymlinkUnsupported { path: root.to_path_buf() });
         }
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
-            return Err(CorpusTopologyError::UnsupportedFileType {
-                path: root.to_path_buf(),
-            });
+            return Err(CorpusTopologyError::UnsupportedFileType { path: root.to_path_buf() });
         }
         Err(error)
             if error.kind() == std::io::ErrorKind::NotFound
@@ -434,10 +430,7 @@ fn validate_resolved_asset(
                 });
             }
             Err(error) => {
-                return Err(CorpusTopologyError::Io {
-                    path: current,
-                    message: error.to_string(),
-                });
+                return Err(CorpusTopologyError::Io { path: current, message: error.to_string() });
             }
         }
     }
@@ -504,15 +497,11 @@ fn collect_layer_assets(
 ) -> Result<Vec<CorpusAsset>, CorpusTopologyError> {
     match fs::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(CorpusTopologyError::SymlinkUnsupported {
-                path: root.to_path_buf(),
-            });
+            return Err(CorpusTopologyError::SymlinkUnsupported { path: root.to_path_buf() });
         }
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
-            return Err(CorpusTopologyError::UnsupportedFileType {
-                path: root.to_path_buf(),
-            });
+            return Err(CorpusTopologyError::UnsupportedFileType { path: root.to_path_buf() });
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
@@ -572,9 +561,7 @@ fn collect_layer_assets(
 }
 
 fn is_ignored_name(name: &OsStr) -> bool {
-    name.as_encoded_bytes()
-        .first()
-        .is_some_and(|byte| *byte == b'.' || *byte == b'_')
+    name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_')
 }
 
 fn classify_test_asset(path: &Path) -> Option<CorpusAssetKind> {
@@ -600,11 +587,9 @@ fn classify_fuzz_asset(path: &Path) -> Option<CorpusAssetKind> {
 }
 
 fn has_allowed_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extensions.iter().any(|allowed| extension.eq_ignore_ascii_case(allowed))
-        })
+    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
+        extensions.iter().any(|allowed| extension.eq_ignore_ascii_case(allowed))
+    })
 }
 
 #[cfg(test)]
@@ -627,11 +612,7 @@ mod tests {
     }
 
     fn topology_with(assets: Vec<CorpusAsset>) -> CorpusTopology {
-        CorpusTopology {
-            schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION,
-            assets,
-            root: None,
-        }
+        CorpusTopology { schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION, assets, root: None }
     }
 
     #[test]
@@ -786,9 +767,7 @@ mod tests {
         let duplicate = asset("test_corpus/a.pl");
         assert_eq!(
             topology_with(vec![duplicate.clone(), duplicate]).validate(),
-            Err(CorpusTopologyError::DuplicateAssetId {
-                id: "test_corpus/a.pl".to_string(),
-            })
+            Err(CorpusTopologyError::DuplicateAssetId { id: "test_corpus/a.pl".to_string() })
         );
 
         assert_eq!(
@@ -805,9 +784,8 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary directory");
         let included = asset("test_corpus/included.pl");
         write_fixture(&root.path().join(&included.relative_path), "1;");
-        let topology = topology_with(vec![included])
-            .with_root(root.path())
-            .expect("bind topology root");
+        let topology =
+            topology_with(vec![included]).with_root(root.path()).expect("bind topology root");
         let outsider = asset("test_corpus/outsider.pl");
 
         assert_eq!(
@@ -850,10 +828,7 @@ mod tests {
             .with_root(root.path())
             .expect("bind topology root");
 
-        assert_eq!(
-            topology.asset_path(&optional),
-            Ok(root.path().join("test_corpus/optional.pl"))
-        );
+        assert_eq!(topology.asset_path(&optional), Ok(root.path().join("test_corpus/optional.pl")));
     }
 
     #[cfg(unix)]
@@ -945,8 +920,7 @@ mod tests {
 
         let root = tempfile::tempdir().expect("temporary directory");
         let socket = root.path().join("test_corpus/socket.pl");
-        fs::create_dir_all(socket.parent().expect("socket parent"))
-            .expect("create socket parent");
+        fs::create_dir_all(socket.parent().expect("socket parent")).expect("create socket parent");
         let _listener = UnixListener::bind(&socket).expect("bind Unix socket");
 
         assert_eq!(
