@@ -495,8 +495,12 @@ mod tests {
             root: "base".to_string(),
         });
 
-        let error = normalize_discovered_tests(&discovery, HarnessProfile::Base)
-            .expect_err("duplicate selected files must fail closed");
+        let error = build_series_manifest(
+            &discovery,
+            &fixture_config(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("duplicate selected files must fail closed");
         assert!(error.to_string().contains("duplicate discovered test path"));
     }
 
@@ -505,8 +509,12 @@ mod tests {
         let mut discovery = fixture_discovery();
         discovery.tests[0].root = "comp".to_string();
 
-        let error = normalize_discovered_tests(&discovery, HarnessProfile::Base)
-            .expect_err("mismatched roots must fail closed");
+        let error = build_series_manifest(
+            &discovery,
+            &fixture_config(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("mismatched roots must fail closed");
         assert!(error.to_string().contains("mismatched root"));
     }
 
@@ -515,8 +523,12 @@ mod tests {
         let mut discovery = fixture_discovery();
         discovery.tests[0].path = "base/../outside.t".to_string();
 
-        let error = normalize_discovered_tests(&discovery, HarnessProfile::Base)
-            .expect_err("path escapes must fail closed");
+        let error = build_series_manifest(
+            &discovery,
+            &fixture_config(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("path escapes must fail closed");
         assert!(error.to_string().contains("escapes the profile roots"));
     }
 
