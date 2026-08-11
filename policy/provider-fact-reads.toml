@@ -1,0 +1,206 @@
+# Canonical inventory of fact reads performed by governed provider families.
+#
+# This inventory is evidence about current ownership and duplication. It does
+# not promote a producer, change provider output, or authorize an edit.
+
+schema_version = 1
+policy = "provider-fact-reads"
+owner_issue = 6815
+generated_status = "docs/project/status/provider_fact_reads.md"
+
+required_providers = [
+  "completion",
+  "definition",
+  "references",
+  "hover",
+  "diagnostics",
+  "rename",
+  "safe_delete",
+  "workspace_symbols",
+  "document_symbols",
+  "semantic_tokens",
+]
+
+allowed_producers = ["current_document", "workspace_index", "semantic_queries", "semantic_shadow", "runtime_mixed"]
+allowed_proof_classes = ["mixed", "shadow", "edit_authorizing"]
+allowed_dispositions = ["port_candidate", "intentional_provider_policy", "retire_after_parity"]
+
+[[read]]
+id = "completion.current_document_snapshot"
+provider = "completion"
+request_class = "textDocument/completion"
+query = "current document AST, lexical declarations, and open-buffer source"
+source_path = "crates/perl-lsp-rs/src/runtime/language/completion.rs"
+source_anchors = ["handle_completion_cancellable"]
+producer = "current_document"
+proof_class = "mixed"
+readiness_input = "document generation and parse availability"
+fallback = "bounded legacy completion when current exact facts are unavailable"
+duplicate_interpretation = "completion composes document syntax directly instead of one provider query port"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6817"
+
+[[read]]
+id = "completion.workspace_candidates"
+provider = "completion"
+request_class = "textDocument/completion"
+query = "workspace declarations, packages, modules, imports, and generated candidates"
+source_path = "crates/perl-lsp-rs/src/runtime/language/completion.rs"
+source_anchors = ["route_index_access"]
+producer = "workspace_index"
+proof_class = "mixed"
+readiness_input = "index readiness and workspace root"
+fallback = "local and imported candidates remain available after bounded readiness handling"
+duplicate_interpretation = "completion reads and ranks workspace candidates inside the request handler"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6817"
+
+[[read]]
+id = "completion.receiver_shadow"
+provider = "completion"
+request_class = "textDocument/completion"
+query = "receiver visibility and source-backed completion shadow facts"
+source_path = "crates/perl-lsp-rs/src/runtime/language/completion.rs"
+source_anchors = ["completion_visibility_shadow"]
+producer = "semantic_shadow"
+proof_class = "shadow"
+readiness_input = "current document and shadow budget"
+fallback = "live completion remains authoritative"
+duplicate_interpretation = "shadow comparison is completion-specific rather than using a shared provider port"
+migration_disposition = "retire_after_parity"
+replacement_owner = "#6818"
+
+[[read]]
+id = "definition.navigation_candidates"
+provider = "definition"
+request_class = "textDocument/definition"
+query = "exact, imported, module, generated, and fallback definition candidates"
+source_path = "crates/perl-lsp-rs/src/runtime/language/navigation.rs"
+source_anchors = ["handle_definition"]
+producer = "runtime_mixed"
+proof_class = "mixed"
+readiness_input = "document generation, root, and index readiness"
+fallback = "legacy navigation for uncertain or unavailable facts"
+duplicate_interpretation = "navigation composes several candidate sources and exactness rules locally"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6817"
+
+[[read]]
+id = "references.reference_candidates"
+provider = "references"
+request_class = "textDocument/references"
+query = "lexical, package, imported, workspace, and textual reference occurrences"
+source_path = "crates/perl-lsp-rs/src/runtime/language/references.rs"
+source_anchors = ["handle_references"]
+producer = "runtime_mixed"
+proof_class = "mixed"
+readiness_input = "document generation, include-declaration mode, root, and index readiness"
+fallback = "legacy scan cascade for unpromoted reference classes"
+duplicate_interpretation = "references owns a separate occurrence and fallback composition path"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6817"
+
+[[read]]
+id = "hover.semantic_and_fallback"
+provider = "hover"
+request_class = "textDocument/hover"
+query = "source-backed, imported, generated, dynamic, documentation, and fallback hover facts"
+source_path = "crates/perl-lsp-rs/src/runtime/language/hover.rs"
+source_anchors = ["handle_hover"]
+producer = "runtime_mixed"
+proof_class = "mixed"
+readiness_input = "document generation and available semantic snapshot"
+fallback = "legacy hover and search fallback when exact facts are unavailable"
+duplicate_interpretation = "hover reconstructs provenance and fallback from several local stores"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6817"
+
+[[read]]
+id = "diagnostics.parser_semantic"
+provider = "diagnostics"
+request_class = "textDocument/publishDiagnostics"
+query = "parser, semantic analyzer, critic, and trust-boundary diagnostic facts"
+source_path = "crates/perl-lsp-rs/src/runtime/diagnostics.rs"
+source_anchors = ["publish_diagnostics"]
+producer = "runtime_mixed"
+proof_class = "mixed"
+readiness_input = "accepted document generation and diagnostic scheduling state"
+fallback = "partial or delayed diagnostics preserve current source authority"
+duplicate_interpretation = "diagnostic producers and suppression evidence are joined inside runtime publication"
+migration_disposition = "intentional_provider_policy"
+replacement_owner = "#4799"
+
+[[read]]
+id = "rename.lexical_and_workspace_plan"
+provider = "rename"
+request_class = "textDocument/rename"
+query = "current lexical declaration edits and guarded package or workspace rename plans"
+source_path = "crates/perl-lsp-rs/src/runtime/language/rename.rs"
+source_anchors = ["handle_rename"]
+producer = "runtime_mixed"
+proof_class = "edit_authorizing"
+readiness_input = "current document generation, workspace readiness, and source guard"
+fallback = "no edit or legacy fallback when exact complete proof is absent"
+duplicate_interpretation = "rename combines lexical AST proof, workspace facts, and edit guards locally"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6819"
+
+[[read]]
+id = "safe_delete.semantic_plan"
+provider = "safe_delete"
+request_class = "perl/safeDelete"
+query = "semantic safe-delete plan, blockers, and shadow comparison"
+source_path = "crates/perl-lsp-rs-core/src/providers/navigation/safe_delete_shadow.rs"
+source_anchors = ["safe_delete_shadow", "safe_delete_cutover"]
+producer = "semantic_queries"
+proof_class = "edit_authorizing"
+readiness_input = "entity identity and current semantic query state"
+fallback = "block deletion when the plan is unavailable, dynamic, ambiguous, or blocked"
+duplicate_interpretation = "safe delete has a dedicated semantic query and receipt path outside a common provider port"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6819"
+
+[[read]]
+id = "workspace_symbols.index_query"
+provider = "workspace_symbols"
+request_class = "workspace/symbol"
+query = "workspace declarations and package symbols"
+source_path = "crates/perl-lsp-rs/src/runtime/workspace.rs"
+source_anchors = ["handle_workspace_symbol"]
+producer = "workspace_index"
+proof_class = "mixed"
+readiness_input = "workspace root, query generation, and index readiness"
+fallback = "bounded partial workspace result or explicit not-ready outcome"
+duplicate_interpretation = "workspace symbols query the live index through provider-specific shaping"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6817"
+
+[[read]]
+id = "document_symbols.current_snapshot"
+provider = "document_symbols"
+request_class = "textDocument/documentSymbol"
+query = "current document declarations, packages, generated labels, and hierarchy"
+source_path = "crates/perl-lsp-rs/src/runtime/language/symbols.rs"
+source_anchors = ["handle_document_symbol"]
+producer = "current_document"
+proof_class = "mixed"
+readiness_input = "current document generation and parse snapshot"
+fallback = "bounded syntax-only result for recovered or partial source"
+duplicate_interpretation = "document symbols build a provider-specific projection from AST and semantic helpers"
+migration_disposition = "port_candidate"
+replacement_owner = "#6816/#6817"
+
+[[read]]
+id = "semantic_tokens.current_snapshot"
+provider = "semantic_tokens"
+request_class = "textDocument/semanticTokens/full"
+query = "current AST, semantic analyzer, reviewed compiler-token classes, and fallback token facts"
+source_path = "crates/perl-lsp-rs/src/runtime/language/semantic_tokens.rs"
+source_anchors = ["handle_semantic_tokens"]
+producer = "runtime_mixed"
+proof_class = "mixed"
+readiness_input = "current document generation and semantic-token cache identity"
+fallback = "current syntax tokens remain authoritative for unpromoted classes"
+duplicate_interpretation = "semantic tokens compose syntax, semantic, and reviewed compiler classes locally"
+migration_disposition = "intentional_provider_policy"
+replacement_owner = "#2035"
