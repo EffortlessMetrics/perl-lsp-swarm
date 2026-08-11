@@ -26,7 +26,7 @@ The live release truth is:
 This is a public-beta product. Use the [stability policy](../reference/STABILITY.md) to decide what an upgrade may require:
 
 - patch releases in the same 0.Y line preserve the published API and documented behavior;
-- pre-1.0 minor releases may intentionally remove or rename public items, but the release notes must include migration guidance;
+- pre-1.0 minor releases may intentionally remove or rename public items; facade-crate breaks require a Migration section, while other published support-crate changes must be described in the changelog or release notes;
 - editor capability advertising and DAP preview behavior can change as support is measured, even when the binary still starts;
 - publication channels are independent. A GitHub Release, crates.io version, marketplace entry, and Homebrew formula are separate receipts.
 
