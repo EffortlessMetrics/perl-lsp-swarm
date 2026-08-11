@@ -37,6 +37,12 @@ impl TargetSelectionContract {
         }
         validate_optional_stable_id(self.variant_of.as_deref(), "variant target ID")?;
         validate_optional_stable_id(self.replaces_target_id.as_deref(), "replaced target ID")?;
+        if self.replaces_target_id.is_some() && self.change_reason.is_none() {
+            return Err(format!(
+                "target {} replaces another target without a change reason",
+                self.target_id
+            ));
+        }
         if let Some(reason) = self.change_reason.as_deref() {
             validate_nonempty(reason, "change reason")?;
         }
