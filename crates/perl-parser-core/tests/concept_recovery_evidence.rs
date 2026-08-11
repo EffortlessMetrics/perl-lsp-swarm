@@ -93,3 +93,55 @@ fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration()
     assert!(!output.terminated_early, "this local syntax error should remain recoverable");
     Ok(())
 }
+
+#[test]
+fn missing_initializer_emits_local_evidence_and_preserves_following_declaration()
+-> Result<(), String> {
+    let source = "my $broken = ; my $after = 2;";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let mut missing_expression_spans = Vec::new();
+    let mut after_declaration_spans = Vec::new();
+
+    walk(&output.ast, &mut |node| match &node.kind {
+        NodeKind::MissingExpression => {
+            missing_expression_spans.push((node.location.start, node.location.end));
+        }
+        NodeKind::VariableDeclaration { variable, .. }
+            if matches!(
+                &variable.kind,
+                NodeKind::Variable { sigil, name } if sigil == "$" && name == "after"
+            ) =>
+        {
+            if let Some(text) = source.get(node.location.start..node.location.end) {
+                after_declaration_spans.push(text.to_owned());
+            }
+        }
+        _ => {}
+    });
+
+    assert!(
+        !output.diagnostics.is_empty(),
+        "missing initializer must not be represented as a clean parse"
+    );
+    assert_eq!(
+        missing_expression_spans.len(),
+        1,
+        "the declaration hole must remain one typed MissingExpression node"
+    );
+
+    let gap_start = source
+        .find("= ;")
+        .ok_or_else(|| "test source lost the initializer hole".to_string())?;
+    let gap_end = gap_start + "= ;".len();
+    let (missing_start, missing_end) = missing_expression_spans[0];
+    assert!(
+        missing_start >= gap_start && missing_end <= gap_end,
+        "initializer recovery evidence escaped its declaration: {missing_start}..{missing_end}"
+    );
+
+    assert_eq!(after_declaration_spans.len(), 1);
+    assert!(after_declaration_spans[0].starts_with("my $after = 2"));
+    assert!(!output.terminated_early, "initializer recovery must preserve following code");
+    Ok(())
+}
