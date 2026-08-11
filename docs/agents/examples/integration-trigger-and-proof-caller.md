@@ -38,8 +38,7 @@ or synthetic-tree work existed.
 
 PR #5717 consumed the trigger result rather than re-deciding it. For a required
 trigger, it constructed one synthetic squash tree and ran only the commands in
-the supplied proof set. The command runner bound relative working directories
-to that synthetic tree and rejected absolute or parent-component escapes.
+the supplied proof set. The command runner bound relative working directories to that synthetic tree and rejected absolute or parent-component escapes. This was lexical containment only: the lane did not prove that a selected directory containing a symlink could not resolve outside the synthetic tree, so symlink-based containment remains `NOT_PROVEN`.
 
 The caller preserved upstream results:
 
@@ -69,7 +68,7 @@ not claim that the hosted checks proved every execution path.
 
 - The trigger decision has a pure, typed contract with explicit negative cases.
 - The caller consumes that decision and does not become a second authority.
-- Synthetic-proof commands are rooted and traversal-checked.
+- Synthetic-proof commands reject absolute paths and parent traversal; canonical symlink containment remains an explicit unproven boundary.
 - Instrument failure is represented as `NOT_PROVEN` rather than silently
   converted into product pass or fail.
 
