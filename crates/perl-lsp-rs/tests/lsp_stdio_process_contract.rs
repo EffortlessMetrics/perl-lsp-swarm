@@ -1,14 +1,16 @@
 //! Required real-process contract for Cargo's exact `perl-lsp` binary.
 //!
 //! These tests do not use PATH discovery, target-directory probing, `cargo
-//! run`, or an in-process `LspServer`.
+//! run`, or an in-process `LspServer`. The required `lsp_smoke` gate includes
+//! this file from `semantic_definition.rs`, so these cases are merge-blocking.
 
-mod support;
+#[path = "support/real_process.rs"]
+mod real_process;
 
 use anyhow::{Result, ensure};
+use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
-use support::real_process::RealProcessClient;
 
 fn timeout() -> Duration {
     Duration::from_secs(10)
@@ -181,23 +183,33 @@ fn fragmented_and_coalesced_frames_preserve_ids() -> Result<()> {
 }
 
 #[test]
-fn notification_is_not_answered() -> Result<()> {
+fn serialized_notification_is_not_answered() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     initialize_and_notify(&mut client, json!(1))?;
-    client.notify(
-        "custom/unknownNotification",
-        json!({ "marker": "no-response" }),
-    )?;
-    let barrier_id = json!("barrier");
-    let barrier = client.request(
-        barrier_id.clone(),
-        "$/perl-lsp/watchdog",
-        json!({}),
+
+    // `$/setTrace` and `shutdown` share the exclusive lifecycle queue. Receiving
+    // the shutdown response therefore proves the preceding notification was
+    // processed; a response emitted for it would have been observed first and
+    // retained as unmatched by `receive_response`.
+    client.notify("$/setTrace", json!({ "value": "off" }))?;
+    let shutdown_id = json!("serialized-barrier");
+    let shutdown = client.request(
+        shutdown_id.clone(),
+        "shutdown",
+        Value::Null,
         timeout(),
     )?;
-    assert_response_id(&barrier, &barrier_id)?;
+    assert_response_id(&shutdown, &shutdown_id)?;
+    ensure!(
+        shutdown.get("result").is_some_and(Value::is_null),
+        "shutdown must return null: {shutdown}"
+    );
     client.assert_no_response_pending()?;
-    shutdown_and_exit(&mut client, json!(2))
+
+    client.notify("exit", Value::Null)?;
+    let status = client.wait_for_exit(timeout())?;
+    ensure!(status.success(), "shutdown then exit failed: {status}");
+    client.assert_transport_clean()
 }
 
 #[test]
@@ -258,6 +270,39 @@ fn strict_parser_rejects_truncated_and_oversized_headers() -> Result<()> {
 }
 
 #[test]
+fn terminal_notification_requires_jsonrpc_2() -> Result<()> {
+    let valid = json!({
+        "jsonrpc": "2.0",
+        "method": "window/logMessage",
+        "params": { "type": 3, "message": "ok" }
+    });
+    ensure!(
+        RealProcessClient::is_valid_server_notification_for_test(&valid),
+        "valid JSON-RPC notification was rejected"
+    );
+
+    let missing_version = json!({
+        "method": "window/logMessage",
+        "params": { "type": 3, "message": "missing" }
+    });
+    ensure!(
+        !RealProcessClient::is_valid_server_notification_for_test(&missing_version),
+        "method-shaped object without jsonrpc was accepted"
+    );
+
+    let wrong_version = json!({
+        "jsonrpc": "1.0",
+        "method": "window/logMessage",
+        "params": { "type": 3, "message": "wrong" }
+    });
+    ensure!(
+        !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
+        "wrong JSON-RPC version was accepted"
+    );
+    Ok(())
+}
+
+#[test]
 fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     let mut requests = Vec::new();
@@ -290,12 +335,16 @@ fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
 fn terminal_check_rejects_unmatched_response() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     initialize_and_notify(&mut client, json!(1))?;
+
+    let orphan_id = json!("orphan-response");
     client.send_raw_bytes(&RealProcessClient::encode_message(&json!({
         "jsonrpc": "2.0",
-        "id": "orphan-response",
+        "id": orphan_id.clone(),
         "method": "$/perl-lsp/watchdog",
         "params": {}
     })))?;
+    let orphan = client.receive_response_and_retain(&orphan_id, timeout())?;
+    assert_response_id(&orphan, &orphan_id)?;
 
     let shutdown_id = json!(2);
     let shutdown = client.request(
