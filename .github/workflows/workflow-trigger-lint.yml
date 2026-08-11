@@ -6,14 +6,17 @@ on:
   merge_group:
     types: [checks_requested]
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+      - test/lsp-real-process-6720
 
 concurrency:
   group: workflow-trigger-lint-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   lint:
@@ -55,3 +58,208 @@ jobs:
             echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
             echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  finish-exact-process:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/test/lsp-real-process-6720'
+    name: Finish exact-process review fixes
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 2
+          ref: test/lsp-real-process-6720
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Apply reviewed strict-envelope patch
+        shell: bash
+        run: |
+          git apply <<'PATCH'
+          diff --git a/crates/perl-lsp-rs/tests/support/real_process.rs b/crates/perl-lsp-rs/tests/support/real_process.rs
+          --- a/crates/perl-lsp-rs/tests/support/real_process.rs
+          +++ b/crates/perl-lsp-rs/tests/support/real_process.rs
+          @@ -147,4 +147,8 @@
+                   is_server_notification(message)
+               }
+          
+          +    pub fn is_valid_server_request_for_test(message: &Value, method: &str) -> bool {
+          +        is_server_request_for(message, method)
+          +    }
+          +
+               pub fn send_raw_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+          @@ -437,9 +437,20 @@
+                   && (message.get("result").is_some() || message.get("error").is_some())
+           }
+          
+          +fn has_valid_params(message: &Value) -> bool {
+          +    message
+          +        .get("params")
+          +        .is_none_or(|params| params.is_object() || params.is_array())
+          +}
+          +
+          +fn has_no_response_members(message: &Value) -> bool {
+          +    message.get("result").is_none() && message.get("error").is_none()
+          +}
+          +
+           fn is_response(message: &Value) -> bool {
+               is_jsonrpc_2(message)
+                   && is_response_like(message)
+          +        && message.get("params").is_none()
+                   && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
+                   && (message.get("result").is_some() ^ message.get("error").is_some())
+           }
+          @@ -451,6 +462,8 @@
+           fn is_server_request_for(message: &Value, method: &str) -> bool {
+               is_jsonrpc_2(message)
+                   && message.get("method").and_then(Value::as_str) == Some(method)
+          +        && has_no_response_members(message)
+          +        && has_valid_params(message)
+                   && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
+           }
+          
+          @@ -458,4 +471,6 @@
+               is_jsonrpc_2(message)
+                   && message.get("method").and_then(Value::as_str).is_some()
+                   && message.get("id").is_none()
+          +        && has_no_response_members(message)
+          +        && has_valid_params(message)
+           }
+          @@ -494,7 +494,8 @@
+                   header_bytes = header_bytes.saturating_add(line.len());
+          
+          -        let line = std::str::from_utf8(&line).context("stdout header was not valid UTF-8")?;
+          -        let line = line.trim_end_matches(['\r', '\n']);
+          +        ensure!(line.ends_with(b"\r\n"), "stdout header line did not end with CRLF");
+          +        let line = std::str::from_utf8(&line[..line.len() - 2])
+          +            .context("stdout header was not valid UTF-8")?;
+                   if line.is_empty() {
+                       break;
+                   }
+          diff --git a/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs b/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
+          --- a/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
+          +++ b/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
+          @@ -217,5 +217,5 @@
+           #[test]
+          -fn strict_parser_rejects_truncated_and_oversized_headers() -> Result<()> {
+          +fn strict_parser_rejects_truncated_oversized_and_lf_only_headers() -> Result<()> {
+               let truncated = b"Content-Length: 12\r\n";
+               let error = RealProcessClient::parse_stdout_frame_for_test(truncated)
+                   .expect_err("truncated header must fail");
+          @@ -225,6 +225,16 @@
+               let error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
+                   .expect_err("oversized header must fail");
+               ensure!(error.to_string().contains("exceeded"));
+          +
+          +    let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
+          +    let mut lf_only = format!("Content-Length: {}\n\n", body.len()).into_bytes();
+          +    lf_only.extend_from_slice(body);
+          +    let error = RealProcessClient::parse_stdout_frame_for_test(&lf_only)
+          +        .expect_err("LF-only framing must fail");
+          +    ensure!(
+          +        error.to_string().contains("CRLF"),
+          +        "LF-only framing failed for the wrong reason: {error:#}"
+          +    );
+               Ok(())
+           }
+          
+          @@ -258,5 +268,71 @@
+                   !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
+                   "wrong JSON-RPC version was accepted"
+               );
+          +
+          +    let scalar_params = json!({
+          +        "jsonrpc": "2.0",
+          +        "method": "window/logMessage",
+          +        "params": "not-an-object-or-array"
+          +    });
+          +    ensure!(
+          +        !RealProcessClient::is_valid_server_notification_for_test(&scalar_params),
+          +        "notification with scalar params was accepted"
+          +    );
+          +
+          +    for hybrid in [
+          +        json!({"jsonrpc": "2.0", "method": "window/logMessage", "result": null}),
+          +        json!({
+          +            "jsonrpc": "2.0",
+          +            "method": "window/logMessage",
+          +            "error": {"code": -32603, "message": "hybrid"}
+          +        }),
+          +    ] {
+          +        ensure!(
+          +            !RealProcessClient::is_valid_server_notification_for_test(&hybrid),
+          +            "hybrid notification/response object was accepted: {hybrid}"
+          +        );
+          +    }
+               Ok(())
+           }
+          +
+          +#[test]
+          +fn server_request_requires_request_only_members_and_structured_params() -> Result<()> {
+          +    let method = "client/registerCapability";
+          +    let valid = json!({
+          +        "jsonrpc": "2.0",
+          +        "id": 1,
+          +        "method": method,
+          +        "params": {"registrations": []}
+          +    });
+          +    ensure!(
+          +        RealProcessClient::is_valid_server_request_for_test(&valid, method),
+          +        "valid server request was rejected"
+          +    );
+          +
+          +    let scalar_params = json!({
+          +        "jsonrpc": "2.0",
+          +        "id": 2,
+          +        "method": method,
+          +        "params": true
+          +    });
+          +    ensure!(
+          +        !RealProcessClient::is_valid_server_request_for_test(&scalar_params, method),
+          +        "server request with scalar params was accepted"
+          +    );
+          +
+          +    for hybrid in [
+          +        json!({"jsonrpc": "2.0", "id": 3, "method": method, "result": null}),
+          +        json!({
+          +            "jsonrpc": "2.0",
+          +            "id": 4,
+          +            "method": method,
+          +            "error": {"code": -32603, "message": "hybrid"}
+          +        }),
+          +    ] {
+          +        ensure!(
+          +            !RealProcessClient::is_valid_server_request_for_test(&hybrid, method),
+          +            "hybrid request/response object was accepted: {hybrid}"
+          +        );
+          +    }
+          +    Ok(())
+          +}
+          PATCH
+
+      - name: Format and verify focused contracts
+        shell: bash
+        run: |
+          rustup run 1.95.0 rustfmt \
+            --edition 2024 \
+            --config-path . \
+            crates/perl-lsp-rs/tests/support/real_process.rs \
+            crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
+          cargo test -p perl-lsp-rs --test lsp_stdio_process_contract --locked -- --test-threads=1
+          cargo test -p perl-lsp-rs --test semantic_definition --locked -- --test-threads=1
+
+      - name: Restore carrier workflow and push reviewed result
+        shell: bash
+        run: |
+          git show HEAD^:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            crates/perl-lsp-rs/tests/support/real_process.rs \
+            crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs \
+            .github/workflows/workflow-trigger-lint.yml
+          git diff --cached --check
+          git commit -m "test(lsp): enforce strict JSON-RPC framing envelopes"
+          git push origin HEAD:test/lsp-real-process-6720
