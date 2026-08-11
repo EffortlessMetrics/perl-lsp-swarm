@@ -1,8 +1,9 @@
-//! Version-bounded lexical matrix for Perl quote-like operators.
+//! Lexer-owned matrix for currently supported Perl quote-like operators.
 //!
 //! This suite owns recognition, whole-token geometry, context suppression, and
 //! malformed terminal behavior. Parser AST structure and regex semantics remain
-//! separate contracts under #6692 and #2075.
+//! separate contracts under #6692 and #2075. Forms without a reviewed Perl
+//! version oracle are deliberately not promoted into this matrix.
 
 use perl_lexer::{PerlLexer, Token, TokenType};
 
@@ -67,7 +68,6 @@ fn every_operator_family_owns_exact_whole_token_geometry() -> R {
         ("q{literal}", ExpectedKind::QuoteSingle),
         (r"q|literal\|tail|", ExpectedKind::QuoteSingle),
         ("q#literal#", ExpectedKind::QuoteSingle),
-        ("q§literal§", ExpectedKind::QuoteSingle),
         ("qq[hello $name]", ExpectedKind::QuoteDouble),
         ("qw(foo bar)", ExpectedKind::QuoteWords),
         ("qx<echo hi>", ExpectedKind::QuoteCommand),
