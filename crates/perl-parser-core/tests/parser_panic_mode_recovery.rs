@@ -236,7 +236,37 @@ fn parser_ac8_error_location_accuracy() {
     // AC:AC8
     let code = "my $x = 42;\nmy $y = ;\nmy $z = 99;";
     let mut parser = Parser::new(code);
-    let _result = parser.parse();
+    let ast = parser
+        .parse()
+        .expect("panic-mode recovery should return the recovered program");
+
+    if let NodeKind::Program { statements } = &ast.kind {
+        assert_eq!(
+            statements.len(),
+            3,
+            "recovery must preserve statements before, at, and after the malformed declaration"
+        );
+        assert!(
+            matches!(statements[0].kind, NodeKind::VariableDeclaration { .. }),
+            "statement before the error must remain a variable declaration: {:?}",
+            statements[0].kind
+        );
+        assert!(
+            matches!(
+                statements[1].kind,
+                NodeKind::VariableDeclaration { .. } | NodeKind::Error { .. }
+            ),
+            "malformed statement must remain represented in the recovered tree: {:?}",
+            statements[1].kind
+        );
+        assert!(
+            matches!(statements[2].kind, NodeKind::VariableDeclaration { .. }),
+            "statement after the error must remain a variable declaration: {:?}",
+            statements[2].kind
+        );
+    } else {
+        panic!("panic-mode recovery must return a Program node");
+    }
 
     let errors = parser.errors();
     assert!(!errors.is_empty(), "Should have recorded errors");
