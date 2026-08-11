@@ -114,8 +114,12 @@ fn manifest_population_accepts_dot_t_and_test_pl() -> Result<()> {
         RunnerScheduling::default(),
     )
     .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    assert_eq!(plan.source_items[0].source_form, SourceForm::DotT);
-    assert_eq!(plan.source_items[1].source_form, SourceForm::TestPl);
+    let forms = plan
+        .source_items
+        .iter()
+        .map(|item| item.source_form)
+        .collect::<Vec<_>>();
+    assert_eq!(forms, vec![SourceForm::DotT, SourceForm::TestPl]);
     Ok(())
 }
 
