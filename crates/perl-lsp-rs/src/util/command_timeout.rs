@@ -132,6 +132,9 @@ mod tests {
         assert!(result.is_ok(), "expected success, got: {:?}", result.err());
         if let Ok(output) = result {
             assert!(output.status.success());
+            #[cfg(windows)]
+            assert_eq!(output.stdout, b"hello\r\n");
+            #[cfg(not(windows))]
             assert_eq!(output.stdout, b"hello\n");
             assert!(output.stderr.is_empty());
         }
@@ -145,6 +148,9 @@ mod tests {
         if let Ok(output) = result {
             assert!(output.status.success());
             assert!(output.stdout.is_empty());
+            #[cfg(windows)]
+            assert_eq!(output.stderr, b"diagnostic\r\n");
+            #[cfg(not(windows))]
             assert_eq!(output.stderr, b"diagnostic");
         }
     }
