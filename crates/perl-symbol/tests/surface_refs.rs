@@ -566,7 +566,7 @@ fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
         NodeKind::Goto {
             target: Box::new(Node::new(
                 NodeKind::FunctionCall { name: "Package::method".to_string(), args: vec![] },
-                loc(6, 22),
+                loc(5, 22),
             )),
             form: GotoTargetForm::Sub,
         },
@@ -577,7 +577,7 @@ fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
             op: "\\".to_string(),
             operand: Box::new(Node::new(
                 NodeKind::FunctionCall { name: "Foo::Bar::baz".to_string(), args: vec![] },
-                loc(24, 37),
+                loc(23, 37),
             )),
         },
         loc(23, 38),
@@ -586,7 +586,7 @@ fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
         NodeKind::Goto {
             target: Box::new(Node::new(
                 NodeKind::FunctionCall { name: "A::B::C::func".to_string(), args: vec![] },
-                loc(43, 56),
+                loc(42, 56),
             )),
             form: GotoTargetForm::Sub,
         },
