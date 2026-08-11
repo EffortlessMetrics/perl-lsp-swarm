@@ -384,7 +384,7 @@ jobs:
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
-            gates: unit_parser_stack_full
+            gates: unit_parser_stack_full parser_integration
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
