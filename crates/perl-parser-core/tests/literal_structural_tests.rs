@@ -73,6 +73,7 @@ fn array_and_hash_literals_retain_structural_children() {
     let ast = parse(r#"my @values = (1, 2); my %map = (alpha => "beta");"#);
     let mut array_elements = None;
     let mut hash_pairs = None;
+    let mut hash_value = false;
 
     visit(&ast, &mut |node| match &node.kind {
         NodeKind::ArrayLiteral { elements } => {
@@ -80,6 +81,9 @@ fn array_and_hash_literals_retain_structural_children() {
         }
         NodeKind::HashLiteral { pairs } => {
             hash_pairs = Some(pairs.len());
+        }
+        NodeKind::String { value, interpolated } if value == "beta" && *interpolated => {
+            hash_value = true;
         }
         _ => {}
     });
@@ -90,5 +94,5 @@ fn array_and_hash_literals_retain_structural_children() {
     let sexp = ast.to_sexp();
     assert!(sexp.contains("(number 1)"), "array element 1 was not retained:\\n{sexp}");
     assert!(sexp.contains("(number 2)"), "array element 2 was not retained:\\n{sexp}");
-    assert!(sexp.contains("(string \\"beta\\")"), "hash value was not retained:\\n{sexp}");
+    assert!(hash_value, "hash value was not retained as an interpolated String node:\\n{sexp}");
 }
