@@ -829,15 +829,27 @@ fn test_unclosed_qw_long_single_line_stays_linear_candidate_scan() -> Result<(),
 }
 
 #[test]
-fn test_unclosed_non_parenthesized_qw_keeps_existing_behavior() -> Result<(), String> {
+fn test_unclosed_non_parenthesized_qw_recovers_trailing_declaration() -> Result<(), String> {
     let code = "my @items = qw[word\nmy $x = 1;";
     let mut parser = Parser::new(code);
     let ast = parser.parse().map_err(|error| format!("non-parenthesized qw failed: {error}"))?;
     let NodeKind::Program { statements } = &ast.kind else {
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
-    if statements.len() != 1 {
-        return Err(format!("non-parenthesized qw recovery behavior changed: {}", ast.to_sexp()));
+    if statements.len() != 2
+        || !matches!(
+            statements.first().map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+    {
+        return Err(format!(
+            "non-parenthesized qw recovery lost trailing declaration: {}",
+            ast.to_sexp()
+        ));
     }
     let errors = format!("{:?}", parser.errors());
     if !errors.contains("Unclosed qw() delimiter: missing closing delimiter before end of file")
