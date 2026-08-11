@@ -1,7 +1,7 @@
 //! Cross-cutting recovery evidence for the parser concept ledger (#6709).
 //!
 //! `Ok(ast)` is not synonymous with a clean parse. These tests require the public
-//! recovery entry point to expose diagnostics and a typed recovery node while
+//! recovery entry point to expose diagnostics and typed recovery nodes while
 //! retaining valid source that follows the break.
 
 use perl_parser_core::{Node, NodeKind, Parser};
@@ -11,6 +11,12 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
     for child in node.children() {
         walk(child, visit);
     }
+}
+
+fn source_text(source: &str, node: &Node) -> Option<String> {
+    source
+        .get(node.location.start..node.location.end)
+        .map(str::to_owned)
 }
 
 fn is_recovery_node(node: &Node) -> bool {
@@ -25,9 +31,27 @@ fn is_recovery_node(node: &Node) -> bool {
     )
 }
 
+fn declaration_spans(source: &str, ast: &Node, expected_name: &str) -> Vec<String> {
+    let mut spans = Vec::new();
+    walk(ast, &mut |node| {
+        if let NodeKind::VariableDeclaration { variable, .. } = &node.kind
+            && matches!(
+                &variable.kind,
+                NodeKind::Variable { sigil, name }
+                    if sigil == "$" && name == expected_name
+            )
+            && let Some(text) = source_text(source, node)
+        {
+            spans.push(text);
+        }
+    });
+    spans
+}
+
 #[test]
 fn clean_source_has_no_recovery_evidence() {
-    let mut parser = Parser::new("my $value = 1 + 2; my $after = 2;");
+    let source = "my $value = 1 + 2; my $after = 2;";
+    let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
     let mut recovery_nodes = 0usize;
 
@@ -39,6 +63,7 @@ fn clean_source_has_no_recovery_evidence() {
 
     assert!(output.diagnostics.is_empty(), "clean source must not carry diagnostics");
     assert_eq!(recovery_nodes, 0, "clean source must not carry recovery nodes");
+    assert_eq!(declaration_spans(source, &output.ast, "after"), vec!["my $after = 2"]);
     assert!(!output.terminated_early, "clean source must not terminate early");
 }
 
@@ -50,27 +75,13 @@ fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration()
     let output = parser.parse_with_recovery();
     let mut recovery_nodes = 0usize;
     let mut missing_expression_spans = Vec::new();
-    let mut after_declaration_spans = Vec::new();
 
     walk(&output.ast, &mut |node| {
         if is_recovery_node(node) {
             recovery_nodes += 1;
         }
-        match &node.kind {
-            NodeKind::MissingExpression => {
-                missing_expression_spans.push((node.location.start, node.location.end));
-            }
-            NodeKind::VariableDeclaration { variable, .. }
-                if matches!(
-                    &variable.kind,
-                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "after"
-                ) =>
-            {
-                if let Some(text) = source.get(node.location.start..node.location.end) {
-                    after_declaration_spans.push(text.to_owned());
-                }
-            }
-            _ => {}
+        if matches!(&node.kind, NodeKind::MissingExpression) {
+            missing_expression_spans.push((node.location.start, node.location.end));
         }
     });
 
@@ -98,7 +109,7 @@ fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration()
         "recovery evidence escaped the malformed infix boundary: {missing_start}..{missing_end}"
     );
 
-    assert_eq!(after_declaration_spans, vec!["my $after = 2"]);
+    assert_eq!(declaration_spans(source, &output.ast, "after"), vec!["my $after = 2"]);
     assert!(!output.terminated_early, "this local syntax error should remain recoverable");
     Ok(())
 }
@@ -111,27 +122,13 @@ fn missing_initializer_emits_local_evidence_and_preserves_following_declaration(
     let output = parser.parse_with_recovery();
     let mut recovery_nodes = 0usize;
     let mut missing_expression_spans = Vec::new();
-    let mut after_declaration_spans = Vec::new();
 
     walk(&output.ast, &mut |node| {
         if is_recovery_node(node) {
             recovery_nodes += 1;
         }
-        match &node.kind {
-            NodeKind::MissingExpression => {
-                missing_expression_spans.push((node.location.start, node.location.end));
-            }
-            NodeKind::VariableDeclaration { variable, .. }
-                if matches!(
-                    &variable.kind,
-                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "after"
-                ) =>
-            {
-                if let Some(text) = source.get(node.location.start..node.location.end) {
-                    after_declaration_spans.push(text.to_owned());
-                }
-            }
-            _ => {}
+        if matches!(&node.kind, NodeKind::MissingExpression) {
+            missing_expression_spans.push((node.location.start, node.location.end));
         }
     });
 
@@ -159,7 +156,67 @@ fn missing_initializer_emits_local_evidence_and_preserves_following_declaration(
         "initializer recovery evidence escaped its declaration: {missing_start}..{missing_end}"
     );
 
-    assert_eq!(after_declaration_spans, vec!["my $after = 2"]);
+    assert_eq!(declaration_spans(source, &output.ast, "after"), vec!["my $after = 2"]);
     assert!(!output.terminated_early, "initializer recovery must preserve following code");
     Ok(())
+}
+
+#[test]
+fn truncated_arrow_preserves_partial_prefix_and_following_declaration() {
+    let source = "$object->; my $after = 2;";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let mut recovery_nodes = 0usize;
+    let mut errors = Vec::new();
+
+    walk(&output.ast, &mut |node| {
+        if is_recovery_node(node) {
+            recovery_nodes += 1;
+        }
+        if let NodeKind::Error {
+            message,
+            expected,
+            partial,
+            ..
+        } = &node.kind
+        {
+            let partial_shape = partial.as_deref().map(|prefix| {
+                (
+                    source_text(source, prefix),
+                    matches!(
+                        &prefix.kind,
+                        NodeKind::Variable { sigil, name }
+                            if sigil == "$" && name == "object"
+                    ),
+                )
+            });
+            errors.push((
+                message.clone(),
+                expected.is_empty(),
+                source_text(source, node),
+                partial_shape,
+            ));
+        }
+    });
+
+    assert!(
+        !output.diagnostics.is_empty(),
+        "truncated postfix syntax must emit a recovery diagnostic"
+    );
+    assert_eq!(
+        recovery_nodes, 1,
+        "the truncated arrow must produce one local Error node and no hidden recovery footprint"
+    );
+    assert_eq!(
+        errors,
+        vec![(
+            "Incomplete arrow expression".to_string(),
+            true,
+            Some("$object->".to_string()),
+            Some((Some("$object".to_string()), true)),
+        )],
+        "the Error node must preserve the usable object prefix and exact malformed span"
+    );
+    assert_eq!(declaration_spans(source, &output.ast, "after"), vec!["my $after = 2"]);
+    assert!(!output.terminated_early, "postfix recovery must preserve following code");
 }
