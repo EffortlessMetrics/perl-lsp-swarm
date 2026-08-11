@@ -112,32 +112,42 @@ fn require_keeps_dynamic_bareword_and_string_targets_distinct() -> Result<(), St
     walk(&ast, &mut |node| {
         if let NodeKind::FunctionCall { name, args } = &node.kind
             && name == "require"
-            && let Some(target) = args.first()
         {
-            let span = source_text(source, target);
-            match &target.kind {
-                NodeKind::Variable { sigil, name } if sigil == "$" && name == "module" => {
-                    if let Some(span) = span {
-                        dynamic_targets.push(span);
+            assert_eq!(args.len(), 1, "require must retain exactly one target expression");
+            if let Some(target) = args.first()
+                && let (Some(target_span), Some(call_span)) =
+                    (source_text(source, target), source_text(source, node))
+            {
+                match &target.kind {
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "module" => {
+                        dynamic_targets.push((target_span, call_span));
                     }
-                }
-                NodeKind::Identifier { name } if name == "Static::Module" => {
-                    if let Some(span) = span {
-                        bareword_targets.push(span);
+                    NodeKind::Identifier { name } if name == "Static::Module" => {
+                        bareword_targets.push((target_span, call_span));
                     }
-                }
-                NodeKind::String { .. } => {
-                    if let Some(span) = span {
-                        string_targets.push(span);
+                    NodeKind::String { .. } => {
+                        string_targets.push((target_span, call_span));
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     });
 
-    assert_eq!(dynamic_targets, vec!["$module"]);
-    assert_eq!(bareword_targets, vec!["Static::Module"]);
-    assert_eq!(string_targets, vec!["'relative/file.pl'"]);
+    assert_eq!(
+        dynamic_targets,
+        vec![("$module".to_string(), "require $module".to_string())]
+    );
+    assert_eq!(
+        bareword_targets,
+        vec![("Static::Module".to_string(), "require Static::Module".to_string())]
+    );
+    assert_eq!(
+        string_targets,
+        vec![(
+            "'relative/file.pl'".to_string(),
+            "require 'relative/file.pl'".to_string(),
+        )]
+    );
     Ok(())
 }
