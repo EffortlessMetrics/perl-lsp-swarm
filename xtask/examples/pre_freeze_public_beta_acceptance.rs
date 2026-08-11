@@ -551,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_product_blocker_cannot_claim_ready() {
+    fn unresolved_product_blocker_cannot_claim_ready() -> Result<()> {
         let mut packet = ready_packet();
         packet.product_blockers = vec!["exact installed binary is missing".to_string()];
         packet.freeze_recommendation = FreezeRecommendation::Blocked;
