@@ -367,7 +367,14 @@ fn walk_security_node(
         | NodeKind::MissingBlock
         | NodeKind::Error { .. }
         | NodeKind::UnknownRest => signal_shadowed,
-        _ => signal_shadowed,
+        _ => {
+            // Unknown AST variants may be containers. Preserve security diagnostics
+            // for known descendants instead of treating the wrapper as a leaf.
+            node.for_each_child(|child| {
+                let _ = walk_security_node(child, diagnostics, signal_shadowed);
+            });
+            signal_shadowed
+        }
     }
 }
 
