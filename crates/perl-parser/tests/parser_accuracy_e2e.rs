@@ -147,7 +147,10 @@ fn assert_observed_expectation(
         node.kind == expectation.kind
             && node.line == expectation.line
             && node.span_text.contains(&expectation.span_text)
-            && expectation.parent_kind.as_deref().is_none_or(|parent| node.parent_kind == Some(parent))
+            && expectation
+                .parent_kind
+                .as_deref()
+                .is_none_or(|parent| node.parent_kind == Some(parent))
             && expectation.depth.is_none_or(|depth| node.depth == depth)
     });
 
