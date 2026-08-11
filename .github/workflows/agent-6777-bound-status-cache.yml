@@ -47,15 +47,14 @@ jobs:
               )
 
           text = data.decode("utf-8")
-          old = """        with:
-          cache-on-failure: true
-          shared-key: post-merge-status-${{ hashFiles('Cargo.lock') }}
-"""
-          new = """        with:
-          cache-on-failure: true
-          cache-targets: false
-          shared-key: post-merge-status-${{ hashFiles('Cargo.lock') }}
-"""
+          shared_key = "          shared-key: post-merge-status-" + "${" + "{ hashFiles('Cargo.lock') }}\n"
+          old = "        with:\n          cache-on-failure: true\n" + shared_key
+          new = (
+              "        with:\n"
+              "          cache-on-failure: true\n"
+              "          cache-targets: false\n"
+              + shared_key
+          )
           count = text.count(old)
           if count != 1:
               raise SystemExit(f"expected one status cache block, found {count}")
