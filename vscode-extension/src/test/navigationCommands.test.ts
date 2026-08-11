@@ -153,6 +153,7 @@ describe('navigation command implementations', () => {
       'Restart Server',
       'Run Health Check',
       'Show Output',
+      'Open Actions',
     );
   });
 
