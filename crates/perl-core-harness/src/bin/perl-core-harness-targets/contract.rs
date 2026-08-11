@@ -1,8 +1,8 @@
 //! Target-contract shape validation.
 
 use crate::model::{
-    TARGET_SELECTION_SCHEMA_VERSION, TargetKind, TargetSelectionContract, TargetSelector,
-    TargetTerminalPolicy,
+    TARGET_SELECTION_SCHEMA_VERSION, TargetAuthorityKind, TargetKind, TargetSelectionContract,
+    TargetSelector, TargetTerminalPolicy,
 };
 use std::collections::BTreeSet;
 
@@ -26,6 +26,15 @@ impl TargetSelectionContract {
         validate_nonempty(&self.display_name, "display name")?;
         validate_nonempty(&self.perl_version_row, "Perl version row")?;
         validate_nonempty(&self.authority.entrypoint, "authority entrypoint")?;
+        if let Some(authority) = &self.selection_authority {
+            validate_nonempty(&authority.entrypoint, "selection authority entrypoint")?;
+            if authority.kind == TargetAuthorityKind::Make {
+                return Err(format!(
+                    "target {} selection authority must name a test scheduler, not a Make target",
+                    self.target_id
+                ));
+            }
+        }
         validate_optional_stable_id(self.variant_of.as_deref(), "variant target ID")?;
         validate_optional_stable_id(self.replaces_target_id.as_deref(), "replaced target ID")?;
         if let Some(reason) = self.change_reason.as_deref() {
@@ -39,9 +48,11 @@ impl TargetSelectionContract {
                 return Err(format!("target {} contains a duplicate selector", self.target_id));
             }
         }
-        let script_forms = self.script_forms.iter().collect::<BTreeSet<_>>();
-        if script_forms.len() != self.script_forms.len() {
-            return Err(format!("target {} contains duplicate script forms", self.target_id));
+        if self.script_forms.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(format!(
+                "target {} script forms must be strictly sorted and unique",
+                self.target_id
+            ));
         }
         validate_sorted_unique_strings(&self.composite_members, "composite member")?;
         validate_unique_strings_in_order(&self.runner_switches, "runner switch")?;
@@ -67,9 +78,12 @@ impl TargetSelectionContract {
     }
 
     fn validate_physical(&self) -> Result<(), String> {
-        if self.selectors.is_empty() || self.script_forms.is_empty() {
+        if self.selectors.is_empty()
+            || self.script_forms.is_empty()
+            || self.selection_authority.is_none()
+        {
             return Err(format!(
-                "physical target {} requires selectors and script forms",
+                "physical target {} requires a selection authority, selectors, and script forms",
                 self.target_id
             ));
         }
@@ -92,9 +106,13 @@ impl TargetSelectionContract {
     }
 
     fn validate_selector_variant(&self) -> Result<(), String> {
-        if self.variant_of.is_none() || self.selectors.is_empty() {
+        if self.variant_of.is_none()
+            || self.selectors.is_empty()
+            || self.script_forms.is_empty()
+            || self.selection_authority.is_none()
+        {
             return Err(format!(
-                "selector variant {} requires a base target and selectors",
+                "selector variant {} requires a base target, selection authority, selectors, and script forms",
                 self.target_id
             ));
         }
@@ -120,7 +138,8 @@ impl TargetSelectionContract {
                 self.target_id
             ));
         }
-        let changes_invocation = !self.runner_switches.is_empty()
+        let changes_invocation = self.selection_authority.is_some()
+            || !self.runner_switches.is_empty()
             || !self.variant_parameters.is_empty()
             || !self.environment.is_empty()
             || !self.script_forms.is_empty()
@@ -139,6 +158,7 @@ impl TargetSelectionContract {
         if !self.selectors.is_empty()
             || !self.script_forms.is_empty()
             || self.preparation.make_target.is_none()
+            || self.selection_authority.is_some()
             || self.variant_of.is_some()
             || !self.composite_members.is_empty()
             || self.composite_overlap_policy.is_some()
@@ -157,6 +177,7 @@ impl TargetSelectionContract {
             || !self.selectors.is_empty()
             || !self.script_forms.is_empty()
             || self.variant_of.is_some()
+            || self.selection_authority.is_some()
             || self.composite_overlap_policy.is_none()
             || !self.variant_parameters.is_empty()
         {
@@ -174,6 +195,7 @@ impl TargetSelectionContract {
             || !self.script_forms.is_empty()
             || !self.composite_members.is_empty()
             || self.composite_overlap_policy.is_some()
+            || self.selection_authority.is_some()
         {
             return Err(format!(
                 "instrumentation target {} must reference one existing target",
