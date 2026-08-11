@@ -70,9 +70,9 @@ fn assert_incremental_edit_matches_fresh(
         .zip(new_chars[common_prefix..].iter().rev())
         .take_while(|(old, new)| old == new)
         .count();
-    if common_prefix + common_suffix >= old_chars.len()
-        || common_prefix + common_suffix >= new_chars.len()
-    {
+    let old_changed_chars = old_chars.len().saturating_sub(common_prefix + common_suffix);
+    let new_changed_chars = new_chars.len().saturating_sub(common_prefix + common_suffix);
+    if old_changed_chars == 0 && new_changed_chars == 0 {
         return Err(format!("{expectation_id}: edit has no changed character range").into());
     }
 
@@ -80,11 +80,13 @@ fn assert_incremental_edit_matches_fresh(
         .iter()
         .map(|character| character.len_utf8())
         .sum();
-    let old_changed_bytes: usize = old_chars[common_prefix..old_chars.len() - common_suffix]
+    let old_changed_end = common_prefix + old_changed_chars;
+    let new_changed_end = common_prefix + new_changed_chars;
+    let old_changed_bytes: usize = old_chars[common_prefix..old_changed_end]
         .iter()
         .map(|character| character.len_utf8())
         .sum();
-    let new_changed_bytes: usize = new_chars[common_prefix..new_chars.len() - common_suffix]
+    let new_changed_bytes: usize = new_chars[common_prefix..new_changed_end]
         .iter()
         .map(|character| character.len_utf8())
         .sum();
@@ -190,6 +192,48 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         &expectation.id,
         true,
     )?;
+    Ok(())
+}
+
+#[test]
+fn pure_insertion_edit_matches_fresh_parse() -> TestResult {
+    let source = concat!(
+        "my $before = 1;\n",
+        "my $value = 20;\n",
+        "my $after = 3;\n",
+    );
+    let fresh_ast = assert_incremental_edit_matches_fresh(
+        source,
+        "$value = 20",
+        "$value = 200",
+        "pure_digit_insertion",
+        false,
+    )?;
+
+    assert!(contains_variable_declaration(&fresh_ast, "before"));
+    assert!(contains_variable_declaration(&fresh_ast, "value"));
+    assert!(contains_variable_declaration(&fresh_ast, "after"));
+    Ok(())
+}
+
+#[test]
+fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
+    let source = concat!(
+        "my $before = 1;\n",
+        "my $value = 200;\n",
+        "my $after = 3;\n",
+    );
+    let fresh_ast = assert_incremental_edit_matches_fresh(
+        source,
+        "$value = 200",
+        "$value = 20",
+        "pure_digit_deletion",
+        false,
+    )?;
+
+    assert!(contains_variable_declaration(&fresh_ast, "before"));
+    assert!(contains_variable_declaration(&fresh_ast, "value"));
+    assert!(contains_variable_declaration(&fresh_ast, "after"));
     Ok(())
 }
 
