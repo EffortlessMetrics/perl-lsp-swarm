@@ -39,21 +39,12 @@ fn initialize(client: &mut RealProcessClient, id: Value) -> Result<Value> {
 }
 
 fn assert_response_id(response: &Value, expected: &Value) -> Result<()> {
-    ensure!(
-        response.get("jsonrpc") == Some(&json!("2.0")),
-        "missing JSON-RPC version: {response}"
-    );
-    ensure!(
-        response.get("id") == Some(expected),
-        "response ID mismatch: {response}"
-    );
+    ensure!(response.get("jsonrpc") == Some(&json!("2.0")), "missing JSON-RPC version: {response}");
+    ensure!(response.get("id") == Some(expected), "response ID mismatch: {response}");
     Ok(())
 }
 
-fn initialize_and_notify(
-    client: &mut RealProcessClient,
-    id: Value,
-) -> Result<Value> {
+fn initialize_and_notify(client: &mut RealProcessClient, id: Value) -> Result<Value> {
     let response = initialize(client, id.clone())?;
     assert_response_id(&response, &id)?;
     ensure!(
@@ -65,8 +56,7 @@ fn initialize_and_notify(
 }
 
 fn shutdown_and_exit(client: &mut RealProcessClient, id: Value) -> Result<()> {
-    let response =
-        client.request(id.clone(), "shutdown", Value::Null, timeout())?;
+    let response = client.request(id.clone(), "shutdown", Value::Null, timeout())?;
     assert_response_id(&response, &id)?;
     ensure!(
         response.get("result").is_some_and(Value::is_null),
@@ -85,10 +75,7 @@ fn shutdown_and_exit(client: &mut RealProcessClient, id: Value) -> Result<()> {
 #[test]
 fn exact_candidate_completes_legal_lifecycle() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
-    ensure!(
-        client.candidate_path().is_file(),
-        "exact candidate path disappeared"
-    );
+    ensure!(client.candidate_path().is_file(), "exact candidate path disappeared");
     initialize_and_notify(&mut client, json!("initialize-1"))?;
     shutdown_and_exit(&mut client, json!("shutdown-1"))
 }
@@ -137,11 +124,7 @@ fn fragmented_and_coalesced_frames_preserve_ids() -> Result<()> {
     let frame = RealProcessClient::encode_message(&initialize_message);
     let first = frame.len().min(9);
     let second = frame.len().min(first.saturating_add(17));
-    client.send_raw_chunks(&[
-        &frame[..first],
-        &frame[first..second],
-        &frame[second..],
-    ])?;
+    client.send_raw_chunks(&[&frame[..first], &frame[first..second], &frame[second..]])?;
 
     let response = client.receive_response(&initialize_id, timeout())?;
     assert_response_id(&response, &initialize_id)?;
@@ -169,16 +152,8 @@ fn fragmented_and_coalesced_frames_preserve_ids() -> Result<()> {
     let string_response = client.receive_response(&string_id, timeout())?;
     assert_response_id(&numeric_response, &numeric_id)?;
     assert_response_id(&string_response, &string_id)?;
-    ensure!(
-        numeric_response
-            .get("result")
-            .is_some_and(Value::is_null)
-    );
-    ensure!(
-        string_response
-            .get("result")
-            .is_some_and(Value::is_null)
-    );
+    ensure!(numeric_response.get("result").is_some_and(Value::is_null));
+    ensure!(string_response.get("result").is_some_and(Value::is_null));
     shutdown_and_exit(&mut client, json!(43))
 }
 
@@ -193,12 +168,7 @@ fn serialized_notification_is_not_answered() -> Result<()> {
     // retained as unmatched by `receive_response`.
     client.notify("$/setTrace", json!({ "value": "off" }))?;
     let shutdown_id = json!("serialized-barrier");
-    let shutdown = client.request(
-        shutdown_id.clone(),
-        "shutdown",
-        Value::Null,
-        timeout(),
-    )?;
+    let shutdown = client.request(shutdown_id.clone(), "shutdown", Value::Null, timeout())?;
     assert_response_id(&shutdown, &shutdown_id)?;
     ensure!(
         shutdown.get("result").is_some_and(Value::is_null),
@@ -216,20 +186,12 @@ fn serialized_notification_is_not_answered() -> Result<()> {
 fn requests_after_shutdown_are_rejected() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     initialize_and_notify(&mut client, json!(1))?;
-    let shutdown =
-        client.request(json!(2), "shutdown", Value::Null, timeout())?;
-    ensure!(
-        shutdown.get("result").is_some_and(Value::is_null),
-        "shutdown failed: {shutdown}"
-    );
+    let shutdown = client.request(json!(2), "shutdown", Value::Null, timeout())?;
+    ensure!(shutdown.get("result").is_some_and(Value::is_null), "shutdown failed: {shutdown}");
 
     let request_id = json!("after-shutdown");
-    let response = client.request(
-        request_id.clone(),
-        "$/perl-lsp/watchdog",
-        json!({}),
-        timeout(),
-    )?;
+    let response =
+        client.request(request_id.clone(), "$/perl-lsp/watchdog", json!({}), timeout())?;
     assert_response_id(&response, &request_id)?;
     ensure!(
         response.pointer("/error/code") == Some(&json!(-32600)),
@@ -248,10 +210,7 @@ fn exit_without_shutdown_returns_status_one() -> Result<()> {
     client.notify("exit", Value::Null)?;
     let status = client.wait_for_exit(timeout())?;
     ensure!(!status.success(), "exit without shutdown succeeded");
-    ensure!(
-        status.code() == Some(1),
-        "expected status 1, got {status}"
-    );
+    ensure!(status.code() == Some(1), "expected status 1, got {status}");
     client.assert_transport_clean()
 }
 
@@ -324,10 +283,7 @@ fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
 
     let started = Instant::now();
     drop(client);
-    ensure!(
-        started.elapsed() < Duration::from_secs(2),
-        "overflow cleanup blocked"
-    );
+    ensure!(started.elapsed() < Duration::from_secs(2), "overflow cleanup blocked");
     Ok(())
 }
 
@@ -347,20 +303,14 @@ fn terminal_check_rejects_unmatched_response() -> Result<()> {
     assert_response_id(&orphan, &orphan_id)?;
 
     let shutdown_id = json!(2);
-    let shutdown = client.request(
-        shutdown_id.clone(),
-        "shutdown",
-        Value::Null,
-        timeout(),
-    )?;
+    let shutdown = client.request(shutdown_id.clone(), "shutdown", Value::Null, timeout())?;
     assert_response_id(&shutdown, &shutdown_id)?;
     client.notify("exit", Value::Null)?;
     let status = client.wait_for_exit(timeout())?;
     ensure!(status.success(), "candidate exit failed: {status}");
 
-    let error = client
-        .assert_transport_clean()
-        .expect_err("unmatched response must fail terminal proof");
+    let error =
+        client.assert_transport_clean().expect_err("unmatched response must fail terminal proof");
     ensure!(error.to_string().contains("unconsumed terminal message"));
     Ok(())
 }

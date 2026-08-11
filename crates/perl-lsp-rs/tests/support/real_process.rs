@@ -14,9 +14,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{
-    self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError,
-};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -66,8 +64,7 @@ impl RealProcessClient {
             candidate_path.display()
         );
 
-        let workspace = tempfile::tempdir()
-            .context("create isolated LSP process workspace")?;
+        let workspace = tempfile::tempdir().context("create isolated LSP process workspace")?;
         let mut child = Command::new(&candidate_path)
             .arg("--stdio")
             .current_dir(workspace.path())
@@ -76,9 +73,7 @@ impl RealProcessClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| {
-                format!("spawn exact candidate {}", candidate_path.display())
-            })?;
+            .with_context(|| format!("spawn exact candidate {}", candidate_path.display()))?;
 
         let stdin = take_pipe(&mut child, |child| child.stdin.take(), "stdin")?;
         let stdout = take_pipe(&mut child, |child| child.stdout.take(), "stdout")?;
@@ -106,8 +101,7 @@ impl RealProcessClient {
             .name("lsp-exact-stderr".to_string())
             .spawn(move || {
                 drain_stderr(stderr, &stderr_sink, &truncated_flag);
-            })
-        {
+            }) {
             Ok(thread) => thread,
             Err(error) => {
                 terminate_child(&mut child);
@@ -138,8 +132,7 @@ impl RealProcessClient {
 
     pub fn encode_message(message: &Value) -> Vec<u8> {
         let body = message.to_string();
-        let mut frame =
-            format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
         frame.extend_from_slice(body.as_bytes());
         frame
     }
@@ -156,10 +149,7 @@ impl RealProcessClient {
 
     pub fn send_raw_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         ensure!(!self.finished, "cannot write after candidate exit");
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("candidate stdin is closed"))?;
+        let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("candidate stdin is closed"))?;
         stdin.write_all(bytes).context("write candidate stdin")?;
         stdin.flush().context("flush candidate stdin")
     }
@@ -215,17 +205,9 @@ impl RealProcessClient {
         self.send_raw_bytes(&Self::encode_message(&response))
     }
 
-    pub fn receive_response(
-        &mut self,
-        id: &Value,
-        timeout: Duration,
-    ) -> Result<Value> {
+    pub fn receive_response(&mut self, id: &Value, timeout: Duration) -> Result<Value> {
         self.ensure_event_queue_intact()?;
-        if let Some(index) = self
-            .pending
-            .iter()
-            .position(|message| is_response_for(message, id))
-        {
+        if let Some(index) = self.pending.iter().position(|message| is_response_for(message, id)) {
             return self
                 .pending
                 .remove(index)
@@ -242,25 +224,15 @@ impl RealProcessClient {
         }
     }
 
-    pub fn receive_response_and_retain(
-        &mut self,
-        id: &Value,
-        timeout: Duration,
-    ) -> Result<Value> {
+    pub fn receive_response_and_retain(&mut self, id: &Value, timeout: Duration) -> Result<Value> {
         let response = self.receive_response(id, timeout)?;
         self.push_pending(response.clone())?;
         Ok(response)
     }
 
-    pub fn receive_server_request(
-        &mut self,
-        method: &str,
-        timeout: Duration,
-    ) -> Result<Value> {
-        if let Some(index) = self
-            .pending
-            .iter()
-            .position(|message| is_server_request_for(message, method))
+    pub fn receive_server_request(&mut self, method: &str, timeout: Duration) -> Result<Value> {
+        if let Some(index) =
+            self.pending.iter().position(|message| is_server_request_for(message, method))
         {
             return self
                 .pending
@@ -271,8 +243,7 @@ impl RealProcessClient {
         let deadline = Instant::now() + timeout;
         let marker = Value::String(method.to_string());
         loop {
-            let message =
-                self.receive_message_until(deadline, "server request", &marker)?;
+            let message = self.receive_message_until(deadline, "server request", &marker)?;
             if is_server_request_for(&message, method) {
                 return Ok(message);
             }
@@ -281,10 +252,7 @@ impl RealProcessClient {
     }
 
     pub fn assert_no_response_pending(&self) -> Result<()> {
-        let unexpected = self
-            .pending
-            .iter()
-            .find(|message| is_response_like(message));
+        let unexpected = self.pending.iter().find(|message| is_response_like(message));
         ensure!(
             unexpected.is_none(),
             "notification produced an unmatched response: {unexpected:?}"
@@ -322,10 +290,8 @@ impl RealProcessClient {
         self.drain_available_events()?;
         self.ensure_event_queue_intact()?;
 
-        if let Some(unexpected) = self
-            .pending
-            .iter()
-            .find(|message| !is_server_notification(message))
+        if let Some(unexpected) =
+            self.pending.iter().find(|message| !is_server_notification(message))
         {
             bail!(
                 "unconsumed terminal message: {unexpected}; \
@@ -342,9 +308,7 @@ impl RealProcessClient {
         let collected = bytes.iter().copied().collect::<Vec<_>>();
         let tail = String::from_utf8_lossy(&collected).into_owned();
         if self.stderr_truncated.load(Ordering::Acquire) {
-            format!(
-                "[stderr truncated to last {STDERR_BYTE_CAPACITY} bytes]\n{tail}"
-            )
+            format!("[stderr truncated to last {STDERR_BYTE_CAPACITY} bytes]\n{tail}")
         } else {
             tail
         }
@@ -397,10 +361,7 @@ impl RealProcessClient {
             match self.events.try_recv() {
                 Ok(ProcessEvent::Message(message)) => self.push_pending(message)?,
                 Ok(ProcessEvent::ProtocolError(error)) => {
-                    bail!(
-                        "stdout protocol error: {error}; stderr={}",
-                        self.stderr_tail()
-                    )
+                    bail!("stdout protocol error: {error}; stderr={}", self.stderr_tail())
                 }
                 Ok(ProcessEvent::Eof) => {}
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -480,9 +441,7 @@ fn is_response_like(message: &Value) -> bool {
 fn is_response(message: &Value) -> bool {
     is_jsonrpc_2(message)
         && is_response_like(message)
-        && message.get("id").is_some_and(|id| {
-            id.is_number() || id.is_string() || id.is_null()
-        })
+        && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
         && (message.get("result").is_some() ^ message.get("error").is_some())
 }
 
@@ -493,9 +452,7 @@ fn is_response_for(message: &Value, id: &Value) -> bool {
 fn is_server_request_for(message: &Value, method: &str) -> bool {
     is_jsonrpc_2(message)
         && message.get("method").and_then(Value::as_str) == Some(method)
-        && message
-            .get("id")
-            .is_some_and(|id| id.is_number() || id.is_string())
+        && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
 }
 
 fn is_server_notification(message: &Value) -> bool {
@@ -504,11 +461,7 @@ fn is_server_notification(message: &Value) -> bool {
         && message.get("id").is_none()
 }
 
-fn read_stdout(
-    stdout: ChildStdout,
-    sender: SyncSender<ProcessEvent>,
-    overflow: &AtomicBool,
-) {
+fn read_stdout(stdout: ChildStdout, sender: SyncSender<ProcessEvent>, overflow: &AtomicBool) {
     let mut reader = BufReader::new(stdout);
     loop {
         let event = match read_frame(&mut reader) {
@@ -516,10 +469,7 @@ fn read_stdout(
             Ok(None) => ProcessEvent::Eof,
             Err(error) => ProcessEvent::ProtocolError(error.to_string()),
         };
-        let terminal = matches!(
-            event,
-            ProcessEvent::ProtocolError(_) | ProcessEvent::Eof
-        );
+        let terminal = matches!(event, ProcessEvent::ProtocolError(_) | ProcessEvent::Eof);
         if !try_publish_event(&sender, overflow, event) || terminal {
             return;
         }
@@ -554,56 +504,39 @@ fn read_frame(reader: &mut dyn BufRead) -> Result<Option<Value>> {
         };
         header_bytes = header_bytes.saturating_add(line.len());
 
-        let line = std::str::from_utf8(&line)
-            .context("stdout header was not valid UTF-8")?;
+        let line = std::str::from_utf8(&line).context("stdout header was not valid UTF-8")?;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             break;
         }
 
-        let (name, value) = line
-            .split_once(':')
-            .ok_or_else(|| anyhow!("non-header stdout line: {line:?}"))?;
+        let (name, value) =
+            line.split_once(':').ok_or_else(|| anyhow!("non-header stdout line: {line:?}"))?;
         let name = name.trim();
         let value = value.trim();
         if name.eq_ignore_ascii_case("Content-Length") {
-            ensure!(
-                content_length.is_none(),
-                "duplicate Content-Length header"
-            );
+            ensure!(content_length.is_none(), "duplicate Content-Length header");
             let parsed = value
                 .parse::<usize>()
                 .with_context(|| format!("invalid Content-Length {value:?}"))?;
-            ensure!(
-                parsed <= MAX_FRAME_BYTES,
-                "frame exceeded {MAX_FRAME_BYTES} bytes"
-            );
+            ensure!(parsed <= MAX_FRAME_BYTES, "frame exceeded {MAX_FRAME_BYTES} bytes");
             content_length = Some(parsed);
         } else if !name.eq_ignore_ascii_case("Content-Type") {
             bail!("unexpected stdout header {name:?}");
         }
     }
 
-    let length = content_length
-        .ok_or_else(|| anyhow!("frame omitted Content-Length"))?;
+    let length = content_length.ok_or_else(|| anyhow!("frame omitted Content-Length"))?;
     let mut body = vec![0u8; length];
-    reader
-        .read_exact(&mut body)
-        .context("read stdout frame body")?;
+    reader.read_exact(&mut body).context("read stdout frame body")?;
     let message: Value = serde_json::from_slice(&body).with_context(|| {
-        format!(
-            "stdout frame was not JSON: {:?}",
-            String::from_utf8_lossy(&body)
-        )
+        format!("stdout frame was not JSON: {:?}", String::from_utf8_lossy(&body))
     })?;
     ensure!(message.is_object(), "stdout JSON-RPC message was not an object");
     Ok(Some(message))
 }
 
-fn read_bounded_header_line(
-    reader: &mut dyn BufRead,
-    max_bytes: usize,
-) -> Result<Option<Vec<u8>>> {
+fn read_bounded_header_line(reader: &mut dyn BufRead, max_bytes: usize) -> Result<Option<Vec<u8>>> {
     let mut line = Vec::with_capacity(max_bytes.min(256));
     loop {
         let available = reader.fill_buf().context("read stdout header buffer")?;
