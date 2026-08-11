@@ -1227,7 +1227,7 @@
         {
           "id": "imports_exports_import_use",
           "kind": "Use",
-          "line": 15,
+          "line": 16,
           "span_text": "use Accuracy::ImportsExports",
           "parent_kind": null,
           "depth": null,
@@ -1237,7 +1237,7 @@
         {
           "id": "imports_exports_consumer_subroutine",
           "kind": "Subroutine",
-          "line": 17,
+          "line": 18,
           "span_text": "sub call_imported",
           "parent_kind": "Program",
           "depth": 1,
@@ -1247,7 +1247,7 @@
         {
           "id": "imports_exports_imported_call",
           "kind": "FunctionCall",
-          "line": 18,
+          "line": 19,
           "span_text": "answer()",
           "parent_kind": null,
           "depth": null,
@@ -1257,7 +1257,7 @@
         {
           "id": "imports_exports_consumer_return",
           "kind": "Return",
-          "line": 18,
+          "line": 19,
           "span_text": "return answer()",
           "parent_kind": null,
           "depth": null,
