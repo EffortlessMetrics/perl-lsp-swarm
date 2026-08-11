@@ -614,7 +614,13 @@ export async function activate(context: vscode.ExtensionContext) {
             ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
             ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
-            ...(widget?.readinessState ? { readinessState: widget.readinessState } : {}),
+            ...(hasLiveServer
+              ? {
+                  readinessState: widget?.enhancedReadinessAvailable
+                    ? widget.readinessState
+                    : ('legacy' as const),
+                }
+              : {}),
             ...(widget?.readinessReason ? { readinessReason: widget.readinessReason } : {}),
             ...(widget?.experienceAction ? { nextAction: widget.experienceAction } : {}),
             ...(vscode.window.activeTextEditor
