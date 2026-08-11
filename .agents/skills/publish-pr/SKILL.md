@@ -53,6 +53,14 @@ For an existing draft, inspect that named condition. When it is complete, re-eva
 
 Do not claim hosted proof, formal review, or merge readiness before current GitHub evidence exists.
 
+## Enforcement status is part of the claim
+
+When a candidate adds or changes a gate, check, linting check, ratchet, or policy, state in the body whether it is **required** or **advisory**, resolved against live protection rather than intent. A body implying a gate blocks merge when it runs advisory overstates the claim, and that overstatement survives the merge as documentation.
+
+Read both enforcement systems. Classic branch protection and repository rulesets are independent and additive, so either alone yields a confidently wrong answer, and a check may be required by one, the other, both, or neither. For rulesets, inspect enforcement status, target refs, and bypass actors before classifying applicability. A gate running inside a composite or conditional job is required only to the extent its calling job reports it; a skipped job reports Success, while a workflow-level skip leaves a required check Pending.
+
+Where a change is deliberately advisory first — a new ratchet awaiting a baseline, or a gate that cannot pass until something merges past it — say so and name the promotion condition. Unenforced-by-design is an honest claim; unenforced-and-described-as-blocking is not.
+
 ## Routes
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `$address-review-comments`
