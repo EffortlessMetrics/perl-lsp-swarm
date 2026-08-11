@@ -4,15 +4,18 @@
 //! ratchet:
 //! - incomparable observations → [`CompatibilityTransition::NotProven`]
 //! - any accepted pass that becomes a fail → [`CompatibilityTransition::Regression`]
-//! - exact V2 file-result identity → [`CompatibilityTransition::NoChange`]
+//! - exact V2 observation identity → [`CompatibilityTransition::NoChange`]
 //!
-//! Bucket inventory, typed failures, assertion deltas, improvements, and V1
-//! migration remain follow-up classifier slices. Aggregate `summary` fields are
-//! ignored so forged totals cannot manufacture a transition.
+//! Assertion deltas, improvements, and V1 migration remain follow-up classifier
+//! slices. Aggregate `summary` fields are ignored so forged totals cannot
+//! manufacture a transition. Compiler/invocation/capability/environment subject
+//! ids are retained on the V2 ratchet but are not present on [`RunReport`]; they
+//! are bound in receipts by a later slice rather than compared here.
 
 use crate::transition::model::AcceptedBaseline;
 use perl_core_harness_types::{
-    CompatibilityTransition, CompileBaselineV2, RunFileResult, RunReport, RunnerStatus,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2,
+    RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunnerStatus,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -75,8 +78,12 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
         };
     }
 
-    if matches!(accepted, AcceptedBaseline::V2(_))
+    if let AcceptedBaseline::V2(value) = accepted
         && accepted.file_results() == current.file_results.as_slice()
+        && accepted.buckets() == &current.buckets
+        && accepted.failures() == current.failures.as_slice()
+        && value.semantic_boundaries == current.semantic_boundaries
+        && current.harness_status == Some(0)
     {
         return Classification {
             transition: CompatibilityTransition::NoChange,
@@ -93,20 +100,29 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
 }
 
 fn v2_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<String> {
-    let accepted_subject = (
-        value.report_schema_version.as_str(),
-        value.mode,
-        value.profile,
-        value.runner,
-        value.perl_resolved_ref.as_str(),
-    );
-    let current_subject = (
-        current.schema_version.as_str(),
-        current.mode,
-        current.profile,
-        current.runner,
-        current.perl_ref.as_str(),
-    );
+    if value.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
+        return Some(format!(
+            "accepted and current observations are not comparable: unsupported accepted V2 schema {}",
+            value.schema_version
+        ));
+    }
+    if value.report_schema_version != RUN_REPORT_SCHEMA_VERSION
+        || current.schema_version != RUN_REPORT_SCHEMA_VERSION
+    {
+        return Some(
+            "accepted and current observations are not comparable: report schema is not the supported run-report version"
+                .into(),
+        );
+    }
+    if let Some(path) = first_duplicate_str(value.file_membership.iter().map(String::as_str)) {
+        return Some(format!(
+            "accepted and current observations are not comparable: accepted V2 file_membership repeats path {path}"
+        ));
+    }
+    let accepted_subject =
+        (value.mode, value.profile, value.runner, value.perl_resolved_ref.as_str());
+    let current_subject =
+        (current.mode, current.profile, current.runner, current.perl_ref.as_str());
     let expected_membership =
         value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let observed_membership =
@@ -130,13 +146,12 @@ fn not_proven(reason: String) -> Classification {
 }
 
 fn first_duplicate_path(results: &[RunFileResult]) -> Option<&str> {
+    first_duplicate_str(results.iter().map(|result| result.path.as_str()))
+}
+
+fn first_duplicate_str<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let mut seen = BTreeSet::new();
-    for result in results {
-        if !seen.insert(result.path.as_str()) {
-            return Some(result.path.as_str());
-        }
-    }
-    None
+    paths.into_iter().find(|path| !seen.insert(*path))
 }
 
 fn index_by_path(results: &[RunFileResult]) -> BTreeMap<&str, &RunFileResult> {

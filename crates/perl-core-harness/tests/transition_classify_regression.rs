@@ -79,6 +79,26 @@ fn duplicate_accepted_file_path_is_not_proven() {
     assert!(classification.reason.contains("accepted observation repeats"));
 }
 
+#[test]
+fn bucket_inventory_drift_is_not_no_change() {
+    let mut accepted = sample_v2_baseline(2, 2);
+    accepted.buckets.insert("parse_recovery".into(), 1);
+    let current = sample_report(2, 2);
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(!classification.requires_candidate);
+}
+
+#[test]
+fn duplicate_file_membership_is_not_proven() {
+    let mut accepted = sample_v2_baseline(1, 1);
+    accepted.file_membership.push(accepted.file_membership[0].clone());
+    let current = sample_report(1, 1);
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("file_membership repeats"));
+}
+
 fn compensated_swap_classification() -> Classification {
     let accepted = sample_v2_baseline(2, 1);
     let mut current = sample_report(2, 1);
