@@ -106,6 +106,37 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn span_fixtures_preserve_the_bytes_they_measure() -> TestResult {
+    let workspace_root = workspace_root();
+    let fixture_root = workspace_root
+        .join("crates")
+        .join("perl-corpus")
+        .join("fixtures")
+        .join("parser_accuracy");
+
+    let crlf = fs::read(fixture_root.join("span_crlf.pl"))?;
+    assert!(
+        crlf.windows(2).any(|window| window == b"\r\n"),
+        "span_crlf must contain at least one CRLF sequence"
+    );
+
+    let bom = fs::read(fixture_root.join("span_bom.pl"))?;
+    assert_eq!(
+        bom.get(..3),
+        Some([0xef, 0xbb, 0xbf].as_slice()),
+        "span_bom must begin with a UTF-8 BOM"
+    );
+
+    let mixed = fs::read(fixture_root.join("span_mixed_newlines.pl"))?;
+    assert!(
+        mixed.contains(&b'\n') && mixed.windows(2).any(|window| window == b"\r\n"),
+        "span_mixed_newlines must contain both LF and CRLF line endings"
+    );
+
+    Ok(())
+}
+
 fn find_fixture<'a>(
     manifest: &'a ParserAccuracyManifest,
     fixture_id: &str,
