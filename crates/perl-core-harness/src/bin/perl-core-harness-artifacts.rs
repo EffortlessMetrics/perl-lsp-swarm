@@ -5,11 +5,13 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
     HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION,
     RUNNER_RECORD_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunnerRecord, RunnerStatus,
+    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
     SemanticBoundaryRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -188,6 +190,8 @@ struct DiscoveryRawEnvelope {
     schema_version: String,
     runner: HarnessRunner,
     profile: HarnessProfile,
+    host_perl: String,
+    working_directory: String,
     argv: Vec<String>,
     status: Option<i32>,
     success: bool,
@@ -208,6 +212,11 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     if !script.is_file() {
         bail!("prepared Perl tree is missing runner script {}", script.display());
     }
+    reject_output_aliases(
+        std::slice::from_ref(&script),
+        std::slice::from_ref(&config.output),
+    )?;
+
     let script_name = script
         .file_name()
         .and_then(|value| value.to_str())
@@ -221,29 +230,28 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     command.env("LC_ALL", "C");
     sanitize_perl_env(&mut command);
 
-    let envelope = match command.output() {
-        Ok(output) => DiscoveryRawEnvelope {
-            schema_version: DISCOVERY_RAW_SCHEMA_VERSION.to_string(),
-            runner: config.runner,
-            profile: config.profile,
-            argv,
-            status: output.status.code(),
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            spawn_error: None,
-        },
-        Err(error) => DiscoveryRawEnvelope {
-            schema_version: DISCOVERY_RAW_SCHEMA_VERSION.to_string(),
-            runner: config.runner,
-            profile: config.profile,
-            argv,
-            status: None,
-            success: false,
-            stdout: String::new(),
-            stderr: String::new(),
-            spawn_error: Some(error.to_string()),
-        },
+    let (status, success, stdout, stderr, spawn_error) = match command.output() {
+        Ok(output) => (
+            output.status.code(),
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            None,
+        ),
+        Err(error) => (None, false, String::new(), String::new(), Some(error.to_string())),
+    };
+    let envelope = DiscoveryRawEnvelope {
+        schema_version: DISCOVERY_RAW_SCHEMA_VERSION.to_string(),
+        runner: config.runner,
+        profile: config.profile,
+        host_perl: config.host_perl.display().to_string(),
+        working_directory: t_dir.display().to_string(),
+        argv,
+        status,
+        success,
+        stdout,
+        stderr,
+        spawn_error,
     };
     write_json(&config.output, &envelope)?;
     if !envelope.success {
@@ -316,7 +324,12 @@ fn collect_test_paths(t_dir: &Path, directory: &Path, paths: &mut Vec<String>) -
 }
 
 fn derive_runner_records(config: DeriveRunnerRecordsConfig) -> Result<()> {
+    reject_output_aliases(
+        &config.reports,
+        &[config.output.clone(), config.boundaries_output.clone()],
+    )?;
     let reports = read_reports(&config.reports)?;
+    validate_report_collection(&reports)?;
     let expected = records_from_reports(&reports)?;
     write_json_lines(&config.output, &expected)?;
     let boundaries = compile_boundaries(&reports)?;
@@ -326,6 +339,7 @@ fn derive_runner_records(config: DeriveRunnerRecordsConfig) -> Result<()> {
 
 fn check_runner_records(config: CheckRunnerRecordsConfig) -> Result<()> {
     let reports = read_reports(&config.reports)?;
+    validate_report_collection(&reports)?;
     validate_record_files(&reports, &config.records, config.boundaries.as_deref())
 }
 
@@ -343,10 +357,53 @@ fn read_reports(paths: &[PathBuf]) -> Result<Vec<RunReport>> {
         .collect()
 }
 
+fn validate_report_collection(reports: &[RunReport]) -> Result<()> {
+    let first = reports
+        .first()
+        .ok_or_else(|| color_eyre::eyre::eyre!("no run reports were supplied"))?;
+    let expected_membership = report_membership(first);
+    let mut modes = BTreeSet::new();
+    for report in reports {
+        if report.commit != first.commit
+            || report.perl_ref != first.perl_ref
+            || report.runner != first.runner
+            || report.profile != first.profile
+            || report.prepared_tree != first.prepared_tree
+            || report.host_perl != first.host_perl
+        {
+            bail!(
+                "run reports do not describe one measured subject: commit, Perl ref, runner, profile, prepared tree, and host Perl must match"
+            );
+        }
+        if !modes.insert(report.mode.as_str()) {
+            bail!("multiple run reports declare {} mode", report.mode);
+        }
+        if report_membership(report) != expected_membership {
+            bail!("run report membership differs across modes for the measured subject");
+        }
+    }
+    Ok(())
+}
+
+fn report_membership(report: &RunReport) -> BTreeSet<String> {
+    report.file_results.iter().map(|result| result.path.clone()).collect()
+}
+
 fn validate_report(report: &RunReport) -> Result<()> {
     if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!("unsupported run report schema: {}", report.schema_version);
     }
+    for (label, value) in [
+        ("commit", report.commit.as_str()),
+        ("Perl ref", report.perl_ref.as_str()),
+        ("prepared tree", report.prepared_tree.as_str()),
+        ("host Perl", report.host_perl.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            bail!("run report has an empty {label}");
+        }
+    }
+
     let mut files = BTreeMap::<String, &RunFileResult>::new();
     for result in &report.file_results {
         validate_test_path(&result.path)?;
@@ -408,25 +465,99 @@ fn validate_report(report: &RunReport) -> Result<()> {
         }
     }
 
-    let mut boundary_keys = BTreeSet::new();
+    validate_semantic_boundary_inventory(&report.semantic_boundaries)?;
     for boundary in &report.semantic_boundaries {
-        validate_test_path(&boundary.path)?;
         if !files.contains_key(&boundary.path) {
             bail!("semantic boundary path {} is absent from file results", boundary.path);
         }
-        if boundary.id.trim().is_empty()
-            || boundary.reason.trim().is_empty()
-            || boundary.source_kind.trim().is_empty()
-            || boundary.owner_workstream.trim().is_empty()
-            || boundary.supporting_test.trim().is_empty()
-            || boundary.source_span.start >= boundary.source_span.end
-        {
-            bail!("semantic boundary {} has incomplete typed evidence", boundary.id);
+    }
+    Ok(())
+}
+
+fn validate_semantic_boundary_inventory(
+    boundaries: &[ObservedSemanticBoundary],
+) -> Result<()> {
+    let mut violations = Vec::new();
+    let mut keys = BTreeSet::new();
+    for boundary in boundaries {
+        let mut add = |message: &str| {
+            violations.push(format!("{} {}: {message}", boundary.path, boundary.id));
+        };
+
+        if !keys.insert(boundary_key(boundary)) {
+            add("semantic boundary inventory contains a duplicate key");
         }
-        let key = boundary_key(boundary);
-        if !boundary_keys.insert(key) {
-            bail!("run report contains a duplicate semantic boundary");
+        if boundary.path.trim().is_empty() {
+            add("semantic boundary has an empty path");
+        } else if validate_test_path(&boundary.path).is_err() {
+            add("semantic boundary has an invalid normalized test path");
         }
+        if boundary.id.trim().is_empty() {
+            add("semantic boundary has an empty stable id");
+        }
+        if boundary.reason.trim().is_empty() {
+            add("semantic boundary has an empty reason");
+        }
+        if boundary.source_kind.trim().is_empty() {
+            add("semantic boundary has an empty source kind");
+        }
+        if boundary.owner_workstream.trim().is_empty() {
+            add("semantic boundary has no owning workstream");
+        }
+        if boundary.supporting_test.trim().is_empty() {
+            add("semantic boundary has no supporting test");
+        }
+        if boundary.source_span.start > boundary.source_span.end {
+            add("semantic boundary source span is reversed");
+        }
+
+        match boundary.disposition {
+            SemanticBoundaryDisposition::SourceLockedCompatibility => {
+                if boundary.lock_scope != SemanticBoundaryLockScope::PathAndSource {
+                    add("source-locked compatibility boundary must use a path_and_source lock");
+                }
+                if boundary.confidence != SemanticBoundaryConfidence::Exact {
+                    add("source-locked compatibility boundary must have exact confidence");
+                }
+                if boundary.blocks_compilation {
+                    add("source-locked compatibility boundary must not block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::Unknown => {
+                add("unknown semantic boundary disposition is not admissible");
+                if boundary.confidence != SemanticBoundaryConfidence::Unresolved {
+                    add("unknown semantic boundary must have unresolved confidence");
+                }
+                if !boundary.blocks_compilation {
+                    add("unknown semantic boundary must block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::Unsupported => {
+                if boundary.confidence != SemanticBoundaryConfidence::Unresolved {
+                    add("unsupported semantic boundary must have unresolved confidence");
+                }
+                if !boundary.blocks_compilation {
+                    add("unsupported semantic boundary must block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::ImplementedStatic
+            | SemanticBoundaryDisposition::StaticallyClassified
+            | SemanticBoundaryDisposition::OrdinaryRuntime
+            | SemanticBoundaryDisposition::DeferredRuntime
+            | SemanticBoundaryDisposition::DeferredLifecycle => {
+                if boundary.blocks_compilation {
+                    add("non-blocking semantic boundary disposition cannot block compilation");
+                }
+            }
+            SemanticBoundaryDisposition::GovernedCompileTimeDynamic => {}
+        }
+    }
+    if !violations.is_empty() {
+        bail!(
+            "semantic-boundary inventory is invalid with {} violation(s):\n{}",
+            violations.len(),
+            violations.join("\n")
+        );
     }
     Ok(())
 }
@@ -517,6 +648,7 @@ fn validate_record_files(
             .with_context(|| format!("reading semantic boundaries {}", path.display()))?;
         let mut actual_boundaries: Vec<ObservedSemanticBoundary> = serde_json::from_str(&raw)
             .with_context(|| format!("decoding semantic boundaries {}", path.display()))?;
+        validate_semantic_boundary_inventory(&actual_boundaries)?;
         actual_boundaries.sort_by_key(boundary_key);
         if actual_boundaries != compile_boundaries(reports)? {
             bail!("semantic-boundary artifact does not match the compile report");
@@ -561,6 +693,64 @@ fn boundary_key(boundary: &ObservedSemanticBoundary) -> (String, String, usize, 
         boundary.source_span.start,
         boundary.source_span.end,
     )
+}
+
+fn reject_output_aliases(inputs: &[PathBuf], outputs: &[PathBuf]) -> Result<()> {
+    let input_paths = inputs
+        .iter()
+        .map(|path| {
+            fs::canonicalize(path)
+                .with_context(|| format!("canonicalizing input evidence {}", path.display()))
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let mut output_paths = BTreeSet::new();
+    for output in outputs {
+        let resolved = resolve_destination(output)?;
+        if input_paths.contains(&resolved) {
+            bail!("output path {} aliases an input evidence file", output.display());
+        }
+        if !output_paths.insert(resolved) {
+            bail!("multiple output options resolve to the same path");
+        }
+    }
+    Ok(())
+}
+
+fn resolve_destination(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return fs::canonicalize(path)
+            .with_context(|| format!("canonicalizing output path {}", path.display()));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("reading current directory")?
+            .join(path)
+    };
+    let mut ancestor = absolute.as_path();
+    let mut suffix = Vec::new();
+    while !ancestor.exists() {
+        let component = ancestor.file_name().ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "output path has no existing ancestor: {}",
+                path.display()
+            )
+        })?;
+        suffix.push(component.to_os_string());
+        ancestor = ancestor.parent().ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "output path has no existing ancestor: {}",
+                path.display()
+            )
+        })?;
+    }
+    let mut resolved = fs::canonicalize(ancestor)
+        .with_context(|| format!("canonicalizing output ancestor {}", ancestor.display()))?;
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 fn validate_test_path(path: &str) -> Result<()> {
@@ -619,13 +809,18 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 
 fn write_json_lines(path: &Path, records: &[RunnerRecord]) -> Result<()> {
     create_parent(path)?;
-    let mut output = String::new();
+    let file = fs::File::create(path)
+        .with_context(|| format!("creating runner records {}", path.display()))?;
+    let mut writer = BufWriter::new(file);
     for record in records {
-        output.push_str(&serde_json::to_string(record).context("serializing runner record")?);
-        output.push('\n');
+        serde_json::to_writer(&mut writer, record).context("serializing runner record")?;
+        writer
+            .write_all(b"\n")
+            .with_context(|| format!("writing runner records {}", path.display()))?;
     }
-    fs::write(path, output)
-        .with_context(|| format!("writing runner records {}", path.display()))
+    writer
+        .flush()
+        .with_context(|| format!("flushing runner records {}", path.display()))
 }
 
 fn create_parent(path: &Path) -> Result<()> {
@@ -639,10 +834,8 @@ fn create_parent(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_core_harness_types::{
-        RunSummary, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
-        SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
-    };
+    use perl_core_harness_types::RunSummary;
+    use perl_core_harness_types::SemanticBoundarySourceSpan;
 
     type TestResult = Result<()>;
 
@@ -651,6 +844,7 @@ mod tests {
         let parse = sample_report(HarnessMode::Parse);
         let mut compile = sample_report(HarnessMode::Compile);
         compile.semantic_boundaries.push(sample_boundary());
+        validate_report_collection(&[parse.clone(), compile.clone()])?;
         let records = records_from_reports(&[parse, compile])?;
         if records.len() != 4 {
             bail!("expected four records, found {}", records.len());
@@ -670,6 +864,52 @@ mod tests {
     }
 
     #[test]
+    fn report_collection_rejects_cross_subject_modes() -> TestResult {
+        let parse = sample_report(HarnessMode::Parse);
+        let mut compile = sample_report(HarnessMode::Compile);
+        compile.commit = "b".repeat(40);
+        let Err(error) = validate_report_collection(&[parse, compile]) else {
+            bail!("reports from different commits must be rejected");
+        };
+        if !error.to_string().contains("one measured subject") {
+            bail!("unexpected cross-subject error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn report_collection_rejects_membership_drift() -> TestResult {
+        let parse = sample_report(HarnessMode::Parse);
+        let mut compile = sample_report(HarnessMode::Compile);
+        compile.file_results[1].path = "base/drift.t".into();
+        let Err(error) = validate_report_collection(&[parse, compile]) else {
+            bail!("cross-mode membership drift must be rejected");
+        };
+        if !error.to_string().contains("membership differs") {
+            bail!("unexpected membership error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derivation_rejects_output_aliasing_report() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = temp.path().join("report.json");
+        let boundaries = temp.path().join("boundaries.json");
+        fs::write(&report, "{}\n")?;
+        let Err(error) = reject_output_aliases(
+            std::slice::from_ref(&report),
+            &[report.clone(), boundaries],
+        ) else {
+            bail!("output aliases must be rejected before writing");
+        };
+        if !error.to_string().contains("aliases an input") {
+            bail!("unexpected output-alias error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn report_validation_rejects_missing_failure_evidence() -> TestResult {
         let mut report = sample_report(HarnessMode::Compile);
         report.file_results[1].status = RunnerStatus::Fail;
@@ -680,6 +920,23 @@ mod tests {
         };
         if !error.to_string().contains("status and failure evidence disagree") {
             bail!("unexpected report validation error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn report_validation_rejects_contradictory_source_lock() -> TestResult {
+        let mut report = sample_report(HarnessMode::Compile);
+        let mut boundary = sample_boundary();
+        boundary.confidence = SemanticBoundaryConfidence::Unresolved;
+        boundary.blocks_compilation = true;
+        report.semantic_boundaries.push(boundary);
+        let Err(error) = validate_report(&report) else {
+            bail!("contradictory source-lock evidence must be rejected");
+        };
+        let text = error.to_string();
+        if !text.contains("exact confidence") || !text.contains("must not block compilation") {
+            bail!("unexpected boundary-invariant error: {error}");
         }
         Ok(())
     }
@@ -707,6 +964,8 @@ mod tests {
             schema_version: DISCOVERY_RAW_SCHEMA_VERSION.into(),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
+            host_perl: "perl".into(),
+            working_directory: "t".into(),
             argv: vec!["TEST".into(), "--dumptests".into()],
             status: Some(7),
             success: false,
@@ -727,9 +986,9 @@ mod tests {
             schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
             commit: "a".repeat(40),
             timestamp: "2026-08-11T00:00:00Z".into(),
-            perl_ref: "b".repeat(40),
+            perl_ref: "perl-ref".into(),
             prepared_tree: "<prepared-tree>".into(),
-            run_tree: "<run-tree>".into(),
+            run_tree: format!("<run-tree-{}>", mode.as_str()),
             host_perl: "perl".into(),
             runner: HarnessRunner::Test,
             mode,
