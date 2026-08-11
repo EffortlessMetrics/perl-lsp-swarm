@@ -272,6 +272,34 @@ pub(super) fn is_completion_identifier_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
+fn enrich_current_package_from_class_models(
+    current_package: &mut String,
+    class_models: &[perl_semantic_analyzer::analysis::class_model::ClassModel],
+    source: &str,
+    position: usize,
+) {
+    if *current_package != "main" || class_models.is_empty() {
+        return;
+    }
+
+    let source_before_cursor = &source[..position];
+    let mut best: Option<&perl_semantic_analyzer::analysis::class_model::ClassModel> = None;
+    let mut best_start = 0usize;
+    for model in class_models {
+        let needle = format!("package {}", model.name);
+        if let Some(start) = source_before_cursor.rfind(&needle)
+            && best.is_none_or(|_| start >= best_start)
+        {
+            best = Some(model);
+            best_start = start;
+        }
+    }
+
+    if let Some(model) = best {
+        *current_package = model.name.clone();
+    }
+}
+
 impl CompletionProvider {
     /// Create a new completion provider from parsed AST for Perl script analysis
     ///
@@ -827,6 +855,12 @@ impl CompletionProvider {
             in_comment,
             word_prefix,
             prefix_start,
+        );
+        enrich_current_package_from_class_models(
+            &mut context.current_package,
+            &self.class_models,
+            source,
+            position,
         );
         context.cursor_scope_id =
             scope_distance::scope_at_position(&self.symbol_table, source, position);

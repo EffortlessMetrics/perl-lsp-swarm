@@ -8405,6 +8405,30 @@ has 'status' => (
 }
 
 #[test]
+fn inherited_moo_current_package_is_child() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "Child",
+        "receiver package context must be Child, got {:?}",
+        context.current_package
+    );
+}
+
+#[test]
 fn test_inherited_moo_accessor_completion_from_parent_class() {
     let code = r#"
 package Child;

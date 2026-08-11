@@ -3767,10 +3767,8 @@ fn score_ast_expectations(
                 .operator
                 .as_ref()
                 .is_none_or(|operator| prediction.operator.as_ref() == Some(operator));
-            let parent_operator_matches = expectation
-                .parent_operator
-                .as_ref()
-                .is_none_or(|parent_operator| {
+            let parent_operator_matches =
+                expectation.parent_operator.as_ref().is_none_or(|parent_operator| {
                     prediction.parent_operator.as_ref() == Some(parent_operator)
                 });
             if operator_matches && parent_operator_matches {

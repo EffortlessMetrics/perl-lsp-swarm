@@ -3838,7 +3838,12 @@ impl WorkspaceIndex {
     /// ```
     pub fn has_symbols(&self) -> bool {
         let files = self.files.read();
-        files.values().any(|file_index| !file_index.symbols.is_empty())
+        if files.values().any(|file_index| !file_index.symbols.is_empty()) {
+            return true;
+        }
+
+        let shards = self.fact_shards.read();
+        shards.values().any(|shard| !shard.entities.is_empty())
     }
 
     /// Search for symbols by query
@@ -4498,7 +4503,6 @@ impl WorkspaceIndex {
     /// responses, so completion can traverse indexed generated members without
     /// treating them as source-defined methods.
     pub fn get_generated_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
-        let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
         let mut members = Vec::new();
 
@@ -4506,7 +4510,6 @@ impl WorkspaceIndex {
             for entity in &shard.entities {
                 if entity.kind != EntityKind::GeneratedMember
                     || !is_framework_generated_member_entity(entity)
-                    || source_backed_qualified_names.contains(&entity.canonical_name)
                 {
                     continue;
                 }
@@ -7234,6 +7237,48 @@ has display_name => (is => 'rw');
             non_framework_symbols.is_empty(),
             "generated workspace-symbol pilot must require framework-synthesis provenance"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn has_symbols_true_for_fact_shard_only_index() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/FactOnly.pm"));
+        must(index.index_file(
+            uri,
+            r#"package Generated::FactOnly;
+use Moo;
+has status => (is => 'rw');
+1;
+"#
+            .to_string(),
+        ));
+
+        assert!(
+            index.has_symbols(),
+            "fact-shard-only indexes must still be treated as populated"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_members_include_generated_framework_members() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/PackageMembers.pm"));
+        must(index.index_file(
+            uri,
+            r#"package Generated::PackageMembers;
+use Moo;
+has status => (is => 'rw', predicate => 1);
+1;
+"#
+            .to_string(),
+        ));
+
+        let members = index.get_generated_package_members("Generated::PackageMembers");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"status"), "generated reader must be exposed: {names:?}");
+        assert!(names.contains(&"has_status"), "generated predicate must be exposed: {names:?}");
         Ok(())
     }
 

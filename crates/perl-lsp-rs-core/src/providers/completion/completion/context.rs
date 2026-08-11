@@ -77,7 +77,10 @@ impl CompletionContext {
             return sym.name.clone();
         }
 
-        // Fallback: find last package declaration without block before position
+        // Fallback: find the active package declaration before `position`.
+        // Semicolon-form packages (`package Foo;`) do not create a package scope,
+        // so the first pass above cannot match positions inside later subs.
+        // Block-form packages only apply while the cursor stays inside the block.
         let mut current = "main".to_string();
         let mut packages: Vec<&perl_semantic_analyzer::symbol::Symbol> = symbol_table
             .symbols
@@ -87,15 +90,22 @@ impl CompletionContext {
             .collect();
         packages.sort_by_key(|sym| sym.location.start);
         for sym in packages {
-            if sym.location.start <= position {
-                let has_scope = symbol_table.scopes.values().any(|sc| {
-                    sc.kind == ScopeKind::Package && sc.location.start == sym.location.start
-                });
-                if !has_scope {
+            if sym.location.start > position {
+                break;
+            }
+
+            let package_scope = symbol_table.scopes.values().find(|scope| {
+                scope.kind == ScopeKind::Package && scope.location.start == sym.location.start
+            });
+
+            match package_scope {
+                Some(scope) if scope.location.start <= position && position <= scope.location.end => {
                     current = sym.name.clone();
                 }
-            } else {
-                break;
+                Some(_) => {}
+                None => {
+                    current = sym.name.clone();
+                }
             }
         }
         current
