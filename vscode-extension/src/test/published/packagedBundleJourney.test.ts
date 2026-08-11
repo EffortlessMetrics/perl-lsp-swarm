@@ -423,6 +423,12 @@ suite('Packaged VSIX bundled-server journey', function () {
             bundledVersion.status === 'ok' && expectedVersion !== null
               ? bundledVersion.version === expectedVersion
               : false,
+          activated_version: metrics.server_version ?? null,
+          activated_version_match:
+            bundledVersion.status === 'ok' &&
+            expectedVersion !== null &&
+            metrics.server_version === bundledVersion.version &&
+            metrics.server_version === expectedVersion,
           startup_source: metrics.binary_resolution_source ?? null,
         },
         startup: metrics,
@@ -524,8 +530,30 @@ suite('Packaged VSIX bundled-server journey', function () {
                 },
               }
             : null;
+      const activatedVersion = metrics.server_version;
+      const activatedVersionBlocker =
+        bundledVersion.status !== 'ok' || expectedVersion === null || !activatedVersion
+          ? {
+              label: 'activated_server_version',
+              result: {
+                expected: expectedVersion ?? bundledVersion.version,
+                actual: activatedVersion ?? null,
+                message: 'initialized server did not report a comparable semantic version',
+              },
+            }
+          : activatedVersion !== bundledVersion.version || activatedVersion !== expectedVersion
+            ? {
+                label: 'activated_server_version',
+                result: {
+                  expected: { package: expectedVersion, bundled: bundledVersion.version },
+                  actual: activatedVersion,
+                  message: 'initialized server version disagrees with packaged identities',
+                },
+              }
+            : null;
       const productBlockers = [
         ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
+        ...(activatedVersionBlocker ? [activatedVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
       ];
