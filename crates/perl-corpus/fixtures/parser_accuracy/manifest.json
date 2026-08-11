@@ -2302,9 +2302,9 @@
         },
         {
           "line": 12,
-            "expected_tags": [
-              "function_call"
-            ]
+          "expected_tags": [
+            "function_call"
+          ]
         }
       ],
       "symbol_expectations": {
@@ -3160,7 +3160,7 @@
     },
     {
       "id": "indirect_call",
-      "family": "indirect_call",
+      "family": "function_call_disambiguation",
       "label_mode": "partial",
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/indirect_call.pl",
       "scored_lines": 20,
@@ -3197,7 +3197,7 @@
         {
           "line": 12,
           "expected_tags": [
-            "indirect_call"
+            "function_call"
           ]
         },
         {
@@ -3215,7 +3215,7 @@
         {
           "line": 17,
           "expected_tags": [
-            "indirect_call"
+            "function_call"
           ]
         },
         {
@@ -3258,7 +3258,7 @@
         },
         {
           "id": "indirect_call_user_defined",
-          "kind": "IndirectCall",
+          "kind": "FunctionCall",
           "line": 12,
           "span_text": "move $player",
           "parent_kind": "ExpressionStatement",
@@ -3288,7 +3288,7 @@
         },
         {
           "id": "indirect_call_control_flow",
-          "kind": "IndirectCall",
+          "kind": "FunctionCall",
           "line": 17,
           "span_text": "move $player",
           "parent_kind": "ExpressionStatement",
