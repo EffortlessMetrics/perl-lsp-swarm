@@ -522,6 +522,20 @@ mod tests {
     }
 
     #[test]
+    fn platform_provenance_from_another_candidate_fails_closed() {
+        let mut packet = ready_packet();
+        packet.platforms.linux.provenance.candidate_id = "other-candidate".to_string();
+        assert!(validate(&packet).is_err());
+    }
+
+    #[test]
+    fn journey_provenance_from_another_topology_fails_closed() {
+        let mut packet = ready_packet();
+        packet.journey_cells[0].provenance.topology_digest = format!("sha256:{}", "c".repeat(64));
+        assert!(validate(&packet).is_err());
+    }
+
+    #[test]
     fn workspace_artifact_provenance_cannot_pass() {
         let mut packet = ready_packet();
         packet.artifacts.perllsp.provenance = ArtifactProvenance::WorkspaceOutput;
