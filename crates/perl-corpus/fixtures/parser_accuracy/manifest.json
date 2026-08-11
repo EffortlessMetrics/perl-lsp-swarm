@@ -4357,7 +4357,7 @@
       "family": "quote_like",
       "label_mode": "partial",
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/quote_like.pl",
-      "scored_lines": 4,
+      "scored_lines": 6,
       "scored_symbols": 2,
       "fully_labeled_regions": 0,
       "partial_labeled_regions": 1,
@@ -4384,6 +4384,18 @@
           "line": 4,
           "expected_tags": [
             "variable_decl"
+          ]
+        },
+        {
+          "line": 5,
+          "expected_tags": [
+            "regex"
+          ]
+        },
+        {
+          "line": 6,
+          "expected_tags": [
+            "regex"
           ]
         }
       ],
@@ -4421,7 +4433,7 @@
         {
           "id": "quote_like_qq_string",
           "kind": "String",
-          "line": 5,
+          "line": 7,
           "span_text": "qq{$message}",
           "parent_kind": "Return",
           "depth": 4,
@@ -4429,9 +4441,29 @@
           "parent_operator": null
         },
         {
+          "id": "quote_like_substitution",
+          "kind": "Substitution",
+          "line": 5,
+          "span_text": "$message =~ s/hello/hello world/g",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_transliteration",
+          "kind": "Transliteration",
+          "line": 6,
+          "span_text": "$message =~ tr/a-z/A-Z/",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
           "id": "quote_like_return",
           "kind": "Return",
-          "line": 5,
+          "line": 7,
           "span_text": "return qq{$message}",
           "parent_kind": "Block",
           "depth": 3,
@@ -4460,7 +4492,7 @@
         {
           "id": "quote_like_no_block_at_qq",
           "kind": "Block",
-          "line": 5,
+          "line": 7,
           "parent_kind": null,
           "depth": null
         }
