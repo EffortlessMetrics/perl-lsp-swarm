@@ -8442,6 +8442,40 @@ sub inspect {
     my $self = shift;
     $self->
 }
+
+#[test]
+fn test_inherited_moo_open_package_survives_unrelated_bare_symbol_match() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub inspect {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    index
+        .index_file(
+            must(Url::parse("file:///workspace/Unrelated.pm")),
+            "package Other; sub Child { 1 }".to_string(),
+        )
+        .expect("unrelated bare symbol fixture should index");
+
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let labels: Vec<_> =
+        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+
+    assert!(
+        labels.iter().any(|label| label == "name"),
+        "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
+    );
+}
 "#;
 
     let mut parser = Parser::new(code);

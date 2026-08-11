@@ -1655,7 +1655,7 @@ pub fn add_workspace_method_completions(
 
     // Collect all methods from the receiver package AND its ancestor chain
     // (parents + roles). Child methods take priority.
-    let members = collect_all_package_members(index, &package_name);
+    let members = collect_all_package_members_with_source(index, &package_name, source);
 
     // Build an auto-import edit once for all methods from this package.
     let auto_import_edit = auto_import::build_auto_import_edit(source, &package_name);
@@ -2211,6 +2211,18 @@ pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
 ) -> Vec<WorkspaceSymbol> {
+    collect_all_package_members_with_source(index, package_name, "")
+}
+
+/// Collect package members and use the current open document as a model source
+/// when the receiver package has not been indexed yet. This keeps completion
+/// useful during editing while retaining the workspace index as the authority
+/// for persisted members and inherited packages.
+fn collect_all_package_members_with_source(
+    index: &WorkspaceIndex,
+    package_name: &str,
+    source: &str,
+) -> Vec<WorkspaceSymbol> {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
@@ -2238,46 +2250,46 @@ pub(super) fn collect_all_package_members(
         cache
             .entry(pkg.to_string())
             .or_insert_with(|| {
-                let Some(pkg_location) = index.find_definition(pkg) else {
-                    return (
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
-                };
-
-                let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                    perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                        .and_then(|path| std::fs::read_to_string(path).ok())
+                let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
+                    index.document_store().get_text(&pkg_location.uri).or_else(|| {
+                        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+                            .and_then(|path| std::fs::read_to_string(path).ok())
+                    })
                 });
 
-                let Some(text) = text else {
-                    return (
+                let fallback = || {
+                    (
                         Vec::new(),
                         Vec::new(),
                         perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
+                    )
                 };
 
-                let mut parser = perl_semantic_analyzer::Parser::new(&text);
-                let Ok(ast) = parser.parse() else {
-                    return (
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
-                };
-
-                perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
-                    .class_models
+                // A bare-symbol lookup can resolve an unrelated indexed symbol.
+                // Only suppress the open-document fallback when the indexed text
+                // actually contains the requested package model.
+                for text in indexed_text
                     .into_iter()
-                    .find(|model| model.name == pkg)
-                    .map(|model| (model.parents.clone(), model.roles.clone(), model.mro))
-                    .unwrap_or((
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    ))
+                    .chain((!source.is_empty()).then_some(source.to_string()))
+                {
+                    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+                    let Ok(ast) = parser.parse() else {
+                        continue;
+                    };
+
+                    if let Some(model) =
+                        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(
+                            &ast, &text,
+                        )
+                        .class_models
+                        .into_iter()
+                        .find(|model| model.name == pkg)
+                    {
+                        return (model.parents.clone(), model.roles.clone(), model.mro);
+                    }
+                }
+
+                fallback()
             })
             .clone()
     };
@@ -2321,7 +2333,10 @@ pub(super) fn collect_all_package_members(
         }
 
         // Collect direct members for this package
-        let members = index.get_package_members(pkg);
+        let members = index
+            .get_package_members(pkg)
+            .into_iter()
+            .chain(index.get_generated_package_members(pkg));
         for symbol in members {
             match symbol.kind {
                 WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
