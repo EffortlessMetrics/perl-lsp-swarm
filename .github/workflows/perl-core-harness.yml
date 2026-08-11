@@ -107,6 +107,7 @@ jobs:
             --modes "$PERL_MODES" \
             --perl-ref "$PERL_REF" \
             --output-dir target/perl-core/smoke/core
+
       - name: Summarize receipts
         if: always()
         shell: bash
