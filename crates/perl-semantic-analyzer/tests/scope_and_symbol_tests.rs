@@ -155,7 +155,7 @@ my ($alpha, $bravo, $charlie) = (1, 2, 3);
 
 #[test]
 fn scope_declaration_capable_builtins_initialize_handle_bindings()
--> Result<(), Box<dyn std::error::Error>> {
+    -> Result<(), Box<dyn std::error::Error>> {
     let code = r#"
 use strict;
 open my $fh, '<', 'input.txt' or die $!;
