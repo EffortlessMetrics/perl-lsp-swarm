@@ -213,6 +213,82 @@ where supported. Do not push an empty commit or rebase solely to manufacture sta
 At merge, the current head is used as compare-and-swap protection; it is not the review
 verdict.
 
+## Specialized contributor workflows
+
+The current route above remains the default. The following surfaces have additional
+bounded obligations; use their existing generators and checks rather than reimplementing
+them in a pull-request body or hand-editing derived state.
+
+### Public API and SemVer
+
+Facade crates have checked public-API baselines. Before changing a published API:
+
+```bash
+just semver-check
+just public-api-update
+```
+
+Review the generated `.ci/public-api-baselines/` changes and include only intentional
+surface movement. A focused compile or unit test does not prove downstream compatibility;
+document migration impact and the exact baseline change.
+
+### New crates, manifests, and publish topology
+
+When adding, removing, or renaming a crate:
+
+1. update the root workspace membership and dependency entries;
+2. update the current publish/topology authority when the crate is distributable;
+3. update affected package-local guidance and ownership surfaces;
+4. run metadata and publish-shape proof.
+
+```bash
+cargo metadata --no-deps --format-version 1 >/dev/null
+just publish-allowlist-check
+just publish-dry-run
+```
+
+Do not assume workspace membership implies publication, or that successful compilation
+proves packaging order, license files, or registry dependencies.
+
+### Version and release-preparation changes
+
+Version, notes, topology, candidate, approval, and publication are separate authorities.
+Ordinary contributors must not create tags or publish artifacts as part of a feature PR.
+A release-owned preparation lane may use:
+
+```bash
+just bump-version X.Y.Z
+just version-check
+just release-check
+```
+
+Review every generated version, lockfile, release-history, notes, and status change. A
+version bump does not authorize a tag, marketplace update, registry publish, or channel
+mutation.
+
+### Generated status, docs, and demo assets
+
+Use the owning generator and require a second run to produce no diff. For API docs and
+status surfaces:
+
+```bash
+just status-update
+just status-check
+just docs-check
+just docs-report
+```
+
+Screen recordings and README walkthrough assets follow
+[`docs/assets/gifs/README.md`](docs/assets/gifs/README.md). Use the repository rendering
+script rather than committing an unbounded raw recording:
+
+```bash
+python scripts/marketing/render-walkthrough-gif.py --help
+```
+
+A visual refresh should preserve the documented workflow, readable dimensions, and
+repository size limits.
+
 ## Documentation and generated state
 
 Generated status, dashboards, ledgers, and manifests must be regenerated through their
@@ -242,6 +318,18 @@ branch, worktree, or scratch state created by the lane when it is safe.
 
 Do not delete dirty, unpushed, ambiguous, or salvageable work. The pull request, reviews,
 checks, issue, and landed commit are the durable record; runtime agent state is not.
+
+## Community and licensing
+
+Use [GitHub issues](https://github.com/EffortlessMetrics/perl-lsp/issues) for confirmed
+defects and scoped implementation work. Keep reports reproducible, redact private data,
+and link the smallest relevant evidence. Repository discussion/support surfaces may be
+enabled separately; do not use a feature proposal as a substitute for a verified bug
+report or accepted plan.
+
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md), and security
+reports follow [SECURITY.md](SECURITY.md). Contributions are licensed under both
+[MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE).
 
 ## Where to ask or start
 
