@@ -77,7 +77,7 @@ copy_development_doc() {
             -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
             -e 's#../tutorials/LSP_DEVELOPMENT_GUIDE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md#g' \
             -e 's#CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
-            -e 's#ROADMAP.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md#g' \
+            -e 's#../project/ROADMAP.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md#g'
     fi
 }
 
@@ -90,7 +90,7 @@ copy_testing_doc() {
         sed_in_place "$dest" \
             -e 's#../../crates/perl-corpus/#https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/main/crates/perl-corpus/#g' \
             -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
-            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
+            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g'
     fi
 }
 
@@ -110,7 +110,7 @@ copy_config_doc() {
             -e 's#PERFORMANCE_SLO.md#performance-slo.md#g' \
             -e 's#LSP_FEATURES.md#../user-guides/lsp-features.md#g' \
             -e 's#../how-to/THREADING_CONFIGURATION_GUIDE.md#../advanced/threading-configuration.md#g' \
-            -e 's#CONFIGURATION_SCHEMA.md#configuration-schema.md#g' \
+            -e 's#CONFIGURATION_SCHEMA.md#configuration-schema.md#g'
     fi
 }
 
