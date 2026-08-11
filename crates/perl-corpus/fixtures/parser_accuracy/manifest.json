@@ -2190,8 +2190,8 @@
           "kind": "Method",
           "line": 2,
           "span_text": "method tick () { 1 }",
-          "parent_kind": "Class",
-          "depth": 2,
+          "parent_kind": "Block",
+          "depth": 3,
           "operator": null,
           "parent_operator": null
         }
