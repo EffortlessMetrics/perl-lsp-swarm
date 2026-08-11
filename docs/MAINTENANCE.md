@@ -4,10 +4,7 @@
 > **Last Updated**: 2026-07-17
 > **Applies To**: the current public-beta line (workspace `v0.17.0`; see [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) for the live version)
 >
-> The maintenance schedule and runbooks below are process guidance. The versioned support, SLA, deprecation, and roadmap material is historical planning context and is not a current commitment.
-> guidance that applies across releases. Any `v0.9.x`/`v0.10.0`-labeled schedule
-> or roadmap entries further down are a historical planning snapshot retained for
-> reference, not current release posture.
+> The maintenance schedule and runbooks below are process guidance. The versioned support, SLA, deprecation, and roadmap material is historical planning context and is not a current commitment. The historical support-policy and roadmap sections below do not define current release, support, or service-level commitments.
 
 ---
 
@@ -575,7 +572,7 @@ memory_usage = { warning = 1.25, critical = 1.5 }
 
 ## Historical Long-term Roadmap
 
-### Version Planning
+### Historical Version Planning
 
 #### v0.10.0 (Q2 2026)
 
