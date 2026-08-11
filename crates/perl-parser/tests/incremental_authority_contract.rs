@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -45,10 +46,16 @@ struct LowerTierSurface {
     entry_points: Vec<String>,
     behavior_authority: bool,
     production_eligible: bool,
-    allowed_consumers: Vec<String>,
+    allowed_consumers: Vec<AllowedConsumer>,
     next_action: String,
     owner_issue: u64,
     decision: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AllowedConsumer {
+    symbol: String,
+    source_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +70,15 @@ struct ModuleSurface {
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn workspace_root() -> PathBuf {
+    let crate_root = crate_root();
+    crate_root
+        .parent()
+        .and_then(Path::parent)
+        .expect("perl-parser must live below the workspace crates directory")
+        .to_path_buf()
 }
 
 fn read(path: impl AsRef<Path>) -> Result<String, std::io::Error> {
@@ -104,11 +120,81 @@ fn facade_incremental_reexports(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+
+        for entry in entries {
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file()
+                && path.extension().is_some_and(|extension| extension == OsStr::new("rs"))
+            {
+                files.push(path);
+            }
+        }
+    }
+
+    files.sort();
+    Ok(files)
+}
+
+fn production_rust_sources() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let crates_root = workspace_root().join("crates");
+    let mut crate_entries = fs::read_dir(&crates_root)?.collect::<Result<Vec<_>, _>>()?;
+    crate_entries.sort_by_key(|entry| entry.file_name());
+
+    let mut sources = Vec::new();
+    for entry in crate_entries {
+        if !entry.file_type()?.is_dir() || entry.file_name() == OsStr::new("perl-parser-core") {
+            continue;
+        }
+
+        let src = entry.path().join("src");
+        if src.is_dir() {
+            sources.extend(rust_source_files(&src)?);
+        }
+    }
+    sources.sort();
+    Ok(sources)
+}
+
+fn uses_lower_tier_incremental(source: &str) -> bool {
+    let compact = compact_whitespace(source);
+    compact.contains("perl_parser_core::incremental")
+        || (compact.contains("perl_parser_core::{")
+            && (compact.contains("incremental::{")
+                || compact.contains("incremental,")
+                || compact.contains("incremental}")))
+}
+
+fn normalized_workspace_path(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let relative = path.strip_prefix(workspace_root())?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn discovered_lower_tier_consumers() -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let mut consumers = BTreeSet::new();
+    for path in production_rust_sources()? {
+        let source = read(&path)?;
+        if uses_lower_tier_incremental(&source) {
+            consumers.insert(normalized_workspace_path(&path)?);
+        }
+    }
+    Ok(consumers)
+}
+
 #[test]
 fn ledger_names_one_canonical_candidate_without_claiming_readiness() -> TestResult {
     let manifest = load_manifest()?;
 
-    assert_eq!(manifest.schema_version, 2);
+    assert_eq!(manifest.schema_version, 3);
     assert_eq!(manifest.owner_issue, 6701);
     assert_eq!(manifest.canonical.module, "incremental");
     assert_eq!(manifest.canonical.path, "perl_parser::incremental");
@@ -195,6 +281,19 @@ fn every_public_incremental_generation_has_one_non_production_disposition() -> T
 }
 
 #[test]
+fn lower_tier_consumer_detector_covers_direct_and_nested_imports() {
+    assert!(uses_lower_tier_incremental(
+        "use perl_parser_core::incremental::IncrementalState;"
+    ));
+    assert!(uses_lower_tier_incremental(
+        "use perl_parser_core::{ParseOutput, incremental::{IncrementalEdit, IncrementalState}};"
+    ));
+    assert!(!uses_lower_tier_incremental(
+        "use perl_parser_core::{ParseOutput, Parser};"
+    ));
+}
+
+#[test]
 fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResult {
     let manifest = load_manifest()?;
     assert_eq!(
@@ -218,13 +317,32 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
     );
     assert!(!kernel.behavior_authority);
     assert!(!kernel.production_eligible);
-    assert_eq!(
-        kernel.allowed_consumers,
-        vec!["tree_sitter_perl_rs::Parser::parse_with_old_tree".to_string()]
-    );
     assert!(!kernel.next_action.trim().is_empty());
     assert_eq!(kernel.owner_issue, 6707);
     assert!(!kernel.decision.trim().is_empty());
+
+    let allowed_sources = kernel
+        .allowed_consumers
+        .iter()
+        .map(|consumer| consumer.source_path.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        allowed_sources.len(),
+        kernel.allowed_consumers.len(),
+        "lower-tier consumer source paths must be unique"
+    );
+    assert_eq!(
+        discovered_lower_tier_consumers()?,
+        allowed_sources,
+        "every production source consumer of perl_parser_core::incremental must be allowlisted exactly once"
+    );
+
+    let consumer = kernel
+        .allowed_consumers
+        .iter()
+        .find(|consumer| consumer.symbol == "tree_sitter_perl_rs::Parser::parse_with_old_tree")
+        .ok_or("the tree-sitter lower-tier consumer is missing from the authority ledger")?;
+    assert_eq!(consumer.source_path, "crates/tree-sitter-perl-rs/src/lib.rs");
 
     let core_facade = compact_whitespace(&read(
         crate_root().join("../perl-parser-core/src/lib.rs"),
@@ -232,9 +350,8 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
     let kernel_source = compact_whitespace(&read(
         crate_root().join("../perl-parser-core/src/incremental.rs"),
     )?);
-    let tree_sitter_facade = compact_whitespace(&read(
-        crate_root().join("../tree-sitter-perl-rs/src/lib.rs"),
-    )?);
+    let tree_sitter_facade =
+        compact_whitespace(&read(workspace_root().join(&consumer.source_path))?);
 
     assert!(
         core_facade.contains("pubmodincremental;"),
