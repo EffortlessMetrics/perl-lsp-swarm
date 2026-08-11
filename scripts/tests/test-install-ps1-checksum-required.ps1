@@ -68,6 +68,14 @@ function Invoke-WebRequest {
                 Set-Content -LiteralPath $OutFile -Encoding ascii -NoNewline -Value "$($PayloadHash.ToUpperInvariant())  $Asset`n"
                 return
             }
+            "uppercase-asset-row" {
+                Set-Content -LiteralPath $OutFile -Encoding ascii -NoNewline -Value "$PayloadHash  $($Asset.ToUpperInvariant())`n"
+                return
+            }
+            "malformed-duplicate-row" {
+                Set-Content -LiteralPath $OutFile -Encoding ascii -NoNewline -Value "$PayloadHash  $Asset`nabc123  $Asset`n"
+                return
+            }
             "short-row" {
                 Set-Content -LiteralPath $OutFile -Encoding ascii -NoNewline -Value "abc123  $Asset`n"
                 return
@@ -128,6 +136,8 @@ $Cases = @(
     @{ Name = "substring-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
     @{ Name = "duplicate-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
     @{ Name = "uppercase-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
+    @{ Name = "uppercase-asset-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
+    @{ Name = "malformed-duplicate-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
     @{ Name = "short-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
     @{ Name = "mismatch"; Expected = 1; AssetRequested = $true; Expanded = $false }
 )
