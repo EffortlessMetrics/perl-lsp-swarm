@@ -1614,7 +1614,8 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_restart_frame_capability_is_not_advertised() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_restart_frame_capability_is_not_advertised()
+    -> Result<(), Box<dyn std::error::Error>> {
         // #5045: supportsRestartFrame is not advertised because the handler
         // unconditionally returns failure ("Perl does not support restarting
         // execution from a specific stack frame").
