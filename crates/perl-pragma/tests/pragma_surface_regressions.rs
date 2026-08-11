@@ -37,10 +37,7 @@ fn eval_node(body_node: Node, start: usize, end: usize) -> Node {
 }
 
 fn string_node(value: &str, interpolated: bool, start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::String { value: value.to_string(), interpolated },
-        loc(start, end),
-    )
+    Node::new(NodeKind::String { value: value.to_string(), interpolated }, loc(start, end))
 }
 
 fn package_block(name: &str, body: Node, start: usize, end: usize) -> Node {

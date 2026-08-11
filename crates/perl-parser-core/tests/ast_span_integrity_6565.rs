@@ -20,18 +20,15 @@ fn initializer(statement: &Node) -> Result<&Node, String> {
 }
 
 fn source_text<'a>(source: &'a str, start: usize, end: usize) -> Result<&'a str, String> {
-    source
-        .get(start..end)
-        .ok_or_else(|| format!("invalid source span {start}..{end}"))
+    source.get(start..end).ok_or_else(|| format!("invalid source span {start}..{end}"))
 }
 
 #[test]
 fn declaration_span_contains_initializer() -> Result<(), String> {
     let source = "our @ISA = qw(Accuracy::Parent);";
     let ast = parse_program(source)?;
-    let statement = statements(&ast)?
-        .first()
-        .ok_or_else(|| "expected one declaration".to_string())?;
+    let statement =
+        statements(&ast)?.first().ok_or_else(|| "expected one declaration".to_string())?;
     let initializer = initializer(statement)?;
 
     if statement.location.start != 0 {
@@ -54,9 +51,8 @@ fn declaration_span_contains_initializer() -> Result<(), String> {
 fn qw_elements_have_individual_source_spans() -> Result<(), String> {
     let source = "my @names = qw(foo bar);";
     let ast = parse_program(source)?;
-    let statement = statements(&ast)?
-        .first()
-        .ok_or_else(|| "expected one declaration".to_string())?;
+    let statement =
+        statements(&ast)?.first().ok_or_else(|| "expected one declaration".to_string())?;
     let initializer = initializer(statement)?;
     let NodeKind::ArrayLiteral { elements } = &initializer.kind else {
         return Err(format!("expected qw array, got {}", initializer.kind.kind_name()));
@@ -78,14 +74,12 @@ fn qw_elements_have_individual_source_spans() -> Result<(), String> {
     Ok(())
 }
 
-
 #[test]
 fn declaration_span_retains_consumed_parenthesized_delimiter() -> Result<(), String> {
     let source = "my $value = (42);";
     let ast = parse_program(source)?;
-    let statement = statements(&ast)?
-        .first()
-        .ok_or_else(|| "expected one declaration".to_string())?;
+    let statement =
+        statements(&ast)?.first().ok_or_else(|| "expected one declaration".to_string())?;
     let initializer = initializer(statement)?;
 
     if statement.location.end < initializer.location.end {
@@ -105,9 +99,8 @@ fn declaration_span_retains_consumed_parenthesized_delimiter() -> Result<(), Str
 fn qw_span_search_starts_inside_literal_content() -> Result<(), String> {
     let source = "my @names = qw(qw foo);";
     let ast = parse_program(source)?;
-    let statement = statements(&ast)?
-        .first()
-        .ok_or_else(|| "expected one declaration".to_string())?;
+    let statement =
+        statements(&ast)?.first().ok_or_else(|| "expected one declaration".to_string())?;
     let initializer = initializer(statement)?;
     let NodeKind::ArrayLiteral { elements } = &initializer.kind else {
         return Err(format!("expected qw array, got {}", initializer.kind.kind_name()));
@@ -127,9 +120,8 @@ fn qw_span_search_starts_inside_literal_content() -> Result<(), String> {
 fn qw_span_search_ignores_comment_text_before_words() -> Result<(), String> {
     let source = "my @names = qw(# qw fake\nbar);";
     let ast = parse_program(source)?;
-    let statement = statements(&ast)?
-        .first()
-        .ok_or_else(|| "expected one declaration".to_string())?;
+    let statement =
+        statements(&ast)?.first().ok_or_else(|| "expected one declaration".to_string())?;
     let initializer = initializer(statement)?;
     let NodeKind::ArrayLiteral { elements } = &initializer.kind else {
         return Err(format!("expected qw array, got {}", initializer.kind.kind_name()));
