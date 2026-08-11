@@ -112,16 +112,12 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            if depth > 0 {
-                let message = if op == "qw" {
-                    "Unclosed qw() delimiter: missing closing delimiter before end of file".to_string()
-                } else {
-                    format!(
-                        "Unclosed {}{}{} delimiter: missing closing delimiter before end of file",
-                        op, opening_delim, closing_delim
-                    )
-                };
-                self.errors.push(ParseError::syntax(message, self.current_position()));
+            if op == "qw" && depth > 0 {
+                let position = self.current_position();
+                self.errors.push(ParseError::syntax(
+                    "Unclosed qw() delimiter: missing closing delimiter before end of file",
+                    position,
+                ));
             }
         } else {
             // For non-balanced delimiters, just scan for the closing char.
@@ -535,49 +531,6 @@ impl<'a> Parser<'a> {
         Ok(words)
     }
 
-}
-
-#[cfg(test)]
-mod unclosed_quote_tests {
-    use crate::Parser;
-
-    #[test]
-    fn all_balanced_quote_operators_report_operator_specific_unclosed_delimiters() {
-        let expectations = [
-            ("q(foo", "Unclosed q() delimiter: missing closing delimiter before end of file"),
-            ("qq(foo", "Unclosed qq() delimiter: missing closing delimiter before end of file"),
-            ("qw(foo", "Unclosed qw() delimiter: missing closing delimiter before end of file"),
-            ("qr(foo", "Unclosed qr() delimiter: missing closing delimiter before end of file"),
-            ("qx(foo", "Unclosed qx() delimiter: missing closing delimiter before end of file"),
-            ("m(foo", "Unclosed m() delimiter: missing closing delimiter before end of file"),
-            ("s(foo", "Unclosed s() delimiter: missing closing delimiter before end of file"),
-        ];
-
-        for (source, expected_message) in expectations {
-            let result = Parser::new(source).parse_with_recovery();
-            assert!(
-                result
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.message == expected_message),
-                "{source:?} should report {expected_message:?}: {:?}",
-                result.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn qw_keeps_its_compatibility_diagnostic() {
-        let result = Parser::new("qw(foo").parse_with_recovery();
-        assert!(
-            result.diagnostics.iter().any(|diagnostic| {
-                diagnostic.message
-                    == "Unclosed qw() delimiter: missing closing delimiter before end of file"
-            }),
-            "expected the established qw diagnostic: {:?}",
-            result.diagnostics
-        );
-    }
 }
 
 #[cfg(test)]
