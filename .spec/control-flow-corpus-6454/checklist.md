@@ -1,0 +1,1 @@
+# Checklist — control-flow parser corpus\n\n- [x] Source fixture added.\n- [x] Manifest entry added.\n- [x] Public parser E2E selector updated.\n- [ ] Hosted Cargo verification.\n
