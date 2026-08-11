@@ -38,8 +38,14 @@ fn initialize(client: &mut RealProcessClient, id: Value) -> Result<Value> {
 }
 
 fn assert_response_id(response: &Value, expected: &Value) -> Result<()> {
-    ensure!(response.get("jsonrpc") == Some(&json!("2.0")), "missing JSON-RPC version: {response}");
-    ensure!(response.get("id") == Some(expected), "response ID mismatch: {response}");
+    ensure!(
+        response.get("jsonrpc") == Some(&json!("2.0")),
+        "missing JSON-RPC version: {response}"
+    );
+    ensure!(
+        response.get("id") == Some(expected),
+        "response ID mismatch: {response}"
+    );
     Ok(())
 }
 
@@ -57,24 +63,35 @@ fn initialize_and_notify(client: &mut RealProcessClient, id: Value) -> Result<Va
 fn shutdown_and_exit(client: &mut RealProcessClient, id: Value) -> Result<()> {
     let response = client.request(id.clone(), "shutdown", Value::Null, timeout())?;
     assert_response_id(&response, &id)?;
-    ensure!(response.get("result").is_some_and(Value::is_null), "shutdown must return null: {response}");
+    ensure!(
+        response.get("result").is_some_and(Value::is_null),
+        "shutdown must return null: {response}"
+    );
     client.notify("exit", Value::Null)?;
     let status = client.wait_for_exit(timeout())?;
-    ensure!(status.success(), "clean shutdown exited with {status}; stderr={}", client.stderr_tail());
+    ensure!(
+        status.success(),
+        "clean shutdown exited with {status}; stderr={}",
+        client.stderr_tail()
+    );
     client.assert_transport_clean()
 }
 
 #[test]
 fn exact_candidate_completes_legal_lifecycle() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
-    ensure!(client.candidate_path().is_file(), "exact candidate path disappeared");
+    ensure!(
+        client.candidate_path().is_file(),
+        "exact candidate path disappeared"
+    );
 
     initialize_and_notify(&mut client, json!("initialize-1"))?;
     shutdown_and_exit(&mut client, json!("shutdown-1"))
 }
 
 #[test]
-fn request_before_initialize_returns_server_not_initialized_and_preserves_string_id() -> Result<()> {
+fn request_before_initialize_returns_server_not_initialized_and_preserves_string_id() -> Result<()>
+{
     let mut client = RealProcessClient::spawn_exact()?;
     let request_id = json!("before-initialize");
     let response = client.request(
@@ -88,7 +105,10 @@ fn request_before_initialize_returns_server_not_initialized_and_preserves_string
     )?;
 
     assert_response_id(&response, &request_id)?;
-    ensure!(response.pointer("/error/code") == Some(&json!(-32002)), "expected ServerNotInitialized: {response}");
+    ensure!(
+        response.pointer("/error/code") == Some(&json!(-32002)),
+        "expected ServerNotInitialized: {response}"
+    );
 
     initialize_and_notify(&mut client, json!(2))?;
     shutdown_and_exit(&mut client, json!(3))
@@ -101,7 +121,7 @@ fn numeric_and_string_ids_round_trip_over_fragmented_and_coalesced_frames() -> R
     let initialize_id = json!(7);
     let initialize_message = json!({
         "jsonrpc": "2.0",
-        "id": initialize_id,
+        "id": initialize_id.clone(),
         "method": "initialize",
         "params": {
             "processId": null,
@@ -113,7 +133,9 @@ fn numeric_and_string_ids_round_trip_over_fragmented_and_coalesced_frames() -> R
     });
     let initialize_frame = RealProcessClient::encode_message(&initialize_message);
     let first_split = initialize_frame.len().min(9);
-    let second_split = initialize_frame.len().min(first_split.saturating_add(17));
+    let second_split = initialize_frame
+        .len()
+        .min(first_split.saturating_add(17));
     client.send_raw_chunks(&[
         &initialize_frame[..first_split],
         &initialize_frame[first_split..second_split],
@@ -122,20 +144,24 @@ fn numeric_and_string_ids_round_trip_over_fragmented_and_coalesced_frames() -> R
 
     let initialize_response = client.receive_response(&initialize_id, timeout())?;
     assert_response_id(&initialize_response, &initialize_id)?;
-    ensure!(initialize_response.pointer("/result/capabilities").is_some());
+    ensure!(
+        initialize_response
+            .pointer("/result/capabilities")
+            .is_some()
+    );
     client.notify("initialized", json!({}))?;
 
     let numeric_id = json!(42);
     let string_id = json!("utf8-✓");
     let numeric_frame = RealProcessClient::encode_message(&json!({
         "jsonrpc": "2.0",
-        "id": numeric_id,
+        "id": numeric_id.clone(),
         "method": "$/perl-lsp/watchdog",
         "params": { "payload": "first" }
     }));
     let string_frame = RealProcessClient::encode_message(&json!({
         "jsonrpc": "2.0",
-        "id": string_id,
+        "id": string_id.clone(),
         "method": "$/perl-lsp/watchdog",
         "params": { "payload": "π and ✓ prove byte-length framing" }
     }));
@@ -147,8 +173,16 @@ fn numeric_and_string_ids_round_trip_over_fragmented_and_coalesced_frames() -> R
     let string_response = client.receive_response(&string_id, timeout())?;
     assert_response_id(&numeric_response, &numeric_id)?;
     assert_response_id(&string_response, &string_id)?;
-    ensure!(numeric_response.get("result").is_some_and(Value::is_null));
-    ensure!(string_response.get("result").is_some_and(Value::is_null));
+    ensure!(
+        numeric_response
+            .get("result")
+            .is_some_and(Value::is_null)
+    );
+    ensure!(
+        string_response
+            .get("result")
+            .is_some_and(Value::is_null)
+    );
 
     shutdown_and_exit(&mut client, json!(43))
 }
@@ -158,7 +192,10 @@ fn notification_is_not_answered_and_a_later_request_forms_an_ordered_barrier() -
     let mut client = RealProcessClient::spawn_exact()?;
     initialize_and_notify(&mut client, json!(1))?;
 
-    client.notify("custom/unknownNotification", json!({ "marker": "no-response" }))?;
+    client.notify(
+        "custom/unknownNotification",
+        json!({ "marker": "no-response" }),
+    )?;
     let barrier_id = json!("barrier");
     let barrier = client.request(
         barrier_id.clone(),
@@ -178,7 +215,10 @@ fn requests_after_shutdown_are_rejected_before_clean_exit() -> Result<()> {
     initialize_and_notify(&mut client, json!(1))?;
 
     let shutdown = client.request(json!(2), "shutdown", Value::Null, timeout())?;
-    ensure!(shutdown.get("result").is_some_and(Value::is_null), "shutdown failed: {shutdown}");
+    ensure!(
+        shutdown.get("result").is_some_and(Value::is_null),
+        "shutdown failed: {shutdown}"
+    );
 
     let after_shutdown_id = json!("after-shutdown");
     let after_shutdown = client.request(
@@ -195,7 +235,10 @@ fn requests_after_shutdown_are_rejected_before_clean_exit() -> Result<()> {
 
     client.notify("exit", Value::Null)?;
     let status = client.wait_for_exit(timeout())?;
-    ensure!(status.success(), "shutdown followed by exit should succeed: {status}");
+    ensure!(
+        status.success(),
+        "shutdown followed by exit should succeed: {status}"
+    );
     client.assert_transport_clean()
 }
 
@@ -206,7 +249,13 @@ fn exit_without_shutdown_returns_failure_status() -> Result<()> {
 
     client.notify("exit", Value::Null)?;
     let status = client.wait_for_exit(timeout())?;
-    ensure!(!status.success(), "exit without shutdown must fail, got {status}");
-    ensure!(status.code() == Some(1), "exit without shutdown must use status 1, got {status}");
+    ensure!(
+        !status.success(),
+        "exit without shutdown must fail, got {status}"
+    );
+    ensure!(
+        status.code() == Some(1),
+        "exit without shutdown must use status 1, got {status}"
+    );
     client.assert_transport_clean()
 }
