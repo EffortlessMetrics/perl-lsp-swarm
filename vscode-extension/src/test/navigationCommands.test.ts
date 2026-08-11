@@ -75,7 +75,7 @@ describe('navigation command implementations', () => {
     expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('perllsp 0.17.0');
   });
 
-  test('shows a healthy workspace status with explicit recovery actions', async () => {
+  test('shows a healthy workspace status with explicit product and executable identity', async () => {
     const getWorkspaceStatus = jest.fn(() => ({
       mode: 'running' as const,
       version: 'perllsp 0.17.0',
@@ -87,7 +87,7 @@ describe('navigation command implementations', () => {
     await showWorkspaceStatusCommand({ getWorkspaceStatus });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: running\nVersion: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer: perllsp (running)\nServer version: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors\nWorkspace index: legacy server (enhanced readiness unavailable)',
       'Run Health Check',
       'Show Output',
       'Open Actions',
@@ -110,7 +110,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: running\nLifecycle: ready_limited\nWorkspace index: ready_limited\nActive document: not ready\nCoverage: Workspace file limit reached\nNext: Wait for the active document to become ready.',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer: perllsp (running)\nLifecycle: ready_limited\nWorkspace index: ready_limited\nActive document: not ready\nCoverage: Workspace file limit reached\nNext: Wait for the active document to become ready.',
       'Run Health Check',
       'Show Output',
       'Open Actions',
@@ -129,7 +129,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: running\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer: perllsp (running)\nWorkspace index: legacy server (enhanced readiness unavailable)',
       'Run Health Check',
       'Show Output',
       'Open Actions',
@@ -149,7 +149,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: stopped\nLifecycle: failed\nDetail: Managed server binary is missing.\nNext: Reinstall the server.',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer: perllsp (stopped)\nLifecycle: failed\nDetail: Managed server binary is missing.\nNext: Reinstall the server.',
       'Restart Server',
       'Run Health Check',
       'Show Output',
@@ -168,7 +168,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: stopped',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer: perllsp (stopped)',
       'Restart Server',
       'Run Health Check',
       'Show Output',
