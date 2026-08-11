@@ -20,6 +20,19 @@ fn summarize_checkpoint(
     LexCheckpoint { byte: checkpoint.position, mode: checkpoint.mode, line, column }
 }
 
+fn push_summary(
+    summaries: &mut Vec<LexCheckpoint>,
+    checkpoint: &LiveLexerCheckpoint,
+    line_index: &LineIndex,
+) {
+    // A queued/virtual lexer event may expose several internal states at one
+    // byte. The public summary is intentionally one replayable boundary per
+    // byte and corresponds to the first complete live state at that boundary.
+    if summaries.last().is_none_or(|summary| summary.byte != checkpoint.position) {
+        summaries.push(summarize_checkpoint(checkpoint, line_index));
+    }
+}
+
 /// Lex one complete source and capture restart candidates from the lexer's
 /// actual live state before every emitted token and before terminal EOF.
 pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) -> LexedSource {
@@ -31,7 +44,7 @@ pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) 
 
     loop {
         let live = lexer.checkpoint();
-        checkpoints.push(summarize_checkpoint(&live, line_index));
+        push_summary(&mut checkpoints, &live, line_index);
         #[cfg(test)]
         live_checkpoints.push(live);
 
@@ -101,7 +114,7 @@ pub(crate) fn lex_from_live_checkpoint(
 
     loop {
         let live = lexer.checkpoint();
-        checkpoints.push(summarize_checkpoint(&live, line_index));
+        push_summary(&mut checkpoints, &live, line_index);
         #[cfg(test)]
         live_checkpoints.push(live);
 
