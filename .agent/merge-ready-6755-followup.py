@@ -61,6 +61,24 @@ extra_tests = r'''
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("fake"));
     }
+
+    #[test]
+    fn closed_multiline_two_body_quote_like_excludes_both_bodies() {
+        let source = concat!(
+            "my $value = 'before';\n",
+            "$value =~ s{\n",
+            "sub fake_pattern { }\n",
+            "}{\n",
+            "sub fake_replacement { }\n",
+            "};\n",
+            "sub real { }\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
+        assert!(!table.is_known_sub("fake_pattern"));
+        assert!(!table.is_known_sub("fake_replacement"));
+    }
 '''
 head, separator, tail = text.rpartition("\n}")
 if not separator:
