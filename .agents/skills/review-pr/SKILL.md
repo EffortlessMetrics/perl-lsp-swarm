@@ -155,6 +155,12 @@ same direction or from different ones.
    cannot be dispositioned per finding. `scripts/reviews/inline` never resolves
    anything; resolution stays in `scripts/reviews/disposition`.
 
+   Attribute a failing check before recording it. Confirm it ran on the live head; a
+   failure at a superseded SHA describes a commit the branch no longer has, and
+   cancelled lanes usually say so in their logs. Then confirm it does not reproduce on
+   the base; a gate already red on `main` is a repository condition to file, not a
+   candidate finding.
+
    **The integrating reviewer posts.** A skill run that only answers a bounded review
    question returns file/line-anchored findings as evidence and does not write to
    GitHub itself. One cumulative judgment is published per review pass, not one per
@@ -239,6 +245,10 @@ and one cumulative review because those remain useful after the review context e
 ## Semantic currentness
 
 - later commit alone does not invalidate review;
+- base movement alone is not a finding. This repository squash-merges; a conflict-free
+  candidate behind `main` needs no rebase, branch update, CI replay, or review refresh.
+  Do not raise "behind by N" or "rebuild on current main" as a blocker. A real conflict
+  or an actual combined-tree failure does change this; name the seam, not the distance;
 - finding repair requires checking that finding, proof, and changed seam;
 - material claim, production-route, authority, proof, compatibility, risk, or rollback
   change requires affected review;
