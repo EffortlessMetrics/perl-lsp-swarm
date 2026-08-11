@@ -52,3 +52,21 @@ fn self_delimited_qw_keeps_similar_words_as_content() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn self_delimited_qw_preserves_a_valid_closer_after_recovery() {
+    let input = "my @items = qw[word1\nwarn foo;\n];";
+    let tokens = PerlLexer::new(input).collect_tokens();
+
+    assert!(
+        !tokens.iter().any(|token| {
+            matches!(token.token_type, TokenType::Error(_))
+                && token.text.starts_with("qw")
+        }),
+        "a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"
+    );
+    assert!(
+        tokens.iter().any(|token| token.text.as_ref() == "]"),
+        "the list closer must remain in the token stream: {tokens:?}"
+    );
+}
