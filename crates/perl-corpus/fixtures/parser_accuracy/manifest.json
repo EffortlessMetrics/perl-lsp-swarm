@@ -3554,16 +3554,6 @@
           "parent_operator": null
         },
         {
-          "id": "postderef_boundary_sub_named_values",
-          "kind": "Subroutine",
-          "line": 3,
-          "span_text": "sub values {",
-          "parent_kind": "Program",
-          "depth": 1,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
           "id": "postderef_boundary_sub_spans_postderef",
           "kind": "Subroutine",
           "line": 3,
@@ -4320,6 +4310,36 @@
           "span_text": "foo() + bar()",
           "parent_kind": "Return",
           "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_string_l4_qw_foo",
+          "kind": "String",
+          "line": 4,
+          "span_text": "foo",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_string_l4_qw_bar",
+          "kind": "String",
+          "line": 4,
+          "span_text": "bar",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_functioncall_l16_bar",
+          "kind": "FunctionCall",
+          "line": 16,
+          "span_text": "bar()",
+          "parent_kind": null,
+          "depth": null,
           "operator": null,
           "parent_operator": null
         }
@@ -5315,6 +5335,16 @@
           "span_text": "\"Accuracy::Provider::Foo\"",
           "parent_kind": "FunctionCall",
           "depth": 5,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_hashliteral_l37_empty",
+          "kind": "HashLiteral",
+          "line": 37,
+          "span_text": "{}",
+          "parent_kind": null,
+          "depth": null,
           "operator": null,
           "parent_operator": null
         }
