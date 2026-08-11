@@ -197,7 +197,7 @@ export async function showStatusMenuCommand(): Promise<void> {
     {
       label: '$(pulse) Show Workspace Status',
       detail: 'Explain workspace, environment, index, and trust state',
-      command: 'perl-lsp.showWorkspaceTrustReport',
+      command: 'perl-lsp.showWorkspaceStatus',
     },
     {
       label: '$(question) Explain Provider Result',
