@@ -29,7 +29,8 @@ fn selector_payloads_reject_unknown_fields() {
 }
 
 #[test]
-fn legacy_composites_reject_overlap_and_keep_op_hook_disjoint() -> Result<(), Box<dyn std::error::Error>> {
+fn legacy_composites_reject_overlap_and_keep_op_hook_disjoint()
+-> Result<(), Box<dyn std::error::Error>> {
     let matrix = io::read_matrix(&repo_file(
         ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
     ))?;
@@ -56,7 +57,11 @@ fn legacy_composites_reject_overlap_and_keep_op_hook_disjoint() -> Result<(), Bo
         full.composite_overlap_policy,
         Some(CompositeOverlapPolicy::RejectOverlap)
     );
-    assert!(core.composite_members.iter().any(|member| member == "component_op"));
+    assert!(
+        core.composite_members
+            .iter()
+            .any(|member| member == "component_op")
+    );
     assert!(
         core.composite_members
             .iter()
