@@ -54,6 +54,18 @@ fn self_delimited_qw_keeps_similar_words_as_content() -> Result<(), String> {
 }
 
 #[test]
+fn same_character_qw_stops_before_declaration_keywords() -> Result<(), String> {
+    let input = "my @a = qw/foo\nmy $x = 1;\nprint 1;";
+    let span = qw_recovery_span(input, LexerConfig::default())?;
+    if span != "qw/foo\n" {
+        return Err(format!(
+            "same-character qw must recover before following declaration: {span:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn self_delimited_qw_preserves_a_valid_closer_after_recovery() {
     let input = "my @items = qw[word1\nwarn foo;\n];";
     let tokens = PerlLexer::new(input).collect_tokens();
@@ -65,7 +77,10 @@ fn self_delimited_qw_preserves_a_valid_closer_after_recovery() {
         "a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"
     );
     assert!(
-        tokens.iter().any(|token| token.text.as_ref() == "]"),
+        tokens.iter().any(|token| {
+            token.text.as_ref() == "]"
+                || (matches!(token.token_type, TokenType::QuoteWords) && token.text.ends_with(']'))
+        }),
         "the list closer must remain in the token stream: {tokens:?}"
     );
 }

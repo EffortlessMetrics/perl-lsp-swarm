@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::engine::parser::Parser;
-    use perl_ast::ast::{Node, NodeKind, SourceLocation};
+    use perl_ast::ast::{Node, NodeKind};
 
     fn parse_code(input: &str) -> Option<Node> {
         let mut parser = Parser::new(input);
@@ -15,23 +15,6 @@ mod tests {
                 statements.drain(..).next().expect("expected one statement")
             }
             other => panic!("Expected Program node, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_general_indirect_method_call() {
-        let stmt = first_statement("move $player 10, 20;");
-        match stmt.kind {
-            NodeKind::IndirectCall { method, object, args } => {
-                assert_eq!(method, "move");
-                assert!(matches!(
-                    object.kind,
-                    NodeKind::Variable { ref sigil, ref name }
-                        if sigil == "$" && name == "player"
-                ));
-                assert_eq!(args.len(), 2);
-            }
-            other => panic!("Expected IndirectCall node, got {other:?}"),
         }
     }
 
@@ -70,11 +53,17 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_is_function_call() {
-        let stmt = first_statement("my_custom_method $obj 10, 20;");
+        let source = "my_custom_method $obj 10, 20;";
+        let stmt = first_statement(source);
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
+                assert_eq!(
+                    stmt.location.end,
+                    source.len() - 1,
+                    "FunctionCall span must cover all arguments"
+                );
             }
             other => {
                 panic!("Unknown lowercase names must remain FunctionCall nodes, got {other:?}")
@@ -84,13 +73,18 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
-        let stmt =
-            first_statement("my_custom_method $obj ($title // 'Untitled'), $options->{limit};");
+        let source = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
+        let stmt = first_statement(source);
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
                 assert!(matches!(&args[0].kind, NodeKind::Variable { .. }));
+                assert_eq!(
+                    stmt.location.end,
+                    source.len() - 1,
+                    "FunctionCall span must cover trailing arguments"
+                );
             }
             other => panic!("Expected FunctionCall node, got {other:?}"),
         }

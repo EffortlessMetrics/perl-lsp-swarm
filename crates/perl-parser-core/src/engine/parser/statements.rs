@@ -487,6 +487,9 @@ impl<'a> Parser<'a> {
                         // `close FH || croak`.
                         let call = self.parse_indirect_call()?;
                         Ok(self.parse_named_unary_statement_tail(call)?)
+                    } else if self.is_unknown_lowercase_bareword_call_pattern(&text) {
+                        let call = self.parse_unknown_lowercase_bareword_call()?;
+                        Ok(self.parse_named_unary_statement_tail(call)?)
                     } else {
                         self.parse_expression_statement()
                     }
