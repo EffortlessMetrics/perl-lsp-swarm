@@ -1049,5 +1049,6 @@ where
                 find_nodes_recursive(item, predicate, results);
             }
         }
+        _ => {} // Future AST variants are intentionally opaque to this traversal.
     }
 }
