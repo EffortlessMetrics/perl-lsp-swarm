@@ -54,6 +54,7 @@ const E2E_FIXTURES: &[&str] = &[
     "glob_expression",
     "tie_interface",
     "indirect_call",
+    "expression_statement",
 ];
 
 #[test]
