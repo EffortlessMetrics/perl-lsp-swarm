@@ -35,7 +35,8 @@ just devex
 just pr-fast
 ```
 
-The repository pins Rust in `rust-toolchain.toml` and currently requires MSRV 1.95.
+The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
+requires MSRV 1.95.
 
 ## Choose one coherent claim
 
