@@ -544,22 +544,8 @@ mod unclosed_quote_tests {
     use crate::Parser;
 
     #[test]
-    fn qw_unclosed_delimiter_preserves_legacy_diagnostic() {
-        let result = Parser::new("qw(foo").parse_with_recovery();
-        assert!(
-            result.diagnostics.iter().any(|diagnostic| {
-                format!("{diagnostic:?}")
-                    .contains("Unclosed qw() delimiter: missing closing delimiter before end of file")
-            }),
-            "qw should preserve its established diagnostic: {:?}",
-            result.diagnostics
-        );
-    }
-
-    #[test]
-    fn balanced_quote_operators_report_unclosed_delimiters() {
-        let operators = ["q", "qq", "qr", "qx", "m", "s"];
-        for operator in operators {
+    fn balanced_quote_operators_report_operator_specific_unclosed_delimiters() {
+        for operator in ["q", "qq", "qw", "qx", "m", "s"] {
             let source = format!("{operator}(foo");
             let result = Parser::new(&source).parse_with_recovery();
             assert!(
