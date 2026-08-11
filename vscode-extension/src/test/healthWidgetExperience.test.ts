@@ -126,6 +126,31 @@ describe('HealthWidget workspace experience adapter', () => {
     expect(widget.providerReasonCode).toBeUndefined();
   });
 
+  test('clears operation state immediately when readiness changes during active progress', () => {
+    const { item, widget } = makeWidget();
+    widget.onProgress('token-1', { kind: 'begin', title: 'Indexing workspace' });
+    widget.setProviderOutcome('bounded_fallback', {
+      detail: 'Prior readiness generation used a fallback.',
+      action: 'Wait for current readiness.',
+      reasonCode: 'prior_generation_fallback',
+    });
+    const indexingText = item.text;
+
+    widget.onIndexReadinessState('ready_limited', 'ScanTimeout { elapsed_ms: 30000 }');
+
+    expect(widget.readinessState).toBe('ready_limited');
+    expect(widget.providerOutcome).toBeUndefined();
+    expect(widget.providerDetail).toBeUndefined();
+    expect(widget.providerAction).toBeUndefined();
+    expect(widget.providerReasonCode).toBeUndefined();
+    expect(widget.mode).toBe('indexing');
+    expect(item.text).toBe(indexingText);
+
+    widget.onProgress('token-1', { kind: 'end' });
+    expect(widget.mode).toBe('running');
+    expect(item.text).toContain('ready (limited)');
+  });
+
   test('running projection must not clobber active workspace indexing', () => {
     const { item, widget } = makeWidget();
     widget.onProgress('token-1', { kind: 'begin', title: 'Indexing workspace' });
