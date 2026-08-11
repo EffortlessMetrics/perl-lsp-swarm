@@ -2173,7 +2173,29 @@
         ],
         "occurrences": [],
         "edges": []
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "method_decl_class",
+          "kind": "Class",
+          "line": 1,
+          "span_text": "class Accuracy::MethodDecl",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_decl_tick",
+          "kind": "Method",
+          "line": 2,
+          "span_text": "method tick",
+          "parent_kind": "Class",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "medium_method_call",
