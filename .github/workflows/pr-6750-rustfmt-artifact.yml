@@ -1,0 +1,45 @@
+name: PR 6750 rustfmt artifact
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt-artifact:
+    if: github.event.pull_request.number == 6750
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Produce bounded rustfmt artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_file='xtask/src/tasks/generate_semantic_snapshot.rs'
+          cargo fmt -p xtask
+          mkdir -p target/rustfmt/xtask/src/tasks
+          cp "$target_file" "target/rustfmt/$target_file"
+          git diff -- "$target_file" > target/rustfmt/rustfmt.patch
+          test -s target/rustfmt/rustfmt.patch
+
+      - name: Upload bounded rustfmt artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rustfmt-pr-6750-${{ github.event.pull_request.head.sha }}
+          path: target/rustfmt
+          if-no-files-found: error
+          retention-days: 1
