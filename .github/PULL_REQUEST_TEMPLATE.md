@@ -9,6 +9,22 @@ like (#0000) or (#9999) will fail CI.
 A PR owns one coherent acceptance-and-rollback claim. Complete the sections
 that apply to that claim. Use "N/A" where a repository-specific proof surface
 genuinely does not apply; do not fabricate evidence.
+
+Reviewers, before asking for a rebuild: this repository squash-merges. A
+conflict-free candidate whose base is behind main needs no rebase, branch
+update, empty commit, CI replay, or review refresh. "Behind by N" and "targets
+<sha> while live main is <sha>" are not findings. Only a real conflict or an
+actual combined-tree failure changes that.
+
+Before attributing a failing check to the candidate, confirm it ran on the live
+head and does not also fail on main. A failure at a superseded SHA says nothing
+about the current candidate, and a gate already red on main is a repository
+condition to file, not a candidate defect.
+
+The branch keeps one writer until the claim lands. Request changes; do not push
+to someone else's candidate.
+
+See docs/agents/REVIEW_CURRENTNESS.md.
 -->
 
 ## Claim

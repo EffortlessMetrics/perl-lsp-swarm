@@ -60,6 +60,14 @@ results, unresolved contradictions, limitations, and typed result.
 
 1. Enumerate the PR's review threads with `scripts/reviews/threads <pr> [owner/repo] [--unresolved-only] [--json]`. This read-only enumerator is the sanctioned source of the `<threadId>` required by `disposition --thread` in step 5. `scripts/reviews/state` returns an aggregate classification without per-thread identity and cannot supply it; do not hand-roll a `reviewThreads` GraphQL query.
 2. Verify each finding against current source and authority; do not patch comments literally.
+   Refute, do not comply with, a finding the currentness contract already answers.
+   Base staleness, head-SHA movement, and "rebuild on current main" for a conflict-free
+   candidate are settled by [`REVIEW_CURRENTNESS.md`](../../../docs/agents/REVIEW_CURRENTNESS.md):
+   this repository squash-merges. Reply `Disposition: refuted` citing the contract.
+   Rebasing to satisfy such a request costs a full re-proof cycle, draws fresh
+   stale-head objections against the new head, and can absorb concurrent branch edits
+   unnoticed. A check anchored to a superseded SHA, or one reproducing on the base, is
+   likewise not a finding about this candidate.
 3. Batch accepted repairs through one integrating writer.
 4. Run affected focused proof.
 5. Compose the canonical human reply with `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines, then pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
