@@ -1,23 +1,20 @@
 # Perl LSP Maintenance Plan
 
-> **Status**: Active (process runbook — release-independent)
+> **Status**: Active process guidance plus explicitly historical planning snapshots
 > **Last Updated**: 2026-07-17
-> **Applies To**: the current public-alpha line (workspace `v0.17.0`; see [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) for the live version)
+> **Applies To**: the current public-beta line (workspace `v0.17.0`; see [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) for the live version)
 >
-> The maintenance schedule, support policy, and runbooks below are process
-> guidance that applies across releases. Any `v0.9.x`/`v0.10.0`-labeled schedule
-> or roadmap entries further down are a historical planning snapshot retained for
-> reference, not current release posture.
+> The maintenance schedule and runbooks below are process guidance. The versioned support, SLA, deprecation, and roadmap material is historical planning context and is not a current commitment. The historical support-policy and roadmap sections below do not define current release, support, or service-level commitments.
 
 ---
 
 ## Table of Contents
 
 1. [Maintenance Schedule](#maintenance-schedule)
-2. [Support Policy](#support-policy)
-3. [Monitoring and Metrics](#monitoring-and-metrics)
+2. [Historical Support Policy](#historical-support-policy-snapshot)
+3. [Monitoring and Metrics](#monitoring-and-metrics-process-guidance-targets-below-may-be-historical)
 4. [Team Responsibilities](#team-responsibilities)
-5. [Long-term Roadmap](#long-term-roadmap)
+5. [Historical Long-term Roadmap](#historical-long-term-roadmap)
 6. [Runbooks](#runbooks)
 7. [Emergency Procedures](#emergency-procedures)
 
@@ -100,7 +97,7 @@ cargo machete
 # Edit docs/project/ROADMAP.md based on completed work and new priorities
 ```
 
-### Patch Release Cadence
+### Historical Patch Release Cadence
 
 **Frequency**: As needed (typically 1-2 per month)
 
@@ -161,9 +158,9 @@ cargo machete
 
 ---
 
-## Support Policy
+## Historical Support-Policy Snapshot
 
-### Supported Versions
+### Historical Supported Versions (v0.9.x planning snapshot)
 
 | Version | Release Date | End of Life | Status |
 |---------|--------------|-------------|--------|
@@ -174,9 +171,9 @@ cargo machete
 - **Active (0.9.x)**: Bug fixes and security patches
 - **Deprecated (0.8.x)**: No updates, users must upgrade
 
-### Service Level Agreement (SLA)
+### Historical Service Level Agreement (SLA) Planning
 
-#### Bug Fix SLA
+#### Historical Bug Fix SLA
 
 | Priority | Response Time | Fix Time | Example |
 |----------|---------------|----------|---------|
@@ -204,7 +201,7 @@ cargo machete
 4. Coordinate disclosure timeline with reporter
 5. Release patch and advisory simultaneously
 
-#### Compatibility Guarantees
+#### Historical Compatibility Guarantees
 
 **API Stability** (v0.9.x):
 - Public APIs remain stable within major version
@@ -227,7 +224,7 @@ cargo machete
 - Windows (x86_64): Supported through v1.x
 - Minimum supported OS versions documented in INSTALLATION.md
 
-### Deprecation Policy
+### Historical Deprecation Policy
 
 **Deprecation Timeline**:
 
@@ -252,7 +249,7 @@ cargo machete
 
 ---
 
-## Monitoring and Metrics
+## Monitoring and Metrics (process guidance; targets below may be historical)
 
 ### Key Performance Indicators (KPIs)
 
@@ -573,9 +570,9 @@ memory_usage = { warning = 1.25, critical = 1.5 }
 
 ---
 
-## Long-term Roadmap
+## Historical Long-term Roadmap
 
-### Version Planning
+### Historical Version Planning
 
 #### v0.10.0 (Q2 2026)
 
