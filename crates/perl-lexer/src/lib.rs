@@ -3513,7 +3513,7 @@ impl<'a> PerlLexer<'a> {
             {
                 return self.qw_has_top_level_closer_after(position, close);
             }
-            if ch == '\n' {
+            if ch == '\n' || ch == '\r' {
                 at_line_prefix = true;
             } else if at_line_prefix && !ch.is_whitespace() {
                 at_line_prefix = false;
