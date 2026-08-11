@@ -382,3 +382,81 @@ mod heredoc_fuzz_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod heredoc_branch_tests {
+    use super::{after_line_break, map_heredoc_quote_kind, parse_heredoc_delimiter};
+    use crate::engine::parser::heredoc_collector::QuoteKind;
+
+    #[test]
+    fn parses_empty_and_semicolon_terminated_labels() {
+        assert_eq!(parse_heredoc_delimiter("<<"), (String::new(), true, false, false));
+        assert_eq!(
+            parse_heredoc_delimiter("<<;"),
+            (String::new(), true, false, false)
+        );
+    }
+
+    #[test]
+    fn parses_indented_and_quoted_labels() {
+        assert_eq!(
+            parse_heredoc_delimiter("<<~EOF"),
+            ("EOF".to_string(), true, true, false)
+        );
+        assert_eq!(
+            parse_heredoc_delimiter("<<'EOF'"),
+            ("EOF".to_string(), false, false, false)
+        );
+        assert_eq!(
+            parse_heredoc_delimiter("<<\"E\\\\nOF\""),
+            ("E\nOF".to_string(), true, false, false)
+        );
+    }
+
+    #[test]
+    fn parses_literal_and_command_labels() {
+        assert_eq!(
+            parse_heredoc_delimiter(r"<<\EOF"),
+            ("EOF".to_string(), false, false, false)
+        );
+        let command = format!("<<{}echo EOF{}", 96 as char, 96 as char);
+        assert_eq!(
+            parse_heredoc_delimiter(&command),
+            ("echo EOF".to_string(), true, false, true)
+        );
+    }
+
+    #[test]
+    fn maps_quote_kinds_for_supported_delimiters() {
+        assert!(matches!(
+            map_heredoc_quote_kind(r"<<\EOF", false),
+            QuoteKind::Single
+        ));
+        assert!(matches!(
+            map_heredoc_quote_kind("<<'EOF'", false),
+            QuoteKind::Single
+        ));
+        assert!(matches!(
+            map_heredoc_quote_kind("<<\"EOF\"", true),
+            QuoteKind::Double
+        ));
+        let command = format!("<<{}EOF{}", 96 as char, 96 as char);
+        assert!(matches!(
+            map_heredoc_quote_kind(&command, true),
+            QuoteKind::Backtick
+        ));
+        assert!(matches!(
+            map_heredoc_quote_kind("<<EOF", true),
+            QuoteKind::Unquoted
+        ));
+    }
+
+    #[test]
+    fn advances_over_lf_crlf_and_end_of_input() {
+        assert_eq!(after_line_break(b"abc\ndef", 0), 4);
+        assert_eq!(after_line_break(b"abc\r\ndef", 0), 5);
+        assert_eq!(after_line_break(b"abc\rdef", 0), 4);
+        assert_eq!(after_line_break(b"abcdef", 0), 6);
+        assert_eq!(after_line_break(b"abc\ndef", 99), 99);
+    }
+}

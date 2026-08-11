@@ -114,7 +114,8 @@ fn tag_equality_across_module_paths() {
 fn diagnostic_struct_binds_unified_severity_type() {
     use perl_diagnostics::types::Diagnostic;
 
-    let diag = Diagnostic { severity: CodesSeverity::Error, ..Default::default() };
+    let mut diag = Diagnostic::default();
+    diag.severity = CodesSeverity::Error;
 
     // The field must accept CodesSeverity (same as TypesSeverity)
     let _severity: TypesSeverity = diag.severity;

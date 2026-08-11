@@ -140,10 +140,11 @@ fn test_tag_type_identity_same_underlying_type() {
 // Test 11: Diagnostic struct uses unified severity type
 #[test]
 fn test_diagnostic_struct_uses_unified_severity() {
+    use perl_diagnostics::codes::DiagnosticCode;
     use perl_diagnostics::types::Diagnostic;
     use perl_diagnostics::types::DiagnosticSeverity;
 
-    let diag = Diagnostic { severity: DiagnosticSeverity::Error, ..Default::default() };
+    let diag = Diagnostic::new(DiagnosticCode::default(), DiagnosticSeverity::Error, (0, 0), "");
 
     // The field should bind to the unified type
     let _severity = diag.severity;
@@ -265,12 +266,13 @@ fn test_publish_allowlist_count_should_be_118() {
 #[test]
 fn test_no_circular_dependency_codes_types() {
     use perl_diagnostics::codes::DiagnosticCode;
-    use perl_diagnostics::types::Diagnostic;
+    use perl_diagnostics::types::{Diagnostic, DiagnosticSeverity};
 
     // codes module exports DiagnosticCode (used by types)
     // types module re-exports from codes
     // This assignment demonstrates the dependency direction is correct
-    let diag = Diagnostic { code: DiagnosticCode::ParseError, ..Default::default() };
+    let diag =
+        Diagnostic::new(DiagnosticCode::ParseError, DiagnosticSeverity::default(), (0, 0), "");
 
     let _ = diag;
 }
@@ -280,14 +282,12 @@ fn test_no_circular_dependency_codes_types() {
 fn test_diagnostic_struct_fields_accessible() {
     use perl_diagnostics::types::{Diagnostic, DiagnosticSeverity};
 
-    let diag = Diagnostic {
-        code: perl_diagnostics::codes::DiagnosticCode::ParseError,
-        severity: DiagnosticSeverity::Error,
-        range: Default::default(),
-        message: "test".to_string(),
-        related_information: None,
-        tags: None,
-    };
+    let mut diag = Diagnostic::new(
+        perl_diagnostics::codes::DiagnosticCode::ParseError,
+        DiagnosticSeverity::Error,
+        Default::default(),
+        "test",
+    );
 
     // All fields must be accessible (struct not broken by unification)
     assert_eq!(diag.message, "test");
@@ -349,7 +349,7 @@ fn test_diagnostic_meta_reexport() {
 fn test_related_information_struct_accessible() {
     use perl_diagnostics::types::RelatedInformation;
 
-    let info = RelatedInformation { message: "test".to_string(), location: Default::default() };
+    let info = RelatedInformation::new("test", Default::default());
 
     assert_eq!(info.message, "test");
 }

@@ -30,6 +30,7 @@
     "outcome": "failed",
     "observed_release_identity": null,
     "artifact_verified": false,
+    "artifact_sha256": null,
     "known_good_preserved": true,
     "partial_artifact_promoted": false,
     "mixed_version_reported_ready": false,

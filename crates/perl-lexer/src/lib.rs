@@ -3539,17 +3539,23 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn qw_has_top_level_closer_after(&self, position: usize, close: char) -> bool {
-        if close != ')' {
-            return false;
-        }
+        let (open, close) = match close {
+            ')' => ("(", ")"),
+            ']' => ("[", "]"),
+            '}' => ("{", "}"),
+            '>' => ("<", ">"),
+            _ => return false,
+        };
         let mut lexer = Self::without_qw_recovery(&self.input[position..], self.config.clone());
         let mut depth = 0usize;
         while let Some(token) = lexer.next_token() {
-            match token.token_type {
-                TokenType::LeftParen => depth = depth.saturating_add(1),
-                TokenType::RightParen if depth == 0 => return true,
-                TokenType::RightParen => depth = depth.saturating_sub(1),
-                _ => {}
+            if token.text.as_ref() == open {
+                depth = depth.saturating_add(1);
+            } else if token.text.as_ref() == close {
+                if depth == 0 {
+                    return true;
+                }
+                depth = depth.saturating_sub(1);
             }
         }
         false
@@ -3573,12 +3579,25 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
-        if remaining
-            .strip_prefix("print")
-            .is_some_and(|after| after.starts_with(char::is_whitespace))
-            && self.qw_statement_terminates(position)
-        {
-            return true;
+        for keyword in ["print", "warn", "say"] {
+            if remaining
+                .strip_prefix(keyword)
+                .is_some_and(|after| after.starts_with(char::is_whitespace))
+                && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        if let Some(symbol_table) = &self.config.symbol_table {
+            if remaining.split_whitespace().next().is_some_and(|keyword| {
+                symbol_table.is_known_sub(keyword)
+                    && remaining
+                        .strip_prefix(keyword)
+                        .is_some_and(|after| after.starts_with(char::is_whitespace))
+            }) && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
         }
         self.qw_block_statement_boundary_at(position)
     }
@@ -4004,7 +4023,7 @@ impl<'a> PerlLexer<'a> {
                 self.parse_regex_modifiers(&quote_handler::M_SPEC);
                 body_closed
             }
-            "qw" if delimiter == '(' && self.qw_recovery_enabled => {
+            "qw" if self.qw_recovery_enabled => {
                 let (_body, body_closed) = self.read_qw_body(delimiter);
                 body_closed
             }
