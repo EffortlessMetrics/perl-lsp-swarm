@@ -60,10 +60,7 @@ fn assert_suppressed_token(
     text: &str,
     expected: SuppressedKind,
 ) -> R {
-    let matches = tokens
-        .iter()
-        .filter(|token| token.text.as_ref() == text)
-        .collect::<Vec<_>>();
+    let matches = tokens.iter().filter(|token| token.text.as_ref() == text).collect::<Vec<_>>();
     if matches.len() != 1 {
         return Err(missing(format!(
             "expected one suppressed {text:?} token in {source:?}, got {}",
@@ -133,19 +130,19 @@ fn every_operator_family_owns_exact_whole_token_geometry() -> R {
 }
 
 #[test]
-fn bare_reserved_operator_names_without_delimiters_are_source_anchored_errors() -> R {
+fn bare_reserved_operator_names_without_delimiters_remain_identifiers() -> R {
     for name in ["q", "qq", "qw", "qx", "qr", "m", "s", "tr", "y"] {
         let mut lexer = PerlLexer::new(name);
-        let token = next(&mut lexer, "missing bare quote-operator error")?;
+        let token = next(&mut lexer, "missing bare quote-operator identifier")?;
         assert!(
-            matches!(&token.token_type, TokenType::Error(message) if message.contains("delimiter")),
-            "bare {name:?} must be a missing-delimiter error, got {:?}",
+            matches!(&token.token_type, TokenType::Identifier(identifier) if identifier.as_ref() == name),
+            "bare {name:?} must remain an identifier, got {:?}",
             token.token_type
         );
         assert_eq!(token.text.as_ref(), name);
         assert_eq!((token.start, token.end), (0, name.len()));
 
-        let eof = next(&mut lexer, "missing EOF after bare quote-operator error")?;
+        let eof = next(&mut lexer, "missing EOF after bare quote-operator identifier")?;
         assert!(matches!(&eof.token_type, TokenType::EOF));
         assert_eq!((eof.start, eof.end), (name.len(), name.len()));
         assert!(lexer.next_token().is_none());
@@ -242,11 +239,7 @@ fn malformed_forms_emit_one_source_anchored_error_then_eof() -> R {
 
 #[test]
 fn multiline_unicode_and_all_line_endings_preserve_byte_extent() -> R {
-    for lexeme in [
-        "qq{\n café $name\n}",
-        "qq{\r\n café $name\r\n}",
-        "qq{\r café $name\r}",
-    ] {
+    for lexeme in ["qq{\n café $name\n}", "qq{\r\n café $name\r\n}", "qq{\r café $name\r}"] {
         let mut lexer = PerlLexer::new(lexeme);
         let token = next(&mut lexer, "missing multiline quote token")?;
         assert!(matches!(&token.token_type, TokenType::QuoteDouble));
