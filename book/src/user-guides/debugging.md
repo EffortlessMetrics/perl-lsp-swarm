@@ -5,9 +5,9 @@ Perl debugging is available via the `perl-dap` Debug Adapter Protocol (DAP) serv
 ## Current Status (Native Adapter)
 
 - **Launch debugging**: supported
-- **TCP attach**: transport handshake is present, but interactive attach is not supported by the native adapter yet
+- **TCP attach**: transport handshake is present; interactive attach remains unsupported because ordinary control and inspection requests are not routed through attached sessions yet
 - **Variables/evaluate**: parsed values are used when available; placeholder fallback remains when parsing provides no value, and scorecard receipts are a separate verification gap
-- **Legacy bridge**: compatibility-only; native launch and TCP attach use the built-in runtime
+- **Legacy bridge**: compatibility-only; native launch uses the built-in runtime; TCP attach remains a transport-only preview
 
 ## Features
 
@@ -16,7 +16,7 @@ Perl debugging is available via the `perl-dap` Debug Adapter Protocol (DAP) serv
 - **Step Controls**: Step over, step into, step out
 - **Call Stack**: Navigate through the call stack (best-effort)
 - **Variable Inspection**: Parsed native-adapter values are rendered when available; placeholder fallback remains for unavailable values
-- **Evaluate**: Native-adapter evaluation is available where the active session routes the request
+- **Evaluate**: Native-adapter evaluation is available for launched sessions where the active session routes the request
 - **Conditional Breakpoints**: Best-effort conditions via Perl debugger
 
 ### Test Debugging
@@ -107,7 +107,7 @@ The Perl Language Server extension automatically detects and uses the debug adap
 - Use the Breakpoints panel to manage all breakpoints
 
 ### Variables
-- Native adapter sessions render debugger values in the Variables panel.
+- Native launch sessions render debugger values in the Variables panel. Attached sessions remain transport-only until ordinary control and inspection requests are routed.
 - Session correctness and evaluate scorecards are tracked separately in [DAP status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/dap.md).
 
 ## Configuration Options
@@ -197,7 +197,7 @@ The debugging system consists of:
 ## Limitations
 
 - Remote debugging not yet supported
-- Native TCP attach and session scorecards remain distinct verification surfaces
+- TCP attach remains a transport-only preview; session scorecards remain a distinct verification surface
 - Some variable/evaluate edge cases may not be covered by the current scorecard receipts
 - Some Perl internals may not be inspectable
 
