@@ -76,6 +76,18 @@ fn self_delimited_qw_handles_cr_only_recovery() -> Result<(), String> {
 }
 
 #[test]
+fn self_delimited_qw_does_not_borrow_a_cr_only_later_semicolon() -> Result<(), String> {
+    let input = "my @items = qw[word1\rwarn foo\rprint 1;";
+    let span = qw_recovery_span(input, LexerConfig::default())?;
+    if !span.contains("warn foo") {
+        return Err(format!(
+            "CR-only later semicolon incorrectly created a recovery boundary: {span:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn self_delimited_qw_preserves_a_valid_cr_only_closer() -> Result<(), String> {
     let input = "my @items = qw[word1\rwarn foo;\r];";
     let tokens = PerlLexer::new(input).collect_tokens();
