@@ -2302,9 +2302,9 @@
         },
         {
           "line": 12,
-          "expected_tags": [
-            "function_call"
-          ]
+            "expected_tags": [
+              "function_call"
+            ]
         }
       ],
       "symbol_expectations": {
