@@ -269,7 +269,7 @@ fn assert_node_absent(fixture_id: &str, forbidden: &ForbiddenNode, observed: &[O
 
     assert!(
         offender.is_none(),
-        "fixture {fixture_id:?} violates forbidden node {{}}: found kind {{}} on line {{}} spanning {{:?}}",
+        "fixture {fixture_id:?} violates forbidden node {}: found kind {} on line {} spanning {:?}",
         forbidden.id,
         forbidden.kind,
         forbidden.line,
