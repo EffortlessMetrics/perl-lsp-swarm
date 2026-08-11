@@ -116,6 +116,17 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
         })?;
         let observed = collect_observed_nodes(&ast, &source);
 
+        // Per-fixture, not just in aggregate: a shared counter cannot tell that one
+        // selected fixture lost every assertion while the others kept the suite green,
+        // which is exactly the hollow-fixture state this selector exists to prevent.
+        let contributed = fixture.ast_expectations.len() + fixture.forbidden_nodes.len();
+        assert!(
+            contributed > 0,
+            "fixture `{}` is selected by E2E_FIXTURES but contributes no assertion: \
+             give it `ast_expectations` or `forbidden_nodes`, or remove it from the selector",
+            fixture.id
+        );
+
         for expectation in &fixture.ast_expectations {
             assert_observed_expectation(&fixture.id, expectation, &observed);
             exercised += 1;

@@ -154,6 +154,16 @@
           "depth": 2,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "dynamic_require_module_string",
+          "kind": "String",
+          "line": 3,
+          "span_text": "\"Accuracy::Plugin\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -1271,6 +1281,16 @@
           "depth": null,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "imports_exports_qw_string",
+          "kind": "String",
+          "line": 6,
+          "span_text": "qw(answer)",
+          "parent_kind": "ArrayLiteral",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -1675,6 +1695,26 @@
           "span_text": "Accuracy::Same::B::run()",
           "parent_kind": null,
           "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_alpha_string",
+          "kind": "String",
+          "line": 4,
+          "span_text": "\"A\"",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_beta_string",
+          "kind": "String",
+          "line": 10,
+          "span_text": "\"B\"",
+          "parent_kind": "Return",
+          "depth": 4,
           "operator": null,
           "parent_operator": null
         }
