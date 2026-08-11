@@ -242,6 +242,26 @@ fn duplicate_current_file_path_is_not_proven() -> TestResult {
 }
 
 #[test]
+fn duplicate_accepted_file_path_is_not_proven() -> TestResult {
+    let mut accepted = sample_v2_baseline(1, 1);
+    accepted.file_results.push(RunFileResult {
+        path: "base/0.t".into(),
+        status: RunnerStatus::Pass,
+        assertions_passed: 1,
+        assertions_total: 1,
+    });
+    let current = sample_report(1, 1);
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::NotProven
+        || classification.requires_candidate
+        || !classification.reason.contains("accepted observation repeats")
+    {
+        bail!("duplicate accepted paths must be rejected before comparison");
+    }
+    Ok(())
+}
+
+#[test]
 fn additional_failed_assertions_are_regression() -> TestResult {
     let mut accepted = sample_v2_baseline(1, 0);
     accepted.file_results[0].assertions_passed = 1;
