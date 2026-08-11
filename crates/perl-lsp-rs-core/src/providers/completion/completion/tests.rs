@@ -8445,6 +8445,20 @@ sub greet {
         "open receiver must resolve to current package: {evidence:?}"
     );
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let mut workspace_completions = Vec::new();
+    super::workspace::add_workspace_method_completions(
+        &mut workspace_completions,
+        &context,
+        code,
+        Some(&type_engine),
+        &Some(index.clone()),
+        &std::collections::HashSet::new(),
+    );
+    assert!(
+        workspace_completions.iter().any(|item| item.label == "name"),
+        "workspace provider must emit inherited generated members, got {:?}",
+        workspace_completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
     let completions = provider.get_completions(code, pos);
 
     assert!(
