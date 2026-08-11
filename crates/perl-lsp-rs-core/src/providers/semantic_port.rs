@@ -34,7 +34,7 @@ impl ProviderIdentity {
     /// Whether this value carries a non-empty stable identity.
     #[must_use]
     pub fn is_known(&self) -> bool {
-        matches!(self, Self::Known(value) if !value.is_empty())
+        matches!(self, Self::Known(value) if !value.trim().is_empty())
     }
 
     fn is_malformed(&self) -> bool {
@@ -850,7 +850,8 @@ mod tests {
         );
 
         assert_eq!(serde_json::to_string(&left)?, serde_json::to_string(&right)?);
-        assert_eq!(left.limitations(), ["a".to_string(), "z".to_string()]);
+        let expected_limitations = vec!["a".to_string(), "z".to_string()];
+        assert_eq!(left.limitations(), expected_limitations.as_slice());
         Ok(())
     }
 
