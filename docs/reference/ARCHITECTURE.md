@@ -36,7 +36,7 @@ The table is a navigation aid, not a complete crate inventory. When it conflicts
 Perl source is handled by the native parser stack in layers:
 
 1. The lexer/token packages preserve source-oriented token information and lexical context.
-2. perl-parser-core owns the low-level parsing engine, AST-facing nodes, parse results, position/trivia infrastructure, and recovery boundaries.
+2. perl-ast owns the AST node types and methods; perl-parser-core owns the low-level parsing engine, parse results, position/trivia infrastructure, and recovery boundaries while constructing those AST values.
 3. perl-parser provides the higher-level parsing facade and re-exports the analysis, workspace, refactoring, and provider-oriented surfaces that downstream users commonly need together.
 4. Semantic and workspace packages consume parser output for symbol, scope, module, index, and cross-file operations.
 
@@ -66,7 +66,8 @@ Former crates may be represented by modules inside a surviving package. The comm
 
 ## How to choose a change seam
 
-- Syntax or AST behavior: begin with perl-parser-core and its focused tests.
+- AST types or methods: begin with perl-ast and its focused tests.
+- Syntax, parsing, or recovery behavior: begin with perl-parser-core and its focused tests.
 - Higher-level parser API or combined parser facade: begin with perl-parser.
 - Scope, symbols, modules, or cross-file behavior: begin with the owning semantic/workspace package.
 - LSP protocol, runtime, capability, or provider behavior: begin with perl-lsp-rs-core and its package-local guidance.
