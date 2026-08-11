@@ -2,6 +2,7 @@
 
 use crate::model::{
     TARGET_SELECTION_SCHEMA_VERSION, TargetKind, TargetSelectionContract, TargetSelector,
+    TargetTerminalPolicy,
 };
 use std::collections::BTreeSet;
 
@@ -15,6 +16,13 @@ impl TargetSelectionContract {
         }
         validate_stable_id(&self.target_id, "target ID")?;
         validate_nonempty(&self.upstream_name, "upstream name")?;
+        validate_sorted_unique_strings(&self.aliases, "target alias")?;
+        if self.aliases.iter().any(|alias| alias == &self.upstream_name) {
+            return Err(format!(
+                "target {} repeats its upstream name as an alias",
+                self.target_id
+            ));
+        }
         validate_nonempty(&self.display_name, "display name")?;
         validate_nonempty(&self.perl_version_row, "Perl version row")?;
         validate_nonempty(&self.authority.entrypoint, "authority entrypoint")?;
@@ -36,14 +44,12 @@ impl TargetSelectionContract {
             return Err(format!("target {} contains duplicate script forms", self.target_id));
         }
         validate_sorted_unique_strings(&self.composite_members, "composite member")?;
-        validate_sorted_unique_strings(&self.runner_switches, "runner switch")?;
+        validate_unique_strings_in_order(&self.runner_switches, "runner switch")?;
         validate_sorted_unique_strings(&self.capability_predicates, "capability predicate")?;
         validate_sorted_unique_strings(&self.preparation.required_products, "required product")?;
 
-        for (name, value) in &self.environment {
-            validate_nonempty(name, "environment key")?;
-            validate_nonempty(value, "environment value")?;
-        }
+        validate_string_map(&self.variant_parameters, "variant parameter")?;
+        validate_string_map(&self.environment, "environment")?;
         for exclusion in &self.exclusions {
             validate_nonempty(&exclusion.subject, "exclusion subject")?;
             validate_stable_id(&exclusion.reason_code, "exclusion reason")?;
@@ -67,9 +73,18 @@ impl TargetSelectionContract {
                 self.target_id
             ));
         }
-        if self.variant_of.is_some() || !self.composite_members.is_empty() {
+        if self.variant_of.is_some()
+            || !self.composite_members.is_empty()
+            || self.composite_overlap_policy.is_some()
+        {
             return Err(format!(
                 "physical target {} cannot be a variant or composite",
+                self.target_id
+            ));
+        }
+        if !self.variant_parameters.is_empty() {
+            return Err(format!(
+                "physical target {} cannot define variant parameters",
                 self.target_id
             ));
         }
@@ -83,9 +98,9 @@ impl TargetSelectionContract {
                 self.target_id
             ));
         }
-        if !self.composite_members.is_empty() {
+        if !self.composite_members.is_empty() || self.composite_overlap_policy.is_some() {
             return Err(format!(
-                "selector variant {} cannot contain composite members",
+                "selector variant {} cannot contain composite state",
                 self.target_id
             ));
         }
@@ -99,9 +114,21 @@ impl TargetSelectionContract {
                 self.target_id
             ));
         }
-        if !self.composite_members.is_empty() {
+        if !self.composite_members.is_empty() || self.composite_overlap_policy.is_some() {
             return Err(format!(
-                "environment variant {} cannot contain composite members",
+                "environment variant {} cannot contain composite state",
+                self.target_id
+            ));
+        }
+        let changes_invocation = !self.runner_switches.is_empty()
+            || !self.variant_parameters.is_empty()
+            || !self.environment.is_empty()
+            || !self.script_forms.is_empty()
+            || !self.capability_predicates.is_empty()
+            || self.terminal_policy != TargetTerminalPolicy::Inherited;
+        if !changes_invocation {
+            return Err(format!(
+                "environment variant {} does not change any declared invocation input",
                 self.target_id
             ));
         }
@@ -112,9 +139,13 @@ impl TargetSelectionContract {
         if !self.selectors.is_empty()
             || !self.script_forms.is_empty()
             || self.preparation.make_target.is_none()
+            || self.variant_of.is_some()
+            || !self.composite_members.is_empty()
+            || self.composite_overlap_policy.is_some()
+            || !self.variant_parameters.is_empty()
         {
             return Err(format!(
-                "preparation target {} cannot define a source denominator",
+                "preparation target {} cannot define a source denominator or variant",
                 self.target_id
             ));
         }
@@ -125,9 +156,12 @@ impl TargetSelectionContract {
         if self.composite_members.is_empty()
             || !self.selectors.is_empty()
             || !self.script_forms.is_empty()
+            || self.variant_of.is_some()
+            || self.composite_overlap_policy.is_none()
+            || !self.variant_parameters.is_empty()
         {
             return Err(format!(
-                "composite target {} requires only component target IDs",
+                "composite target {} requires only members and an overlap policy",
                 self.target_id
             ));
         }
@@ -138,9 +172,11 @@ impl TargetSelectionContract {
         if self.variant_of.is_none()
             || !self.selectors.is_empty()
             || !self.script_forms.is_empty()
+            || !self.composite_members.is_empty()
+            || self.composite_overlap_policy.is_some()
         {
             return Err(format!(
-                "instrumentation target {} must reference an existing target",
+                "instrumentation target {} must reference one existing target",
                 self.target_id
             ));
         }
@@ -182,6 +218,31 @@ fn validate_external_selector(value: &str) -> Result<(), String> {
         || rest.split('/').any(|component| component == "." || component == "..")
     {
         return Err(format!("invalid external selector {value}"));
+    }
+    Ok(())
+}
+
+fn validate_string_map(
+    values: &std::collections::BTreeMap<String, String>,
+    label: &str,
+) -> Result<(), String> {
+    for (name, value) in values {
+        validate_nonempty(name, &format!("{label} key"))?;
+        validate_nonempty(value, &format!("{label} value"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_unique_strings_in_order(
+    values: &[String],
+    label: &str,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        validate_nonempty(value, label)?;
+        if !seen.insert(value) {
+            return Err(format!("{label} values must be unique"));
+        }
     }
     Ok(())
 }
