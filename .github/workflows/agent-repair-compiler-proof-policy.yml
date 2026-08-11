@@ -57,13 +57,33 @@ jobs:
       - name: Verify Clippy
         run: |
           set +e
-          output=$(cargo clippy -p xtask --bin compiler-proof-policy -- -D warnings 2>&1)
+          cargo clippy -p xtask --bin compiler-proof-policy --message-format=json -- -D warnings > /tmp/clippy.jsonl
           status=$?
-          printf '%s\n' "$output"
-          if [ "$status" -ne 0 ]; then
-            diagnostic=$(printf '%s\n' "$output" | grep -E '^(error|warning):|^[[:space:]]*-->' | head -n 12 | tr '\n' ' ')
-            echo "::error title=Compiler proof policy Clippy::$diagnostic"
-          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          emitted = 0
+          for raw in Path('/tmp/clippy.jsonl').read_text().splitlines():
+              try:
+                  item = json.loads(raw)
+              except json.JSONDecodeError:
+                  continue
+              if item.get('reason') != 'compiler-message':
+                  continue
+              message = item.get('message', {})
+              if message.get('level') != 'error':
+                  continue
+              spans = [span for span in message.get('spans', []) if span.get('is_primary')]
+              span = spans[0] if spans else {}
+              text = message.get('message', 'Clippy failed').replace('\n', ' ')
+              file = span.get('file_name', '.github')
+              line = span.get('line_start', 1)
+              print(f'::error file={file},line={line},title=Compiler proof policy Clippy::{text}')
+              emitted += 1
+          if not emitted:
+              print('::error title=Compiler proof policy Clippy::Clippy failed without a structured error diagnostic')
+          PY
           exit "$status"
 
       - name: Verify generated status
