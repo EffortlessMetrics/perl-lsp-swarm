@@ -16,7 +16,7 @@ jobs:
       - name: Checkout exact branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          fetch-depth: 3
+          fetch-depth: 4
           ref: test/lsp-client-support-registry-6739
 
       - name: Install pinned Rust toolchain
@@ -35,7 +35,7 @@ jobs:
           from pathlib import Path
 
           carrier = subprocess.run(
-              ["git", "show", "HEAD^^:.github/workflows/workflow-trigger-lint.yml"],
+              ["git", "show", "HEAD^^^:.github/workflows/workflow-trigger-lint.yml"],
               check=True,
               capture_output=True,
               text=True,
@@ -69,7 +69,7 @@ jobs:
           robust = '''lines = text.splitlines()
           start = next(
               (index for index, line in enumerate(lines)
-               if line.strip() == "let allowed_tiers = registry"),
+               if line.strip().startswith("let allowed_tiers")),
               None,
           )
           end = next(
