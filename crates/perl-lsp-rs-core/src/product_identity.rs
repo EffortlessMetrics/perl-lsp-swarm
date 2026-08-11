@@ -282,19 +282,22 @@ impl BinaryIdentityPacketV1 {
 }
 
 /// Detect a supported one-shot identity request without replacing the ordinary CLI parser.
+///
+/// Mixed identity and operational arguments are deliberately rejected so a
+/// one-shot query cannot silently replace a requested server or DAP session.
 #[must_use]
 pub fn requested_identity_output(args: &[String]) -> Option<IdentityOutputFormat> {
-    let has_identity = args.iter().any(|arg| arg == "--identity");
-    let has_identity_json = args.iter().any(|arg| arg == "--identity-json");
-    let has_info = args.iter().any(|arg| arg == "--info");
-    let has_json = args.iter().any(|arg| arg == "--json");
-
-    if has_identity_json || (has_info && has_json) {
-        Some(IdentityOutputFormat::Json)
-    } else if has_identity {
-        Some(IdentityOutputFormat::Human)
-    } else {
-        None
+    let operands = args.get(1..).unwrap_or_default();
+    match operands {
+        [flag] if flag == "--identity" => Some(IdentityOutputFormat::Human),
+        [flag] if flag == "--identity-json" => Some(IdentityOutputFormat::Json),
+        [first, second]
+            if (first == "--info" && second == "--json")
+                || (first == "--json" && second == "--info") =>
+        {
+            Some(IdentityOutputFormat::Json)
+        }
+        _ => None,
     }
 }
 
@@ -409,12 +412,25 @@ mod tests {
     }
 
     #[test]
-    fn identity_flags_do_not_capture_ordinary_info() {
+    fn identity_flags_do_not_capture_ordinary_or_mixed_operations() {
         let ordinary = vec!["perllsp".to_owned(), "--info".to_owned()];
         let json = vec!["perllsp".to_owned(), "--info".to_owned(), "--json".to_owned()];
+        let reversed_json = vec!["perllsp".to_owned(), "--json".to_owned(), "--info".to_owned()];
         let human = vec!["perllsp".to_owned(), "--identity".to_owned()];
+        let mixed_server = vec!["perllsp".to_owned(), "--stdio".to_owned(), "--identity".to_owned()];
+        let mixed_dap = vec![
+            "perl-dap".to_owned(),
+            "--external-peer".to_owned(),
+            "127.0.0.1:5000".to_owned(),
+            "--info".to_owned(),
+            "--json".to_owned(),
+        ];
+
         assert_eq!(requested_identity_output(&ordinary), None);
         assert_eq!(requested_identity_output(&json), Some(IdentityOutputFormat::Json));
+        assert_eq!(requested_identity_output(&reversed_json), Some(IdentityOutputFormat::Json));
         assert_eq!(requested_identity_output(&human), Some(IdentityOutputFormat::Human));
+        assert_eq!(requested_identity_output(&mixed_server), None);
+        assert_eq!(requested_identity_output(&mixed_dap), None);
     }
 }
