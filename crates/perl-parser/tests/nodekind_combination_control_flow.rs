@@ -836,11 +836,6 @@ where
             find_nodes_recursive(target, predicate, results);
             find_nodes_recursive(keys, predicate, results);
         }
-        NodeKind::ChainedComparison { operands, .. } => {
-            for operand in operands {
-                find_nodes_recursive(operand, predicate, results);
-            }
-        }
         NodeKind::Unary { operand, .. } => {
             find_nodes_recursive(operand, predicate, results);
         }
@@ -1047,6 +1042,11 @@ where
         NodeKind::NestedVariableList { items } => {
             for item in items {
                 find_nodes_recursive(item, predicate, results);
+            }
+        }
+        _ => {
+            for child in node.children() {
+                find_nodes_recursive(child, predicate, results);
             }
         }
     }
