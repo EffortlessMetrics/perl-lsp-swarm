@@ -111,11 +111,11 @@ mod tests {
             NodeKind::Block { statements } => statements,
             other => panic!("Expected Block node, got {other:?}"),
         };
-        let call = match &body[0].kind {
-            NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-            other => other,
+        let call = match &body[0] {
+            Node { kind: NodeKind::ExpressionStatement { expression }, .. } => expression.as_ref(),
+            node => node,
         };
-        match call {
+        match &call.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
