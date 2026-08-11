@@ -12,7 +12,8 @@ fn project_root() -> PathBuf {
 
 #[test]
 fn status_generator_keeps_target_artifacts_out_of_the_shared_cache()
--> Result<(), Box<dyn std::error::Error>> {
+    -> Result<(), Box<dyn std::error::Error>>
+{
     let workflow_path = project_root().join(".github/workflows/post-merge-status.yml");
     let source = fs::read_to_string(&workflow_path)?;
     let workflow: Value = serde_yaml_ng::from_str(&source)?;
@@ -22,9 +23,9 @@ fn status_generator_keeps_target_artifacts_out_of_the_shared_cache()
         .ok_or("post-merge-status.yml must declare jobs")?;
 
     let exact_generator_command = "cargo run -p xtask -- update-status --write";
-    let (_job_name, generator) = jobs
+    let generator_jobs: Vec<_> = jobs
         .iter()
-        .find(|(_, job)| {
+        .filter(|(_, job)| {
             job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
                 steps.iter().any(|step| {
                     step.get("run").and_then(Value::as_str).map(str::trim)
@@ -32,7 +33,13 @@ fn status_generator_keeps_target_artifacts_out_of_the_shared_cache()
                 })
             })
         })
-        .ok_or("no job executes the exact post-merge status generator command")?;
+        .collect();
+    assert_eq!(
+        generator_jobs.len(),
+        1,
+        "post-merge-status.yml must have exactly one job executing the status generator"
+    );
+    let (_job_name, generator) = generator_jobs[0];
 
     let steps = generator
         .get("steps")
