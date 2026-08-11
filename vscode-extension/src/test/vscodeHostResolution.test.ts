@@ -23,9 +23,12 @@ describe('VS Code host resolution receipts', () => {
   });
 
   test('classifies DNS, timeout, and download failures as network blocks', () => {
-    const dnsError = Object.assign(new Error('getaddrinfo ENOTFOUND update.code.visualstudio.com'), {
-      code: 'ENOTFOUND',
-    });
+    const dnsError = Object.assign(
+      new Error('getaddrinfo ENOTFOUND update.code.visualstudio.com'),
+      {
+        code: 'ENOTFOUND',
+      },
+    );
     expect(classifyHostResolutionError(dnsError)).toBe('network');
     expect(classifyHostResolutionError(new Error('request timeout while resolving host'))).toBe(
       'network',
