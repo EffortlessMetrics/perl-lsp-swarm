@@ -288,7 +288,12 @@ async function main(): Promise<void> {
     try {
       vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
     } catch (error: unknown) {
-      writeHostResolutionFailureReceipt(receiptsRoot, vscodeVersion, error);
+      try {
+        writeHostResolutionFailureReceipt(receiptsRoot, vscodeVersion, error);
+      } catch (receiptError: unknown) {
+        const detail = receiptError instanceof Error ? receiptError.message : String(receiptError);
+        console.error(`Unable to write VS Code host-resolution receipt: ${detail}`);
+      }
       throw error;
     }
     const installTarget = await resolveInstallTarget(source, downloadDir);
