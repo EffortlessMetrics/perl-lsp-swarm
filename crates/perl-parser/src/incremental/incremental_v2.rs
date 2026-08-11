@@ -278,6 +278,7 @@ impl IncrementalParserV2 {
         // Reset statistics
         self.reused_nodes = 0;
         self.reparsed_nodes = 0;
+        self.last_reuse_analysis = None;
         self.incremental_path_attempted = false;
         self.advanced_reuse_selected = false;
 
