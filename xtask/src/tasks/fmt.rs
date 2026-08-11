@@ -5,7 +5,7 @@ use duct::cmd;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 struct CargoMetadata {
@@ -82,8 +82,18 @@ pub(crate) fn classify_staged_paths(
         .collect()
 }
 
+/// Runs git and returns its stdout as lines.
+///
+/// `core.quotePath=false` because git's default quotes and octal-escapes any
+/// path containing non-ASCII bytes — `"cr\303\251es/a.rs"`, literal quotes
+/// included. That string names no file on disk, so it would reach rustfmt and
+/// fail the whole run. Paths are also not trimmed: leading and trailing spaces
+/// are legal in filenames, and trimming them yields a path that does not exist.
+/// Empty lines are still dropped, since git emits a trailing newline.
 fn git_lines(args: &[&str]) -> Result<Vec<String>> {
-    let out = cmd("git", args)
+    let mut full: Vec<&str> = vec!["-c", "core.quotePath=false"];
+    full.extend_from_slice(args);
+    let out = cmd("git", &full)
         .stdout_capture()
         .unchecked()
         .run()
@@ -93,7 +103,6 @@ fn git_lines(args: &[&str]) -> Result<Vec<String>> {
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
-        .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(ToString::to_string)
         .collect())
@@ -129,29 +138,26 @@ pub(crate) fn owning_package<'a>(
 /// narrows that to the packages actually being committed, which is what makes
 /// it cheap enough to run from the pre-commit hook on every commit.
 ///
-/// Formatting invokes `rustfmt` on exactly the staged files, never
-/// `cargo fmt -p <package>`. That distinction is a safety property, not a
-/// performance one: `cargo fmt -p` formats every file in the package against
-/// the live worktree, so a staged file with an unstaged sibling in the same
-/// package would silently rewrite that sibling's uncommitted work. Re-staging
-/// only the staged paths keeps the *commit* narrow but cannot undo the
-/// worktree mutation, so the package-wide call is not usable here at all.
+/// Staged content is fed to `rustfmt` over stdin, one file at a time. Neither
+/// `cargo fmt -p <package>` nor path-mode `rustfmt <file>` is usable here, and
+/// both for the same reason — each writes files the author did not stage:
 ///
-/// The reason to reach for `cargo fmt` in the first place was that bare
-/// `rustfmt` disagreed with it: on 40 already-gate-clean files, bare `rustfmt`
-/// rewrote 9. That disagreement was entirely the **edition**. `rustfmt`
-/// invoked directly defaults to edition 2015; `cargo fmt` passes each
-/// package's actual edition. Re-measured over 80 gate-clean files:
+/// - `cargo fmt -p` formats every file in the package against the live
+///   worktree, so an unstaged sibling gets rewritten.
+/// - path-mode `rustfmt` resolves the file's out-of-line `mod child;`
+///   declarations and rewrites those children too, so a staged `lib.rs` or
+///   `mod.rs` reaches an unstaged child module. That path bypasses
+///   [`classify_staged_paths`] entirely, since the child was never staged.
 ///
-/// | invocation | files rewritten |
-/// | --- | --- |
-/// | `rustfmt --check` (defaults to 2015) | 29 / 80 |
-/// | `rustfmt --edition 2024 --check` | **0 / 80** |
+/// Re-staging only the staged paths bounds the *commit* but cannot undo either
+/// worktree mutation. See [`rustfmt_text`] for the stdin contract and the
+/// measurements behind it.
 ///
-/// So each file is formatted with its owning package's declared edition, which
-/// reproduces `cargo fmt`'s output while touching nothing but the staged paths.
-/// `rustfmt` discovers `rustfmt.toml` by walking up from each file, so the
-/// workspace style config applies unchanged.
+/// The run is transactional: every file is formatted in memory first, and
+/// nothing is written or re-staged unless all of them succeed. A syntax error
+/// in a later file must not leave earlier ones rewritten in the worktree but
+/// absent from the index, which the next run would then classify as partially
+/// staged and skip.
 ///
 /// Only fully staged files are re-staged — see [`StagedFormatAction`].
 pub fn run_staged() -> Result<()> {
@@ -181,48 +187,49 @@ pub fn run_staged() -> Result<()> {
         .collect();
 
     if !to_format.is_empty() {
+        let root = repo_root()?;
         let metadata = load_workspace_metadata()?;
-        let packages = workspace_packages(&metadata);
+        let packages = workspace_packages(&metadata, &root);
+        // The config actually being committed — see `staged_rustfmt_config`.
+        let config_text = staged_rustfmt_config()?;
 
-        // Group by edition so one `rustfmt` process covers every staged file
-        // sharing an edition. This runs on every commit, and a process per file
-        // is a noticeable cost on Windows in particular. Files whose owning
-        // package cannot be determined get no edition and are left to the gate
-        // rather than formatted under a guessed one.
-        let mut by_edition: HashMap<&str, Vec<&str>> = HashMap::new();
+        // Phase 1 — format in memory. Nothing on disk is touched yet.
+        let mut pending: Vec<(PathBuf, String)> = Vec::new();
         let mut unowned: Vec<&str> = Vec::new();
         for path in &to_format {
-            match owning_package(path, &packages) {
-                Some(package) => {
-                    by_edition.entry(package.edition.as_str()).or_default().push(path.as_str());
-                }
-                None => unowned.push(path.as_str()),
+            let Some(package) = owning_package(path, &packages) else {
+                // No package means no edition, and guessing one would format
+                // against the wrong language rules. Leave it to the gate.
+                unowned.push(path.as_str());
+                continue;
+            };
+            // git paths are repository-relative and this may run from a
+            // subdirectory, so resolve against the git root.
+            let absolute = root.join(path);
+            let original = std::fs::read_to_string(&absolute)
+                .with_context(|| format!("failed to read staged file {path}"))?;
+            let formatted =
+                rustfmt_text(config_text.as_deref(), &package.edition, &original, path)?;
+            if formatted != original {
+                pending.push((absolute, formatted));
             }
         }
 
-        let mut formatted: Vec<&str> = Vec::new();
-        let mut editions: Vec<&&str> = by_edition.keys().collect();
-        editions.sort_unstable();
-        for edition in editions {
-            let files = &by_edition[*edition];
-            let mut args = vec!["--edition", edition];
-            args.extend(files.iter().copied());
-            cmd("rustfmt", &args).run().with_context(|| {
-                format!("rustfmt failed on staged edition-{edition} file(s): {}", files.join(", "))
-            })?;
-            formatted.extend(files.iter().copied());
-        }
-
-        if formatted.is_empty() {
-            println!(
-                "Staged Rust files are outside every workspace package; leaving them to the gate."
-            );
+        // Phase 2 — commit the results, reached only when every file formatted
+        // cleanly, so writes and re-staging stay in step.
+        if pending.is_empty() {
+            println!("Staged Rust files are already formatted.");
         } else {
-            formatted.sort_unstable();
+            let mut written: Vec<String> = Vec::with_capacity(pending.len());
+            for (absolute, text) in &pending {
+                std::fs::write(absolute, text)
+                    .with_context(|| format!("failed to write formatted {}", absolute.display()))?;
+                written.push(absolute.to_string_lossy().into_owned());
+            }
             let mut add_args = vec!["add", "--"];
-            add_args.extend(formatted.iter().copied());
+            add_args.extend(written.iter().map(String::as_str));
             cmd("git", &add_args).run().context("failed to re-stage formatted files")?;
-            println!("Formatted and re-staged {} staged Rust file(s).", formatted.len());
+            println!("Formatted and re-staged {} staged Rust file(s).", written.len());
         }
 
         if !unowned.is_empty() {
@@ -411,10 +418,16 @@ fn load_workspace_metadata() -> Result<CargoMetadata> {
 
 /// Workspace members reduced to name, repository-relative directory, and edition.
 ///
-/// The directory is the manifest's parent, relative to the workspace root, so
-/// it can be prefix-matched against `git diff --name-only` output.
-fn workspace_packages(metadata: &CargoMetadata) -> Vec<WorkspacePackage> {
-    let root = std::env::current_dir().ok();
+/// `repo_root` must be the git top level, **not** the process working
+/// directory. `git diff --name-only` reports repository-relative paths wherever
+/// it is invoked from (verified: run inside `xtask/`, it still prints
+/// `xtask/src/main.rs`). Anchoring on the working directory breaks as soon as
+/// the command runs from a subdirectory: every manifest outside it keeps its
+/// absolute path and matches nothing, while that subdirectory's own package
+/// strips to `""`, which [`owning_package`] treats as a workspace-root package
+/// owning *every* path — so files get formatted at the wrong edition and
+/// rustfmt is handed paths that do not resolve.
+fn workspace_packages(metadata: &CargoMetadata, repo_root: &Path) -> Vec<WorkspacePackage> {
     metadata
         .packages
         .iter()
@@ -422,10 +435,10 @@ fn workspace_packages(metadata: &CargoMetadata) -> Vec<WorkspacePackage> {
         .filter_map(|package| {
             let manifest = Path::new(&package.manifest_path);
             let dir = manifest.parent()?;
-            let relative = match &root {
-                Some(root) => dir.strip_prefix(root).unwrap_or(dir),
-                None => dir,
-            };
+            // A package outside the repository cannot own a git-reported path;
+            // leaving it absolute makes it match nothing, so its files fall
+            // through to the gate instead of being misattributed.
+            let relative = dir.strip_prefix(repo_root).unwrap_or(dir);
             Some(WorkspacePackage {
                 name: package.name.clone(),
                 dir: relative.to_string_lossy().replace('\\', "/"),
@@ -433,6 +446,112 @@ fn workspace_packages(metadata: &CargoMetadata) -> Vec<WorkspacePackage> {
             })
         })
         .collect()
+}
+
+/// Formats `text` with rustfmt and returns the result, writing no files.
+///
+/// Content goes in over **stdin**, never as a file path, and that is a safety
+/// property rather than a convenience: given a path, rustfmt resolves the
+/// file's out-of-line `mod child;` declarations and rewrites those children
+/// too. Verified — `rustfmt --edition 2024 src/lib.rs` on a crate whose
+/// `lib.rs` declares `mod child;` rewrites `src/child.rs`; the same content
+/// piped over stdin leaves it byte-identical.
+///
+/// The check half of this same gate pipes stdin for this reason already, so
+/// apply and check now agree on both mechanism and bytes — see
+/// `commit_checks::rustfmt_would_reformat`.
+///
+/// stdin mode has no file location to search upward from, so `--config-path`
+/// must be supplied explicitly; `config_text` carries the **staged**
+/// `rustfmt.toml`. `None` means the tree has no config and rustfmt's defaults
+/// apply.
+///
+/// Equivalence to `cargo fmt` was measured, not assumed: over 80 gate-clean
+/// files this path reproduced each file byte-for-byte in all 80 cases, whereas
+/// bare `rustfmt` (edition 2015 by default) rewrote 29 of them.
+fn rustfmt_text(
+    config_text: Option<&str>,
+    edition: &str,
+    text: &str,
+    path_for_errors: &str,
+) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut command = Command::new("rustfmt");
+    command.args(["--edition", edition, "--emit", "stdout", "--quiet"]);
+
+    // Keep the temp file alive until rustfmt exits, or --config-path dangles.
+    let _config_guard = match config_text {
+        Some(content) => {
+            let mut file = tempfile::NamedTempFile::new()
+                .context("failed to create a temp file for the staged rustfmt.toml")?;
+            file.write_all(content.as_bytes())
+                .context("failed to write the staged rustfmt.toml to a temp file")?;
+            command.arg("--config-path").arg(file.path());
+            Some(file)
+        }
+        None => None,
+    };
+
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn rustfmt")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| eyre!("rustfmt stdin was not piped"))?
+        .write_all(text.as_bytes())
+        .context("failed to write staged content to rustfmt stdin")?;
+    let output = child.wait_with_output().context("failed to wait for rustfmt")?;
+
+    // A syntax error in the staged content, or a bad config, must surface as a
+    // real error rather than silently yielding empty or partial output.
+    if !output.status.success() || !output.stderr.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("rustfmt failed on staged {path_for_errors}: {stderr}"));
+    }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("rustfmt returned non-UTF-8 output for {path_for_errors}"))
+}
+
+/// The `rustfmt.toml` content as staged, or `None` when the index has none.
+///
+/// Deliberately the index copy, not the working tree's. The check half reads
+/// the staged config; if the apply half read the worktree copy instead, a
+/// staged `rustfmt.toml` policy change with an unrelated unstaged edit on top
+/// would have the author's staged Rust rewritten under settings that are not
+/// the ones being committed — and the gate would then reject the very index
+/// this step produced.
+fn staged_rustfmt_config() -> Result<Option<String>> {
+    let out = cmd("git", ["show", ":rustfmt.toml"])
+        .stdout_capture()
+        .stderr_capture()
+        .unchecked()
+        .run()
+        .context("failed to read the staged rustfmt.toml")?;
+    if !out.status.success() {
+        // Not in the index at all — rustfmt defaults apply, matching the
+        // check half's `config_text: None` fallback.
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// The git top level, which is what `git diff --name-only` paths are relative to.
+///
+/// Propagates rather than falling back: without a usable root every package
+/// directory stays absolute, no staged path matches any package, and staged
+/// formatting silently becomes a no-op.
+fn repo_root() -> Result<PathBuf> {
+    git_lines(&["rev-parse", "--show-toplevel"])?
+        .into_iter()
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| eyre!("git rev-parse --show-toplevel returned no path"))
 }
 
 fn workspace_manifest_paths(package_filters: Option<&[String]>) -> Result<Vec<String>> {
@@ -825,12 +944,78 @@ mod tests {
             "run_staged must not call the package-wide formatter: it would rewrite unstaged \
              siblings in the same package"
         );
+        // The internal call is not the only spelling of the hazard: a direct
+        // `cmd("cargo", &["fmt", "-p", name])` or `--manifest-path` spawn
+        // reintroduces it exactly.
         assert!(
-            body.contains("\"--edition\""),
-            "run_staged must pass each file's package edition to rustfmt; bare rustfmt defaults \
-             to edition 2015 and reformats gate-clean edition-2024 files"
+            !body.contains("\"fmt\""),
+            "run_staged must not spawn `cargo fmt` in any form: every package- or \
+             manifest-scoped invocation rewrites unstaged siblings"
+        );
+        // Path-mode rustfmt resolves `mod child;` and rewrites unstaged child
+        // modules, bypassing classify_staged_paths entirely.
+        assert!(
+            body.contains("rustfmt_text("),
+            "run_staged must format through rustfmt_text (stdin), never by handing rustfmt a \
+             file path: path mode traverses into unstaged child modules"
+        );
+        assert!(
+            body.contains("package.edition"),
+            "run_staged must pass each file's own package edition through to rustfmt"
+        );
+
+        // The edition and stdin contracts live in rustfmt_text.
+        let formatter = fmt_source
+            .split_once("fn rustfmt_text(")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("\n/// The `rustfmt.toml` content"))
+            .map(|(body, _)| body)
+            .ok_or_else(|| color_eyre::eyre::eyre!("could not isolate rustfmt_text body"))?;
+        assert!(
+            formatter.contains("\"--edition\""),
+            "rustfmt_text must pass --edition; bare rustfmt defaults to edition 2015 and \
+             reformats gate-clean edition-2024 files"
+        );
+        assert!(
+            formatter.contains("Stdio::piped()"),
+            "rustfmt_text must pipe content over stdin so rustfmt has no path to resolve \
+             out-of-line child modules from"
         );
         Ok(())
+    }
+
+    #[test]
+    fn package_dirs_are_relative_to_the_git_root_not_the_working_directory() {
+        // `git diff --name-only` reports repository-relative paths wherever it
+        // is invoked from. Passing a root that is NOT the working directory
+        // pins the git-root anchor: under the previous `current_dir()`
+        // behaviour these could not come out repository-relative.
+        let metadata = sample_metadata();
+        let packages = super::workspace_packages(&metadata, Path::new("/repo"));
+
+        let mut dirs: Vec<(&str, &str)> =
+            packages.iter().map(|package| (package.name.as_str(), package.dir.as_str())).collect();
+        dirs.sort_unstable();
+        assert_eq!(dirs, vec![("perl-parser", "crates/perl-parser"), ("xtask", "xtask")]);
+        assert_eq!(
+            super::owning_package("crates/perl-parser/src/lib.rs", &packages)
+                .map(|package| package.name.as_str()),
+            Some("perl-parser"),
+        );
+    }
+
+    #[test]
+    fn a_package_outside_the_repository_root_owns_nothing() {
+        // strip_prefix fails, the dir stays absolute, and an absolute dir can
+        // never prefix-match a repository-relative git path. Those files fall
+        // through to the gate rather than being misattributed.
+        let metadata = sample_metadata();
+        let packages = super::workspace_packages(&metadata, Path::new("/somewhere/else"));
+        assert!(
+            packages.iter().all(|package| package.dir.starts_with('/')),
+            "packages outside the given root must keep absolute dirs: {packages:?}"
+        );
+        assert_eq!(super::owning_package("crates/perl-parser/src/lib.rs", &packages), None);
     }
 
     #[test]
