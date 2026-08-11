@@ -28,6 +28,14 @@ fn source_text(source: &str, node: &Node) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn subtree_contains(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> bool {
+    predicate(&node.kind)
+        || node
+            .children()
+            .into_iter()
+            .any(|child| subtree_contains(child, predicate))
+}
+
 #[test]
 fn nested_lexical_declaration_retains_group_identity_and_span() -> Result<(), String> {
     let source = "my ($head, ($middle, $tail)) = @values;";
@@ -88,28 +96,35 @@ fn array_hash_and_key_value_slices_remain_distinct() -> Result<(), String> {
 }
 
 #[test]
-fn typeglob_alias_keeps_both_storage_and_coderef_identity() -> Result<(), String> {
+fn typeglob_alias_keeps_both_operands_attached_to_the_assignment() -> Result<(), String> {
     let source = "sub original { 1 }\n*alias = \\&original;\n";
     let ast = parse_clean(source)?;
-    let mut typeglobs = Vec::new();
-    let mut coderefs = Vec::new();
+    let mut observed = None;
 
-    walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Typeglob { .. } => {
-            if let Some(text) = source_text(source, node) {
-                typeglobs.push(text);
-            }
+    walk(&ast, &mut |node| {
+        if let NodeKind::Assignment { lhs, rhs, op } = &node.kind
+            && op == "="
+            && source_text(source, node).as_deref() == Some("*alias = \\&original")
+        {
+            observed = Some((
+                source_text(source, lhs),
+                source_text(source, rhs),
+                subtree_contains(lhs, &|kind| {
+                    matches!(kind, NodeKind::Typeglob { name } if name == "alias")
+                }),
+                subtree_contains(rhs, &|kind| {
+                    matches!(kind, NodeKind::AmperCall { name, .. } if name == "original")
+                }),
+            ));
         }
-        NodeKind::AmperCall { name, .. } if name == "original" => {
-            if let Some(text) = source_text(source, node) {
-                coderefs.push(text);
-            }
-        }
-        _ => {}
     });
 
-    assert_eq!(typeglobs, vec!["*alias"]);
-    assert_eq!(coderefs, vec!["&original"]);
+    let (lhs_span, rhs_span, lhs_is_typeglob, rhs_contains_coderef) = observed
+        .ok_or_else(|| "typeglob alias was not preserved as one assignment node".to_string())?;
+    assert_eq!(lhs_span.as_deref(), Some("*alias"));
+    assert_eq!(rhs_span.as_deref(), Some("\\&original"));
+    assert!(lhs_is_typeglob, "assignment lhs lost Typeglob identity");
+    assert!(rhs_contains_coderef, "assignment rhs lost the &original coderef identity");
     Ok(())
 }
 
