@@ -41,18 +41,25 @@ pub(crate) fn apply_single_edit(
         apply_text_edit_to_state(state, edit)?;
         anyhow::bail!("No lexer restart boundary found");
     };
-    let Some(live_checkpoint) = capture_live_checkpoint(&state.source, summary.byte) else {
+    let Some(mut live_checkpoint) = capture_live_checkpoint(&state.source, summary.byte) else {
         apply_text_edit_to_state(state, edit)?;
         anyhow::bail!("Could not reproduce complete live lexer state at restart boundary");
     };
+    let old_len = edit
+        .old_end_byte
+        .checked_sub(edit.start_byte)
+        .ok_or_else(|| anyhow::anyhow!("edit end precedes edit start"))?;
+    if !live_checkpoint.try_apply_edit(edit.start_byte, old_len, edit.new_text.len()) {
+        apply_text_edit_to_state(state, edit)?;
+        anyhow::bail!("Edit invalidated required live lexer state");
+    }
 
     let restart_byte = live_checkpoint.position;
     let reused_prefix_tokens =
         state.tokens.iter().take_while(|token| token.start < restart_byte).count();
     apply_text_edit_to_state(state, edit)?;
 
-    let lexed =
-        lex_from_live_checkpoint(&state.source, &state.line_index, &live_checkpoint)?;
+    let lexed = lex_from_live_checkpoint(&state.source, &state.line_index, &live_checkpoint)?;
 
     state.tokens.truncate(reused_prefix_tokens);
     state.tokens.extend(lexed.tokens);
@@ -168,6 +175,25 @@ mod tests {
         let mut state = IncrementalState::new(source.to_string());
         let result = apply_single_edit(&mut state, &edit)?;
 
+        assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        Ok(())
+    }
+
+    #[test]
+    fn heredoc_body_edit_restores_the_live_queue_and_matches_fresh_lex() -> Result<()> {
+        let source = "my $value = <<EOF;\nbody\nEOF\nprint $value;\n";
+        let start = source.find("body").ok_or_else(|| anyhow::anyhow!("body missing"))?;
+        let edit = Edit {
+            start_byte: start,
+            old_end_byte: start + "body".len(),
+            new_end_byte: start + "changed".len(),
+            new_text: "changed".to_string(),
+        };
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_single_edit(&mut state, &edit)?;
+
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
         assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
         Ok(())
