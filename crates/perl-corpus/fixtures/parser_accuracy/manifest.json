@@ -1759,16 +1759,6 @@
           "depth": null,
           "operator": null,
           "parent_operator": null
-        },
-        {
-          "id": "imports_exports_qw_string",
-          "kind": "String",
-          "line": 6,
-          "span_text": "qw(answer)",
-          "parent_kind": "ArrayLiteral",
-          "depth": 3,
-          "operator": null,
-          "parent_operator": null
         }
       ]
     },
