@@ -47,6 +47,7 @@ const E2E_FIXTURES: &[&str] = &[
     "operator_precedence",
     "quote_like",
     "regex_match",
+    "method_call",
     "slash_ambiguity",
     "control_flow_core",
     "dynamic_require_boundary",
