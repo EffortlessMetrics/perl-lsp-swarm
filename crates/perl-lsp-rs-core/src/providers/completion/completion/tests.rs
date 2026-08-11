@@ -8428,7 +8428,7 @@ sub greet {
     assert_eq!(child_model.parents, vec!["Parent"], "open Child model must retain use parent");
     let index = must(inherited_moo_parent_index());
     let inherited_members =
-        super::collect_all_package_members_with_source(index.as_ref(), "Child", code);
+        super::workspace::collect_all_package_members_with_source(index.as_ref(), "Child", code);
     assert!(
         inherited_members.iter().any(|member| member.name == "name"),
         "collector must traverse indexed Parent members, got {:?}",
