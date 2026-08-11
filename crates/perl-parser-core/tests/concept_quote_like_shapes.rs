@@ -61,10 +61,11 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
             if *has_embedded_code || *negated {
                 return Err("substitution flags were not preserved".into());
             }
-            assert_eq!(
-                source.get(node.location.start..node.location.end),
-                Some("$message =~ s/hello/hello world/g")
-            );
+            if source.get(node.location.start..node.location.end)
+                != Some("$message =~ s/hello/hello world/g")
+            {
+                return Err("substitution source span was not preserved".into());
+            }
             substitution_seen = true;
         }
         NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
