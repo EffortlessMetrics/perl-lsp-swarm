@@ -465,6 +465,17 @@ const TEXT: &str = "fn string_target() { helper(); }";
     assert anchor_count(tokens, "rust_fn", "block_target") == 0
     assert anchor_count(tokens, "rust_call", "helper") == 1
 
+    multi_path = '''
+fn handle_completion() { route_index_access(self.coordinator()); }
+fn handle_completion_cancellable() { route_index_access(self.coordinator()); }
+// route_index_access(self.coordinator());
+const EXAMPLE: &str = "route_index_access(self.coordinator());";
+'''
+    multi_tokens = rust_tokens(multi_path)
+    assert anchor_count(multi_tokens, "rust_fn", "handle_completion") == 1
+    assert anchor_count(multi_tokens, "rust_fn", "handle_completion_cancellable") == 1
+    assert anchor_count(multi_tokens, "rust_call", "route_index_access") == 2
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
