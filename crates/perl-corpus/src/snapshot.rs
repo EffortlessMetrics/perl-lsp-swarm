@@ -20,7 +20,7 @@
 //!
 //! Each snapshot entry records:
 //! - `fixture_id` — stable identifier for the source fixture
-//! - `source_hash` — within-build-deterministic hash of the source text (hex, lowercase)
+//! - `source_hash` — stable, versioned digest of the source text (hex, lowercase)
 //! - `hir_schema_version` — monotonic HIR schema model version string
 //! - `hir_summary` — deterministic structural summary of the lowered `HirFile`
 //!
@@ -38,6 +38,9 @@ use std::fmt;
 /// Snapshots recorded under a different version are considered stale and must
 /// be regenerated before comparison.
 pub const HIR_SCHEMA_VERSION: &str = "hir.v1";
+
+/// Stable source-digest algorithm recorded by snapshot manifests.
+pub const SOURCE_HASH_ALGORITHM: &str = "fnv1a-128.v1";
 
 /// A deterministic structural summary of one lowered `HirFile`.
 ///
@@ -76,14 +79,11 @@ pub struct HirSummary {
 /// from the freshly computed one, indicating HIR drift.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotEntry {
-    /// Stable fixture identifier (matches the fixture filename stem).
+    /// Stable fixture identifier: normalized path relative to the fixture root.
     pub fixture_id: String,
-    /// Within-build-deterministic hash of the fixture source text (lowercase hex, no prefix).
+    /// Stable source digest (32 lowercase hexadecimal characters, no prefix).
     ///
-    /// Computed via [`source_hash`]. **Not** SHA-256, **not** stable across Rust
-    /// versions or platforms — suitable only for within-environment drift detection.
-    /// FIXME: if cross-version or cross-machine snapshot persistence is ever required,
-    /// migrate to a named stable digest (e.g. the `sha2` crate).
+    /// Computed via [`source_hash`] using [`SOURCE_HASH_ALGORITHM`].
     pub source_hash: String,
     /// HIR schema version at snapshot generation time.
     pub hir_schema_version: String,
@@ -168,6 +168,8 @@ pub struct SnapshotManifest {
     pub claim_boundary: String,
     /// HIR schema version used for all entries in this manifest.
     pub hir_schema_version: String,
+    /// Named, versioned source-digest algorithm used by every entry.
+    pub source_hash_algorithm: String,
     /// Date of last generation (ISO 8601 `YYYY-MM-DD`).
     pub generated_on: String,
     /// Snapshot entries, one per fixture in the corpus slice.
@@ -187,6 +189,7 @@ impl SnapshotManifest {
             )
             .to_string(),
             hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
+            source_hash_algorithm: SOURCE_HASH_ALGORITHM.to_string(),
             generated_on,
             entries: Vec::new(),
         }
@@ -270,35 +273,20 @@ impl SnapshotManifest {
     }
 }
 
-/// Compute a within-build-deterministic hash of a source string.
+/// Compute the stable FNV-1a 128-bit digest of a source string.
 ///
-/// Returns lowercase hex without any prefix. The output is 32 characters
-/// (two concatenated 64-bit `DefaultHasher` values encoded as 16-hex-char each).
-///
-/// # Stability caveats
-///
-/// `std::collections::hash_map::DefaultHasher` is **not** SHA-256, **not** FNV,
-/// and **not** stable across Rust versions or platforms — its output can change
-/// between Rust releases or between machines. This function is intentionally
-/// scoped to **within-environment drift detection** (the snapshot rail defined by
-/// PLSP-SPEC-0033 needs only within-run consistency).
-///
-/// FIXME: if cross-version or cross-machine snapshot persistence is ever required,
-/// replace this with a named stable digest (e.g. the `sha2` crate).
+/// The algorithm identity is [`SOURCE_HASH_ALGORITHM`]. Output is exactly 32
+/// lowercase hexadecimal characters and is stable across Rust versions,
+/// operating systems, and CPU architectures.
+#[must_use]
 pub fn source_hash(source: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
 
-    let mut h1 = DefaultHasher::new();
-    source.hash(&mut h1);
-    let d1 = h1.finish();
-
-    let mut h2 = DefaultHasher::new();
-    0x9e3779b97f4a7c15u64.hash(&mut h2);
-    source.hash(&mut h2);
-    let d2 = h2.finish();
-
-    format!("{d1:016x}{d2:016x}")
+    let hash = source.as_bytes().iter().fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u128::from(*byte)).wrapping_mul(PRIME)
+    });
+    format!("{hash:032x}")
 }
 
 #[cfg(test)]
@@ -344,8 +332,8 @@ mod tests {
     }
 
     #[test]
-    fn source_hash_len_is_32() {
-        assert_eq!(source_hash("hello").len(), 32);
+    fn source_hash_matches_portable_known_vector() {
+        assert_eq!(source_hash("hello"), "e3e1efd54283d94f7081314b599d31b3");
     }
 
     #[test]
@@ -354,6 +342,7 @@ mod tests {
         assert_eq!(manifest.schema, "semantic_snapshot.v1");
         assert_eq!(manifest.kpi, "semantic_snapshot_stability_rate");
         assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
+        assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);
         assert!(
             manifest.claim_boundary.contains("stability"),
             "claim boundary must mention stability"
