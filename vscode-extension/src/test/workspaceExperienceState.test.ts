@@ -2,12 +2,13 @@ import {
   presentIndexReadinessReason,
   presentWorkspaceExperience,
   projectWorkspaceLifecycle,
+  type WorkspaceExperienceSnapshot,
 } from '../workspaceExperienceState';
 
 describe('workspace experience presentation', () => {
   test.each([
     ['ParseStorm { pending_parses: 4 }', 'Frequent changes limited workspace coverage'],
-    ['IoError { message: \"permission denied\" }', 'Some workspace files could not be read'],
+    ['IoError { message: "permission denied" }', 'Some workspace files could not be read'],
     ['ScanTimeout { elapsed_ms: 30000 }', 'Workspace indexing reached its time budget'],
     ['ResourceLimit { kind: MaxFiles }', 'Workspace file limit reached'],
     ['ResourceLimit { kind: MaxSymbols }', 'Workspace symbol limit reached'],
@@ -18,7 +19,7 @@ describe('workspace experience presentation', () => {
   });
 
   test('maps unknown readiness reasons to a generic bounded label', () => {
-    expect(presentIndexReadinessReason('FutureReason { private: \"value\" }')).toBe(
+    expect(presentIndexReadinessReason('FutureReason { private: "value" }')).toBe(
       'Limited workspace coverage',
     );
   });
@@ -27,7 +28,7 @@ describe('workspace experience presentation', () => {
     expect(presentIndexReadinessReason('FutureReason { detail: MaxFiles, note: ParseStorm }')).toBe(
       'Limited workspace coverage',
     );
-    expect(presentIndexReadinessReason('IoError { message: \"ParseStorm\" }')).toBe(
+    expect(presentIndexReadinessReason('IoError { message: "ParseStorm" }')).toBe(
       'Some workspace files could not be read',
     );
   });
@@ -39,9 +40,16 @@ describe('workspace experience presentation', () => {
     expect(projectWorkspaceLifecycle('failed')).toBe('failed');
   });
 
-  test('keeps exact current answers quiet in the ready state', () => {
+  test('keeps operation outcomes outside the workspace snapshot contract', () => {
+    const snapshot: WorkspaceExperienceSnapshot = { lifecycle: 'ready' };
+    // @ts-expect-error Provider outcomes describe one operation, not workspace health.
+    snapshot.providerOutcome = 'not_ready';
+    expect(snapshot.lifecycle).toBe('ready');
+  });
+
+  test('renders a healthy ready state without operation-scoped result data', () => {
     const presentation = presentWorkspaceExperience(
-      { lifecycle: 'ready', providerOutcome: 'exact_current' },
+      { lifecycle: 'ready' },
       { version: '0.18.0', fileCount: 12, errorCount: 0 },
     );
 
@@ -50,20 +58,9 @@ describe('workspace experience presentation', () => {
     expect(presentation.background).toBeUndefined();
   });
 
-  test('does not misclassify a legitimate empty result as not ready', () => {
+  test('shows active-document readiness only when the lifecycle authority supplies it', () => {
     const presentation = presentWorkspaceExperience({
-      lifecycle: 'ready',
-      providerOutcome: 'legitimate_empty',
-    });
-
-    expect(presentation.mode).toBe('running');
-    expect(presentation.text).toBe('$(check) perl-lsp');
-  });
-
-  test('does not flatten not-ready into a successful empty state', () => {
-    const presentation = presentWorkspaceExperience({
-      lifecycle: 'ready',
-      providerOutcome: 'not_ready',
+      lifecycle: 'indexing_active_context',
       reasonCode: 'active_document_pending',
     });
 
@@ -72,20 +69,17 @@ describe('workspace experience presentation', () => {
     expect(presentation.tooltip).toContain('active_document_pending');
   });
 
-  test.each(['bounded_fallback', 'unsupported_or_dynamic', 'safe_refusal'] as const)(
-    'presents %s as ready but limited',
-    (providerOutcome) => {
-      const presentation = presentWorkspaceExperience({
-        lifecycle: 'ready',
-        providerOutcome,
-        detail: 'Exact source-backed evidence is unavailable.',
-      });
+  test('shows ready-limited only when the readiness authority supplies it', () => {
+    const presentation = presentWorkspaceExperience({
+      lifecycle: 'ready_limited',
+      detail: 'Some workspace files could not be read.',
+      reasonCode: 'index_ready_limited',
+    });
 
-      expect(presentation.mode).toBe('running');
-      expect(presentation.text).toContain('ready (limited)');
-      expect(presentation.tooltip).toContain('Exact source-backed evidence is unavailable.');
-    },
-  );
+    expect(presentation.mode).toBe('running');
+    expect(presentation.text).toContain('ready (limited)');
+    expect(presentation.tooltip).toContain('Some workspace files could not be read.');
+  });
 
   test('surfaces configuration action without reporting a product crash', () => {
     const presentation = presentWorkspaceExperience({
@@ -99,11 +93,10 @@ describe('workspace experience presentation', () => {
     expect(presentation.tooltip).toContain('Trust the workspace');
   });
 
-  test('promotes instrument errors to a failed state', () => {
+  test('reports failure only when the lifecycle authority supplies failure', () => {
     const presentation = presentWorkspaceExperience({
-      lifecycle: 'ready',
-      providerOutcome: 'product_or_instrument_error',
-      detail: 'The provider receipt could not be read.',
+      lifecycle: 'failed',
+      detail: 'The provider transport failed and stopped the server.',
     });
 
     expect(presentation.mode).toBe('stopped');
@@ -116,9 +109,6 @@ describe('workspace experience presentation', () => {
 
     expect(presentation.mode).toBe('stopped');
     expect(presentation.background).toBe('error');
-    // The status-bar item opens the status menu, where Restart Server is one
-    // explicit action. The tooltip must not claim that the click invokes a
-    // direct restart.
     expect(presentation.tooltip).toBe(
       'Perl Language Server has stopped; choose Restart Server from the status menu (click for restart options)',
     );
