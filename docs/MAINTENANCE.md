@@ -4,7 +4,7 @@
 > **Last Updated**: 2026-07-17
 > **Applies To**: the current public-beta line (workspace `v0.17.0`; see [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) for the live version)
 >
-> The maintenance schedule, support policy, and runbooks below are process
+> The maintenance schedule and runbooks below are process guidance. The versioned support, SLA, deprecation, and roadmap material is historical planning context and is not a current commitment.
 > guidance that applies across releases. Any `v0.9.x`/`v0.10.0`-labeled schedule
 > or roadmap entries further down are a historical planning snapshot retained for
 > reference, not current release posture.
@@ -14,10 +14,10 @@
 ## Table of Contents
 
 1. [Maintenance Schedule](#maintenance-schedule)
-2. [Support Policy](#historical-support-policy-snapshot)
+2. [Historical Support Policy](#historical-support-policy-snapshot)
 3. [Monitoring and Metrics](#monitoring-and-metrics-process-guidance-targets-below-may-be-historical)
 4. [Team Responsibilities](#team-responsibilities)
-5. [Long-term Roadmap](#long-term-roadmap)
+5. [Historical Long-term Roadmap](#historical-long-term-roadmap)
 6. [Runbooks](#runbooks)
 7. [Emergency Procedures](#emergency-procedures)
 
@@ -573,7 +573,7 @@ memory_usage = { warning = 1.25, critical = 1.5 }
 
 ---
 
-## Long-term Roadmap
+## Historical Long-term Roadmap
 
 ### Version Planning
 
