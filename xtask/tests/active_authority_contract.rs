@@ -33,8 +33,7 @@ fn assert_contains_none(surface: &str, name: &str, forbidden: &[&str]) {
 }
 
 #[test]
-fn maintainer_contract_preserves_ruling_and_evidence_boundaries(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn maintainer_contract_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let doctrine = read(&root, "docs/reference/MAINTAINER_AGENT_DOCTRINE.md")?;
 
@@ -66,8 +65,7 @@ fn maintainer_contract_preserves_ruling_and_evidence_boundaries(
 }
 
 #[test]
-fn contributing_uses_provider_native_review_and_integration(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn contributing_uses_current_review_model() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let contributing = read(&root, "CONTRIBUTING.md")?;
 
@@ -98,8 +96,7 @@ fn contributing_uses_provider_native_review_and_integration(
 }
 
 #[test]
-fn copilot_file_is_a_current_route_map_not_a_stale_architecture_copy(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn copilot_is_a_current_route_map() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let copilot = read(&root, ".github/copilot-instructions.md")?;
 
@@ -131,8 +128,7 @@ fn copilot_file_is_a_current_route_map_not_a_stale_architecture_copy(
 }
 
 #[test]
-fn worktree_protocol_requires_ownership_and_concrete_integration_purpose(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn worktree_mutation_has_a_concrete_reason() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let protocol = read(&root, "docs/reference/WORKTREE_PROTOCOL.md")?;
 
@@ -164,8 +160,7 @@ fn worktree_protocol_requires_ownership_and_concrete_integration_purpose(
 }
 
 #[test]
-fn active_authority_workflow_tracks_every_entrypoint(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn workflow_tracks_current_entrypoints() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let workflow = read(&root, ".github/workflows/active-authority-contract.yml")?;
 
