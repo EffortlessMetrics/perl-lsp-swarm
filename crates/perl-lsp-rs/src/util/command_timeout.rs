@@ -94,6 +94,22 @@ mod tests {
         }
     }
 
+    fn stderr_command() -> Command {
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "echo", "diagnostic", "1>&2"]);
+            cmd
+        }
+
+        #[cfg(not(windows))]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "printf diagnostic >&2"]);
+            cmd
+        }
+    }
+
     fn nonexistent_command() -> Command {
         Command::new("__perl_lsp_nonexistent_command__")
     }
@@ -116,6 +132,20 @@ mod tests {
         assert!(result.is_ok(), "expected success, got: {:?}", result.err());
         if let Ok(output) = result {
             assert!(output.status.success());
+            assert_eq!(output.stdout, b"hello\n");
+            assert!(output.stderr.is_empty());
+        }
+    }
+
+    #[test]
+    fn unit_command_captures_stderr_without_losing_successful_completion() {
+        let result = run_command_with_timeout(stderr_command(), 10);
+
+        assert!(result.is_ok(), "expected command output, got: {:?}", result.err());
+        if let Ok(output) = result {
+            assert!(output.status.success());
+            assert!(output.stdout.is_empty());
+            assert_eq!(output.stderr, b"diagnostic");
         }
     }
 
@@ -134,6 +164,8 @@ mod tests {
         if let Ok(output) = result {
             assert_eq!(output.status.code(), Some(7));
             assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(output.stderr.is_empty());
         }
     }
 
