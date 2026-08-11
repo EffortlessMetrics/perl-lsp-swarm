@@ -128,7 +128,7 @@ pub fn classify_transition(
         return Ok(Classification {
             transition: CompatibilityTransition::ImprovementCandidate,
             reason: format!(
-                "complete observation may improve the accepted ratchet: {}",
+                "complete observation may have improved the accepted ratchet: {}",
                 if improvements.is_empty() {
                     format!(
                         "aggregate result changed from {}/{} to {}/{} files",
