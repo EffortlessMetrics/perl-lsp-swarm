@@ -590,7 +590,7 @@ fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
             )),
             form: GotoTargetForm::Sub,
         },
-        loc(38, 56),
+        loc(38, 57),
     );
     let program = Node::new(
         NodeKind::Program {
