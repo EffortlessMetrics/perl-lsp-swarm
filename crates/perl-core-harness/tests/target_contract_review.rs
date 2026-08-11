@@ -175,6 +175,30 @@ fn legacy_composites_reject_overlap_and_keep_op_hook_disjoint() -> TestResult {
 }
 
 #[test]
+fn target_names_are_globally_unambiguous() -> TestResult {
+    let mut matrix = matrix_with_contract(
+        "fixture",
+        "1111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222",
+        physical_contract("first target"),
+    );
+    let mut second = physical_contract("second target");
+    second.target_id = "component_comp".to_string();
+    second.upstream_name = "t/comp".to_string();
+    second.aliases = vec!["t/base".to_string()];
+    second.perl_version_row = "fixture".to_string();
+    matrix.targets.push(TargetMatrixEntry {
+        contract: second,
+        disposition: TargetDisposition::Implemented,
+        owner_issue: Some(6660),
+        claim_boundary: "second fixture topology only".to_string(),
+    });
+
+    assert!(matrix.validate().is_err());
+    Ok(())
+}
+
+#[test]
 fn presentation_only_changes_do_not_become_topology_drift() -> TestResult {
     let pinned = matrix_with_contract(
         "fixture",
