@@ -13,6 +13,9 @@ required_paths=(
   'AGENTS.md'
   'CLAUDE.md'
   'docs/agents/**'
+  'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+  'docs/specs/README.md'
+  'docs/INDEX.md'
   '.agents/skills/**'
   '.claude/skills/**'
   '.claude/settings.json'
@@ -21,6 +24,7 @@ required_paths=(
   'xtask/src/tasks/agent_flow.rs'
   'xtask/src/tasks/mod.rs'
   'xtask/tests/agent_merge_review_backstop.rs'
+  'xtask/tests/pr_convergence_contract.rs'
   'scripts/tests/test-agent-flow-control-plane-trigger.sh'
   '.github/workflows/agent-flow-control-plane.yml'
 )
