@@ -965,6 +965,7 @@ impl SemanticAnalyzer {
 
             _ => {
                 // Preserve forward compatibility with future public AST variants.
+                node.for_each_child(|child| self.analyze_node(child, scope_id));
             }
         }
     }
