@@ -13,6 +13,12 @@
 
 mod common;
 
+// The required `lsp_smoke` merge gate executes this integration-test target.
+// Include the exact-process contract here so shipped-binary lifecycle and
+// framing regressions are merge-blocking rather than advisory-only.
+#[path = "lsp_stdio_process_contract.rs"]
+mod exact_process_contract;
+
 #[cfg(test)]
 mod semantic_definition_tests {
     use crate::common::test_utils::TestServerBuilder;
