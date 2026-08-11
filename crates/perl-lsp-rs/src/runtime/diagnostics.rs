@@ -4089,9 +4089,7 @@ print \"unreachable\\n\";\n";
         let mut latest = None;
 
         while let Some(header_start) = remaining.find("Content-Length:") {
-            let Some(after_header) =
-                remaining.get(header_start + "Content-Length:".len()..)
-            else {
+            let Some(after_header) = remaining.get(header_start + "Content-Length:".len()..) else {
                 break;
             };
             let Some((header, body)) = after_header.split_once("\r\n\r\n") else {
@@ -4137,10 +4135,9 @@ print \"unreachable\\n\";\n";
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out waiting for publishDiagnostics frame for {uri}"
-                )
-                .into());
+                return Err(
+                    format!("timed out waiting for publishDiagnostics frame for {uri}").into()
+                );
             }
             std::thread::sleep(Duration::from_millis(1));
         }
