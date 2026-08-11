@@ -597,7 +597,18 @@
         ],
         "edges": []
       },
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "heuristic_generated_member_call_name",
+          "kind": "FunctionCall",
+          "line": 5,
+          "span_text": "has name => (is => 'ro')",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "negative_symbol_regions",
