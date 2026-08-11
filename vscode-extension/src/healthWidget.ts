@@ -83,6 +83,7 @@ export class HealthWidget {
   private _version: string | undefined = undefined;
   private _readinessState: IndexReadinessState = 'ready';
   private _readinessReason: string | undefined = undefined;
+  private _enhancedReadinessAvailable = false;
 
   constructor(private readonly item: vscode.StatusBarItem) {
     this._render();
@@ -96,6 +97,7 @@ export class HealthWidget {
   onStateChange(state: ClientState): void {
     switch (state) {
       case ClientState.Starting:
+        this._enhancedReadinessAvailable = false;
         this.setWorkspaceLifecycleState('starting');
         break;
       case ClientState.Running:
@@ -151,6 +153,7 @@ export class HealthWidget {
 
   /** Consume canonical server readiness without inferring it from progress. */
   onIndexReadinessState(state: IndexReadinessState, reason?: string): void {
+    this._enhancedReadinessAvailable = true;
     this._readinessState = state;
     this._readinessReason = reason;
     if (this._activeTokens.size === 0) {
@@ -244,6 +247,11 @@ export class HealthWidget {
   /** Current canonical index readiness state from the server. */
   get readinessState(): IndexReadinessState {
     return this._readinessState;
+  }
+
+  /** Whether this server has emitted the enhanced readiness notification. */
+  get enhancedReadinessAvailable(): boolean {
+    return this._enhancedReadinessAvailable;
   }
 
   /** Bounded user-facing readiness detail for status surfaces. */
