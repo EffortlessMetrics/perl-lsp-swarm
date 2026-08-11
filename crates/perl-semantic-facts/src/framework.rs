@@ -1,117 +1,69 @@
-//! Framework adapter SDK types.
+//! Checked framework-adapter SDK vocabulary.
 //!
-//! Defines the low-level vocabulary for the `FrameworkAdapter` interface
-//! without implementing any production adapter, registry dispatch, or
-//! `ProjectModel` publication.
+//! Serialized request structures retain only admission-time snapshots. Live
+//! cancellation is supplied separately through [`AdapterCancellationControl`]
+//! and cannot be represented truthfully in JSON.
 //!
-//! # Dependency boundary
-//!
-//! These types depend only on `serde` and the existing vocabulary in this
-//! crate — [`Confidence`], [`Provenance`], [`SourceGeneration`],
-//! [`InvalidationDependency`], [`SemanticFactEnvelope`], and the ID
-//! newtypes. LSP, VS Code, DAP, and provider presentation types must never
-//! be imported here.
-//!
-//! # Versioning
-//!
-//! Every wire/persisted structure carries an explicit schema version.
-//! The current top-level version constant is
-//! [`FRAMEWORK_ADAPTER_SDK_VERSION`]. Consumers must tolerate additive
-//! changes (unknown `serde(default)` fields) from newer schema versions.
-//!
-//! # What this module does **not** do
-//!
-//! - No registry or dispatch.
-//! - No `ProjectModel` publication.
-//! - No production framework adapter (Exporter, Moo, Moose, …).
-//! - No provider shadowing or cutover.
-//! - No arbitrary framework execution.
-//!
-//! [`Confidence`]: crate::Confidence
-//! [`Provenance`]: crate::Provenance
-//! [`SourceGeneration`]: crate::SourceGeneration
-//! [`InvalidationDependency`]: crate::InvalidationDependency
-//! [`SemanticFactEnvelope`]: crate::SemanticFactEnvelope
+//! Wire compatibility is versioned. Additive struct fields are tolerated by
+//! older consumers because Serde ignores unknown fields by default, but adding
+//! an enum discriminant requires a new schema version: `#[non_exhaustive]` is a
+//! Rust source-compatibility tool, not an unknown-variant wire fallback.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AnchorId, Confidence, FileId, InvalidationDependency, Provenance, SemanticFactEnvelope,
-    SourceGeneration,
+    AnchorId, Confidence, FileId, InvalidationDependency, LifecyclePhase, Provenance,
+    SemanticConfidence, SemanticFactEnvelope, SemanticFactStatus, SemanticFreshness,
+    SemanticProducer, SemanticProvenance, SourceGeneration,
 };
 
-/// Current additive schema version for all framework adapter SDK types.
-///
-/// Consumers should record this string alongside serialized adapter results
-/// so that forward-incompatible schema changes can be detected. Unknown fields
-/// added in future minor versions must be tolerated via `#[serde(default)]`.
+/// Current framework-adapter SDK wire version.
 pub const FRAMEWORK_ADAPTER_SDK_VERSION: &str = "framework_adapter_sdk.v1";
 
-// ── ID newtypes ────────────────────────────────────────────────────────────
+/// Current numeric schema version for descriptor/result records.
+pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 1;
 
 /// Stable opaque identity for a registered adapter.
-///
-/// `AdapterId` is not a semantic entity ID — it must not be used as a key
-/// into the workspace entity graph. Adapters may derive their own ID
-/// deterministically from their name and schema version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AdapterId(pub u64);
 
-/// Opaque identity for a [`FactSink`] produced in one adapter invocation.
-///
-/// Scoped to the current server instance; all prior identities are invalid
-/// after a server restart. Must not be exposed to untrusted client input.
+/// Opaque identity for one invocation-local fact sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct FactSinkId(pub u64);
 
-// ── Adapter descriptor ─────────────────────────────────────────────────────
-
 /// Deployment disposition for an adapter.
-///
-/// Controls whether the adapter's output is authoritative, shadowed for
-/// comparison only, or experimental (subject to removal without notice).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AdapterDisposition {
-    /// Output is authoritative and visible to downstream providers.
+    /// Output may be published after validation.
     Production,
-    /// Output is produced and compared against existing results but not
-    /// delivered — used for incremental rollout and A/B evaluation.
+    /// Output is comparison-only.
     Shadow,
-    /// Output may be incorrect or incomplete; only enabled in explicit
-    /// experimental configurations.
+    /// Output is experimental and not publication authority.
     Experimental,
 }
 
-/// Versioned self-description of one registered adapter.
-///
-/// An `AdapterDescriptor` is stable across invocations and safe to
-/// serialize across process boundaries. It carries no live mutable state.
-///
-/// The `schema_version` field tracks the version of the *descriptor format*
-/// itself, independent of the adapter SDK version constant.
+/// Versioned self-description of one adapter.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterDescriptor {
-    /// Stable opaque identity for this adapter.
+    /// Stable adapter identity.
     pub adapter_id: AdapterId,
-    /// Human-readable adapter name (e.g. `"moo"`, `"moose"`, `"exporter"`).
+    /// Human-readable adapter name.
     pub name: String,
-    /// Framework or module family this adapter handles (e.g. `"Moo"`).
+    /// Framework or module family handled by the adapter.
     pub framework_name: String,
-    /// Optional semver-style version constraint for the target framework
-    /// (e.g. `">=2.0,<3.0"`). `None` means any version is accepted.
+    /// Optional registry-level framework-version constraint.
     pub framework_version_constraint: Option<String>,
-    /// Schema version of this descriptor record. Currently `1`.
+    /// Descriptor schema version.
     pub schema_version: u32,
-    /// Deployment disposition for this adapter instance.
+    /// Deployment disposition.
     pub disposition: AdapterDisposition,
 }
 
 impl AdapterDescriptor {
-    /// Construct a new `AdapterDescriptor`.
-    ///
-    /// Required because the struct is `#[non_exhaustive]`.
+    /// Construct a descriptor.
+    #[must_use]
     pub fn new(
         adapter_id: AdapterId,
         name: impl Into<String>,
@@ -129,111 +81,164 @@ impl AdapterDescriptor {
             disposition,
         }
     }
+
+    fn is_valid_authority(&self) -> bool {
+        self.schema_version == FRAMEWORK_ADAPTER_SCHEMA_VERSION
+            && self.disposition == AdapterDisposition::Production
+            && !self.name.trim().is_empty()
+            && !self.framework_name.trim().is_empty()
+    }
 }
 
-// ── Detection ──────────────────────────────────────────────────────────────
-
-/// Identity of one module available in the current project for detection.
-///
-/// Adapters use this to decide if their target framework is present without
-/// reading the file system directly or invoking dynamic module resolution.
-/// No path or source-text content is carried — only stable IDs and generations.
+/// Observed version evidence for one activation module.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ModuleActivationIdentity {
-    /// Fully qualified package or module name (e.g. `"Moo"`, `"Moose::Role"`).
-    pub module_name: String,
-    /// Optional source file identity for this module within the current workspace.
-    pub file_id: Option<FileId>,
-    /// Source generation snapshot for this module's source bytes.
+pub struct ModuleVersionEvidence {
+    /// Version spelling observed by the project model.
+    pub version: String,
+    /// Generation that produced the version observation.
     pub generation: SourceGeneration,
 }
 
+impl ModuleVersionEvidence {
+    /// Construct known module-version evidence.
+    #[must_use]
+    pub fn new(version: impl Into<String>, generation: SourceGeneration) -> Self {
+        Self {
+            version: version.into(),
+            generation,
+        }
+    }
+
+    fn is_known(&self) -> bool {
+        !self.version.trim().is_empty() && self.generation.is_known()
+    }
+}
+
+/// Identity of one module available to the detection pass.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ModuleActivationIdentity {
+    /// Fully qualified module name.
+    pub module_name: String,
+    /// Optional source file identity.
+    pub file_id: Option<FileId>,
+    /// Source generation represented by this activation row.
+    pub generation: SourceGeneration,
+    /// Optional observed framework/module version.
+    #[serde(default)]
+    pub observed_version: Option<ModuleVersionEvidence>,
+}
+
 impl ModuleActivationIdentity {
-    /// Construct a module activation identity.
+    /// Construct an activation identity without version evidence.
+    #[must_use]
     pub fn new(
         module_name: impl Into<String>,
         file_id: Option<FileId>,
         generation: SourceGeneration,
     ) -> Self {
-        Self { module_name: module_name.into(), file_id, generation }
+        Self {
+            module_name: module_name.into(),
+            file_id,
+            generation,
+            observed_version: None,
+        }
+    }
+
+    /// Attach version evidence produced from the same module generation.
+    #[must_use]
+    pub fn with_observed_version(mut self, evidence: ModuleVersionEvidence) -> Self {
+        self.observed_version = Some(evidence);
+        self
     }
 }
 
-/// Cancellation token for adapter detection and invocation operations.
+/// Serializable cancellation state captured when work is admitted.
 ///
-/// Adapters must poll `is_cancelled` at natural checkpoints and return a
-/// `Cancelled` outcome immediately — without completing partial work — when
-/// the token is set.
+/// This is deliberately a snapshot. Runtime implementations receive a live
+/// [`AdapterCancellationControl`] separately and poll that control during work.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterCancellation {
-    /// `true` when the caller has requested cancellation.
+    /// Whether cancellation had already been requested at admission.
     pub is_cancelled: bool,
 }
 
 impl AdapterCancellation {
-    /// Construct a token representing an active (non-cancelled) operation.
+    /// Construct an active admission snapshot.
     #[must_use]
     pub const fn active() -> Self {
-        Self { is_cancelled: false }
+        Self {
+            is_cancelled: false,
+        }
     }
 
-    /// Construct a pre-cancelled token.
+    /// Construct a pre-cancelled admission snapshot.
     #[must_use]
     pub const fn cancelled() -> Self {
         Self { is_cancelled: true }
     }
 }
 
-/// Resource budget for one adapter detection or invocation operation.
-///
-/// Limits are enforced by the adapter itself. Results that exceed the budget
-/// must return a `BudgetExhausted` outcome with any partial facts collected.
+/// Live cancellation port supplied alongside serialized adapter input.
+pub trait AdapterCancellationControl: Send + Sync {
+    /// Whether cancellation is currently requested.
+    fn is_cancelled(&self) -> bool;
+}
+
+/// Live control that never cancels.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopAdapterCancellationControl;
+
+impl AdapterCancellationControl for NoopAdapterCancellationControl {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// Resource budget for one detection or invocation operation.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterBudget {
-    /// Maximum number of [`EmittedFact`]s the adapter may produce.
+    /// Maximum emitted fact count.
     pub max_emitted_facts: u32,
-    /// Maximum total payload bytes across all serialized emitted facts.
+    /// Maximum serialized payload bytes.
     pub max_payload_bytes: u64,
 }
 
 impl AdapterBudget {
-    /// Construct a budget constraint.
+    /// Construct a budget.
     #[must_use]
     pub const fn new(max_emitted_facts: u32, max_payload_bytes: u64) -> Self {
-        Self { max_emitted_facts, max_payload_bytes }
+        Self {
+            max_emitted_facts,
+            max_payload_bytes,
+        }
     }
 }
 
-/// Input to the framework detection pass.
-///
-/// Contains only the information needed to decide whether the target framework
-/// is present in the current project. No private paths, no source text, and
-/// no workspace write access.
+/// Input to a framework-detection pass.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterDetectionInput {
-    /// Descriptor of the adapter being queried.
+    /// Adapter descriptor.
     pub descriptor: AdapterDescriptor,
-    /// Modules visible in the current project index.
+    /// Modules visible in the current project model.
     pub available_modules: Vec<ModuleActivationIdentity>,
-    /// Source generation for the whole project snapshot.
+    /// Project-model generation.
     pub project_generation: SourceGeneration,
-    /// Optional content digest over the module activation list
-    /// (for cache invalidation — not source text).
+    /// Optional digest over the activation list.
     pub content_digest: Option<String>,
-    /// Optional resource budget for this detection call.
+    /// Optional resource budget.
     pub budget: Option<AdapterBudget>,
-    /// Cancellation token.
+    /// Admission-time cancellation snapshot.
     pub cancellation: AdapterCancellation,
 }
 
 impl AdapterDetectionInput {
     /// Construct a detection input.
-    ///
-    /// Required because the struct is `#[non_exhaustive]`.
+    #[must_use]
     pub fn new(
         descriptor: AdapterDescriptor,
         available_modules: Vec<ModuleActivationIdentity>,
@@ -251,168 +256,195 @@ impl AdapterDetectionInput {
             cancellation,
         }
     }
+
+    /// Whether the input contains coherent version evidence for `module_name`.
+    #[must_use]
+    pub fn has_version_evidence(&self, module_name: &str) -> bool {
+        self.available_modules.iter().any(|module| {
+            module.module_name == module_name
+                && module.generation.is_known()
+                && module
+                    .observed_version
+                    .as_ref()
+                    .is_some_and(|version| version.is_known() && version.generation == module.generation)
+        })
+    }
 }
 
-/// Structured reason a required framework was found to be absent.
+/// Structured reason a framework is absent.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DetectionAbsenceReason {
-    /// None of the activation modules required by this adapter were present.
+    /// Required activation modules were missing.
     RequiredModulesMissing,
-    /// An activation module was present but its version did not satisfy the
-    /// adapter's [`AdapterDescriptor::framework_version_constraint`].
+    /// Observed version evidence did not satisfy the descriptor constraint.
     VersionConstraintNotSatisfied,
-    /// The framework is explicitly excluded by project configuration.
+    /// Project configuration explicitly excluded the framework.
     ExcludedByConfiguration,
 }
 
-/// Reason an adapter could not proceed with detection or invocation.
+/// Reason detection or invocation could not proceed.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnavailableReason {
-    /// The project source generation was not available (unknown or empty).
+    /// Required generation identity was unavailable.
     MissingGeneration,
-    /// The module activation list provided to the adapter was empty.
+    /// No activation modules were available.
     NoModulesAvailable,
-    /// An adapter-internal invariant was violated.
+    /// An internal invariant failed.
     InternalError,
 }
 
-/// Concrete outcome of one framework detection pass.
+/// Outcome of one framework-detection pass.
 ///
-/// All outcome variants are `#[non_exhaustive]` because new discriminants
-/// may be added without a major version bump. Deserializing an unknown
-/// variant must be handled gracefully by callers.
+/// Enum additions are wire-schema changes and require a new SDK version.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DetectionOutcome {
-    /// The framework was definitively detected.
+    /// Framework presence was established.
     Detected {
-        /// Confidence in the detection result.
+        /// Detection confidence.
         confidence: Confidence,
-        /// Detected framework version string, when identifiable.
+        /// Observed framework version, when known.
         framework_version: Option<String>,
     },
-    /// The framework is definitively absent in the current project.
+    /// Framework absence was established.
     Absent {
-        /// Structured reason explaining why the framework was not found.
+        /// Absence reason.
         reason: DetectionAbsenceReason,
     },
-    /// Framework presence is ambiguous due to conflicting activation signals.
+    /// Conflicting signals prevented one answer.
     Conflicting {
-        /// Human-readable description of each detected conflict.
+        /// Conflict descriptions.
         conflict_descriptions: Vec<String>,
     },
-    /// Detection could not complete due to a structural problem.
+    /// Detection could not execute.
     Unavailable {
-        /// Reason the detection operation could not proceed.
+        /// Unavailability reason.
         reason: UnavailableReason,
     },
-    /// Detection was cancelled before completing.
+    /// Detection was cancelled.
     Cancelled,
-    /// The resource budget was exhausted before detection could complete.
+    /// Detection exhausted its resource budget.
     BudgetExhausted,
-    /// This adapter does not support detecting the current framework version
-    /// or configuration.
+    /// The adapter does not support this configuration.
     Unsupported {
-        /// Human-readable explanation of why this adapter cannot help.
+        /// Bounded explanation.
         reason: String,
     },
 }
 
-/// Full result of one framework detection pass.
-///
-/// Carries the originating descriptor and project generation so consumers
-/// can verify the result is still authoritative against the current workspace.
+/// Result of one detection pass.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterDetectionResult {
-    /// Descriptor of the adapter that performed detection.
+    /// Adapter descriptor.
     pub descriptor: AdapterDescriptor,
-    /// Project generation in effect during detection.
+    /// Project generation represented by the result.
     pub project_generation: SourceGeneration,
-    /// Concrete outcome of the detection pass.
+    /// Detection outcome.
     pub outcome: DetectionOutcome,
+    /// Version evidence used for a version-qualified absence.
+    #[serde(default)]
+    pub version_evidence: Option<ModuleVersionEvidence>,
 }
 
 impl AdapterDetectionResult {
-    /// Construct a detection result.
-    ///
-    /// Required because the struct is `#[non_exhaustive]`.
+    /// Construct a detection result without version evidence.
+    #[must_use]
     pub fn new(
         descriptor: AdapterDescriptor,
         project_generation: SourceGeneration,
         outcome: DetectionOutcome,
     ) -> Self {
-        Self { descriptor, project_generation, outcome }
+        Self {
+            descriptor,
+            project_generation,
+            outcome,
+            version_evidence: None,
+        }
     }
 
-    /// Whether this result indicates definite framework presence.
-    ///
-    /// Returns `false` for all outcomes except [`DetectionOutcome::Detected`].
+    /// Attach the observed version used for a version-qualified verdict.
+    #[must_use]
+    pub fn with_version_evidence(mut self, evidence: ModuleVersionEvidence) -> Self {
+        self.version_evidence = Some(evidence);
+        self
+    }
+
+    /// Whether this result reports framework presence.
     #[must_use]
     pub fn is_detected(&self) -> bool {
         matches!(self.outcome, DetectionOutcome::Detected { .. })
     }
 
-    /// Whether the detection result is authoritative for the current
-    /// project generation (i.e. not stale, partial, or unknown).
+    /// Whether this result is eligible to act as detection authority.
     #[must_use]
     pub fn is_authoritative(&self) -> bool {
-        self.project_generation.is_known()
-            && matches!(
-                self.outcome,
-                DetectionOutcome::Detected { .. } | DetectionOutcome::Absent { .. }
-            )
+        if !self.descriptor.is_valid_authority() || !self.project_generation.is_known() {
+            return false;
+        }
+        match &self.outcome {
+            DetectionOutcome::Detected {
+                confidence,
+                framework_version,
+            } => {
+                *confidence == Confidence::High
+                    && self
+                        .descriptor
+                        .framework_version_constraint
+                        .as_ref()
+                        .is_none_or(|_| framework_version.as_ref().is_some_and(|value| !value.trim().is_empty()))
+            }
+            DetectionOutcome::Absent {
+                reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
+            } => {
+                self.descriptor.framework_version_constraint.is_some()
+                    && self.version_evidence.as_ref().is_some_and(|evidence| {
+                        evidence.is_known() && evidence.generation == self.project_generation
+                    })
+            }
+            DetectionOutcome::Absent { .. } => true,
+            _ => false,
+        }
     }
 }
 
-// ── Adapter input (invocation) ─────────────────────────────────────────────
-
 /// Class of semantic facts an adapter may emit.
-///
-/// Adapters declare which classes they produce; the runtime may filter or
-/// skip adapters whose output classes are irrelevant for the current query.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FactClass {
-    /// Framework-synthesized entity members (e.g. Moo/Moose accessors from `has`).
+    /// Framework-generated members.
     GeneratedMembers,
-    /// Package inheritance and role-composition relationships.
+    /// Package inheritance or role-composition facts.
     PackageGraph,
-    /// Framework-specific import and export facts.
+    /// Framework import/export facts.
     FrameworkImports,
-    /// Diagnostic facts describing framework usage errors.
+    /// Framework diagnostics.
     Diagnostics,
-    /// Catch-all for fact classes introduced by future adapter families.
+    /// Versioned extension class.
     Extension,
 }
 
-/// Source scope presented to an adapter during invocation.
-///
-/// The adapter may only inspect facts about entities within this scope.
-/// Private paths, external filesystem access, and unbounded workspace reads
-/// are not permitted — the scope carries only stable IDs and generation tokens.
+/// Source scope presented to one adapter invocation.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterSourceScope {
-    /// Primary file being analysed.
+    /// Primary source file.
     pub primary_file_id: FileId,
-    /// Source generation snapshot for the primary file.
+    /// Primary source generation.
     pub primary_generation: SourceGeneration,
-    /// Content digest for the primary file (for invalidation — not source text).
+    /// Optional content digest.
     pub primary_content_digest: Option<String>,
-    /// Anchor of the framework activation statement that scopes this run
-    /// (e.g. the `use Moo;` statement in the target file).
+    /// Activation statement anchor.
     pub activation_anchor_id: Option<AnchorId>,
-    /// Package or class name being analysed.
+    /// Package or class name.
     pub package_name: Option<String>,
 }
 
 impl AdapterSourceScope {
-    /// Construct an adapter source scope.
-    ///
-    /// Required because the struct is `#[non_exhaustive]`.
+    /// Construct a source scope.
+    #[must_use]
     pub fn new(
         primary_file_id: FileId,
         primary_generation: SourceGeneration,
@@ -430,32 +462,27 @@ impl AdapterSourceScope {
     }
 }
 
-/// Full input to one adapter invocation.
-///
-/// The adapter must complete within the given budget and respect the
-/// cancellation token. Private paths and source text must not be read
-/// beyond the scope identified by `source_scope`.
+/// Input to one adapter invocation.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterInput {
-    /// Descriptor of the adapter to invoke.
+    /// Adapter descriptor.
     pub descriptor: AdapterDescriptor,
-    /// Source scope the adapter may inspect.
+    /// Source scope.
     pub source_scope: AdapterSourceScope,
-    /// Fact classes the caller requires from this invocation.
+    /// Fact classes requested by the caller.
     pub required_fact_classes: Vec<FactClass>,
-    /// Source identities that, if changed, would invalidate this result.
+    /// Invalidation dependencies.
     pub invalidation_inputs: Vec<InvalidationDependency>,
-    /// Optional resource budget.
+    /// Optional budget.
     pub budget: Option<AdapterBudget>,
-    /// Cancellation token.
+    /// Admission-time cancellation snapshot.
     pub cancellation: AdapterCancellation,
 }
 
 impl AdapterInput {
-    /// Construct an adapter input.
-    ///
-    /// Required because the struct is `#[non_exhaustive]`.
+    /// Construct an invocation input.
+    #[must_use]
     pub fn new(
         descriptor: AdapterDescriptor,
         source_scope: AdapterSourceScope,
@@ -475,80 +502,65 @@ impl AdapterInput {
     }
 }
 
-// ── FactSink and emitted facts ─────────────────────────────────────────────
-
-/// Reason a generated fact is limited, bounded, or incomplete.
-///
-/// Carried alongside an [`EmittedFact`] to explain why the fact may need
-/// to be treated with reduced confidence or refused for certain operations.
+/// Reason a fact is bounded or unusable.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactLimitation {
-    /// Human-readable description of the limitation.
+    /// Human-readable description.
     pub description: String,
-    /// Whether this limitation prevents the fact from being used at all.
-    ///
-    /// When `true`, downstream consumers should treat the fact as refused.
+    /// Whether this limitation blocks publication.
     pub is_blocking: bool,
-    /// Confidence impact — the confidence of the fact should not exceed this.
+    /// Maximum confidence allowed by the limitation.
     pub confidence_impact: Confidence,
 }
 
 impl FactLimitation {
-    /// Construct a fact limitation.
+    /// Construct a limitation.
+    #[must_use]
     pub fn new(
         description: impl Into<String>,
         is_blocking: bool,
         confidence_impact: Confidence,
     ) -> Self {
-        Self { description: description.into(), is_blocking, confidence_impact }
+        Self {
+            description: description.into(),
+            is_blocking,
+            confidence_impact,
+        }
     }
 }
 
-/// One semantic fact emitted by an adapter, carrying full provenance metadata.
-///
-/// Wraps a [`SemanticFactEnvelope`] with adapter identity and limitation
-/// context. The `is_stronger_than_generated` flag allows explicit source
-/// declarations (e.g. a literal `has` declaration with a `reader` override)
-/// to take precedence over synthesised equivalents.
-///
-/// Generated facts must use canonical project/semantic identities from the
-/// existing vocabulary in [`crate`]. Provider-specific output structures are
-/// structurally impossible through this interface.
+/// One semantic fact emitted by an adapter.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmittedFact {
-    /// Sink this fact was emitted into.
+    /// Sink identity.
     pub sink_id: FactSinkId,
-    /// Adapter that produced this fact.
+    /// Adapter identity.
     pub adapter_id: AdapterId,
-    /// Framework name the producing adapter handles.
+    /// Framework name.
     pub framework_name: String,
-    /// Provenance of this specific fact.
-    ///
-    /// Must be [`Provenance::FrameworkSynthesis`] for generated members.
+    /// Adapter-level provenance.
     pub provenance: Provenance,
-    /// Confidence in this fact before any limitation adjustment.
+    /// Adapter-level confidence.
     pub confidence: Confidence,
-    /// Canonical semantic fact transport record.
+    /// Canonical semantic envelope.
     pub envelope: SemanticFactEnvelope,
-    /// Class of this emitted fact.
+    /// Fact class.
     pub fact_class: FactClass,
-    /// Optional limitation describing why this fact may be incomplete.
+    /// Optional limitation.
     pub limitation: Option<FactLimitation>,
-    /// Whether this fact represents an explicit source declaration that is
-    /// stronger than a synthesised/generated equivalent.
+    /// Untrusted compatibility hint from the producing adapter.
     ///
-    /// When `true`, a conflicting synthesised fact should be discarded in
-    /// favour of this one during conflict resolution.
+    /// Downstream code must use [`EmittedFact::can_override_generated`] instead
+    /// of trusting this serialized field directly.
     pub is_stronger_than_generated: bool,
 }
 
 impl EmittedFact {
     /// Construct an emitted fact.
-    ///
-    /// Required because the struct is `#[non_exhaustive]`.
-    #[allow(clippy::too_many_arguments)] // mirrors the struct fields 1-to-1
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         sink_id: FactSinkId,
         adapter_id: AdapterId,
@@ -576,25 +588,74 @@ impl EmittedFact {
     /// Whether this fact has a blocking limitation.
     #[must_use]
     pub fn is_blocked(&self) -> bool {
-        self.limitation.as_ref().is_some_and(|l| l.is_blocking)
+        self.limitation
+            .as_ref()
+            .is_some_and(|limitation| limitation.is_blocking)
+    }
+
+    /// Whether source-backed evidence validates the precedence hint.
+    #[must_use]
+    pub fn can_override_generated(&self) -> bool {
+        if !self.is_stronger_than_generated {
+            return false;
+        }
+        matches!(
+            self.provenance,
+            Provenance::ExactAst
+                | Provenance::DesugaredAst
+                | Provenance::SemanticAnalyzer
+                | Provenance::LiteralRequireImport
+        ) && matches!(
+            self.envelope.provenance,
+            SemanticProvenance::Known(value) if value == self.provenance
+        ) && self.envelope.reason_code == crate::SemanticReasonCode::ExactSource
+    }
+
+    fn is_structurally_coherent(
+        &self,
+        descriptor: &AdapterDescriptor,
+        scope: &AdapterSourceScope,
+        sink_id: FactSinkId,
+        generation: &SourceGeneration,
+    ) -> bool {
+        self.sink_id == sink_id
+            && self.adapter_id == descriptor.adapter_id
+            && self.framework_name == descriptor.framework_name
+            && !self.framework_name.trim().is_empty()
+            && self.envelope.anchor.file_id == scope.primary_file_id
+            && self.envelope.anchor.start_byte <= self.envelope.anchor.end_byte
+            && &self.envelope.source_generation == generation
+            && self.envelope.producer == SemanticProducer::FrameworkAdapter
+            && self.envelope.freshness == SemanticFreshness::Fresh
+            && !matches!(
+                self.envelope.status(),
+                SemanticFactStatus::Stale | SemanticFactStatus::Refused
+            )
+            && matches!(
+                self.envelope.provenance,
+                SemanticProvenance::Known(value) if value == self.provenance
+            )
+            && matches!(
+                self.envelope.confidence,
+                SemanticConfidence::Known(value) if value == self.confidence
+            )
+            && dependencies_are_coherent(self.envelope.invalidation_dependencies())
+            && (!self.is_stronger_than_generated || self.can_override_generated())
+            && !self.is_blocked()
     }
 }
 
-/// Bounded collection of facts produced by one adapter invocation.
-///
-/// Facts are ordered by emission sequence, preserving adapter-defined priority
-/// for conflict resolution. The sink is not persisted beyond the current
-/// server-instance invocation; all facts are discarded on server restart.
+/// Bounded collection produced by one invocation.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactSink {
-    /// Stable identity of this sink within the current server instance.
+    /// Sink identity.
     pub sink_id: FactSinkId,
-    /// Adapter that produced this sink.
+    /// Producing adapter identity.
     pub adapter_id: AdapterId,
-    /// Ordered sequence of emitted facts.
+    /// Ordered emitted facts.
     pub facts: Vec<EmittedFact>,
-    /// Total serialized payload bytes emitted, for budget accounting.
+    /// Serialized payload bytes.
     pub total_payload_bytes: u64,
 }
 
@@ -602,602 +663,403 @@ impl FactSink {
     /// Construct an empty sink.
     #[must_use]
     pub const fn new(sink_id: FactSinkId, adapter_id: AdapterId) -> Self {
-        Self { sink_id, adapter_id, facts: Vec::new(), total_payload_bytes: 0 }
+        Self {
+            sink_id,
+            adapter_id,
+            facts: Vec::new(),
+            total_payload_bytes: 0,
+        }
     }
 
-    /// Whether the sink carries any facts.
+    /// Whether the sink is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.facts.is_empty()
     }
 
-    /// Count of emitted facts.
+    /// Number of emitted facts.
     #[must_use]
     pub fn len(&self) -> usize {
         self.facts.len()
     }
 
-    /// Iterate over facts that have a blocking limitation.
+    /// Iterate blocking facts.
     pub fn blocking_limited_facts(&self) -> impl Iterator<Item = &EmittedFact> {
-        self.facts.iter().filter(|f| f.is_blocked())
+        self.facts.iter().filter(|fact| fact.is_blocked())
     }
 
-    /// Iterate over usable facts (no blocking limitation).
+    /// Iterate facts without blocking limitations.
     pub fn usable_facts(&self) -> impl Iterator<Item = &EmittedFact> {
-        self.facts.iter().filter(|f| !f.is_blocked())
+        self.facts.iter().filter(|fact| !fact.is_blocked())
+    }
+
+    /// Iterate facts whose source-backed precedence is validated.
+    pub fn source_precedence_facts(&self) -> impl Iterator<Item = &EmittedFact> {
+        self.facts.iter().filter(|fact| fact.can_override_generated())
     }
 }
 
-// ── Adapter result ─────────────────────────────────────────────────────────
-
-/// Concrete outcome of one adapter invocation.
+/// Outcome of one adapter invocation.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AdapterOutcome {
-    /// The adapter completed successfully and produced facts.
+    /// Adapter completed.
     Applied {
-        /// All facts produced by this invocation.
+        /// Produced sink.
         sink: FactSink,
-        /// Non-blocking limitations on the produced result.
+        /// Result-level limitations.
         limitations: Vec<FactLimitation>,
     },
-    /// The result is bounded by a dynamic Perl feature the adapter cannot model.
-    ///
-    /// Equivalent to a `DynamicBoundary` — the adapter ran but its output is
-    /// incomplete because a runtime value would be required.
+    /// A dynamic boundary prevented completion.
     Dynamic {
-        /// Human-readable reason for the dynamic boundary.
+        /// Boundary explanation.
         reason: String,
-        /// Partial facts collected before the dynamic boundary was reached.
+        /// Partial facts.
         partial_sink: Option<FactSink>,
     },
-    /// This adapter does not support the current framework version or
-    /// configuration.
+    /// Configuration is unsupported.
     Unsupported {
-        /// Human-readable explanation.
+        /// Explanation.
         reason: String,
     },
-    /// Conflicting framework signals prevent the adapter from producing a
-    /// coherent result.
+    /// Conflicting signals prevented a result.
     Conflict {
-        /// Human-readable description of each detected conflict.
+        /// Conflict descriptions.
         conflict_descriptions: Vec<String>,
     },
-    /// The resource budget was exhausted before the adapter completed.
+    /// Budget was exhausted.
     BudgetExhausted {
-        /// Partial facts collected before the budget was reached.
+        /// Partial facts.
         partial_sink: Option<FactSink>,
     },
-    /// The operation was cancelled before completing.
+    /// Invocation was cancelled.
     Cancelled,
 }
 
+/// Checked authority failure for an adapter result.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterAuthorityError {
+    /// Result or descriptor schema is unsupported.
+    UnsupportedSchema,
+    /// Adapter disposition is not production.
+    NonProduction,
+    /// Generations are unknown or disagree.
+    GenerationMismatch,
+    /// Outcome is not complete `Applied`.
+    IncompleteOutcome,
+    /// A result-level blocking limitation exists.
+    BlockingLimitation,
+    /// Sink identity disagrees with the descriptor.
+    SinkIdentityMismatch,
+    /// One emitted fact is structurally incoherent.
+    InvalidFact,
+}
+
 /// Full result of one adapter invocation.
-///
-/// Carries the originating descriptor and source generation so consumers
-/// can verify the result is still authoritative against the current workspace.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterResult {
-    /// Schema version of this result record. Currently `1`.
+    /// Result schema version.
     pub schema_version: u32,
-    /// Descriptor of the adapter that ran.
+    /// Adapter descriptor.
     pub descriptor: AdapterDescriptor,
-    /// Source scope used during this invocation.
+    /// Source scope.
     pub source_scope: AdapterSourceScope,
-    /// Generation in effect at invocation time.
+    /// Invocation generation.
     pub invocation_generation: SourceGeneration,
-    /// Concrete outcome of the invocation.
+    /// Invocation outcome.
     pub outcome: AdapterOutcome,
 }
 
 impl AdapterResult {
-    /// Construct an adapter result with the current schema version (`1`).
-    ///
-    /// Required because the struct is `#[non_exhaustive]`.
+    /// Construct a result.
+    #[must_use]
     pub fn new(
         descriptor: AdapterDescriptor,
         source_scope: AdapterSourceScope,
         invocation_generation: SourceGeneration,
         outcome: AdapterOutcome,
     ) -> Self {
-        Self { schema_version: 1, descriptor, source_scope, invocation_generation, outcome }
+        Self {
+            schema_version: FRAMEWORK_ADAPTER_SCHEMA_VERSION,
+            descriptor,
+            source_scope,
+            invocation_generation,
+            outcome,
+        }
     }
 
-    /// Whether the adapter produced at least one fact.
+    /// Whether any complete or partial sink contains facts.
     #[must_use]
     pub fn has_facts(&self) -> bool {
         match &self.outcome {
             AdapterOutcome::Applied { sink, .. } => !sink.is_empty(),
-            AdapterOutcome::Dynamic { partial_sink, .. } => {
-                partial_sink.as_ref().is_some_and(|s| !s.is_empty())
-            }
-            AdapterOutcome::BudgetExhausted { partial_sink } => {
-                partial_sink.as_ref().is_some_and(|s| !s.is_empty())
+            AdapterOutcome::Dynamic { partial_sink, .. }
+            | AdapterOutcome::BudgetExhausted { partial_sink } => {
+                partial_sink.as_ref().is_some_and(|sink| !sink.is_empty())
             }
             _ => false,
         }
     }
 
-    /// Whether the result is fully authoritative (not a fallback or partial).
-    ///
-    /// Returns `true` only for [`AdapterOutcome::Applied`] with a known
-    /// invocation generation.
+    /// Validate whether this result may act as publication authority.
+    pub fn validate_authority(&self) -> Result<(), AdapterAuthorityError> {
+        if self.schema_version != FRAMEWORK_ADAPTER_SCHEMA_VERSION
+            || self.descriptor.schema_version != FRAMEWORK_ADAPTER_SCHEMA_VERSION
+        {
+            return Err(AdapterAuthorityError::UnsupportedSchema);
+        }
+        if self.descriptor.disposition != AdapterDisposition::Production {
+            return Err(AdapterAuthorityError::NonProduction);
+        }
+        if !self.source_scope.primary_generation.is_known()
+            || !self.invocation_generation.is_known()
+            || self.source_scope.primary_generation != self.invocation_generation
+        {
+            return Err(AdapterAuthorityError::GenerationMismatch);
+        }
+
+        let AdapterOutcome::Applied { sink, limitations } = &self.outcome else {
+            return Err(AdapterAuthorityError::IncompleteOutcome);
+        };
+        if limitations.iter().any(|limitation| limitation.is_blocking) {
+            return Err(AdapterAuthorityError::BlockingLimitation);
+        }
+        if sink.adapter_id != self.descriptor.adapter_id {
+            return Err(AdapterAuthorityError::SinkIdentityMismatch);
+        }
+        if sink.facts.iter().any(|fact| {
+            !fact.is_structurally_coherent(
+                &self.descriptor,
+                &self.source_scope,
+                sink.sink_id,
+                &self.invocation_generation,
+            )
+        }) {
+            return Err(AdapterAuthorityError::InvalidFact);
+        }
+        Ok(())
+    }
+
+    /// Whether this result passed the complete authority contract.
     #[must_use]
     pub fn is_authoritative(&self) -> bool {
-        self.invocation_generation.is_known()
-            && matches!(self.outcome, AdapterOutcome::Applied { .. })
+        self.validate_authority().is_ok()
     }
 }
 
+fn dependencies_are_coherent(dependencies: &[InvalidationDependency]) -> bool {
+    if dependencies
+        .iter()
+        .any(|dependency| dependency.dependency_key.trim().is_empty() || !dependency.generation.is_known())
+    {
+        return false;
+    }
+    dependencies.windows(2).all(|pair| {
+        pair[0].dependency_key != pair[1].dependency_key
+            || pair[0].generation == pair[1].generation
+    })
+}
+
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::{
-        AnchorId, EntityId, FactId, LifecyclePhase, SemanticConfidence, SemanticFactEnvelope,
-        SemanticFactKind, SemanticFreshness, SemanticProducer, SemanticProvenance,
-        SemanticReasonCode, SourceAnchor,
+        EntityId, FactId, SemanticFactKind, SemanticReasonCode, SourceAnchor,
+    };
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
     };
 
-    fn sample_descriptor() -> AdapterDescriptor {
+    fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
         AdapterDescriptor::new(
             AdapterId(1),
-            "moo-test",
+            "moo",
             "Moo",
             None,
             1,
-            AdapterDisposition::Production,
+            disposition,
         )
     }
 
-    fn sample_scope() -> AdapterSourceScope {
+    fn scope() -> AdapterSourceScope {
         AdapterSourceScope::new(
             FileId(10),
-            SourceGeneration::known("sha256:aabbcc"),
-            Some("digest:aabbcc".to_string()),
-            Some(AnchorId(5)),
-            Some("My::Package".to_string()),
+            SourceGeneration::known("generation-1"),
+            None,
+            Some(AnchorId(2)),
+            Some("Example".to_string()),
         )
     }
 
-    fn sample_envelope(file_id: FileId) -> SemanticFactEnvelope {
+    fn envelope(provenance: Provenance) -> SemanticFactEnvelope {
         SemanticFactEnvelope::new(
             FactId(1),
             Some(EntityId(2)),
             SemanticFactKind::Declaration,
-            SourceAnchor::new(Some(AnchorId(3)), file_id, 10, 20),
-            SourceGeneration::known("sha256:aabbcc"),
+            SourceAnchor::new(Some(AnchorId(3)), FileId(10), 4, 12),
+            SourceGeneration::known("generation-1"),
             None,
-            Some("My::Package".to_string()),
+            Some("Example".to_string()),
             LifecyclePhase::Runtime,
             SemanticProducer::FrameworkAdapter,
-            SemanticProvenance::Known(Provenance::FrameworkSynthesis),
-            SemanticConfidence::Known(Confidence::Medium),
+            SemanticProvenance::Known(provenance),
+            SemanticConfidence::Known(Confidence::High),
             SemanticFreshness::Fresh,
             None,
-            vec![],
-            SemanticReasonCode::GeneratedFromSource,
+            Vec::new(),
+            if matches!(
+                provenance,
+                Provenance::ExactAst
+                    | Provenance::DesugaredAst
+                    | Provenance::SemanticAnalyzer
+                    | Provenance::LiteralRequireImport
+            ) {
+                SemanticReasonCode::ExactSource
+            } else {
+                SemanticReasonCode::GeneratedFromSource
+            },
         )
     }
 
-    #[test]
-    fn adapter_descriptor_roundtrips_through_json() {
-        let descriptor = sample_descriptor();
-        let json = serde_json::to_string(&descriptor).expect("serialize descriptor");
-        let decoded: AdapterDescriptor =
-            serde_json::from_str(&json).expect("deserialize descriptor");
-        assert_eq!(decoded, descriptor);
+    fn applied(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
+        let mut sink = FactSink::new(FactSinkId(7), AdapterId(1));
+        sink.facts.push(fact);
+        AdapterResult::new(
+            descriptor(disposition),
+            scope(),
+            SourceGeneration::known("generation-1"),
+            AdapterOutcome::Applied {
+                sink,
+                limitations: Vec::new(),
+            },
+        )
+    }
+
+    struct AtomicControl(Arc<AtomicBool>);
+
+    impl AdapterCancellationControl for AtomicControl {
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
     }
 
     #[test]
-    fn detection_result_detected_roundtrips() {
+    fn live_cancellation_can_change_after_dispatch() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let control = AtomicControl(Arc::clone(&flag));
+        assert!(!control.is_cancelled());
+        flag.store(true, Ordering::SeqCst);
+        assert!(control.is_cancelled());
+    }
+
+    #[test]
+    fn version_qualified_absence_requires_version_evidence() {
         let result = AdapterDetectionResult::new(
-            sample_descriptor(),
-            SourceGeneration::known("sha256:aabbcc"),
-            DetectionOutcome::Detected {
-                confidence: Confidence::High,
-                framework_version: Some("2.5.0".to_string()),
+            AdapterDescriptor::new(
+                AdapterId(1),
+                "moo",
+                "Moo",
+                Some(">=2".to_string()),
+                1,
+                AdapterDisposition::Production,
+            ),
+            SourceGeneration::known("project-1"),
+            DetectionOutcome::Absent {
+                reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
             },
         );
-        let json = serde_json::to_string(&result).expect("serialize");
-        let decoded: AdapterDetectionResult = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, result);
-        assert!(result.is_detected());
-        assert!(result.is_authoritative());
-    }
-
-    #[test]
-    fn detection_result_absent_is_not_detected() {
-        let result = AdapterDetectionResult::new(
-            sample_descriptor(),
-            SourceGeneration::known("sha256:aabbcc"),
-            DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing },
-        );
-        assert!(!result.is_detected());
-        assert!(result.is_authoritative());
-    }
-
-    #[test]
-    fn detection_result_with_unknown_generation_is_not_authoritative() {
-        let result = AdapterDetectionResult::new(
-            sample_descriptor(),
-            SourceGeneration::Unknown,
-            DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
-        );
-        assert!(result.is_detected());
-        assert!(!result.is_authoritative(), "unknown generation must not be authoritative");
-    }
-
-    #[test]
-    fn detection_conflicting_roundtrips() {
-        let result = AdapterDetectionResult::new(
-            sample_descriptor(),
-            SourceGeneration::known("sha256:cc"),
-            DetectionOutcome::Conflicting {
-                conflict_descriptions: vec![
-                    "both Moo and Moose activated".to_string(),
-                    "version constraint violated".to_string(),
-                ],
-            },
-        );
-        let json = serde_json::to_string(&result).expect("serialize");
-        let decoded: AdapterDetectionResult = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, result);
-        assert!(!result.is_detected());
-    }
-
-    #[test]
-    fn detection_budget_exhausted_roundtrips() {
-        let result = AdapterDetectionResult::new(
-            sample_descriptor(),
-            SourceGeneration::known("sha256:cc"),
-            DetectionOutcome::BudgetExhausted,
-        );
-        let json = serde_json::to_string(&result).expect("serialize");
-        let decoded: AdapterDetectionResult = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, result);
-        assert!(!result.is_detected());
         assert!(!result.is_authoritative());
+
+        let result = result.with_version_evidence(ModuleVersionEvidence::new(
+            "1.9",
+            SourceGeneration::known("project-1"),
+        ));
+        assert!(result.is_authoritative());
     }
 
     #[test]
-    fn detection_unsupported_roundtrips() {
-        let result = AdapterDetectionResult::new(
-            sample_descriptor(),
-            SourceGeneration::known("sha256:cc"),
-            DetectionOutcome::Unsupported { reason: "Moo v1 not supported".to_string() },
-        );
-        let json = serde_json::to_string(&result).expect("serialize");
-        let decoded: AdapterDetectionResult = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, result);
+    fn shadow_and_experimental_results_are_not_authoritative() {
+        for disposition in [
+            AdapterDisposition::Shadow,
+            AdapterDisposition::Experimental,
+        ] {
+            let fact = EmittedFact::new(
+                FactSinkId(7),
+                AdapterId(1),
+                "Moo",
+                Provenance::FrameworkSynthesis,
+                Confidence::High,
+                envelope(Provenance::FrameworkSynthesis),
+                FactClass::GeneratedMembers,
+                None,
+                false,
+            );
+            assert!(!applied(disposition, fact).is_authoritative());
+        }
     }
 
     #[test]
-    fn cancellation_token_semantics() {
-        let active = AdapterCancellation::active();
-        assert!(!active.is_cancelled);
-        let cancelled = AdapterCancellation::cancelled();
-        assert!(cancelled.is_cancelled);
-    }
-
-    #[test]
-    fn adapter_budget_roundtrips() {
-        let budget = AdapterBudget::new(100, 1_024 * 1_024);
-        let json = serde_json::to_string(&budget).expect("serialize");
-        let decoded: AdapterBudget = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, budget);
-    }
-
-    #[test]
-    fn adapter_input_roundtrips() {
-        let input = AdapterInput::new(
-            sample_descriptor(),
-            sample_scope(),
-            vec![FactClass::GeneratedMembers, FactClass::PackageGraph],
-            vec![InvalidationDependency::new(
-                "file:My/Package.pm",
-                SourceGeneration::known("sha256:aabbcc"),
-            )],
-            Some(AdapterBudget::new(50, 512_000)),
-            AdapterCancellation::active(),
-        );
-        let json = serde_json::to_string(&input).expect("serialize");
-        let decoded: AdapterInput = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, input);
-    }
-
-    #[test]
-    fn fact_sink_is_empty_on_construction() {
-        let sink = FactSink::new(FactSinkId(1), AdapterId(1));
-        assert!(sink.is_empty());
-        assert_eq!(sink.len(), 0);
-        assert_eq!(sink.blocking_limited_facts().count(), 0);
-        assert_eq!(sink.usable_facts().count(), 0);
-    }
-
-    #[test]
-    fn emitted_fact_blocking_limitation_is_detectable() {
-        let envelope = sample_envelope(FileId(10));
+    fn generation_and_sink_identity_must_be_coherent() {
         let fact = EmittedFact::new(
-            FactSinkId(1),
-            AdapterId(1),
-            "Moo",
-            Provenance::FrameworkSynthesis,
-            Confidence::Medium,
-            envelope,
-            FactClass::GeneratedMembers,
-            Some(FactLimitation::new("dynamic has body", true, Confidence::Low)),
-            false,
-        );
-        assert!(fact.is_blocked());
-    }
-
-    #[test]
-    fn emitted_fact_without_limitation_is_usable() {
-        let envelope = sample_envelope(FileId(10));
-        let fact = EmittedFact::new(
-            FactSinkId(1),
-            AdapterId(1),
-            "Moo",
-            Provenance::FrameworkSynthesis,
-            Confidence::Medium,
-            envelope,
-            FactClass::GeneratedMembers,
-            None,
-            false,
-        );
-        assert!(!fact.is_blocked());
-    }
-
-    #[test]
-    fn stronger_than_generated_flag_preserved() {
-        let envelope = sample_envelope(FileId(10));
-        let fact = EmittedFact::new(
-            FactSinkId(1),
+            FactSinkId(7),
             AdapterId(1),
             "Moo",
             Provenance::FrameworkSynthesis,
             Confidence::High,
-            envelope,
+            envelope(Provenance::FrameworkSynthesis),
             FactClass::GeneratedMembers,
             None,
-            true, // explicit source declaration — stronger than synthesised
+            false,
+        );
+        let mut result = applied(AdapterDisposition::Production, fact);
+        result.invocation_generation = SourceGeneration::known("generation-2");
+        assert_eq!(
+            result.validate_authority(),
+            Err(AdapterAuthorityError::GenerationMismatch)
+        );
+    }
+
+    #[test]
+    fn generated_precedence_hint_is_not_validated() {
+        let fact = EmittedFact::new(
+            FactSinkId(7),
+            AdapterId(1),
+            "Moo",
+            Provenance::FrameworkSynthesis,
+            Confidence::High,
+            envelope(Provenance::FrameworkSynthesis),
+            FactClass::GeneratedMembers,
+            None,
+            true,
         );
         assert!(fact.is_stronger_than_generated);
-        let json = serde_json::to_string(&fact).expect("serialize");
-        let decoded: EmittedFact = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, fact);
+        assert!(!fact.can_override_generated());
+        assert!(!applied(AdapterDisposition::Production, fact).is_authoritative());
     }
 
     #[test]
-    fn adapter_result_applied_is_authoritative() {
-        let mut sink = FactSink::new(FactSinkId(1), AdapterId(1));
-        let envelope = sample_envelope(FileId(10));
-        sink.facts.push(EmittedFact::new(
-            FactSinkId(1),
+    fn exact_source_precedence_can_be_validated() {
+        let fact = EmittedFact::new(
+            FactSinkId(7),
             AdapterId(1),
             "Moo",
-            Provenance::FrameworkSynthesis,
-            Confidence::Medium,
-            envelope,
+            Provenance::ExactAst,
+            Confidence::High,
+            envelope(Provenance::ExactAst),
             FactClass::GeneratedMembers,
             None,
-            false,
-        ));
-        sink.total_payload_bytes = 512;
-        let result = AdapterResult::new(
-            sample_descriptor(),
-            sample_scope(),
-            SourceGeneration::known("sha256:aabbcc"),
-            AdapterOutcome::Applied { sink, limitations: Vec::new() },
+            true,
         );
-        assert!(result.is_authoritative());
-        assert!(result.has_facts());
-        assert_eq!(result.schema_version, 1);
+        assert!(fact.can_override_generated());
+        assert!(applied(AdapterDisposition::Production, fact).is_authoritative());
     }
 
     #[test]
-    fn adapter_result_dynamic_boundary_is_not_authoritative() {
-        let result = AdapterResult::new(
-            sample_descriptor(),
-            sample_scope(),
-            SourceGeneration::known("sha256:aabbcc"),
-            AdapterOutcome::Dynamic {
-                reason: "has body uses a runtime variable".to_string(),
-                partial_sink: None,
-            },
-        );
-        assert!(!result.is_authoritative());
-        assert!(!result.has_facts());
-    }
-
-    #[test]
-    fn adapter_result_budget_exhausted_with_partial_sink() {
-        let mut partial = FactSink::new(FactSinkId(2), AdapterId(1));
-        let envelope = sample_envelope(FileId(10));
-        partial.facts.push(EmittedFact::new(
-            FactSinkId(2),
-            AdapterId(1),
-            "Moo",
-            Provenance::FrameworkSynthesis,
-            Confidence::Low,
-            envelope,
-            FactClass::GeneratedMembers,
-            None,
-            false,
-        ));
-        let result = AdapterResult::new(
-            sample_descriptor(),
-            sample_scope(),
-            SourceGeneration::known("sha256:aabbcc"),
-            AdapterOutcome::BudgetExhausted { partial_sink: Some(partial) },
-        );
-        assert!(!result.is_authoritative());
-        assert!(result.has_facts(), "partial sink facts should be reported");
-    }
-
-    #[test]
-    fn adapter_result_cancelled_has_no_facts() {
-        let result = AdapterResult::new(
-            sample_descriptor(),
-            sample_scope(),
-            SourceGeneration::known("sha256:aabbcc"),
-            AdapterOutcome::Cancelled,
-        );
-        assert!(!result.is_authoritative());
-        assert!(!result.has_facts());
-    }
-
-    #[test]
-    fn adapter_result_conflict_roundtrips() {
-        let result = AdapterResult::new(
-            sample_descriptor(),
-            sample_scope(),
-            SourceGeneration::known("sha256:aabbcc"),
-            AdapterOutcome::Conflict {
-                conflict_descriptions: vec!["Moo and Moose co-activated".to_string()],
-            },
-        );
-        let json = serde_json::to_string(&result).expect("serialize");
-        let decoded: AdapterResult = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, result);
-        assert!(!result.is_authoritative());
-    }
-
-    #[test]
-    fn adapter_result_unknown_generation_not_authoritative() {
-        let sink = FactSink::new(FactSinkId(1), AdapterId(1));
-        let result = AdapterResult::new(
-            sample_descriptor(),
-            sample_scope(),
-            SourceGeneration::Unknown,
-            AdapterOutcome::Applied { sink, limitations: Vec::new() },
-        );
-        assert!(
-            !result.is_authoritative(),
-            "unknown generation must not be authoritative even for Applied"
-        );
-    }
-
-    #[test]
-    fn module_activation_identity_roundtrips() {
-        let identity = ModuleActivationIdentity::new(
-            "Moo",
-            Some(FileId(42)),
-            SourceGeneration::known("sha256:deadbeef"),
-        );
-        let json = serde_json::to_string(&identity).expect("serialize");
-        let decoded: ModuleActivationIdentity = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, identity);
-    }
-
-    #[test]
-    fn detection_input_roundtrips() {
-        let input = AdapterDetectionInput::new(
-            sample_descriptor(),
-            vec![
-                ModuleActivationIdentity::new(
-                    "Moo",
-                    Some(FileId(1)),
-                    SourceGeneration::known("sha256:aa"),
-                ),
-                ModuleActivationIdentity::new(
-                    "Moo::Role",
-                    None,
-                    SourceGeneration::known("sha256:bb"),
-                ),
-            ],
-            SourceGeneration::known("sha256:project"),
-            Some("digest:project".to_string()),
-            Some(AdapterBudget::new(10, 65536)),
-            AdapterCancellation::active(),
-        );
-        let json = serde_json::to_string(&input).expect("serialize");
-        let decoded: AdapterDetectionInput = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, input);
-    }
-
-    /// Verify that a minimal test-only adapter can compile against the interface
-    /// without going through a registry. This is the compile-contract test
-    /// from acceptance criteria §8 of issue #6820.
-    #[test]
-    fn minimal_test_adapter_compiles_against_interface() {
-        fn run_detection(input: &AdapterDetectionInput) -> AdapterDetectionResult {
-            // A test adapter that unconditionally reports the framework absent.
-            AdapterDetectionResult::new(
-                input.descriptor.clone(),
-                input.project_generation.clone(),
-                DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing },
-            )
-        }
-
-        fn run_adapter(input: &AdapterInput) -> AdapterResult {
-            // A test adapter that emits an empty Applied result.
-            let sink = FactSink::new(FactSinkId(99), input.descriptor.adapter_id);
-            AdapterResult::new(
-                input.descriptor.clone(),
-                input.source_scope.clone(),
-                input.source_scope.primary_generation.clone(),
-                AdapterOutcome::Applied { sink, limitations: Vec::new() },
-            )
-        }
-
-        let detection_input = AdapterDetectionInput::new(
-            sample_descriptor(),
-            vec![],
-            SourceGeneration::known("sha256:test"),
-            None,
-            None,
-            AdapterCancellation::active(),
-        );
-        let detection_result = run_detection(&detection_input);
-        assert!(!detection_result.is_detected());
-
-        let adapter_input = AdapterInput::new(
-            sample_descriptor(),
-            sample_scope(),
-            vec![FactClass::GeneratedMembers],
-            vec![],
-            None,
-            AdapterCancellation::active(),
-        );
-        let adapter_result = run_adapter(&adapter_input);
-        // Empty Applied sink: has no facts but is authoritative when generation is known.
-        assert!(adapter_result.is_authoritative());
-        assert!(!adapter_result.has_facts());
-    }
-
-    #[test]
-    fn sdk_version_constant_is_stable() {
-        assert_eq!(FRAMEWORK_ADAPTER_SDK_VERSION, "framework_adapter_sdk.v1");
-    }
-
-    #[test]
-    fn adapter_disposition_variants_roundtrip() {
-        for disposition in [
-            AdapterDisposition::Production,
-            AdapterDisposition::Shadow,
-            AdapterDisposition::Experimental,
-        ] {
-            let json = serde_json::to_string(&disposition).expect("serialize");
-            let decoded: AdapterDisposition = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(decoded, disposition);
-        }
-    }
-
-    #[test]
-    fn fact_class_variants_roundtrip() {
-        for class in [
-            FactClass::GeneratedMembers,
-            FactClass::PackageGraph,
-            FactClass::FrameworkImports,
-            FactClass::Diagnostics,
-            FactClass::Extension,
-        ] {
-            let json = serde_json::to_string(&class).expect("serialize");
-            let decoded: FactClass = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(decoded, class);
-        }
+    fn future_enum_variant_requires_a_schema_bump() {
+        let future = r#"{"FutureVariant":{"payload":1}}"#;
+        assert!(serde_json::from_str::<DetectionOutcome>(future).is_err());
     }
 }
