@@ -196,10 +196,7 @@ fn diagnostic_with_tags() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn diagnostic_with_related_information() -> Result<(), Box<dyn std::error::Error>> {
     let mut d = Diagnostic::default();
-    d.related_information = Some(vec![RelatedInformation::new(
-        "did you mean 'foo'?",
-        (100, 120),
-    )]);
+    d.related_information = Some(vec![RelatedInformation::new("did you mean 'foo'?", (100, 120))]);
     assert!(d.related_information.is_some());
     assert_eq!(d.related_information.as_ref().map(|r| r.len()), Some(1));
     Ok(())
@@ -311,8 +308,7 @@ fn diagnostic_fields_are_mutable() -> Result<(), Box<dyn std::error::Error>> {
     d.range = (100, 200);
     d.severity = DiagnosticSeverity::Hint;
     d.message = "updated".to_string();
-    d.related_information =
-        Some(vec![RelatedInformation::new("added", (0, 0))]);
+    d.related_information = Some(vec![RelatedInformation::new("added", (0, 0))]);
     d.tags = Some(vec![DiagnosticTag::Deprecated]);
 
     assert_eq!(d.range, (100, 200));
