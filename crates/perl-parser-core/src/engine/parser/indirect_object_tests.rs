@@ -22,7 +22,9 @@ mod tests {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
             }
-            other => panic!("unknown lowercase names must remain FunctionCall nodes, got {other:?}"),
+            other => panic!(
+                "unknown lowercase names must remain FunctionCall nodes, got {other:?}"
+            ),
         }
     }
 
