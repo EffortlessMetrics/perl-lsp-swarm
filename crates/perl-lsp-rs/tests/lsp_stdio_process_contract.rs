@@ -8,7 +8,7 @@ mod support;
 
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use support::real_process::RealProcessClient;
 
 fn timeout() -> Duration {
@@ -204,7 +204,7 @@ fn notification_is_not_answered_and_a_later_request_forms_an_ordered_barrier() -
         timeout(),
     )?;
     assert_response_id(&barrier, &barrier_id)?;
-    client.assert_no_null_id_response_pending()?;
+    client.assert_no_response_pending()?;
 
     shutdown_and_exit(&mut client, json!(2))
 }
@@ -258,4 +258,91 @@ fn exit_without_shutdown_returns_failure_status() -> Result<()> {
         "exit without shutdown must use status 1, got {status}"
     );
     client.assert_transport_clean()
+}
+
+#[test]
+fn strict_stdout_parser_rejects_truncated_and_oversized_headers() -> Result<()> {
+    let truncated = b"Content-Length: 12\r\n";
+    let truncated_error = RealProcessClient::parse_stdout_frame_for_test(truncated)
+        .expect_err("EOF inside a header block must not be clean EOF");
+    ensure!(
+        truncated_error.to_string().contains("header"),
+        "truncated-header error lost framing context: {truncated_error}"
+    );
+
+    let oversized = vec![b'x'; 5 * 1024];
+    let oversized_error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
+        .expect_err("an oversized newline-free header must fail at the byte budget");
+    ensure!(
+        oversized_error.to_string().contains("exceeded"),
+        "oversized-header error lost budget context: {oversized_error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    let mut requests = Vec::new();
+    for id in 0..400 {
+        requests.extend_from_slice(&RealProcessClient::encode_message(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "$/perl-lsp/watchdog",
+            "params": {}
+        })));
+    }
+    client.send_raw_bytes(&requests)?;
+
+    let deadline = Instant::now() + timeout();
+    while !client.event_queue_overflowed() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    ensure!(
+        client.event_queue_overflowed(),
+        "expected the 256-entry event queue to report overflow"
+    );
+
+    let drop_started = Instant::now();
+    drop(client);
+    ensure!(
+        drop_started.elapsed() < Duration::from_secs(2),
+        "overflow cleanup blocked instead of terminating the candidate"
+    );
+    Ok(())
+}
+
+#[test]
+fn terminal_transport_check_rejects_an_unmatched_response() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    initialize_and_notify(&mut client, json!(1))?;
+
+    let orphan_id = json!("orphan-response");
+    client.send_raw_bytes(&RealProcessClient::encode_message(&json!({
+        "jsonrpc": "2.0",
+        "id": orphan_id,
+        "method": "$/perl-lsp/watchdog",
+        "params": {}
+    })))?;
+
+    let shutdown_id = json!(2);
+    let shutdown = client.request(
+        shutdown_id.clone(),
+        "shutdown",
+        Value::Null,
+        timeout(),
+    )?;
+    assert_response_id(&shutdown, &shutdown_id)?;
+    client.notify("exit", Value::Null)?;
+    let status = client.wait_for_exit(timeout())?;
+    ensure!(status.success(), "candidate did not exit cleanly: {status}");
+
+    let error = client
+        .assert_transport_clean()
+        .expect_err("an unmatched response must invalidate terminal proof");
+    ensure!(
+        error.to_string().contains("unconsumed terminal server message"),
+        "unexpected unmatched-response error: {error}"
+    );
+    Ok(())
 }
