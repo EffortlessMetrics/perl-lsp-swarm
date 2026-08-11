@@ -19,6 +19,22 @@ fn codes(source: &str, root: &Node, options: AstInvariantOptions) -> Vec<AstInva
 }
 
 #[test]
+fn options_builders_are_available_to_external_consumers() {
+    let options = AstInvariantOptions::default()
+        .with_max_findings(3)
+        .with_max_depth(4)
+        .with_max_nodes(5)
+        .with_child_source_order(false)
+        .with_empty_ranges(false);
+
+    assert_eq!(options.max_findings, 3);
+    assert_eq!(options.max_depth, 4);
+    assert_eq!(options.max_nodes, 5);
+    assert!(!options.require_child_source_order);
+    assert!(!options.allow_empty_ranges);
+}
+
+#[test]
 fn valid_tree_has_a_deterministic_clean_report() {
     let source = "1 2";
     let root = Node::new(
@@ -95,12 +111,26 @@ fn zero_width_policy_is_explicit() {
     let strict = validate_ast(
         "",
         &root,
-        AstInvariantOptions { allow_empty_ranges: false, ..AstInvariantOptions::default() },
+        AstInvariantOptions::default().with_empty_ranges(false),
     );
 
     assert!(permissive.is_valid());
     assert_eq!(strict.findings.len(), 1);
     assert_eq!(strict.findings[0].code, AstInvariantCode::UnexpectedEmptyRange);
+}
+
+#[test]
+fn zero_finding_limit_retains_nothing_and_marks_the_report_incomplete() {
+    let reversed = number("1", 2, 1);
+    let report = validate_ast(
+        "12",
+        &reversed,
+        AstInvariantOptions::default().with_max_findings(0),
+    );
+
+    assert!(report.findings.is_empty());
+    assert!(report.truncated);
+    assert!(!report.is_valid());
 }
 
 #[test]
@@ -114,12 +144,13 @@ fn depth_and_finding_budgets_bound_adversarial_trees() {
     let depth_report = validate_ast(
         "1",
         &root,
-        AstInvariantOptions { max_depth: 1, ..AstInvariantOptions::default() },
+        AstInvariantOptions::default().with_max_depth(1),
     );
 
     assert_eq!(depth_report.findings.len(), 1);
     assert_eq!(depth_report.findings[0].code, AstInvariantCode::DepthLimitExceeded);
     assert_eq!(depth_report.findings[0].path, "root:Program/statements[0]:Unary/operand[0]:Number");
+    assert!(depth_report.truncated);
 
     let invalid_root = Node::new(
         NodeKind::Program { statements: vec![number("2", 2, 1)] },
@@ -128,8 +159,28 @@ fn depth_and_finding_budgets_bound_adversarial_trees() {
     let bounded = validate_ast(
         "1",
         &invalid_root,
-        AstInvariantOptions { max_findings: 1, ..AstInvariantOptions::default() },
+        AstInvariantOptions::default().with_max_findings(1),
     );
     assert_eq!(bounded.findings.len(), 1);
     assert!(bounded.truncated);
+}
+
+#[test]
+fn wide_tree_respects_the_node_budget_without_collecting_every_child() {
+    let statements = (0..256).map(|_| number("1", 0, 1)).collect();
+    let root = Node::new(NodeKind::Program { statements }, location(0, 1));
+    let report = validate_ast(
+        "1",
+        &root,
+        AstInvariantOptions::default().with_max_nodes(8),
+    );
+
+    assert_eq!(report.nodes_visited, 8);
+    assert!(report.truncated);
+    assert_eq!(
+        report.findings.iter().filter(|finding| {
+            finding.code == AstInvariantCode::NodeLimitExceeded
+        }).count(),
+        1
+    );
 }
