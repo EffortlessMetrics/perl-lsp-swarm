@@ -3184,7 +3184,7 @@
     },
     {
       "id": "indirect_call",
-      "family": "indirect_call",
+      "family": "function_call_disambiguation",
       "label_mode": "partial",
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/indirect_call.pl",
       "scored_lines": 20,
@@ -3221,7 +3221,7 @@
         {
           "line": 12,
           "expected_tags": [
-            "indirect_call"
+            "function_call"
           ]
         },
         {
@@ -3239,7 +3239,7 @@
         {
           "line": 17,
           "expected_tags": [
-            "indirect_call"
+            "function_call"
           ]
         },
         {
@@ -3282,7 +3282,7 @@
         },
         {
           "id": "indirect_call_user_defined",
-          "kind": "IndirectCall",
+          "kind": "FunctionCall",
           "line": 12,
           "span_text": "move $player",
           "parent_kind": "ExpressionStatement",
@@ -3312,7 +3312,7 @@
         },
         {
           "id": "indirect_call_control_flow",
-          "kind": "IndirectCall",
+          "kind": "FunctionCall",
           "line": 17,
           "span_text": "move $player",
           "parent_kind": "ExpressionStatement",
@@ -3335,7 +3335,8 @@
     {
       "id": "continue_redo",
       "family": "continue_redo",
-      "label_mode": "partial",\n      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/continue_redo.pl",
+      "label_mode": "partial",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/continue_redo.pl",
       "scored_lines": 12,
       "scored_symbols": 3,
       "fully_labeled_regions": 0,
@@ -3445,13 +3446,13 @@
           "operator": null,
           "parent_operator": null
         }
-      ],
-      "label_mode": "partial"
+      ]
     },
     {
       "id": "glob_expression",
       "family": "glob",
-      "label_mode": "partial",\n      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/glob_expression.pl",
+      "label_mode": "partial",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/glob_expression.pl",
       "scored_lines": 8,
       "scored_symbols": 3,
       "fully_labeled_regions": 0,
@@ -3530,13 +3531,13 @@
           "operator": null,
           "parent_operator": null
         }
-      ],
-      "label_mode": "partial"
+      ]
     },
     {
       "id": "tie_interface",
       "family": "tie",
-      "label_mode": "partial",\n      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/tie_interface.pl",
+      "label_mode": "partial",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/tie_interface.pl",
       "scored_lines": 9,
       "scored_symbols": 3,
       "fully_labeled_regions": 0,
@@ -3620,8 +3621,7 @@
           "operator": null,
           "parent_operator": null
         }
-      ],
-      "label_mode": "partial"
+      ]
     }
   ]
 }
