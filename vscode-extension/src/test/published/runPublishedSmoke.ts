@@ -292,7 +292,7 @@ async function main(): Promise<void> {
         writeHostResolutionFailureReceipt(receiptsRoot, vscodeVersion, error);
       } catch (receiptError: unknown) {
         const detail = receiptError instanceof Error ? receiptError.message : String(receiptError);
-        console.error(`Unable to write VS Code host-resolution receipt: ${detail}`);
+        process.stderr.write(`Unable to write VS Code host-resolution receipt: ${detail}\n`);
       }
       throw error;
     }
