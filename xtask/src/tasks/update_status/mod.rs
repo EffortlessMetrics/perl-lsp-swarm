@@ -11,6 +11,7 @@
 //!   - docs/project/status/quality.md (mutation score, perf)
 //!   - docs/project/status/editor_ux.json (UX scorecard receipt)
 //!   - docs/project/status/workspace.md (workspace index scorecard)
+//!   - docs/project/status/provider_fact_reads.md (provider fact-read inventory)
 //!
 //! Also keeps docs/project/ROADMAP.md compliance table in sync when lsp subsystem runs.
 
@@ -34,6 +35,7 @@ mod lsp;
 #[cfg(test)]
 mod mod_tests;
 mod parser;
+mod provider_fact_reads;
 mod quality;
 mod tests;
 mod token;
@@ -55,6 +57,8 @@ pub enum StatusSubsystem {
     /// DAP debugger scorecard (launch success, latency, test counts).
     Dap,
     Workspace,
+    /// Provider fact-read ownership and duplicate-interpretation inventory.
+    ProviderFacts,
 }
 
 impl StatusSubsystem {
@@ -67,6 +71,7 @@ impl StatusSubsystem {
             StatusSubsystem::Quality => "quality",
             StatusSubsystem::Dap => "dap",
             StatusSubsystem::Workspace => "workspace",
+            StatusSubsystem::ProviderFacts => "provider-facts",
         }
     }
 }
@@ -123,6 +128,7 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
             StatusSubsystem::Quality,
             StatusSubsystem::Dap,
             StatusSubsystem::Workspace,
+            StatusSubsystem::ProviderFacts,
         ],
     };
 
@@ -134,6 +140,7 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
     let need_quality = subsystems.contains(&StatusSubsystem::Quality);
     let need_dap = subsystems.contains(&StatusSubsystem::Dap);
     let need_workspace = subsystems.contains(&StatusSubsystem::Workspace);
+    let need_provider_facts = subsystems.contains(&StatusSubsystem::ProviderFacts);
 
     // --- LSP subsystem ---
     if need_lsp {
@@ -268,6 +275,28 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
             }
             Ok(())
         })?;
+    }
+
+    // --- Provider fact-read inventory subsystem ---
+    if need_provider_facts {
+        run_subsystem(
+            "provider-facts",
+            "cargo xtask update-status --write --only provider-facts",
+            || {
+                let (status_path, updated_status) = provider_fact_reads::generate(&root)?;
+                let original_status = fs::read_to_string(&status_path).with_context(|| {
+                    format!("reading {}", status_path.display())
+                })?;
+                if updated_status != original_status {
+                    files_to_update.push((
+                        "docs/project/status/provider_fact_reads.md",
+                        status_path,
+                        updated_status,
+                    ));
+                }
+                Ok(())
+            },
+        )?;
     }
 
     if files_to_update.is_empty() {
