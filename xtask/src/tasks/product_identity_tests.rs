@@ -357,6 +357,37 @@ perl-lsp-rs = "999"
 }
 
 #[test]
+fn workspace_alias_to_in_tree_implementation_is_accepted() -> Result<()> {
+    let repo = fixture_repo()?;
+    write(
+        repo.path(),
+        "Cargo.toml",
+        r#"[workspace.package]
+repository = "https://github.com/EffortlessMetrics/perl-lsp"
+
+[workspace.dependencies]
+server_impl = { package = "perl-lsp-rs", path = "crates/perl-lsp-rs" }
+"#,
+    )?;
+    write(
+        repo.path(),
+        "crates/perllsp/Cargo.toml",
+        r#"[package]
+name = "perllsp"
+repository.workspace = true
+
+[[bin]]
+name = "perllsp"
+
+[dependencies]
+server_impl = { workspace = true }
+"#,
+    )?;
+
+    check_with_repository_context(repo.path(), Some("EffortlessMetrics/perl-lsp-swarm"))
+}
+
+#[test]
 fn direct_in_tree_path_dependency_is_accepted() -> Result<()> {
     let repo = fixture_repo()?;
     write(
