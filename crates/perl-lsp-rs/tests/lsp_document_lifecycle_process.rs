@@ -3,10 +3,12 @@
 //! The tests use Cargo's exact candidate and observe current-generation parse
 //! publication through semantic tokens, whose live path requires
 //! `DocumentState::current_parsed()`. They also cover document symbols, pull
-//! diagnostics, close ownership, stale-version rejection, and reopen state.
-//! They do not claim incremental parser reuse; #1374 remains the performance
-//! and reuse owner. The required `lsp_smoke` gate includes this file from
-//! `semantic_definition.rs`.
+//! diagnostics, close ownership, stale-version rejection, and settled
+//! close/reopen state reset. They do not hold an old parse in flight across a
+//! close/reopen boundary; deterministic parse-worker barrier tests own that ABA
+//! race. They also do not claim incremental parser reuse; #1374 remains the
+//! performance and reuse owner. The required `lsp_smoke` gate includes this
+//! file from `semantic_definition.rs`.
 
 #[path = "support/real_process.rs"]
 mod real_process;
@@ -249,21 +251,76 @@ fn diagnostic_fingerprints(items: &[Value]) -> Result<Vec<String>> {
     Ok(fingerprints)
 }
 
+fn is_parser_diagnostic(item: &Value) -> Result<bool> {
+    if item.get("source").and_then(Value::as_str) != Some("perl-lsp") {
+        return Ok(false);
+    }
+
+    let Some(code) = item.get("code") else {
+        return Ok(false);
+    };
+    let number = match code {
+        Value::Number(number) => {
+            number.as_u64().context("parser diagnostic numeric code must be an unsigned integer")?
+        }
+        Value::String(code) => {
+            let Some(digits) = code.strip_prefix("PL") else {
+                return Ok(false);
+            };
+            if digits.len() != 3 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Ok(false);
+            }
+            digits
+                .parse::<u64>()
+                .with_context(|| format!("invalid parser diagnostic code {code:?}"))?
+        }
+        Value::Null => return Ok(false),
+        other => bail!("unsupported diagnostic code kind: {other}"),
+    };
+    Ok((1..=99).contains(&number))
+}
+
 fn parser_diagnostic_fingerprints(items: &[Value]) -> Result<Vec<String>> {
     let mut fingerprints = Vec::new();
     for item in items {
-        let is_parser_code = item
-            .get("code")
-            .and_then(Value::as_str)
-            .and_then(|code| code.strip_prefix("PL"))
-            .and_then(|digits| digits.parse::<u16>().ok())
-            .is_some_and(|number| number < 100);
-        if is_parser_code {
+        if is_parser_diagnostic(item)? {
             fingerprints.push(diagnostic_fingerprint(item)?);
         }
     }
     fingerprints.sort();
     Ok(fingerprints)
+}
+
+#[test]
+fn parser_diagnostic_classifier_rejects_policy_codes_and_wrong_sources() -> Result<()> {
+    let parser = json!({
+        "source": "perl-lsp",
+        "code": "PL001",
+        "message": "parser",
+        "range": null
+    });
+    ensure!(is_parser_diagnostic(&parser)?);
+
+    for non_parser in [
+        json!({"source": "perl-lsp", "code": "PL100"}),
+        json!({"source": "perl-lsp", "code": "PL000"}),
+        json!({"source": "perl-lsp", "code": "PL01"}),
+        json!({"source": "perl-lsp", "code": 100}),
+        json!({"source": "perlcritic", "code": "PL001"}),
+        json!({"code": "PL001"}),
+    ] {
+        ensure!(
+            !is_parser_diagnostic(&non_parser)?,
+            "non-parser diagnostic was accepted: {non_parser}"
+        );
+    }
+
+    let malformed = json!({"source": "perl-lsp", "code": true});
+    ensure!(
+        is_parser_diagnostic(&malformed).is_err(),
+        "malformed diagnostic code kind was silently accepted"
+    );
+    Ok(())
 }
 
 #[test]
@@ -296,9 +353,10 @@ fn increasing_change_publishes_current_parse_and_stale_change_is_ignored() -> Re
         "version 1 symbol survived version 2 publication: {current_names:?}"
     );
     let current_diagnostics = diagnostic_items(&mut client, "diagnostics-v2")?;
+    let current_parser_fingerprints = parser_diagnostic_fingerprints(&current_diagnostics)?;
     ensure!(
-        !current_diagnostics.is_empty(),
-        "broken version 2 source must produce parser diagnostics"
+        !current_parser_fingerprints.is_empty(),
+        "broken version 2 source must produce parser diagnostics: {current_diagnostics:?}"
     );
     let current_fingerprints = diagnostic_fingerprints(&current_diagnostics)?;
 
@@ -328,7 +386,7 @@ fn increasing_change_publishes_current_parse_and_stale_change_is_ignored() -> Re
 }
 
 #[test]
-fn close_removes_open_document_authority_and_reopen_starts_fresh() -> Result<()> {
+fn close_after_settled_parse_removes_authority_and_reopen_starts_fresh() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     initialize(&mut client)?;
 
@@ -354,6 +412,9 @@ fn close_removes_open_document_authority_and_reopen_starts_fresh() -> Result<()>
         "broken pre-close source must produce parser diagnostics: {before_close_diagnostics:?}"
     );
 
+    // Version 8 has deliberately settled before close. This exact-process
+    // slice proves ownership removal and fresh reopen state, not the separate
+    // worker-level ABA case where an old parse is held in flight across reopen.
     did_close(&mut client)?;
     let closed_id = json!("tokens-after-close");
     let closed = client.request(
