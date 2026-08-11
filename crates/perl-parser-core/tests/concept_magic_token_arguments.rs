@@ -27,6 +27,15 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
     }
 }
 
+fn node_shape(node: &Node) -> &'static str {
+    match &node.kind {
+        NodeKind::FunctionCall { .. } => "FunctionCall",
+        NodeKind::String { .. } => "String",
+        NodeKind::Identifier { .. } => "Identifier",
+        _ => "Other",
+    }
+}
+
 #[test]
 fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result<(), String> {
     let source = concat!(
@@ -132,7 +141,7 @@ fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(
     );
     let ast = parse_clean(source)?;
     let mut observed = Vec::new();
-    let mut hash_magic_keys = Vec::new();
+    let mut hash_pairs = None;
 
     walk(&ast, &mut |node| {
         if let NodeKind::FunctionCall { name, args } = &node.kind
@@ -142,20 +151,40 @@ fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(
             observed.push(name.clone());
         }
         if let NodeKind::HashLiteral { pairs } = &node.kind {
-            for (key, _) in pairs {
-                if let NodeKind::FunctionCall { name, args } = &key.kind
-                    && name == "__FILE__"
-                    && args.is_empty()
-                    && let Some(text) = source.get(key.location.start..key.location.end)
-                {
-                    hash_magic_keys.push(text.to_owned());
-                }
+            let contracts = pairs
+                .iter()
+                .map(|(key, value)| {
+                    Some((
+                        node_shape(key),
+                        source.get(key.location.start..key.location.end)?.to_owned(),
+                        node_shape(value),
+                        source.get(value.location.start..value.location.end)?.to_owned(),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>();
+            if contracts
+                .as_ref()
+                .is_some_and(|pairs| pairs.iter().any(|(_, key, _, _)| key == "__FILE__"))
+            {
+                hash_pairs = contracts;
             }
         }
     });
     observed.sort();
 
     assert_eq!(observed, vec!["__FILE__", "__FILE__", "__LINE__", "__PACKAGE__", "__SUB__"]);
-    assert_eq!(hash_magic_keys, vec!["__FILE__"]);
+    assert_eq!(
+        hash_pairs,
+        Some(vec![
+            (
+                "FunctionCall",
+                "__FILE__".to_owned(),
+                "Identifier",
+                "line".to_owned()
+            ),
+            ("String", "file".to_owned(), "FunctionCall", "__FILE__".to_owned()),
+            ("String", "line".to_owned(), "FunctionCall", "__LINE__".to_owned()),
+        ])
+    );
     Ok(())
 }
