@@ -1568,7 +1568,109 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "same_bare_subs_package_a",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Same::A",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_run_a",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_return_a",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return \"A\"",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_package_b",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::Same::B",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_run_b",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_return_b",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return \"B\"",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_package_main",
+          "kind": "Package",
+          "line": 13,
+          "span_text": "package Accuracy::Same::Main",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_call_both",
+          "kind": "Subroutine",
+          "line": 15,
+          "span_text": "sub call_both",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_call_a",
+          "kind": "FunctionCall",
+          "line": 16,
+          "span_text": "Accuracy::Same::A::run()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_call_b",
+          "kind": "FunctionCall",
+          "line": 17,
+          "span_text": "Accuracy::Same::B::run()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "heredoc_basic",
