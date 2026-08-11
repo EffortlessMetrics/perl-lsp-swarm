@@ -135,18 +135,12 @@ fn validate_relative_path(raw: &str) -> Result<PathBuf> {
             }
         }
     }
-    ensure!(
-        !normalized.as_os_str().is_empty(),
-        "repository path must name a file: {raw}"
-    );
+    ensure!(!normalized.as_os_str().is_empty(), "repository path must name a file: {raw}");
     Ok(normalized)
 }
 
 fn repository_path_string(path: &Path) -> String {
-    path.iter()
-        .map(|part| part.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    path.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 fn resolve_repository_file(root: &Path, raw: &str) -> Result<(PathBuf, PathBuf)> {
@@ -210,9 +204,7 @@ fn validate_protocol_profile_evidence(
         "protocol-profile evidence must be a Rust test source: {raw}"
     );
     ensure!(
-        relative
-            .components()
-            .any(|component| component.as_os_str() == "tests"),
+        relative.components().any(|component| component.as_os_str() == "tests"),
         "protocol-profile evidence must live under a tests directory: {raw}"
     );
     let path = validate_repository_file(root, raw, tracked_files)?;
@@ -223,9 +215,7 @@ fn validate_protocol_profile_evidence(
         "protocol-profile evidence must define at least one Rust test: {raw}"
     );
     ensure!(
-        ["initialize", "capabilit", "stdio"]
-            .iter()
-            .any(|marker| source.contains(marker)),
+        ["initialize", "capabilit", "stdio"].iter().any(|marker| source.contains(marker)),
         "protocol-profile evidence must exercise a recognizable LSP protocol seam: {raw}"
     );
     Ok(())
@@ -252,9 +242,7 @@ fn validate_execution_receipt_path(raw: &str, kind: &str) -> Result<PathBuf> {
 
 fn is_lower_hex(value: &str, expected_len: usize) -> bool {
     value.len() == expected_len
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_artifact(artifact: &ReceiptArtifact) -> Result<()> {
@@ -264,10 +252,7 @@ fn validate_artifact(artifact: &ReceiptArtifact) -> Result<()> {
         is_lower_hex(&artifact.sha256, 64),
         "artifact sha256 must be 64 lowercase hexadecimal characters"
     );
-    ensure!(
-        artifact.size_bytes > 0,
-        "packaged-product artifact must have a non-zero size"
-    );
+    ensure!(artifact.size_bytes > 0, "packaged-product artifact must have a non-zero size");
     Ok(())
 }
 
@@ -311,16 +296,10 @@ fn validate_execution_receipt(
         !receipt.client_executable.trim().is_empty(),
         "receipt client_executable must not be empty"
     );
-    ensure!(
-        !receipt.client_version.trim().is_empty(),
-        "receipt client_version must not be empty"
-    );
+    ensure!(!receipt.client_version.trim().is_empty(), "receipt client_version must not be empty");
     ensure!(
         !receipt.server_command.is_empty()
-            && receipt
-                .server_command
-                .iter()
-                .all(|argument| !argument.trim().is_empty()),
+            && receipt.server_command.iter().all(|argument| !argument.trim().is_empty()),
         "receipt server_command must contain non-empty arguments"
     );
     ensure!(
@@ -341,27 +320,17 @@ fn validate_execution_receipt(
         is_lower_hex(&receipt.stderr_sha256, 64),
         "receipt stderr_sha256 must be 64 lowercase hexadecimal characters"
     );
-    ensure!(
-        !receipt.assertions.is_empty(),
-        "executable client receipt must contain assertions"
-    );
+    ensure!(!receipt.assertions.is_empty(), "executable client receipt must contain assertions");
 
     let mut assertion_names = BTreeSet::new();
     for assertion in &receipt.assertions {
-        ensure!(
-            !assertion.name.trim().is_empty(),
-            "receipt assertion name must not be empty"
-        );
+        ensure!(!assertion.name.trim().is_empty(), "receipt assertion name must not be empty");
         ensure!(
             assertion_names.insert(assertion.name.as_str()),
             "receipt repeats assertion {}",
             assertion.name
         );
-        ensure!(
-            assertion.passed,
-            "receipt assertion failed: {}",
-            assertion.name
-        );
+        ensure!(assertion.passed, "receipt assertion failed: {}", assertion.name);
         ensure!(
             !assertion.evidence.trim().is_empty(),
             "receipt assertion {} has no evidence locator",
@@ -432,10 +401,7 @@ fn render_status(registry: &Registry) -> String {
         .client
         .iter()
         .filter(|client| {
-            matches!(
-                client.tier.as_str(),
-                "packaged_product_proven" | "real_generic_client_proven"
-            )
+            matches!(client.tier.as_str(), "packaged_product_proven" | "real_generic_client_proven")
         })
         .map(|client| format!("`{}` (`{}`)", client.display_name, client.tier))
         .collect::<Vec<_>>();
@@ -461,29 +427,20 @@ fn client_registry_matches_documented_editor_population() -> Result<()> {
     ensure!(registry.meta.schema == "lsp-client-support.v1");
     ensure!(registry.meta.owner_issue == 6739);
 
-    let docs_path = validate_repository_file(
-        &root,
-        &registry.meta.source_document,
-        &tracked_files,
-    )?;
+    let docs_path =
+        validate_repository_file(&root, &registry.meta.source_document, &tracked_files)?;
     let docs = fs::read_to_string(&docs_path)
         .with_context(|| format!("read editor setup guide at {}", docs_path.display()))?;
     let documented_rows = editor_table_names(&docs);
-    ensure!(
-        !documented_rows.is_empty(),
-        "editor setup table was not found or was empty"
-    );
+    ensure!(!documented_rows.is_empty(), "editor setup table was not found or was empty");
     let documented = documented_rows.iter().cloned().collect::<BTreeSet<_>>();
     ensure!(
         documented.len() == documented_rows.len(),
         "editor setup table contains duplicate client names: {documented_rows:?}"
     );
 
-    let registered_rows = registry
-        .client
-        .iter()
-        .map(|client| client.display_name.clone())
-        .collect::<Vec<_>>();
+    let registered_rows =
+        registry.client.iter().map(|client| client.display_name.clone()).collect::<Vec<_>>();
     let registered = registered_rows.iter().cloned().collect::<BTreeSet<_>>();
     ensure!(
         registered.len() == registered_rows.len(),
@@ -503,48 +460,28 @@ fn client_registry_rejects_claim_inflation_and_missing_evidence() -> Result<()> 
     let root = workspace_root()?;
     let registry = load_registry(&root)?;
     let tracked_files = load_tracked_files(&root)?;
-    let allowed_tiers = registry
-        .meta
-        .allowed_tiers
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let allowed_evidence = registry
-        .meta
-        .allowed_evidence_kinds
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
+    let allowed_tiers =
+        registry.meta.allowed_tiers.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let allowed_evidence =
+        registry.meta.allowed_evidence_kinds.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let mut ids = BTreeSet::new();
 
     for client in &registry.client {
         ensure!(!client.id.is_empty(), "client ID must not be empty");
-        ensure!(
-            ids.insert(client.id.as_str()),
-            "duplicate client ID: {}",
-            client.id
-        );
+        ensure!(ids.insert(client.id.as_str()), "duplicate client ID: {}", client.id);
         ensure!(
             allowed_tiers.contains(client.tier.as_str()),
             "unknown tier for {}: {}",
             client.id,
             client.tier
         );
-        ensure!(
-            client.owner_issue > 0,
-            "{} must name an owning issue",
-            client.id
-        );
+        ensure!(client.owner_issue > 0, "{} must name an owning issue", client.id);
         ensure!(
             !client.claim_boundary.trim().is_empty(),
             "{} must state a claim boundary",
             client.id
         );
-        ensure!(
-            !client.evidence.is_empty(),
-            "{} must name typed evidence",
-            client.id
-        );
+        ensure!(!client.evidence.is_empty(), "{} must name typed evidence", client.id);
 
         let mut evidence_kinds = BTreeSet::new();
         let mut evidence_paths = BTreeSet::new();
@@ -567,18 +504,13 @@ fn client_registry_rejects_claim_inflation_and_missing_evidence() -> Result<()> 
             if matches!(evidence.kind.as_str(), "actual_client" | "packaged_product") {
                 let expected_relative =
                     validate_execution_receipt_path(&evidence.path, &evidence.kind)?;
-                let receipt_path =
-                    validate_repository_file(&root, &evidence.path, &tracked_files)?;
+                let receipt_path = validate_repository_file(&root, &evidence.path, &tracked_files)?;
                 ensure!(
                     repository_path_string(&expected_relative)
                         == repository_path_string(&validate_relative_path(&evidence.path)?),
                     "executable receipt path normalization drifted"
                 );
-                validate_execution_receipt(
-                    &receipt_path,
-                    &client.id,
-                    &evidence.kind,
-                )?;
+                validate_execution_receipt(&receipt_path, &client.id, &evidence.kind)?;
                 validated_execution_kinds.insert(evidence.kind.as_str());
             } else if evidence.kind == "protocol_profile" {
                 validate_protocol_profile_evidence(&root, &evidence.path, &tracked_files)?;
@@ -587,11 +519,7 @@ fn client_registry_rejects_claim_inflation_and_missing_evidence() -> Result<()> 
             }
         }
         for override_text in &client.known_overrides {
-            ensure!(
-                !override_text.trim().is_empty(),
-                "{} contains an empty override",
-                client.id
-            );
+            ensure!(!override_text.trim().is_empty(), "{} contains an empty override", client.id);
         }
         if client.synthetic_profile {
             ensure!(
@@ -694,11 +622,8 @@ fn bridge_boundaries_do_not_misrepresent_lsp_as_mcp_or_native_zed_registration()
     ensure!(codex_desktop.tier == "not_proven_unsupported");
     ensure!(codex_desktop.claim_boundary.contains("unsupported"));
 
-    let zed = registry
-        .client
-        .iter()
-        .find(|client| client.id == "zed")
-        .context("missing Zed row")?;
+    let zed =
+        registry.client.iter().find(|client| client.id == "zed").context("missing Zed row")?;
     ensure!(
         zed.integration_mode == "extension_registered_language_server",
         "Zed must remain an extension-registered language-server integration"
@@ -730,10 +655,7 @@ fn repository_paths_reject_absolute_traversal_and_untracked_files() -> Result<()
         validate_relative_path(&absolute.to_string_lossy()).is_err(),
         "absolute path was accepted"
     );
-    ensure!(
-        validate_relative_path("../outside.json").is_err(),
-        "parent traversal was accepted"
-    );
+    ensure!(validate_relative_path("../outside.json").is_err(), "parent traversal was accepted");
     ensure!(
         validate_relative_path("docs/./receipt.json").is_err(),
         "current-directory traversal was accepted"
@@ -743,17 +665,11 @@ fn repository_paths_reject_absolute_traversal_and_untracked_files() -> Result<()
     let tracked_files = load_tracked_files(&root)?;
     let untracked = tempfile::NamedTempFile::new_in(&root)
         .context("create untracked evidence negative control")?;
-    let relative = untracked
-        .path()
-        .strip_prefix(&root)
-        .context("derive untracked evidence path")?;
+    let relative =
+        untracked.path().strip_prefix(&root).context("derive untracked evidence path")?;
     ensure!(
-        validate_repository_file(
-            &root,
-            &repository_path_string(relative),
-            &tracked_files,
-        )
-        .is_err(),
+        validate_repository_file(&root, &repository_path_string(relative), &tracked_files,)
+            .is_err(),
         "untracked regular file was accepted as evidence"
     );
     ensure!(
@@ -772,8 +688,7 @@ fn repository_paths_reject_symlink_escape() -> Result<()> {
     let outside = tempfile::tempdir().context("create outside directory")?;
     let outside_file = outside.path().join("receipt.json");
     fs::write(&outside_file, "{}\n").context("write outside receipt")?;
-    symlink(&outside_file, root.path().join("escape.json"))
-        .context("create escaping symlink")?;
+    symlink(&outside_file, root.path().join("escape.json")).context("create escaping symlink")?;
 
     ensure!(
         resolve_repository_file(root.path(), "escape.json").is_err(),
@@ -784,8 +699,7 @@ fn repository_paths_reject_symlink_escape() -> Result<()> {
 
 fn write_receipt(path: &Path, value: &serde_json::Value) -> Result<()> {
     let encoded = serde_json::to_vec_pretty(value).context("encode receipt fixture")?;
-    fs::write(path, encoded)
-        .with_context(|| format!("write receipt fixture {}", path.display()))
+    fs::write(path, encoded).with_context(|| format!("write receipt fixture {}", path.display()))
 }
 
 fn valid_receipt_value(
@@ -834,18 +748,15 @@ fn executable_receipt_schema_accepts_actual_client_and_rejects_relabeling() -> R
         "actual-client receipt was relabeled as packaged-product proof"
     );
     ensure!(
-        validate_execution_receipt_path(
-            "Cargo.toml",
-            "actual_client",
-        )
-        .is_err(),
+        validate_execution_receipt_path("Cargo.toml", "actual_client",).is_err(),
         "arbitrary repository file was accepted as executable evidence"
     );
     Ok(())
 }
 
 #[test]
-fn executable_receipt_schema_rejects_failed_assertions_and_missing_product_artifact() -> Result<()> {
+fn executable_receipt_schema_rejects_failed_assertions_and_missing_product_artifact() -> Result<()>
+{
     let directory = tempfile::tempdir().context("create receipt fixture directory")?;
     let failed_path = directory.path().join("failed.json");
     let mut failed = valid_receipt_value("neovim", "actual_client", None);
