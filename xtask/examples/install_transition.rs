@@ -641,6 +641,13 @@ mod tests {
         })
     }
 
+    fn bind_artifact(receipt: &mut Receipt, bytes: &[u8]) {
+        receipt.status = ReceiptStatus::Pass;
+        receipt.transition.outcome = super::TransitionOutcome::Completed;
+        receipt.transition.artifact_verified = true;
+        receipt.transition.artifact_sha256 = Some(sha256_bytes(bytes));
+    }
+
     #[test]
     fn pass_requires_exact_topology_and_artifact_bytes() -> Result<()> {
         let mut receipt = fixture(include_str!(
@@ -655,7 +662,7 @@ mod tests {
         let artifact_path = directory.path().join(&receipt.transition.expected_asset);
         let artifact = b"candidate archive bytes";
         fs::write(&artifact_path, artifact)?;
-        receipt.transition.artifact_sha256 = Some(sha256_bytes(artifact));
+        bind_artifact(&mut receipt, artifact);
 
         verify_topology_binding(&receipt, &topology_path)?;
         verify_artifact_binding(&receipt, &artifact_path)?;
@@ -727,9 +734,10 @@ mod tests {
 
     #[test]
     fn verified_child_output_carries_transition_identity() -> Result<()> {
-        let receipt = fixture(include_str!(
+        let mut receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/clean_install.json"
         ))?;
+        bind_artifact(&mut receipt, b"candidate archive bytes");
         let status = validate(&receipt)?;
         let directory = tempdir()?;
         let output = directory.path().join("child.json");
@@ -767,11 +775,11 @@ mod tests {
     }
 
     #[test]
-    fn clean_install_fixture_passes() -> Result<()> {
+    fn clean_install_fixture_without_artifact_is_not_proven() -> Result<()> {
         let receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/clean_install.json"
         ))?;
-        assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
+        assert_eq!(validate(&receipt)?, ReceiptStatus::NotProven);
         Ok(())
     }
 
@@ -855,11 +863,11 @@ mod tests {
     }
 
     #[test]
-    fn normal_upgrade_fixture_passes() -> Result<()> {
+    fn normal_upgrade_fixture_without_artifact_is_not_proven() -> Result<()> {
         let receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/normal_upgrade.json"
         ))?;
-        assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
+        assert_eq!(validate(&receipt)?, ReceiptStatus::NotProven);
         Ok(())
     }
 
@@ -908,9 +916,10 @@ mod tests {
     /// able to reach `pass`, so the new invariant is not blocking everything.
     #[test]
     fn matching_resolved_asset_still_reaches_pass() -> Result<()> {
-        let receipt = fixture(include_str!(
+        let mut receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/clean_install.json"
         ))?;
+        bind_artifact(&mut receipt, b"candidate archive bytes");
         assert_eq!(
             receipt.transition.resolved_asset.as_deref(),
             Some(receipt.transition.expected_asset.as_str())
@@ -982,6 +991,7 @@ mod tests {
         let mut receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/normal_upgrade.json"
         ))?;
+        bind_artifact(&mut receipt, b"candidate upgrade artifact bytes");
         receipt.transition.class = super::TransitionClass::Rollback;
         receipt.transition.intended_disposition = super::Disposition::RolledBack;
         receipt.transition.observed_disposition = super::Disposition::RolledBack;
