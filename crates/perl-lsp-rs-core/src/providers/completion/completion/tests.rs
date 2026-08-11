@@ -8368,13 +8368,24 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
     Ok(())
 }
 
-#[test]
-fn test_inherited_moo_accessor_completion_from_parent_class() {
-    let code = r#"
-package Parent;
+fn moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Parent.pm")?,
+        r#"package Parent;
 use Moo;
 has 'name' => (is => 'ro', isa => 'Str');
+1;
+"#
+        .to_string(),
+    )?;
+    Ok(index)
+}
 
+#[test]
+fn test_inherited_moo_accessor_completion_from_parent_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
 package Child;
 use Moo;
 use parent 'Parent';
@@ -8387,7 +8398,8 @@ sub greet {
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let index = moo_parent_index()?;
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
     let completions = provider.get_completions(code, pos);
 
@@ -8399,17 +8411,9 @@ sub greet {
 }
 
 #[test]
-fn test_inherited_moo_generated_accessor_methods_are_completed() {
+fn test_inherited_moo_generated_accessor_methods_are_completed()
+-> Result<(), Box<dyn std::error::Error>> {
     let code = r#"
-package Parent;
-use Moo;
-has 'status' => (
-    is => 'rw',
-    predicate => 1,
-    builder => 1,
-    clearer => 1,
-);
-
 package Child;
 use Moo;
 use parent 'Parent';
@@ -8422,7 +8426,22 @@ sub inspect {
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Parent.pm")?,
+        r#"package Parent;
+use Moo;
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
+1;
+"#
+        .to_string(),
+    )?;
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
     let labels: Vec<_> =
         provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
@@ -8435,4 +8454,5 @@ sub inspect {
             labels
         );
     }
+    Ok(())
 }
