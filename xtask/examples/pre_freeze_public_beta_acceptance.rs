@@ -82,6 +82,7 @@ impl FreezeRecommendation {
 struct ArtifactEvidence {
     path: String,
     sha256: String,
+    repository_sha: String,
     artifact_set_id: String,
     provenance: ArtifactProvenance,
 }
@@ -211,6 +212,9 @@ fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
 fn validate_artifact(name: &str, artifact: &ArtifactEvidence, packet: &Packet) -> Result<()> {
     non_empty(&artifact.path, &format!("artifacts.{name}.path"))?;
     exact_hex(&artifact.sha256, 32, &format!("artifacts.{name}.sha256"))?;
+    if artifact.repository_sha != packet.repository_sha {
+        bail!("artifacts.{name} belongs to a different repository SHA");
+    }
     if artifact.artifact_set_id != packet.artifact_set_id {
         bail!("artifacts.{name} belongs to a different artifact set");
     }
@@ -396,6 +400,7 @@ mod tests {
         let artifact = |name: &str| ArtifactEvidence {
             path: format!("isolated/{name}"),
             sha256: "a".repeat(64),
+            repository_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
             artifact_set_id: "candidate-v0.18.0".to_string(),
             provenance: ArtifactProvenance::ReleaseShaped,
         };
