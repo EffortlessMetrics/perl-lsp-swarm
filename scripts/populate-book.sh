@@ -150,7 +150,7 @@ copy_development_doc "$DOCS_DIR/project/DEVELOPMENT.md" "$BOOK_SRC/developer/dev
 
 # LSP Development section
 echo "Setting up LSP Development..."
-copy_doc "$DOCS_DIR/reference/LSP_IMPLEMENTATION_GUIDE.md" "$BOOK_SRC/lsp/implementation-guide.md"
+copy_lsp_doc "$DOCS_DIR/tutorials/LSP_DEVELOPMENT_GUIDE.md" "$BOOK_SRC/lsp/implementation-guide.md"
 copy_doc "$DOCS_DIR/reference/LSP_PROVIDERS_REFERENCE.md" "$BOOK_SRC/lsp/providers-reference.md"
 copy_doc "$DOCS_DIR/reference/LSP_FEATURE_IMPLEMENTATION_BEST_PRACTICES.md" "$BOOK_SRC/lsp/feature-implementation.md"
 copy_doc "$DOCS_DIR/reference/LSP_CANCELLATION_PROTOCOL.md" "$BOOK_SRC/lsp/cancellation-system.md"
