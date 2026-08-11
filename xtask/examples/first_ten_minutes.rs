@@ -718,7 +718,11 @@ mod tests {
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no finding object"))?
             .remove("linked_issue");
-        assert!(validate_raw_shape(&raw).is_err());
+        if validate_raw_shape(&raw).is_ok() {
+            return Err(color_eyre::eyre::eyre!(
+                "omitted findings[].linked_issue unexpectedly passed raw validation"
+            ));
+        }
         Ok(())
     }
 
@@ -740,7 +744,11 @@ mod tests {
             .cloned()
             .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no step limitation"))?;
         limitations.push(first);
-        assert!(validate_raw_shape(&raw).is_err());
+        if validate_raw_shape(&raw).is_ok() {
+            return Err(color_eyre::eyre::eyre!(
+                "duplicate steps[].limitations unexpectedly passed raw validation"
+            ));
+        }
         Ok(())
     }
 }
