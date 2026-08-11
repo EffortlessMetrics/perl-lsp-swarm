@@ -621,8 +621,391 @@ fn unresolved_route_hint(target: &str, known_names: &BTreeSet<String>) -> String
         return format!(
             " — no skill is named '{target}', and every skill name in this tree is hyphenated. \
              If this is prose or a code identifier rather than a route target, remove the \
-             backticks; any backticked lowercase token inside a route-bearing section \
-             (Routes/Flow/Orchestration/Outcome/Procedure) is parsed as a route. See #6235."
+             route marker (the backticks and any leading '"
+        );
+    }
+    String::new()
+}
+
+/// The closest known skill name within a small edit distance, if one is clearly
+/// closest. Ties produce no suggestion — guessing between two candidates is
+/// worse than staying quiet.
+fn nearest_skill_name(target: &str, known_names: &BTreeSet<String>) -> Option<String> {
+    let budget = if target.len() <= 6 { 1 } else { 2 };
+    let mut best: Option<(usize, &String)> = None;
+    let mut tied = false;
+    for name in known_names {
+        let distance = edit_distance(target, name);
+        if distance > budget {
+            continue;
+        }
+        match best {
+            Some((best_distance, _)) if distance > best_distance => {}
+            Some((best_distance, _)) if distance == best_distance => tied = true,
+            _ => {
+                best = Some((distance, name));
+                tied = false;
+            }
+        }
+    }
+    match best {
+        Some((_, name)) if !tied => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// Levenshtein distance over bytes; skill names are ASCII kebab-case.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0usize; right.len() + 1];
+    for (i, left_byte) in left.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, right_byte) in right.iter().enumerate() {
+            let substitution = previous[j] + usize::from(left_byte != right_byte);
+            let deletion = previous[j + 1] + 1;
+            let insertion = current[j] + 1;
+            current[j + 1] = substitution.min(deletion).min(insertion);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+fn is_route_heading(heading: &str) -> bool {
+    let normalized = heading.trim_start_matches('#').trim().to_ascii_lowercase();
+    normalized.contains("route")
+        || normalized.contains("routing")
+        || normalized.contains("valid exit")
+        || normalized == "flow"
+        || normalized == "loop"
+        || normalized.contains("orchestration")
+        || normalized.contains("outcome")
+        || normalized == "procedure"
+}
+
+fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
+    // Metasyntactic `$placeholders` that appear in prose inside route/orchestration
+    // sections but are NOT actual skill route targets (#5930).
+    const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
+
+    let mut tokens = Vec::new();
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < chars.len() {
+        if in_route_section && chars[index] == '$' {
+            let start = index + 1;
+            let mut end = start;
+            while end < chars.len()
+                && (chars[end].is_ascii_lowercase()
+                    || chars[end].is_ascii_digit()
+                    || chars[end] == '-')
+            {
+                end += 1;
+            }
+            if end > start {
+                let token: String = chars[start..end].iter().collect();
+                // Skip metasyntactic placeholders that are prose, not route targets.
+                if !METASYNTACTIC_PLACEHOLDERS.contains(&token.as_str()) {
+                    tokens.push(token);
+                }
+            }
+            index = end;
+        } else if in_route_section && chars[index] == '`' {
+            let start = index + 1;
+            if let Some(relative_end) =
+                chars[start..].iter().position(|character| *character == '`')
+            {
+                let end = start + relative_end;
+                let token = chars[start..end].iter().collect::<String>();
+                let token = token.strip_prefix('$').unwrap_or(&token);
+                if token.chars().next().is_some_and(|character| character.is_ascii_lowercase())
+                    && token.chars().all(|character| {
+                        character.is_ascii_lowercase()
+                            || character.is_ascii_digit()
+                            || character == '-'
+                    })
+                    // Skip metasyntactic placeholders that are prose, not route
+                    // targets — mirrors the bare-$ branch (#5930).
+                    && !METASYNTACTIC_PLACEHOLDERS.contains(&token)
+                {
+                    tokens.push(token.to_owned());
+                }
+                index = end + 1;
+            } else {
+                index += 1;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    tokens
+}
+
+fn print_human(report: &CheckReport) {
+    println!("{}", report.result);
+    for (provider, provider_report) in &report.providers {
+        println!(
+            "{provider}: {} skills, {} route references, {} metadata characters",
+            provider_report.skill_count,
+            provider_report.route_count,
+            provider_report.metadata_chars
+        );
+    }
+    println!(
+        "scenarios: {} fixtures across {} providers",
+        report.scenarios.fixture_count,
+        report.scenarios.checked_providers.len()
+    );
+    for error in &report.errors {
+        println!("ERROR: {error}");
+    }
+    for advisory in &report.advisories {
+        println!("ADVISORY: {advisory}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::{
+        SCENARIO_FIXTURES, check_scenarios, edit_distance, frontmatter_metadata_chars,
+        frontmatter_value, missing_markers, nearest_skill_name, route_targets, route_tokens,
+        unresolved_route_hint,
+    };
+
+    fn known() -> BTreeSet<String> {
+        ["deliver-pr", "finish-pr", "review-tests", "build-candidate"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // The #6085 regression: `clear` shipped as backticked prose, was parsed as a
+    // route, and the bare "missing skill" text sent the reader after a routing
+    // bug that did not exist. The hint must name the real remedy.
+    #[test]
+    fn prose_token_hint_names_the_backticks_as_the_problem() {
+        let hint = unresolved_route_hint("clear", &known());
+        assert!(hint.contains("remove the"), "hint should name the remedy: {hint}");
+        assert!(hint.contains("backticks"), "hint should name backticks: {hint}");
+        assert!(hint.contains("#6235"), "hint should cite the issue: {hint}");
+    }
+
+    // The #6091 near-miss: JSON field names documented in a Procedure section.
+    #[test]
+    fn identifier_tokens_from_the_6091_draft_get_the_prose_hint() {
+        for token in ["path", "line"] {
+            let hint = unresolved_route_hint(token, &known());
+            assert!(hint.contains("backticks"), "`{token}` should get the prose hint: {hint}");
+        }
+    }
+
+    // Third in-the-wild instance, from a different lane:
+    //   route from 'deliver-goal' points to missing provider-local skill 'main'
+    // on agent/6077-hierarchical-orchestration. `main` is the git branch, written
+    // in backticks in prose. Named explicitly because these three occurrences are
+    // the dominant failure mode of the `Compile agent-flow control plane` gate.
+    #[test]
+    fn branch_name_prose_token_gets_the_prose_hint() {
+        let hint = unresolved_route_hint("main", &known());
+        assert!(hint.contains("backticks"), "`main` should get the prose hint: {hint}");
+        assert!(!hint.contains("did you mean"), "`main` resembles no skill: {hint}");
+    }
+
+    // A misspelled REAL route must be told what it meant, not lectured about
+    // backticks — that is a routing bug and the hint must not disguise it.
+    #[test]
+    fn misspelled_route_suggests_the_intended_skill() {
+        let hint = unresolved_route_hint("deliver-pd", &known());
+        assert!(hint.contains("did you mean 'deliver-pr'?"), "{hint}");
+        assert!(!hint.contains("backticks"), "a near-miss is a routing bug, not prose: {hint}");
+    }
+
+    // A hyphenated token that resolves to nothing and resembles nothing gets no
+    // hint: it looks like a real route target, so the bare error is correct and
+    // an unfounded "maybe remove the backticks" would be actively misleading.
+    #[test]
+    fn unrecognised_hyphenated_token_gets_no_hint() {
+        assert_eq!(unresolved_route_hint("archive-corpus-nightly", &known()), "");
+    }
+
+    // Guessing between equally-close candidates is worse than staying quiet.
+    #[test]
+    fn ambiguous_near_miss_produces_no_suggestion() {
+        let candidates: BTreeSet<String> =
+            ["review-plan", "review-pran"].into_iter().map(str::to_owned).collect();
+        assert_eq!(nearest_skill_name("review-plax", &candidates), None);
+    }
+
+    // Short tokens get a tighter budget so unrelated four-letter prose is not
+    // "corrected" into a skill name.
+    #[test]
+    fn short_prose_token_is_not_matched_to_a_distant_skill() {
+        assert_eq!(nearest_skill_name("clear", &known()), None);
+        assert_eq!(nearest_skill_name("path", &known()), None);
+    }
+
+    #[test]
+    fn edit_distance_is_symmetric_and_zero_on_equality() {
+        assert_eq!(edit_distance("finish-pr", "finish-pr"), 0);
+        assert_eq!(edit_distance("finish-pr", "finish-p"), 1);
+        assert_eq!(edit_distance("finish-p", "finish-pr"), 1);
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
+
+    // The hint is advisory: it must not change which targets are considered
+    // resolved, or it would silently swallow real routing defects.
+    #[test]
+    fn hint_does_not_alter_route_parsing() {
+        let before = route_targets("## Procedure\n\nReturn `clear` when done.\n");
+        assert_eq!(before, vec!["clear".to_owned()]);
+    }
+
+    #[test]
+    fn parses_frontmatter_name() {
+        let text = "---\nname: prepare-issue\ndescription: test\n---\n";
+        assert_eq!(frontmatter_value(text, "name").as_deref(), Some("prepare-issue"));
+    }
+
+    #[test]
+    fn extracts_provider_route_targets_from_route_bearing_sections() {
+        let text = "# Skill\n\n`not-a-route`\n\n## Procedure\n- `PLAN_READY` -> `$prepare-proof`\n- clean -> `deliver-pr`\n\n## Notes\n- `not-a-route`\n";
+        assert_eq!(route_targets(text), vec!["deliver-pr", "prepare-proof"]);
+    }
+
+    #[test]
+    fn ignores_provider_skill_mentions_outside_route_sections() {
+        let text = "# Skill\n\nUse `$prepare-proof` for context.\n";
+        assert!(route_targets(text).is_empty());
+    }
+
+    #[test]
+    fn treats_routing_headings_as_route_bearing_sections() {
+        let text = "## Entry routing\n- `READY` -> `$prepare-proof`\n";
+        assert_eq!(route_targets(text), vec!["prepare-proof"]);
+    }
+
+    #[test]
+    fn treats_flow_loop_and_orchestration_headings_as_route_bearing_sections() {
+        let text = "## Loop\n- `$deliver-pr`\n\n## PR review orchestration\n- `review-pr`\n";
+        assert_eq!(route_targets(text), vec!["deliver-pr", "review-pr"]);
+    }
+
+    #[test]
+    fn ignores_uppercase_status_tokens() {
+        assert_eq!(
+            route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`", true),
+            vec!["verify-live-ci"]
+        );
+    }
+
+    #[test]
+    fn ignores_metasyntactic_placeholders_in_backticks() {
+        // A `$skill` placeholder in prose under a route-bearing heading must
+        // not be treated as a route target — even inside backticks (#5930).
+        assert_eq!(
+            route_tokens("which `$skill` to consume. Do not ask agents.", true),
+            Vec::<String>::new()
+        );
+        // The real skill names are still extracted.
+        assert_eq!(route_tokens("- `$deliver-pr` then `$skill`", true), vec!["deliver-pr"]);
+    }
+
+    #[test]
+    fn reports_missing_operational_markers() {
+        assert_eq!(
+            missing_markers("review-pr REVIEW_CURRENT", &["review-pr", "REVIEW_CURRENT"]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            missing_markers("review-pr", &["review-pr", "REVIEW_CURRENT"]),
+            vec!["REVIEW_CURRENT"]
+        );
+    }
+
+    #[test]
+    fn rejects_unclosed_frontmatter() {
+        let text = "---\nname: prepare-issue\ndescription: truncated\n";
+        assert_eq!(frontmatter_value(text, "name"), None);
+        assert_eq!(frontmatter_metadata_chars(text), 0);
+    }
+
+    #[test]
+    fn ignores_delimiters_inside_document_body_for_metadata_size() {
+        let text = "# Skill\n\n---\nnot frontmatter\n---\n";
+        assert_eq!(frontmatter_metadata_chars(text), 0);
+    }
+
+    #[test]
+    fn scenario_fixture_names_are_unique_and_cover_required_review_routes() {
+        let names = SCENARIO_FIXTURES.iter().map(|fixture| fixture.name).collect::<BTreeSet<_>>();
+        assert_eq!(names.len(), SCENARIO_FIXTURES.len());
+        assert!(names.contains("fresh_issue"));
+        assert!(names.contains("same_candidate_writer_collision"));
+        assert!(names.contains("unchanged_main_movement"));
+        assert!(names.contains("substantive_review_orchestration"));
+        assert!(names.contains("review_enters_live_integration"));
+        assert!(names.contains("live_ci_requires_review"));
+        assert!(names.contains("related_pr_native_review"));
+    }
+
+    #[test]
+    fn scenario_checker_reports_missing_static_route_contracts() {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "codex".to_string(),
+            (
+                [
+                    "deliver-pr".to_string(),
+                    "prepare-issue".to_string(),
+                    "prepare-proof".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+                [
+                    ("deliver-pr".to_string(), ["prepare-issue".to_string()].into_iter().collect()),
+                    (
+                        "prepare-proof".to_string(),
+                        ["prepare-issue".to_string()].into_iter().collect(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+
+        let errors = check_scenarios(&providers);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("no route from 'deliver-pr' to 'prepare-proof'"))
+        );
+    }
+
+    #[test]
+    fn scenario_output_ignores_unrelated_inventory_errors() {
+        let output = super::scenario_output(super::CheckReport {
+            schema: "agent-flow-check.v1",
+            result: "FAIL",
+            providers: BTreeMap::new(),
+            scenarios: super::ScenarioReport {
+                fixture_count: SCENARIO_FIXTURES.len(),
+                checked_providers: vec!["codex".to_string()],
+                errors: Vec::new(),
+            },
+            errors: vec!["codex: unrelated metadata error".to_string()],
+            advisories: Vec::new(),
+        });
+        assert_eq!(output.result, "PASS");
+        assert!(output.errors.is_empty());
+    }
+}
+); any backticked lowercase token \
+             inside a route-bearing section (Routes/Flow/Orchestration/Outcome/Procedure) is \
+             parsed as a route. See #6235."
         );
     }
     String::new()
