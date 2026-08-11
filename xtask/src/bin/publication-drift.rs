@@ -175,7 +175,12 @@ impl ClassificationState {
     }
 }
 
+#[allow(dead_code)]
 fn main() -> Result<()> {
+    run()
+}
+
+pub(crate) fn run() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let observation = load_observation(&args.input)?;
@@ -431,10 +436,7 @@ fn classify(observation: Observation) -> Receipt {
     if state.drift && swarm.version == public.version {
         state.push_blocker(
             "same_version_divergent_product",
-            format!(
-                "version {} has behavior or invariant drift",
-                swarm.version
-            ),
+            format!("version {} has behavior or invariant drift", swarm.version),
             "release-engineering",
         );
     }
