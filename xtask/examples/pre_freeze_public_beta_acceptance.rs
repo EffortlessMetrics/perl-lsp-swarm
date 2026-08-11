@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_product_blocker_cannot_claim_ready() {
+    fn unresolved_product_blocker_cannot_claim_ready() -> Result<()> {
         let mut packet = ready_packet();
         packet.product_blockers = vec!["exact installed binary is missing".to_string()];
         packet.freeze_recommendation = FreezeRecommendation::Blocked;
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn not_proven_linux_cannot_be_ready() {
+    fn not_proven_linux_cannot_be_ready() -> Result<()> {
         let mut packet = ready_packet();
         packet.platforms.linux.status = EvidenceStatus::NotProven;
         packet.freeze_recommendation = FreezeRecommendation::NotProven;
