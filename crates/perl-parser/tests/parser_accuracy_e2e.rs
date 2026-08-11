@@ -41,6 +41,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const E2E_FIXTURES: &[&str] = &[
     "package_basic",
+    "dynamic_require_boundary",
     "imports_exports",
     "operator_precedence",
     "quote_like",
