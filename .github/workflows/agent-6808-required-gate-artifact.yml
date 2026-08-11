@@ -1,0 +1,68 @@
+name: Agent 6808 required LSP gate artifact
+
+on:
+  push:
+    branches:
+      - codex/6776-text-document-sync-shape-contract
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-6808-required-gate-artifact
+  cancel-in-progress: false
+
+jobs:
+  generate-and-prove:
+    if: github.ref == 'refs/heads/codex/6776-text-document-sync-shape-contract'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact branch head without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Generate bounded gate-policy candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/ci/agent_6808_required_gate.py
+          test "$(git diff --name-only)" = ".ci/gate-policy.yaml"
+          git diff --check
+          ruby -e 'require "yaml"; YAML.load_file(".ci/gate-policy.yaml")'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Prove policy and focused contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p xtask --locked --test gate_policy_profile_tests
+          cargo test -p perl-lsp-rs --test lsp_api_contracts --locked \
+            test_text_document_sync_option_keys_use_lsp_camel_case \
+            -- --exact --test-threads=1
+
+      - name: Stage verified artifact with manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/agent-6808-artifact/.ci
+          cp .ci/gate-policy.yaml target/agent-6808-artifact/.ci/gate-policy.yaml
+          sha256sum target/agent-6808-artifact/.ci/gate-policy.yaml \
+            > target/agent-6808-artifact/SHA256SUMS
+          printf '%s\n' "$GITHUB_SHA" > target/agent-6808-artifact/source-sha.txt
+
+      - name: Upload exact verified artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: agent-6808-required-gate-${{ github.sha }}
+          path: target/agent-6808-artifact
+          if-no-files-found: error
+          retention-days: 1
