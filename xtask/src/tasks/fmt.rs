@@ -153,11 +153,17 @@ pub(crate) fn owning_package<'a>(
 /// worktree mutation. See [`rustfmt_text`] for the stdin contract and the
 /// measurements behind it.
 ///
-/// The run is transactional: every file is formatted in memory first, and
-/// nothing is written or re-staged unless all of them succeed. A syntax error
-/// in a later file must not leave earlier ones rewritten in the worktree but
-/// absent from the index, which the next run would then classify as partially
-/// staged and skip.
+/// The run is transactional in two stages. Every file is formatted in memory
+/// first, so a rustfmt failure writes nothing at all. The commit stage then
+/// writes and re-stages under [`commit_formatted`], which restores the original
+/// bytes if any write or the `git add` fails. Both matter for the same reason:
+/// a file rewritten in the worktree but absent from the index is classified as
+/// partially staged by the *next* run and skipped, so the author's formatting
+/// silently stops happening.
+///
+/// The one case that is not fully recoverable is a rollback that itself fails;
+/// that leaves the file formatted-but-unstaged and is reported by name rather
+/// than swallowed.
 ///
 /// Only fully staged files are re-staged — see [`StagedFormatAction`].
 pub fn run_staged() -> Result<()> {
@@ -194,7 +200,7 @@ pub fn run_staged() -> Result<()> {
         let config_text = staged_rustfmt_config()?;
 
         // Phase 1 — format in memory. Nothing on disk is touched yet.
-        let mut pending: Vec<(PathBuf, String)> = Vec::new();
+        let mut pending: Vec<FormattedFile> = Vec::new();
         let mut unowned: Vec<&str> = Vec::new();
         for path in &to_format {
             let Some(package) = owning_package(path, &packages) else {
@@ -211,25 +217,16 @@ pub fn run_staged() -> Result<()> {
             let formatted =
                 rustfmt_text(config_text.as_deref(), &package.edition, &original, path)?;
             if formatted != original {
-                pending.push((absolute, formatted));
+                pending.push(FormattedFile { path: absolute, original, formatted });
             }
         }
 
-        // Phase 2 — commit the results, reached only when every file formatted
-        // cleanly, so writes and re-staging stay in step.
+        // Phase 2 — commit the results, with rollback. See `commit_formatted`.
         if pending.is_empty() {
             println!("Staged Rust files are already formatted.");
         } else {
-            let mut written: Vec<String> = Vec::with_capacity(pending.len());
-            for (absolute, text) in &pending {
-                std::fs::write(absolute, text)
-                    .with_context(|| format!("failed to write formatted {}", absolute.display()))?;
-                written.push(absolute.to_string_lossy().into_owned());
-            }
-            let mut add_args = vec!["add", "--"];
-            add_args.extend(written.iter().map(String::as_str));
-            cmd("git", &add_args).run().context("failed to re-stage formatted files")?;
-            println!("Formatted and re-staged {} staged Rust file(s).", written.len());
+            commit_formatted(&pending, &mut write_file_atomically, &mut git_add_paths)?;
+            println!("Formatted and re-staged {} staged Rust file(s).", pending.len());
         }
 
         if !unowned.is_empty() {
@@ -446,6 +443,106 @@ fn workspace_packages(metadata: &CargoMetadata, repo_root: &Path) -> Vec<Workspa
             })
         })
         .collect()
+}
+
+/// One staged file that rustfmt changed, with the bytes needed to roll back.
+pub(crate) struct FormattedFile {
+    pub(crate) path: PathBuf,
+    pub(crate) original: String,
+    pub(crate) formatted: String,
+}
+
+/// Writes every formatted file and re-stages them, restoring the worktree if
+/// any step fails.
+///
+/// Formatting in memory first (phase 1) only makes rustfmt failures safe. The
+/// commit phase has its own partial-failure modes, and both were real:
+///
+/// - a later `write` failing leaves earlier files rewritten while the index
+///   still holds the old bytes;
+/// - every `write` succeeding but `git add` failing leaves the whole set
+///   rewritten and unstaged.
+///
+/// Either way the next run sees worktree ≠ index, classifies those files as
+/// partially staged, and skips them — the author's formatting silently stops
+/// happening. So on any failure this restores the original bytes of everything
+/// it had already written, leaving the worktree as it found it.
+///
+/// Rollback is best-effort by nature: if restoring a file *also* fails, that
+/// file genuinely is left modified, and the returned error names it explicitly
+/// rather than implying a clean state.
+///
+/// `write` and `stage` are injected so the failure paths are testable without
+/// a read-only filesystem or a broken git.
+pub(crate) fn commit_formatted(
+    files: &[FormattedFile],
+    write: &mut dyn FnMut(&Path, &str) -> Result<()>,
+    stage: &mut dyn FnMut(&[&Path]) -> Result<()>,
+) -> Result<()> {
+    let mut written: Vec<&FormattedFile> = Vec::with_capacity(files.len());
+
+    for file in files {
+        if let Err(error) = write(&file.path, &file.formatted) {
+            let context = format!("failed to write formatted {}", file.path.display());
+            return Err(rollback(&written, write, error, context));
+        }
+        written.push(file);
+    }
+
+    let paths: Vec<&Path> = written.iter().map(|file| file.path.as_path()).collect();
+    if let Err(error) = stage(&paths) {
+        return Err(rollback(&written, write, error, "failed to re-stage formatted files".into()));
+    }
+    Ok(())
+}
+
+/// Restores `written` to their original bytes and builds the reported error.
+fn rollback(
+    written: &[&FormattedFile],
+    write: &mut dyn FnMut(&Path, &str) -> Result<()>,
+    cause: color_eyre::Report,
+    context: String,
+) -> color_eyre::Report {
+    let mut unrestored: Vec<String> = Vec::new();
+    for file in written {
+        if write(&file.path, &file.original).is_err() {
+            unrestored.push(file.path.display().to_string());
+        }
+    }
+
+    if unrestored.is_empty() {
+        return cause.wrap_err(format!("{context}; the worktree was restored, nothing re-staged"));
+    }
+    cause.wrap_err(format!(
+        "{context}; rollback also failed, so these file(s) are left formatted in the worktree but \
+         not staged — re-run `cargo xtask fmt --staged` or `git checkout --` them: {}",
+        unrestored.join(", ")
+    ))
+}
+
+/// Replaces `path`'s contents via a same-directory temp file and a rename, so
+/// a crash or a full disk cannot leave a half-written source file behind.
+fn write_file_atomically(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| eyre!("cannot write {} — it has no parent directory", path.display()))?;
+    // Same directory, because a rename across filesystems is not atomic (and
+    // on many systems simply fails).
+    let mut file = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to create a temp file beside {}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("failed to write formatted bytes for {}", path.display()))?;
+    file.persist(path).map_err(|error| eyre!("failed to replace {}: {error}", path.display()))?;
+    Ok(())
+}
+
+fn git_add_paths(paths: &[&Path]) -> Result<()> {
+    let mut args: Vec<&std::ffi::OsStr> = vec!["add".as_ref(), "--".as_ref()];
+    args.extend(paths.iter().map(|path| path.as_os_str()));
+    cmd("git", &args).run().context("git add failed")?;
+    Ok(())
 }
 
 /// Formats `text` with rustfmt and returns the result, writing no files.
@@ -743,7 +840,7 @@ mod tests {
         assert!(classify_staged_paths(&[], &unstaged(&["crates/a/src/lib.rs"])).is_empty());
     }
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     fn sample_metadata() -> CargoMetadata {
         CargoMetadata {
@@ -982,6 +1079,147 @@ mod tests {
              out-of-line child modules from"
         );
         Ok(())
+    }
+
+    fn formatted(name: &str) -> super::FormattedFile {
+        super::FormattedFile {
+            path: PathBuf::from(name),
+            original: format!("original {name}"),
+            formatted: format!("formatted {name}"),
+        }
+    }
+
+    /// Records every write so a test can assert the final on-"disk" state.
+    #[derive(Default)]
+    struct FakeFs {
+        writes: Vec<(String, String)>,
+    }
+
+    impl FakeFs {
+        fn state(&self) -> std::collections::BTreeMap<String, String> {
+            self.writes.iter().cloned().collect()
+        }
+    }
+
+    #[test]
+    fn a_successful_commit_writes_every_file_and_stages_exactly_those_paths() -> Result<()> {
+        let files = vec![formatted("a.rs"), formatted("b.rs")];
+        let mut fs = FakeFs::default();
+        let mut staged: Vec<String> = Vec::new();
+
+        super::commit_formatted(
+            &files,
+            &mut |path, text| {
+                fs.writes.push((path.display().to_string(), text.to_string()));
+                Ok(())
+            },
+            &mut |paths| {
+                staged = paths.iter().map(|path| path.display().to_string()).collect();
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(
+            fs.state(),
+            [
+                ("a.rs".to_string(), "formatted a.rs".to_string()),
+                ("b.rs".to_string(), "formatted b.rs".to_string()),
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(staged, vec!["a.rs".to_string(), "b.rs".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_write_restores_the_files_already_written_and_stages_nothing() {
+        // The divergence this prevents: `a.rs` rewritten in the worktree while
+        // the index still holds the old bytes. The next run would classify it
+        // as partially staged and skip it, so formatting silently stops.
+        let files = vec![formatted("a.rs"), formatted("b.rs")];
+        let mut fs = FakeFs::default();
+        let mut stage_called = false;
+
+        let error = super::commit_formatted(
+            &files,
+            &mut |path, text| {
+                if path.display().to_string() == "b.rs" && text.starts_with("formatted") {
+                    return Err(color_eyre::eyre::eyre!("disk full"));
+                }
+                fs.writes.push((path.display().to_string(), text.to_string()));
+                Ok(())
+            },
+            &mut |_| {
+                stage_called = true;
+                Ok(())
+            },
+        )
+        .expect_err("a failed write must not report success");
+
+        assert!(!stage_called, "nothing may be staged when a write failed");
+        assert_eq!(
+            fs.state().get("a.rs").map(String::as_str),
+            Some("original a.rs"),
+            "the already-written file must be restored"
+        );
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("disk full"), "the cause must survive: {rendered}");
+        assert!(rendered.contains("worktree was restored"), "{rendered}");
+    }
+
+    #[test]
+    fn a_failed_stage_restores_every_written_file() {
+        // All writes succeed, `git add` fails: without rollback the whole set
+        // is left rewritten and unstaged.
+        let files = vec![formatted("a.rs"), formatted("b.rs")];
+        let mut fs = FakeFs::default();
+
+        let error = super::commit_formatted(
+            &files,
+            &mut |path, text| {
+                fs.writes.push((path.display().to_string(), text.to_string()));
+                Ok(())
+            },
+            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+        )
+        .expect_err("a failed stage must not report success");
+
+        let state = fs.state();
+        assert_eq!(state.get("a.rs").map(String::as_str), Some("original a.rs"));
+        assert_eq!(state.get("b.rs").map(String::as_str), Some("original b.rs"));
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("index.lock exists"), "{rendered}");
+        assert!(rendered.contains("worktree was restored"), "{rendered}");
+    }
+
+    #[test]
+    fn a_failed_rollback_names_the_files_left_modified() {
+        // Rollback is best-effort. When it cannot restore a file, the error
+        // must say so by name rather than claiming a clean worktree — the
+        // author needs to know exactly what to `git checkout --`.
+        let files = vec![formatted("a.rs")];
+
+        let error = super::commit_formatted(
+            &files,
+            &mut |_, text| {
+                // The formatted write succeeds; the restore write fails.
+                if text.starts_with("original") {
+                    return Err(color_eyre::eyre::eyre!("read-only filesystem"));
+                }
+                Ok(())
+            },
+            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+        )
+        .expect_err("a failed stage must not report success");
+
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("rollback also failed"), "{rendered}");
+        assert!(rendered.contains("a.rs"), "the unrestored file must be named: {rendered}");
+        assert!(
+            !rendered.contains("worktree was restored"),
+            "must not claim a clean worktree: {rendered}"
+        );
     }
 
     #[test]
