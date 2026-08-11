@@ -10,12 +10,18 @@ export interface NavigationCommandDependencies {
 }
 
 export type WorkspaceStatusMode = 'starting' | 'indexing' | 'running' | 'stopped';
+export type WorkspaceStatusReadiness = 'building' | 'ready' | 'ready_limited' | 'legacy';
 
 export interface WorkspaceStatusSnapshot {
   readonly mode: WorkspaceStatusMode;
   readonly version?: string;
   readonly fileCount?: number;
   readonly errorCount?: number;
+  readonly lifecycle?: string;
+  readonly readinessState?: WorkspaceStatusReadiness;
+  readonly readinessReason?: string;
+  readonly activeDocumentReady?: boolean;
+  readonly nextAction?: string;
 }
 
 /** Invoke VS Code's organize-imports command. */
@@ -86,6 +92,23 @@ export async function showWorkspaceStatusCommand(dependencies: {
   }
   if (status.errorCount !== undefined) {
     lines.push(`Diagnostics: ${status.errorCount} error${status.errorCount === 1 ? '' : 's'}`);
+  }
+  if (status.lifecycle) {
+    lines.push(`Lifecycle: ${status.lifecycle}`);
+  }
+  if (status.readinessState) {
+    lines.push(`Workspace index: ${status.readinessState}`);
+  } else if (hasLiveServer) {
+    lines.push('Workspace index: legacy server (enhanced readiness unavailable)');
+  }
+  if (status.activeDocumentReady !== undefined) {
+    lines.push(`Active document: ${status.activeDocumentReady ? 'ready' : 'not ready'}`);
+  }
+  if (status.readinessReason) {
+    lines.push(`Coverage: ${status.readinessReason}`);
+  }
+  if (status.nextAction) {
+    lines.push(`Next: ${status.nextAction}`);
   }
 
   const actions =
