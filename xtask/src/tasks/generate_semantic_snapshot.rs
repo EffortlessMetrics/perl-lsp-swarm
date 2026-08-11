@@ -78,8 +78,7 @@ fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
 
     for entry in entries {
-        let entry =
-            entry.with_context(|| format!("reading fixture entry in {}", dir.display()))?;
+        let entry = entry.with_context(|| format!("reading fixture entry in {}", dir.display()))?;
         let file_type = entry
             .file_type()
             .with_context(|| format!("reading fixture type for {}", entry.path().display()))?;
@@ -147,7 +146,8 @@ fn summarize_hir(file: &HirFile) -> HirSummary {
     let scope_count = file.scope_graph.scopes.len();
     let binding_count = file.scope_graph.bindings.len();
     let package_count = file.stash_graph.packages.len();
-    let slot_count: usize = file.stash_graph.packages.iter().map(|package| package.slots.len()).sum();
+    let slot_count: usize =
+        file.stash_graph.packages.iter().map(|package| package.slots.len()).sum();
     let directive_count = file.compile_environment.directives.len();
     let module_request_count = file.compile_environment.module_requests.len();
     let dynamic_boundary_count = file.compile_environment.dynamic_boundaries.len();
@@ -245,11 +245,7 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
         serde_json::from_str(&json).context("parsing snapshot manifest")?;
 
     if recorded.schema != SNAPSHOT_SCHEMA {
-        bail!(
-            "Snapshot schema mismatch: recorded={} current={}",
-            recorded.schema,
-            SNAPSHOT_SCHEMA
-        );
+        bail!("Snapshot schema mismatch: recorded={} current={}", recorded.schema, SNAPSHOT_SCHEMA);
     }
     if recorded.kpi != SNAPSHOT_KPI {
         bail!("Snapshot KPI mismatch: recorded={} current={}", recorded.kpi, SNAPSHOT_KPI);
@@ -273,18 +269,13 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
         let Some(fresh_entry) =
             fresh.iter().find(|entry| entry.fixture_id == recorded_entry.fixture_id)
         else {
-            bail!(
-                "Snapshot set changed after validation: missing {}",
-                recorded_entry.fixture_id
-            );
+            bail!("Snapshot set changed after validation: missing {}", recorded_entry.fixture_id);
         };
 
         if fresh_entry.source_hash != recorded_entry.source_hash {
             eprintln!(
                 "  SOURCE CHANGED: {} (hash {} -> {})",
-                recorded_entry.fixture_id,
-                recorded_entry.source_hash,
-                fresh_entry.source_hash,
+                recorded_entry.fixture_id, recorded_entry.source_hash, fresh_entry.source_hash,
             );
             drift_found = true;
         } else if fresh_entry.hir_schema_version != recorded_entry.hir_schema_version {
@@ -377,10 +368,7 @@ mod tests {
         let entry = &manifest.entries[0];
         assert_eq!(entry.fixture_id, "minimal");
         assert_eq!(entry.source_hash, source_hash(source));
-        assert!(
-            entry.hir_summary.item_count > 0,
-            "expected HIR items from non-trivial source"
-        );
+        assert!(entry.hir_summary.item_count > 0, "expected HIR items from non-trivial source");
     }
 
     #[test]
@@ -412,18 +400,14 @@ mod tests {
         let output = temporary.path().join("snapshot.json");
 
         generate_snapshot(temporary.path(), &output);
-        check_snapshot(temporary.path(), &output)
-            .expect("check should pass on unchanged source");
+        check_snapshot(temporary.path(), &output).expect("check should pass on unchanged source");
     }
 
     #[test]
     fn check_mode_fails_on_source_change() {
         let temporary = TempDir::new().expect("tempdir");
-        let path = write_fixture(
-            temporary.path(),
-            "changed.pl",
-            "package Changed; sub first { 1 } 1;",
-        );
+        let path =
+            write_fixture(temporary.path(), "changed.pl", "package Changed; sub first { 1 } 1;");
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
@@ -501,10 +485,7 @@ mod tests {
 
         let error = collect_fixtures(temporary.path())
             .expect_err("symlinked Perl fixtures must fail closed");
-        assert!(
-            error.to_string().contains("symlink is unsupported"),
-            "unexpected error: {error}"
-        );
+        assert!(error.to_string().contains("symlink is unsupported"), "unexpected error: {error}");
     }
 
     #[test]
@@ -517,11 +498,7 @@ mod tests {
         }
 
         let fixtures = collect_fixtures(&fixture_dir).expect("collect fixtures");
-        assert!(
-            fixtures.len() >= 3,
-            "expected at least 3 slice fixtures, got {}",
-            fixtures.len()
-        );
+        assert!(fixtures.len() >= 3, "expected at least 3 slice fixtures, got {}", fixtures.len());
 
         let entries = compute_snapshot_entries(&fixtures).expect("compute entries");
         for entry in &entries {

@@ -135,10 +135,16 @@ impl fmt::Display for SnapshotSetError {
                 write!(formatter, "duplicate fresh snapshot fixture ID: {fixture_id}")
             }
             Self::MissingFresh { fixture_id } => {
-                write!(formatter, "recorded snapshot fixture is missing from fresh input: {fixture_id}")
+                write!(
+                    formatter,
+                    "recorded snapshot fixture is missing from fresh input: {fixture_id}"
+                )
             }
             Self::UnexpectedFresh { fixture_id } => {
-                write!(formatter, "fresh snapshot fixture is absent from recorded manifest: {fixture_id}")
+                write!(
+                    formatter,
+                    "fresh snapshot fixture is absent from recorded manifest: {fixture_id}"
+                )
             }
         }
     }
@@ -222,15 +228,11 @@ impl SnapshotManifest {
             }
         }
         if let Some(fixture_id) = duplicate_fresh.first() {
-            return Err(SnapshotSetError::DuplicateFresh {
-                fixture_id: (*fixture_id).to_string(),
-            });
+            return Err(SnapshotSetError::DuplicateFresh { fixture_id: (*fixture_id).to_string() });
         }
 
         if let Some(fixture_id) = recorded_ids.difference(&fresh_ids).next() {
-            return Err(SnapshotSetError::MissingFresh {
-                fixture_id: (*fixture_id).to_string(),
-            });
+            return Err(SnapshotSetError::MissingFresh { fixture_id: (*fixture_id).to_string() });
         }
         if let Some(fixture_id) = fresh_ids.difference(&recorded_ids).next() {
             return Err(SnapshotSetError::UnexpectedFresh {
@@ -374,10 +376,7 @@ mod tests {
     #[test]
     fn exact_entry_set_rejects_empty_fresh_population() {
         let manifest = manifest_with(vec![sample_entry("foo")]);
-        assert_eq!(
-            manifest.validate_exact_entry_set(&[]),
-            Err(SnapshotSetError::EmptyFresh)
-        );
+        assert_eq!(manifest.validate_exact_entry_set(&[]), Err(SnapshotSetError::EmptyFresh));
     }
 
     #[test]
@@ -386,9 +385,7 @@ mod tests {
         let manifest = manifest_with(vec![entry.clone(), entry]);
         assert_eq!(
             manifest.validate_exact_entry_set(&[sample_entry("foo")]),
-            Err(SnapshotSetError::DuplicateRecorded {
-                fixture_id: "foo".to_string(),
-            })
+            Err(SnapshotSetError::DuplicateRecorded { fixture_id: "foo".to_string() })
         );
     }
 
@@ -398,9 +395,7 @@ mod tests {
         let manifest = manifest_with(vec![entry.clone()]);
         assert_eq!(
             manifest.validate_exact_entry_set(&[entry.clone(), entry]),
-            Err(SnapshotSetError::DuplicateFresh {
-                fixture_id: "foo".to_string(),
-            })
+            Err(SnapshotSetError::DuplicateFresh { fixture_id: "foo".to_string() })
         );
     }
 
@@ -409,9 +404,7 @@ mod tests {
         let manifest = manifest_with(vec![sample_entry("foo"), sample_entry("bar")]);
         assert_eq!(
             manifest.validate_exact_entry_set(&[sample_entry("foo")]),
-            Err(SnapshotSetError::MissingFresh {
-                fixture_id: "bar".to_string(),
-            })
+            Err(SnapshotSetError::MissingFresh { fixture_id: "bar".to_string() })
         );
     }
 
@@ -420,9 +413,7 @@ mod tests {
         let manifest = manifest_with(vec![sample_entry("foo")]);
         assert_eq!(
             manifest.validate_exact_entry_set(&[sample_entry("foo"), sample_entry("bar")]),
-            Err(SnapshotSetError::UnexpectedFresh {
-                fixture_id: "bar".to_string(),
-            })
+            Err(SnapshotSetError::UnexpectedFresh { fixture_id: "bar".to_string() })
         );
     }
 
