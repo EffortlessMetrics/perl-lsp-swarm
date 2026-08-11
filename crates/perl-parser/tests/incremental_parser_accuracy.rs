@@ -40,13 +40,13 @@ struct IncrementalEditExpectation {
 type TestError = Box<dyn std::error::Error>;
 type TestResult = Result<(), TestError>;
 
-fn assert_incremental_edit_matches_fresh(
+fn apply_incremental_edit(
+    incremental: &mut IncrementalParserV2,
     source: &str,
     old_text: &str,
     new_text: &str,
     expectation_id: &str,
-    require_reuse: bool,
-) -> Result<Node, TestError> {
+) -> Result<String, TestError> {
     if old_text.contains(['\n', '\r']) || new_text.contains(['\n', '\r']) {
         return Err("incremental equivalence slices currently expect a single-line edit".into());
     }
@@ -97,8 +97,6 @@ fn assert_incremental_edit_matches_fresh(
     let line = (source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1) as u32;
     let character = (start - line_start) as u32;
 
-    let mut incremental = IncrementalParserV2::new();
-    incremental.parse(source)?;
     incremental.edit(Edit::new(
         start,
         old_end,
@@ -107,6 +105,20 @@ fn assert_incremental_edit_matches_fresh(
         Position::new(old_end, line, character + old_changed_bytes as u32),
         Position::new(new_end, line, character + new_changed_bytes as u32),
     ));
+    Ok(new_source)
+}
+
+fn assert_incremental_edit_matches_fresh(
+    source: &str,
+    old_text: &str,
+    new_text: &str,
+    expectation_id: &str,
+    require_reuse: bool,
+) -> Result<Node, TestError> {
+    let mut incremental = IncrementalParserV2::new();
+    incremental.parse(source)?;
+    let new_source =
+        apply_incremental_edit(&mut incremental, source, old_text, new_text, expectation_id)?;
     let incremental_ast = incremental.parse(&new_source)?;
 
     if require_reuse {
@@ -221,27 +233,55 @@ fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
 }
 
 #[test]
-fn slash_reclassification_edit_matches_fresh_parse() -> TestResult {
-    let source = concat!("my $before = 1;\n", "my $value = $left / 2;\n", "my $after = 3;\n",);
+fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
+    let source = concat!(
+        "my $before = 1;\n",
+        "my $value = $left / 2 / $right;\n",
+        "my $after = 3;\n",
+    );
     let before_ast = Parser::new(source).parse()?;
     assert!(contains_division(&before_ast), "the pre-edit source must contain division");
     assert!(!contains_match(&before_ast), "the pre-edit source must not contain a regex Match");
+    assert_eq!(source.matches('/').count(), 2);
+    assert!(source.contains("/ 2 /"));
 
-    let fresh_ast = assert_incremental_edit_matches_fresh(
+    let mut incremental = IncrementalParserV2::new();
+    incremental.parse(source)?;
+    let with_match_operator = apply_incremental_edit(
+        &mut incremental,
         source,
-        "$left / 2",
-        "$left =~ /two/",
-        "division_to_regex_match",
-        false,
+        "$left / 2 / $right",
+        "$left =~ / 2 / $right",
+        "insert_match_operator_before_existing_slash",
+    )?;
+    let final_source = apply_incremental_edit(
+        &mut incremental,
+        &with_match_operator,
+        " $right",
+        "",
+        "delete_obsolete_division_rhs_after_existing_slash",
     )?;
 
+    assert_eq!(final_source.matches('/').count(), 2);
+    assert!(
+        final_source.contains("$left =~ / 2 /"),
+        "both original slash tokens must survive the edit sequence"
+    );
+
+    let incremental_ast = incremental.parse(&final_source)?;
+    let fresh_ast = Parser::new(&final_source).parse()?;
+    assert_eq!(
+        incremental_ast.to_sexp(),
+        fresh_ast.to_sexp(),
+        "incremental result diverged from fresh parse after preserving slash tokens"
+    );
     assert!(
         contains_match(&fresh_ast),
         "the edited source must be reclassified as a regex Match expression"
     );
     assert!(
         !contains_division(&fresh_ast),
-        "the edited source must not retain the obsolete division node"
+        "the edited source must not retain obsolete division nodes"
     );
     assert!(contains_variable_declaration(&fresh_ast, "before"));
     assert!(contains_variable_declaration(&fresh_ast, "after"));
