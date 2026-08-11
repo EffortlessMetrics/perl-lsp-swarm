@@ -94,8 +94,8 @@ per finding or resolve merely to make the thread count green.
 
 ## Routes
 
-- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `final-challenge`
-- `MATERIAL_PREMISE_CHANGED` → `prepare-issue`
-- `PROOF_WEAKENED` → `prepare-proof`
+- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `$final-challenge`
+- `MATERIAL_PREMISE_CHANGED` → `$prepare-issue`
+- `PROOF_WEAKENED` → `$prepare-proof`
 - `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up and continue within the current claim
 - `DISPOSITION_INSTRUMENT_FAILURE` / `BLOCKED` / `NOT_PROVEN` → preserve the unresolved finding or missing evidence
