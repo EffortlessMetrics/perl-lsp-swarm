@@ -73,8 +73,8 @@ def validate_refs(refs: Any, field: str, *, required: bool) -> None:
     if required:
         require(bool(refs), f"{field} requires live evidence")
         require(
-            any(item.startswith("https://github.com/") for item in refs),
-            f"{field} requires a durable GitHub URL, not only source or issue identifiers",
+            any(item.startswith(REPOSITORY_EVIDENCE_PREFIX) for item in refs),
+            f"{field} requires a durable URL for this repository, not only source, issue, or unrelated repository identifiers",
         )
 
 
@@ -210,6 +210,16 @@ def validate_environments(settings: dict[str, Any], channels: dict[str, str]) ->
             reviewers == sorted(set(reviewers)),
             f"{name}.required_reviewers must be sorted and unique",
         )
+        publication_jobs = row.get("publication_jobs")
+        require(
+            isinstance(publication_jobs, list)
+            and all(isinstance(item, str) and item.strip() for item in publication_jobs),
+            f"{name}.publication_jobs must be an array of job identities",
+        )
+        require(
+            publication_jobs == sorted(set(publication_jobs)),
+            f"{name}.publication_jobs must be sorted and unique",
+        )
         branch_policy = row.get("deployment_branch_policy")
         require(
             branch_policy is None
@@ -232,6 +242,10 @@ def validate_environments(settings: dict[str, Any], channels: dict[str, str]) ->
             require(
                 row["secret_scope_verified"],
                 f"{name}: proven environment requires verified secret scope",
+            )
+            require(
+                publication_jobs,
+                f"{name}: proven environment requires a publication job binding",
             )
         found[channel] = state
     require(
