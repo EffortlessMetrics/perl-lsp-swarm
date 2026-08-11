@@ -2218,17 +2218,25 @@ function startWatchdog(): void {
     if (languageClientLifecycle?.snapshot.state !== 'running') {
       return;
     }
+    let watchdogTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        languageClientLifecycle.client?.sendRequest('workspace/symbol', { query: '' }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('watchdog timeout')), WATCHDOG_TIMEOUT_MS),
-        ),
+        languageClientLifecycle.client?.sendRequest('$/perl-lsp/watchdog'),
+        new Promise((_, reject) => {
+          watchdogTimeout = setTimeout(
+            () => reject(new Error('watchdog timeout')),
+            WATCHDOG_TIMEOUT_MS,
+          );
+        }),
       ]);
     } catch {
       outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
       autoRestartAttempts = 0;
       await handleUnexpectedServerStop();
+    } finally {
+      if (watchdogTimeout !== undefined) {
+        clearTimeout(watchdogTimeout);
+      }
     }
   }, WATCHDOG_INTERVAL_MS);
 }
