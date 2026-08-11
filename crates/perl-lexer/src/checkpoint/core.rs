@@ -171,21 +171,32 @@ impl LexerCheckpoint {
 
     /// Apply an edit to source-relative checkpoint offsets.
     ///
-    /// An edit overlapping the replay position or another required state offset
-    /// invalidates the checkpoint and rewinds it to `start`. Offsets after the
-    /// replaced range are shifted. An edit beginning exactly at an offset leaves
-    /// that offset anchored before the replacement so the new text is re-lexed.
+    /// Invalidated checkpoints retain the historical behavior of rewinding to
+    /// `start`. Call [`Self::try_apply_edit`] when the caller must distinguish a
+    /// transformed checkpoint from a conservative reset.
     pub fn apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
+        let _ = self.try_apply_edit(start, old_len, new_len);
+    }
+
+    /// Apply an edit and report whether all required replay state survived.
+    ///
+    /// An edit overlapping the replay position or another required state offset
+    /// invalidates the checkpoint and rewinds it to `start`, returning `false`.
+    /// Offsets after the replaced range are shifted. An edit beginning exactly
+    /// at an offset leaves it anchored before the replacement so the new text is
+    /// re-lexed.
+    #[must_use]
+    pub fn try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool {
         let original_position = self.position;
         let Some(position) = transform_offset(self.position, start, old_len, new_len) else {
             self.invalidate_at(start);
-            return;
+            return false;
         };
         let Some(line_start_offset) =
             transform_offset(self.line_start_offset, start, old_len, new_len)
         else {
             self.invalidate_at(start);
-            return;
+            return false;
         };
 
         let mut pending_heredocs = self.pending_heredocs.clone();
@@ -193,7 +204,7 @@ impl LexerCheckpoint {
             let Some(body_start) = transform_offset(pending.body_start, start, old_len, new_len)
             else {
                 self.invalidate_at(start);
-                return;
+                return false;
             };
             pending.body_start = body_start;
         }
@@ -202,7 +213,7 @@ impl LexerCheckpoint {
         if let Some(quote) = &mut current_quote_op {
             let Some(start_pos) = transform_offset(quote.start_pos, start, old_len, new_len) else {
                 self.invalidate_at(start);
-                return;
+                return false;
             };
             quote.start_pos = start_pos;
         }
@@ -227,7 +238,7 @@ impl LexerCheckpoint {
         };
         if !context_valid {
             self.invalidate_at(start);
-            return;
+            return false;
         }
 
         self.position = position;
@@ -239,6 +250,7 @@ impl LexerCheckpoint {
         if self.position != original_position {
             self.current_pos = Position::start();
         }
+        true
     }
 
     /// Validate all source-relative checkpoint offsets for an input.
@@ -247,10 +259,10 @@ impl LexerCheckpoint {
         offset_is_valid(input, self.position)
             && offset_is_valid(input, self.line_start_offset)
             && self.line_start_offset <= self.position
-            && self.pending_heredocs.iter().all(|pending| {
-                offset_is_valid(input, pending.body_start)
-                    && pending.body_start >= self.line_start_offset
-            })
+            && self
+                .pending_heredocs
+                .iter()
+                .all(|pending| offset_is_valid(input, pending.body_start))
             && self.current_quote_op.as_ref().is_none_or(|quote| {
                 offset_is_valid(input, quote.start_pos) && quote.start_pos <= self.position
             })
