@@ -12,6 +12,13 @@ use crate::runner_model::{
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+const INVOCATION_LIMITATION: &str =
+    "per_file_upstream_scan_and_effective_invocation_not_captured";
+const DIRECT_FALLBACK_LIMITATION: &str =
+    "direct_fallback_missing_upstream_selection_context";
+const ALTERNATE_RUNNER_LIMITATION: &str =
+    "alternate_runner_requires_membership_parity_evidence";
+
 pub(crate) fn build_runner_plan(
     matrix: &UpstreamTargetMatrix,
     target_id: &str,
@@ -24,7 +31,9 @@ pub(crate) fn build_runner_plan(
     let entry = find_target(matrix, target_id)?;
     let (selectors, script_forms) = effective_selection(matrix, entry)?;
     if selectors.is_empty() || script_forms.is_empty() {
-        return Err(format!("target {target_id} does not define a physical source population"));
+        return Err(format!(
+            "target {target_id} does not define a physical source population"
+        ));
     }
     let canonical_authority = effective_selection_authority(matrix, entry)?;
     let text = std::str::from_utf8(raw_discovery)
@@ -57,19 +66,19 @@ pub(crate) fn build_runner_plan(
         return Err(format!("target {target_id} discovery contains no files"));
     }
 
-    let normalized_order =
-        source_items.iter().map(|item| item.canonical_path.clone()).collect::<Vec<_>>();
+    let normalized_order = source_items
+        .iter()
+        .map(|item| item.canonical_path.clone())
+        .collect::<Vec<_>>();
     let mut normalized_membership = normalized_order.clone();
     normalized_membership.sort();
     let target_contract_digest = sha256_json(&entry.contract)?;
     let raw_discovery_digest = sha256_bytes(raw_discovery);
-    let mut limitations = vec![
-        "per_file_upstream_scan_and_effective_invocation_not_captured".to_string(),
-    ];
+    let mut limitations = vec![INVOCATION_LIMITATION.to_string()];
     if runner == RunnerKind::DirectFallback {
-        limitations.push("direct_fallback_missing_upstream_selection_context".to_string());
+        limitations.push(DIRECT_FALLBACK_LIMITATION.to_string());
     } else if !runner_matches_authority(runner, canonical_authority.kind) {
-        limitations.push("alternate_runner_requires_membership_parity_evidence".to_string());
+        limitations.push(ALTERNATE_RUNNER_LIMITATION.to_string());
     }
     limitations.sort();
 
@@ -96,14 +105,22 @@ pub(crate) fn build_runner_plan(
 
 pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
     if plan.schema_version != RUNNER_PLAN_SCHEMA_VERSION {
-        return Err(format!("unsupported runner plan schema {}", plan.schema_version));
+        return Err(format!(
+            "unsupported runner plan schema {}",
+            plan.schema_version
+        ));
     }
     validate_sha256(&plan.matrix_fingerprint, "matrix fingerprint")?;
     validate_sha256(&plan.target_contract_digest, "target contract digest")?;
     validate_sha256(&plan.raw_discovery_digest, "raw discovery digest")?;
-    if plan.target_id.trim().is_empty()
-        || plan.runner_entrypoint.trim().is_empty()
-        || plan.canonical_selection_entrypoint.trim().is_empty()
+    validate_stable_id(&plan.target_id, "target ID")?;
+    if plan.runner_entrypoint != plan.runner.entrypoint() {
+        return Err(format!(
+            "runner plan entrypoint {} disagrees with {:?}",
+            plan.runner_entrypoint, plan.runner
+        ));
+    }
+    if plan.canonical_selection_entrypoint.trim().is_empty()
         || plan.claim_boundary.trim().is_empty()
     {
         return Err("runner plan contains incomplete identity or claim boundary".to_string());
@@ -113,6 +130,11 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
     }
     if plan.scheduling.jobs == Some(0) {
         return Err("runner plan jobs must be positive when present".to_string());
+    }
+    for (key, value) in &plan.scheduling.properties {
+        if key.trim().is_empty() || value.trim().is_empty() {
+            return Err("runner plan scheduling properties require nonempty keys and values".to_string());
+        }
     }
 
     let mut seen = BTreeSet::new();
@@ -131,38 +153,80 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
             ));
         }
     }
-    let expected_order =
-        plan.source_items.iter().map(|item| item.canonical_path.clone()).collect::<Vec<_>>();
+    let expected_order = plan
+        .source_items
+        .iter()
+        .map(|item| item.canonical_path.clone())
+        .collect::<Vec<_>>();
     if expected_order != plan.normalized_order {
         return Err("runner plan normalized order disagrees with source items".to_string());
     }
     let mut expected_membership = expected_order.clone();
     expected_membership.sort();
     if expected_membership != plan.normalized_membership {
-        return Err("runner plan normalized membership is not sorted unique order projection".to_string());
+        return Err(
+            "runner plan normalized membership is not sorted unique order projection".to_string(),
+        );
     }
-    if plan.normalized_membership.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err("runner plan normalized membership must be strictly sorted and unique".to_string());
+    if plan
+        .normalized_membership
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(
+            "runner plan normalized membership must be strictly sorted and unique".to_string(),
+        );
     }
     if plan.limitations.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err("runner plan limitations must be strictly sorted and unique".to_string());
     }
-    if !plan
-        .limitations
-        .iter()
-        .any(|value| value == "per_file_upstream_scan_and_effective_invocation_not_captured")
-    {
+    if !has_limitation(&plan.limitations, INVOCATION_LIMITATION) {
         return Err("runner plan must retain its per-file invocation limitation".to_string());
     }
-    if plan.runner == RunnerKind::DirectFallback
-        && !plan
-            .limitations
-            .iter()
-            .any(|value| value == "direct_fallback_missing_upstream_selection_context")
-    {
-        return Err("direct fallback plan is missing its upstream-context limitation".to_string());
+    match plan.runner {
+        RunnerKind::DirectFallback => {
+            if !has_limitation(&plan.limitations, DIRECT_FALLBACK_LIMITATION) {
+                return Err(
+                    "direct fallback plan is missing its upstream-context limitation".to_string(),
+                );
+            }
+        }
+        RunnerKind::Test | RunnerKind::Harness => {
+            if has_limitation(&plan.limitations, DIRECT_FALLBACK_LIMITATION) {
+                return Err(
+                    "upstream runner plan cannot retain a direct-fallback limitation".to_string(),
+                );
+            }
+        }
     }
     Ok(())
+}
+
+pub(crate) fn validate_runner_plan_against(
+    matrix: &UpstreamTargetMatrix,
+    raw_discovery: &[u8],
+    plan: &RunnerPlan,
+) -> Result<(), String> {
+    validate_runner_plan(plan)?;
+    let rebuilt = build_runner_plan(
+        matrix,
+        &plan.target_id,
+        plan.runner,
+        raw_discovery,
+        plan.scheduling.clone(),
+    )?;
+    if rebuilt != *plan {
+        return Err(
+            "runner plan does not match the supplied matrix, target contract, raw discovery, and scheduling authority"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn runner_plan_digest(plan: &RunnerPlan) -> Result<String, String> {
+    validate_runner_plan(plan)?;
+    sha256_json(plan)
 }
 
 fn find_target<'a>(
@@ -181,9 +245,10 @@ fn effective_selection(
     entry: &TargetMatrixEntry,
 ) -> Result<(Vec<crate::model::TargetSelector>, Vec<TargetScriptForm>), String> {
     match entry.contract.target_kind {
-        TargetKind::PhysicalSeries | TargetKind::SelectorVariant => {
-            Ok((entry.contract.selectors.clone(), entry.contract.script_forms.clone()))
-        }
+        TargetKind::PhysicalSeries | TargetKind::SelectorVariant => Ok((
+            entry.contract.selectors.clone(),
+            entry.contract.script_forms.clone(),
+        )),
         TargetKind::EnvironmentVariant => {
             let base = entry
                 .contract
@@ -232,19 +297,37 @@ fn runner_matches_authority(runner: RunnerKind, authority: TargetAuthorityKind) 
     )
 }
 
+fn has_limitation(limitations: &[String], expected: &str) -> bool {
+    limitations.iter().any(|value| value == expected)
+}
+
+fn validate_stable_id(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        Err(format!("{label} must match [a-z0-9_]+: {value}"))
+    } else {
+        Ok(())
+    }
+}
+
 fn sha256_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
     let bytes = serde_json::to_vec(value)
-        .map_err(|error| format!("serializing target contract: {error}"))?;
+        .map_err(|error| format!("serializing runner authority: {error}"))?;
     Ok(sha256_bytes(&bytes))
 }
 
-fn sha256_bytes(bytes: &[u8]) -> String {
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
 fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Err(format!("{label} must be a 64-character hexadecimal digest: {value}"))
+        Err(format!(
+            "{label} must be a 64-character hexadecimal digest: {value}"
+        ))
     } else {
         Ok(())
     }
