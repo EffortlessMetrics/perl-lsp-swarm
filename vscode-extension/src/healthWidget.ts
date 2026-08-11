@@ -13,6 +13,7 @@
 import * as vscode from 'vscode';
 import type { IndexReadinessState } from './activeDocumentReadiness';
 import {
+  presentIndexReadinessReason,
   presentWorkspaceExperience,
   type LegacyWidgetMode,
   type ProviderOutcome,
@@ -257,9 +258,10 @@ export class HealthWidget {
       case 'ready_limited':
         this.setWorkspaceLifecycleState(
           'ready_limited',
-          this._readinessReason === undefined
-            ? { reasonCode: 'index_ready_limited' }
-            : { detail: this._readinessReason, reasonCode: 'index_ready_limited' },
+          {
+              detail: presentIndexReadinessReason(this._readinessReason),
+              reasonCode: 'index_ready_limited',
+            },
         );
         break;
       case 'ready':
