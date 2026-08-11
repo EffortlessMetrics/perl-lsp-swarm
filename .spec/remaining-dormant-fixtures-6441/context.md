@@ -45,7 +45,7 @@ declares `* text eol=lf` with a single exemption for `span_coordinates.pl`, so
 `span_empty_at_eof.pl`, `span_utf8_multibyte.pl`, and `span_emoji.pl` contain
 **zero CR bytes** in the committed blob. Their expectations here prove LF line
 arithmetic only. `span_coordinates` is the sole fixture in the group that
-genuinely exercises BOM, CR, tab, emoji, and accented bytes. Reported in #6620.
+genuinely exercises BOM, CR, tab, emoji, and accented bytes. Reported in #6630.
 
 **Three recovery fixtures assert current behavior, not desired behavior.**
 `unclosed_quote_like_operator`, `partial_sub_body`, and
@@ -54,7 +54,7 @@ the parser accepts the malformed input with a clean tree. `malformed_heredoc_rec
 is named for recovery that does not happen: its `UnknownRest` swallows the
 well-formed subroutine that follows. These expectations pin what the parser does
 today so the behavior is visible and any change is deliberate; they are not an
-endorsement. Reported in #6619.
+endorsement. Reported in #6629.
 
 ## Observations recorded, not asserted
 

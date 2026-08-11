@@ -24,6 +24,28 @@ Read both enforcement systems. Classic branch protection and repository rulesets
 
 Where a change is deliberately advisory first — a new ratchet needing a baseline, or a gate that cannot pass until something merges past it — say so and name the condition for promotion. Unenforced-by-design is an honest claim; unenforced-and-described-as-blocking is not.
 
+## A published branch still has one writer
+
+Publishing does not release the candidate. The branch keeps exactly one writer until
+the claim merges or is deliberately closed, and a reviewer who wants a change requests
+it rather than pushing it.
+
+A second writer pushing to a published branch produces failures that look like the
+author's: the push can land a change that was never proven, it can be silently absorbed
+by the author's next force-push, and the author's local head and the PR head diverge
+without either party noticing. All three are expensive precisely because the branch
+still looks like one coherent candidate.
+
+If a reviewer has already pushed, do not race it. Read what landed, verify it against
+observed behavior rather than assuming it is correct, and either adopt it — restating
+the proof, since a reviewer's push carries none — or replace it and say why in the
+thread. Step 8 of `address-review-comments` covers the same case: a reviewer-applied
+repair makes a new authored candidate whose affected review dimensions are invalid.
+
+Recreating a closed PR is a different matter: GitHub refuses to reopen a pull request
+whose branch was force-pushed or rebuilt, so a rebuilt claim needs a fresh PR that
+names what it supersedes. Prefer not rebuilding at all — see the currentness contract.
+
 ## Routes
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `address-review-comments`

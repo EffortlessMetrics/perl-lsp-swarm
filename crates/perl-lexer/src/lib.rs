@@ -3566,7 +3566,7 @@ impl<'a> PerlLexer<'a> {
 
     fn qw_statement_boundary_at(&self, position: usize) -> bool {
         let consumed = &self.input[..position];
-        let line_start = consumed.rfind('\n').map_or(0, |index| index + 1);
+        let line_start = consumed.rfind(['\n', '\r']).map_or(0, |index| index + 1);
         if !consumed[line_start..].chars().all(char::is_whitespace) {
             return false;
         }
@@ -3621,7 +3621,7 @@ impl<'a> PerlLexer<'a> {
     /// `warn`/`say`, known user subs, and block-form statement starters (#4499).
     fn qw_self_delimited_statement_boundary_at(&self, position: usize) -> bool {
         let consumed = &self.input[..position];
-        let line_start = consumed.rfind('\n').map_or(0, |index| index + 1);
+        let line_start = consumed.rfind(['\n', '\r']).map_or(0, |index| index + 1);
         if !consumed[line_start..].chars().all(char::is_whitespace) {
             return false;
         }
@@ -4012,7 +4012,7 @@ impl<'a> PerlLexer<'a> {
             }
             if !first && delimiter_depth == 0 {
                 let prefix = &source[..token.start];
-                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                let line_start = prefix.rfind(['\n', '\r']).map_or(0, |index| index + 1);
                 if prefix[line_start..].chars().all(char::is_whitespace)
                     && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
                 {
