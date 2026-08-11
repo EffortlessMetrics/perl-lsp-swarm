@@ -92,7 +92,7 @@ mod tests {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
-                assert!(matches!(args[0].kind, NodeKind::Variable { .. }));
+                assert!(matches!(&args[0].kind, NodeKind::Variable { .. }));
             }
             other => panic!("Expected FunctionCall node, got {other:?}"),
         }
@@ -124,7 +124,7 @@ mod tests {
     fn test_comma_separated_user_call_is_not_indirect() {
         let stmt = first_statement("render $renderer, @parts;");
         assert!(
-            !matches!(stmt.kind, NodeKind::IndirectCall { .. }),
+            !matches!(&stmt.kind, NodeKind::IndirectCall { .. }),
             "comma-separated user call must not be classified as indirect: {:?}",
             stmt.kind
         );
