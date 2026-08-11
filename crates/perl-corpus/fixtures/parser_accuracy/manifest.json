@@ -2681,7 +2681,6 @@
           "parent_operator": null
         }
       ]
-
     },
     {
       "id": "inherited_method",
@@ -2882,7 +2881,6 @@
           "parent_operator": null
         }
       ]
-
     },
     {
       "id": "export_tags",
