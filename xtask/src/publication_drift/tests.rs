@@ -313,6 +313,33 @@ fn file_loader_hashes_and_parses_manifest_bytes() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn manifest_symlink_cannot_escape_repository_root() -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let repo = TempDir::new()?;
+    let outside = TempDir::new()?;
+    let outside_manifest = outside.path().join("authority.json");
+    fs::write(&outside_manifest, AUTHORITY)?;
+    let relative = "authority.json";
+    symlink(&outside_manifest, repo.path().join(relative))?;
+
+    let mut observation = clean_observation()?;
+    let manifest =
+        observation.manifest.as_mut().ok_or_else(|| eyre!("clean fixture manifest missing"))?;
+    manifest.path = relative.to_string();
+
+    match load_authority(repo.path(), Some(manifest)) {
+        AuthoritySource::Invalid { message, actual_sha256: None }
+            if message.contains("resolves outside repository root") =>
+        {
+            Ok(())
+        }
+        other => bail!("escaping manifest symlink was accepted: {other:?}"),
+    }
+}
+
 #[test]
 fn schemas_are_well_formed_json_documents() -> Result<()> {
     for raw in [

@@ -28,7 +28,41 @@ pub(crate) fn load_authority(
         };
     }
 
-    let path = repo_root.join(&identity.path);
+    let canonical_root = match fs::canonicalize(repo_root) {
+        Ok(root) => root,
+        Err(error) => {
+            return AuthoritySource::Invalid {
+                message: format!(
+                    "canonicalizing comparison repository root {}: {error}",
+                    repo_root.display()
+                ),
+                actual_sha256: None,
+            };
+        }
+    };
+    let declared_path = repo_root.join(&identity.path);
+    let path = match fs::canonicalize(&declared_path) {
+        Ok(path) => path,
+        Err(error) => {
+            return AuthoritySource::Invalid {
+                message: format!(
+                    "resolving comparison manifest {}: {error}",
+                    declared_path.display()
+                ),
+                actual_sha256: None,
+            };
+        }
+    };
+    if !path.starts_with(&canonical_root) {
+        return AuthoritySource::Invalid {
+            message: format!(
+                "comparison manifest {} resolves outside repository root {}",
+                declared_path.display(),
+                canonical_root.display()
+            ),
+            actual_sha256: None,
+        };
+    }
     let raw = match fs::read(&path) {
         Ok(raw) => raw,
         Err(error) => {
