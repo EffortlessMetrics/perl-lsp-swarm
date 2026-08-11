@@ -1,0 +1,13 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: >-
+  Add a fail-closed publication-drift classifier with exact swarm/public
+  identities, manifest authority, difference classifications, cross-file
+  invariants, and clean/drift/not-proven receipts. Preserve the v0.17 Windows
+  ARM64 managed-download mismatch as a same-version product-drift fixture.
+time: 2026-08-11T10:09:03Z
+custom:
+  PR: "6756"
+  Slug: publication-drift-classifier
+  Breaking: "no"
