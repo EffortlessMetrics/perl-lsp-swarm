@@ -328,6 +328,15 @@ fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
         {
             bail!("release topology VS Code package or asset does not match candidate");
         }
+        let managed_targets = topology["vsix"]["managed_targets"].as_array().ok_or_else(|| {
+            color_eyre::eyre::eyre!("release topology VSIX has no managed_targets array")
+        })?;
+        if !managed_targets.iter().any(|target| target == &receipt.candidate.target) {
+            bail!(
+                "release topology VSIX does not publish candidate target {}",
+                receipt.candidate.target
+            );
+        }
         return Ok(());
     }
 
