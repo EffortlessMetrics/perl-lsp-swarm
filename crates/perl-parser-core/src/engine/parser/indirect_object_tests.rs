@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
-        let source = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
+        let source = "my_custom_method($obj, ($title // 'Untitled'), $options->{limit});";
         let stmt = first_statement(source);
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_inside_control_flow_is_function_call() {
-        let stmt = first_statement("if ($enabled) { my_custom_method $obj 10, 20; }");
+        let stmt = first_statement("if ($enabled) { my_custom_method($obj, 10, 20); }");
         let then_branch = match stmt.kind {
             NodeKind::If { then_branch, .. } => then_branch,
             other => panic!("Expected If node, got {other:?}"),
@@ -101,7 +101,14 @@ mod tests {
             NodeKind::Block { statements } => statements,
             other => panic!("Expected Block node, got {other:?}"),
         };
-        match &body[0].kind {
+        let call = match &body[0] {
+            Node {
+                kind: NodeKind::ExpressionStatement { expression },
+                ..
+            } => expression.as_ref(),
+            node => node,
+        };
+        match &call.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
