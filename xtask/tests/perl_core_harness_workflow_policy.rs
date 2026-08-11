@@ -35,7 +35,10 @@ fn perl_core_harness_preserves_each_selected_observation_after_a_red() {
         "- name: Check upstream compile ratchets\n        if: always()",
         "- name: Run core parse+compile smoke (advisory)\n        if: always()",
     ] {
-        assert!(workflow.contains(step), "selected harness step must run after an earlier red: {step}");
+        assert!(
+            workflow.contains(step),
+            "selected harness step must run after an earlier red: {step}"
+        );
     }
 }
 
