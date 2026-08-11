@@ -331,12 +331,66 @@
         ]
       },
       "ast_expectations": [
-        { "id": "typeglob_alias_package", "kind": "Package", "line": 1, "span_text": "package Accuracy::TypeglobAlias", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_original", "kind": "Subroutine", "line": 3, "span_text": "sub original", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_assignment", "kind": "Assignment", "line": 7, "span_text": "*alias = \\&original", "parent_kind": null, "depth": null, "operator": "=", "parent_operator": null },
-        { "id": "typeglob_alias_typeglob", "kind": "Typeglob", "line": 7, "span_text": "*alias", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
-        { "id": "typeglob_alias_coderef", "kind": "AmperCall", "line": 7, "span_text": "&original", "parent_kind": "Unary", "depth": 4, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_call", "kind": "FunctionCall", "line": 8, "span_text": "alias()", "parent_kind": null, "depth": null, "operator": null, "parent_operator": null }
+        {
+          "id": "typeglob_alias_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::TypeglobAlias",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_original",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub original",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_assignment",
+          "kind": "Assignment",
+          "line": 7,
+          "span_text": "*alias = \\&original",
+          "parent_kind": null,
+          "depth": null,
+          "operator": "=",
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_typeglob",
+          "kind": "Typeglob",
+          "line": 7,
+          "span_text": "*alias",
+          "parent_kind": "Assignment",
+          "depth": null,
+          "operator": null,
+          "parent_operator": "="
+        },
+        {
+          "id": "typeglob_alias_coderef",
+          "kind": "AmperCall",
+          "line": 7,
+          "span_text": "&original",
+          "parent_kind": "Unary",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_call",
+          "kind": "FunctionCall",
+          "line": 8,
+          "span_text": "alias()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
