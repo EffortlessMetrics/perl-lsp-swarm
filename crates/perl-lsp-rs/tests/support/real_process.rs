@@ -453,12 +453,16 @@ fn is_server_request_for(message: &Value, method: &str) -> bool {
     is_jsonrpc_2(message)
         && message.get("method").and_then(Value::as_str) == Some(method)
         && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
+        && message.get("result").is_none()
+        && message.get("error").is_none()
 }
 
 fn is_server_notification(message: &Value) -> bool {
     is_jsonrpc_2(message)
         && message.get("method").and_then(Value::as_str).is_some()
         && message.get("id").is_none()
+        && message.get("result").is_none()
+        && message.get("error").is_none()
 }
 
 fn read_stdout(stdout: ChildStdout, sender: SyncSender<ProcessEvent>, overflow: &AtomicBool) {

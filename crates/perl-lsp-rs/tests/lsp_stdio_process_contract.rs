@@ -258,6 +258,27 @@ fn terminal_notification_requires_jsonrpc_2() -> Result<()> {
         !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
         "wrong JSON-RPC version was accepted"
     );
+
+    let result_hybrid = json!({
+        "jsonrpc": "2.0",
+        "method": "window/logMessage",
+        "result": null
+    });
+    ensure!(
+        !RealProcessClient::is_valid_server_notification_for_test(&result_hybrid),
+        "method/response hybrid was accepted as a notification"
+    );
+
+    let error_hybrid = json!({
+        "jsonrpc": "2.0",
+        "method": "window/logMessage",
+        "error": { "code": -32603, "message": "hybrid" }
+    });
+    ensure!(
+        !RealProcessClient::is_valid_server_notification_for_test(&error_hybrid),
+        "method/error hybrid was accepted as a notification"
+    );
+
     Ok(())
 }
 
