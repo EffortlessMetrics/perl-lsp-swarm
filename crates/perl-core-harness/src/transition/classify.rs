@@ -93,18 +93,16 @@ pub fn classify_transition(
                     value.runner, current.runner
                 ));
             }
-            if current.commit != value.repository_commit {
-                identity_mismatches.push(format!(
-                    "repository commit differs (accepted {}, current {})",
-                    value.repository_commit, current.commit
-                ));
-            }
             if current.perl_ref != value.perl_resolved_ref {
                 identity_mismatches.push(format!(
                     "Perl reference differs (accepted {}, current {})",
                     value.perl_resolved_ref, current.perl_ref
                 ));
             }
+            // Do not require current.commit == accepted.repository_commit: a
+            // transition measures a later implementation SHA against the
+            // accepted observation. Bind the measured SHA in receipts, not as
+            // a classifier identity gate.
             let expected_membership =
                 value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
             let observed_membership = current

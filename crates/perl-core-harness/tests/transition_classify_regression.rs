@@ -160,12 +160,28 @@ fn typed_failure_inventory_change_is_not_no_change() -> TestResult {
 fn different_v2_measurement_subject_is_not_proven() -> TestResult {
     let accepted = sample_v2_baseline(1, 1);
     let mut current = sample_report(1, 1);
-    current.commit = "b".repeat(40);
+    current.perl_ref = "other-perl".into();
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
     if classification.transition != CompatibilityTransition::NotProven
         || classification.requires_candidate
     {
         bail!("a different measurement subject was treated as an exact ratchet match");
+    }
+    Ok(())
+}
+
+#[test]
+fn later_implementation_sha_remains_classifiable() -> TestResult {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.commit = "b".repeat(40);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::Regression {
+        bail!("a later implementation SHA must still be able to classify as regression");
     }
     Ok(())
 }
