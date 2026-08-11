@@ -206,6 +206,46 @@ fn v1_missing_accepted_file_is_not_proven() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn duplicate_current_file_path_is_not_proven() -> TestResult {
+    let accepted = sample_v2_baseline(1, 0);
+    let mut current = sample_report(1, 0);
+    current.file_results.push(RunFileResult {
+        path: "base/0.t".into(),
+        status: RunnerStatus::Pass,
+        assertions_passed: 1,
+        assertions_total: 1,
+    });
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::NotProven
+        || classification.requires_candidate
+    {
+        bail!("duplicate file-result paths must be incomparable, not silently collapsed");
+    }
+    Ok(())
+}
+
+#[test]
+fn additional_failed_assertions_are_regression() -> TestResult {
+    let mut accepted = sample_v2_baseline(1, 0);
+    accepted.file_results[0].assertions_passed = 1;
+    accepted.file_results[0].assertions_total = 2;
+    accepted.tap_assertions_passed = 1;
+    accepted.tap_assertions_total = 2;
+    let mut current = sample_report(1, 0);
+    current.file_results[0].assertions_passed = 1;
+    current.file_results[0].assertions_total = 3;
+    current.summary.tap_assertions_passed = 1;
+    current.summary.tap_assertions_total = 3;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::Regression
+        || classification.requires_candidate
+    {
+        bail!("more failed assertions must classify as regression, not a correction candidate");
+    }
+    Ok(())
+}
+
 fn sample_report(total: usize, passed: usize) -> RunReport {
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.into(),

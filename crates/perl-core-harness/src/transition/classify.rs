@@ -17,6 +17,25 @@ pub fn classify_transition(
     accepted: &AcceptedBaseline,
     current: &RunReport,
 ) -> Result<Classification> {
+    let mut identity_mismatches = Vec::new();
+    if let Some(path) = first_duplicate_path(accepted.file_results()) {
+        identity_mismatches.push(format!("accepted observation repeats file-result path {path}"));
+    }
+    if let Some(path) = first_duplicate_path(&current.file_results) {
+        identity_mismatches.push(format!("current observation repeats file-result path {path}"));
+    }
+    if !identity_mismatches.is_empty() {
+        return Ok(Classification {
+            transition: CompatibilityTransition::NotProven,
+            reason: format!(
+                "accepted and current observations are not comparable: {}",
+                identity_mismatches.join("; ")
+            ),
+            requires_candidate: false,
+            semantic_boundary_change: false,
+        });
+    }
+
     let accepted_by_path = accepted
         .file_results()
         .iter()
@@ -28,7 +47,6 @@ pub fn classify_transition(
         .map(|result| (result.path.as_str(), result))
         .collect::<BTreeMap<_, _>>();
 
-    let mut identity_mismatches = Vec::new();
     match accepted {
         AcceptedBaseline::V1(value) => {
             if current.schema_version != value.report_schema_version {
@@ -154,6 +172,15 @@ pub fn classify_transition(
             regressions.push(format!(
                 "{path} declared fewer assertions ({}/{})",
                 current_result.assertions_total, accepted_result.assertions_total
+            ));
+        }
+        let accepted_failed =
+            accepted_result.assertions_total.saturating_sub(accepted_result.assertions_passed);
+        let current_failed =
+            current_result.assertions_total.saturating_sub(current_result.assertions_passed);
+        if current_failed > accepted_failed {
+            regressions.push(format!(
+                "{path} failed more assertions ({current_failed}/{accepted_failed} previously failed)"
             ));
         }
         if accepted_result.status == RunnerStatus::Fail
@@ -285,6 +312,16 @@ pub fn classify_transition(
         requires_candidate: false,
         semantic_boundary_change: false,
     })
+}
+
+fn first_duplicate_path(results: &[perl_core_harness_types::RunFileResult]) -> Option<&str> {
+    let mut seen = BTreeSet::new();
+    for result in results {
+        if !seen.insert(result.path.as_str()) {
+            return Some(result.path.as_str());
+        }
+    }
+    None
 }
 
 fn run_state(report: &RunReport) -> crate::transition::model::TransitionRunState {
