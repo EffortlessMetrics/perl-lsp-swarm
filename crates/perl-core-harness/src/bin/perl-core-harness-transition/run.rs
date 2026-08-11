@@ -69,12 +69,36 @@ fn validate_accepted_baseline_shape(accepted: &CompileBaselineV2) -> Result<()> 
         .filter(|result| result.status == RunnerStatus::Pass)
         .count();
     let failed = accepted.file_results.len().saturating_sub(passed);
+    let assertions_total: usize = accepted
+        .file_results
+        .iter()
+        .map(|result| result.assertions_total)
+        .sum();
+    let assertions_passed: usize = accepted
+        .file_results
+        .iter()
+        .map(|result| result.assertions_passed)
+        .sum();
     if accepted.files_total != accepted.file_results.len()
         || accepted.files_passed != passed
         || accepted.files_failed != failed
         || accepted.files_passed.saturating_add(accepted.files_failed) != accepted.files_total
     {
         bail!("accepted ratchet file counts are internally inconsistent with file_results");
+    }
+    if accepted.tap_assertions_total != assertions_total
+        || accepted.tap_assertions_passed != assertions_passed
+        || accepted.tap_assertions_passed > accepted.tap_assertions_total
+    {
+        bail!("accepted ratchet assertion counts are internally inconsistent with file_results");
+    }
+    for result in &accepted.file_results {
+        if result.assertions_passed > result.assertions_total {
+            bail!(
+                "accepted ratchet file {} passes more assertions than it declares",
+                result.path
+            );
+        }
     }
     Ok(())
 }
@@ -98,6 +122,16 @@ fn validate_compile_report_shape(report: &RunReport) -> Result<()> {
         .filter(|result| result.status == RunnerStatus::Pass)
         .count();
     let failed = report.file_results.len().saturating_sub(passed);
+    let assertions_total: usize = report
+        .file_results
+        .iter()
+        .map(|result| result.assertions_total)
+        .sum();
+    let assertions_passed: usize = report
+        .file_results
+        .iter()
+        .map(|result| result.assertions_passed)
+        .sum();
     if report.summary.files_total != report.file_results.len()
         || report.summary.files_passed != passed
         || report.summary.files_failed != failed
@@ -108,6 +142,14 @@ fn validate_compile_report_shape(report: &RunReport) -> Result<()> {
             != report.summary.files_total
     {
         bail!("compile observation file counts are internally inconsistent with file_results");
+    }
+    if report.summary.tap_assertions_total != assertions_total
+        || report.summary.tap_assertions_passed != assertions_passed
+        || report.summary.tap_assertions_passed > report.summary.tap_assertions_total
+    {
+        bail!(
+            "compile observation assertion counts are internally inconsistent with file_results"
+        );
     }
     for result in &report.file_results {
         if result.assertions_passed > result.assertions_total {

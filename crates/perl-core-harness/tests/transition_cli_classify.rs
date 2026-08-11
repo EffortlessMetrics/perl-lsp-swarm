@@ -113,6 +113,73 @@ fn classify_cli_creates_missing_output_directories() {
 }
 
 #[test]
+fn classify_cli_rejects_forged_accepted_assertion_totals() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let out = dir.path().join("out.json");
+    let mut baseline = sample_v2_baseline(1, 1);
+    baseline.tap_assertions_passed = 99;
+    write_json(&accepted, &baseline);
+    write_json(&compile, &sample_report(1, 1));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8 path"),
+            "--compile",
+            compile.to_str().expect("utf8 path"),
+            "--output",
+            out.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("assertion counts are internally inconsistent"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn classify_cli_rejects_forged_current_assertion_totals_on_regression_shape() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let out = dir.path().join("out.json");
+    let mut current = sample_report(2, 1);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    current.summary.tap_assertions_total = 99;
+    write_json(&accepted, &sample_v2_baseline(2, 1));
+    write_json(&compile, &current);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8 path"),
+            "--compile",
+            compile.to_str().expect("utf8 path"),
+            "--output",
+            out.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("assertion counts are internally inconsistent"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(!out.exists());
+}
+
+#[test]
 fn classify_cli_rejects_null_harness_status() {
     let dir = tempdir().expect("tempdir");
     let accepted = dir.path().join("accepted.json");
