@@ -397,4 +397,15 @@ describe('HealthWidget — version display', () => {
     expect(widget.mode).toBe('running');
     expect(item.text).toBe('$(check) perl-lsp v0.12.0');
   });
+
+  test('reports enhanced readiness only after a readiness notification', () => {
+    const { widget } = makeWidget();
+    widget.onStateChange(ClientState.Starting);
+    widget.onStateChange(ClientState.Running);
+
+    expect(widget.enhancedReadinessAvailable).toBe(false);
+
+    widget.onIndexReadinessState('ready');
+    expect(widget.enhancedReadinessAvailable).toBe(true);
+  });
 });
