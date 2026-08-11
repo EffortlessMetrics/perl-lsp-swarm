@@ -981,6 +981,16 @@ mod tests {
             "<<~ allows an indented terminator and skips spaces before the label"
         );
         assert_eq!(
+            heredoc_opener_on_line("my $x = <<~\tEOF;"),
+            Some(("EOF".to_string(), true)),
+            "<<~ allows tabs before an indented terminator label"
+        );
+        assert_eq!(
+            heredoc_opener_on_line("my $x = <<~;"),
+            None,
+            "<<~ without a label is not a heredoc opener"
+        );
+        assert_eq!(
             heredoc_opener_on_line("my $x = <<'END OF';"),
             Some(("END OF".to_string(), false)),
             "a single-quoted label may contain spaces"
@@ -1013,6 +1023,11 @@ mod tests {
             heredoc_opener_on_line("my $x = <<'unterminated;"),
             None,
             "an unterminated quoted label is rejected"
+        );
+        assert_eq!(
+            heredoc_opener_on_line("my $x = <<é;"),
+            None,
+            "a non-ASCII character cannot start an unquoted label"
         );
     }
 
@@ -1578,6 +1593,11 @@ mod tests {
             super::heredoc_opener_on_line("my $m = '#'; print <<END;"),
             Some(("END".to_string(), false)),
             "heredoc opener after a quoted # must still be found"
+        );
+        assert_eq!(
+            super::heredoc_opener_on_line("my $m = \"a\\\"# still quoted\"; print <<END;"),
+            Some(("END".to_string(), false)),
+            "an escaped quote must not end the string before its #"
         );
     }
 }
