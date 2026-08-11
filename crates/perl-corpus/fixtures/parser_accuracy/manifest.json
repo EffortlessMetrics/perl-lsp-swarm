@@ -2076,6 +2076,16 @@
           "parent_operator": null
         },
         {
+          "id": "method_call_shift",
+          "kind": "FunctionCall",
+          "line": 4,
+          "span_text": "shift",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
           "id": "method_call_receiver",
           "kind": "MethodCall",
           "line": 5,
@@ -2345,7 +2355,8 @@
         {
           "line": 4,
           "expected_tags": [
-            "variable_decl"
+            "variable_decl",
+            "function_call"
           ]
         },
         {
