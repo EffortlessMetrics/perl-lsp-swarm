@@ -202,7 +202,7 @@ producer = "runtime_mixed"
 proof_class = "mixed"
 readiness_input = "workspace generation, root, cancellation, and partial-result state"
 fallback = "bounded partial workspace report or explicit unavailable outcome"
-duplicate_interpretation = "workspace pull diagnostics own provider-specific document enumeration and aggregation"
+duplicate_interpretation = "workspace pull diagnostics own provider-specific document enumeration, semantic-query joins, critic/dead-code analysis, freshness guards, and report shaping"
 migration_disposition = "port_candidate"
 replacement_owner = "#4799"
 [[read.source]]
@@ -210,10 +210,6 @@ path = "crates/perl-lsp-rs/src/runtime/diagnostics.rs"
 [[read.source.anchor]]
 kind = "rust_fn"
 value = "handle_workspace_diagnostic"
-count = 1
-[[read.source.anchor]]
-kind = "rust_call"
-value = "get_workspace_diagnostics_with_context"
 count = 1
 
 [[read]]
