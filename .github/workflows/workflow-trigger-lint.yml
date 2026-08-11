@@ -23,24 +23,246 @@ jobs:
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Apply reviewed strict-envelope patch
+      - name: Enforce strict JSON-RPC framing envelopes
         shell: python
         run: |
-          import base64
-          import hashlib
-          import subprocess
-          import zlib
           from pathlib import Path
 
-          encoded = "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"
-          patch = zlib.decompress(base64.b64decode(encoded))
-          actual = hashlib.sha256(patch).hexdigest()
-          expected = "4cd36f46fabfa48cd495d20cc5c38190008a93bf78f3dae704d09423aa2acd8a"
-          if actual != expected:
-              raise SystemExit(f"patch digest mismatch: {actual}")
-          path = Path("/tmp/pr6811.patch")
-          path.write_bytes(patch)
-          subprocess.run(["git", "apply", str(path)], check=True)
+          harness = Path("crates/perl-lsp-rs/tests/support/real_process.rs")
+          text = harness.read_text()
+
+          notification_helper = '''    pub fn is_valid_server_notification_for_test(message: &Value) -> bool {
+              is_server_notification(message)
+          }
+          '''
+          request_helper = '''    pub fn is_valid_server_notification_for_test(message: &Value) -> bool {
+              is_server_notification(message)
+          }
+
+              pub fn is_valid_server_request_for_test(message: &Value, method: &str) -> bool {
+              is_server_request_for(message, method)
+          }
+          '''
+          if request_helper.strip() not in text:
+              if notification_helper not in text:
+                  raise SystemExit("notification test helper anchor not found")
+              text = text.replace(notification_helper, request_helper, 1)
+
+          response_like = '''fn is_response_like(message: &Value) -> bool {
+              message.get("method").is_none()
+                  && (message.get("result").is_some() || message.get("error").is_some())
+          }
+          '''
+          response_helpers = '''fn is_response_like(message: &Value) -> bool {
+              message.get("method").is_none()
+                  && (message.get("result").is_some() || message.get("error").is_some())
+          }
+
+          fn has_valid_params(message: &Value) -> bool {
+              match message.get("params") {
+                  None => true,
+                  Some(params) => params.is_object() || params.is_array(),
+              }
+          }
+
+          fn has_no_response_members(message: &Value) -> bool {
+              message.get("result").is_none() && message.get("error").is_none()
+          }
+          '''
+          if response_helpers.strip() not in text:
+              if response_like not in text:
+                  raise SystemExit("response-like helper anchor not found")
+              text = text.replace(response_like, response_helpers, 1)
+
+          response_predicate = '''fn is_response(message: &Value) -> bool {
+              is_jsonrpc_2(message)
+                  && is_response_like(message)
+                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
+                  && (message.get("result").is_some() ^ message.get("error").is_some())
+          }
+          '''
+          strict_response_predicate = '''fn is_response(message: &Value) -> bool {
+              is_jsonrpc_2(message)
+                  && is_response_like(message)
+                  && message.get("params").is_none()
+                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
+                  && (message.get("result").is_some() ^ message.get("error").is_some())
+          }
+          '''
+          if strict_response_predicate.strip() not in text:
+              if response_predicate not in text:
+                  raise SystemExit("response predicate anchor not found")
+              text = text.replace(response_predicate, strict_response_predicate, 1)
+
+          request_predicate = '''fn is_server_request_for(message: &Value, method: &str) -> bool {
+              is_jsonrpc_2(message)
+                  && message.get("method").and_then(Value::as_str) == Some(method)
+                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
+          }
+          '''
+          strict_request_predicate = '''fn is_server_request_for(message: &Value, method: &str) -> bool {
+              is_jsonrpc_2(message)
+                  && message.get("method").and_then(Value::as_str) == Some(method)
+                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
+                  && has_no_response_members(message)
+                  && has_valid_params(message)
+          }
+          '''
+          if strict_request_predicate.strip() not in text:
+              if request_predicate not in text:
+                  raise SystemExit("server request predicate anchor not found")
+              text = text.replace(request_predicate, strict_request_predicate, 1)
+
+          notification_predicate = '''fn is_server_notification(message: &Value) -> bool {
+              is_jsonrpc_2(message)
+                  && message.get("method").and_then(Value::as_str).is_some()
+                  && message.get("id").is_none()
+          }
+          '''
+          strict_notification_predicate = '''fn is_server_notification(message: &Value) -> bool {
+              is_jsonrpc_2(message)
+                  && message.get("method").and_then(Value::as_str).is_some()
+                  && message.get("id").is_none()
+                  && has_no_response_members(message)
+                  && has_valid_params(message)
+          }
+          '''
+          if strict_notification_predicate.strip() not in text:
+              if notification_predicate not in text:
+                  raise SystemExit("server notification predicate anchor not found")
+              text = text.replace(notification_predicate, strict_notification_predicate, 1)
+
+          permissive_header = '''        let line = std::str::from_utf8(&line).context("stdout header was not valid UTF-8")?;
+              let line = line.trim_end_matches(['\\r', '\\n']);
+          '''
+          strict_header = '''        ensure!(
+                  line.ends_with(b"\\r\\n"),
+                  "stdout header line did not end with CRLF"
+              );
+              let line = std::str::from_utf8(&line[..line.len() - 2])
+                  .context("stdout header was not valid UTF-8")?;
+          '''
+          if strict_header.strip() not in text:
+              if permissive_header not in text:
+                  raise SystemExit("header terminator anchor not found")
+              text = text.replace(permissive_header, strict_header, 1)
+
+          harness.write_text(text)
+
+          contract = Path("crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs")
+          text = contract.read_text()
+          text = text.replace(
+              "fn strict_parser_rejects_truncated_and_oversized_headers() -> Result<()> {",
+              "fn strict_parser_rejects_truncated_oversized_and_lf_only_headers() -> Result<()> {",
+              1,
+          )
+
+          oversized = '''    let oversized = vec![b'x'; 5 * 1024];
+              let error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
+                  .expect_err("oversized header must fail");
+              ensure!(error.to_string().contains("exceeded"));
+              Ok(())
+          '''
+          lf_only = '''    let oversized = vec![b'x'; 5 * 1024];
+              let error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
+                  .expect_err("oversized header must fail");
+              ensure!(error.to_string().contains("exceeded"));
+
+              let body = br#"{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\"}"#;
+              let mut frame = format!("Content-Length: {}\\n\\n", body.len()).into_bytes();
+              frame.extend_from_slice(body);
+              let error = RealProcessClient::parse_stdout_frame_for_test(&frame)
+                  .expect_err("LF-only framing must fail");
+              ensure!(
+                  error.to_string().contains("CRLF"),
+                  "LF-only framing failed for the wrong reason: {error:#}"
+              );
+              Ok(())
+          '''
+          if lf_only.strip() not in text:
+              if oversized not in text:
+                  raise SystemExit("strict parser test anchor not found")
+              text = text.replace(oversized, lf_only, 1)
+
+          wrong_version = '''    ensure!(
+                  !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
+                  "wrong JSON-RPC version was accepted"
+              );
+          '''
+          scalar_params = '''    ensure!(
+                  !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
+                  "wrong JSON-RPC version was accepted"
+              );
+
+              let scalar_params = json!({
+                  "jsonrpc": "2.0",
+                  "method": "window/logMessage",
+                  "params": "not-an-object-or-array"
+              });
+              ensure!(
+                  !RealProcessClient::is_valid_server_notification_for_test(&scalar_params),
+                  "notification with scalar params was accepted"
+              );
+          '''
+          if scalar_params.strip() not in text:
+              if wrong_version not in text:
+                  raise SystemExit("notification version test anchor not found")
+              text = text.replace(wrong_version, scalar_params, 1)
+
+          insertion_anchor = '''#[test]
+          fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
+          '''
+          request_test = '''#[test]
+          fn server_request_requires_request_only_members_and_structured_params() -> Result<()> {
+              let method = "client/registerCapability";
+              let valid = json!({
+                  "jsonrpc": "2.0",
+                  "id": 1,
+                  "method": method,
+                  "params": { "registrations": [] }
+              });
+              ensure!(
+                  RealProcessClient::is_valid_server_request_for_test(&valid, method),
+                  "valid server request was rejected"
+              );
+
+              for invalid in [
+                  json!({
+                      "jsonrpc": "2.0",
+                      "id": 2,
+                      "method": method,
+                      "params": true
+                  }),
+                  json!({
+                      "jsonrpc": "2.0",
+                      "id": 3,
+                      "method": method,
+                      "result": null
+                  }),
+                  json!({
+                      "jsonrpc": "2.0",
+                      "id": 4,
+                      "method": method,
+                      "error": { "code": -32603, "message": "hybrid" }
+                  }),
+              ] {
+                  ensure!(
+                      !RealProcessClient::is_valid_server_request_for_test(&invalid, method),
+                      "invalid server request was accepted: {invalid}"
+                  );
+              }
+              Ok(())
+          }
+
+          #[test]
+          fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
+          '''
+          if request_test.strip() not in text:
+              if insertion_anchor not in text:
+                  raise SystemExit("server request test insertion anchor not found")
+              text = text.replace(insertion_anchor, request_test, 1)
+
+          contract.write_text(text)
 
       - name: Format and verify focused contracts
         shell: bash
