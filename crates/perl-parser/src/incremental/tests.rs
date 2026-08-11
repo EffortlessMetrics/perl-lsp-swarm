@@ -80,7 +80,7 @@ fn incremental_state_records_lex_and_parse_restart_points() -> Result<()> {
     );
 
     let package_start =
-        source.find("package").ok_or_else(|| anyhow::anyhow!("package declaration is present"))?;
+        source.find("package").ok_or_else(|| anyhow::anyhow!("package declaration not found in source"))?;
     let package_checkpoint = state
         .find_parse_checkpoint(package_start)
         .ok_or_else(|| anyhow::anyhow!("package declarations create parse checkpoints"))?;
@@ -91,7 +91,7 @@ fn incremental_state_records_lex_and_parse_restart_points() -> Result<()> {
 
     let sub_start = source
         .find("sub run")
-        .ok_or_else(|| anyhow::anyhow!("subroutine declaration is present"))?;
+        .ok_or_else(|| anyhow::anyhow!("subroutine declaration not found in source"))?;
     let sub_checkpoint = state
         .find_parse_checkpoint(sub_start)
         .ok_or_else(|| anyhow::anyhow!("subroutine declarations create parse checkpoints"))?;
@@ -119,7 +119,7 @@ fn expression_only_trees_have_no_parse_restart_checkpoint() -> Result<()> {
 )]
 #[test]
 fn incremental_state_retains_error_ast_when_initial_parse_fails() -> Result<()> {
-    let state = IncrementalState::new("sub {".to_string());
+    let state = IncrementalState::new("(".repeat(256));
     anyhow::ensure!(
         matches!(state.ast.kind, NodeKind::Error { .. }),
         "initial parse failure must retain an error AST"
