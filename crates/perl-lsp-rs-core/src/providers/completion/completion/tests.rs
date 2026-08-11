@@ -8434,8 +8434,17 @@ sub greet {
         "collector must traverse indexed Parent members, got {:?}",
         inherited_members.iter().map(|member| &member.name).collect::<Vec<_>>()
     );
-    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
+    let context = ctx_for("$self->", "Child", pos);
+    let mut type_engine = perl_semantic_analyzer::type_inference::TypeInferenceEngine::new();
+    let _ = type_engine.infer(&ast);
+    let evidence = super::workspace::classify_receiver(&context, code, Some(&type_engine));
+    assert_eq!(
+        evidence.package(),
+        Some("Child"),
+        "open receiver must resolve to current package: {evidence:?}"
+    );
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let completions = provider.get_completions(code, pos);
 
     assert!(
