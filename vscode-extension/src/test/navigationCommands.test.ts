@@ -87,29 +87,74 @@ describe('navigation command implementations', () => {
     await showWorkspaceStatusCommand({ getWorkspaceStatus });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: running\nVersion: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors',
+      'Perl LSP workspace status\nServer: running\nVersion: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors\nWorkspace index: legacy server (enhanced readiness unavailable)',
       'Run Health Check',
       'Show Output',
+      'Open Actions',
     );
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.showOutput');
   });
 
-  test('shows limited readiness as a live server state', async () => {
-    const getWorkspaceStatus = jest.fn(() => ({
-      mode: 'ready_limited' as const,
-      version: 'perllsp 0.17.0',
-      fileCount: 500,
-      errorCount: 1,
-    }));
+  test('shows lifecycle, readiness, and active-document status', async () => {
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
 
-    await showWorkspaceStatusCommand({ getWorkspaceStatus });
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'running',
+        lifecycle: 'ready_limited',
+        readinessState: 'ready_limited',
+        readinessReason: 'Workspace file limit reached',
+        activeDocumentReady: false,
+        nextAction: 'Wait for the active document to become ready.',
+      }),
+    });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: ready (limited)\nVersion: perllsp 0.17.0\nWorkspace files: 500\nDiagnostics: 1 error',
+      'Perl LSP workspace status\nServer: running\nLifecycle: ready_limited\nWorkspace index: ready_limited\nActive document: not ready\nCoverage: Workspace file limit reached\nNext: Wait for the active document to become ready.',
       'Run Health Check',
       'Show Output',
+      'Open Actions',
     );
-    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  test('omits active-document readiness for unsupported editors', async () => {
+    setActiveEditor(makeEditor('markdown', '/workspace/README.md'));
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'running',
+        readinessState: 'legacy',
+      }),
+    });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nServer: running\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Run Health Check',
+      'Show Output',
+      'Open Actions',
+    );
+  });
+
+  test('shows lifecycle detail when the server has a known failure cause', async () => {
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'stopped',
+        lifecycle: 'failed',
+        lifecycleDetail: 'Managed server binary is missing.',
+        nextAction: 'Reinstall the server.',
+      }),
+    });
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nServer: stopped\nLifecycle: failed\nDetail: Managed server binary is missing.\nNext: Reinstall the server.',
+      'Restart Server',
+      'Run Health Check',
+      'Show Output',
+      'Open Actions',
+    );
   });
 
   test('offers restart for a stopped workspace', async () => {
@@ -127,6 +172,7 @@ describe('navigation command implementations', () => {
       'Restart Server',
       'Run Health Check',
       'Show Output',
+      'Open Actions',
     );
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.restart');
   });

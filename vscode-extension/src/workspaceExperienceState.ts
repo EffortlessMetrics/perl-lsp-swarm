@@ -148,6 +148,54 @@ function indexingLabel(telemetry: WorkspaceExperienceTelemetry): string {
 }
 
 /**
+ * Convert the readiness transport's internal reason into bounded UI text.
+ *
+ * The current server serializes its Rust enum with Debug formatting for
+ * diagnostics. That representation is intentionally not part of the VS Code
+ * presentation contract: it is unstable, implementation-shaped, and can
+ * contain raw I/O text. Keep this mapper provider-neutral and fail closed for
+ * unknown/future reasons.
+ */
+export function presentIndexReadinessReason(reason?: string): string {
+  if (!reason) {
+    return 'Limited workspace coverage';
+  }
+
+  const outerVariant = /^\s*([A-Za-z][A-Za-z0-9_]*)\b/.exec(reason)?.[1];
+  switch (outerVariant) {
+    case 'Cancelled':
+      return 'Workspace indexing was cancelled';
+    case 'ParseStorm':
+    case 'parse_storm':
+      return 'Frequent changes limited workspace coverage';
+    case 'IoError':
+    case 'io_error':
+      return 'Some workspace files could not be read';
+    case 'ScanTimeout':
+    case 'scan_timeout':
+      return 'Workspace indexing reached its time budget';
+    case 'ResourceLimit': {
+      const kind = /\bkind\s*:\s*([A-Za-z][A-Za-z0-9_]*)\b/.exec(reason)?.[1];
+      switch (kind) {
+        case 'MaxFiles':
+        case 'max_files':
+          return 'Workspace file limit reached';
+        case 'MaxSymbols':
+        case 'max_symbols':
+          return 'Workspace symbol limit reached';
+        case 'MaxCacheBytes':
+        case 'max_cache_bytes':
+          return 'Workspace cache limit reached';
+        default:
+          return 'Limited workspace coverage';
+      }
+    }
+    default:
+      return 'Limited workspace coverage';
+  }
+}
+
+/**
  * Render one canonical experience snapshot for a compact status surface.
  *
  * Normal exact/current and legitimate-empty outcomes remain quiet. Limited,

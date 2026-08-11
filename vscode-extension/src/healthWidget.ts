@@ -13,6 +13,7 @@
 import * as vscode from 'vscode';
 import type { IndexReadinessState } from './activeDocumentReadiness';
 import {
+  presentIndexReadinessReason,
   presentWorkspaceExperience,
   type LegacyWidgetMode,
   type ProviderOutcome,
@@ -82,6 +83,7 @@ export class HealthWidget {
   private _version: string | undefined = undefined;
   private _readinessState: IndexReadinessState = 'ready';
   private _readinessReason: string | undefined = undefined;
+  private _enhancedReadinessAvailable = false;
 
   constructor(private readonly item: vscode.StatusBarItem) {
     this._render();
@@ -95,6 +97,7 @@ export class HealthWidget {
   onStateChange(state: ClientState): void {
     switch (state) {
       case ClientState.Starting:
+        this._enhancedReadinessAvailable = false;
         this.setWorkspaceLifecycleState('starting');
         break;
       case ClientState.Running:
@@ -148,8 +151,18 @@ export class HealthWidget {
     }
   }
 
+  /** Seed the visible readiness state while waiting for the server contract. */
+  seedIndexReadinessState(state: IndexReadinessState): void {
+    this._readinessState = state;
+    this._readinessReason = undefined;
+    if (this._activeTokens.size === 0) {
+      this._applyReadinessLifecycle();
+    }
+  }
+
   /** Consume canonical server readiness without inferring it from progress. */
   onIndexReadinessState(state: IndexReadinessState, reason?: string): void {
+    this._enhancedReadinessAvailable = true;
     this._readinessState = state;
     this._readinessReason = reason;
     if (this._activeTokens.size === 0) {
@@ -245,6 +258,27 @@ export class HealthWidget {
     return this._readinessState;
   }
 
+  /** Whether this server has emitted the enhanced readiness notification. */
+  get enhancedReadinessAvailable(): boolean {
+    return this._enhancedReadinessAvailable;
+  }
+
+  /** Bounded user-facing readiness detail for status surfaces. */
+  get readinessReason(): string | undefined {
+    return this._readinessState === 'ready_limited'
+      ? presentIndexReadinessReason(this._readinessReason)
+      : undefined;
+  }
+
+  /** Current presentation detail/action supplied by the owning lifecycle path. */
+  get experienceDetail(): string | undefined {
+    return this._experience.detail;
+  }
+
+  get experienceAction(): string | undefined {
+    return this._experience.action;
+  }
+
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
@@ -254,14 +288,14 @@ export class HealthWidget {
       case 'building':
         this.setWorkspaceLifecycleState('indexing_workspace');
         break;
-      case 'ready_limited':
-        this.setWorkspaceLifecycleState(
-          'ready_limited',
-          this._readinessReason === undefined
-            ? { reasonCode: 'index_ready_limited' }
-            : { detail: this._readinessReason, reasonCode: 'index_ready_limited' },
-        );
+      case 'ready_limited': {
+        const detail = presentIndexReadinessReason(this._readinessReason);
+        this.setWorkspaceLifecycleState('ready_limited', {
+          detail,
+          reasonCode: 'index_ready_limited',
+        });
         break;
+      }
       case 'ready':
         this.setWorkspaceLifecycleState('ready');
         break;

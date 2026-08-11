@@ -38,7 +38,6 @@ import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
 import { HealthWidgetDataSource } from './healthWidgetDataSource';
 import { projectWorkspaceLifecycle } from './workspaceExperienceState';
-import { replayOpenPerlDocuments } from './languageClientDocumentSync';
 import { registerPodPreview } from './podPreview';
 import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
@@ -147,6 +146,7 @@ let languageClientLifecycle:
   | undefined;
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
 const activeDocumentReadiness = new ActiveDocumentReadiness();
+let latestLanguageClientGeneration = 0;
 const featureActivationMetrics = new FeatureActivationMetrics();
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
@@ -512,7 +512,7 @@ export async function activate(context: vscode.ExtensionContext) {
     registerMcpSupport(outputChannel),
   );
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.command = 'perl-lsp.showStatusMenu';
+  statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
     label: 'Perl Language Server',
     role: 'button',
@@ -615,13 +615,32 @@ export async function activate(context: vscode.ExtensionContext) {
         getWorkspaceStatus: () => {
           const widget = healthWidget;
           const mode = widget?.mode ?? 'starting';
-          const hasLiveServer =
-            mode === 'running' || mode === 'indexing' || widget?.lifecycleState === 'ready_limited';
+          const hasLiveServer = mode === 'running' || mode === 'indexing';
+          const activeEditor = vscode.window.activeTextEditor;
+          const activePerlDocument = activeEditor?.document.languageId === 'perl';
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
             ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
+            ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
+            ...(widget?.experienceDetail ? { lifecycleDetail: widget.experienceDetail } : {}),
+            ...(hasLiveServer
+              ? {
+                  readinessState: widget?.enhancedReadinessAvailable
+                    ? widget.readinessState
+                    : ('legacy' as const),
+                }
+              : {}),
+            ...(widget?.readinessReason ? { readinessReason: widget.readinessReason } : {}),
+            ...(widget?.experienceAction ? { nextAction: widget.experienceAction } : {}),
+            ...(activePerlDocument && activeEditor
+              ? {
+                  activeDocumentReady: activeDocumentReadiness.isReady(
+                    activeEditor.document.uri.toString(),
+                  ),
+                }
+              : {}),
           };
         },
       }),
@@ -1160,7 +1179,7 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setServerVersion(
         startedClient.initializeResult?.serverInfo?.version,
       );
-      await finalizeStartedLanguageClient(context, startedClient);
+      await finalizeStartedLanguageClient(context, startedClient, latestLanguageClientGeneration);
     },
     onFailed: () => {
       languageClientStartupMetrics.finishServerStart('error');
@@ -1210,7 +1229,15 @@ function clientStateForLifecycle(state: LifecycleState): ClientState {
 async function finalizeStartedLanguageClient(
   context: vscode.ExtensionContext,
   startedClient: LanguageClient,
+  generation: number,
 ): Promise<void> {
+  // A LanguageClient restart does not replay didOpen for documents that VS Code
+  // kept open while the previous client was stopped. Rehydrate those documents
+  // before providers issue requests against the new server.
+  if (generation > 1) {
+    await synchronizeOpenPerlDocuments(startedClient);
+  }
+
   // This hook is part of the lifecycle controller so initial startup and
   // restart/reinstall generations rebuild the same client integrations.
   const serverVersion = startedClient.initializeResult?.serverInfo?.version;
@@ -1235,6 +1262,26 @@ async function finalizeStartedLanguageClient(
   }
   lastStartupDiagnosis = undefined;
   outputChannel.info('Perl Language Server started successfully');
+}
+
+async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<void> {
+  for (const document of vscode.workspace.textDocuments) {
+    if (
+      document.languageId !== 'perl' ||
+      (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled')
+    ) {
+      continue;
+    }
+
+    await client.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri: document.uri.toString(),
+        languageId: document.languageId,
+        version: document.version,
+        text: document.getText(),
+      },
+    });
+  }
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -1330,7 +1377,8 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
 function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
-  healthWidget?.onIndexReadinessState('building');
+  latestLanguageClientGeneration = generation;
+  healthWidget?.seedIndexReadinessState('building');
   const serverOptions: ServerOptions = {
     run: {
       command: serverPath,
@@ -1825,15 +1873,6 @@ async function restartServer(_context: vscode.ExtensionContext) {
     if (!started) {
       return;
     }
-    await replayOpenPerlDocuments(
-      started,
-      vscode.workspace.textDocuments.map((document) => ({
-        uri: document.uri.toString(),
-        languageId: document.languageId,
-        version: document.version,
-        text: document.getText(),
-      })),
-    );
     languageClientStartupMetrics.markMilestone('restart');
     syncLifecycleProjection();
     vscode.window
@@ -2215,10 +2254,11 @@ async function handleUnexpectedServerStop(): Promise<void> {
       `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})\u2026`,
     );
     const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
-    const selection = await vscode.window.showErrorMessage(message, 'Show Output');
-    if (selection === 'Show Output') {
-      outputChannel?.show();
-    }
+    void vscode.window.showErrorMessage(message, 'Show Output').then((selection) => {
+      if (selection === 'Show Output') {
+        outputChannel?.show();
+      }
+    });
     if (!context) {
       outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
       return;
