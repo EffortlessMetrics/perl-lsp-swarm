@@ -108,9 +108,19 @@ struct Artifacts {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct EvidenceProvenance {
+    candidate_id: String,
+    repository_sha: String,
+    artifact_set_id: String,
+    topology_digest: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PlatformEvidence {
     status: EvidenceStatus,
     evidence_refs: Vec<String>,
+    provenance: EvidenceProvenance,
     claim_boundary: String,
 }
 
@@ -128,6 +138,7 @@ struct JourneyCell {
     id: String,
     status: EvidenceStatus,
     evidence_refs: Vec<String>,
+    provenance: EvidenceProvenance,
     limitation: Option<String>,
 }
 
@@ -227,13 +238,38 @@ fn validate_artifact(name: &str, artifact: &ArtifactEvidence, packet: &Packet) -
     Ok(())
 }
 
-fn validate_platform(name: &str, platform: &PlatformEvidence) -> Result<()> {
+fn validate_provenance(
+    field: &str,
+    provenance: &EvidenceProvenance,
+    packet: &Packet,
+) -> Result<()> {
+    if provenance.candidate_id != packet.candidate_id {
+        bail!("{field}.provenance belongs to a different candidate");
+    }
+    if provenance.repository_sha != packet.repository_sha {
+        bail!("{field}.provenance belongs to a different repository SHA");
+    }
+    if provenance.artifact_set_id != packet.artifact_set_id {
+        bail!("{field}.provenance belongs to a different artifact set");
+    }
+    if provenance.topology_digest != packet.topology_digest {
+        bail!("{field}.provenance belongs to a different topology");
+    }
+    Ok(())
+}
+
+fn validate_platform(
+    name: &str,
+    platform: &PlatformEvidence,
+    packet: &Packet,
+) -> Result<()> {
     if platform.evidence_refs.is_empty() {
         bail!("platforms.{name}.evidence_refs must not be empty");
     }
     for evidence in &platform.evidence_refs {
         non_empty(evidence, &format!("platforms.{name}.evidence_refs[]"))?;
     }
+    validate_provenance(&format!("platforms.{name}"), &platform.provenance, packet)?;
     non_empty(&platform.claim_boundary, &format!("platforms.{name}.claim_boundary"))?;
     if platform.status == EvidenceStatus::Pass && name != "linux" {
         // A pass is allowed for release-preparation smoke on these platforms;
@@ -242,7 +278,7 @@ fn validate_platform(name: &str, platform: &PlatformEvidence) -> Result<()> {
     Ok(())
 }
 
-fn validate_journey_cells(cells: &[JourneyCell]) -> Result<()> {
+fn validate_journey_cells(cells: &[JourneyCell], packet: &Packet) -> Result<()> {
     let mut observed = BTreeSet::new();
     for cell in cells {
         if !observed.insert(cell.id.as_str()) {
@@ -251,6 +287,7 @@ fn validate_journey_cells(cells: &[JourneyCell]) -> Result<()> {
         if !REQUIRED_JOURNEY_CELLS.contains(&cell.id.as_str()) {
             bail!("unknown journey cell: {}", cell.id);
         }
+        validate_provenance(&format!("journey_cells.{}", cell.id), &cell.provenance, packet)?;
         if cell.evidence_refs.is_empty() {
             bail!("journey cell {} has no evidence references", cell.id);
         }
@@ -352,10 +389,10 @@ fn validate(packet: &Packet) -> Result<FreezeRecommendation> {
     validate_artifact("perllsp", &packet.artifacts.perllsp, packet)?;
     validate_artifact("perl_dap", &packet.artifacts.perl_dap, packet)?;
     validate_artifact("vsix", &packet.artifacts.vsix, packet)?;
-    validate_platform("linux", &packet.platforms.linux)?;
-    validate_platform("macos", &packet.platforms.macos)?;
-    validate_platform("windows", &packet.platforms.windows)?;
-    validate_journey_cells(&packet.journey_cells)?;
+    validate_platform("linux", &packet.platforms.linux, packet)?;
+    validate_platform("macos", &packet.platforms.macos, packet)?;
+    validate_platform("windows", &packet.platforms.windows, packet)?;
+    validate_journey_cells(&packet.journey_cells, packet)?;
     validate_mechanisms(&packet.mechanism_dispositions, packet)?;
     for (field, values) in [
         ("product_blockers", &packet.product_blockers),
@@ -394,8 +431,9 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactEvidence, ArtifactProvenance, Artifacts, EvidenceStatus, FreezeRecommendation,
-        JourneyCell, MechanismDisposition, Packet, PlatformEvidence, Platforms, ZeroBudgetCounts,
+        ArtifactEvidence, ArtifactProvenance, Artifacts, EvidenceProvenance, EvidenceStatus,
+        FreezeRecommendation, JourneyCell, MechanismDisposition, Packet, PlatformEvidence, Platforms,
+        ZeroBudgetCounts,
         computed_recommendation, validate,
     };
     use color_eyre::eyre::Result;
@@ -408,9 +446,16 @@ mod tests {
             artifact_set_id: "candidate-v0.18.0".to_string(),
             provenance: ArtifactProvenance::ReleaseShaped,
         };
+        let provenance = || EvidenceProvenance {
+            candidate_id: "candidate-v0.18.0".to_string(),
+            repository_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            artifact_set_id: "candidate-v0.18.0".to_string(),
+            topology_digest: format!("sha256:{}", "b".repeat(64)),
+        };
         let platform = |status| PlatformEvidence {
             status,
             evidence_refs: vec!["receipt/candidate-v0.18.0".to_string()],
+            provenance: provenance(),
             claim_boundary: "bounded platform evidence".to_string(),
         };
         let mechanisms = ["#5900", "#5901", "#5902", "#5903"]
@@ -428,6 +473,7 @@ mod tests {
                 id: id.to_string(),
                 status: EvidenceStatus::Pass,
                 evidence_refs: vec![format!("journey/{id}/candidate-v0.18.0")],
+                provenance: provenance(),
                 limitation: None,
             })
             .collect();
