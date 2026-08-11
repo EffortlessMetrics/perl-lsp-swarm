@@ -258,11 +258,7 @@ fn validate_provenance(
     Ok(())
 }
 
-fn validate_platform(
-    name: &str,
-    platform: &PlatformEvidence,
-    packet: &Packet,
-) -> Result<()> {
+fn validate_platform(name: &str, platform: &PlatformEvidence, packet: &Packet) -> Result<()> {
     if platform.evidence_refs.is_empty() {
         bail!("platforms.{name}.evidence_refs must not be empty");
     }
@@ -432,9 +428,8 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         ArtifactEvidence, ArtifactProvenance, Artifacts, EvidenceProvenance, EvidenceStatus,
-        FreezeRecommendation, JourneyCell, MechanismDisposition, Packet, PlatformEvidence, Platforms,
-        ZeroBudgetCounts,
-        computed_recommendation, validate,
+        FreezeRecommendation, JourneyCell, MechanismDisposition, Packet, PlatformEvidence,
+        Platforms, ZeroBudgetCounts, computed_recommendation, validate,
     };
     use color_eyre::eyre::Result;
 
@@ -551,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_product_blocker_cannot_claim_ready() {
+    fn unresolved_product_blocker_cannot_claim_ready() -> Result<()> {
         let mut packet = ready_packet();
         packet.product_blockers = vec!["exact installed binary is missing".to_string()];
         packet.freeze_recommendation = FreezeRecommendation::Blocked;
