@@ -12,6 +12,7 @@ use super::{
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
 use perl_module::path::module_name_to_path;
 use perl_parser_core::SourceLocation;
+use perl_lexer::{PerlLexer, TokenType};
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
     receiver_facts::{
@@ -1290,36 +1291,57 @@ pub(super) fn receiver_package_from_context_or_source(
 }
 
 fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+    let prefix = source.get(..position)?;
+    let mut lexer = PerlLexer::new(prefix);
     let mut current = "main".to_string();
     let mut brace_depth = 0usize;
     let mut package_blocks: Vec<(usize, String)> = Vec::new();
+    let mut package_name: Option<String> = None;
+    let mut in_package_declaration = false;
 
-    for line in source.get(..position)?.lines() {
-        let trimmed = line.trim_start();
-        if let Some(declaration) = trimmed.strip_prefix("package ") {
-            let mut parts =
-                declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace());
-            let package = parts.next().filter(|package| !package.is_empty())?;
-            if declaration.contains('{') {
+    while let Some(token) = lexer.next_token() {
+        match &token.token_type {
+            TokenType::Keyword(name) if name.as_ref() == "package" => {
+                package_name = None;
+                in_package_declaration = true;
+            }
+            TokenType::Identifier(name) if in_package_declaration && package_name.is_none() => {
+                package_name = Some(name.to_string());
+            }
+            TokenType::LeftBrace if in_package_declaration => {
+                let Some(package) = package_name.take() else {
+                    in_package_declaration = false;
+                    brace_depth = brace_depth.saturating_add(1);
+                    continue;
+                };
                 let previous = current.clone();
-                current = package.to_string();
-                package_blocks.push((brace_depth.saturating_add(1), previous));
-            } else {
-                current = package.to_string();
+                current = package;
+                brace_depth = brace_depth.saturating_add(1);
+                package_blocks.push((brace_depth, previous));
+                in_package_declaration = false;
             }
-        }
-
-        brace_depth = brace_depth.saturating_add(line.chars().filter(|&ch| ch == '{').count());
-        brace_depth = brace_depth.saturating_sub(line.chars().filter(|&ch| ch == '}').count());
-
-        while let Some((depth, _)) = package_blocks.last() {
-            if *depth <= brace_depth {
-                break;
+            TokenType::Semicolon if in_package_declaration => {
+                if let Some(package) = package_name.take() {
+                    current = package;
+                }
+                in_package_declaration = false;
             }
-            let Some((_, previous)) = package_blocks.pop() else {
-                break;
-            };
-            current = previous;
+            TokenType::LeftBrace => {
+                brace_depth = brace_depth.saturating_add(1);
+            }
+            TokenType::RightBrace => {
+                brace_depth = brace_depth.saturating_sub(1);
+                while let Some((depth, _)) = package_blocks.last() {
+                    if *depth <= brace_depth {
+                        break;
+                    }
+                    let Some((_, previous)) = package_blocks.pop() else {
+                        break;
+                    };
+                    current = previous;
+                }
+            }
+            _ => {}
         }
     }
 
