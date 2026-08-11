@@ -4048,6 +4048,10 @@ print \"unreachable\\n\";\n";
         updated_text: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         server.test_apply_did_open(uri, indexed_text, 1)?;
+        // Drain didOpen's asynchronous push before the fixture clears the
+        // capture after making the workspace index stale; otherwise the
+        // version-1 notification can race into the stale-index assertion.
+        std::thread::sleep(Duration::from_millis(50));
         server
             .test_index_file_in_building_state(uri, indexed_text)
             .map_err(std::io::Error::other)?;
