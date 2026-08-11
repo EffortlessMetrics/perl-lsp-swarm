@@ -53,10 +53,8 @@ The `perl_lsp` library re-exports `LspServer`, `JsonRpcRequest`, `JsonRpcRespons
 ## Workspace role
 
 This is the internal executable implementation in the
-[`perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) workspace. It
-delegates parsing to `perl-parser` and dispatches feature work through focused
-provider crates such as `perl-lsp-completion`, `perl-lsp-navigation`, and
-`perl-lsp-diagnostics`.
+[`perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) workspace. It delegates parsing to `perl-parser` and dispatches protocol, transport,
+runtime, and provider work through the consolidated `perl-lsp-rs-core` package.
 
 ## License
 
