@@ -63,12 +63,21 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         .ok_or("incremental_small_edit expectation has no edit")?;
 
     let source = fs::read_to_string(root.join(&fixture.source_path))?;
-    let start = source
+    let statement_start = source
         .find(&edit.old_text)
         .ok_or("incremental edit old_text is absent from fixture source")?;
-    let old_end = start + edit.old_text.len();
+    let literal_offset = edit
+        .old_text
+        .find('1')
+        .ok_or("incremental edit old_text has no numeric literal")?;
+    let start = statement_start + literal_offset;
+    let old_end = start + 1;
     let new_source = source.replacen(&edit.old_text, &edit.new_text, 1);
-    let new_end = start + edit.new_text.len();
+    let new_end = start + 1;
+
+    let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
+    let line = source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let character = start - line_start;
 
     let mut incremental = IncrementalParserV2::new();
     incremental.parse(&source)?;
@@ -76,11 +85,16 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         start,
         old_end,
         new_end,
-        Position::new(start, 3, 1),
-        Position::new(old_end, 3, 15),
-        Position::new(new_end, 3, 15),
+        Position::new(start, line, character),
+        Position::new(old_end, line, character + 1),
+        Position::new(new_end, line, character + 1),
     ));
     let incremental_ast = incremental.parse(&new_source)?;
+
+    assert!(
+        incremental.reused_nodes > 0,
+        "literal edit should exercise incremental reuse rather than a full fallback"
+    );
 
     let fresh_ast = Parser::new(&new_source).parse()?;
 
