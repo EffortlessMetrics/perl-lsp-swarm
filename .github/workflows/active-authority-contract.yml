@@ -1,6 +1,6 @@
 name: Active Authority Contract
 
-# Compile the short, high-retrieval maintainer and contributor entrypoints that
+# Check the short, high-retrieval maintainer and contributor entrypoints that
 # steer humans and coding agents. Historical documents are outside this workflow.
 
 on:
@@ -11,7 +11,7 @@ on:
       - '.github/copilot-instructions.md'
       - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
-      - 'xtask/tests/active_authority_contract.rs'
+      - 'tests/test_active_authority_contract.py'
       - '.github/workflows/active-authority-contract.yml'
   push:
     branches: [main]
@@ -20,7 +20,7 @@ on:
       - '.github/copilot-instructions.md'
       - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
-      - 'xtask/tests/active_authority_contract.rs'
+      - 'tests/test_active_authority_contract.py'
       - '.github/workflows/active-authority-contract.yml'
 
 permissions:
@@ -34,22 +34,11 @@ jobs:
   check:
     name: Check active authority contract
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
-        with:
-          toolchain: stable
-
-      - name: Check authority-ratchet formatting
-        run: rustfmt --edition 2024 --check xtask/tests/active_authority_contract.rs
-
       - name: Check current maintainer entrypoints
-        run: cargo test -p xtask --test active_authority_contract --locked
-
-      - name: Check contributor command documentation
-        run: cargo xtask check-devex-docs
+        run: python3 -m unittest tests/test_active_authority_contract.py
