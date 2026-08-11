@@ -17,37 +17,6 @@ fn after_line_break(src: &[u8], mut off: usize) -> usize {
     off
 }
 
-/// Unescape a string literal (e.g., convert \n to newline)
-fn unescape_label(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(next) = chars.next() {
-                match next {
-                    'n' => out.push('\n'),
-                    'r' => out.push('\r'),
-                    't' => out.push('\t'),
-                    '\\' => out.push('\\'),
-                    '"' => out.push('"'),
-                    '\'' => out.push('\''),
-                    '$' => out.push('$'),
-                    '@' => out.push('@'),
-                    _ => {
-                        out.push('\\');
-                        out.push(next);
-                    }
-                }
-            } else {
-                out.push('\\');
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Parse heredoc delimiter from a string like "<<EOF", "<<'EOF'", "<<~EOF", "<<`EOF`"
 fn parse_heredoc_delimiter(s: &str) -> (String, bool, bool, bool) {
     let mut chars = s.chars();
@@ -461,52 +430,6 @@ mod heredoc_branch_tests {
         assert_eq!(after_line_break(b"abc\rdef", 0), 4);
         assert_eq!(after_line_break(b"abcdef", 0), 6);
         assert_eq!(after_line_break(b"abc\ndef", 99), 99);
-    }
-
-    // --- unescape_label branch coverage ---
-
-    /// Every named escape sequence that unescape_label handles must round-trip
-    /// correctly. Each branch in the match arm is exercised independently so a
-    /// regression in any single arm is immediately visible.
-    #[test]
-    fn unescape_label_named_escapes_round_trip() {
-        // \r → carriage return (ASCII 0x0D)
-        assert_eq!(unescape_label("A\\rB"), "A\rB");
-        // \t → horizontal tab (ASCII 0x09)
-        assert_eq!(unescape_label("A\\tB"), "A\tB");
-        // \\ → literal backslash
-        assert_eq!(unescape_label("A\\\\B"), "A\\B");
-        // \" → double-quote character
-        assert_eq!(unescape_label("A\\\"B"), "A\"B");
-        // \' → single-quote character
-        assert_eq!(unescape_label("A\\'B"), "A'B");
-        // \$ → dollar sign (prevents variable interpolation in the label)
-        assert_eq!(unescape_label("A\\$B"), "A$B");
-        // \@ → at-sign (prevents array interpolation in the label)
-        assert_eq!(unescape_label("A\\@B"), "A@B");
-    }
-
-    /// An unrecognised escape sequence (\x for any x not in the named set) must
-    /// be passed through verbatim — both the backslash and the following
-    /// character are preserved in the output.
-    #[test]
-    fn unescape_label_unknown_escape_passthrough() {
-        // \x is not a recognised escape; both chars should appear in the output.
-        assert_eq!(unescape_label("A\\xB"), "A\\xB");
-        // \z likewise
-        assert_eq!(unescape_label("A\\zB"), "A\\zB");
-        // digit not in the set
-        assert_eq!(unescape_label("A\\1B"), "A\\1B");
-    }
-
-    /// A trailing backslash at the very end of the input string (i.e. the
-    /// escape character has no successor) must be preserved as a literal
-    /// backslash — the `else` branch after `chars.next()` returns None.
-    #[test]
-    fn unescape_label_trailing_backslash_preserved() {
-        assert_eq!(unescape_label("A\\"), "A\\");
-        // Standalone backslash — no prefix either
-        assert_eq!(unescape_label("\\"), "\\");
     }
 
     // --- parse_heredoc_delimiter indented-combination branch coverage ---
