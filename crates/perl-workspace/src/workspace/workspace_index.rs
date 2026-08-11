@@ -7243,7 +7243,12 @@ has display_name => (is => 'rw');
             uri,
             r#"package Generated::PackageMembers;
 use Moo;
-has status => (is => 'rw', predicate => 1);
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
 1;
 "#.to_string(),
         ));
