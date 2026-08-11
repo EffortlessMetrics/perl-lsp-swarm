@@ -10,9 +10,9 @@ Run the commands in this order:
 
 ```bash
 just devex
-just pr-fast
 just status-update   # when the source contract changed
 just status-check
+just pr-fast
 nix develop -c just ci-gate
 just ci-full
 just release-check
