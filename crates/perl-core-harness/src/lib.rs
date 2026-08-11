@@ -1195,6 +1195,8 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
     let compile_path = output_dir.join("compile.json");
     let gap_map_path = output_dir.join("gap-map.json");
     let smoke_path = output_dir.join("smoke.json");
+    let runner_records_path = output_dir.join("runner-records.jsonl");
+    let mut runner_records = Vec::new();
 
     discover(DiscoverConfig {
         perl_tree: config.perl_tree.clone(),
@@ -1227,7 +1229,9 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
             output: Some(report_path.clone()),
             runner_binary: config.runner_binary.clone(),
             perl_ref: config.perl_ref.clone(),
-            runner_records_output: Some(output_dir.join("runner-records.jsonl")),
+            runner_records_output: Some(
+                output_dir.join(format!("runner-records.{}.jsonl", mode.as_str())),
+            ),
         });
         if let Err(err) = &run_result {
             if !report_path.is_file() {
@@ -1243,6 +1247,11 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
             );
         }
 
+        let mode_records_path = output_dir.join(format!("runner-records.{}.jsonl", mode.as_str()));
+        if mode_records_path.is_file() {
+            runner_records.extend(read_runner_records(&mode_records_path)?);
+        }
+
         let report = read_run_report(&report_path)?;
         match mode {
             HarnessMode::Parse => parse_report = Some(report),
@@ -1250,6 +1259,8 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
             HarnessMode::Execute => unreachable!("execute mode is rejected above"),
         }
     }
+
+    write_runner_records(&runner_records_path, &runner_records)?;
 
     let gap_map =
         build_gap_map(config.profile, &modes, parse_report.as_ref(), compile_report.as_ref());
