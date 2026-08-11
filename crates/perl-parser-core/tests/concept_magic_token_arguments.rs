@@ -49,7 +49,10 @@ fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result
         let spans = observed
             .get(token)
             .ok_or_else(|| format!("{token} lost its nullary FunctionCall identity"))?;
-        assert!(spans.iter().all(|span| span == token), "{token} has incorrect source spans: {spans:?}");
+        assert!(
+            spans.iter().all(|span| span == token),
+            "{token} has incorrect source spans: {spans:?}"
+        );
     }
     assert_eq!(observed["__FILE__"].len(), 2);
     assert_eq!(observed["__LINE__"].len(), 2);
