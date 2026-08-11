@@ -154,6 +154,16 @@
           "depth": 2,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "dynamic_require_module_string",
+          "kind": "String",
+          "line": 3,
+          "span_text": "\"Accuracy::Plugin\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -321,66 +331,12 @@
         ]
       },
       "ast_expectations": [
-        {
-          "id": "typeglob_alias_package",
-          "kind": "Package",
-          "line": 1,
-          "span_text": "package Accuracy::TypeglobAlias",
-          "parent_kind": "Program",
-          "depth": 1,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
-          "id": "typeglob_alias_original",
-          "kind": "Subroutine",
-          "line": 3,
-          "span_text": "sub original",
-          "parent_kind": "Program",
-          "depth": 1,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
-          "id": "typeglob_alias_assignment",
-          "kind": "Assignment",
-          "line": 7,
-          "span_text": "*alias = \\&original",
-          "parent_kind": null,
-          "depth": null,
-          "operator": "=",
-          "parent_operator": null
-        },
-        {
-          "id": "typeglob_alias_typeglob",
-          "kind": "Typeglob",
-          "line": 7,
-          "span_text": "*alias",
-          "parent_kind": "Assignment",
-          "depth": null,
-          "operator": null,
-          "parent_operator": "="
-        },
-        {
-          "id": "typeglob_alias_coderef",
-          "kind": "AmperCall",
-          "line": 7,
-          "span_text": "&original",
-          "parent_kind": "Unary",
-          "depth": 4,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
-          "id": "typeglob_alias_call",
-          "kind": "FunctionCall",
-          "line": 8,
-          "span_text": "alias()",
-          "parent_kind": null,
-          "depth": null,
-          "operator": null,
-          "parent_operator": null
-        }
+        { "id": "typeglob_alias_package", "kind": "Package", "line": 1, "span_text": "package Accuracy::TypeglobAlias", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
+        { "id": "typeglob_alias_original", "kind": "Subroutine", "line": 3, "span_text": "sub original", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
+        { "id": "typeglob_alias_assignment", "kind": "Assignment", "line": 7, "span_text": "*alias = \\&original", "parent_kind": null, "depth": null, "operator": "=", "parent_operator": null },
+        { "id": "typeglob_alias_typeglob", "kind": "Typeglob", "line": 7, "span_text": "*alias", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
+        { "id": "typeglob_alias_coderef", "kind": "AmperCall", "line": 7, "span_text": "&original", "parent_kind": "Unary", "depth": 4, "operator": null, "parent_operator": null },
+        { "id": "typeglob_alias_call", "kind": "FunctionCall", "line": 8, "span_text": "alias()", "parent_kind": null, "depth": null, "operator": null, "parent_operator": null }
       ]
     },
     {
@@ -471,8 +427,7 @@
             "confidence": "High"
           }
         ]
-      },
-      "ast_expectations": []
+      }
     },
     {
       "id": "heuristic_generated_member",
@@ -545,8 +500,7 @@
           }
         ],
         "edges": []
-      },
-      "ast_expectations": []
+      }
     },
     {
       "id": "negative_symbol_regions",
@@ -585,7 +539,48 @@
           "span_text": "dynamic_name"
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "negative_symbol_regions_package_decl",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::NegativeSymbolRegions",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "negative_symbol_regions_stringy_sub_stays_string",
+          "kind": "String",
+          "line": 4,
+          "span_text": "\"sub stringy { return 1 }\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "negative_symbol_regions_dynamic_accessor_call",
+          "kind": "FunctionCall",
+          "line": 10,
+          "span_text": "make_accessor(\"dynamic_name\")",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "negative_symbol_regions_real_sub_definition",
+          "kind": "Subroutine",
+          "line": 12,
+          "span_text": "sub real { return 1 }",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_coordinates",
@@ -700,7 +695,58 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_coordinates_package_after_bom",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanCoordinates",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_coordinates_emoji_string_line2",
+          "kind": "String",
+          "line": 2,
+          "span_text": "\"😀\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_coordinates_cafe_string_line3",
+          "kind": "String",
+          "line": 3,
+          "span_text": "\"café\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_coordinates_sub_span_crosses_crlf",
+          "kind": "Subroutine",
+          "line": 4,
+          "span_text": "sub multi_line {\n\treturn \"done\";\r\n}",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_coordinates_return_after_tab_line5",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return \"done\"",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_utf8_multibyte",
@@ -735,7 +781,38 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_utf8_multibyte_package_line1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanUtf8",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_utf8_multibyte_decl_line2",
+          "kind": "VariableDeclaration",
+          "line": 2,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_utf8_multibyte_string_covers_accent",
+          "kind": "String",
+          "line": 2,
+          "span_text": "\"cafeé\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_emoji",
@@ -770,7 +847,38 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_emoji_package_line1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanEmoji",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_emoji_decl_line2",
+          "kind": "VariableDeclaration",
+          "line": 2,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_emoji_string_covers_astral_char",
+          "kind": "String",
+          "line": 2,
+          "span_text": "\"😀\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_crlf",
@@ -805,7 +913,48 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_crlf_package_line1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanCRLF",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_crlf_first_value_string_line2",
+          "kind": "String",
+          "line": 2,
+          "span_text": "\"line1\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_crlf_second_decl_line3",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $other",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_crlf_second_value_string_line3",
+          "kind": "String",
+          "line": 3,
+          "span_text": "\"line2\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_tabs",
@@ -840,7 +989,38 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_tabs_package_line1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanTabs",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_tabs_plain_decl_line2",
+          "kind": "VariableDeclaration",
+          "line": 2,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_tabs_tab_indented_decl_line3",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $indented",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_bom",
@@ -875,7 +1055,28 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_bom_package_excludes_bom",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanBOM",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_bom_decl_line2_after_bom",
+          "kind": "VariableDeclaration",
+          "line": 2,
+          "span_text": "my $x",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_cross_line",
@@ -910,7 +1111,48 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_cross_line_package_line1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanCrossLine",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_cross_line_sub_multiline_span",
+          "kind": "Subroutine",
+          "line": 2,
+          "span_text": "sub say {\n    return \"done\";\n}",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_cross_line_return_inside_multiline",
+          "kind": "Return",
+          "line": 3,
+          "span_text": "return \"done\"",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_cross_line_string_inside_multiline",
+          "kind": "String",
+          "line": 3,
+          "span_text": "\"done\"",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_mixed_newlines",
@@ -945,7 +1187,38 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_mixed_newlines_package_line1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanMixed",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_mixed_newlines_decl_line2",
+          "kind": "VariableDeclaration",
+          "line": 2,
+          "span_text": "my $lf",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_mixed_newlines_decl_line3",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $crlf",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "span_empty_at_eof",
@@ -980,7 +1253,28 @@
           }
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "span_empty_at_eof_package_line1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::SpanEmpty",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "span_empty_at_eof_last_decl_line2",
+          "kind": "VariableDeclaration",
+          "line": 2,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "incremental_small_edit",
@@ -1008,7 +1302,48 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "incremental_small_edit_package_decl",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::IncrementalSmallEdit",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "incremental_small_edit_value_var_decl",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "incremental_small_edit_value_sub_definition",
+          "kind": "Subroutine",
+          "line": 5,
+          "span_text": "sub value {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "incremental_small_edit_value_return",
+          "kind": "Return",
+          "line": 6,
+          "span_text": "return $value",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "malformed_heredoc_recovery",
@@ -1070,7 +1405,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "malformed_heredoc_recovery_declaration_recovered",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $text",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "malformed_heredoc_recovery_heredoc_opener",
+          "kind": "Heredoc",
+          "line": 3,
+          "span_text": "<<'BROKEN'",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "malformed_heredoc_recovery_unknown_rest_swallows_following_sub",
+          "kind": "UnknownRest",
+          "line": 4,
+          "span_text": "sub after_recovery {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "imports_exports",
@@ -1337,6 +1703,16 @@
           "span_text": "return answer()",
           "parent_kind": null,
           "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_qw_string",
+          "kind": "String",
+          "line": 6,
+          "span_text": "qw(answer)",
+          "parent_kind": "ArrayLiteral",
+          "depth": 3,
           "operator": null,
           "parent_operator": null
         }
@@ -1745,6 +2121,26 @@
           "depth": null,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_alpha_string",
+          "kind": "String",
+          "line": 4,
+          "span_text": "\"A\"",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_beta_string",
+          "kind": "String",
+          "line": 10,
+          "span_text": "\"B\"",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -1879,7 +2275,58 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "heredoc_utf8_delimiter_use_utf8_line3",
+          "kind": "Use",
+          "line": 3,
+          "span_text": "use utf8",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_utf8_delimiter_text_decl_line5",
+          "kind": "VariableDeclaration",
+          "line": 5,
+          "span_text": "my $text",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_utf8_delimiter_opener_multibyte_tag",
+          "kind": "Heredoc",
+          "line": 5,
+          "span_text": "<<עד_כאן",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_utf8_delimiter_sub_after_body_line9",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub after_utf8_heredoc { return $text; }",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_utf8_delimiter_return_after_body_line9",
+          "kind": "Return",
+          "line": 9,
+          "span_text": "return $text",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "regex_match",
@@ -1973,6 +2420,25 @@
           "depth": 3,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "regex_match_variabledeclaration_l4_my_value_shift",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $value = shift",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ],
+      "forbidden_nodes": [
+        {
+          "id": "regex_match_no_division_binary",
+          "kind": "Binary",
+          "line": 5,
+          "parent_kind": null,
+          "depth": null
         }
       ]
     },
@@ -2506,7 +2972,68 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "autoload_boundary_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Autoload",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "autoload_boundary_our_autoload_decl",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "our $AUTOLOAD",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "autoload_boundary_autoload_sub",
+          "kind": "Subroutine",
+          "line": 5,
+          "span_text": "sub AUTOLOAD {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "autoload_boundary_returns_autoload",
+          "kind": "Return",
+          "line": 6,
+          "span_text": "return $AUTOLOAD",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "autoload_boundary_caller_sub",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub call_missing {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "autoload_boundary_missing_method_call",
+          "kind": "MethodCall",
+          "line": 10,
+          "span_text": "Accuracy::Autoload->missing()",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "eval_string_boundary",
@@ -2549,7 +3076,68 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "eval_string_boundary_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::EvalString",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "eval_string_boundary_code_decl",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $code",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "eval_string_boundary_code_stays_string",
+          "kind": "String",
+          "line": 3,
+          "span_text": "sub generated { 1 }",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "eval_string_boundary_eval_of_variable",
+          "kind": "Eval",
+          "line": 4,
+          "span_text": "eval $code",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "eval_string_boundary_sub_after_eval",
+          "kind": "Subroutine",
+          "line": 6,
+          "span_text": "sub after_eval {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "eval_string_boundary_after_eval_return",
+          "kind": "Return",
+          "line": 7,
+          "span_text": "return 1",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "control_do_until",
@@ -2592,7 +3180,68 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "control_do_until_sub",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub loop_until {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_do_until_counter_decl",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $count",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_do_until_do_block",
+          "kind": "Do",
+          "line": 5,
+          "span_text": "do {",
+          "parent_kind": "ExpressionStatement",
+          "depth": 5,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_do_until_until_modifier",
+          "kind": "StatementModifier",
+          "line": 5,
+          "span_text": "} until $count > 2",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_do_until_condition",
+          "kind": "Binary",
+          "line": 7,
+          "span_text": "$count > 2",
+          "parent_kind": "StatementModifier",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_do_until_return_counter",
+          "kind": "Return",
+          "line": 8,
+          "span_text": "return $count",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "format_decl",
@@ -2629,7 +3278,48 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "format_decl_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Format",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "format_decl_format_declaration",
+          "kind": "Format",
+          "line": 3,
+          "span_text": "format STDOUT =",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "format_decl_sub_after_format",
+          "kind": "Subroutine",
+          "line": 8,
+          "span_text": "sub after_format {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "format_decl_after_format_return",
+          "kind": "Return",
+          "line": 9,
+          "span_text": "return 1",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "postderef_boundary",
@@ -2666,7 +3356,58 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "postderef_boundary_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Postderef",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "postderef_boundary_sub_named_values",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub values {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "postderef_boundary_sub_spans_postderef",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "$array->@*",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "postderef_boundary_array_ref_decl",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $array = [1, 2, 3]",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "postderef_boundary_return_of_deref",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return $array",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "signatures_basic",
@@ -2709,7 +3450,68 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "signatures_basic_feature_use",
+          "kind": "Use",
+          "line": 3,
+          "span_text": "use feature 'signatures'",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "signatures_basic_sub_with_signature",
+          "kind": "Subroutine",
+          "line": 6,
+          "span_text": "sub add ($left, $right) {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "signatures_basic_signature_node",
+          "kind": "Signature",
+          "line": 6,
+          "span_text": "($left, $right)",
+          "parent_kind": "Subroutine",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "signatures_basic_param_left",
+          "kind": "MandatoryParameter",
+          "line": 6,
+          "span_text": "$left",
+          "parent_kind": "Signature",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "signatures_basic_param_right",
+          "kind": "MandatoryParameter",
+          "line": 6,
+          "span_text": "$right",
+          "parent_kind": "Signature",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "signatures_basic_body_uses_params",
+          "kind": "Return",
+          "line": 7,
+          "span_text": "return $left + $right",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "role_method",
@@ -3244,7 +4046,68 @@
           }
         ]
       },
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "export_tags_export_tags_decl",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "our %EXPORT_TAGS = (",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_tag_hash_literal",
+          "kind": "HashLiteral",
+          "line": 3,
+          "span_text": "all => [qw(foo bar)]",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_tag_name_all",
+          "kind": "String",
+          "line": 4,
+          "span_text": "all",
+          "parent_kind": "HashLiteral",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_exported_sub_foo",
+          "kind": "Subroutine",
+          "line": 7,
+          "span_text": "sub foo {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_exported_sub_bar",
+          "kind": "Subroutine",
+          "line": 11,
+          "span_text": "sub bar {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "export_tags_export_used_as_call",
+          "kind": "FunctionCall",
+          "line": 16,
+          "span_text": "foo()",
+          "parent_kind": "Binary",
+          "depth": 5,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "quote_like",
@@ -3331,6 +4194,32 @@
           "depth": 3,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "quote_like_variabledeclaration_l4_my_message",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $message",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ],
+      "forbidden_nodes": [
+        {
+          "id": "quote_like_no_block_at_q",
+          "kind": "Block",
+          "line": 4,
+          "parent_kind": null,
+          "depth": null
+        },
+        {
+          "id": "quote_like_no_block_at_qq",
+          "kind": "Block",
+          "line": 5,
+          "parent_kind": null,
+          "depth": null
         }
       ]
     },
@@ -3363,7 +4252,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "unterminated_heredoc_declaration_recovered",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $payload",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "unterminated_heredoc_heredoc_opener",
+          "kind": "Heredoc",
+          "line": 3,
+          "span_text": "<<'EOF'",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "unterminated_heredoc_unknown_rest_body",
+          "kind": "UnknownRest",
+          "line": 4,
+          "span_text": "unterminated payload",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "bad_heredoc_terminator",
@@ -3394,7 +4314,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "bad_heredoc_terminator_declaration_recovered",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $payload",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "bad_heredoc_terminator_heredoc_opener",
+          "kind": "Heredoc",
+          "line": 3,
+          "span_text": "<<'END'",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "bad_heredoc_terminator_unknown_rest_includes_bad_terminator",
+          "kind": "UnknownRest",
+          "line": 4,
+          "span_text": "payload\nEND;",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "unclosed_quote_like_operator",
@@ -3425,7 +4376,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "unclosed_quote_like_operator_package_before_malformed",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::UnclosedQuoteLike",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "unclosed_quote_like_operator_declaration_recovered",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $message",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "unclosed_quote_like_operator_string_runs_to_eof",
+          "kind": "String",
+          "line": 3,
+          "span_text": "q{still open",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "unclosed_regex",
@@ -3456,7 +4438,28 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "unclosed_regex_package_before_malformed",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::UnclosedRegex",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "unclosed_regex_error_node_emitted",
+          "kind": "Error",
+          "line": 4,
+          "span_text": "",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "unbalanced_bracket",
@@ -3481,7 +4484,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "unbalanced_bracket_package_before_malformed",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::UnbalancedBracket",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "unbalanced_bracket_declaration_truncated_at_bad_delimiter",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $value = [1, 2,",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "unbalanced_bracket_error_node_emitted",
+          "kind": "Error",
+          "line": 3,
+          "span_text": "",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "partial_sub_body",
@@ -3506,7 +4540,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "partial_sub_body_package_before_malformed",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::PartialSubBody",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "partial_sub_body_subroutine_recognized",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub partial {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "partial_sub_body_return_inside_unclosed_body",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "orphan_close_delimiters",
@@ -3531,7 +4596,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "orphan_close_delimiters_package_before_malformed",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::OrphanCloseDelimiters",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "orphan_close_delimiters_declaration_before_orphan",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "orphan_close_delimiters_error_node_at_orphan",
+          "kind": "Error",
+          "line": 4,
+          "span_text": "",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "missing_comma_list",
@@ -3562,7 +4658,38 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "missing_comma_list_error_node_at_bad_list",
+          "kind": "Error",
+          "line": 3,
+          "span_text": "",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "missing_comma_list_subroutine_recovered_after_error",
+          "kind": "Subroutine",
+          "line": 4,
+          "span_text": "sub recovered { return 1; }",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "missing_comma_list_return_recovered_after_error",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "nested_malformed_delimiters",
@@ -3587,7 +4714,28 @@
           ]
         }
       ],
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "nested_malformed_delimiters_package_before_malformed",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::NestedMalformedDelimiters",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "nested_malformed_delimiters_declaration_spans_malformed_region",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $value = ([1, 2, 3)",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "post_error_package_sub_recovery",
@@ -3685,6 +4833,16 @@
           "span_text": "return 1",
           "parent_kind": "Block",
           "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_package_sub_recovery_variabledeclaration_l3_my_value",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
           "operator": null,
           "parent_operator": null
         }
@@ -3833,7 +4991,88 @@
           }
         ]
       },
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "method_completion_provider_parent_package_decl",
+          "kind": "Package",
+          "line": 2,
+          "span_text": "package Accuracy::Provider::Parent",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_use_parent_inheritance",
+          "kind": "Use",
+          "line": 7,
+          "span_text": "use parent 'Accuracy::Provider::Parent'",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_foo_own_method_def",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub own_method",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_foo_package_reopened",
+          "kind": "Package",
+          "line": 21,
+          "span_text": "package Accuracy::Provider::Foo",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_self_cursor_incomplete_arrow",
+          "kind": "Error",
+          "line": 25,
+          "span_text": "$self",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_imported_module_use",
+          "kind": "Use",
+          "line": 29,
+          "span_text": "use Accuracy::Provider::Imported",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_constructor_receiver_method_call",
+          "kind": "MethodCall",
+          "line": 32,
+          "span_text": "Accuracy::Provider::Foo->new",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_completion_provider_literal_bless_call",
+          "kind": "FunctionCall",
+          "line": 37,
+          "span_text": "bless {}, \"Accuracy::Provider::Foo\"",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "navigation_provider",
@@ -3919,7 +5158,88 @@
           }
         ]
       },
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "navigation_provider_usecases_package_decl",
+          "kind": "Package",
+          "line": 14,
+          "span_text": "package Accuracy::Navigation::UseCases",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "navigation_provider_use_parent_inheritance",
+          "kind": "Use",
+          "line": 17,
+          "span_text": "use parent 'Accuracy::Navigation::Parent'",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "navigation_provider_use_exporter_import",
+          "kind": "Use",
+          "line": 18,
+          "span_text": "use Accuracy::Navigation::Exporter qw(imported_nav)",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "navigation_provider_own_sub_definition",
+          "kind": "Subroutine",
+          "line": 20,
+          "span_text": "sub own_sub",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "navigation_provider_bare_call_site",
+          "kind": "FunctionCall",
+          "line": 24,
+          "span_text": "own_sub()",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "navigation_provider_qualified_call_site",
+          "kind": "FunctionCall",
+          "line": 28,
+          "span_text": "Accuracy::Navigation::UseCases::own_sub()",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "navigation_provider_method_receiver_call",
+          "kind": "MethodCall",
+          "line": 37,
+          "span_text": "$self->inherited_method()",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "navigation_provider_dynamic_amper_call",
+          "kind": "AmperCall",
+          "line": 47,
+          "span_text": "&$name()",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "diagnostic_provider",
@@ -3996,7 +5316,88 @@
           }
         ]
       },
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "diagnostic_provider_usecases_package_decl",
+          "kind": "Package",
+          "line": 8,
+          "span_text": "package Accuracy::Diagnostics::UseCases",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "diagnostic_provider_exporter_import_use",
+          "kind": "Use",
+          "line": 11,
+          "span_text": "use Accuracy::Diagnostics::Exporter qw(imported_known)",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "diagnostic_provider_undefined_bareword_call",
+          "kind": "FunctionCall",
+          "line": 18,
+          "span_text": "print truly_missing_symbol",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "diagnostic_provider_eval_string_boundary_literal",
+          "kind": "String",
+          "line": 22,
+          "span_text": "\"sub eval_generated_symbol { 1 }\"",
+          "parent_kind": "Eval",
+          "depth": 5,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "diagnostic_provider_dynamic_import_method_call",
+          "kind": "MethodCall",
+          "line": 29,
+          "span_text": "$module->import(qw(dynamic_imported_symbol generated_accessor))",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "diagnostic_provider_autoload_sub_definition",
+          "kind": "Subroutine",
+          "line": 35,
+          "span_text": "sub AUTOLOAD",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "diagnostic_provider_known_imported_symbol_call",
+          "kind": "FunctionCall",
+          "line": 45,
+          "span_text": "print imported_known",
+          "parent_kind": "ExpressionStatement",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "diagnostic_provider_package_local_our_decl",
+          "kind": "VariableDeclaration",
+          "line": 48,
+          "span_text": "our $package_local_symbol",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "control_flow_core",
