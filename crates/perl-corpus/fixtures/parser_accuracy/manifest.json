@@ -4519,6 +4519,17 @@
           "operator": null,
           "parent_operator": null
         }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "unterminated_heredoc_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
+        }
       ]
     },
     {
@@ -4580,6 +4591,17 @@
           "depth": 1,
           "operator": null,
           "parent_operator": null
+        }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "bad_heredoc_terminator_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
         }
       ]
     },
@@ -4643,6 +4665,17 @@
           "operator": null,
           "parent_operator": null
         }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "unclosed_quote_like_operator_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
+        }
       ]
     },
     {
@@ -4694,6 +4727,17 @@
           "depth": 1,
           "operator": null,
           "parent_operator": null
+        }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "unclosed_regex_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
         }
       ]
     },
@@ -4751,6 +4795,17 @@
           "operator": null,
           "parent_operator": null
         }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "unbalanced_bracket_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
+        }
       ]
     },
     {
@@ -4807,6 +4862,17 @@
           "operator": null,
           "parent_operator": null
         }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "partial_sub_body_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
+        }
       ]
     },
     {
@@ -4862,6 +4928,17 @@
           "depth": 1,
           "operator": null,
           "parent_operator": null
+        }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "orphan_close_delimiters_reports_recovery",
+          "first_error_line": 4,
+          "error_region": {
+            "start": 4,
+            "end": 4
+          },
+          "recovery_line": 4
         }
       ]
     },
@@ -4925,6 +5002,17 @@
           "operator": null,
           "parent_operator": null
         }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "missing_comma_list_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
+        }
       ]
     },
     {
@@ -4970,6 +5058,17 @@
           "depth": 1,
           "operator": null,
           "parent_operator": null
+        }
+      ],
+      "recovery_expectations": [
+        {
+          "id": "nested_malformed_delimiters_reports_recovery",
+          "first_error_line": 3,
+          "error_region": {
+            "start": 3,
+            "end": 3
+          },
+          "recovery_line": 3
         }
       ]
     },
