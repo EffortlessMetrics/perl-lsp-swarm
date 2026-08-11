@@ -116,7 +116,49 @@ fn valid_identifier_list(raw: &str, reject_numeric_leading_zero: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_release_version;
+    use super::{normalize_release_version, valid_repository_path, valid_repository_slug};
+
+    #[test]
+    fn accepts_only_canonical_repository_paths() {
+        assert!(
+            valid_repository_path("xtask/src/publication_drift/mod.rs"),
+            "canonical repository path must be accepted"
+        );
+        for invalid in [
+            "",
+            "/abs",
+            "a//b",
+            "a/",
+            "../etc/passwd",
+            "a/./b",
+            "a/../b",
+            "a\\b",
+            "C:/x",
+            "a\0b",
+        ] {
+            assert!(!valid_repository_path(invalid), "invalid path was accepted: {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_only_canonical_repository_slugs() {
+        assert!(
+            valid_repository_slug("EffortlessMetrics/perl-lsp-swarm"),
+            "canonical repository slug must be accepted"
+        );
+        for invalid in [
+            "",
+            "owner",
+            "owner/",
+            "/repo",
+            "./repo",
+            "owner/..",
+            "a/b/c",
+            "own er/repo",
+        ] {
+            assert!(!valid_repository_slug(invalid), "invalid slug was accepted: {invalid:?}");
+        }
+    }
 
     #[test]
     fn normalizes_optional_tag_prefix() {
