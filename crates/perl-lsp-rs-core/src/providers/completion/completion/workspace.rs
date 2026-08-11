@@ -1242,10 +1242,7 @@ pub(super) fn receiver_package_from_context_or_source(
         let table = analyzer.symbol_table();
 
         let mut scope_id = table.scope_at_offset(position);
-        loop {
-            let Some(scope) = table.scopes.get(&scope_id) else {
-                break;
-            };
+        while let Some(scope) = table.scopes.get(&scope_id) {
             if scope.kind == ScopeKind::Package
                 && let Some(package) =
                     table.symbols.values().flat_map(|symbols| symbols.iter()).find(|symbol| {
