@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { execFileSync } from 'child_process';
+import { spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -50,19 +50,64 @@ type BundledServerVersion =
   | { status: 'ok'; version: string; output: string }
   | { status: 'error'; version?: never; output?: string; message: string };
 
-function bundledServerVersion(binaryPath: string): BundledServerVersion {
-  try {
-    const output = execFileSync(binaryPath, ['--version'], {
-      encoding: 'utf8',
+async function bundledServerVersion(binaryPath: string): Promise<BundledServerVersion> {
+  const output = await new Promise<{ output: string; error?: string }>((resolve) => {
+    const child = spawn(binaryPath, ['--version'], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 15_000,
       windowsHide: true,
-    }).trim();
-    const match = /(?:^|\s)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/m.exec(output);
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    const finish = (error?: string) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+      resolve({ output: `${stdout}${stderr}`.trim(), error });
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const deadline = setTimeout(() => {
+      child.kill('SIGTERM');
+      forceKillTimer = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish('bundled server --version exceeded the 15 second deadline');
+      }, 500);
+    }, 15_000);
+    child.once('error', (error: Error) => {
+      clearTimeout(deadline);
+      finish(error.message);
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(deadline);
+      finish(
+        code === 0 && signal === null
+          ? undefined
+          : `bundled server --version exited with ${signal ?? `code ${code}`}`,
+      );
+    });
+  });
+  try {
+    const firstLine = output.output.split(/\r?\n/, 1)[0]?.trim() ?? '';
+    const match =
+      /^(?:perllsp|perl-lsp)\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/.exec(
+        firstLine,
+      );
     if (!match) {
       return {
         status: 'error',
-        output,
+        output: output.output,
         message: 'bundled server --version did not contain a semantic version',
       };
     }
@@ -70,14 +115,18 @@ function bundledServerVersion(binaryPath: string): BundledServerVersion {
     if (!version) {
       return {
         status: 'error',
-        output,
+        output: output.output,
         message: 'bundled server --version contained an empty semantic version capture',
       };
     }
-    return { status: 'ok', version, output };
+    if (output.error) {
+      return { status: 'error', output: output.output, message: output.error };
+    }
+    return { status: 'ok', version, output: output.output };
   } catch (error: unknown) {
     return {
       status: 'error',
+      output: output.output,
       message: error instanceof Error ? error.message : String(error),
     };
   }
@@ -243,7 +292,6 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(extension, 'packaged journey requires the installed extension');
 
     const bundledServerPath = bundledBinaryPath(extension.extensionPath);
-    const bundledVersion = bundledServerVersion(bundledServerPath);
     const expectedVersion = extension.packageJSON?.version ?? null;
     const workspaceFile = path.join(workspacePath, 'packaged_daily_driver.pl');
     fs.writeFileSync(
@@ -300,6 +348,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           }
         | undefined;
       const activationCompleted = performance.now();
+      const bundledVersion = await bundledServerVersion(bundledServerPath);
       const document = await vscode.workspace.openTextDocument(workspaceFile);
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
@@ -566,6 +615,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       );
       writeVerifiedChildArtifact(receipt);
 
+      assert.equal(productBlockers.length, 0, JSON.stringify(productBlockers));
       assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
       assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
       assert.equal(metrics.server_start_status, 'ok', JSON.stringify(metrics));
