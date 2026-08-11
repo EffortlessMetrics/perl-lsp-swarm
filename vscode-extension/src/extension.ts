@@ -626,7 +626,7 @@ export async function activate(context: vscode.ExtensionContext) {
               : {}),
             ...(widget?.readinessReason ? { readinessReason: widget.readinessReason } : {}),
             ...(widget?.experienceAction ? { nextAction: widget.experienceAction } : {}),
-            ...(activePerlDocument
+            ...(activePerlDocument && activeEditor
               ? {
                   activeDocumentReady: activeDocumentReadiness.isReady(
                     activeEditor.document.uri.toString(),
