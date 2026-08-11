@@ -26,38 +26,35 @@ jobs:
       - name: Enforce strict JSON-RPC framing envelopes
         shell: python
         run: |
+          import re
           from pathlib import Path
+
+          def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE | re.DOTALL)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return updated
 
           harness = Path("crates/perl-lsp-rs/tests/support/real_process.rs")
           text = harness.read_text()
 
-          notification_helper = '''    pub fn is_valid_server_notification_for_test(message: &Value) -> bool {
-              is_server_notification(message)
-          }
-          '''
-          request_helper = '''    pub fn is_valid_server_notification_for_test(message: &Value) -> bool {
-              is_server_notification(message)
-          }
-
+          if "is_valid_server_request_for_test" not in text:
+              text = replace_once(
+                  text,
+                  r"(    pub fn is_valid_server_notification_for_test\(message: &Value\) -> bool \{\n        is_server_notification\(message\)\n    \}\n)",
+                  r'''\1
               pub fn is_valid_server_request_for_test(message: &Value, method: &str) -> bool {
-              is_server_request_for(message, method)
-          }
-          '''
-          if request_helper.strip() not in text:
-              if notification_helper not in text:
-                  raise SystemExit("notification test helper anchor not found")
-              text = text.replace(notification_helper, request_helper, 1)
+                  is_server_request_for(message, method)
+              }
+          ''',
+                  "notification helper",
+              )
 
-          response_like = '''fn is_response_like(message: &Value) -> bool {
-              message.get("method").is_none()
-                  && (message.get("result").is_some() || message.get("error").is_some())
-          }
-          '''
-          response_helpers = '''fn is_response_like(message: &Value) -> bool {
-              message.get("method").is_none()
-                  && (message.get("result").is_some() || message.get("error").is_some())
-          }
-
+          if "fn has_valid_params" not in text:
+              text = replace_once(
+                  text,
+                  r"(fn is_response_like\(message: &Value\) -> bool \{.*?\n\}\n)",
+                  r'''\1
           fn has_valid_params(message: &Value) -> bool {
               match message.get("params") {
                   None => true,
@@ -68,85 +65,65 @@ jobs:
           fn has_no_response_members(message: &Value) -> bool {
               message.get("result").is_none() && message.get("error").is_none()
           }
-          '''
-          if response_helpers.strip() not in text:
-              if response_like not in text:
-                  raise SystemExit("response-like helper anchor not found")
-              text = text.replace(response_like, response_helpers, 1)
+          ''',
+                  "response helpers",
+              )
 
-          response_predicate = '''fn is_response(message: &Value) -> bool {
-              is_jsonrpc_2(message)
-                  && is_response_like(message)
-                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
-                  && (message.get("result").is_some() ^ message.get("error").is_some())
-          }
-          '''
-          strict_response_predicate = '''fn is_response(message: &Value) -> bool {
+          text = replace_once(
+              text,
+              r"fn is_response\(message: &Value\) -> bool \{.*?\n\}",
+              '''fn is_response(message: &Value) -> bool {
               is_jsonrpc_2(message)
                   && is_response_like(message)
                   && message.get("params").is_none()
-                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
+                  && message
+                      .get("id")
+                      .is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
                   && (message.get("result").is_some() ^ message.get("error").is_some())
-          }
-          '''
-          if strict_response_predicate.strip() not in text:
-              if response_predicate not in text:
-                  raise SystemExit("response predicate anchor not found")
-              text = text.replace(response_predicate, strict_response_predicate, 1)
+          }''',
+              "response predicate",
+          )
 
-          request_predicate = '''fn is_server_request_for(message: &Value, method: &str) -> bool {
+          text = replace_once(
+              text,
+              r"fn is_server_request_for\(message: &Value, method: &str\) -> bool \{.*?\n\}",
+              '''fn is_server_request_for(message: &Value, method: &str) -> bool {
               is_jsonrpc_2(message)
                   && message.get("method").and_then(Value::as_str) == Some(method)
-                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
-          }
-          '''
-          strict_request_predicate = '''fn is_server_request_for(message: &Value, method: &str) -> bool {
-              is_jsonrpc_2(message)
-                  && message.get("method").and_then(Value::as_str) == Some(method)
-                  && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
+                  && message
+                      .get("id")
+                      .is_some_and(|id| id.is_number() || id.is_string())
                   && has_no_response_members(message)
                   && has_valid_params(message)
-          }
-          '''
-          if strict_request_predicate.strip() not in text:
-              if request_predicate not in text:
-                  raise SystemExit("server request predicate anchor not found")
-              text = text.replace(request_predicate, strict_request_predicate, 1)
+          }''',
+              "server request predicate",
+          )
 
-          notification_predicate = '''fn is_server_notification(message: &Value) -> bool {
-              is_jsonrpc_2(message)
-                  && message.get("method").and_then(Value::as_str).is_some()
-                  && message.get("id").is_none()
-          }
-          '''
-          strict_notification_predicate = '''fn is_server_notification(message: &Value) -> bool {
+          text = replace_once(
+              text,
+              r"fn is_server_notification\(message: &Value\) -> bool \{.*?\n\}",
+              '''fn is_server_notification(message: &Value) -> bool {
               is_jsonrpc_2(message)
                   && message.get("method").and_then(Value::as_str).is_some()
                   && message.get("id").is_none()
                   && has_no_response_members(message)
                   && has_valid_params(message)
-          }
-          '''
-          if strict_notification_predicate.strip() not in text:
-              if notification_predicate not in text:
-                  raise SystemExit("server notification predicate anchor not found")
-              text = text.replace(notification_predicate, strict_notification_predicate, 1)
+          }''',
+              "server notification predicate",
+          )
 
-          permissive_header = '''        let line = std::str::from_utf8(&line).context("stdout header was not valid UTF-8")?;
-              let line = line.trim_end_matches(['\\r', '\\n']);
-          '''
-          strict_header = '''        ensure!(
+          text = replace_once(
+              text,
+              r'''        let line = std::str::from_utf8\(&line\)\.context\("stdout header was not valid UTF-8"\)\?;
+              let line = line\.trim_end_matches\(\['\\r', '\\n'\]\);''',
+              '''        ensure!(
                   line.ends_with(b"\\r\\n"),
                   "stdout header line did not end with CRLF"
               );
               let line = std::str::from_utf8(&line[..line.len() - 2])
-                  .context("stdout header was not valid UTF-8")?;
-          '''
-          if strict_header.strip() not in text:
-              if permissive_header not in text:
-                  raise SystemExit("header terminator anchor not found")
-              text = text.replace(permissive_header, strict_header, 1)
-
+                  .context("stdout header was not valid UTF-8")?;''',
+              "header terminator",
+          )
           harness.write_text(text)
 
           contract = Path("crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs")
@@ -157,19 +134,18 @@ jobs:
               1,
           )
 
-          oversized = '''    let oversized = vec![b'x'; 5 * 1024];
-              let error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
-                  .expect_err("oversized header must fail");
-              ensure!(error.to_string().contains("exceeded"));
-              Ok(())
-          '''
-          lf_only = '''    let oversized = vec![b'x'; 5 * 1024];
-              let error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
-                  .expect_err("oversized header must fail");
-              ensure!(error.to_string().contains("exceeded"));
+          if "LF-only framing must fail" not in text:
+              text = replace_once(
+                  text,
+                  r'''(    let oversized = vec!\[b'x'; 5 \* 1024\];
+              let error = RealProcessClient::parse_stdout_frame_for_test\(&oversized\)
+                  \.expect_err\("oversized header must fail"\);
+              ensure!\(error\.to_string\(\)\.contains\("exceeded"\)\);)
+              (    Ok\(\(\)\))''',
+                  r'''\1
 
-              let body = br#"{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\"}"#;
-              let mut frame = format!("Content-Length: {}\\n\\n", body.len()).into_bytes();
+              let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
+              let mut frame = format!("Content-Length: {}\n\n", body.len()).into_bytes();
               frame.extend_from_slice(body);
               let error = RealProcessClient::parse_stdout_frame_for_test(&frame)
                   .expect_err("LF-only framing must fail");
@@ -177,22 +153,18 @@ jobs:
                   error.to_string().contains("CRLF"),
                   "LF-only framing failed for the wrong reason: {error:#}"
               );
-              Ok(())
-          '''
-          if lf_only.strip() not in text:
-              if oversized not in text:
-                  raise SystemExit("strict parser test anchor not found")
-              text = text.replace(oversized, lf_only, 1)
+          \2''',
+                  "LF-only falsifier",
+              )
 
-          wrong_version = '''    ensure!(
-                  !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
+          if "notification with scalar params was accepted" not in text:
+              text = replace_once(
+                  text,
+                  r'''(    ensure!\(
+                  !RealProcessClient::is_valid_server_notification_for_test\(&wrong_version\),
                   "wrong JSON-RPC version was accepted"
-              );
-          '''
-          scalar_params = '''    ensure!(
-                  !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
-                  "wrong JSON-RPC version was accepted"
-              );
+              \);)''',
+                  r'''\1
 
               let scalar_params = json!({
                   "jsonrpc": "2.0",
@@ -202,17 +174,15 @@ jobs:
               ensure!(
                   !RealProcessClient::is_valid_server_notification_for_test(&scalar_params),
                   "notification with scalar params was accepted"
-              );
-          '''
-          if scalar_params.strip() not in text:
-              if wrong_version not in text:
-                  raise SystemExit("notification version test anchor not found")
-              text = text.replace(wrong_version, scalar_params, 1)
+              );''',
+                  "notification scalar-params falsifier",
+              )
 
-          insertion_anchor = '''#[test]
-          fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
-          '''
-          request_test = '''#[test]
+          if "server_request_requires_request_only_members_and_structured_params" not in text:
+              text = replace_once(
+                  text,
+                  r"(#\[test\]\nfn event_queue_overflow_does_not_deadlock_drop\(\) -> Result<\(\)> \{)",
+                  '''#[test]
           fn server_request_requires_request_only_members_and_structured_params() -> Result<()> {
               let method = "client/registerCapability";
               let valid = json!({
@@ -255,12 +225,9 @@ jobs:
           }
 
           #[test]
-          fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {
-          '''
-          if request_test.strip() not in text:
-              if insertion_anchor not in text:
-                  raise SystemExit("server request test insertion anchor not found")
-              text = text.replace(insertion_anchor, request_test, 1)
+          fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {''',
+                  "server-request falsifiers",
+              )
 
           contract.write_text(text)
 
