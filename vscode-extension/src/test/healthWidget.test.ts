@@ -211,15 +211,27 @@ describe('HealthWidget — $/progress', () => {
     expect(widget.mode).toBe('indexing');
   });
 
-  test('ready_limited is visible without being presented as fully ready', () => {
+  test('ready_limited presents a known transport reason as bounded user text', () => {
     const { item, widget } = makeWidget();
     widget.onStateChange(ClientState.Running);
-    widget.onIndexReadinessState('ready_limited', 'resource limit');
+    widget.onIndexReadinessState('ready_limited', 'ResourceLimit { kind: MaxFiles }');
 
     expect(widget.lifecycleState).toBe('ready_limited');
     expect(widget.readinessState).toBe('ready_limited');
     expect(item.text).toContain('(limited)');
-    expect(item.tooltip).toContain('resource limit');
+    expect(item.tooltip).toContain('Workspace file limit reached');
+    expect(item.tooltip).not.toContain('ResourceLimit');
+    expect(item.tooltip).not.toContain('MaxFiles');
+  });
+
+  test('ready_limited fails closed for an unknown future reason', () => {
+    const { item, widget } = makeWidget();
+    widget.onStateChange(ClientState.Running);
+    widget.onIndexReadinessState('ready_limited', 'FutureReason { detail: secret }');
+
+    expect(item.tooltip).toContain('Limited workspace coverage');
+    expect(item.tooltip).not.toContain('FutureReason');
+    expect(item.tooltip).not.toContain('secret');
   });
 });
 
