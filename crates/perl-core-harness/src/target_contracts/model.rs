@@ -1,6 +1,7 @@
 //! Typed contracts for upstream Perl test-target topology.
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::BTreeMap;
 
 pub const TARGET_SELECTION_SCHEMA_VERSION: &str = "perl_core_harness.target_selection.v1";
@@ -108,7 +109,7 @@ pub struct TargetExclusion {
     pub claim_impact: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetSelectionContract {
     pub schema_version: String,
@@ -134,6 +135,52 @@ pub struct TargetSelectionContract {
     pub exclusions: Vec<TargetExclusion>,
     pub replaces_target_id: Option<String>,
     pub change_reason: Option<String>,
+}
+
+impl Serialize for TargetSelectionContract {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // `target_topology_digest` uses this sentinel to compare executable
+        // topology across version rows. Presentation text is deliberately
+        // excluded from that projection while remaining in canonical matrix
+        // serialization and its pinned fingerprint.
+        let include_display_name = self.perl_version_row != "<version-row>";
+        let mut state = serializer.serialize_struct(
+            "TargetSelectionContract",
+            if include_display_name { 23 } else { 22 },
+        )?;
+        state.serialize_field("schema_version", &self.schema_version)?;
+        state.serialize_field("target_id", &self.target_id)?;
+        state.serialize_field("upstream_name", &self.upstream_name)?;
+        state.serialize_field("aliases", &self.aliases)?;
+        if include_display_name {
+            state.serialize_field("display_name", &self.display_name)?;
+        }
+        state.serialize_field("perl_version_row", &self.perl_version_row)?;
+        state.serialize_field("target_kind", &self.target_kind)?;
+        state.serialize_field("authority", &self.authority)?;
+        state.serialize_field("selection_authority", &self.selection_authority)?;
+        state.serialize_field("selectors", &self.selectors)?;
+        state.serialize_field("script_forms", &self.script_forms)?;
+        state.serialize_field("preparation", &self.preparation)?;
+        state.serialize_field("variant_of", &self.variant_of)?;
+        state.serialize_field("composite_members", &self.composite_members)?;
+        state.serialize_field(
+            "composite_overlap_policy",
+            &self.composite_overlap_policy,
+        )?;
+        state.serialize_field("runner_switches", &self.runner_switches)?;
+        state.serialize_field("variant_parameters", &self.variant_parameters)?;
+        state.serialize_field("environment", &self.environment)?;
+        state.serialize_field("terminal_policy", &self.terminal_policy)?;
+        state.serialize_field("capability_predicates", &self.capability_predicates)?;
+        state.serialize_field("exclusions", &self.exclusions)?;
+        state.serialize_field("replaces_target_id", &self.replaces_target_id)?;
+        state.serialize_field("change_reason", &self.change_reason)?;
+        state.end()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
