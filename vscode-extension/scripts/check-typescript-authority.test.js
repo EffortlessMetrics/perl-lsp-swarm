@@ -191,6 +191,39 @@ void test('an installed major below the authority major is red', () => {
   );
 });
 
+void test('a same-major installed package that is not the locked version is red', () => {
+  // The hole this closes: lockfile 7.0.2, installed 7.1.0, binary 7.1.0. Every
+  // major check passes and the binary agrees with its own package metadata, so
+  // the gate would report lock + install + executing compiler as one authority
+  // chain while the installed bytes are not the locked artifact — a stale or
+  // tampered node_modules.
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({ installedVersion: '7.1.0', binaryVersionOutput: 'Version 7.1.0\n' }),
+    ),
+    /installed typescript is 7\.1\.0 but package-lock\.json pins 7\.0\.2/,
+  );
+});
+
+void test('only the opposite-platform shim being present is red, not accepted', () => {
+  // `npm run typecheck` resolves `tsc` through node_modules/.bin. On POSIX a
+  // shell will not select `tsc.cmd`; it falls through to whatever `tsc` is on
+  // PATH — a compiler this gate never inspected. Accepting the other
+  // platform's wrapper because it happens to resolve to the pinned package
+  // would be a false green.
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        binShim: {
+          error:
+            'only tsc.cmd is present, but this platform (linux) executes tsc — the compiler `npm run` would resolve is not the one verified here',
+        },
+      }),
+    ),
+    /is not the one verified here/,
+  );
+});
+
 void test('a binary whose version disagrees with its package metadata is red', () => {
   assertFailedWith(
     evaluateTypeScriptAuthority(healthyInput({ binaryVersionOutput: 'Version 6.0.3\n' })),

@@ -280,6 +280,19 @@ function evaluateTypeScriptAuthority(input) {
     failures.push(
       `installed typescript is ${String(input.installedVersion)} (major ${installedMajor}), not the authority major ${expected}`,
     );
+  } else if (
+    typeof input.lockEntry?.version === 'string' &&
+    input.lockEntry.version !== input.installedVersion
+  ) {
+    // Same major is not the same artifact. A tree with lockfile 7.0.2 and an
+    // installed 7.1.0 satisfies every major check and agrees with its own
+    // binary, so the gate would report lock, install, and executing compiler
+    // as one authority chain while the installed bytes are not the locked
+    // ones — a stale or tampered node_modules, which is exactly the substituted
+    // -compiler shape this gate exists to surface.
+    failures.push(
+      `installed typescript is ${String(input.installedVersion)} but package-lock.json pins ${String(input.lockEntry.version)} — the installed package is not the locked artifact (stale or tampered node_modules; run \`npm ci\`)`,
+    );
   }
 
   // 4. The binary that actually type-checks.
@@ -392,14 +405,21 @@ function resolveBinShim(extensionRoot, typescriptDir) {
   // Absence is its own, clearer diagnosis — check it before anything else, so
   // a tree with no node_modules at all reports "missing" rather than an
   // incidental failure to resolve the package's bin/tsc.
-  const shim = fs.existsSync(preferred)
-    ? preferred
-    : fs.existsSync(fallback)
-      ? fallback
-      : undefined;
-  if (shim === undefined) {
+  if (!fs.existsSync(preferred)) {
+    if (fs.existsSync(fallback)) {
+      // Accepting the other platform's wrapper would be a false green: on
+      // POSIX `npm run typecheck` invokes `tsc`, and a shell will not select
+      // `tsc.cmd` — it falls through to whatever `tsc` is on PATH, which is a
+      // compiler this gate never inspected. The same applies in reverse on
+      // Windows. Only the shim this platform actually executes can carry the
+      // authority claim.
+      return {
+        error: `only ${path.basename(fallback)} is present, but this platform (${process.platform}) executes ${path.basename(preferred)} — the compiler \`npm run\` would resolve is not the one verified here`,
+      };
+    }
     return undefined;
   }
+  const shim = preferred;
 
   /** @type {string | undefined} */
   let expected;
