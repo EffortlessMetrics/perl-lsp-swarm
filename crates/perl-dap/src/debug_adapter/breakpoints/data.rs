@@ -73,12 +73,23 @@ impl DebugAdapter {
             }
         };
 
+        // DAP makes `dataId` required-but-nullable. The shared response type
+        // predates that distinction and omits `None`, so repair this one wire
+        // boundary explicitly rather than allowing an unavailable target to
+        // serialize as a schema-invalid missing property.
+        let body = serde_json::to_value(&body).ok().map(|mut value| {
+            if let Value::Object(fields) = &mut value {
+                fields.entry("dataId".to_string()).or_insert(Value::Null);
+            }
+            value
+        });
+
         DapMessage::Response {
             seq,
             request_seq,
             success: true,
             command: "dataBreakpointInfo".to_string(),
-            body: serde_json::to_value(&body).ok(),
+            body,
             message: None,
         }
     }

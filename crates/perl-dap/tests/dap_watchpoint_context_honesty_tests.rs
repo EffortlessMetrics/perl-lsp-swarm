@@ -18,8 +18,8 @@ fn data_breakpoint_info(
     }
 }
 
-fn data_id_is_absent(body: &Value) -> bool {
-    body.get("dataId").is_none_or(Value::is_null)
+fn data_id_is_explicit_null(body: &Value) -> bool {
+    body.get("dataId").is_some_and(Value::is_null)
 }
 
 #[test]
@@ -34,8 +34,8 @@ fn variables_reference_is_not_silently_ignored() -> TestResult {
     )?;
 
     assert!(
-        data_id_is_absent(&body),
-        "an unvalidated variablesReference must not produce a persistent dataId: {body}"
+        data_id_is_explicit_null(&body),
+        "an unvalidated variablesReference must emit dataId: null: {body}"
     );
     let description = body.get("description").and_then(Value::as_str).unwrap_or_default();
     assert!(
@@ -58,8 +58,8 @@ fn frame_id_is_not_silently_ignored() -> TestResult {
     )?;
 
     assert!(
-        data_id_is_absent(&body),
-        "an unvalidated frameId must not produce a persistent dataId: {body}"
+        data_id_is_explicit_null(&body),
+        "an unvalidated frameId must emit dataId: null: {body}"
     );
     let description = body.get("description").and_then(Value::as_str).unwrap_or_default();
     assert!(
@@ -82,7 +82,7 @@ fn variables_reference_precedes_frame_id_when_both_are_present() -> TestResult {
         }),
     )?;
 
-    assert!(data_id_is_absent(&body));
+    assert!(data_id_is_explicit_null(&body));
     let description = body.get("description").and_then(Value::as_str).unwrap_or_default();
     assert!(
         description.contains("variablesReference"),
@@ -104,8 +104,8 @@ fn zero_context_values_are_still_explicit_context() -> TestResult {
     )?;
 
     assert!(
-        data_id_is_absent(&body),
-        "explicit zero context must not be treated as omitted context: {body}"
+        data_id_is_explicit_null(&body),
+        "explicit zero context must emit dataId: null: {body}"
     );
     Ok(())
 }
@@ -121,7 +121,7 @@ fn invalid_expression_remains_invalid_before_context_classification() -> TestRes
         }),
     )?;
 
-    assert!(data_id_is_absent(&body));
+    assert!(data_id_is_explicit_null(&body));
     assert_eq!(
         body.get("description").and_then(Value::as_str),
         Some("Cannot watch this expression")
