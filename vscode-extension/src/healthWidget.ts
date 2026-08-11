@@ -246,6 +246,22 @@ export class HealthWidget {
     return this._readinessState;
   }
 
+  /** Bounded user-facing readiness detail for status surfaces. */
+  get readinessReason(): string | undefined {
+    return this._readinessState === 'ready_limited'
+      ? presentIndexReadinessReason(this._readinessReason)
+      : undefined;
+  }
+
+  /** Current presentation detail/action supplied by the owning lifecycle path. */
+  get experienceDetail(): string | undefined {
+    return this._experience.detail;
+  }
+
+  get experienceAction(): string | undefined {
+    return this._experience.action;
+  }
+
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
