@@ -53,11 +53,17 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_is_function_call() {
-        let stmt = first_statement("my_custom_method $obj 10, 20;");
+        let source = "my_custom_method $obj 10, 20;";
+        let stmt = first_statement(source);
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
+                assert_eq!(
+                    stmt.location.end,
+                    source.len() - 1,
+                    "FunctionCall span must cover all arguments"
+                );
             }
             other => {
                 panic!("Unknown lowercase names must remain FunctionCall nodes, got {other:?}")
@@ -67,13 +73,19 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
-        let stmt =
-            first_statement("my_custom_method $obj ($title // 'Untitled'), $options->{limit};");
+        let source =
+            "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
+        let stmt = first_statement(source);
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
                 assert!(matches!(&args[0].kind, NodeKind::Variable { .. }));
+                assert_eq!(
+                    stmt.location.end,
+                    source.len() - 1,
+                    "FunctionCall span must cover trailing arguments"
+                );
             }
             other => panic!("Expected FunctionCall node, got {other:?}"),
         }

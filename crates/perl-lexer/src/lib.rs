@@ -3606,10 +3606,11 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn qw_recovery_boundary_at(&self, delim: char, position: usize) -> bool {
-        if delim == '(' {
-            self.qw_statement_boundary_at(position)
-        } else {
-            self.qw_self_delimited_statement_boundary_at(position)
+        match quote_handler::paired_close(delim) {
+            // qw( ... ) and same-character delimiters (qw/.../, qw!...!) keep broad recovery.
+            Some(')') | None => self.qw_statement_boundary_at(position),
+            // Bracket-style paired delimiters use the narrowed #4499 policy.
+            Some(_) => self.qw_self_delimited_statement_boundary_at(position),
         }
     }
 

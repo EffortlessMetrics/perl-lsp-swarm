@@ -392,7 +392,10 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            let end = s.previous_position();
+            let end = args
+                .last()
+                .map(|arg| arg.location.end)
+                .unwrap_or_else(|| s.previous_position());
             Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
         })
     }
