@@ -76,24 +76,25 @@ fn self_delimited_qw_handles_cr_only_recovery() -> Result<(), String> {
 }
 
 #[test]
-fn self_delimited_qw_preserves_a_valid_cr_only_closer() {
+fn self_delimited_qw_preserves_a_valid_cr_only_closer() -> Result<(), String> {
     let input = "my @items = qw[word1\rwarn foo;\r];";
     let tokens = PerlLexer::new(input).collect_tokens();
 
-    assert!(
-        !tokens.iter().any(|token| {
-            matches!(token.token_type, TokenType::Error(_)) && token.text.starts_with("qw")
-        }),
-        "a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"
-    );
-    assert!(
-        tokens.iter().any(|token| {
-            token.text.as_ref() == "]"
-                || (matches!(token.token_type, TokenType::QuoteWords)
-                    && token.text.ends_with(']'))
-        }),
-        "the list closer must remain in the token stream: {tokens:?}"
-    );
+    if tokens.iter().any(|token| {
+        matches!(token.token_type, TokenType::Error(_)) && token.text.starts_with("qw")
+    }) {
+        return Err(format!(
+            "a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"
+        ));
+    }
+    if !tokens.iter().any(|token| {
+        token.text.as_ref() == "]"
+            || (matches!(token.token_type, TokenType::QuoteWords)
+                && token.text.ends_with(']'))
+    }) {
+        return Err(format!("the list closer must remain in the token stream: {tokens:?}"));
+    }
+    Ok(())
 }
 
 #[test]
