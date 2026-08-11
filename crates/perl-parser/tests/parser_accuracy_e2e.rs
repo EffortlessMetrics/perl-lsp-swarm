@@ -64,6 +64,8 @@ const E2E_FIXTURES: &[&str] = &[
     "typeglob_alias",
     "heredoc_basic",
     "post_error_package_sub_recovery",
+    "generated_accessor",
+    "heuristic_generated_member",
 ];
 
 #[test]
