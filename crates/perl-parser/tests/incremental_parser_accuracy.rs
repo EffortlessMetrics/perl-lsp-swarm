@@ -147,7 +147,28 @@ fn assert_incremental_edit_matches_fresh(
     let incremental_ast = incremental.parse(&new_source)?;
 
     if !incremental.incremental_path_attempted() {
-        return Err(format!("{expectation_id}: edit did not enter the incremental path").into());
+        return Err(format!(
+            "{expectation_id}: edit did not produce an accepted incremental parse"
+        )
+        .into());
+    }
+
+    let mut actual_spans = Vec::new();
+    collect_span_fingerprint(&incremental_ast, &mut actual_spans);
+    let actual_node_count = actual_spans.len();
+    if incremental.reused_nodes > actual_node_count {
+        return Err(format!(
+            "{expectation_id}: reuse count {} exceeds produced node count {actual_node_count}",
+            incremental.reused_nodes
+        )
+        .into());
+    }
+    if incremental.reused_nodes + incremental.reparsed_nodes != actual_node_count {
+        return Err(format!(
+            "{expectation_id}: reuse accounting {} + {} does not equal produced node count {actual_node_count}",
+            incremental.reused_nodes, incremental.reparsed_nodes
+        )
+        .into());
     }
 
     if require_reuse {

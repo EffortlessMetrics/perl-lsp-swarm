@@ -285,9 +285,9 @@ impl IncrementalParserV2 {
         if let Some(ref last_tree) = self.last_tree {
             if !self.pending_edits.is_empty() {
                 let last_tree_clone = last_tree.clone();
-                self.incremental_path_attempted = true;
                 // Check if we can do incremental parsing
                 if let Some(new_tree) = self.try_incremental_parse(source, &last_tree_clone) {
+                    self.incremental_path_attempted = true;
                     self.last_tree =
                         Some(IncrementalTree::new(new_tree.clone(), source.to_string()));
                     self.pending_edits = EditSet::new();
@@ -387,11 +387,12 @@ impl IncrementalParserV2 {
 
         // Check if reuse analysis meets our efficiency targets
         if let Some(ref analysis) = self.last_reuse_analysis {
-            if analysis.meets_efficiency_target(self.reuse_config.min_confidence * 100.0) {
+            if analysis.reused_nodes <= analysis.total_new_nodes
+                && analysis.meets_efficiency_target(self.reuse_config.min_confidence * 100.0)
+            {
                 // Update statistics based on analysis
                 self.reused_nodes = analysis.reused_nodes;
-                self.reparsed_nodes =
-                    analysis.total_new_nodes.saturating_sub(analysis.reused_nodes);
+                self.reparsed_nodes = analysis.total_new_nodes - analysis.reused_nodes;
                 self.advanced_reuse_selected = true;
 
                 // Return the new tree with reuse benefits counted
