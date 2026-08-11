@@ -11,10 +11,9 @@ mod tests {
     fn first_statement(input: &str) -> Node {
         let ast = parse_code(input).expect("source should parse");
         match ast.kind {
-            NodeKind::Program { mut statements } => statements
-                .drain(..)
-                .next()
-                .expect("expected one statement"),
+            NodeKind::Program { mut statements } => {
+                statements.drain(..).next().expect("expected one statement")
+            },
             other => panic!("Expected Program node, got {other:?}"),
         }
     }
@@ -77,17 +76,16 @@ mod tests {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
             }
-            other => panic!(
-                "Unknown lowercase names must remain FunctionCall nodes, got {other:?}"
-            ),
+            other => {
+                panic!("Unknown lowercase names must remain FunctionCall nodes, got {other:?}")
+            },
         }
     }
 
     #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
-        let stmt = first_statement(
-            "my_custom_method $obj ($title // 'Untitled'), $options->{limit};",
-        );
+        let stmt =
+            first_statement("my_custom_method $obj ($title // 'Untitled'), $options->{limit};");
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
@@ -100,9 +98,7 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_inside_control_flow_is_function_call() {
-        let stmt = first_statement(
-            "if ($enabled) { my_custom_method $obj 10, 20; }",
-        );
+        let stmt = first_statement("if ($enabled) { my_custom_method $obj 10, 20; }");
         let then_branch = match stmt.kind {
             NodeKind::If { then_branch, .. } => then_branch,
             other => panic!("Expected If node, got {other:?}"),
@@ -132,11 +128,7 @@ mod tests {
 
     #[test]
     fn test_common_list_builtins_remain_regular_calls() {
-        for source in [
-            "push @items, $item;",
-            "defined $object->method;",
-            "sort @items;",
-        ] {
+        for source in ["push @items, $item;", "defined $object->method;", "sort @items;"] {
             assert!(
                 !matches!(first_statement(source).kind, NodeKind::IndirectCall { .. }),
                 "{source:?} must not be classified as indirect"
