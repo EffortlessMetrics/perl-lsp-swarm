@@ -153,28 +153,39 @@ test_public_semantic_wrapper_is_authority() {
 test_currentness_policy_surfaces() {
     local ok=true
 
-    grep -Fq 'Rebase is an ordinary integration tool, not a freshness ceremony.' "$CURRENTNESS_DOC" || ok=false
-    grep -Fq 'Its main accepted use is while resolving an actual merge conflict.' "$CURRENTNESS_DOC" || ok=false
-    grep -Fq 'there is no mechanical one-rebase limit.' "$CURRENTNESS_DOC" || ok=false
-    grep -Fq 'rebase is acceptable when resolving an actual conflict' "$AGENT_VERIFY" || ok=false
-    grep -Fq 'rebase is acceptable when resolving an actual conflict' "$CLAUDE_VERIFY" || ok=false
-    grep -Fq 'Rebasing is ordinary integration work when it solves a concrete problem.' "$PR_TEMPLATE" || ok=false
-    grep -Fq 'There is no one-rebase limit' "$PR_TEMPLATE" || ok=false
-    grep -Fq 'a completed result on an earlier PR head remains usable semantic evidence' "$AGENT_VERIFY" || ok=false
-    grep -Fq 'a completed result on an earlier PR head remains usable semantic evidence' "$CLAUDE_VERIFY" || ok=false
-    grep -Fq 'Do not describe hosted CI as an "exact-head proof authority."' "$PR_TEMPLATE" || ok=false
-    grep -Fq 'This is the only policy-bearing review-convergence entrypoint.' "$CONVERGENCE_WRAPPER" || ok=false
+    # Prose assertions must survive markdown reflow. `grep -F` is line-oriented,
+    # so a sentence that wraps across a line break silently fails to match even
+    # though the document says exactly what is being asserted. Squeeze each file
+    # to a single whitespace-normalized line before matching.
+    prose_has() {
+        tr '\n' ' ' < "$1" | tr -s '[:space:]' ' ' | grep -Fq "$2"
+    }
+    prose_lacks() {
+        ! prose_has "$1" "$2"
+    }
 
-    if grep -Fq 'Success on an older candidate is stale evidence, not current green.' "$AGENT_VERIFY" "$CLAUDE_VERIFY"; then
+    prose_has "$CURRENTNESS_DOC" 'Rebase is an ordinary integration tool, not a freshness ceremony.' || ok=false
+    prose_has "$CURRENTNESS_DOC" 'Its main accepted use is while resolving an actual merge conflict.' || ok=false
+    prose_has "$CURRENTNESS_DOC" 'there is no mechanical one-rebase limit.' || ok=false
+    prose_has "$AGENT_VERIFY" 'rebase is acceptable when resolving an actual conflict' || ok=false
+    prose_has "$CLAUDE_VERIFY" 'rebase is acceptable when resolving an actual conflict' || ok=false
+    prose_has "$PR_TEMPLATE" 'Rebasing is ordinary integration work when it solves a concrete problem.' || ok=false
+    prose_has "$PR_TEMPLATE" 'There is no one-rebase limit' || ok=false
+    prose_has "$AGENT_VERIFY" 'a completed result on an earlier PR head remains usable semantic evidence' || ok=false
+    prose_has "$CLAUDE_VERIFY" 'a completed result on an earlier PR head remains usable semantic evidence' || ok=false
+    prose_has "$PR_TEMPLATE" 'Do not describe hosted CI as an "exact-head proof authority."' || ok=false
+    prose_has "$CONVERGENCE_WRAPPER" 'This is the only policy-bearing review-convergence entrypoint.' || ok=false
+
+    if prose_has "$AGENT_VERIFY" 'Success on an older candidate is stale evidence, not current green.' || prose_has "$CLAUDE_VERIFY" 'Success on an older candidate is stale evidence, not current green.'; then
         ok=false
     fi
-    if grep -Fq 'one rebase immediately before merge' "$CURRENTNESS_DOC"; then
+    if prose_has "$CURRENTNESS_DOC" 'one rebase immediately before merge'; then
         ok=false
     fi
-    if grep -Fq 'one optional late rebase, once' "$AGENT_VERIFY" "$CLAUDE_VERIFY"; then
+    if prose_has "$AGENT_VERIFY" 'one optional late rebase, once' || prose_has "$CLAUDE_VERIFY" 'one optional late rebase, once'; then
         ok=false
     fi
-    if grep -Fq 'optional one-time decision' "$PR_TEMPLATE"; then
+    if prose_has "$PR_TEMPLATE" 'optional one-time decision'; then
         ok=false
     fi
 
