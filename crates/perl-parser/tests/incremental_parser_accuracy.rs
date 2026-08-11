@@ -76,8 +76,8 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
     let new_end = start + 1;
 
     let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
-    let line = source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let character = start - line_start;
+    let line = (source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1) as u32;
+    let character = (start - line_start) as u32;
 
     let mut incremental = IncrementalParserV2::new();
     incremental.parse(&source)?;
