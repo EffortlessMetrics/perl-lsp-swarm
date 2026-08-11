@@ -86,7 +86,7 @@ Before writing an example or documenting a public item:
 ```bash
 cargo metadata --format-version=1 --no-deps
 cargo tree -p <crate>
-rg 'pub (fn|struct|enum|trait|type|const|static)|pub use' crates/<crate>/src
+rg 'pub(\\s+(async|unsafe|const|extern\\s+"[^"]+"))*\\s+(fn|struct|enum|trait|type|const|static)|pub\\s+use' crates/<crate>/src
 ```
 
 Read the owning crate's `lib.rs`, its public re-exports, and the nearest
