@@ -228,9 +228,19 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
         assert_eq!(error_lines.first().copied(), Some(expectation.first_error_line),
             "recovery fixture '{fixture_id}' first error boundary drifted ({})", expectation.id);
         let expected_region = expectation.error_region.start..=expectation.error_region.end;
-        assert!(error_lines.iter().any(|line| expected_region.contains(line)),
-            "recovery fixture '{fixture_id}' has no error in declared region {}..={} ({})",
-            expectation.error_region.start, expectation.error_region.end, expectation.id);
+        let spillover: Vec<_> = error_lines
+            .iter()
+            .filter(|line| !expected_region.contains(line))
+            .copied()
+            .collect();
+        assert!(
+            spillover.is_empty(),
+            "recovery fixture '{fixture_id}' emitted error lines outside declared region {}..={}: {:?} ({})",
+            expectation.error_region.start,
+            expectation.error_region.end,
+            spillover,
+            expectation.id
+        );
         assert!(error_lines.contains(&expectation.recovery_line),
             "recovery fixture '{fixture_id}' missing recovery error node/diagnostic on line {} ({})",
             expectation.recovery_line, expectation.id);
