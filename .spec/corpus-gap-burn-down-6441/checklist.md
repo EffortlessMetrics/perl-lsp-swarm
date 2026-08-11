@@ -8,7 +8,7 @@
 - [x] Promote dormant format and control-flow fixtures into E2E selection.
 - [x] Register new fixtures in the parser-accuracy manifest.
 - [x] Add package/subroutine AST anchors.
-- [x] Run hosted Cargo parser-accuracy tests.
+- [ ] Run hosted Cargo parser-accuracy tests.
 - [ ] Run cargo xtask fmt --check.
 - [ ] Run corpus audit/sweep checks.
-- [x] Review the final diff and update this receipt with results.
+- [x] Review the final diff; hosted verification remains pending.
