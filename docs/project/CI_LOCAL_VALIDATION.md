@@ -11,10 +11,10 @@ Run the commands in this order:
 ```bash
 just devex
 just pr-fast
+just status-update   # when the source contract changed
+just status-check
 nix develop -c just ci-gate
 just ci-full
-just status-update
-just status-check
 just release-check
 ```
 
@@ -25,11 +25,11 @@ shell is only there to make the toolchain and external helpers reproducible.
 
 - `just devex` checks the local environment and highlights missing tools.
 - `just pr-fast` is the quick edit loop for normal PR iteration.
+- `just status-update` refreshes generated status docs when their source contract changed.
+- `just status-check` verifies that generated status docs are synchronized before a gate reads them.
 - `nix develop -c just ci-gate` is the canonical full local merge gate.
 - `just ci-full` is the broader validation pass for large refactors or release
   confidence.
-- `just status-update` and `just status-check` keep generated status docs in
-  sync.
 - `just release-check` is the release-prep gate before tagging or publishing.
 
 If a change is security-sensitive, also run `just security-audit`. If it touches
@@ -48,7 +48,7 @@ replacement for `nix develop -c just ci-gate`.
 
 ## Dependency order and ownership
 
-The commands above are intentionally ordered from cheap local environment checks to broader repository proof. The ownership boundary is:
+The commands above are intentionally ordered from cheap local environment checks to broader repository proof. The status pair is conditional: run `just status-update` before `just status-check` when a source contract changed; for docs-only edits, run `just status-check` when the touched surface depends on generated status. The ownership boundary is:
 
 | Concern | Primary authority | Local consequence |
 | --- | --- | --- |
