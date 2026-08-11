@@ -23,18 +23,12 @@ fn assert_success_response(response: &Value, id: &Value, context: &str) -> Resul
         response.get("jsonrpc") == Some(&json!("2.0")),
         "{context} response omitted JSON-RPC 2.0: {response}"
     );
-    ensure!(
-        response.get("id") == Some(id),
-        "{context} response ID mismatch: {response}"
-    );
+    ensure!(response.get("id") == Some(id), "{context} response ID mismatch: {response}");
     ensure!(
         response.get("error").is_none(),
         "{context} response unexpectedly contained an error: {response}"
     );
-    ensure!(
-        response.get("result").is_some(),
-        "{context} response omitted result: {response}"
-    );
+    ensure!(response.get("result").is_some(), "{context} response omitted result: {response}");
     Ok(())
 }
 
@@ -93,12 +87,7 @@ fn initialize_once(
     initialization_options: Option<Value>,
 ) -> Result<Value> {
     let mut client = RealProcessClient::spawn_exact()?;
-    let response = initialize(
-        &mut client,
-        client_name,
-        capabilities,
-        initialization_options,
-    )?;
+    let response = initialize(&mut client, client_name, capabilities, initialization_options)?;
     finish(&mut client)?;
     Ok(response)
 }
@@ -107,21 +96,9 @@ fn initialize_once(
 fn workspace_folder_support_requires_boolean_true() -> Result<()> {
     let cases = [
         (json!({}), false, "absent"),
-        (
-            json!({ "workspace": { "workspaceFolders": false } }),
-            false,
-            "explicit false",
-        ),
-        (
-            json!({ "workspace": { "workspaceFolders": "true" } }),
-            false,
-            "malformed string",
-        ),
-        (
-            json!({ "workspace": { "workspaceFolders": true } }),
-            true,
-            "supported true",
-        ),
+        (json!({ "workspace": { "workspaceFolders": false } }), false, "explicit false"),
+        (json!({ "workspace": { "workspaceFolders": "true" } }), false, "malformed string"),
+        (json!({ "workspace": { "workspaceFolders": true } }), true, "supported true"),
     ];
 
     for (capabilities, expected, label) in cases {
@@ -177,8 +154,7 @@ fn inline_completion_initialize_shape_selects_static_or_dynamic_mode() -> Result
     for (capabilities, expect_static, expect_dynamic_request, label) in cases {
         let mut client = RealProcessClient::spawn_exact()?;
         let response = initialize(&mut client, "capability-matrix", capabilities, None)?;
-        let static_provider =
-            response.pointer("/result/capabilities/inlineCompletionProvider");
+        let static_provider = response.pointer("/result/capabilities/inlineCompletionProvider");
         if expect_static {
             ensure!(
                 static_provider == Some(&json!({})),
@@ -194,10 +170,9 @@ fn inline_completion_initialize_shape_selects_static_or_dynamic_mode() -> Result
         if expect_dynamic_request {
             let registration =
                 client.receive_server_request("client/registerCapability", timeout())?;
-            let request_id = registration
-                .get("id")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("registration request omitted id: {registration}"))?;
+            let request_id = registration.get("id").cloned().ok_or_else(|| {
+                anyhow::anyhow!("registration request omitted id: {registration}")
+            })?;
             let registrations = registration
                 .pointer("/params/registrations")
                 .and_then(Value::as_array)
@@ -292,10 +267,7 @@ fn code_action_documentation_requires_boolean_true() -> Result<()> {
             "code-action documentation negotiation mismatch for {label}: {response}"
         );
         if let Some(entries) = documentation {
-            ensure!(
-                !entries.is_empty(),
-                "advertised documentation must have entries"
-            );
+            ensure!(!entries.is_empty(), "advertised documentation must have entries");
         }
     }
     Ok(())
@@ -313,9 +285,7 @@ fn disabled_feature_removes_capability_and_rejects_route() -> Result<()> {
         })),
     )?;
     ensure!(
-        response
-            .pointer("/result/capabilities/hoverProvider")
-            .is_none(),
+        response.pointer("/result/capabilities/hoverProvider").is_none(),
         "disabled hover remained advertised: {response}"
     );
 
@@ -333,10 +303,7 @@ fn disabled_feature_removes_capability_and_rejects_route() -> Result<()> {
         hover.get("jsonrpc") == Some(&json!("2.0")),
         "hover response omitted JSON-RPC 2.0: {hover}"
     );
-    ensure!(
-        hover.get("id") == Some(&hover_id),
-        "hover ID mismatch: {hover}"
-    );
+    ensure!(hover.get("id") == Some(&hover_id), "hover ID mismatch: {hover}");
     ensure!(
         hover.pointer("/error/code") == Some(&json!(-32601)),
         "disabled hover route must return MethodNotFound: {hover}"
@@ -357,9 +324,7 @@ fn malformed_disabled_feature_list_leaves_hover_route_enabled() -> Result<()> {
         })),
     )?;
     ensure!(
-        response
-            .pointer("/result/capabilities/hoverProvider")
-            .is_some(),
+        response.pointer("/result/capabilities/hoverProvider").is_some(),
         "malformed disabledFeatures value changed advertised feature state: {response}"
     );
 
@@ -377,10 +342,7 @@ fn malformed_disabled_feature_list_leaves_hover_route_enabled() -> Result<()> {
         hover.get("jsonrpc") == Some(&json!("2.0")),
         "hover response omitted JSON-RPC 2.0: {hover}"
     );
-    ensure!(
-        hover.get("id") == Some(&hover_id),
-        "hover ID mismatch: {hover}"
-    );
+    ensure!(hover.get("id") == Some(&hover_id), "hover ID mismatch: {hover}");
     ensure!(
         hover.pointer("/error/code") != Some(&json!(-32601)),
         "malformed disabledFeatures value removed the live hover route: {hover}"
