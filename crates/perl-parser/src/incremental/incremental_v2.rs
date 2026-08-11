@@ -381,7 +381,8 @@ impl IncrementalParserV2 {
             if analysis.meets_efficiency_target(self.reuse_config.min_confidence * 100.0) {
                 // Update statistics based on analysis
                 self.reused_nodes = analysis.reused_nodes;
-                self.reparsed_nodes = analysis.total_new_nodes - analysis.reused_nodes;
+                self.reparsed_nodes =
+                    analysis.total_new_nodes.saturating_sub(analysis.reused_nodes);
 
                 // Return the new tree with reuse benefits counted
                 return Some(new_tree);
