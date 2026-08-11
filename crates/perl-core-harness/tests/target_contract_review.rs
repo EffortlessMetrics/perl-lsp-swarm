@@ -122,7 +122,7 @@ fn selector_payloads_reject_unknown_fields() {
 }
 
 #[test]
-fn legacy_composites_reject_overlap_and_keep_op_hook_disjoint() -> TestResult {
+fn legacy_composites_are_partitioned_by_runner() -> TestResult {
     let matrix = io::read_matrix(&repo_file(
         ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
     ))?;
@@ -136,28 +136,64 @@ fn legacy_composites_reject_overlap_and_keep_op_hook_disjoint() -> TestResult {
             .ok_or_else(|| format!("missing target contract {target_id}"))
     };
 
-    let core = find("legacy_custom_core")?;
-    let full = find("legacy_custom_full")?;
+    let core_harness = find("legacy_custom_core_harness")?;
+    let core_test = find("legacy_custom_core_test")?;
+    let full_harness = find("legacy_custom_full_harness")?;
+    let full_test = find("legacy_custom_full_test")?;
     let direct_op = find("component_op")?;
     let op_hook = find("component_op_hook")?;
 
-    assert_eq!(
-        core.composite_overlap_policy,
-        Some(CompositeOverlapPolicy::RejectOverlap)
-    );
-    assert_eq!(
-        full.composite_overlap_policy,
-        Some(CompositeOverlapPolicy::RejectOverlap)
-    );
+    for composite in [core_harness, core_test, full_harness, full_test] {
+        assert_eq!(
+            composite.composite_overlap_policy,
+            Some(CompositeOverlapPolicy::RejectOverlap)
+        );
+    }
     assert!(
-        core.composite_members
+        core_harness
+            .composite_members
             .iter()
             .any(|member| member == "component_op")
     );
     assert!(
-        core.composite_members
+        !core_harness
+            .composite_members
             .iter()
             .any(|member| member == "component_op_hook")
+    );
+    assert!(
+        core_test
+            .composite_members
+            .iter()
+            .any(|member| member == "component_op")
+    );
+    assert!(
+        core_test
+            .composite_members
+            .iter()
+            .any(|member| member == "component_op_hook")
+    );
+    assert_eq!(
+        full_harness.composite_members,
+        vec![
+            "component_uni".to_string(),
+            "legacy_custom_core_harness".to_string(),
+        ]
+    );
+    assert_eq!(
+        full_test.composite_members,
+        vec![
+            "component_uni".to_string(),
+            "legacy_custom_core_test".to_string(),
+        ]
+    );
+    assert_eq!(
+        core_harness.variant_parameters,
+        BTreeMap::from([("runner".to_string(), "harness".to_string())])
+    );
+    assert_eq!(
+        core_test.variant_parameters,
+        BTreeMap::from([("runner".to_string(), "test".to_string())])
     );
     assert_eq!(
         direct_op.selectors,
