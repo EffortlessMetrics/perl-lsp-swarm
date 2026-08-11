@@ -30,6 +30,9 @@ use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const SNAPSHOT_SCHEMA: &str = "semantic_snapshot.v1";
+const SNAPSHOT_KPI: &str = "semantic_snapshot_stability_rate";
+
 // ---------------------------------------------------------------------------
 // Public API (called from main.rs)
 // ---------------------------------------------------------------------------
@@ -70,12 +73,27 @@ fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {
         bail!("Fixture directory not found: {}", dir.display());
     }
 
-    let mut paths: Vec<PathBuf> = fs::read_dir(dir)
-        .with_context(|| format!("reading fixture dir {}", dir.display()))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "pl"))
-        .collect();
+    let entries =
+        fs::read_dir(dir).with_context(|| format!("reading fixture dir {}", dir.display()))?;
+    let mut paths = Vec::new();
+
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("reading fixture entry in {}", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading fixture type for {}", entry.path().display()))?;
+        let path = entry.path();
+
+        if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"))
+        {
+            paths.push(path);
+        }
+    }
 
     paths.sort();
     Ok(paths)
@@ -92,7 +110,7 @@ fn compute_one_entry(path: &Path) -> Result<SnapshotEntry> {
 
     let fixture_id = path
         .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
+        .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".to_string());
 
     let hash = source_hash(&source);
@@ -126,7 +144,7 @@ fn summarize_hir(file: &HirFile) -> HirSummary {
     let scope_count = file.scope_graph.scopes.len();
     let binding_count = file.scope_graph.bindings.len();
     let package_count = file.stash_graph.packages.len();
-    let slot_count: usize = file.stash_graph.packages.iter().map(|p| p.slots.len()).sum();
+    let slot_count: usize = file.stash_graph.packages.iter().map(|package| package.slots.len()).sum();
     let directive_count = file.compile_environment.directives.len();
     let module_request_count = file.compile_environment.module_requests.len();
     let dynamic_boundary_count = file.compile_environment.dynamic_boundaries.len();
@@ -165,7 +183,8 @@ fn item_kind_name(kind: &HirKind) -> &'static str {
         HirKind::ControlTransfer(_) => "ControlTransfer",
         HirKind::DerefExpr(_) => "DerefExpr",
         HirKind::DynamicBoundary(_) => "DynamicBoundary",
-        // Catch-all for any variants added in future HIR model versions.
+        // The HIR enum is non-exhaustive. Explicit unknown-kind failure is a
+        // separate #6725 slice that must advance the summary schema deliberately.
         _ => "Unknown",
     }
 }
@@ -178,6 +197,9 @@ fn run_generate(output: &Path, entries: Vec<SnapshotEntry>) -> Result<()> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let mut manifest = SnapshotManifest::new(today);
     manifest.entries = entries;
+    manifest
+        .validate_exact_entry_set(&manifest.entries)
+        .context("validating generated snapshot fixture set")?;
 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
@@ -219,7 +241,16 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
     let recorded: SnapshotManifest =
         serde_json::from_str(&json).context("parsing snapshot manifest")?;
 
-    // Schema version check.
+    if recorded.schema != SNAPSHOT_SCHEMA {
+        bail!(
+            "Snapshot schema mismatch: recorded={} current={}",
+            recorded.schema,
+            SNAPSHOT_SCHEMA
+        );
+    }
+    if recorded.kpi != SNAPSHOT_KPI {
+        bail!("Snapshot KPI mismatch: recorded={} current={}", recorded.kpi, SNAPSHOT_KPI);
+    }
     if recorded.hir_schema_version != HIR_SCHEMA_VERSION {
         bail!(
             "HIR schema version mismatch: recorded={} current={}; regenerate snapshot",
@@ -228,58 +259,64 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
         );
     }
 
-    let (stable, total, rate) = recorded.stability_rate(fresh);
+    recorded
+        .validate_exact_entry_set(fresh)
+        .with_context(|| format!("validating snapshot set in {}", snapshot_path.display()))?;
 
-    // Report per-entry results.
+    let (stable, total, rate) = recorded.stability_rate(fresh);
     let mut drift_found = false;
+
     for recorded_entry in &recorded.entries {
-        let fresh_match = fresh.iter().find(|f| f.fixture_id == recorded_entry.fixture_id);
-        match fresh_match {
-            None => {
-                eprintln!(
-                    "  MISSING fixture: {} (no fresh entry computed)",
-                    recorded_entry.fixture_id
-                );
-                drift_found = true;
-            }
-            Some(fresh_entry) => {
-                if fresh_entry.source_hash != recorded_entry.source_hash {
-                    eprintln!(
-                        "  SOURCE CHANGED: {} (hash {} -> {})",
-                        recorded_entry.fixture_id,
-                        recorded_entry.source_hash,
-                        fresh_entry.source_hash,
-                    );
-                    drift_found = true;
-                } else if fresh_entry.hir_summary != recorded_entry.hir_summary {
-                    eprintln!(
-                        "  HIR DRIFT: {} (same source, different HIR structure)",
-                        recorded_entry.fixture_id
-                    );
-                    eprintln!(
-                        "    recorded item_count={} fresh item_count={}",
-                        recorded_entry.hir_summary.item_count, fresh_entry.hir_summary.item_count,
-                    );
-                    drift_found = true;
-                } else {
-                    println!("  OK: {}", recorded_entry.fixture_id);
-                }
-            }
+        let Some(fresh_entry) =
+            fresh.iter().find(|entry| entry.fixture_id == recorded_entry.fixture_id)
+        else {
+            bail!(
+                "Snapshot set changed after validation: missing {}",
+                recorded_entry.fixture_id
+            );
+        };
+
+        if fresh_entry.source_hash != recorded_entry.source_hash {
+            eprintln!(
+                "  SOURCE CHANGED: {} (hash {} -> {})",
+                recorded_entry.fixture_id,
+                recorded_entry.source_hash,
+                fresh_entry.source_hash,
+            );
+            drift_found = true;
+        } else if fresh_entry.hir_schema_version != recorded_entry.hir_schema_version {
+            eprintln!(
+                "  ENTRY SCHEMA DRIFT: {} ({} -> {})",
+                recorded_entry.fixture_id,
+                recorded_entry.hir_schema_version,
+                fresh_entry.hir_schema_version,
+            );
+            drift_found = true;
+        } else if fresh_entry.hir_summary != recorded_entry.hir_summary {
+            eprintln!(
+                "  HIR DRIFT: {} (same source, different HIR structure)",
+                recorded_entry.fixture_id
+            );
+            eprintln!(
+                "    recorded item_count={} fresh item_count={}",
+                recorded_entry.hir_summary.item_count, fresh_entry.hir_summary.item_count,
+            );
+            drift_found = true;
+        } else {
+            println!("  OK: {}", recorded_entry.fixture_id);
         }
     }
 
-    println!("semantic_snapshot_stability_rate: {}/{} = {:.1}%", stable, total, rate * 100.0);
+    println!("semantic_snapshot_stability_rate: {stable}/{total} = {:.1}%", rate * 100.0);
 
     if drift_found || stable < total {
         bail!(
-            "Snapshot check failed: {}/{} stable. \
-             Run without --check to regenerate the snapshot manifest.",
-            stable,
-            total
+            "Snapshot check failed: {stable}/{total} stable. \
+             Run without --check to regenerate the snapshot manifest."
         );
     }
 
-    println!("Snapshot check passed: all {} entries stable.", total);
+    println!("Snapshot check passed: all {total} entries stable.");
     Ok(())
 }
 
@@ -295,55 +332,64 @@ mod tests {
 
     fn write_fixture(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
-        let mut f = fs::File::create(&path).expect("create fixture");
-        f.write_all(content.as_bytes()).expect("write fixture");
+        let mut file = fs::File::create(&path).expect("create fixture");
+        file.write_all(content.as_bytes()).expect("write fixture");
         path
+    }
+
+    fn generate_snapshot(fixture_dir: &Path, output: &Path) {
+        run(GenerateSemanticSnapshotArgs {
+            fixture_dir: fixture_dir.to_path_buf(),
+            output: output.to_path_buf(),
+            check: false,
+        })
+        .expect("generate snapshot");
+    }
+
+    fn check_snapshot(fixture_dir: &Path, output: &Path) -> Result<()> {
+        run(GenerateSemanticSnapshotArgs {
+            fixture_dir: fixture_dir.to_path_buf(),
+            output: output.to_path_buf(),
+            check: true,
+        })
     }
 
     #[test]
     fn generates_snapshot_for_minimal_source() {
-        let tmp = TempDir::new().expect("tempdir");
-        let src = "package Foo;\nsub bar { return 1; }\n1;\n";
-        write_fixture(tmp.path(), "minimal.pl", src);
+        let temporary = TempDir::new().expect("tempdir");
+        let source = "package Foo;\nsub bar { return 1; }\n1;\n";
+        write_fixture(temporary.path(), "minimal.pl", source);
 
-        let out = tmp.path().join("snapshot.json");
-        let args = GenerateSemanticSnapshotArgs {
-            fixture_dir: tmp.path().to_owned(),
-            output: out.clone(),
-            check: false,
-        };
-        run(args).expect("generate should succeed");
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
 
-        let json = fs::read_to_string(&out).expect("read output");
+        let json = fs::read_to_string(&output).expect("read output");
         let manifest: SnapshotManifest = serde_json::from_str(&json).expect("deserialize manifest");
 
-        assert_eq!(manifest.schema, "semantic_snapshot.v1");
-        assert_eq!(manifest.kpi, "semantic_snapshot_stability_rate");
+        assert_eq!(manifest.schema, SNAPSHOT_SCHEMA);
+        assert_eq!(manifest.kpi, SNAPSHOT_KPI);
         assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
         assert_eq!(manifest.entries.len(), 1);
 
         let entry = &manifest.entries[0];
         assert_eq!(entry.fixture_id, "minimal");
-        assert_eq!(entry.source_hash, source_hash(src));
-        // The lowerer must produce at least one item (PackageDecl or SubDecl).
-        assert!(entry.hir_summary.item_count > 0, "expected HIR items from non-trivial source");
+        assert_eq!(entry.source_hash, source_hash(source));
+        assert!(
+            entry.hir_summary.item_count > 0,
+            "expected HIR items from non-trivial source"
+        );
     }
 
     #[test]
     fn snapshot_names_typed_dereference_items() {
-        let tmp = TempDir::new().expect("tempdir");
-        let src = "my @arr = @{\"foo\"};\n";
-        write_fixture(tmp.path(), "deref.pl", src);
+        let temporary = TempDir::new().expect("tempdir");
+        let source = "my @arr = @{\"foo\"};\n";
+        write_fixture(temporary.path(), "deref.pl", source);
 
-        let out = tmp.path().join("snapshot.json");
-        run(GenerateSemanticSnapshotArgs {
-            fixture_dir: tmp.path().to_owned(),
-            output: out.clone(),
-            check: false,
-        })
-        .expect("generate should succeed");
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
 
-        let json = fs::read_to_string(&out).expect("read output");
+        let json = fs::read_to_string(&output).expect("read output");
         let manifest: SnapshotManifest = serde_json::from_str(&json).expect("deserialize manifest");
         assert!(
             manifest.entries[0]
@@ -357,68 +403,104 @@ mod tests {
 
     #[test]
     fn check_mode_passes_when_snapshot_matches() {
-        let tmp = TempDir::new().expect("tempdir");
-        let src = "package Bar;\nsub baz { 0 }\n1;\n";
-        write_fixture(tmp.path(), "bar.pl", src);
-        let out = tmp.path().join("snap.json");
+        let temporary = TempDir::new().expect("tempdir");
+        let source = "package Bar;\nsub baz { 0 }\n1;\n";
+        write_fixture(temporary.path(), "bar.pl", source);
+        let output = temporary.path().join("snapshot.json");
 
-        // Generate.
-        run(GenerateSemanticSnapshotArgs {
-            fixture_dir: tmp.path().to_owned(),
-            output: out.clone(),
-            check: false,
-        })
-        .expect("generate");
-
-        // Check — should pass because source hasn't changed.
-        run(GenerateSemanticSnapshotArgs {
-            fixture_dir: tmp.path().to_owned(),
-            output: out.clone(),
-            check: true,
-        })
-        .expect("check should pass on unchanged source");
+        generate_snapshot(temporary.path(), &output);
+        check_snapshot(temporary.path(), &output)
+            .expect("check should pass on unchanged source");
     }
 
     #[test]
     fn check_mode_fails_on_source_change() {
-        let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("ch.pl");
-        fs::write(&path, "package Ch; sub a { 1 } 1;").expect("write v1");
-        let out = tmp.path().join("snap.json");
+        let temporary = TempDir::new().expect("tempdir");
+        let path = write_fixture(
+            temporary.path(),
+            "changed.pl",
+            "package Changed; sub first { 1 } 1;",
+        );
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
 
-        // Generate with v1 source.
-        run(GenerateSemanticSnapshotArgs {
-            fixture_dir: tmp.path().to_owned(),
-            output: out.clone(),
-            check: false,
-        })
-        .expect("generate v1");
+        fs::write(&path, "package Changed; sub first { 1 } sub second { 2 } 1;")
+            .expect("write changed source");
 
-        // Overwrite with different source.
-        fs::write(&path, "package Ch; sub a { 1 } sub b { 2 } 1;").expect("write v2");
+        assert!(
+            check_snapshot(temporary.path(), &output).is_err(),
+            "check must fail when source changes"
+        );
+    }
 
-        // Check should fail because source hash changed.
-        let result = run(GenerateSemanticSnapshotArgs {
-            fixture_dir: tmp.path().to_owned(),
-            output: out.clone(),
-            check: true,
-        });
-        assert!(result.is_err(), "check must fail when source changes");
+    #[test]
+    fn check_mode_fails_when_fresh_fixture_is_added() {
+        let temporary = TempDir::new().expect("tempdir");
+        write_fixture(temporary.path(), "first.pl", "1;");
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
+
+        write_fixture(temporary.path(), "second.pl", "2;");
+
+        assert!(
+            check_snapshot(temporary.path(), &output).is_err(),
+            "check must reject a fresh fixture absent from the manifest"
+        );
+    }
+
+    #[test]
+    fn check_mode_fails_when_recorded_fixture_is_removed() {
+        let temporary = TempDir::new().expect("tempdir");
+        let first = write_fixture(temporary.path(), "first.pl", "1;");
+        write_fixture(temporary.path(), "second.pl", "2;");
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
+
+        fs::remove_file(first).expect("remove recorded fixture");
+
+        assert!(
+            check_snapshot(temporary.path(), &output).is_err(),
+            "check must reject a recorded fixture missing from fresh input"
+        );
+    }
+
+    #[test]
+    fn check_mode_fails_on_duplicate_recorded_id() {
+        let temporary = TempDir::new().expect("tempdir");
+        write_fixture(temporary.path(), "fixture.pl", "1;");
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
+
+        let json = fs::read_to_string(&output).expect("read snapshot");
+        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
+        manifest.entries.push(manifest.entries[0].clone());
+        fs::write(
+            &output,
+            serde_json::to_string_pretty(&manifest).expect("serialize duplicate snapshot"),
+        )
+        .expect("write duplicate snapshot");
+
+        assert!(
+            check_snapshot(temporary.path(), &output).is_err(),
+            "check must reject duplicate recorded fixture IDs"
+        );
     }
 
     #[test]
     fn snapshot_covers_slice_fixtures() {
-        // Validate that all three bundled slice fixtures produce non-empty HIR.
         let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../crates/perl-corpus/fixtures/snapshot-slice");
 
         if !fixture_dir.exists() {
-            // Fixture dir only present in the workspace; skip in isolated builds.
             return;
         }
 
         let fixtures = collect_fixtures(&fixture_dir).expect("collect fixtures");
-        assert!(fixtures.len() >= 3, "expected at least 3 slice fixtures, got {}", fixtures.len());
+        assert!(
+            fixtures.len() >= 3,
+            "expected at least 3 slice fixtures, got {}",
+            fixtures.len()
+        );
 
         let entries = compute_snapshot_entries(&fixtures).expect("compute entries");
         for entry in &entries {
