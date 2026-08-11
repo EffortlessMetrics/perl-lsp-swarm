@@ -12,6 +12,12 @@ use std::process::Command;
 const CONTRACT_PATH: &str = "policy/product-identity.toml";
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug)]
+struct RepositoryContext {
+    repository: String,
+    authoritative: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProductIdentityContract {
@@ -73,14 +79,26 @@ struct IdentityConflict {
 /// Validate the canonical identity map against package and extension metadata.
 pub fn check(repo_root: &Path) -> Result<()> {
     let repository_context = resolve_repository_context(repo_root)?;
-    check_with_repository_context(repo_root, repository_context.as_deref())
+    check_with_resolved_repository_context(repo_root, repository_context.as_ref())
 }
 
 fn check_with_repository_context(
     repo_root: &Path,
     repository_context: Option<&str>,
 ) -> Result<()> {
+    let repository_context = repository_context.map(|repository| RepositoryContext {
+        repository: repository.to_string(),
+        authoritative: true,
+    });
+    check_with_resolved_repository_context(repo_root, repository_context.as_ref())
+}
+
+fn check_with_resolved_repository_context(
+    repo_root: &Path,
+    resolved_context: Option<&RepositoryContext>,
+) -> Result<()> {
     let contract = load_contract(repo_root)?;
+    let repository_context = select_repository_context(&contract, resolved_context);
     validate_contract(repo_root, &contract, repository_context)?;
 
     let context = repository_context.unwrap_or("unbound-local-checkout");
@@ -98,6 +116,21 @@ fn check_with_repository_context(
         context
     );
     Ok(())
+}
+
+fn select_repository_context<'a>(
+    contract: &ProductIdentityContract,
+    resolved_context: Option<&'a RepositoryContext>,
+) -> Option<&'a str> {
+    let context = resolved_context?;
+    if context.authoritative
+        || context.repository == contract.product.public_repository
+        || context.repository == contract.product.development_repository
+    {
+        Some(context.repository.as_str())
+    } else {
+        None
+    }
 }
 
 fn load_contract(repo_root: &Path) -> Result<ProductIdentityContract> {
@@ -469,12 +502,15 @@ fn validate_conflicts(contract: &ProductIdentityContract) -> Result<()> {
     Ok(())
 }
 
-fn resolve_repository_context(repo_root: &Path) -> Result<Option<String>> {
+fn resolve_repository_context(repo_root: &Path) -> Result<Option<RepositoryContext>> {
     if let Ok(value) = env::var("GITHUB_REPOSITORY") {
         let value = value.trim();
         if !value.is_empty() {
             validate_repository_slug("GITHUB_REPOSITORY", value)?;
-            return Ok(Some(value.to_string()));
+            return Ok(Some(RepositoryContext {
+                repository: value.to_string(),
+                authoritative: true,
+            }));
         }
     }
 
@@ -497,14 +533,14 @@ fn resolve_repository_context(repo_root: &Path) -> Result<Option<String>> {
     if remote.is_empty() {
         return Ok(None);
     }
-    let repository = parse_github_repository(remote).ok_or_else(|| {
-        eyre!(
-            "origin remote {:?} is not a supported github.com repository URL",
-            remote
-        )
-    })?;
+    let Some(repository) = parse_github_repository(remote) else {
+        return Ok(None);
+    };
     validate_repository_slug("origin repository", &repository)?;
-    Ok(Some(repository))
+    Ok(Some(RepositoryContext {
+        repository,
+        authoritative: false,
+    }))
 }
 
 fn parse_github_repository(remote: &str) -> Option<String> {
@@ -622,310 +658,5 @@ fn require_non_empty(label: &str, value: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{check_with_repository_context, parse_github_repository};
-    use color_eyre::eyre::{Result, bail};
-    use std::fs;
-    use std::path::Path;
-    use tempfile::TempDir;
-
-    const CONTRACT: &str = r#"
-schema_version = 1
-
-[product]
-name = "perl-lsp"
-public_repository = "EffortlessMetrics/perl-lsp"
-development_repository = "EffortlessMetrics/perl-lsp-swarm"
-
-[server]
-primary_executable = "perllsp"
-cargo_package = "perllsp"
-package_manifest = "crates/perllsp/Cargo.toml"
-implementation_crate = "perl-lsp-rs"
-implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
-
-[extension]
-publisher = "EffortlessMetrics"
-package_name = "perl-lsp-rs"
-id = "EffortlessMetrics.perl-lsp-rs"
-display_name = "Perl Language Server (perl-lsp)"
-package_manifest = "vscode-extension/package.json"
-
-[debug_adapter]
-executable = "perl-dap"
-cargo_package = "perl-dap"
-package_manifest = "crates/perl-dap/Cargo.toml"
-maturity = "preview"
-
-[[conflicts]]
-identity = "crates.io/perl-lsp"
-relation = "different_project"
-remediation = "Install perllsp."
-"#;
-
-    #[test]
-    fn coherent_identity_contract_passes_in_both_declared_repositories() -> Result<()> {
-        let repo = fixture_repo()?;
-        check_with_repository_context(
-            repo.path(),
-            Some("EffortlessMetrics/perl-lsp-swarm"),
-        )?;
-        check_with_repository_context(repo.path(), Some("EffortlessMetrics/perl-lsp"))
-    }
-
-    #[test]
-    fn extension_identity_drift_fails() -> Result<()> {
-        let repo = fixture_repo()?;
-        write(
-            repo.path(),
-            "vscode-extension/package.json",
-            r#"{
-  "name": "wrong-extension",
-  "displayName": "Perl Language Server (perl-lsp)",
-  "publisher": "EffortlessMetrics",
-  "repository": {"url": "https://github.com/EffortlessMetrics/perl-lsp"}
-}"#,
-        )?;
-
-        expect_failure(repo.path(), "extension package name drifted")
-    }
-
-    #[test]
-    fn package_repository_override_fails() -> Result<()> {
-        let repo = fixture_repo()?;
-        write(
-            repo.path(),
-            "crates/perllsp/Cargo.toml",
-            r#"[package]
-name = "perllsp"
-repository = "https://github.com/other/project"
-
-[[bin]]
-name = "perllsp"
-
-[dependencies]
-perl-lsp-rs = { workspace = true }
-"#,
-        )?;
-
-        expect_failure(repo.path(), "primary server package repository drifted")
-    }
-
-    #[test]
-    fn undeclared_repository_context_fails() -> Result<()> {
-        let repo = fixture_repo()?;
-        let error = match check_with_repository_context(repo.path(), Some("other/project")) {
-            Ok(()) => bail!("undeclared repository context should fail"),
-            Err(error) => error,
-        };
-        if !format!("{error:#}").contains("is not declared as either public") {
-            bail!("unexpected error: {error:#}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn identical_public_and_development_repositories_fail() -> Result<()> {
-        let repo = fixture_repo()?;
-        let contract = CONTRACT.replace(
-            "development_repository = \"EffortlessMetrics/perl-lsp-swarm\"",
-            "development_repository = \"EffortlessMetrics/perl-lsp\"",
-        );
-        write(repo.path(), "policy/product-identity.toml", &contract)?;
-
-        expect_failure(repo.path(), "public and development repositories must remain distinct")
-    }
-
-    #[test]
-    fn missing_facade_dependency_fails() -> Result<()> {
-        let repo = fixture_repo()?;
-        write(
-            repo.path(),
-            "crates/perllsp/Cargo.toml",
-            r#"[package]
-name = "perllsp"
-repository.workspace = true
-
-[[bin]]
-name = "perllsp"
-
-[dependencies]
-serde = "1"
-"#,
-        )?;
-
-        expect_failure(
-            repo.path(),
-            "does not depend on declared implementation crate",
-        )
-    }
-
-    #[test]
-    fn same_named_dependency_alias_cannot_hide_another_package() -> Result<()> {
-        let repo = fixture_repo()?;
-        write(
-            repo.path(),
-            "crates/perllsp/Cargo.toml",
-            r#"[package]
-name = "perllsp"
-repository.workspace = true
-
-[[bin]]
-name = "perllsp"
-
-[dependencies]
-perl-lsp-rs = { package = "different-project", version = "1" }
-"#,
-        )?;
-
-        expect_failure(
-            repo.path(),
-            "does not depend on declared implementation crate",
-        )
-    }
-
-    #[test]
-    fn implicit_primary_binary_is_accepted() -> Result<()> {
-        let repo = fixture_repo()?;
-        write(
-            repo.path(),
-            "crates/perllsp/Cargo.toml",
-            r#"[package]
-name = "perllsp"
-repository.workspace = true
-
-[dependencies]
-perl-lsp-rs = { workspace = true }
-"#,
-        )?;
-
-        check_with_repository_context(
-            repo.path(),
-            Some("EffortlessMetrics/perl-lsp-swarm"),
-        )
-    }
-
-    #[test]
-    fn missing_primary_binary_fails() -> Result<()> {
-        let repo = fixture_repo()?;
-        write(
-            repo.path(),
-            "crates/perllsp/Cargo.toml",
-            r#"[package]
-name = "perllsp"
-repository.workspace = true
-autobins = false
-
-[[bin]]
-name = "wrong"
-
-[dependencies]
-perl-lsp-rs = { workspace = true }
-"#,
-        )?;
-
-        expect_failure(repo.path(), "does not expose binary \"perllsp\"")
-    }
-
-    #[test]
-    fn github_remote_forms_resolve_to_repository_slug() {
-        for remote in [
-            "https://github.com/EffortlessMetrics/perl-lsp-swarm.git",
-            "ssh://git@github.com/EffortlessMetrics/perl-lsp-swarm.git",
-            "git@github.com:EffortlessMetrics/perl-lsp-swarm.git",
-        ] {
-            assert_eq!(
-                parse_github_repository(remote).as_deref(),
-                Some("EffortlessMetrics/perl-lsp-swarm")
-            );
-        }
-    }
-
-    fn expect_failure(repo: &Path, expected: &str) -> Result<()> {
-        let error = match check_with_repository_context(
-            repo,
-            Some("EffortlessMetrics/perl-lsp-swarm"),
-        ) {
-            Ok(()) => bail!("identity drift should fail"),
-            Err(error) => error,
-        };
-        if !format!("{error:#}").contains(expected) {
-            bail!("unexpected error: {error:#}");
-        }
-        Ok(())
-    }
-
-    fn fixture_repo() -> Result<TempDir> {
-        let repo = TempDir::new()?;
-        write(repo.path(), "policy/product-identity.toml", CONTRACT)?;
-        write(
-            repo.path(),
-            "Cargo.toml",
-            "[workspace.package]\nrepository = \"https://github.com/EffortlessMetrics/perl-lsp\"\n",
-        )?;
-        write(
-            repo.path(),
-            "crates/perllsp/Cargo.toml",
-            r#"[package]
-name = "perllsp"
-repository.workspace = true
-
-[[bin]]
-name = "perllsp"
-
-[dependencies]
-perl-lsp-rs = { workspace = true }
-"#,
-        )?;
-        write(repo.path(), "crates/perllsp/src/main.rs", "fn main() {}\n")?;
-        write(
-            repo.path(),
-            "crates/perl-lsp-rs/Cargo.toml",
-            r#"[package]
-name = "perl-lsp-rs"
-repository.workspace = true
-
-[[bin]]
-name = "perl-lsp"
-"#,
-        )?;
-        write(
-            repo.path(),
-            "crates/perl-lsp-rs/src/main.rs",
-            "fn main() {}\n",
-        )?;
-        write(
-            repo.path(),
-            "crates/perl-dap/Cargo.toml",
-            r#"[package]
-name = "perl-dap"
-repository.workspace = true
-
-[[bin]]
-name = "perl-dap"
-"#,
-        )?;
-        write(repo.path(), "crates/perl-dap/src/main.rs", "fn main() {}\n")?;
-        write(
-            repo.path(),
-            "vscode-extension/package.json",
-            r#"{
-  "name": "perl-lsp-rs",
-  "displayName": "Perl Language Server (perl-lsp)",
-  "publisher": "EffortlessMetrics",
-  "repository": {"url": "https://github.com/EffortlessMetrics/perl-lsp"}
-}"#,
-        )?;
-        Ok(repo)
-    }
-
-    fn write(root: &Path, relative: &str, content: &str) -> Result<()> {
-        let path = root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, content)?;
-        Ok(())
-    }
-}
+#[path = "product_identity_tests.rs"]
+mod tests;
