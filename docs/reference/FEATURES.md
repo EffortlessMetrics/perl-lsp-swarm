@@ -1,13 +1,7 @@
-# Parser feature reference — current-evidence pointer
+# Parser documentation — current-evidence pointer
 
-This page is retained for compatibility with older links. Its former “complete feature list” asserted 100% coverage, near-total real-world coverage, and implementation details tied to old parser revisions without a current evidence receipt.
+This page retires a historical snapshot. It does not define parser coverage, performance, production readiness, or workspace navigation guarantees.
 
-Use these current authorities instead:
+Use the [current parser package README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-parser/README.md), [parser-core README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-parser-core/README.md), [workspace manifest](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml), and [current status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md) for evidence tied to the present workspace.
 
-- [Parser feature matrix](PARSER_FEATURE_MATRIX.md) for governed feature status;
-- [Parser limitations](PARSER_LIMITATIONS.md) for known gaps and partial support;
-- [Parser contracts](PARSER_CONTRACTS.md) for behavioral boundaries;
-- [Current status](../project/CURRENT_STATUS.md) for project-level support and release posture;
-- focused compiler/parser tests and their linked issues for executable proof.
-
-The former percentages, broad checkmarks, version-specific claims, and old PR references are historical. A clean parse, a fixture, or a documented intent does not by itself establish complete Perl compatibility.
+Performance or coverage claims require a reproducible receipt with source revision, command, corpus, and result; this pointer supplies none.
