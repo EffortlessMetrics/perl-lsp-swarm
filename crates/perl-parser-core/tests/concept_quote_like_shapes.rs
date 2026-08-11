@@ -68,13 +68,7 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
                 }
                 substitution_seen = true;
             }
-            NodeKind::Transliteration {
-                expr,
-                search,
-                replace,
-                modifiers,
-                negated,
-            } => {
+            NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
                 if !matches!(
                     &expr.kind,
                     NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
@@ -125,9 +119,7 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
         ),
     ];
     if transliterations != expected_transliterations {
-        return Err(format!(
-            "unexpected transliteration payloads: {transliterations:?}"
-        ));
+        return Err(format!("unexpected transliteration payloads: {transliterations:?}"));
     }
     if quote_spans != vec!["qq{$message}", "q{hello}"] {
         return Err(format!("unexpected quote spans: {quote_spans:?}"));
