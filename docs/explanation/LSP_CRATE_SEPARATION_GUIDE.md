@@ -1,70 +1,15 @@
-# LSP Crate Separation Architecture Guide (v0.8.8)
+# LSP crate separation guide — current-source pointer
 
-## Rationale and Benefits
+This page describes a retired v0.8.8 architecture. It mixed parser and LSP responsibilities, named absorbed provider crates as current, and gave migration commands and quality claims that are not the present workspace contract.
 
-The comprehensive LSP crate separation in v0.8.8 represents a major architectural improvement that provides clear separation of concerns between parsing logic and LSP protocol implementation:
+Use the current sources instead:
 
-**Architectural Principles**:
-- **Single Responsibility**: Each crate has a focused, well-defined purpose
-- **Clean Interfaces**: Clear API boundaries between parser and LSP functionality
-- **Independent Versioning**: LSP server can evolve independently from parser core
-- **Reduced Coupling**: LSP protocol changes don't impact parser internals
-- **Enhanced Testability**: Isolated testing of LSP features and parser logic
+- [Architecture Overview](../reference/ARCHITECTURE.md) — current parser, semantic, workspace, and LSP data flow;
+- [Cargo.toml](../../Cargo.toml) — authoritative workspace members and absorbed-crate comments;
+- [perl-parser-core README](../../crates/perl-parser-core/README.md) — parser-core ownership;
+- [perl-parser README](../../crates/perl-parser/README.md) — higher-level parsing facade;
+- [perl-lsp-rs-core README](../../crates/perl-lsp-rs-core/README.md) — consolidated LSP core;
+- [perl-lsp-rs README](../../crates/perl-lsp-rs/README.md) — server implementation and embedding boundary;
+- [LSP contribution guide](../how-to/CONTRIBUTING_LSP.md) — contributor workflow for LSP changes.
 
-**Production Benefits**:
-- **Improved Maintainability**: Easier to understand, modify, and extend each component
-- **Better Distribution**: Users can install only what they need (parser library vs LSP binary)
-- **Enhanced Modularity**: Clear separation enables better code organization
-- **Reduced Build Times**: Selective compilation of components reduces build overhead
-- **Cleaner Dependencies**: Each crate manages only its necessary dependencies
-
-## Crate Responsibilities
-
-**perl-parser crate** (`/crates/perl-parser/`):
-- **Core parser implementation** - AST generation, syntax analysis
-- **LSP provider logic** - completion, hover, diagnostics, etc.
-- **Text processing utilities** - Rope integration, position mapping
-- **Incremental parsing** - document state management, cache handling
-- **Library API** - stable interface for external consumers
-
-**perl-lsp crate** (`/crates/perl-lsp-rs/`):
-- **LSP protocol implementation** - JSON-RPC communication, request handling
-- **Command-line interface** - argument parsing, logging, health checks
-- **Server lifecycle management** - initialization, shutdown, error handling
-- **Editor integration** - protocol compliance, feature advertisement
-- **Binary distribution** - executable for end users
-
-## Migration Guide
-
-**For End Users**:
-```bash
-# Old approach (deprecated)
-cargo install perl-parser --features lsp
-
-# New approach (recommended)
-cargo install perllsp
-```
-
-**For Library Consumers**:
-```rust
-// Parser functionality remains in perl-parser
-use perl_parser::{Parser, LspServer, CompletionProvider};
-
-// LSP binary logic is now in perl-lsp crate
-// (most users don't need to import this directly)
-```
-
-**For Contributors**:
-- **Parser improvements** → `/crates/perl-parser/src/`
-- **LSP protocol features** → `/crates/perl-parser/src/` (provider logic)
-- **CLI enhancements** → `/crates/perl-lsp-rs/src/` (binary interface)
-- **Integration tests** → `/crates/perl-lsp-rs/tests/` (E2E LSP tests)
-
-## Quality Improvements
-
-The crate separation delivered immediate quality benefits:
-- **Zero clippy warnings** across both crates
-- **Consistent formatting** with shared workspace lints
-- **Enhanced test coverage** with dedicated LSP integration tests
-- **Improved error handling** with focused error types per crate
-- **Better documentation** with crate-specific examples and guides
+The former migration examples, crate paths, parser/LSP ownership table, and “zero warnings” or coverage claims are historical. Do not copy them into new documentation or use them to choose an implementation seam.
