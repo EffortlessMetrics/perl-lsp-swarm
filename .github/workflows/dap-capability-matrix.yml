@@ -1,0 +1,131 @@
+name: DAP Capability Matrix
+
+on:
+  pull_request:
+    branches: [main, master, agent/dap-protocol-authority-6737]
+    paths:
+      - '.ci/dap/capability-matrix.json'
+      - '.ci/dap/protocol-authority.json'
+      - 'crates/perl-dap/**'
+      - 'scripts/ci/dap_capability_*.py'
+      - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_authority_*.py'
+      - 'scripts/tests/test_dap_capability_matrix.py'
+      - 'docs/reference/DAP_CAPABILITY_MATRIX.md'
+      - '.github/workflows/dap-capability-matrix.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.ci/dap/capability-matrix.json'
+      - '.ci/dap/protocol-authority.json'
+      - 'crates/perl-dap/**'
+      - 'scripts/ci/dap_capability_*.py'
+      - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_authority_*.py'
+      - 'scripts/tests/test_dap_capability_matrix.py'
+      - 'docs/reference/DAP_CAPABILITY_MATRIX.md'
+      - '.github/workflows/dap-capability-matrix.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: dap-capability-matrix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  DAP_CAPABILITY_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  DAP_CAPABILITY_RUN_ID: ${{ github.run_id }}
+  DAP_CAPABILITY_RUN_ATTEMPT: ${{ github.run_attempt }}
+
+jobs:
+  matrix:
+    name: Initialize capability inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ env.DAP_CAPABILITY_CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout identity and clean source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$DAP_CAPABILITY_CANDIDATE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          cache-on-failure: true
+          shared-key: dap-capability-matrix-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Run capability-matrix falsifiers
+        run: python3 scripts/tests/test_dap_capability_matrix.py
+
+      - name: Prove actual initialize value shapes
+        run: cargo test -p perl-dap --test dap_capability_matrix_contract --locked
+
+      - name: Reconcile tree after executing repository code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --cached --exit-code
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+
+      - name: Validate production inventory against pinned upstream DAP
+        run: |
+          python3 scripts/ci/dap_capability_matrix.py \
+            --root . \
+            --matrix .ci/dap/capability-matrix.json \
+            --authority-manifest .ci/dap/protocol-authority.json \
+            --repository-sha "$DAP_CAPABILITY_CANDIDATE_SHA" \
+            --run-id "$DAP_CAPABILITY_RUN_ID" \
+            --run-attempt "$DAP_CAPABILITY_RUN_ATTEMPT" \
+            --receipt target/receipts/dap-capability-matrix.json
+
+      - name: Reconcile final candidate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --cached --exit-code
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+
+      - name: Publish capability summary
+        shell: bash
+        run: |
+          {
+            echo '### DAP initialize capability inventory'
+            echo
+            echo '- Candidate: `'$DAP_CAPABILITY_CANDIDATE_SHA'`'
+            echo '- Run: `'$DAP_CAPABILITY_RUN_ID'.'$DAP_CAPABILITY_RUN_ATTEMPT'`'
+            echo '- Receipt: `target/receipts/dap-capability-matrix.json`'
+            echo
+            echo '```json'
+            cat target/receipts/dap-capability-matrix.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload capability receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: dap-capability-matrix-${{ env.DAP_CAPABILITY_CANDIDATE_SHA }}
+          path: target/receipts/dap-capability-matrix.json
+          if-no-files-found: error
+          retention-days: 14
