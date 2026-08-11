@@ -1,0 +1,75 @@
+name: Agent repair compiler proof policy
+
+on:
+  push:
+    branches:
+      - agent/compiler-concept-proof-6689
+    paths:
+      - .github/workflows/agent-repair-compiler-proof-policy.yml
+      - .github/scripts/repair_compiler_proof_policy.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-repair-compiler-proof-policy
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout triggering candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Confirm candidate identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Apply reviewed repairs
+        run: python3 .github/scripts/repair_compiler_proof_policy.py
+
+      - name: Validate schema syntax
+        run: python3 -m json.tool schemas/perl_compiler_proof_policy.v1.schema.json >/dev/null
+
+      - name: Format candidate
+        run: rustfmt --edition 2024 xtask/src/bin/compiler-proof-policy.rs
+
+      - name: Regenerate status
+        run: cargo run -p xtask --bin compiler-proof-policy -- --write-status
+
+      - name: Verify formatting
+        run: rustfmt --edition 2024 --check xtask/src/bin/compiler-proof-policy.rs
+
+      - name: Verify unit tests
+        run: cargo test -p xtask --bin compiler-proof-policy
+
+      - name: Verify Clippy
+        run: cargo clippy -p xtask --bin compiler-proof-policy -- -D warnings
+
+      - name: Verify generated status
+        run: cargo run -p xtask --bin compiler-proof-policy -- --check
+
+      - name: Commit improvement pass
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm .github/workflows/agent-repair-compiler-proof-policy.yml
+          git rm .github/scripts/repair_compiler_proof_policy.py
+          git add contracts/compiler/perl_compiler_proof_policy.v1.toml
+          git add docs/project/status/perl_compiler_proof_policy.md
+          git add schemas/perl_compiler_proof_policy.v1.schema.json
+          git add xtask/src/bin/compiler-proof-policy.rs
+          git diff --cached --check
+          git commit -m "fix(compiler): close proof policy authority gaps"
+          git push origin HEAD:agent/compiler-concept-proof-6689
