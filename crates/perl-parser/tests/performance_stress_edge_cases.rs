@@ -377,9 +377,19 @@ fn test_concurrent_parsing_stress() {
         );
     }
 
-    // At least some parses should succeed even under stress
+    // The generated stress inputs are expected to remain parseable. A single
+    // successful parse is not meaningful evidence for a concurrent regression.
     let success_count = results.iter().filter(|(_, _, _, _, success)| *success).count();
-    assert!(success_count > 0, "At least some parses should succeed");
+    assert!(
+        success_count * 2 >= results.len(),
+        "at least half of concurrent parses must succeed: {success_count}/{} (errors: {error_count})",
+        results.len()
+    );
+    assert!(
+        error_count * 2 <= results.len(),
+        "concurrent parse errors must remain bounded: {error_count}/{}",
+        results.len()
+    );
 }
 
 /// Test memory pressure scenarios
