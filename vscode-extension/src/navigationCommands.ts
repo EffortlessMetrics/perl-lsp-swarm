@@ -18,6 +18,7 @@ export interface WorkspaceStatusSnapshot {
   readonly fileCount?: number;
   readonly errorCount?: number;
   readonly lifecycle?: string;
+  readonly lifecycleDetail?: string;
   readonly readinessState?: WorkspaceStatusReadiness;
   readonly readinessReason?: string;
   readonly activeDocumentReady?: boolean;
@@ -95,6 +96,9 @@ export async function showWorkspaceStatusCommand(dependencies: {
   }
   if (status.lifecycle) {
     lines.push(`Lifecycle: ${status.lifecycle}`);
+  }
+  if (status.lifecycleDetail) {
+    lines.push(`Detail: ${status.lifecycleDetail}`);
   }
   if (status.readinessState === 'legacy') {
     lines.push('Workspace index: legacy server (enhanced readiness unavailable)');
