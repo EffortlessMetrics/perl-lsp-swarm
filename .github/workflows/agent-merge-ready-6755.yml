@@ -14,7 +14,7 @@ jobs:
       github.event.pull_request.number == 6755 &&
       github.event.pull_request.head.ref == 'agent/lexer-symbol-prepass-6732'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     outputs:
       patch_b64: ${{ steps.patch.outputs.patch_b64 }}
       patch_sha256: ${{ steps.patch.outputs.patch_sha256 }}
@@ -42,11 +42,16 @@ jobs:
         run: |
           set -euo pipefail
           python3 .agent/merge-ready-6755.py
-          rm .agent/merge-ready-6755.py .github/workflows/agent-merge-ready-6755.yml
+          python3 .agent/merge-ready-6755-followup.py
+          rm \
+            .agent/merge-ready-6755.py \
+            .agent/merge-ready-6755-followup.py \
+            .github/workflows/agent-merge-ready-6755.yml
           rustfmt --edition 2024 crates/perl-lexer/src/symbol_table.rs
 
           mapfile -t changed < <(git diff --name-only | sort)
           expected=(
+            .agent/merge-ready-6755-followup.py
             .agent/merge-ready-6755.py
             .github/workflows/agent-merge-ready-6755.yml
             crates/perl-lexer/src/symbol_table.rs
@@ -62,6 +67,7 @@ jobs:
           set -euo pipefail
           rustfmt --edition 2024 --check crates/perl-lexer/src/symbol_table.rs
           cargo test -p perl-lexer --lib symbol_table --locked
+          cargo test -p perl-lexer --test ripr_seam_proof_qw_self_delimited --locked
           cargo test -p perl-lexer --tests --locked
           cargo clippy -p perl-lexer --all-targets --locked -- -D warnings
 
@@ -104,6 +110,7 @@ jobs:
 
           mapfile -t changed < <(git diff --name-only | sort)
           expected=(
+            .agent/merge-ready-6755-followup.py
             .agent/merge-ready-6755.py
             .github/workflows/agent-merge-ready-6755.yml
             crates/perl-lexer/src/symbol_table.rs
@@ -112,6 +119,7 @@ jobs:
           printf '%s\n' "${changed[@]}" | sort > /tmp/changed-files
           diff -u /tmp/expected-files /tmp/changed-files
           test ! -e .agent/merge-ready-6755.py
+          test ! -e .agent/merge-ready-6755-followup.py
           test ! -e .github/workflows/agent-merge-ready-6755.yml
           git diff --check
 
@@ -119,7 +127,10 @@ jobs:
           git config user.email git@effortlesssteven.com
           git config core.hooksPath /dev/null
           git add crates/perl-lexer/src/symbol_table.rs
-          git add -u .agent/merge-ready-6755.py .github/workflows/agent-merge-ready-6755.yml
+          git add -u \
+            .agent/merge-ready-6755.py \
+            .agent/merge-ready-6755-followup.py \
+            .github/workflows/agent-merge-ready-6755.yml
           git commit --no-verify -m 'fix(lexer): complete source-aware local sub scanning (#6732)'
 
       - name: Publish only if the reviewed branch has not advanced
