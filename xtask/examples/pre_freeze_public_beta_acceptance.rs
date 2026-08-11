@@ -461,6 +461,9 @@ fn main() -> Result<()> {
         packet.artifact_set_id,
         recommendation.as_str()
     );
+    if recommendation != FreezeRecommendation::Ready {
+        bail!("freeze recommendation is {}", recommendation.as_str());
+    }
     Ok(())
 }
 
