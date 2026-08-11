@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 /// ServerCapabilities with a typed struct that can be serialized
 /// directly, preventing field name drift.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TextDocumentSyncOptions {
     open_close: bool,
     change: i32,
@@ -22,6 +23,7 @@ struct TextDocumentSyncOptions {
 
 /// Save options for TextDocumentSyncOptions.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SaveOptions {
     include_text: bool,
 }
