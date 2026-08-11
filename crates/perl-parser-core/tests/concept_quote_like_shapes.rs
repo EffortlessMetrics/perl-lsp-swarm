@@ -15,11 +15,12 @@ fn parse_clean(source: &str) -> Result<Node, String> {
     }
 }
 
-fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
-    visit(node);
+fn walk(node: &Node, visit: &mut impl FnMut(&Node) -> Result<(), String>) -> Result<(), String> {
+    visit(node)?;
     for child in node.children() {
-        walk(child, visit);
+        walk(child, visit)?;
     }
+    Ok(())
 }
 
 #[test]
@@ -36,7 +37,8 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
     let mut transliterations = Vec::new();
     let mut quote_spans = Vec::new();
 
-    walk(&ast, &mut |node| match &node.kind {
+    walk(&ast, &mut |node| {
+        match &node.kind {
         NodeKind::Substitution {
             expr,
             pattern,
@@ -45,15 +47,20 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
             has_embedded_code,
             negated,
         } => {
-            assert!(matches!(
+            if !matches!(
                 &expr.kind,
                 NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
-            ));
-            assert_eq!(pattern, "hello");
-            assert_eq!(replacement, "hello world");
-            assert_eq!(modifiers, "g");
-            assert!(!has_embedded_code);
-            assert!(!negated);
+            ) {
+                return Err("substitution target was not $message".into());
+            }
+            if pattern != "hello" || replacement != "hello world" || modifiers != "g" {
+                return Err(format!(
+                    "unexpected substitution payload: pattern={pattern:?}, replacement={replacement:?}, modifiers={modifiers:?}"
+                ));
+            }
+            if *has_embedded_code || *negated {
+                return Err("substitution flags were not preserved".into());
+            }
             assert_eq!(
                 source.get(node.location.start..node.location.end),
                 Some("$message =~ s/hello/hello world/g")
@@ -61,10 +68,12 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
             substitution_seen = true;
         }
         NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
-            assert!(matches!(
+            if !matches!(
                 &expr.kind,
                 NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
-            ));
+            ) {
+                return Err("transliteration target was not $message".into());
+            }
             if let Some(text) = source.get(node.location.start..node.location.end) {
                 transliterations.push((
                     text.to_owned(),
@@ -83,32 +92,39 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
             }
         }
         _ => {}
-    });
+        }
+        Ok(())
+    })?;
 
     transliterations.sort();
     quote_spans.sort();
-    assert!(substitution_seen, "substitution node was not preserved");
-    assert_eq!(
-        transliterations,
-        vec![
-            (
-                "$message =~ tr/a-z/A-Z/".to_string(),
-                "a-z".to_string(),
-                "A-Z".to_string(),
-                String::new(),
-                false,
-            ),
-            (
-                "$message =~ y{a-z}{A-Z}r".to_string(),
-                "a-z".to_string(),
-                "A-Z".to_string(),
-                "r".to_string(),
-                false,
-            ),
-        ],
-        "tr and y spellings must retain the same payload contract with their own modifiers"
-    );
-    assert_eq!(quote_spans, vec!["qq{$message}", "q{hello}"]);
+    if !substitution_seen {
+        return Err("substitution node was not preserved".into());
+    }
+    let expected_transliterations = vec![
+        (
+            "$message =~ tr/a-z/A-Z/".to_string(),
+            "a-z".to_string(),
+            "A-Z".to_string(),
+            String::new(),
+            false,
+        ),
+        (
+            "$message =~ y{a-z}{A-Z}r".to_string(),
+            "a-z".to_string(),
+            "A-Z".to_string(),
+            "r".to_string(),
+            false,
+        ),
+    ];
+    if transliterations != expected_transliterations {
+        return Err(format!(
+            "unexpected transliteration payloads: {transliterations:?}"
+        ));
+    }
+    if quote_spans != vec!["qq{$message}", "q{hello}"] {
+        return Err(format!("unexpected quote spans: {quote_spans:?}"));
+    }
     Ok(())
 }
 
@@ -125,11 +141,13 @@ fn paired_quote_delimiters_do_not_fabricate_block_nodes() -> Result<(), String> 
         {
             fabricated_blocks.push(text.to_owned());
         }
-    });
+        Ok(())
+    })?;
 
-    assert!(
-        fabricated_blocks.is_empty(),
-        "quote delimiters were misclassified as blocks: {fabricated_blocks:?}"
-    );
+    if !fabricated_blocks.is_empty() {
+        return Err(format!(
+            "quote delimiters were misclassified as blocks: {fabricated_blocks:?}"
+        ));
+    }
     Ok(())
 }
