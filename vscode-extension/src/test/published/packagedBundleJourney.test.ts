@@ -46,12 +46,9 @@ function sha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
-interface BundledServerVersion {
-  status: 'ok' | 'error';
-  version?: string;
-  output?: string;
-  message?: string;
-}
+type BundledServerVersion =
+  | { status: 'ok'; version: string; output: string }
+  | { status: 'error'; version?: never; output?: string; message: string };
 
 function bundledServerVersion(binaryPath: string): BundledServerVersion {
   try {
