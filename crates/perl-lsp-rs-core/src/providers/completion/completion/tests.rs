@@ -8382,77 +8382,84 @@ has 'name' => (is => 'ro', isa => 'Str');
     Ok(index)
 }
 
-#[test]
-fn test_inherited_moo_accessor_completion_from_parent_class()
--> Result<(), Box<dyn std::error::Error>> {
-    let code = r#"
-package Child;
-use Moo;
-use parent 'Parent';
-
-sub greet {
-    my $self = shift;
-    $self->
-}
-"#;
-
-    let mut parser = Parser::new(code);
-    let ast = must(parser.parse());
-    let index = moo_parent_index()?;
-    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
-    let pos = must_some(code.find("$self->")) + "$self->".len();
-    let completions = provider.get_completions(code, pos);
-
-    assert!(
-        completions.iter().any(|item| item.label == "name"),
-        "expected inherited Moo accessor name in Child completion, got {:?}",
-        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn test_inherited_moo_generated_accessor_methods_are_completed()
--> Result<(), Box<dyn std::error::Error>> {
-    let code = r#"
-package Child;
-use Moo;
-use parent 'Parent';
-
-sub inspect {
-    my $self = shift;
-    $self->
-}
-"#;
-
-    let mut parser = Parser::new(code);
-    let ast = must(parser.parse());
-    let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
-        Url::parse("file:///workspace/Parent.pm")?,
-        r#"package Parent;
-use Moo;
-has 'status' => (
-    is => 'rw',
-    predicate => 1,
-    builder => 1,
-    clearer => 1,
-);
-1;
-"#
-        .to_string(),
-    )?;
-    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
-    let pos = must_some(code.find("$self->")) + "$self->".len();
-    let labels: Vec<_> =
-        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
-
-    for expected in ["status", "has_status", "_build_status", "clear_status"] {
-        assert!(
-            labels.iter().any(|label| label == expected),
-            "expected inherited generated accessor {} in Child completion, got {:?}",
-            expected,
-            labels
-        );
-    }
-    Ok(())
-}
++
++/// Index the parent package separately so these tests prove the workspace
++/// inheritance edge rather than merely finding declarations in one AST.
++fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
++    let index = Arc::new(WorkspaceIndex::new());
++    index.index_file(
++        Url::parse("file:///workspace/Parent.pm")?,
++        r#"package Parent;
++use Moo;
++has 'name' => (is => 'ro', isa => 'Str');
++has 'status' => (
++    is => 'rw',
++    predicate => 1,
++    builder => 1,
++    clearer => 1,
++);
++1;
++"#
++        .to_string(),
++    )?;
++    Ok(index)
++}
++
++#[test]
++fn test_inherited_moo_accessor_completion_from_parent_class() {
++    let code = r#"
++package Child;
++use Moo;
++use parent 'Parent';
++
++sub greet {
++    my $self = shift;
++    $self->
++}
++"#;
++
++    let mut parser = Parser::new(code);
++    let ast = must(parser.parse());
++    let index = must(inherited_moo_parent_index());
++    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
++    let pos = must_some(code.find("$self->")) + "$self->".len();
++    let completions = provider.get_completions(code, pos);
++
++    assert!(
++        completions.iter().any(|item| item.label == "name"),
++        "expected inherited Moo accessor name in Child completion, got {:?}",
++        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
++    );
++}
++
++#[test]
++fn test_inherited_moo_generated_accessor_methods_are_completed() {
++    let code = r#"
++package Child;
++use Moo;
++use parent 'Parent';
++
++sub inspect {
++    my $self = shift;
++    $self->
++}
++"#;
++
++    let mut parser = Parser::new(code);
++    let ast = must(parser.parse());
++    let index = must(inherited_moo_parent_index());
++    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
++    let pos = must_some(code.find("$self->")) + "$self->".len();
++    let labels: Vec<_> =
++        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
++
++    for expected in ["status", "has_status", "_build_status", "clear_status"] {
++        assert!(
++            labels.iter().any(|label| label == expected),
++            "expected inherited generated accessor {} in Child completion, got {:?}",
++            expected,
++            labels
++        );
++    }
++}
++
