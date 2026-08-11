@@ -610,10 +610,10 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Receipt, ReceiptStatus, sha256_bytes, validate, verify_artifact_binding,
-        verify_topology_binding, write_verified_child_artifact,
+        InstallPath, Receipt, ReceiptStatus, sha256_bytes, validate, validate_topology_path,
+        verify_artifact_binding, verify_topology_binding, write_verified_child_artifact,
     };
-    use color_eyre::eyre::Result;
+    use color_eyre::eyre::{bail, Result};
     use std::fs;
     use tempfile::tempdir;
 
