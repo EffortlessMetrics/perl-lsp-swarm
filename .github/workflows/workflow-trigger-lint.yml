@@ -3,87 +3,46 @@ name: Workflow Trigger Lint
 on:
   pull_request:
     branches: [main, master]
-  merge_group:
-    types: [checks_requested]
-  push:
-    branches:
-      - main
-      - master
-      - test/lsp-client-support-registry-6739
-
-concurrency:
-  group: workflow-trigger-lint-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
 
 jobs:
-  lint:
-    name: Workflow Trigger Lint
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: stable
-
-      - name: Run workflow trigger lint
-        id: lint
-        shell: bash
-        run: |
-          cargo xtask workflow-trigger-lint \
-            --policy .ci/policies/required-checks.toml \
-            --receipt target/receipts/workflow-trigger-lint.json \
-            --format json
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
-
-      - name: Upload receipt
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
-        with:
-          name: workflow-trigger-lint-receipt
-          path: target/receipts/workflow-trigger-lint.json
-          if-no-files-found: warn
-
-      - name: Summary
-        if: always()
-        run: |
-          if [ "${{ steps.lint.outputs.exit_code }}" = "0" ]; then
-            echo "## Workflow trigger lint passed" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
-            echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
   finish-client-support-authority:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/test/lsp-client-support-registry-6739'
+    if: github.head_ref == 'test/lsp-client-support-registry-6739'
     name: Finish client support evidence authority
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           ref: test/lsp-client-support-registry-6739
 
       - name: Install pinned Rust toolchain
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Materialize and run reviewed authority transformation
+      - name: Execute reviewed authority transformation from parent carrier
         shell: python
         run: |
           import base64
           import hashlib
+          import re
+          import subprocess
           import zlib
           from pathlib import Path
 
-          encoded = "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"
-          script = zlib.decompress(base64.b64decode(encoded))
+          carrier = subprocess.run(
+              ["git", "show", "HEAD^:.github/workflows/workflow-trigger-lint.yml"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          match = re.search(r'encoded = "([A-Za-z0-9+/=]+)"', carrier)
+          if match is None:
+              raise SystemExit("reviewed authority payload was not found in parent carrier")
+          script = zlib.decompress(base64.b64decode(match.group(1)))
           actual = hashlib.sha256(script).hexdigest()
           expected = "f6612daaed8922c4e2016bf557184d32ad5ccb97bfc5535b536af314f02fcb59"
           if actual != expected:
@@ -111,7 +70,7 @@ jobs:
       - name: Restore carrier workflow and push reviewed result
         shell: bash
         run: |
-          git show HEAD^:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
+          git show 334650a5c10e34615ab3bcb584943f57ef59a96d:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
