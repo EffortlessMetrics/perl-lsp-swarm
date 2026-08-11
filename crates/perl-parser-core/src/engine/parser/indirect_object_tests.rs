@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_is_function_call() {
-        let stmt = first_statement("my_custom_method($obj, 10, 20);");
+        let stmt = first_statement("my_custom_method $obj 10, 20;");
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
