@@ -236,9 +236,7 @@ fn parser_ac8_error_location_accuracy() -> ParseResult<()> {
     // AC:AC8
     let code = "my $x = 42;\nmy $y = ;\nmy $z = 99;";
     let mut parser = Parser::new(code);
-    let ast = parser
-        .parse()
-        .expect("panic-mode recovery should return the recovered program");
+    let ast = parser.parse()?;
 
     if let NodeKind::Program { statements } = &ast.kind {
         assert_eq!(
