@@ -2092,7 +2092,14 @@
           "parent_operator": null
         }
       ]
-    },
+,
+      "forbidden_nodes": [
+        {
+          "id": "slash_ambiguity_match_no_division_binary",
+          "kind": "Binary",
+          "line": 7
+        }
+      ]    },
     {
       "id": "method_call",
       "family": "method_call",
@@ -3333,7 +3340,19 @@
           "parent_operator": null
         }
       ]
-    },
+,
+      "forbidden_nodes": [
+        {
+          "id": "quote_like_no_block_at_q",
+          "kind": "Block",
+          "line": 4
+        },
+        {
+          "id": "quote_like_no_block_at_qq",
+          "kind": "Block",
+          "line": 5
+        }
+      ]    },
     {
       "id": "unterminated_heredoc",
       "family": "recovery",
