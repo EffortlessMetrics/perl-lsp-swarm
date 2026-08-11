@@ -31,7 +31,8 @@ Keep parser, LSP, DAP, packaging, and documentation claims separate. A parser te
 - Parsing, positions, trivia, and recovery: `crates/perl-parser-core`
 - Public parser facade: `crates/perl-parser`
 - Semantic and workspace analysis: `crates/perl-semantic-analyzer`, `crates/perl-workspace`
-- LSP protocol, transport, runtime, governance, and providers: `crates/perl-lsp-rs-core`
+- LSP protocol, shared runtime infrastructure, governance, and providers: `crates/perl-lsp-rs-core`
+- LSP server scheduling, serving, workspace readiness, document lifecycle, and dispatch: `crates/perl-lsp-rs`
 - Server integration: `crates/perl-lsp-rs`
 - Public binary: `crates/perllsp`
 - Native DAP: `crates/perl-dap`
