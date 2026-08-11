@@ -65,35 +65,52 @@ proptest! {
 }
 
 #[test]
-fn incremental_state_records_lex_and_parse_restart_points() {
+fn incremental_state_records_lex_and_parse_restart_points() -> Result<()> {
     let source =
         "package Example;\nmy ($scalar, @items);\nsub run { my $local = 1; }\n".to_string();
     let state = IncrementalState::new(source.clone());
 
     let first_lex = state
         .find_lex_checkpoint(0)
-        .expect("the lexer always has an origin checkpoint");
-    assert_eq!(first_lex.byte, 0);
-    assert!(state.find_lex_checkpoint(source.len()).is_some());
+        .ok_or_else(|| anyhow::anyhow!("the lexer always has an origin checkpoint"))?;
+    anyhow::ensure!(first_lex.byte == 0, "the origin checkpoint must start at byte 0");
+    anyhow::ensure!(
+        state.find_lex_checkpoint(source.len()).is_some(),
+        "the lexer must retain a checkpoint at the document end"
+    );
 
-    let package_start = source.find("package").expect("package declaration is present");
+    let package_start =
+        source.find("package").ok_or_else(|| anyhow::anyhow!("package declaration is present"))?;
     let package_checkpoint = state
         .find_parse_checkpoint(package_start)
-        .expect("package declarations create parse checkpoints");
-    assert_eq!(package_checkpoint.scope_snapshot.package_name, "Example");
+        .ok_or_else(|| anyhow::anyhow!("package declarations create parse checkpoints"))?;
+    anyhow::ensure!(
+        package_checkpoint.scope_snapshot.package_name == "Example",
+        "package checkpoint must retain the package scope"
+    );
 
-    let sub_start = source.find("sub run").expect("subroutine declaration is present");
+    let sub_start = source
+        .find("sub run")
+        .ok_or_else(|| anyhow::anyhow!("subroutine declaration is present"))?;
     let sub_checkpoint = state
         .find_parse_checkpoint(sub_start)
-        .expect("subroutine declarations create parse checkpoints");
-    assert_eq!(sub_checkpoint.scope_snapshot.package_name, "Example");
-    assert!(sub_checkpoint.node_id > 0);
+        .ok_or_else(|| anyhow::anyhow!("subroutine declarations create parse checkpoints"))?;
+    anyhow::ensure!(
+        sub_checkpoint.scope_snapshot.package_name == "Example",
+        "subroutine checkpoint must retain the package scope"
+    );
+    anyhow::ensure!(sub_checkpoint.node_id > 0, "subroutine checkpoint must retain a node id");
+    Ok(())
 }
 
 #[test]
-fn expression_only_trees_have_no_parse_restart_checkpoint() {
+fn expression_only_trees_have_no_parse_restart_checkpoint() -> Result<()> {
     let state = IncrementalState::new("1 + 2;".to_string());
-    assert!(state.find_parse_checkpoint(0).is_none());
+    anyhow::ensure!(
+        state.find_parse_checkpoint(0).is_none(),
+        "expression-only trees must not create parse restart checkpoints"
+    );
+    Ok(())
 }
 
 #[expect(
@@ -101,7 +118,11 @@ fn expression_only_trees_have_no_parse_restart_checkpoint() {
     reason = "the test verifies the legacy AST error fallback used by IncrementalState::new"
 )]
 #[test]
-fn incremental_state_retains_error_ast_when_initial_parse_fails() {
+fn incremental_state_retains_error_ast_when_initial_parse_fails() -> Result<()> {
     let state = IncrementalState::new("sub {".to_string());
-    assert!(matches!(state.ast.kind, NodeKind::Error { .. }));
+    anyhow::ensure!(
+        matches!(state.ast.kind, NodeKind::Error { .. }),
+        "initial parse failure must retain an error AST"
+    );
+    Ok(())
 }
