@@ -4,7 +4,7 @@
 //! fixture files and their manifest expectations so parser regressions are
 //! caught at the same fixture boundary used by downstream accuracy tooling.
 
-use perl_parser::{Node, NodeKind, Parser};
+use perl_parser::{Node, Parser};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,32 @@ struct ParserAccuracyFixture {
     source_path: PathBuf,
     #[serde(default)]
     ast_expectations: Vec<AstExpectation>,
+    #[serde(default)]
+    forbidden_nodes: Vec<ForbiddenNode>,
+}
+
+/// A node shape that must NOT appear at a given position.
+///
+/// Positive expectations cannot reject an *extra* wrong node: the matcher asks
+/// whether some node matches, so a parser that emits the right node plus a
+/// spurious one still passes. Disambiguation fixtures need the other half —
+/// "the `q{}` braces did not open a block" is a different claim from "a String
+/// is present".
+///
+/// `line` is required, unlike the optional refinements on `AstExpectation`. A
+/// forbidden entry without a position would ban a kind across the whole file,
+/// and the kinds worth forbidding here (`Block`, `ExpressionStatement`) all
+/// occur legitimately elsewhere in the same fixture — `quote_like` contains
+/// `sub quote { ... }`, whose body is a perfectly good `Block`.
+#[derive(Debug, Deserialize)]
+struct ForbiddenNode {
+    id: String,
+    kind: String,
+    line: usize,
+    #[serde(default)]
+    parent_kind: Option<String>,
+    #[serde(default)]
+    depth: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,10 +58,6 @@ struct AstExpectation {
     parent_kind: Option<String>,
     #[serde(default)]
     depth: Option<usize>,
-    #[serde(default)]
-    operator: Option<String>,
-    #[serde(default)]
-    parent_operator: Option<String>,
 }
 
 #[derive(Debug)]
@@ -45,8 +67,6 @@ struct ObservedNode<'a> {
     span_text: &'a str,
     parent_kind: Option<&'static str>,
     depth: usize,
-    operator: Option<String>,
-    parent_operator: Option<String>,
 }
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -96,8 +116,24 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
         })?;
         let observed = collect_observed_nodes(&ast, &source);
 
+        // Per-fixture, not just in aggregate: a shared counter cannot tell that one
+        // selected fixture lost every assertion while the others kept the suite green,
+        // which is exactly the hollow-fixture state this selector exists to prevent.
+        let contributed = fixture.ast_expectations.len() + fixture.forbidden_nodes.len();
+        assert!(
+            contributed > 0,
+            "fixture `{}` is selected by E2E_FIXTURES but contributes no assertion: \
+             give it `ast_expectations` or `forbidden_nodes`, or remove it from the selector",
+            fixture.id
+        );
+
         for expectation in &fixture.ast_expectations {
             assert_observed_expectation(&fixture.id, expectation, &observed);
+            exercised += 1;
+        }
+
+        for forbidden in &fixture.forbidden_nodes {
+            assert_node_absent(&fixture.id, forbidden, &observed);
             exercised += 1;
         }
     }
@@ -119,7 +155,7 @@ fn find_fixture<'a>(
 
 fn collect_observed_nodes<'a>(node: &'a Node, source: &'a str) -> Vec<ObservedNode<'a>> {
     let mut nodes = Vec::new();
-    collect_observed_nodes_rec(node, source, &mut nodes, None, 0, None);
+    collect_observed_nodes_rec(node, source, &mut nodes, None, 0);
     nodes
 }
 
@@ -129,39 +165,20 @@ fn collect_observed_nodes_rec<'a>(
     nodes: &mut Vec<ObservedNode<'a>>,
     parent_kind: Option<&'static str>,
     depth: usize,
-    parent_operator: Option<&str>,
 ) {
     let span_text = source.get(node.location.start..node.location.end).unwrap_or_default();
-    let operator = node_operator(node).map(str::to_owned);
     nodes.push(ObservedNode {
         kind: node.kind.kind_name(),
         line: byte_offset_to_line(source, node.location.start),
         span_text,
         parent_kind,
         depth,
-        operator: operator.clone(),
-        parent_operator: parent_operator.map(str::to_owned),
     });
 
     let current_kind = node.kind.kind_name();
     node.for_each_child(|child| {
-        collect_observed_nodes_rec(
-            child,
-            source,
-            nodes,
-            Some(current_kind),
-            depth + 1,
-            operator.as_deref(),
-        )
+        collect_observed_nodes_rec(child, source, nodes, Some(current_kind), depth + 1)
     });
-}
-
-fn node_operator(node: &Node) -> Option<&str> {
-    match &node.kind {
-        NodeKind::Binary { op, .. } | NodeKind::Assignment { op, .. } => Some(op.as_str()),
-        NodeKind::Match { negated, .. } => Some(if *negated { "!~" } else { "=~" }),
-        _ => None,
-    }
 }
 
 fn assert_observed_expectation(
@@ -178,23 +195,33 @@ fn assert_observed_expectation(
                 .as_deref()
                 .is_none_or(|parent| node.parent_kind == Some(parent))
             && expectation.depth.is_none_or(|depth| node.depth == depth)
-            && expectation
-                .operator
-                .as_deref()
-                .is_none_or(|operator| node.operator.as_deref() == Some(operator))
-            && match expectation.operator.as_deref() {
-                Some(_) => node.parent_operator.as_deref() == expectation.parent_operator.as_deref(),
-                None => expectation
-                    .parent_operator
-                    .as_deref()
-                    .is_none_or(|operator| node.parent_operator.as_deref() == Some(operator)),
-            }
     });
 
     assert!(
         matched,
         "fixture `{fixture_id}` missing AST expectation `{}`: expected kind `{}` on line {} containing {:?}",
         expectation.id, expectation.kind, expectation.line, expectation.span_text
+    );
+}
+
+fn assert_node_absent(fixture_id: &str, forbidden: &ForbiddenNode, observed: &[ObservedNode<'_>]) {
+    let offender = observed.iter().find(|node| {
+        node.kind == forbidden.kind
+            && node.line == forbidden.line
+            && forbidden
+                .parent_kind
+                .as_deref()
+                .is_none_or(|parent| node.parent_kind == Some(parent))
+            && forbidden.depth.is_none_or(|depth| node.depth == depth)
+    });
+
+    assert!(
+        offender.is_none(),
+        "fixture `{fixture_id}` violates forbidden node `{}`: found kind `{}` on line {} spanning {:?}",
+        forbidden.id,
+        forbidden.kind,
+        forbidden.line,
+        offender.map(|node| node.span_text).unwrap_or_default(),
     );
 }
 
