@@ -1754,7 +1754,9 @@ impl SymbolExtractor {
         // Create a dummy options_expr Node to pass to existing helpers
         // (a bit hacky, but avoids rewriting the helpers that take Node)
         let options_expr = Node::new(
-            NodeKind::HashLiteral { pairs: option_pairs.to_vec() },
+            NodeKind::HashLiteral {
+                pairs: option_pairs.to_vec(),
+            },
             has_location,
         );
 
