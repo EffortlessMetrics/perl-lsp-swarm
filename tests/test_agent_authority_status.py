@@ -47,6 +47,10 @@ def load_registry() -> dict[str, Any]:
     return tomllib.loads(REGISTRY.read_text(encoding="utf-8"))
 
 
+def prose(path: Path) -> str:
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
 def validate_registry(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if document.get("schema_version") != 1:
@@ -115,10 +119,8 @@ class AgentAuthorityStatusTests(unittest.TestCase):
         self.assertEqual(validate_registry(load_registry()), [])
 
     def test_human_index_points_to_registry_and_current_method(self) -> None:
-        index = (ROOT / "docs" / "agents" / "AUTHORITY_STATUS.md").read_text(
-            encoding="utf-8"
-        )
-        readme = (ROOT / "docs" / "agents" / "README.md").read_text(encoding="utf-8")
+        index = prose(ROOT / "docs" / "agents" / "AUTHORITY_STATUS.md")
+        readme = prose(ROOT / "docs" / "agents" / "README.md")
 
         self.assertIn("authority_status.toml", index)
         self.assertIn("Internal words", index)
