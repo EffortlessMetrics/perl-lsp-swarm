@@ -1,0 +1,158 @@
+name: DAP Scorecard
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'crates/perl-dap/**'
+      - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
+      - 'xtask/src/tasks/update_status/dap.rs'
+      - 'docs/project/status/dap.md'
+      - 'scripts/ci/dap_scorecard_packet.py'
+      - 'scripts/tests/test_dap_scorecard_packet.py'
+      - '.github/workflows/dap-scorecard.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main, master]
+    paths:
+      - 'crates/perl-dap/**'
+      - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
+      - 'xtask/src/tasks/update_status/dap.rs'
+      - 'docs/project/status/dap.md'
+      - 'scripts/ci/dap_scorecard_packet.py'
+      - 'scripts/tests/test_dap_scorecard_packet.py'
+      - '.github/workflows/dap-scorecard.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch: {}
+
+concurrency:
+  group: dap-scorecard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  scorecard:
+    name: DAP runtime scorecard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout identity and clean source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ github.event.pull_request.head.sha || github.sha }}'
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$expected"
+          test -z "$(git status --porcelain)"
+          echo "DAP_SCORECARD_REPOSITORY_SHA=$actual" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: dap-scorecard-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Test packet builder negative controls
+        run: python3 scripts/tests/test_dap_scorecard_packet.py
+
+      - name: Build exact perl-dap candidate
+        run: cargo build -p perl-dap --bin perl-dap --locked
+
+      - name: Capture candidate and Perl identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="$PWD/target/debug/perl-dap"
+          test -x "$binary"
+          binary_sha256="$(sha256sum "$binary" | awk '{print $1}')"
+          perl_path="$(command -v perl)"
+          test -n "$perl_path"
+          echo "DAP_SCORECARD_BINARY=$binary" >> "$GITHUB_ENV"
+          echo "DAP_SCORECARD_BINARY_SHA256=$binary_sha256" >> "$GITHUB_ENV"
+          echo "DAP_SCORECARD_PERL=$perl_path" >> "$GITHUB_ENV"
+
+      - name: Run real-session scorecard harness
+        run: cargo test -p perl-dap --test dap_scorecard_harness --locked -- --nocapture
+
+      - name: Generate status from the required receipt
+        env:
+          XTASK_UPDATE_STATUS_REQUIRE_DAP_RECEIPT: '1'
+        run: cargo run -p xtask --locked -- update-status --write --only dap
+
+      - name: Build candidate-bound proof packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/dap_scorecard_packet.py build \
+            --repository-root . \
+            --repository-sha "$DAP_SCORECARD_REPOSITORY_SHA" \
+            --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' \
+            --binary target/debug/perl-dap \
+            --perl "$DAP_SCORECARD_PERL" \
+            --raw-receipt target/dap_scorecard_receipt.json \
+            --status docs/project/status/dap.md \
+            --fixture crates/perl-dap/tests/fixtures/hello.pl \
+            --fixture crates/perl-dap/tests/fixtures/loops.pl \
+            --fixture crates/perl-dap/tests/fixtures/eval.pl \
+            --fixture crates/perl-dap/tests/fixtures/args.pl \
+            --fixture crates/perl-dap/tests/fixtures/breakpoints_begin_end.pl \
+            --output target/receipts/dap-scorecard/packet.json
+
+      - name: Validate exact packet identity and evidence
+        run: |
+          python3 scripts/ci/dap_scorecard_packet.py validate \
+            --repository-root . \
+            --packet target/receipts/dap-scorecard/packet.json \
+            --expected-repository-sha "$DAP_SCORECARD_REPOSITORY_SHA" \
+            --expected-binary-sha256 "$DAP_SCORECARD_BINARY_SHA256" \
+            --expected-run-id '${{ github.run_id }}' \
+            --expected-run-attempt '${{ github.run_attempt }}'
+
+      - name: Publish scorecard summary
+        shell: bash
+        run: |
+          {
+            echo '### DAP runtime scorecard'
+            echo
+            echo '- Candidate: `'$DAP_SCORECARD_REPOSITORY_SHA'`'
+            echo '- Binary SHA-256: `'$DAP_SCORECARD_BINARY_SHA256'`'
+            echo '- Packet: `target/receipts/dap-scorecard/packet.json`'
+            echo
+            sed -n '/<!-- BEGIN: DAP_LAUNCH_SCORECARD -->/,/<!-- END: DAP_SESSION_SCORECARD -->/p' docs/project/status/dap.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload exact scorecard packet
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: dap-scorecard-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            target/dap_scorecard_receipt.json
+            target/receipts/dap-scorecard/packet.json
+            docs/project/status/dap.md
+          if-no-files-found: warn
+          retention-days: 14
