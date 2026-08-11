@@ -1169,11 +1169,7 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setServerVersion(
         startedClient.initializeResult?.serverInfo?.version,
       );
-      await finalizeStartedLanguageClient(
-        context,
-        startedClient,
-        latestLanguageClientGeneration,
-      );
+      await finalizeStartedLanguageClient(context, startedClient, latestLanguageClientGeneration);
     },
     onFailed: () => {
       languageClientStartupMetrics.finishServerStart('error');
