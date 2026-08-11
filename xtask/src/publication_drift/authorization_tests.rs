@@ -1,13 +1,7 @@
-use super::authority::sha256_hex;
 use super::classify::classify;
-use super::model::{
-    AuthoritySource, LoadedManifest, NOT_PROVEN_CLASS, Observation, PublicationManifest, Verdict,
-};
+use super::model::{AuthoritySource, NOT_PROVEN_CLASS, Observation, Verdict};
+use super::test_support::{CLEAN, first_difference_mut, fixture_authority};
 use color_eyre::eyre::{Result, bail, eyre};
-
-const CLEAN: &str = include_str!("../../../fixtures/publication_drift/clean.json");
-const AUTHORITY: &[u8] =
-    include_bytes!("../../../fixtures/publication_drift/publication_manifest.v1.json");
 
 #[test]
 fn missing_authority_downgrades_clean_difference_in_receipt() -> Result<()> {
@@ -30,21 +24,6 @@ fn mismatched_manifest_rule_downgrades_clean_difference_in_receipt() -> Result<(
     first_difference_mut(&mut observation)?.owner = "different-owner".to_string();
     let receipt = classify(observation, fixture_authority()?);
     assert_not_proven_difference(&receipt, "mismatched rule")
-}
-
-fn first_difference_mut(
-    observation: &mut Observation,
-) -> Result<&mut super::model::ObservedDifference> {
-    observation
-        .differences
-        .as_mut()
-        .and_then(|differences| differences.first_mut())
-        .ok_or_else(|| eyre!("clean fixture has no difference"))
-}
-
-fn fixture_authority() -> Result<AuthoritySource> {
-    let document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: sha256_hex(AUTHORITY) }))
 }
 
 fn assert_not_proven_difference(receipt: &super::model::Receipt, case: &str) -> Result<()> {
