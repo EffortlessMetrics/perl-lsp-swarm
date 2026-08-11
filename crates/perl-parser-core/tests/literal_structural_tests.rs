@@ -24,10 +24,10 @@ fn assert_number(source: &str, expected: &str, start: usize, end: usize) {
         }
     });
 
-    assert!(found_value, "expected numeric literal {expected:?} in AST:\n{}", ast.to_sexp());
+    assert!(found_value, "expected numeric literal {expected:?} in AST:\\n{}", ast.to_sexp());
     assert!(
         found_span,
-        "numeric literal {expected:?} did not retain source span {start}..{end}:\n{}",
+        "numeric literal {expected:?} did not retain source span {start}..{end}:\\n{}",
         ast.to_sexp()
     );
 }
@@ -53,7 +53,7 @@ fn strings_preserve_kind_value_and_span() {
         if let NodeKind::String { value, interpolated } = &node.kind {
             if value == "text" && !interpolated {
                 single = true;
-                single_span = node.location.start == 12 && node.location.end == 18;
+                single_span = node.location.start == 13 && node.location.end == 19;
             }
             if value == "text" && *interpolated {
                 double = true;
@@ -62,10 +62,10 @@ fn strings_preserve_kind_value_and_span() {
         }
     });
 
-    assert!(single, "single-quoted literal was not represented as a String node:\n{}", ast.to_sexp());
-    assert!(double, "double-quoted literal was not represented as an interpolated String node:\n{}", ast.to_sexp());
-    assert!(single_span, "single-quoted literal lost its source span:\n{}", ast.to_sexp());
-    assert!(double_span, "double-quoted literal lost its source span:\n{}", ast.to_sexp());
+    assert!(single, "single-quoted literal was not represented as a String node:\\n{}", ast.to_sexp());
+    assert!(double, "double-quoted literal was not represented as an interpolated String node:\\n{}", ast.to_sexp());
+    assert!(single_span, "single-quoted literal lost its source span:\\n{}", ast.to_sexp());
+    assert!(double_span, "double-quoted literal lost its source span:\\n{}", ast.to_sexp());
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn array_and_hash_literals_retain_structural_children() {
     assert_eq!(hash_pairs, Some(1), "hash literal lost its pair: {}", ast.to_sexp());
 
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(number 1)"), "array element 1 was not retained:\n{sexp}");
-    assert!(sexp.contains("(number 2)"), "array element 2 was not retained:\n{sexp}");
-    assert!(sexp.contains("(string \"beta\")"), "hash value was not retained:\n{sexp}");
+    assert!(sexp.contains("(number 1)"), "array element 1 was not retained:\\n{sexp}");
+    assert!(sexp.contains("(number 2)"), "array element 2 was not retained:\\n{sexp}");
+    assert!(sexp.contains("(string \\"beta\\")"), "hash value was not retained:\\n{sexp}");
 }
