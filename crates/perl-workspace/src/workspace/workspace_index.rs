@@ -7236,6 +7236,26 @@ has display_name => (is => 'rw');
     }
 
     #[test]
+    fn package_members_include_generated_framework_members() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/PackageMembers.pm"));
+        must(index.index_file(
+            uri,
+            r#"package Generated::PackageMembers;
+use Moo;
+has status => (is => 'rw', predicate => 1);
+1;
+"#.to_string(),
+        ));
+
+        let members = index.get_generated_package_members("Generated::PackageMembers");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"status"), "generated reader must be exposed: {names:?}");
+        assert!(names.contains(&"has_status"), "generated predicate must be exposed: {names:?}");
+        Ok(())
+    }
+
+    #[test]
     fn search_symbols_returns_labeled_predicate_generated_members()
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
