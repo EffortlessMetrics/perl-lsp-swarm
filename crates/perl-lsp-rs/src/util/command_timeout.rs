@@ -72,8 +72,8 @@ mod tests {
 
         #[cfg(not(windows))]
         {
-            let mut cmd = Command::new("echo");
-            cmd.arg("hello");
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "printf hello"]);
             cmd
         }
     }
