@@ -48,6 +48,11 @@ const E2E_FIXTURES: &[&str] = &[
     "slash_ambiguity",
     "heredoc_basic",
     "post_error_package_sub_recovery",
+    "format_decl",
+    "control_do_until",
+    "continue_redo",
+    "glob_expression",
+    "tie_interface",
     "indirect_call",
 ];
 
