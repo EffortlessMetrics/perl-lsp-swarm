@@ -480,10 +480,35 @@ mod tests {
             .find("cargo xtask precommit")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
         assert!(guard < gate);
+        // Note this asserts the absence of a bare workspace-wide `cargo fmt`.
+        // The staged formatter is `cargo xtask fmt --staged`, which does not
+        // match — see `pre_commit_formats_staged_diff_before_the_gate`.
         assert!(!hook.contains("cargo fmt"));
         assert!(!hook.contains("cargo clippy"));
         assert!(!hook.contains("cargo test"));
         assert!(!hook.contains("ripr"));
+        Ok(())
+    }
+
+    #[test]
+    fn pre_commit_formats_staged_diff_before_the_gate() -> Result<()> {
+        // Ordering is the hook's contract: format the staged diff, then let the
+        // gate judge the result. Reversed, the gate would reject an index the
+        // very next step was about to fix. Nothing else asserted that the
+        // formatting step is present at all, so a reorder or a deletion would
+        // have gone unnoticed.
+        let hook = pre_commit_hook_script();
+        let guard = hook
+            .find("Refusing commit with placeholder git identity")
+            .ok_or_else(|| color_eyre::eyre::eyre!("placeholder identity guard missing"))?;
+        let format = hook
+            .find("cargo xtask fmt --staged")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged formatting step missing"))?;
+        let gate = hook
+            .find("cargo xtask precommit")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
+        assert!(guard < format, "identity guard must run before staged formatting");
+        assert!(format < gate, "staged formatting must run before the commit gate");
         Ok(())
     }
 
