@@ -1,0 +1,63 @@
+name: Agent finalize compiler concepts
+
+on:
+  push:
+    branches:
+      - agent/compiler-concepts-ledger-6657
+    paths:
+      - .github/workflows/agent-finalize-compiler-concepts.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-finalize-compiler-concepts
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout triggering candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Apply reviewed repairs
+        run: |
+          python3 .github/scripts/repair_compiler_concepts.py
+          python3 .github/scripts/repair_compiler_concepts_closeout.py
+          python3 .github/scripts/fix_compiler_concept_ast_test.py
+      - name: Validate and regenerate
+        run: |
+          python3 -m json.tool schemas/perl_compiler_concepts.v1.schema.json >/dev/null
+          rustfmt --edition 2024 xtask/src/bin/compiler-concepts.rs
+          cargo run -p xtask --bin compiler-concepts -- --write-status
+      - name: Verify candidate
+        run: |
+          rustfmt --edition 2024 --check xtask/src/bin/compiler-concepts.rs
+          cargo test -p xtask --bin compiler-concepts
+          cargo clippy -p xtask --bin compiler-concepts -- -D warnings
+          cargo run -p xtask --bin compiler-concepts -- --check
+      - name: Commit production repair
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm .github/workflows/agent-finalize-compiler-concepts.yml
+          git rm .github/workflows/agent-diagnose-compiler-concepts.yml
+          git rm .github/workflows/agent-repair-compiler-concepts-v3.yml
+          git rm .github/scripts/repair_compiler_concepts.py
+          git rm .github/scripts/repair_compiler_concepts_closeout.py
+          git rm .github/scripts/fix_compiler_concept_ast_test.py
+          git add contracts/compiler/perl_compiler_concepts.v1.toml
+          git add docs/project/status/perl_compiler_concepts.md
+          git add schemas/perl_compiler_concepts.v1.schema.json
+          git add xtask/src/bin/compiler-concepts.rs
+          git diff --cached --check
+          git commit -m "fix(compiler): close concept ledger admission gaps"
+          git push origin HEAD:agent/compiler-concepts-ledger-6657
