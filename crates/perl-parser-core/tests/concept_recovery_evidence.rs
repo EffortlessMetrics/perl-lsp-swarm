@@ -21,7 +21,7 @@ fn clean_source_has_no_recovery_evidence() {
 
     walk(&output.ast, &mut |node| {
         if matches!(
-            node.kind,
+            &node.kind,
             NodeKind::Error { .. }
                 | NodeKind::MissingExpression
                 | NodeKind::MissingStatement
