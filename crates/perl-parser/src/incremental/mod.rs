@@ -15,7 +15,7 @@ use anyhow::Result;
 pub use perl_line_index::LineIndex;
 
 pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
-pub use diagnostics::ReparseResult;
+pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
 pub use state::IncrementalState;
@@ -56,19 +56,20 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
             Ok(reparse) => reparse,
             Err(_) => return full_reparse(state),
         };
-        let reparsed_bytes = reparse.range.end - reparse.range.start;
 
-        // The token fast path does not define a second parser-output contract.
-        // Refresh from the same recovery-aware parser entry point used by a
-        // fresh parse, then return that exact current-generation output.
+        // The token restart path does not define a second parser-output
+        // contract. Refresh through the same recovery-aware full parser used by
+        // a fresh parse and report that parser work honestly.
         state.refresh_parse_output();
+        let reused_tokens = reparse.lex_restart.reused_tokens();
 
         Ok(ReparseResult {
             changed_ranges: vec![reparse.range],
             parse_output: state.parse_output.clone(),
             diagnostics: vec![],
-            reparsed_bytes,
-            reused_tokens: reparse.reused_tokens,
+            lex_restart: reparse.lex_restart,
+            reparsed_bytes: state.source.len(),
+            reused_tokens,
             token_count: reparse.token_count,
         })
     } else {
