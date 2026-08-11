@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/agent-repair-compiler-proof-policy.yml
       - .github/scripts/repair_compiler_proof_policy.py
+      - .github/scripts/fix_compiler_proof_policy_clippy.py
 
 permissions:
   contents: write
@@ -37,7 +38,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Apply reviewed repairs
-        run: python3 .github/scripts/repair_compiler_proof_policy.py
+        run: |
+          python3 .github/scripts/repair_compiler_proof_policy.py
+          python3 .github/scripts/fix_compiler_proof_policy_clippy.py
 
       - name: Validate schema syntax
         run: python3 -m json.tool schemas/perl_compiler_proof_policy.v1.schema.json >/dev/null
@@ -55,36 +58,7 @@ jobs:
         run: cargo test -p xtask --bin compiler-proof-policy
 
       - name: Verify Clippy
-        run: |
-          set +e
-          cargo clippy -p xtask --bin compiler-proof-policy --message-format=json -- -D warnings > /tmp/clippy.jsonl
-          status=$?
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          emitted = 0
-          for raw in Path('/tmp/clippy.jsonl').read_text().splitlines():
-              try:
-                  item = json.loads(raw)
-              except json.JSONDecodeError:
-                  continue
-              if item.get('reason') != 'compiler-message':
-                  continue
-              message = item.get('message', {})
-              if message.get('level') != 'error':
-                  continue
-              spans = [span for span in message.get('spans', []) if span.get('is_primary')]
-              span = spans[0] if spans else {}
-              text = message.get('message', 'Clippy failed').replace('\n', ' ')
-              file = span.get('file_name', '.github')
-              line = span.get('line_start', 1)
-              print(f'::error file={file},line={line},title=Compiler proof policy Clippy::{text}')
-              emitted += 1
-          if not emitted:
-              print('::error title=Compiler proof policy Clippy::Clippy failed without a structured error diagnostic')
-          PY
-          exit "$status"
+        run: cargo clippy -p xtask --bin compiler-proof-policy -- -D warnings
 
       - name: Verify generated status
         run: cargo run -p xtask --bin compiler-proof-policy -- --check
@@ -95,6 +69,7 @@ jobs:
           git config user.email "git@effortlesssteven.com"
           git rm .github/workflows/agent-repair-compiler-proof-policy.yml
           git rm .github/scripts/repair_compiler_proof_policy.py
+          git rm .github/scripts/fix_compiler_proof_policy_clippy.py
           git add contracts/compiler/perl_compiler_proof_policy.v1.toml
           git add docs/project/status/perl_compiler_proof_policy.md
           git add schemas/perl_compiler_proof_policy.v1.schema.json
