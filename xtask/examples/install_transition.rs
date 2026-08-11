@@ -652,7 +652,7 @@ mod tests {
         InstallPath, Receipt, ReceiptStatus, sha256_bytes, validate, validate_topology_path,
         verify_artifact_binding, verify_topology_binding, write_verified_child_artifact,
     };
-    use color_eyre::eyre::{bail, Result};
+    use color_eyre::eyre::{Result, bail};
     use std::fs;
     use tempfile::tempdir;
 
@@ -662,11 +662,8 @@ mod tests {
 
     fn topology_for(receipt: &Receipt) -> serde_json::Value {
         let windows = receipt.candidate.platform.starts_with("windows-");
-        let binary_members = if windows {
-            ["perllsp.exe", "perl-dap.exe"]
-        } else {
-            ["perllsp", "perl-dap"]
-        };
+        let binary_members =
+            if windows { ["perllsp.exe", "perl-dap.exe"] } else { ["perllsp", "perl-dap"] };
         serde_json::json!({
             "schema": 1,
             "release": receipt.candidate.candidate_version,
