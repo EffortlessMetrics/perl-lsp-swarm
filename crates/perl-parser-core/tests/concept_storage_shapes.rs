@@ -41,20 +41,23 @@ fn nested_lexical_declaration_retains_group_identity_and_span() -> Result<(), St
     let source = "my ($head, ($middle, $tail)) = @values;";
     let ast = parse_clean(source)?;
     let mut list_count = 0usize;
-    let mut nested_span = None;
+    let mut nested_spans = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
         NodeKind::VariableListDeclaration { .. } => list_count += 1,
         NodeKind::NestedVariableList { .. } => {
-            nested_span = Some((node.location.start, node.location.end));
+            nested_spans.push((node.location.start, node.location.end));
         }
         _ => {}
     });
 
     assert_eq!(list_count, 1, "the outer declaration must remain one list declaration");
-    let (start, end) = nested_span.ok_or_else(|| {
-        "the inner parenthesized declaration group lost NestedVariableList identity".to_string()
-    })?;
+    assert_eq!(
+        nested_spans.len(),
+        1,
+        "the inner declaration group must remain exactly one NestedVariableList node"
+    );
+    let (start, end) = nested_spans[0];
     let observed = source
         .get(start..end)
         .ok_or_else(|| format!("nested declaration span {start}..{end} is outside the source"))?;
