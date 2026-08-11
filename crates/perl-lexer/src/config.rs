@@ -4,9 +4,10 @@ use crate::symbol_table::LocalSymbolTable;
 
 /// Configuration options for the Perl lexer.
 ///
-/// Controls interpolation handling, position tracking, lookahead limits, and
-/// the optional file-local symbol table used for bareword/regex disambiguation.
-/// Use [`Default::default`] for sensible defaults.
+/// The fields are retained as a public struct for source compatibility. Their
+/// exact runtime effects are deliberately narrower than their historical names
+/// suggested; see each field and the query methods below before selecting a
+/// non-default value.
 ///
 /// # Examples
 ///
@@ -16,17 +17,32 @@ use crate::symbol_table::LocalSymbolTable;
 /// let config = LexerConfig {
 ///     parse_interpolation: true,
 ///     track_positions: true,
-///     max_lookahead: 1024,
+///     max_lookahead: LexerConfig::DEFAULT_MAX_LOOKAHEAD,
 ///     symbol_table: None,
 /// };
 /// ```
 #[derive(Debug, Clone)]
 pub struct LexerConfig {
-    /// Enable interpolation parsing in strings.
+    /// Split supported interpolating strings into structured string parts.
+    ///
+    /// When `false`, interpolation-looking text remains part of the enclosing
+    /// literal token. This switch does not change source consumption or token
+    /// byte geometry.
     pub parse_interpolation: bool,
-    /// Track token positions for error reporting.
+    /// Compatibility field retained for existing struct literals.
+    ///
+    /// Token byte spans are always tracked because the parser and editor
+    /// consumers require them. Setting this field to `false` does **not** remove
+    /// or replace `Token::start` and `Token::end`; use
+    /// [`LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED`] as the executable contract.
+    /// Removal or retyping is tracked by issue #6715.
     pub track_positions: bool,
-    /// Maximum lookahead for disambiguation.
+    /// Control package-qualified identifier continuation.
+    ///
+    /// `0` disables folding `::segment` continuations into the current
+    /// identifier. Any non-zero value enables the current one-boundary
+    /// lookahead path; values greater than one are presently equivalent. This
+    /// is not a general byte or token scan budget.
     pub max_lookahead: usize,
     /// Optional file-local subroutine symbol table for bareword/regex disambiguation.
     ///
@@ -41,12 +57,35 @@ pub struct LexerConfig {
     pub symbol_table: Option<LocalSymbolTable>,
 }
 
+impl LexerConfig {
+    /// Default package-qualified identifier lookahead setting.
+    pub const DEFAULT_MAX_LOOKAHEAD: usize = 1024;
+
+    /// Token byte positions are part of the lexer contract in every configuration.
+    pub const POSITIONS_ARE_ALWAYS_TRACKED: bool = true;
+
+    /// Return whether structured interpolation parsing is enabled.
+    pub fn interpolation_enabled(&self) -> bool {
+        self.parse_interpolation
+    }
+
+    /// Return whether package-qualified identifier continuation is enabled.
+    pub fn qualified_identifier_lookahead_enabled(&self) -> bool {
+        self.max_lookahead > 0
+    }
+
+    /// Return whether a file-local subroutine table was supplied.
+    pub fn has_symbol_table(&self) -> bool {
+        self.symbol_table.is_some()
+    }
+}
+
 impl Default for LexerConfig {
     fn default() -> Self {
         Self {
             parse_interpolation: true,
             track_positions: true,
-            max_lookahead: 1024,
+            max_lookahead: Self::DEFAULT_MAX_LOOKAHEAD,
             symbol_table: None,
         }
     }
@@ -57,25 +96,34 @@ mod tests {
     use super::LexerConfig;
 
     #[test]
-    fn default_enables_interpolation_and_position_tracking() {
+    fn default_enables_interpolation_and_preserves_position_contract() {
         let config = LexerConfig::default();
 
-        assert!(config.parse_interpolation);
+        assert!(config.interpolation_enabled());
         assert!(config.track_positions);
+        assert!(LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED);
     }
 
     #[test]
-    fn default_uses_expected_lookahead_limit() {
+    fn default_uses_expected_lookahead_contract() {
         let config = LexerConfig::default();
 
-        assert_eq!(config.max_lookahead, 1024);
+        assert_eq!(config.max_lookahead, LexerConfig::DEFAULT_MAX_LOOKAHEAD);
+        assert!(config.qualified_identifier_lookahead_enabled());
+    }
+
+    #[test]
+    fn zero_lookahead_disables_qualified_identifier_continuation() {
+        let config = LexerConfig { max_lookahead: 0, ..LexerConfig::default() };
+
+        assert!(!config.qualified_identifier_lookahead_enabled());
     }
 
     #[test]
     fn default_symbol_table_is_none() {
         let config = LexerConfig::default();
 
-        assert!(config.symbol_table.is_none());
+        assert!(!config.has_symbol_table());
     }
 
     #[test]
@@ -89,9 +137,10 @@ mod tests {
 
         let cloned = config.clone();
 
-        assert!(!cloned.parse_interpolation);
+        assert!(!cloned.interpolation_enabled());
         assert!(!cloned.track_positions);
         assert_eq!(cloned.max_lookahead, 256);
-        assert!(cloned.symbol_table.is_none());
+        assert!(!cloned.has_symbol_table());
+        assert!(LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED);
     }
 }
