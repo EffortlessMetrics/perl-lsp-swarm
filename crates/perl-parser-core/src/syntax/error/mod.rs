@@ -1,119 +1,25 @@
-//! Error types for the Perl parser within the Perl parsing workflow pipeline
+//! Error types for the Perl parser.
 //!
-//! This module defines comprehensive error handling for Perl parsing operations that occur
-//! throughout the Perl parsing workflow workflow: Parse → Index → Navigate → Complete → Analyze.
+//! This module defines the public error and result types used by parser
+//! consumers. Recovery can preserve partial information for editor workflows,
+//! but recovery is not semantic validation or runtime execution.
 //!
-//! # Error Recovery Strategy
+//! ## Handling a parser result
 //!
-//! When parsing errors occur during Perl parsing:
-//! 1. **Parse stage**: Parsing failures indicate corrupted or malformed Perl source
-//! 2. **Analyze stage**: Syntax errors suggest script inconsistencies requiring fallback processing
-//! 3. **Navigate stage**: Parse failures can break thread analysis - graceful degradation applies
-//! 4. **Complete stage**: Errors impact output generation but preserve original content
-//! 5. **Analyze stage**: Parse failures affect search indexing but maintain basic metadata
+//! ```rust
+//! use perl_parser_core::syntax::error::ParseResult;
 //!
-//! # Performance Context
-//!
-//! Error handling is optimized for large Perl codebase processing scenarios with minimal memory overhead
-//! and fast recovery paths to maintain enterprise-scale performance targets.
-//!
-//! # Usage Examples
-//!
-//! ## Basic Error Handling
-//!
-//! ```ignore
-//! use perl_parser::{Parser, ParseError, ParseResult};
-//!
-//! fn parse_with_error_handling(code: &str) -> ParseResult<()> {
-//!     let mut parser = Parser::new(code);
-//!     match parser.parse() {
-//!         Ok(ast) => {
-//!             println!("Parsing successful");
-//!             Ok(())
-//!         }
-//!         Err(ParseError::UnexpectedEof) => {
-//!             eprintln!("Incomplete code: unexpected end of input");
-//!             Err(ParseError::UnexpectedEof)
-//!         }
-//!         Err(ParseError::UnexpectedToken { found, expected, location }) => {
-//!             eprintln!("Syntax error at position {}: found '{}', expected '{}'",
-//!                      location, found, expected);
-//!             Err(ParseError::UnexpectedToken { found, expected, location })
-//!         }
-//!         Err(e) => {
-//!             eprintln!("Parse error: {}", e);
-//!             Err(e)
-//!         }
+//! fn report(result: ParseResult<()>) {
+//!     match result {
+//!         Ok(()) => println!("parse completed"),
+//!         Err(error) => eprintln!("parse failed: {error}"),
 //!     }
 //! }
 //! ```
 //!
-//! ## Error Recovery in LSP Context
-//!
-//! ```ignore
-//! use perl_parser::{Parser, ParseError, error_recovery::ErrorRecovery};
-//!
-//! fn parse_with_recovery(code: &str) -> Vec<String> {
-//!     let mut parser = Parser::new(code);
-//!     let mut errors = Vec::new();
-//!
-//!     match parser.parse() {
-//!         Ok(_) => println!("Parse successful"),
-//!         Err(err) => {
-//!             // Log error for diagnostics
-//!             errors.push(format!("Parse error: {}", err));
-//!
-//!             // Attempt error recovery for LSP
-//!             match err {
-//!                 ParseError::UnexpectedToken { .. } => {
-//!                     // Continue parsing from next statement
-//!                     println!("Attempting recovery...");
-//!                 }
-//!                 ParseError::RecursionLimit => {
-//!                     // Use iterative parsing approach
-//!                     println!("Switching to iterative parsing...");
-//!                 }
-//!                 _ => {
-//!                     // Use fallback parsing strategy
-//!                     println!("Using fallback parsing...");
-//!                 }
-//!             }
-//!         }
-//!     }
-//!     errors
-//! }
-//! ```
-//!
-//! ## Comprehensive Error Context
-//!
-//! ```
-//! use perl_parser_core::syntax::error::ParseError;
-//!
-//! fn create_detailed_error() -> ParseError {
-//!     ParseError::UnexpectedToken {
-//!         found: "number".to_string(),
-//!         expected: "identifier".to_string(),
-//!         location: 10, // byte position 10
-//!     }
-//! }
-//!
-//! fn handle_error_with_context(error: &ParseError) {
-//!     match error {
-//!         ParseError::UnexpectedToken { found, expected, location } => {
-//!             println!("Syntax error at byte position {}: found '{}', expected '{}'",
-//!                     location, found, expected);
-//!         }
-//!         ParseError::UnexpectedEof => {
-//!             println!("Incomplete input: unexpected end of file");
-//!         }
-//!         _ => {
-//!             println!("Parse error: {}", error);
-//!         }
-//!     }
-//! }
-//! ```
-
-use perl_position_tracking::LineIndex;
+//! The example is covered by a focused compile test below because this crate's
+//! package configuration does not currently run doctests.
+//use perl_position_tracking::LineIndex;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -1357,5 +1263,23 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         RecoveryKind::InferredSemicolon => {
             format!("Missing `;` at the end of the {site_desc}")
         }
+    }
+}
+
+
+#[cfg(test)]
+mod public_documentation_examples {
+    use super::ParseResult;
+
+    fn report(result: ParseResult<()>) {
+        match result {
+            Ok(()) => println!("parse completed"),
+            Err(error) => eprintln!("parse failed: {error}"),
+        }
+    }
+
+    #[test]
+    fn parse_result_documentation_example_compiles_against_public_error_api() {
+        report(Ok(()));
     }
 }
