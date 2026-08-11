@@ -51,10 +51,7 @@ fn no_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
 }
 
 fn function_call(name: &str, start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::FunctionCall { name: name.to_string(), args: vec![] },
-        loc(start, end),
-    )
+    Node::new(NodeKind::FunctionCall { name: name.to_string(), args: vec![] }, loc(start, end))
 }
 
 fn block(stmts: Vec<Node>, start: usize, end: usize) -> Node {
