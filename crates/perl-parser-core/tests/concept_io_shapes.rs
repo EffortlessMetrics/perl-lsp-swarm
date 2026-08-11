@@ -22,6 +22,12 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
     }
 }
 
+fn source_text(source: &str, node: &Node) -> Option<String> {
+    source
+        .get(node.location.start..node.location.end)
+        .map(str::to_owned)
+}
+
 #[test]
 fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
     let source = concat!(
@@ -32,25 +38,35 @@ fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
         "my $shifted = $value << 2;\n",
     );
     let ast = parse_clean(source)?;
-    let mut stdin_readline = 0usize;
+    let mut stdin_readlines = Vec::new();
     let mut diamonds = 0usize;
-    let mut globs = 0usize;
-    let mut shifts = 0usize;
+    let mut globs = Vec::new();
+    let mut shifts = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
         NodeKind::Readline { filehandle: Some(filehandle) } if filehandle == "STDIN" => {
-            stdin_readline += 1;
+            if let Some(text) = source_text(source, node) {
+                stdin_readlines.push(text);
+            }
         }
         NodeKind::Diamond => diamonds += 1,
-        NodeKind::Glob { .. } => globs += 1,
-        NodeKind::Binary { op, .. } if op == "<<" => shifts += 1,
+        NodeKind::Glob { .. } => {
+            if let Some(text) = source_text(source, node) {
+                globs.push(text);
+            }
+        }
+        NodeKind::Binary { op, .. } if op == "<<" => {
+            if let Some(text) = source_text(source, node) {
+                shifts.push(text);
+            }
+        }
         _ => {}
     });
 
-    assert_eq!(stdin_readline, 1, "<STDIN> must remain a named Readline");
+    assert_eq!(stdin_readlines, vec!["<STDIN>"]);
     assert_eq!(diamonds, 2, "<> and <<>> must remain Diamond nodes");
-    assert_eq!(globs, 1, "<*.pl> must remain a Glob node");
-    assert_eq!(shifts, 1, "$value << 2 must remain a shift expression");
+    assert_eq!(globs, vec!["<*.pl>"]);
+    assert_eq!(shifts, vec!["$value << 2"]);
     Ok(())
 }
 
@@ -58,16 +74,22 @@ fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
 fn heredoc_opener_remains_distinct_from_diamond() -> Result<(), String> {
     let source = "my $document = <<EOF;\nhello\nEOF\n";
     let ast = parse_clean(source)?;
-    let mut heredocs = 0usize;
+    let mut heredoc_spans = Vec::new();
     let mut diamonds = 0usize;
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Heredoc { delimiter, .. } if delimiter == "EOF" => heredocs += 1,
+        NodeKind::Heredoc { delimiter, .. } if delimiter == "EOF" => {
+            if let Some(text) = source_text(source, node) {
+                heredoc_spans.push(text);
+            }
+        }
         NodeKind::Diamond => diamonds += 1,
         _ => {}
     });
 
-    assert_eq!(heredocs, 1, "<<EOF must remain a Heredoc");
+    assert_eq!(heredoc_spans.len(), 1, "<<EOF must remain a Heredoc");
+    assert!(heredoc_spans[0].starts_with("<<EOF"));
+    assert!(heredoc_spans[0].contains("hello"));
     assert_eq!(diamonds, 0, "heredoc syntax must not fabricate a Diamond node");
     Ok(())
 }
@@ -80,32 +102,38 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
         "printf $fh \"%s\", $value;\n",
     );
     let ast = parse_clean(source)?;
-    let mut scalar_handle_print = 0usize;
-    let mut braced_handle_print = 0usize;
-    let mut scalar_handle_printf = 0usize;
+    let mut scalar_handle_print = Vec::new();
+    let mut braced_handle_print = Vec::new();
+    let mut scalar_handle_printf = Vec::new();
 
     walk(&ast, &mut |node| {
         if let NodeKind::IndirectCall { method, object, args } = &node.kind {
             match method.as_str() {
                 "print" if matches!(&object.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh") => {
                     assert_eq!(args.len(), 1, "print scalar handle must retain one output argument");
-                    scalar_handle_print += 1;
+                    if let Some(text) = source_text(source, node) {
+                        scalar_handle_print.push(text);
+                    }
                 }
                 "print" if matches!(&object.kind, NodeKind::Block { .. }) => {
                     assert_eq!(args.len(), 1, "print braced handle must retain one output argument");
-                    braced_handle_print += 1;
+                    if let Some(text) = source_text(source, node) {
+                        braced_handle_print.push(text);
+                    }
                 }
                 "printf" if matches!(&object.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh") => {
                     assert_eq!(args.len(), 2, "printf must retain format and value arguments");
-                    scalar_handle_printf += 1;
+                    if let Some(text) = source_text(source, node) {
+                        scalar_handle_printf.push(text);
+                    }
                 }
                 _ => {}
             }
         }
     });
 
-    assert_eq!(scalar_handle_print, 1, "print $fh LIST lost its indirect-filehandle shape");
-    assert_eq!(braced_handle_print, 1, "print { $fh } LIST lost its braced-handle shape");
-    assert_eq!(scalar_handle_printf, 1, "printf $fh FORMAT, LIST lost its handle boundary");
+    assert_eq!(scalar_handle_print, vec!["print $fh \"hello\""]);
+    assert_eq!(braced_handle_print, vec!["print { $fh } \"hello\""]);
+    assert_eq!(scalar_handle_printf, vec!["printf $fh \"%s\", $value"]);
     Ok(())
 }
