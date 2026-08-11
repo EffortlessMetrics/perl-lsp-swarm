@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use perl_parser_core::{Node, NodeKind, Parser};
 
 const MAGIC_TOKENS: [&str; 5] = ["__FILE__", "__LINE__", "__PACKAGE__", "__SUB__", "__CLASS__"];
+const QUOTED_MAGIC_LITERALS: [&str; 3] = ["\"__FILE__\"", "'__PACKAGE__'", "q{__LINE__}"];
 
 fn parse_clean(source: &str) -> Result<Node, String> {
     let mut parser = Parser::new(source);
@@ -34,6 +35,7 @@ fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result
     );
     let ast = parse_clean(source)?;
     let mut observed: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut die_arguments = None;
 
     walk(&ast, &mut |node| {
         if let NodeKind::FunctionCall { name, args } = &node.kind
@@ -42,6 +44,27 @@ fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result
             && let Some(text) = source.get(node.location.start..node.location.end)
         {
             observed.entry(name.clone()).or_default().push(text.to_owned());
+        }
+    });
+
+    walk(&ast, &mut |node| {
+        if let NodeKind::FunctionCall { name, args } = &node.kind
+            && name == "die"
+        {
+            die_arguments = args
+                .iter()
+                .map(|argument| {
+                    let NodeKind::FunctionCall { name, args } = &argument.kind else {
+                        return None;
+                    };
+                    if !args.is_empty() {
+                        return None;
+                    }
+                    source
+                        .get(argument.location.start..argument.location.end)
+                        .map(|text| (name.clone(), text.to_owned()))
+                })
+                .collect::<Option<Vec<_>>>();
         }
     });
 
@@ -59,6 +82,13 @@ fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result
     assert_eq!(observed["__PACKAGE__"].len(), 1);
     assert_eq!(observed["__SUB__"].len(), 1);
     assert_eq!(observed["__CLASS__"].len(), 1);
+    assert_eq!(
+        die_arguments,
+        Some(vec![
+            ("__FILE__".to_owned(), "__FILE__".to_owned()),
+            ("__LINE__".to_owned(), "__LINE__".to_owned()),
+        ])
+    );
     Ok(())
 }
 
@@ -73,7 +103,7 @@ fn quoted_magic_token_spellings_remain_literals_not_nullary_calls() -> Result<()
         NodeKind::FunctionCall { name, .. } if MAGIC_TOKENS.contains(&name.as_str()) => {
             fabricated.push(name.clone());
         }
-        NodeKind::String { value, .. } if MAGIC_TOKENS.contains(&value.as_str()) => {
+        NodeKind::String { value, .. } if QUOTED_MAGIC_LITERALS.contains(&value.as_str()) => {
             if let Some(text) = source.get(node.location.start..node.location.end) {
                 literals.push((text.to_owned(), value.clone()));
             }
@@ -85,9 +115,9 @@ fn quoted_magic_token_spellings_remain_literals_not_nullary_calls() -> Result<()
     assert_eq!(
         literals,
         vec![
-            ("\"__FILE__\"".to_string(), "__FILE__".to_string()),
-            ("'__PACKAGE__'".to_string(), "__PACKAGE__".to_string()),
-            ("q{__LINE__}".to_string(), "__LINE__".to_string()),
+            ("\"__FILE__\"".to_string(), "\"__FILE__\"".to_string()),
+            ("'__PACKAGE__'".to_string(), "'__PACKAGE__'".to_string()),
+            ("q{__LINE__}".to_string(), "q{__LINE__}".to_string()),
         ]
     );
     assert!(fabricated.is_empty(), "quoted spellings fabricated magic-token calls: {fabricated:?}");
@@ -97,11 +127,12 @@ fn quoted_magic_token_spellings_remain_literals_not_nullary_calls() -> Result<()
 #[test]
 fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(), String> {
     let source = concat!(
-        "my %metadata = (file => __FILE__, line => __LINE__);\n",
+        "my %metadata = (__FILE__ => line, file => __FILE__, line => __LINE__);\n",
         "my @nested = [__PACKAGE__, { sub_name => __SUB__ }];\n",
     );
     let ast = parse_clean(source)?;
     let mut observed = Vec::new();
+    let mut hash_magic_keys = Vec::new();
 
     walk(&ast, &mut |node| {
         if let NodeKind::FunctionCall { name, args } = &node.kind
@@ -110,9 +141,24 @@ fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(
         {
             observed.push(name.clone());
         }
+        if let NodeKind::HashLiteral { pairs } = &node.kind {
+            for (key, _) in pairs {
+                if let NodeKind::FunctionCall { name, args } = &key.kind
+                    && name == "__FILE__"
+                    && args.is_empty()
+                    && let Some(text) = source.get(key.location.start..key.location.end)
+                {
+                    hash_magic_keys.push(text.to_owned());
+                }
+            }
+        }
     });
     observed.sort();
 
-    assert_eq!(observed, vec!["__FILE__", "__LINE__", "__PACKAGE__", "__SUB__"]);
+    assert_eq!(
+        observed,
+        vec!["__FILE__", "__FILE__", "__LINE__", "__PACKAGE__", "__SUB__"]
+    );
+    assert_eq!(hash_magic_keys, vec!["__FILE__"]);
     Ok(())
 }
