@@ -13,10 +13,6 @@ def replace_once(old: str, new: str) -> None:
 
 
 replace_once(
-    "    /// The scanner is O(n) over source bytes and deliberately source-only. It\n",
-    "    /// The scanner is source-only and deliberately independent of symbol-derived lexing. It\n",
-)
-replace_once(
     "            scan_code_line(line, &mut state, &mut known_subs);\n",
     "            scan_code_line(input, line_start, line, &mut state, &mut known_subs);\n",
 )
