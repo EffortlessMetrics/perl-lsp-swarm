@@ -225,6 +225,11 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
             }
         }
         collect_error_node_lines(&output.ast, &source, &mut error_lines);
+        assert!(
+            !error_lines.is_empty(),
+            "recovery fixture '{fixture_id}' produced no diagnostics or Error nodes ({})",
+            expectation.id
+        );
         assert_eq!(error_lines.first().copied(), Some(expectation.first_error_line),
             "recovery fixture '{fixture_id}' first error boundary drifted ({})", expectation.id);
         let expected_region = expectation.error_region.start..=expectation.error_region.end;
