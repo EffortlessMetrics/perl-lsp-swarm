@@ -155,11 +155,13 @@ same direction or from different ones.
    cannot be dispositioned per finding. `scripts/reviews/inline` never resolves
    anything; resolution stays in `scripts/reviews/disposition`.
 
-   Attribute a failing check before recording it. Confirm it ran on the live head; a
-   failure at a superseded SHA describes a commit the branch no longer has, and
-   cancelled lanes usually say so in their logs. Then confirm it does not reproduce on
-   the base; a gate already red on `main` is a repository condition to file, not a
-   candidate finding.
+   Attribute a failing check before recording it, in both directions. A cancelled run
+   reached no verdict and is not evidence; a genuine failure at a superseded SHA
+   remains a finding until the named seam changed, so revalidate that seam at the
+   current head. Base ownership requires the same gate, the same failure signature,
+   and that signature at this PR's merge base — not at current `main`; short of that
+   the failure is `NOT_PROVEN`, and a base failing a different test leaves the
+   candidate owning its own.
 
    **The integrating reviewer posts.** A skill run that only answers a bounded review
    question returns file/line-anchored findings as evidence and does not write to

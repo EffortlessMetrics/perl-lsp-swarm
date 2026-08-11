@@ -142,14 +142,19 @@ from different ones.
    mergeability, rulesets, queue state, and prerequisites as a snapshot. They inform
    integration but do not create substantive review.
 
-   Two snapshot facts are routinely misread as candidate defects. Before recording a
-   failing check against the candidate, confirm it ran on the **live head** — a
-   failure anchored to a superseded SHA is not evidence about the current candidate,
-   and cancelled lanes commonly say so in their own logs. Before recording a failure
-   at the live head, confirm it does not reproduce on the base; a gate that is already
-   red on `main` is a repository condition to name and file, not a candidate finding.
-   Attributing either to the candidate sends the author to fix code that is not
-   broken.
+   Attribute a failing check before recording it, and attribute it in both directions
+   — the contract's check-attribution rules are the authority.
+
+   A superseded SHA does not settle anything by itself. A **cancelled** run reached no
+   verdict and is not evidence either way; a run that **genuinely failed** remains a
+   finding until the seam it names actually changed, so revalidate that seam at the
+   current head rather than discarding the failure because the branch moved.
+   Symmetrically, blaming the base takes the same gate, the same failure signature,
+   and that signature observed at this PR's **merge base** — not at current `main`.
+   Short of that the failure is `NOT_PROVEN`, and if the base fails a *different*
+   test, the candidate still owns its own. Both errors are expensive: one sends the
+   author to fix code that is not broken, the other retires a real regression as
+   somebody else's problem.
 7. **Publish the review.** Post file/line-anchored findings and the cumulative
    conclusion as one submitted review with
    `scripts/reviews/inline --pr <n> --body <summary> [--findings <file>]`, which takes

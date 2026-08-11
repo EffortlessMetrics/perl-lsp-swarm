@@ -16,10 +16,11 @@ update, empty commit, CI replay, or review refresh. "Behind by N" and "targets
 <sha> while live main is <sha>" are not findings. Only a real conflict or an
 actual combined-tree failure changes that.
 
-Before attributing a failing check to the candidate, confirm it ran on the live
-head and does not also fail on main. A failure at a superseded SHA says nothing
-about the current candidate, and a gate already red on main is a repository
-condition to file, not a candidate defect.
+Attribute a failing check before treating it as a candidate defect, and note that
+this cuts both ways. A cancelled run reached no verdict; a run that genuinely
+failed stays a finding until the seam it names actually changed, so a later
+unrelated push does not clear it. Blaming the base takes the same gate and the
+same failure signature observed at this PR's merge base, not at current main.
 
 The branch keeps one writer until the claim lands. Request changes; do not push
 to someone else's candidate.
