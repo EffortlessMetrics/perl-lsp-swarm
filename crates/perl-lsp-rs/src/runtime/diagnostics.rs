@@ -714,9 +714,16 @@ impl LspServer {
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
 
-            // Add dead code diagnostics from workspace-wide symbol analysis
+            // Add dead code diagnostics from workspace-wide symbol analysis.
+            // Re-check freshness immediately before reading the index: readiness
+            // work and semantic queries above may have crossed an index-generation
+            // boundary since the first tier decision. Never let a stale snapshot
+            // reach publish even if the earlier readiness sample was current.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+            if workspace_index_tier_enabled
+                && !self.workspace_index_stale_for_document(uri)
+                && let Some(workspace_index) = self.workspace_index()
+            {
                 let dead_code_diags = perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
                     &workspace_index,
                     uri,
