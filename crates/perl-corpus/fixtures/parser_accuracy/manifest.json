@@ -482,7 +482,48 @@
           }
         ]
       },
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "generated_accessor_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::GeneratedAccessor",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_has_declaration",
+          "kind": "FunctionCall",
+          "line": 5,
+          "span_text": "has name => (is => 'ro')",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_existing_subroutine",
+          "kind": "Subroutine",
+          "line": 7,
+          "span_text": "sub existing",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_call_accessor_method",
+          "kind": "MethodCall",
+          "line": 13,
+          "span_text": "$obj->name",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "heuristic_generated_member",
