@@ -19,6 +19,7 @@ use perl_semantic_analyzer::{
         ReceiverKind, receiver_fact_for_method_call,
     },
     semantic::SemanticModel,
+    symbol::{ScopeKind, SymbolKind},
     type_facts::TypeEvidence,
     type_inference::{PerlType, TypeInferenceEngine},
 };
@@ -1225,6 +1226,106 @@ fn type_engine_receiver(
     }
 }
 
+pub(super) fn receiver_package_from_context_or_source(
+    context: &CompletionContext,
+    source: &str,
+) -> Option<String> {
+    if !context.current_package.is_empty() && context.current_package != "main" {
+        return Some(context.current_package.clone());
+    }
+
+    let position = context.position.min(source.len());
+    let mut parser = Parser::new(source);
+    if let Ok(ast) = parser.parse() {
+        let analyzer =
+            perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
+        let table = analyzer.symbol_table();
+
+        let mut scope_id = table.scope_at_offset(position);
+        loop {
+            let Some(scope) = table.scopes.get(&scope_id) else {
+                break;
+            };
+            if scope.kind == ScopeKind::Package
+                && let Some(package) =
+                    table.symbols.values().flat_map(|symbols| symbols.iter()).find(|symbol| {
+                        symbol.kind == SymbolKind::Package
+                            && symbol.location.start == scope.location.start
+                    })
+            {
+                return Some(package.name.clone());
+            }
+
+            let Some(parent) = scope.parent else {
+                break;
+            };
+            scope_id = parent;
+        }
+
+        let mut current = "main".to_string();
+        let mut packages: Vec<_> = table
+            .symbols
+            .values()
+            .flat_map(|symbols| symbols.iter())
+            .filter(|symbol| symbol.kind == SymbolKind::Package)
+            .collect();
+        packages.sort_by_key(|symbol| symbol.location.start);
+
+        for package in packages {
+            if package.location.start > position {
+                break;
+            }
+
+            let has_scope = table.scopes.values().any(|scope| {
+                scope.kind == ScopeKind::Package && scope.location.start == package.location.start
+            });
+            if !has_scope {
+                current = package.name.clone();
+            }
+        }
+
+        if current != "main" {
+            return Some(current);
+        }
+    }
+
+    source_package_fallback(source, position)
+}
+
+fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+    let mut current = "main".to_string();
+    let mut brace_depth = 0usize;
+    let mut package_blocks: Vec<(usize, String)> = Vec::new();
+
+    for line in source.get(..position)?.lines() {
+        let trimmed = line.trim_start();
+        if let Some(declaration) = trimmed.strip_prefix("package ") {
+            let mut parts =
+                declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace());
+            let package = parts.next().filter(|package| !package.is_empty())?;
+            if declaration.contains('{') {
+                let previous = current.clone();
+                current = package.to_string();
+                package_blocks.push((brace_depth.saturating_add(1), previous));
+            } else {
+                current = package.to_string();
+            }
+        }
+
+        brace_depth = brace_depth.saturating_add(line.chars().filter(|&ch| ch == '{').count());
+        brace_depth = brace_depth.saturating_sub(line.chars().filter(|&ch| ch == '}').count());
+
+        while package_blocks.last().is_some_and(|(depth, _)| *depth > brace_depth) {
+            let Some((_, previous)) = package_blocks.pop() else {
+                break;
+            };
+            current = previous;
+        }
+    }
+
+    (current != "main").then_some(current)
+}
+
 /// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
 /// (static), `$self->` / `$this->` (self), `my $x = Foo->new` (constructor
 /// assignment), and `my $x = bless ..., "Foo"` (literal bless).
@@ -1252,10 +1353,9 @@ pub(super) fn classify_text_pattern_receiver(
     // analyser already sets correctly from the surrounding `package`
     // declaration.
     if matches!(arrow_prefix, "$self" | "$this")
-        && !context.current_package.is_empty()
-        && context.current_package != "main"
+        && let Some(package) = receiver_package_from_context_or_source(context, source)
     {
-        return ReceiverEvidence::SelfOrThis(context.current_package.clone());
+        return ReceiverEvidence::SelfOrThis(package);
     }
 
     // Case 2: Variable method call like `$obj->meth` — try to find the
@@ -2274,12 +2374,10 @@ fn collect_all_package_members_with_source(
                     };
 
                     if let Some(model) =
-                        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(
-                            &ast, &text,
-                        )
-                        .class_models
-                        .into_iter()
-                        .find(|model| model.name == pkg)
+                        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+                            .build(&ast)
+                            .into_iter()
+                            .find(|model| model.name == pkg)
                     {
                         return (model.parents.clone(), model.roles.clone(), model.mro);
                     }
