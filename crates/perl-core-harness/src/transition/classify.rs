@@ -76,6 +76,12 @@ pub fn classify_transition(
         }
     }
 
+    for path in current_by_path.keys() {
+        if !accepted_by_path.contains_key(path) {
+            other_result_change = true;
+        }
+    }
+
     let accepted_boundaries = accepted.semantic_boundaries().map(sorted_boundaries);
     let current_boundaries = sorted_boundaries(&current.semantic_boundaries);
     let semantic_boundary_change =
