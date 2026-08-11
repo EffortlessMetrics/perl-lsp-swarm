@@ -4735,7 +4735,7 @@
           "first_error_line": 3,
           "error_region": {
             "start": 3,
-            "end": 3
+            "end": 4
           },
           "recovery_line": 3
         }
