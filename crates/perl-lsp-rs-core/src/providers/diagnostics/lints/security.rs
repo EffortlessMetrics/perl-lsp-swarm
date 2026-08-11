@@ -367,6 +367,7 @@ fn walk_security_node(
         | NodeKind::MissingBlock
         | NodeKind::Error { .. }
         | NodeKind::UnknownRest => signal_shadowed,
+        _ => false,
     }
 }
 
