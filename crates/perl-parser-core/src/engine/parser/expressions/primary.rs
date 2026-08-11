@@ -346,7 +346,7 @@ impl<'a> Parser<'a> {
                     let cleaned = strip_qw_comments(content_str);
                     // Anchor matching at the original content slice so an
                     // operator/comment prefix cannot steal a matching word.
-                    let content_offset = text.find(content_str).unwrap_or(0);
+                    let content_offset = text.get(2..).and_then(|rest| rest.chars().next()).map_or(2, |delimiter| 2 + delimiter.len_utf8());
                     let mut search_offset = content_offset;
                     let words: Vec<Node> = cleaned
                         .split_whitespace()
