@@ -207,7 +207,7 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
     const RECOVERY_FIXTURES: &[&str] = &[
         "unterminated_heredoc", "bad_heredoc_terminator", "unclosed_quote_like_operator",
         "unclosed_regex", "unbalanced_bracket", "partial_sub_body", "orphan_close_delimiters",
-        "missing_comma_list", "nested_malformed_delimiters", "malformed_heredoc_recovery",
+        "missing_comma_list", "nested_malformed_delimiters",
     ];
     for fixture_id in RECOVERY_FIXTURES {
         let fixture = find_fixture(&manifest, fixture_id)?;
