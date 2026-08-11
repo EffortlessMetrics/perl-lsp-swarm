@@ -86,12 +86,11 @@ fn use_and_no_keep_module_and_argument_boundaries() -> Result<(), String> {
     });
 
     let (use_args, use_span) = use_payload.ok_or_else(|| "use Module was not preserved".to_string())?;
-    let joined_use = use_args.join(" ");
-    assert!(joined_use.contains("alpha") && joined_use.contains("beta"));
+    assert_eq!(use_args, vec!["qw(alpha beta)".to_string()]);
     assert_eq!(use_span.as_deref(), Some("use Feature::Bundle qw(alpha beta)"));
 
     let (no_args, no_span) = no_payload.ok_or_else(|| "no Module was not preserved".to_string())?;
-    assert!(no_args.join(" ").contains("experimental::signatures"));
+    assert_eq!(no_args, vec!["'experimental::signatures'".to_string()]);
     assert_eq!(no_span.as_deref(), Some("no warnings 'experimental::signatures'"));
     Ok(())
 }
