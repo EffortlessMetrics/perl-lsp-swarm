@@ -101,7 +101,7 @@ def main() -> int:
             return result.returncode
 
         # Feature-gated parser tests are not exercised by the default target
-        # command. Keep this explicit proof in the same bounded parser gate.
+        # command. Keep these explicit proofs in the same bounded parser gate.
         incremental_command = [
             "cargo",
             "test",
@@ -112,6 +112,8 @@ def main() -> int:
             "incremental",
             "--test",
             "incremental_parser_accuracy",
+            "--test",
+            "incremental_parse_output",
             "--",
             "--test-threads=4",
         ]
