@@ -1419,7 +1419,7 @@ mod evaluate_fixture_bank_tests {
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod evaluate_real_session_fixtures {
     use super::common::{DapWorkflowSession, perl_available, workflow_timeout};
     use super::{DapMessage, TestResult};
