@@ -26,6 +26,7 @@ jobs:
       - name: Execute reviewed authority transformation from parent carrier
         shell: python
         run: |
+          import ast
           import base64
           import hashlib
           import re
@@ -34,23 +35,88 @@ jobs:
           from pathlib import Path
 
           carrier = subprocess.run(
-              ["git", "show", "HEAD^:.github/workflows/workflow-trigger-lint.yml"],
+              ["git", "show", "HEAD^^:.github/workflows/workflow-trigger-lint.yml"],
               check=True,
               capture_output=True,
               text=True,
           ).stdout
           match = re.search(r'encoded = "([A-Za-z0-9+/=]+)"', carrier)
           if match is None:
-              raise SystemExit("reviewed authority payload was not found in parent carrier")
-          script = zlib.decompress(base64.b64decode(match.group(1)))
-          actual = hashlib.sha256(script).hexdigest()
+              raise SystemExit("reviewed authority payload was not found in ancestor carrier")
+          original = zlib.decompress(base64.b64decode(match.group(1)))
+          actual = hashlib.sha256(original).hexdigest()
           expected = "f6612daaed8922c4e2016bf557184d32ad5ccb97bfc5535b536af314f02fcb59"
           if actual != expected:
               raise SystemExit(f"authority transformation digest mismatch: {actual}")
+
+          source = original.decode()
+          tree = ast.parse(source)
+          target = None
+          for node in ast.walk(tree):
+              if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+                  continue
+              labels = [
+                  argument.value
+                  for argument in node.value.args
+                  if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+              ]
+              if "registry vocabulary authority" in labels:
+                  target = node
+                  break
+          if target is None or target.end_lineno is None:
+              raise SystemExit("registry vocabulary transformation node was not found")
+
+          robust = '''lines = text.splitlines()
+          start = next(
+              (index for index, line in enumerate(lines)
+               if line.strip() == "let allowed_tiers = registry"),
+              None,
+          )
+          end = next(
+              (index for index, line in enumerate(lines)
+               if line.strip() == "let mut ids = BTreeSet::new();"),
+              None,
+          )
+          if start is not None:
+              if end is None or end <= start:
+                  raise SystemExit("registry vocabulary block end not found")
+              replacement = ''' + "'''" + '''    let declared_tiers = registry
+                  .meta
+                  .allowed_tiers
+                  .iter()
+                  .map(String::as_str)
+                  .collect::<BTreeSet<_>>();
+              let expected_tiers = ALLOWED_TIERS.into_iter().collect::<BTreeSet<_>>();
+              ensure!(
+                  declared_tiers == expected_tiers,
+                  "registry tier vocabulary drifted: declared={declared_tiers:?} expected={expected_tiers:?}"
+              );
+              let declared_evidence_kinds = registry
+                  .meta
+                  .allowed_evidence_kinds
+                  .iter()
+                  .map(String::as_str)
+                  .collect::<BTreeSet<_>>();
+              let expected_evidence_kinds =
+                  ALLOWED_EVIDENCE_KINDS.into_iter().collect::<BTreeSet<_>>();
+              ensure!(
+                  declared_evidence_kinds == expected_evidence_kinds,
+                  "registry evidence vocabulary drifted: declared={declared_evidence_kinds:?} expected={expected_evidence_kinds:?}"
+              );
+              let allowed_tiers = declared_tiers;
+              let allowed_evidence = declared_evidence_kinds;
+          ''' + "'''" + '''.splitlines()
+              lines[start:end] = replacement
+              text = "\\n".join(lines) + "\\n"
+          elif "let declared_tiers = registry" not in text:
+              raise SystemExit("registry vocabulary block not found")'''
+          lines = source.splitlines()
+          lines[target.lineno - 1 : target.end_lineno] = robust.splitlines()
+          patched = ("\n".join(lines) + "\n").encode()
           path = Path("/tmp/finish_pr6841.py")
-          path.write_bytes(script)
-          compile(script, str(path), "exec")
-          exec(script, {"__name__": "__main__"})
+          path.write_bytes(patched)
+          compile(patched, str(path), "exec")
+          exec(patched, {"__name__": "__main__"})
 
       - name: Stage transcript fixture for tracked-file validation
         shell: bash
