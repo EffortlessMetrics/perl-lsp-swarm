@@ -4,15 +4,15 @@ use perl_parser::{Node, NodeKind, SourceLocation};
 #[test]
 fn test_classify_unclosed_string_double_quote() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 0, end: 10 },
-    };
+        SourceLocation { start: 0, end: 10 },
+    );
 
     let source = r#""hello world"#;
     let result = classifier.classify(&error_node, source);
@@ -22,15 +22,15 @@ fn test_classify_unclosed_string_double_quote() {
 #[test]
 fn test_classify_unclosed_string_single_quote() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 0, end: 10 },
-    };
+        SourceLocation { start: 0, end: 10 },
+    );
 
     let source = "'hello world";
     let result = classifier.classify(&error_node, source);
@@ -40,15 +40,15 @@ fn test_classify_unclosed_string_single_quote() {
 #[test]
 fn test_classify_unclosed_regex() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 0, end: 10 },
-    };
+        SourceLocation { start: 0, end: 10 },
+    );
 
     let source = "/pattern";
     let result = classifier.classify(&error_node, source);
@@ -58,15 +58,15 @@ fn test_classify_unclosed_regex() {
 #[test]
 fn test_classify_missing_semicolon() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 13, end: 14 },
-    };
+        SourceLocation { start: 13, end: 14 },
+    );
 
     let source = "my $x = 42\nprint $x";
     let result = classifier.classify(&error_node, source);
@@ -77,15 +77,15 @@ fn test_classify_missing_semicolon() {
 #[test]
 fn test_classify_unclosed_parenthesis() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 8, end: 9 },
-    };
+        SourceLocation { start: 8, end: 9 },
+    );
 
     let source = "print (42";
     let result = classifier.classify(&error_node, source);
@@ -96,15 +96,15 @@ fn test_classify_unclosed_parenthesis() {
 #[test]
 fn test_classify_unclosed_bracket() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 10, end: 11 },
-    };
+        SourceLocation { start: 10, end: 11 },
+    );
 
     let source = "my @arr = [1, 2, 3";
     let result = classifier.classify(&error_node, source);
@@ -115,15 +115,15 @@ fn test_classify_unclosed_bracket() {
 #[test]
 fn test_classify_unclosed_brace() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 11, end: 12 },
-    };
+        SourceLocation { start: 11, end: 12 },
+    );
 
     let source = "my %hash = {a => 1";
     let result = classifier.classify(&error_node, source);
@@ -151,15 +151,15 @@ fn test_classify_unexpected_eof() {
 #[test]
 fn test_classify_invalid_syntax() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 0, end: 1 },
-    };
+        SourceLocation { start: 0, end: 1 },
+    );
 
     let source = "@@ invalid";
     let result = classifier.classify(&error_node, source);
@@ -196,28 +196,28 @@ fn test_boundary_conditions() {
     let classifier = ErrorClassifier::new();
 
     // Test with empty source
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 0, end: 0 },
-    };
+        SourceLocation { start: 0, end: 0 },
+    );
     let result = classifier.classify(&error_node, "");
     assert_eq!(result, ParseErrorKind::UnexpectedEof);
 
     // Test with out-of-bounds location
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 100, end: 200 },
-    };
+        SourceLocation { start: 100, end: 200 },
+    );
     let result = classifier.classify(&error_node, "short");
     assert_eq!(result, ParseErrorKind::InvalidSyntax);
 }
@@ -226,15 +226,15 @@ fn test_boundary_conditions() {
 #[test]
 fn test_heredoc_classification() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 7, end: 8 },
-    };
+        SourceLocation { start: 7, end: 8 },
+    );
 
     let source = "<<'EOF'\nsome text";
     let result = classifier.classify(&error_node, source);
@@ -247,15 +247,15 @@ fn test_classify_with_context() {
     let classifier = ErrorClassifier::new();
 
     // Test missing operator between operands
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 7, end: 8 },
-    };
+        SourceLocation { start: 7, end: 8 },
+    );
     let source = "my $x = 5 $y";
     let result = classifier.classify(&error_node, source);
     // This should detect missing operator
@@ -269,15 +269,15 @@ fn test_error_classifier_default() {
     let classifier2 = ErrorClassifier::new();
 
     // Both should behave the same
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 0, end: 5 },
-    };
+        SourceLocation { start: 0, end: 5 },
+    );
 
     let source = "'test";
     assert_eq!(
