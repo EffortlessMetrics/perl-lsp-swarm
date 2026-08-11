@@ -479,4 +479,43 @@ fn parser_recovery_profiles_error_nodes_as_accuracy_issue() -> ParseResult<()> {
     );
     Ok(())
 }
-\n\nfn contains_variable_declaration(node: &perl_parser_core::Node, name: &str) -> bool {\n    let declared_here = matches!(\n        &node.kind,\n        NodeKind::VariableDeclaration { variable, .. }\n            if matches!(&variable.kind, NodeKind::Variable { name: declared, .. } if declared == name)\n    );\n    declared_here || node.children().any(|child| contains_variable_declaration(child, name))\n}\n\n#[test]\nfn parser_recovers_valid_eval_statements_after_malformed_declaration() -> ParseResult<()> {\n    let source = r#"\nmy $before = 1;\neval {\n    my $inside_before = 2;\n    my $broken = ;\n    my $inside_after = 3;\n};\nmy $after = 4;\n"#;\n    let mut parser = Parser::new(source);\n    let ast = parser.parse()?;\n\n    assert!(\n        !parser.errors().is_empty(),\n        "the malformed declaration must remain observable as parser error evidence"\n    );\n\n    for name in ["before", "inside_before", "inside_after", "after"] {\n        assert!(\n            contains_variable_declaration(&ast, name),\n            "recovery must retain every valid declaration: {}",\n            ast.to_sexp()\n        );\n    }\n\n    Ok(())\n}\n
+
+
+(node: &perl_parser_core::Node, name: &str) -> bool {
+    let declared_here = matches!(
+        &node.kind,
+        NodeKind::VariableDeclaration { variable, .. }
+            if matches!(&variable.kind, NodeKind::Variable { name: declared, .. } if declared == name)
+    );
+    declared_here || node.children().any(|child| contains_variable_declaration(child, name))
+}
+
+#[test]
+fn parser_recovers_valid_eval_statements_after_malformed_declaration() -> ParseResult<()> {
+    let source = r#"
+my $before = 1;
+eval {
+    my $inside_before = 2;
+    my $broken = ;
+    my $inside_after = 3;
+};
+my $after = 4;
+"#;
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+
+    assert!(
+        !parser.errors().is_empty(),
+        "the malformed declaration must remain observable as parser error evidence"
+    );
+
+    for name in ["before", "inside_before", "inside_after", "after"] {
+        assert!(
+            contains_variable_declaration(&ast, name),
+            "recovery must retain every valid declaration: {}",
+            ast.to_sexp()
+        );
+    }
+
+    Ok(())
+}
