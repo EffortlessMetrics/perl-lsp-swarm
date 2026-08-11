@@ -10,7 +10,7 @@
 )]
 
 use clap::Parser;
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
@@ -394,9 +394,9 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        computed_recommendation, validate, ArtifactEvidence, ArtifactProvenance, Artifacts,
-        EvidenceStatus, FreezeRecommendation, JourneyCell, MechanismDisposition, Packet,
-        PlatformEvidence, Platforms, ZeroBudgetCounts,
+        ArtifactEvidence, ArtifactProvenance, Artifacts, EvidenceStatus, FreezeRecommendation,
+        JourneyCell, MechanismDisposition, Packet, PlatformEvidence, Platforms, ZeroBudgetCounts,
+        computed_recommendation, validate,
     };
     use color_eyre::eyre::Result;
 
