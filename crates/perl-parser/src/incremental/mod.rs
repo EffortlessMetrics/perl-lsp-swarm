@@ -91,6 +91,25 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
     Ok(total_changed)
 }
 
+fn unchanged_result(state: &IncrementalState) -> ReparseResult {
+    let lex_restart = LexRestartReport {
+        strategy: LexRestartStrategy::Unchanged,
+        restart_byte: state.source.len(),
+        relexed_bytes: 0,
+        reused_prefix_tokens: state.tokens.len(),
+        reused_suffix_tokens: 0,
+    };
+    ReparseResult {
+        changed_ranges: Vec::new(),
+        parse_output: state.parse_output.clone(),
+        diagnostics: Vec::new(),
+        lex_restart,
+        reparsed_bytes: 0,
+        reused_tokens: lex_restart.reused_tokens(),
+        token_count: state.tokens.len(),
+    }
+}
+
 fn apply_text_edits(state: &mut IncrementalState, edits_descending: &[Edit]) -> Result<()> {
     for edit in edits_descending {
         apply_text_edit_to_state(state, edit)?;
@@ -112,6 +131,9 @@ fn full_reparse_after_edits(
 /// Apply edits incrementally.
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
     let total_changed = validate_edits(&state.source, edits)?;
+    if edits.is_empty() {
+        return Ok(unchanged_result(state));
+    }
 
     let mut sorted_edits = edits.to_vec();
     sorted_edits.sort_by_key(|edit| edit.start_byte);
