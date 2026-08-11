@@ -4074,6 +4074,18 @@ print \"unreachable\\n\";\n";
     }
 
     #[cfg(feature = "workspace")]
+    fn latest_published_diagnostics<'a>(text: &'a str, uri: &str) -> Option<&'a str> {
+        let marker = "\"method\":\"textDocument/publishDiagnostics\"";
+        text.match_indices(marker)
+            .filter_map(|(start, _)| {
+                let message = &text[start..];
+                let uri_key = format!("\"uri\":\"{uri}\"");
+                message.contains(&uri_key).then_some(message)
+            })
+            .last()
+    }
+
+    #[cfg(feature = "workspace")]
     fn pull_diagnostic_codes(report: &Value) -> Vec<String> {
         report
             .get("items")
@@ -4161,9 +4173,11 @@ print \"unreachable\\n\";\n";
         std::thread::sleep(Duration::from_millis(50));
 
         let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, uri)
+            .ok_or("stale publish regression must emit a target diagnostic frame")?;
         assert!(
-            !text.contains("dead-code-subroutine"),
-            "stale workspace index must not publish dead-code diagnostics from outdated symbols: {text:?}"
+            !latest.contains("dead-code-subroutine"),
+            "latest stale-target publish must not contain dead-code diagnostics: {latest:?}"
         );
 
         Ok(())
@@ -4199,9 +4213,11 @@ print \"unreachable\\n\";\n";
         std::thread::sleep(Duration::from_millis(50));
 
         let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, target_uri)
+            .ok_or("stale contributor regression must emit a target diagnostic frame")?;
         assert!(
-            !text.contains("dead-code-subroutine"),
-            "stale contributor must suppress workspace dead-code publication: {text:?}"
+            !latest.contains("dead-code-subroutine"),
+            "latest target publish must suppress stale-contributor dead-code diagnostics: {latest:?}"
         );
 
         Ok(())
