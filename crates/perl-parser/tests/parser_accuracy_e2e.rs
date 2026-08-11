@@ -183,7 +183,9 @@ fn assert_observed_expectation(
                 .as_deref()
                 .is_none_or(|operator| node.operator.as_deref() == Some(operator))
             && match expectation.operator.as_deref() {
-                Some(_) => node.parent_operator.as_deref() == expectation.parent_operator.as_deref(),
+                Some(_) => {
+                    node.parent_operator.as_deref() == expectation.parent_operator.as_deref()
+                }
                 None => expectation
                     .parent_operator
                     .as_deref()
