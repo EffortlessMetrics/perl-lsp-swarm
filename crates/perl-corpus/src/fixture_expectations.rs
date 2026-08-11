@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use crate::sidecar::ExpectationMode;
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FixtureExpectation {
@@ -26,16 +28,6 @@ pub struct ExpectBlock {
     pub panic: bool,
     pub timeout: bool,
     pub mode: ExpectationMode,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpectationMode {
-    ParseClean,
-    RecoverWithoutPanic,
-    ExpectedError,
-    TokenOnly,
-    SpanOnly,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
