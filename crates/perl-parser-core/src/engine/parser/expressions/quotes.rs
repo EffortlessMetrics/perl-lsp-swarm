@@ -112,6 +112,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            // Preserve the established qw diagnostic while naming other quote-like operators.
             if depth > 0 {
                 let message = if op == "qw" {
                     "Unclosed qw() delimiter: missing closing delimiter before end of file".to_string()
