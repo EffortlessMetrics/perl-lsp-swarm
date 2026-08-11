@@ -319,6 +319,7 @@ fn line_tag_label(tag: LineTag) -> &'static str {
         LineTag::Import => "import",
         LineTag::Export => "export",
         LineTag::FunctionCall => "function_call",
+        LineTag::IndirectCall => "indirect_call",
         LineTag::MethodCall => "method_call",
         LineTag::Regex => "regex",
         LineTag::RegexMatch => "regex_match",
