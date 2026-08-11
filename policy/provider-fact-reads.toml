@@ -183,10 +183,14 @@ duplicate_interpretation = "pull diagnostics maintain a second result, cache, an
 migration_disposition = "port_candidate"
 replacement_owner = "#4799"
 [[read.source]]
-path = "crates/perl-lsp-rs/src/features/diagnostics/pull.rs"
+path = "crates/perl-lsp-rs/src/runtime/diagnostics.rs"
 [[read.source.anchor]]
 kind = "rust_fn"
 value = "handle_document_diagnostic"
+count = 1
+[[read.source.anchor]]
+kind = "rust_call"
+value = "get_document_diagnostics_with_context"
 count = 1
 
 [[read]]
@@ -202,10 +206,14 @@ duplicate_interpretation = "workspace pull diagnostics own provider-specific doc
 migration_disposition = "port_candidate"
 replacement_owner = "#4799"
 [[read.source]]
-path = "crates/perl-lsp-rs/src/features/diagnostics/pull.rs"
+path = "crates/perl-lsp-rs/src/runtime/diagnostics.rs"
 [[read.source.anchor]]
 kind = "rust_fn"
 value = "handle_workspace_diagnostic"
+count = 1
+[[read.source.anchor]]
+kind = "rust_call"
+value = "get_workspace_diagnostics_with_context"
 count = 1
 
 [[read]]
