@@ -105,6 +105,15 @@ pub enum CorpusTopologyError {
         /// Asset relative path.
         relative_path: String,
     },
+    /// A deserialized asset is outside the prefix owned by its declared layer.
+    LayerPathMismatch {
+        /// Asset ID.
+        id: String,
+        /// Declared layer.
+        layer: CorpusAssetLayer,
+        /// Required root-relative prefix for the declared layer.
+        required_prefix: &'static str,
+    },
     /// The serialized topology schema is not supported by this implementation.
     UnsupportedSchemaVersion {
         /// Schema version found in the topology.
@@ -178,6 +187,12 @@ impl fmt::Display for CorpusTopologyError {
                 write!(
                     formatter,
                     "corpus asset ID {id:?} does not match relative path {relative_path:?}"
+                )
+            }
+            Self::LayerPathMismatch { id, layer, required_prefix } => {
+                write!(
+                    formatter,
+                    "corpus asset {id:?} is outside declared {layer:?} layer prefix {required_prefix:?}"
                 )
             }
             Self::UnsupportedSchemaVersion { found, supported } => {
@@ -360,7 +375,23 @@ fn validate_asset_identity(asset: &CorpusAsset) -> Result<(), CorpusTopologyErro
         });
     }
 
+    let required_prefix = layer_prefix(asset.layer);
+    if !Path::new(&asset.relative_path).starts_with(required_prefix) {
+        return Err(CorpusTopologyError::LayerPathMismatch {
+            id: asset.id.clone(),
+            layer: asset.layer,
+            required_prefix,
+        });
+    }
+
     Ok(())
+}
+
+fn layer_prefix(layer: CorpusAssetLayer) -> &'static str {
+    match layer {
+        CorpusAssetLayer::TestCorpus => "test_corpus",
+        CorpusAssetLayer::Fuzz => "crates/perl-corpus/fuzz",
+    }
 }
 
 fn validate_resolved_asset(
@@ -538,21 +569,24 @@ fn collect_layer_assets(
             })?;
             let kind = classify(&path);
 
-            if file_type.is_symlink() {
-                return Err(CorpusTopologyError::SymlinkUnsupported { path });
-            }
             if file_type.is_dir() {
                 if kind.is_some() {
                     return Err(CorpusTopologyError::UnsupportedFileType { path });
                 }
                 stack.push(path);
-            } else if file_type.is_file() {
-                if let Some(kind) = kind {
-                    assets.push(asset_from_path(paths, &path, layer, kind)?);
-                }
-            } else if kind.is_some() {
+                continue;
+            }
+
+            let Some(kind) = kind else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                return Err(CorpusTopologyError::SymlinkUnsupported { path });
+            }
+            if !file_type.is_file() {
                 return Err(CorpusTopologyError::UnsupportedFileType { path });
             }
+            assets.push(asset_from_path(paths, &path, layer, kind)?);
         }
     }
 
@@ -748,6 +782,30 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_assets_outside_declared_layer() {
+        let outside_test = asset("Cargo.toml");
+        assert_eq!(
+            topology_with(vec![outside_test.clone()]).validate(),
+            Err(CorpusTopologyError::LayerPathMismatch {
+                id: outside_test.id,
+                layer: CorpusAssetLayer::TestCorpus,
+                required_prefix: "test_corpus",
+            })
+        );
+
+        let mut outside_fuzz = asset("test_corpus/case.pl");
+        outside_fuzz.layer = CorpusAssetLayer::Fuzz;
+        assert_eq!(
+            topology_with(vec![outside_fuzz.clone()]).validate(),
+            Err(CorpusTopologyError::LayerPathMismatch {
+                id: outside_fuzz.id,
+                layer: CorpusAssetLayer::Fuzz,
+                required_prefix: "crates/perl-corpus/fuzz",
+            })
+        );
+    }
+
+    #[test]
     fn binding_rejects_unsupported_schema_versions() {
         for found in [0, CORPUS_TOPOLOGY_SCHEMA_VERSION + 1] {
             let mut topology = topology_with(Vec::new());
@@ -892,6 +950,24 @@ mod tests {
         let topology =
             CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf()))
                 .expect("ignore non-asset metadata");
+        assert!(topology.assets.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn excluded_metadata_symlink_does_not_block_discovery() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let target = root.path().join("README-target.md");
+        let link = root.path().join("crates/perl-corpus/fuzz/README.md");
+        write_fixture(&target, "metadata");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(&target, &link).expect("create metadata symlink");
+
+        let topology =
+            CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf()))
+                .expect("ignore excluded metadata symlink");
         assert!(topology.assets.is_empty());
     }
 
