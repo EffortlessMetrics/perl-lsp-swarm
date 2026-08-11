@@ -60,8 +60,7 @@ fn self_delimited_qw_preserves_a_valid_closer_after_recovery() {
 
     assert!(
         !tokens.iter().any(|token| {
-            matches!(token.token_type, TokenType::Error(_))
-                && token.text.starts_with("qw")
+            matches!(token.token_type, TokenType::Error(_)) && token.text.starts_with("qw")
         }),
         "a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"
     );
