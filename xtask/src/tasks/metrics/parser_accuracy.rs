@@ -403,7 +403,18 @@ enum LineTag {
     Import,
     Export,
     FunctionCall,
+    IndirectCall,
     MethodCall,
+    Glob,
+    Tie,
+    Tied,
+    Untie,
+    LoopControl,
+    Next,
+    Last,
+    Redo,
+    ContinueBlock,
+    DiamondRead,
     Regex,
     RegexMatch,
     Division,
@@ -431,7 +442,18 @@ const LINE_TAG_VOCABULARY: &[LineTag] = &[
     LineTag::Import,
     LineTag::Export,
     LineTag::FunctionCall,
+    LineTag::IndirectCall,
     LineTag::MethodCall,
+    LineTag::Glob,
+    LineTag::Tie,
+    LineTag::Tied,
+    LineTag::Untie,
+    LineTag::LoopControl,
+    LineTag::Next,
+    LineTag::Last,
+    LineTag::Redo,
+    LineTag::ContinueBlock,
+    LineTag::DiamondRead,
     LineTag::Regex,
     LineTag::RegexMatch,
     LineTag::Division,
@@ -1411,8 +1433,20 @@ fn line_tag_for_node(node: &Node) -> Option<LineTag> {
         }
         NodeKind::Use { .. } | NodeKind::No { .. } => Some(LineTag::Import),
         NodeKind::FunctionCall { name, .. } if name == "require" => Some(LineTag::Import),
+        NodeKind::FunctionCall { name, .. } if name == "tied" => Some(LineTag::Tied),
         NodeKind::FunctionCall { .. } => Some(LineTag::FunctionCall),
+        NodeKind::IndirectCall { .. } => Some(LineTag::IndirectCall),
         NodeKind::MethodCall { .. } => Some(LineTag::MethodCall),
+        NodeKind::Glob { .. } => Some(LineTag::Glob),
+        NodeKind::Tie { .. } => Some(LineTag::Tie),
+        NodeKind::Untie { .. } => Some(LineTag::Untie),
+        NodeKind::LoopControl { op, .. } => match op.as_str() {
+            "next" => Some(LineTag::Next),
+            "last" => Some(LineTag::Last),
+            "redo" => Some(LineTag::Redo),
+            _ => Some(LineTag::LoopControl),
+        },
+        NodeKind::Readline { .. } => Some(LineTag::DiamondRead),
         NodeKind::Eval { .. } => Some(LineTag::FunctionCall),
         NodeKind::Regex { .. }
         | NodeKind::Substitution { .. }
@@ -3673,7 +3707,12 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::VariableDeclaration { .. }
             | NodeKind::VariableListDeclaration { .. }
             | NodeKind::FunctionCall { .. }
+            | NodeKind::IndirectCall { .. }
             | NodeKind::MethodCall { .. }
+            | NodeKind::Glob { .. }
+            | NodeKind::Tie { .. }
+            | NodeKind::Untie { .. }
+            | NodeKind::LoopControl { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Match { .. }
             | NodeKind::Substitution { .. }
