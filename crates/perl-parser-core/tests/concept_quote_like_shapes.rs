@@ -87,19 +87,13 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
                     ));
                 }
             }
-            NodeKind::VariableDeclaration {
-                variable,
-                initializer: Some(initializer),
-                ..
-            } if matches!(
-                &variable.kind,
-                NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
-            ) => {
-                let NodeKind::String {
-                    value,
-                    interpolated,
-                } = &initializer.kind
-                else {
+            NodeKind::VariableDeclaration { variable, initializer: Some(initializer), .. }
+                if matches!(
+                    &variable.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
+                ) =>
+            {
+                let NodeKind::String { value, interpolated } = &initializer.kind else {
                     return Err("$message declaration did not own a String initializer".into());
                 };
                 quote_payloads.push((
@@ -112,18 +106,12 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
                 ));
             }
             NodeKind::Return { value: Some(value) } => {
-                let NodeKind::String {
-                    value: string_value,
-                    interpolated,
-                } = &value.kind
-                else {
+                let NodeKind::String { value: string_value, interpolated } = &value.kind else {
                     return Err("return did not own a String value".into());
                 };
                 quote_payloads.push((
                     "return".to_string(),
-                    source
-                        .get(value.location.start..value.location.end)
-                        .map(ToOwned::to_owned),
+                    source.get(value.location.start..value.location.end).map(ToOwned::to_owned),
                     string_value.clone(),
                     *interpolated,
                 ));
@@ -158,18 +146,8 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
         return Err(format!("unexpected transliteration payloads: {transliterations:?}"));
     }
     let expected_quote_payloads = vec![
-        (
-            "declaration".to_string(),
-            Some("q{hello}".to_string()),
-            "q{hello}".to_string(),
-            false,
-        ),
-        (
-            "return".to_string(),
-            Some("qq{$message}".to_string()),
-            "qq{$message}".to_string(),
-            true,
-        ),
+        ("declaration".to_string(), Some("q{hello}".to_string()), "q{hello}".to_string(), false),
+        ("return".to_string(), Some("qq{$message}".to_string()), "qq{$message}".to_string(), true),
     ];
     if quote_payloads != expected_quote_payloads {
         return Err(format!("unexpected owned quote payloads: {quote_payloads:?}"));
