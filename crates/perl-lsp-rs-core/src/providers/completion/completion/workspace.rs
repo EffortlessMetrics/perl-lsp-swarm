@@ -2250,43 +2250,46 @@ fn collect_all_package_members_with_source(
         cache
             .entry(pkg.to_string())
             .or_insert_with(|| {
-                let text = index
-                    .find_definition(pkg)
-                    .and_then(|pkg_location| {
-                        index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                            perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                                .and_then(|path| std::fs::read_to_string(path).ok())
-                        })
+                let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
+                    index.document_store().get_text(&pkg_location.uri).or_else(|| {
+                        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+                            .and_then(|path| std::fs::read_to_string(path).ok())
                     })
-                    .or_else(|| (!source.is_empty()).then_some(source.to_string()));
+                });
 
-                let Some(text) = text else {
-                    return (
+                let fallback = || {
+                    (
                         Vec::new(),
                         Vec::new(),
                         perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
+                    )
                 };
 
-                let mut parser = perl_semantic_analyzer::Parser::new(&text);
-                let Ok(ast) = parser.parse() else {
-                    return (
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
-                };
-
-                perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
-                    .class_models
+                // A bare-symbol lookup can resolve an unrelated indexed symbol.
+                // Only suppress the open-document fallback when the indexed text
+                // actually contains the requested package model.
+                for text in indexed_text
                     .into_iter()
-                    .find(|model| model.name == pkg)
-                    .map(|model| (model.parents.clone(), model.roles.clone(), model.mro))
-                    .unwrap_or((
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    ))
+                    .chain((!source.is_empty()).then_some(source.to_string()))
+                {
+                    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+                    let Ok(ast) = parser.parse() else {
+                        continue;
+                    };
+
+                    if let Some(model) =
+                        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(
+                            &ast, &text,
+                        )
+                        .class_models
+                        .into_iter()
+                        .find(|model| model.name == pkg)
+                    {
+                        return (model.parents.clone(), model.roles.clone(), model.mro);
+                    }
+                }
+
+                fallback()
             })
             .clone()
     };
