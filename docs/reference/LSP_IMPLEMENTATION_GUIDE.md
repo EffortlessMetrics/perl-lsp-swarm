@@ -1,14 +1,5 @@
-# LSP implementation guide — current-source pointer
+# LSP implementation guide — compatibility pointer
 
-This page is retained for compatibility with older links. Its former guide combined implementation notes, security conclusions, architecture diagrams, and performance claims from earlier repository states without a current proof boundary.
+This page retains older links but is not a current implementation guide. Current runtime and package boundaries are maintained in the [architecture overview](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md), [LSP core README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-lsp-rs-core/README.md), and [server README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-lsp-rs/README.md).
 
-Use these authorities instead:
-
-- [Architecture Overview](ARCHITECTURE.md) for current runtime and crate boundaries;
-- [LSP capability policy](LSP_CAPABILITY_POLICY.md) for capability decisions;
-- [LSP contribution guide](../how-to/CONTRIBUTING_LSP.md) for implementation workflow;
-- [LSP conformance boundary](../specs/lsp-318-conformance-boundary.md) for standards claims;
-- focused provider tests and issue-linked receipts for behavior proof;
-- [current status](../project/CURRENT_STATUS.md) for project posture.
-
-The former “100% symmetric,” zero-regression, fixed-latency, security-resolution, and complete-feature claims are historical unless a current receipt explicitly proves the narrower claim. Do not use this page as an implementation contract.
+The standards boundary is the [PLSP-SPEC-0029 LSP 3.18 conformance specification](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md). The page is copied into mdBook during deployment, so links are repository-absolute.
