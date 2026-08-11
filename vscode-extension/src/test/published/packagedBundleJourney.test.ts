@@ -71,7 +71,7 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
   const status: VerifiedChildArtifact['status'] =
     outcome === 'failed'
       ? 'blocked'
-      : outcome === 'not_proven' || mandatoryEvidenceIsMissing
+      : outcome !== 'completed' || mandatoryEvidenceIsMissing
         ? 'not_proven'
         : knownLimitations.length > 0
           ? 'limited'
