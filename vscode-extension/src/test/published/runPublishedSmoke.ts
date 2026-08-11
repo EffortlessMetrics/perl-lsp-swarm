@@ -10,6 +10,7 @@ import {
   runTests,
 } from '@vscode/test-electron';
 import { resolveVSCodeTestVersion } from '../vscodeHostVersion';
+import { writeHostResolutionFailureReceipt } from '../vscodeHostResolution';
 import { runWithoutForcedWorkspaceTrust } from '../runVsCodeTests';
 import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceSmokeOptions';
 
@@ -283,7 +284,18 @@ async function main(): Promise<void> {
   }
 
   try {
-    const vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
+    let vscodeExecutablePath: string;
+    try {
+      vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
+    } catch (error: unknown) {
+      try {
+        writeHostResolutionFailureReceipt(receiptsRoot, vscodeVersion, error);
+      } catch (receiptError: unknown) {
+        const detail = receiptError instanceof Error ? receiptError.message : String(receiptError);
+        process.stderr.write(`Unable to write VS Code host-resolution receipt: ${detail}\n`);
+      }
+      throw error;
+    }
     const installTarget = await resolveInstallTarget(source, downloadDir);
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
     await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
