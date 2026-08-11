@@ -62,13 +62,17 @@ function compareInventory(actual, baseline, platform = process.platform, options
   const allowedFiles = new Set(options.allowedFiles ?? []);
   const arch = options.arch ?? process.arch;
   const target = `${platform}-${arch}`;
-  const effectiveBaseline = baselineForPlatform(baseline, platform, arch);
+  const effectiveBaseline = summarizeInventory(
+    Object.entries(baselineForPlatform(baseline, platform, arch).files)
+      .filter(([file]) => !allowedFiles.has(file))
+      .map(([file, bytes]) => ({ file, bytes })),
+  );
   const projectedActual = Object.entries(actual.files).filter(([file]) => {
     const fileTarget = bundleTargetForPackagedFile(file);
-    if (fileTarget === null || fileTarget === target) {
-      return !(allowedFiles.has(file) && !Object.hasOwn(baseline.files, file));
+    if (allowedFiles.has(file)) {
+      return false;
     }
-    return false;
+    return fileTarget === null || fileTarget === target;
   });
   const effectiveActual = summarizeInventory(
     projectedActual.map(([file, bytes]) => ({ file, bytes })),
