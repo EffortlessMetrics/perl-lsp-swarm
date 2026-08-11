@@ -28,76 +28,143 @@ fn source_text(source: &str, node: &Node) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn count_in_subtree(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> usize {
+    usize::from(predicate(&node.kind))
+        + node
+            .children()
+            .into_iter()
+            .map(|child| count_in_subtree(child, predicate))
+            .sum::<usize>()
+}
+
 #[test]
-fn package_statement_and_block_forms_keep_name_geometry() -> Result<(), String> {
+fn package_statement_and_block_forms_keep_exact_name_and_body_geometry() -> Result<(), String> {
     let source = concat!(
         "package Alpha::One 1.23;\n",
         "package Beta::Two { sub inside { 1 } }\n",
     );
     let ast = parse_clean(source)?;
-    let mut statement_package = Vec::new();
-    let mut block_package = Vec::new();
+    let mut packages = Vec::new();
 
     walk(&ast, &mut |node| {
-        if let NodeKind::Package { name, name_span, block } = &node.kind {
-            let observed_name = source.get(name_span.start..name_span.end);
-            match (name.as_str(), block.is_some()) {
-                ("Alpha::One", false) => {
-                    assert_eq!(observed_name, Some("Alpha::One"));
-                    if let Some(text) = source_text(source, node) {
-                        statement_package.push(text);
-                    }
-                }
-                ("Beta::Two", true) => {
-                    assert_eq!(observed_name, Some("Beta::Two"));
-                    if let Some(text) = source_text(source, node) {
-                        block_package.push(text);
-                    }
-                }
-                _ => {}
-            }
+        if let NodeKind::Package {
+            name,
+            name_span,
+            block,
+        } = &node.kind
+        {
+            let name_text = source
+                .get(name_span.start..name_span.end)
+                .map(str::to_owned);
+            let statement_suffix = block.is_none().then(|| {
+                source
+                    .get(name_span.end..node.location.end)
+                    .map(str::trim)
+                    .map(str::to_owned)
+            });
+            let block_text = block.as_deref().and_then(|owned| source_text(source, owned));
+            let block_is_block = block
+                .as_deref()
+                .is_some_and(|owned| matches!(&owned.kind, NodeKind::Block { .. }));
+            let owned_inside_subroutines = block.as_deref().map_or(0, |owned| {
+                count_in_subtree(owned, &|kind| {
+                    matches!(
+                        kind,
+                        NodeKind::Subroutine { name: Some(name), .. } if name == "inside"
+                    )
+                })
+            });
+
+            packages.push((
+                name.clone(),
+                name_text,
+                source_text(source, node),
+                statement_suffix.flatten(),
+                block_text,
+                block_is_block,
+                owned_inside_subroutines,
+            ));
         }
     });
 
     assert_eq!(
-        statement_package,
-        vec!["package Alpha::One 1.23".to_string()],
-        "semicolon package form had an incorrect source range"
+        packages,
+        vec![
+            (
+                "Alpha::One".to_string(),
+                Some("Alpha::One".to_string()),
+                Some("package Alpha::One 1.23".to_string()),
+                Some("1.23".to_string()),
+                None,
+                false,
+                0,
+            ),
+            (
+                "Beta::Two".to_string(),
+                Some("Beta::Two".to_string()),
+                Some("package Beta::Two { sub inside { 1 } }".to_string()),
+                None,
+                Some("{ sub inside { 1 } }".to_string()),
+                true,
+                1,
+            ),
+        ],
+        "package versions must remain outside the name while block packages own their body"
     );
-    assert_eq!(block_package, vec!["package Beta::Two { sub inside { 1 } }"]);
     Ok(())
 }
 
 #[test]
-fn use_and_no_keep_module_and_argument_boundaries() -> Result<(), String> {
+fn use_and_no_keep_exact_module_and_flattened_argument_boundaries() -> Result<(), String> {
     let source = concat!(
         "use Feature::Bundle qw(alpha beta);\n",
+        "use Feature::Bundle ();\n",
+        "use v5.38;\n",
         "no warnings 'experimental::signatures';\n",
     );
     let ast = parse_clean(source)?;
-    let mut use_payloads = Vec::new();
-    let mut no_payloads = Vec::new();
+    let mut uses = Vec::new();
+    let mut no_directives = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Use { module, args, .. } if module == "Feature::Bundle" => {
-            use_payloads.push((args.clone(), source_text(source, node)));
-        }
-        NodeKind::No { module, args, .. } if module == "warnings" => {
-            no_payloads.push((args.clone(), source_text(source, node)));
-        }
+        NodeKind::Use { module, args, .. } => uses.push((
+            module.clone(),
+            args.clone(),
+            source_text(source, node),
+        )),
+        NodeKind::No { module, args, .. } => no_directives.push((
+            module.clone(),
+            args.clone(),
+            source_text(source, node),
+        )),
         _ => {}
     });
 
     assert_eq!(
-        use_payloads,
-        vec![(
-            vec!["qw(alpha beta)".to_string()],
-            Some("use Feature::Bundle qw(alpha beta)".to_string()),
-        )]
+        uses,
+        vec![
+            (
+                "Feature::Bundle".to_string(),
+                vec!["qw(alpha beta)".to_string()],
+                Some("use Feature::Bundle qw(alpha beta)".to_string()),
+            ),
+            (
+                "Feature::Bundle".to_string(),
+                Vec::<String>::new(),
+                Some("use Feature::Bundle ()".to_string()),
+            ),
+            (
+                "v5.38".to_string(),
+                Vec::<String>::new(),
+                Some("use v5.38".to_string()),
+            ),
+        ],
+        "version directives and explicit empty imports must not collapse into another module"
     );
     assert_eq!(
-        no_payloads,
+        no_directives,
         vec![(
+            "warnings".to_string(),
             vec!["'experimental::signatures'".to_string()],
             Some("no warnings 'experimental::signatures'".to_string()),
         )]
@@ -114,49 +181,61 @@ fn require_keeps_dynamic_bareword_and_string_targets_distinct() -> Result<(), St
         "require 'relative/file.pl';\n",
     );
     let ast = parse_clean(source)?;
-    let mut dynamic_targets = Vec::new();
-    let mut bareword_targets = Vec::new();
-    let mut string_targets = Vec::new();
+    let mut targets = Vec::new();
 
     walk(&ast, &mut |node| {
         if let NodeKind::FunctionCall { name, args } = &node.kind
             && name == "require"
         {
-            assert_eq!(args.len(), 1, "require must retain exactly one target expression");
-            if let Some(target) = args.first()
-                && let (Some(target_span), Some(call_span)) =
-                    (source_text(source, target), source_text(source, node))
-            {
-                match &target.kind {
-                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "module" => {
-                        dynamic_targets.push((target_span, call_span));
-                    }
-                    NodeKind::Identifier { name } if name == "Static::Module" => {
-                        bareword_targets.push((target_span, call_span));
-                    }
-                    NodeKind::String { .. } => {
-                        string_targets.push((target_span, call_span));
-                    }
-                    _ => {}
+            let Some(target) = args.first() else {
+                targets.push((
+                    "missing".to_string(),
+                    None,
+                    source_text(source, node),
+                    args.len(),
+                ));
+                return;
+            };
+            let target_kind = match &target.kind {
+                NodeKind::Variable { sigil, name } if sigil == "$" && name == "module" => {
+                    "dynamic"
                 }
-            }
+                NodeKind::Identifier { name } if name == "Static::Module" => "bareword",
+                NodeKind::String { .. } => "string",
+                _ => "unexpected",
+            };
+            targets.push((
+                target_kind.to_string(),
+                source_text(source, target),
+                source_text(source, node),
+                args.len(),
+            ));
         }
     });
 
     assert_eq!(
-        dynamic_targets,
-        vec![("$module".to_string(), "require $module".to_string())]
-    );
-    assert_eq!(
-        bareword_targets,
-        vec![("Static::Module".to_string(), "require Static::Module".to_string())]
-    );
-    assert_eq!(
-        string_targets,
-        vec![(
-            "'relative/file.pl'".to_string(),
-            "require 'relative/file.pl'".to_string(),
-        )]
+        targets,
+        vec![
+            (
+                "dynamic".to_string(),
+                Some("$module".to_string()),
+                Some("require $module".to_string()),
+                1,
+            ),
+            (
+                "bareword".to_string(),
+                Some("Static::Module".to_string()),
+                Some("require Static::Module".to_string()),
+                1,
+            ),
+            (
+                "string".to_string(),
+                Some("'relative/file.pl'".to_string()),
+                Some("require 'relative/file.pl'".to_string()),
+                1,
+            ),
+        ],
+        "each require form must own exactly one target with a distinct node identity"
     );
     Ok(())
 }
