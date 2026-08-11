@@ -304,7 +304,7 @@ impl RealProcessClient {
             self.ensure_event_queue_intact()?;
             if let Some(status) = self.child.try_wait().context("poll candidate exit")? {
                 self.finished = true;
-                self.stdin.take();
+                let _ = self.stdin.take();
                 self.finish_reader_threads();
                 return Ok(status);
             }
@@ -342,12 +342,10 @@ impl RealProcessClient {
 
     /// Bounded stderr tail for failure receipts.
     pub fn stderr_tail(&self) -> String {
-        let bytes = lock_bytes(&self.stderr_bytes);
+        let mut bytes = lock_bytes(&self.stderr_bytes);
         let tail = String::from_utf8_lossy(bytes.make_contiguous()).into_owned();
         if self.stderr_truncated.load(Ordering::Acquire) {
-            format!(
-                "[stderr truncated to last {STDERR_BYTE_CAPACITY} bytes]\n{tail}"
-            )
+            format!("[stderr truncated to last {STDERR_BYTE_CAPACITY} bytes]\n{tail}")
         } else {
             tail
         }
@@ -444,7 +442,7 @@ impl RealProcessClient {
     }
 
     fn force_cleanup(&mut self) {
-        self.stdin.take();
+        let _ = self.stdin.take();
         terminate_child(&mut self.child);
         self.finished = true;
         self.finish_reader_threads();
@@ -478,15 +476,10 @@ fn is_server_request_for(message: &Value, method: &str) -> bool {
 }
 
 fn is_server_notification(message: &Value) -> bool {
-    message.get("method").and_then(Value::as_str).is_some()
-        && message.get("id").is_none()
+    message.get("method").and_then(Value::as_str).is_some() && message.get("id").is_none()
 }
 
-fn read_stdout(
-    stdout: ChildStdout,
-    sender: SyncSender<ProcessEvent>,
-    overflow: &AtomicBool,
-) {
+fn read_stdout(stdout: ChildStdout, sender: SyncSender<ProcessEvent>, overflow: &AtomicBool) {
     let mut reader = BufReader::new(stdout);
     loop {
         let event = match read_frame(&mut reader) {
@@ -624,7 +617,7 @@ fn drain_stderr(
         let mut bytes = lock_bytes(sink);
         for byte in &chunk[..read] {
             if bytes.len() == STDERR_BYTE_CAPACITY {
-                bytes.pop_front();
+                let _ = bytes.pop_front();
                 truncated.store(true, Ordering::Release);
             }
             bytes.push_back(*byte);
