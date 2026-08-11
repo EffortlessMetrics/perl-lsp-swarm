@@ -403,6 +403,7 @@ enum LineTag {
     Import,
     Export,
     FunctionCall,
+    IndirectCall,
     MethodCall,
     Regex,
     RegexMatch,
@@ -431,6 +432,7 @@ const LINE_TAG_VOCABULARY: &[LineTag] = &[
     LineTag::Import,
     LineTag::Export,
     LineTag::FunctionCall,
+    LineTag::IndirectCall,
     LineTag::MethodCall,
     LineTag::Regex,
     LineTag::RegexMatch,
@@ -1412,6 +1414,7 @@ fn line_tag_for_node(node: &Node) -> Option<LineTag> {
         NodeKind::Use { .. } | NodeKind::No { .. } => Some(LineTag::Import),
         NodeKind::FunctionCall { name, .. } if name == "require" => Some(LineTag::Import),
         NodeKind::FunctionCall { .. } => Some(LineTag::FunctionCall),
+        NodeKind::IndirectCall { .. } => Some(LineTag::IndirectCall),
         NodeKind::MethodCall { .. } => Some(LineTag::MethodCall),
         NodeKind::Eval { .. } => Some(LineTag::FunctionCall),
         NodeKind::Regex { .. }
@@ -3673,6 +3676,7 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::VariableDeclaration { .. }
             | NodeKind::VariableListDeclaration { .. }
             | NodeKind::FunctionCall { .. }
+            | NodeKind::IndirectCall { .. }
             | NodeKind::MethodCall { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Match { .. }
