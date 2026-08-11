@@ -1,1 +1,95 @@
-{"schema_version":"perl_core_harness.target_matrix_part.v1","targets":[{"contract":{"schema_version":"perl_core_harness.target_selection.v1","target_id":"instrument_valgrind","upstream_name":"valgrind test targets","aliases":[],"display_name":"upstream valgrind instrumentation","perl_version_row":"5.42.2","target_kind":"instrumentation_only","authority":{"kind":"make","entrypoint":"valgrind test targets"},"selectors":[],"script_forms":[],"preparation":{"make_target":null,"perl_runtime":"inherited","required_products":[]},"variant_of":"make_test_choose","composite_members":[],"composite_overlap_policy":null,"runner_switches":[],"variant_parameters":{},"environment":{"PERL_VALGRIND":"enabled"},"terminal_policy":"inherited","capability_predicates":["valgrind"],"exclusions":[],"replaces_target_id":null,"change_reason":"Instrumentation over another target, not a compiler-conformance denominator."},"disposition":"instrumentation_only","owner_issue":null,"claim_boundary":"Instrumentation/process evidence only; it cannot raise compiler compatibility."},{"contract":{"schema_version":"perl_core_harness.target_selection.v1","target_id":"legacy_custom_core","upstream_name":"HarnessProfile::Core","aliases":[],"display_name":"repository custom eight-root core","perl_version_row":"5.42.2","target_kind":"generated_composite","authority":{"kind":"explicit","entrypoint":"HarnessProfile::Core"},"selectors":[],"script_forms":[],"preparation":{"make_target":null,"perl_runtime":"inherited","required_products":[]},"variant_of":null,"composite_members":["component_base","component_cmd","component_comp","component_io","component_op","component_op_hook","component_opbasic","component_re","component_run"],"composite_overlap_policy":"deduplicate_by_logical_source","runner_switches":[],"variant_parameters":{},"environment":{},"terminal_policy":"not_applicable","capability_predicates":[],"exclusions":[],"replaces_target_id":null,"change_reason":"Preserve the existing repository denominator without calling it upstream --core."},"disposition":"generated_composite","owner_issue":4757,"claim_boundary":"Repository-defined composite only; it is not upstream t/TEST --core."},{"contract":{"schema_version":"perl_core_harness.target_selection.v1","target_id":"legacy_custom_full","upstream_name":"HarnessProfile::Full","aliases":[],"display_name":"repository legacy core-plus-uni view","perl_version_row":"5.42.2","target_kind":"generated_composite","authority":{"kind":"explicit","entrypoint":"HarnessProfile::Full"},"selectors":[],"script_forms":[],"preparation":{"make_target":null,"perl_runtime":"inherited","required_products":[]},"variant_of":null,"composite_members":["component_uni","legacy_custom_core"],"composite_overlap_policy":"deduplicate_by_logical_source","runner_switches":[],"variant_parameters":{},"environment":{},"terminal_policy":"not_applicable","capability_predicates":[],"exclusions":[],"replaces_target_id":null,"change_reason":"Preserve historical identity while broad/full composition is corrected."},"disposition":"generated_composite","owner_issue":4830,"claim_boundary":"Historical repository composite only; it is not Perl's default full test target."}]}
+{
+  "schema_version": "perl_core_harness.target_matrix_part.v1",
+  "targets": [
+    {
+      "contract": {
+        "schema_version": "perl_core_harness.target_selection.v1",
+        "target_id": "instrument_valgrind",
+        "upstream_name": "valgrind test targets",
+        "aliases": [],
+        "display_name": "upstream valgrind instrumentation",
+        "perl_version_row": "5.42.2",
+        "target_kind": "instrumentation_only",
+        "authority": {"kind": "make", "entrypoint": "valgrind test targets"},
+        "selection_authority": null,
+        "selectors": [],
+        "script_forms": [],
+        "preparation": {"make_target": null, "perl_runtime": "inherited", "required_products": []},
+        "variant_of": "make_test_choose",
+        "composite_members": [],
+        "composite_overlap_policy": null,
+        "runner_switches": [],
+        "variant_parameters": {},
+        "environment": {"PERL_VALGRIND": "enabled"},
+        "terminal_policy": "inherited",
+        "capability_predicates": ["valgrind"],
+        "exclusions": [],
+        "replaces_target_id": null,
+        "change_reason": "Instrumentation over another target, not a compiler-conformance denominator."
+      },
+      "disposition": "instrumentation_only",
+      "owner_issue": null,
+      "claim_boundary": "Instrumentation/process evidence only; it cannot raise compiler compatibility."
+    },
+    {
+      "contract": {
+        "schema_version": "perl_core_harness.target_selection.v1",
+        "target_id": "legacy_custom_core",
+        "upstream_name": "HarnessProfile::Core",
+        "aliases": [],
+        "display_name": "repository custom eight-root core",
+        "perl_version_row": "5.42.2",
+        "target_kind": "generated_composite",
+        "authority": {"kind": "explicit", "entrypoint": "HarnessProfile::Core"},
+        "selection_authority": null,
+        "selectors": [],
+        "script_forms": [],
+        "preparation": {"make_target": null, "perl_runtime": "inherited", "required_products": []},
+        "variant_of": null,
+        "composite_members": ["component_base", "component_cmd", "component_comp", "component_io", "component_op", "component_op_hook", "component_opbasic", "component_re", "component_run"],
+        "composite_overlap_policy": "deduplicate_by_logical_source",
+        "runner_switches": [],
+        "variant_parameters": {},
+        "environment": {},
+        "terminal_policy": "not_applicable",
+        "capability_predicates": [],
+        "exclusions": [],
+        "replaces_target_id": null,
+        "change_reason": "Preserve the existing repository denominator without calling it upstream --core."
+      },
+      "disposition": "generated_composite",
+      "owner_issue": 4757,
+      "claim_boundary": "Repository-defined composite only; it is not upstream t/TEST --core."
+    },
+    {
+      "contract": {
+        "schema_version": "perl_core_harness.target_selection.v1",
+        "target_id": "legacy_custom_full",
+        "upstream_name": "HarnessProfile::Full",
+        "aliases": [],
+        "display_name": "repository legacy core-plus-uni view",
+        "perl_version_row": "5.42.2",
+        "target_kind": "generated_composite",
+        "authority": {"kind": "explicit", "entrypoint": "HarnessProfile::Full"},
+        "selection_authority": null,
+        "selectors": [],
+        "script_forms": [],
+        "preparation": {"make_target": null, "perl_runtime": "inherited", "required_products": []},
+        "variant_of": null,
+        "composite_members": ["component_uni", "legacy_custom_core"],
+        "composite_overlap_policy": "deduplicate_by_logical_source",
+        "runner_switches": [],
+        "variant_parameters": {},
+        "environment": {},
+        "terminal_policy": "not_applicable",
+        "capability_predicates": [],
+        "exclusions": [],
+        "replaces_target_id": null,
+        "change_reason": "Preserve historical identity while broad/full composition is corrected."
+      },
+      "disposition": "generated_composite",
+      "owner_issue": 4830,
+      "claim_boundary": "Historical repository composite only; it is not Perl's default full test target."
+    }
+  ]
+}
