@@ -187,7 +187,6 @@ fn parse_package_declaration_with_trailing_separator_and_block()
 }
 
 #[test]
-#[ignore = "vstring version in package declaration not yet implemented; parser extracts 'My::App' without version suffix (#5934)"]
 fn parse_package_declaration_with_vstring_version() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("package My::App v5.38;");
     let ast = must(parser.parse());
