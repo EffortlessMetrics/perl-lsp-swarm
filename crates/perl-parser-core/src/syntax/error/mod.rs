@@ -22,7 +22,7 @@
 //! }
 //! ~~~
 //!
-//! This example is compile-checked against the current parser-core error path;
+//! This example is source-shaped against the current parser-core error path;
 //! it does not invent a parser constructor or claim that every error is
 //! recoverable.
 //!
