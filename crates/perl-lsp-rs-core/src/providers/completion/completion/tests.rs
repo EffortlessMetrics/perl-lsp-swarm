@@ -8447,6 +8447,13 @@ sub inspect {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let index = must(inherited_moo_parent_index());
+    let generated = index.get_generated_package_members("Parent");
+    assert!(
+        generated.iter().any(|symbol| symbol.name == "name"),
+        "indexed Parent must expose generated accessor name, got {:?}",
+        generated.iter().map(|symbol| &symbol.name).collect::<Vec<_>>()
+    );
+
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
     let labels: Vec<_> =
