@@ -89,7 +89,8 @@ fn test_clippy_has_no_warnings_in_new_modules() -> Result<(), Box<dyn std::error
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
             "clippy warnings detected in perl-dap lib (run: cargo clippy -p perl-dap --lib -- -D warnings):\n{stderr}"
-        ).into());
+        )
+        .into());
     }
     Ok(())
 }
