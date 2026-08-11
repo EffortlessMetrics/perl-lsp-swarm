@@ -1483,4 +1483,19 @@ mod helper_tests {
     fn terminal_fat_arrow_continuation_stops_at_right_bracket() -> Result<(), String> {
         assert_clean_parse("my $x = [time =>];")
     }
+
+    #[test]
+    fn special_nullary_tokens_survive_as_call_arguments() -> Result<(), String> {
+        let source = "die __FILE__, __LINE__, __PACKAGE__, __SUB__, __CLASS__;";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let sexp = ast.to_sexp();
+
+        for token in ["__FILE__", "__LINE__", "__PACKAGE__", "__SUB__", "__CLASS__"] {
+            if !sexp.contains(token) {
+                return Err(format!("special token {token} was lost from the AST: {sexp}"));
+            }
+        }
+        Ok(())
+    }
 }
