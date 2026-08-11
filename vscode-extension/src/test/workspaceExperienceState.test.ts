@@ -41,9 +41,11 @@ describe('workspace experience presentation', () => {
   });
 
   test('keeps operation outcomes outside the workspace snapshot contract', () => {
-    const snapshot: WorkspaceExperienceSnapshot = { lifecycle: 'ready' };
     // @ts-expect-error Provider outcomes describe one operation, not workspace health.
-    snapshot.providerOutcome = 'not_ready';
+    const snapshot: WorkspaceExperienceSnapshot = {
+      lifecycle: 'ready',
+      providerOutcome: 'not_ready',
+    };
     expect(snapshot.lifecycle).toBe('ready');
   });
 
