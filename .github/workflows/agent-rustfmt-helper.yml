@@ -1,0 +1,59 @@
+name: Agent rustfmt helper
+
+on:
+  push:
+    branches: [agent/rustfmt-helper-20260811]
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: topology
+            ref: agent/corpus-topology-6699-current
+            files: >-
+              crates/perl-corpus/src/api.rs
+              crates/perl-corpus/src/api/topology.rs
+          - name: snapshot
+            ref: agent/hir-snapshot-exact-set-6725
+            files: >-
+              crates/perl-corpus/src/snapshot.rs
+              xtask/src/tasks/generate_semantic_snapshot.rs
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 1
+
+      - name: Install Rust 1.95 rustfmt
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Format candidate-owned files
+        shell: bash
+        env:
+          FILES: ${{ matrix.files }}
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2024 --config-path rustfmt.toml $FILES
+          mkdir -p formatted
+          cp --parents $FILES formatted/
+          git diff -- $FILES > formatted/rustfmt.patch
+
+      - name: Upload formatted files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rustfmt-${{ matrix.name }}-${{ github.sha }}
+          path: formatted
+          if-no-files-found: error
+          retention-days: 1
