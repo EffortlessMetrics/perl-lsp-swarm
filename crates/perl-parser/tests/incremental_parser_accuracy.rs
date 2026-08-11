@@ -137,6 +137,25 @@ fn contains_match(node: &Node) -> bool {
         || node.children().into_iter().any(contains_match)
 }
 
+fn contains_division(node: &Node) -> bool {
+    matches!(&node.kind, NodeKind::Binary { op, .. } if op == "/")
+        || node.children().into_iter().any(contains_division)
+}
+
+fn contains_variable_declaration(node: &Node, expected_name: &str) -> bool {
+    matches!(
+        &node.kind,
+        NodeKind::VariableDeclaration { variable, .. }
+            if matches!(
+                &variable.kind,
+                NodeKind::Variable { sigil, name } if sigil == "$" && name == expected_name
+            )
+    ) || node
+        .children()
+        .into_iter()
+        .any(|child| contains_variable_declaration(child, expected_name))
+}
+
 #[test]
 fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
@@ -181,6 +200,10 @@ fn slash_reclassification_edit_matches_fresh_parse() -> TestResult {
         "my $value = $left / 2;\n",
         "my $after = 3;\n",
     );
+    let before_ast = Parser::new(source).parse()?;
+    assert!(contains_division(&before_ast), "the pre-edit source must contain division");
+    assert!(!contains_match(&before_ast), "the pre-edit source must not contain a regex Match");
+
     let fresh_ast = assert_incremental_edit_matches_fresh(
         source,
         "$left / 2",
@@ -193,5 +216,11 @@ fn slash_reclassification_edit_matches_fresh_parse() -> TestResult {
         contains_match(&fresh_ast),
         "the edited source must be reclassified as a regex Match expression"
     );
+    assert!(
+        !contains_division(&fresh_ast),
+        "the edited source must not retain the obsolete division node"
+    );
+    assert!(contains_variable_declaration(&fresh_ast, "before"));
+    assert!(contains_variable_declaration(&fresh_ast, "after"));
     Ok(())
 }
