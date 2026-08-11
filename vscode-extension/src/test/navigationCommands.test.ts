@@ -94,6 +94,24 @@ describe('navigation command implementations', () => {
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.showOutput');
   });
 
+  test('shows limited readiness as a live server state', async () => {
+    const getWorkspaceStatus = jest.fn(() => ({
+      mode: 'ready_limited' as const,
+      version: 'perllsp 0.17.0',
+      fileCount: 500,
+      errorCount: 1,
+    }));
+
+    await showWorkspaceStatusCommand({ getWorkspaceStatus });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nServer: ready (limited)\nVersion: perllsp 0.17.0\nWorkspace files: 500\nDiagnostics: 1 error',
+      'Run Health Check',
+      'Show Output',
+    );
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
   test('offers restart for a stopped workspace', async () => {
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Restart Server');
 

@@ -9,7 +9,7 @@ export interface NavigationCommandDependencies {
   readonly getServerVersion: (serverPath: string) => Promise<string>;
 }
 
-export type WorkspaceStatusMode = 'starting' | 'indexing' | 'running' | 'stopped';
+export type WorkspaceStatusMode = 'starting' | 'indexing' | 'running' | 'ready_limited' | 'stopped';
 
 export interface WorkspaceStatusSnapshot {
   readonly mode: WorkspaceStatusMode;
@@ -74,10 +74,12 @@ export async function showWorkspaceStatusCommand(dependencies: {
     starting: 'starting',
     indexing: 'indexing',
     running: 'running',
+    ready_limited: 'ready (limited)',
     stopped: 'stopped',
   }[status.mode];
   const lines = [`Perl LSP workspace status`, `Server: ${modeLabel}`];
-  const hasLiveServer = status.mode === 'running' || status.mode === 'indexing';
+  const hasLiveServer =
+    status.mode === 'running' || status.mode === 'indexing' || status.mode === 'ready_limited';
   if (hasLiveServer && status.version) {
     lines.push(`Version: ${status.version}`);
   }

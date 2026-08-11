@@ -38,6 +38,7 @@ import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
 import { HealthWidgetDataSource } from './healthWidgetDataSource';
 import { projectWorkspaceLifecycle } from './workspaceExperienceState';
+import { replayOpenPerlDocuments } from './languageClientDocumentSync';
 import { registerPodPreview } from './podPreview';
 import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
@@ -607,7 +608,8 @@ export async function activate(context: vscode.ExtensionContext) {
         getWorkspaceStatus: () => {
           const widget = healthWidget;
           const mode = widget?.mode ?? 'starting';
-          const hasLiveServer = mode === 'running' || mode === 'indexing';
+          const hasLiveServer =
+            mode === 'running' || mode === 'indexing' || widget?.lifecycleState === 'ready_limited';
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
@@ -1813,6 +1815,15 @@ async function restartServer(_context: vscode.ExtensionContext) {
     if (!started) {
       return;
     }
+    await replayOpenPerlDocuments(
+      started,
+      vscode.workspace.textDocuments.map((document) => ({
+        uri: document.uri.toString(),
+        languageId: document.languageId,
+        version: document.version,
+        text: document.getText(),
+      })),
+    );
     languageClientStartupMetrics.markMilestone('restart');
     syncLifecycleProjection();
     vscode.window
