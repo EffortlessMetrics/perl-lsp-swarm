@@ -1,6 +1,6 @@
 //! Corpus file discovery helpers.
 
-use std::env;
+use serde::{Deserialize, Serialize};\nuse std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
