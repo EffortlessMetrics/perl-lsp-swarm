@@ -126,7 +126,6 @@ fn collect_observed_nodes_rec<'a>(
     parent_kind: Option<&'static str>,
     depth: usize,
     parent_operator: Option<&str>,
-    _unused: Option<&str>,
 ) {
     let span_text = source.get(node.location.start..node.location.end).unwrap_or_default();
     let operator = node_operator(node).map(str::to_owned);
@@ -149,7 +148,6 @@ fn collect_observed_nodes_rec<'a>(
             Some(current_kind),
             depth + 1,
             operator.as_deref(),
-            None,
         )
     });
 }
