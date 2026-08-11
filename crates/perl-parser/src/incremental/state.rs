@@ -7,32 +7,32 @@ use perl_parser_core::error::ParseOutput;
 use perl_parser_core::parser::Parser;
 use ropey::Rope;
 
+/// One internally consistent incremental parser generation.
+///
+/// Generation-bearing fields are crate-private so external callers cannot
+/// mutate source, tokens, checkpoints, AST, or parser output independently.
+/// Use [`IncrementalState::new`], read-only accessors, and [`super::apply_edits`]
+/// to move between committed generations.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct IncrementalState {
-    pub rope: Rope,
-    pub line_index: LineIndex,
-    pub lex_checkpoints: Vec<LexCheckpoint>,
-    pub parse_checkpoints: Vec<ParseCheckpoint>,
+    pub(super) rope: Rope,
+    pub(super) line_index: LineIndex,
+    pub(super) lex_checkpoints: Vec<LexCheckpoint>,
+    pub(super) parse_checkpoints: Vec<ParseCheckpoint>,
     /// Authoritative native parser output for the current source.
-    ///
-    /// This is produced by `Parser::parse_with_recovery` and carries the AST,
-    /// ordered parser diagnostics, recovery count, budget usage, and early
-    /// termination state. Incremental consumers should use this field rather
-    /// than reconstructing parser state from an AST alone.
-    pub parse_output: ParseOutput,
-    /// Parsed AST compatibility field.
-    ///
-    /// This field mirrors [`Self::parse_output`]'s AST after every supported
-    /// state transition. It remains temporarily for compatibility with existing
-    /// callers and parse-checkpoint code.
-    #[deprecated(note = "Use parse_output.ast; this compatibility mirror will be removed.")]
-    pub ast: Node,
-    pub tokens: Vec<Token>,
-    pub source: String,
+    pub(super) parse_output: ParseOutput,
+    /// Parsed AST compatibility mirror.
+    #[deprecated(note = "Use parse_output(); this compatibility mirror will be removed.")]
+    pub(super) ast: Node,
+    pub(super) tokens: Vec<Token>,
+    pub(super) source: String,
 }
 
 impl IncrementalState {
+    /// Build the initial committed generation from source text.
     #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
+    #[must_use]
     pub fn new(source: String) -> Self {
         let rope = Rope::from_str(&source);
         let line_index = LineIndex::new(&source);
@@ -61,10 +61,63 @@ impl IncrementalState {
         }
     }
 
+    /// Current committed source text.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Rope view for the current committed source.
+    #[must_use]
+    pub fn rope(&self) -> &Rope {
+        &self.rope
+    }
+
+    /// Line index for the current committed source.
+    #[must_use]
+    pub fn line_index(&self) -> &LineIndex {
+        &self.line_index
+    }
+
+    /// Lexer restart summaries for the current committed token stream.
+    #[must_use]
+    pub fn lex_checkpoints(&self) -> &[LexCheckpoint] {
+        &self.lex_checkpoints
+    }
+
+    /// Parser restart summaries for the current committed parse output.
+    #[must_use]
+    pub fn parse_checkpoints(&self) -> &[ParseCheckpoint] {
+        &self.parse_checkpoints
+    }
+
+    /// Authoritative recovery-aware parser output for this generation.
+    #[must_use]
+    pub fn parse_output(&self) -> &ParseOutput {
+        &self.parse_output
+    }
+
+    /// Compatibility AST view for the current generation.
+    #[deprecated(note = "Use parse_output().ast; this compatibility view will be removed.")]
+    #[must_use]
+    pub fn ast(&self) -> &Node {
+        &self.ast
+    }
+
+    /// Current committed lexer token stream.
+    #[must_use]
+    pub fn tokens(&self) -> &[Token] {
+        &self.tokens
+    }
+
+    /// Find the nearest lexer checkpoint at or before `byte`.
+    #[must_use]
     pub fn find_lex_checkpoint(&self, byte: usize) -> Option<&LexCheckpoint> {
         self.lex_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
     }
 
+    /// Find the nearest parser checkpoint at or before `byte`.
+    #[must_use]
     pub fn find_parse_checkpoint(&self, byte: usize) -> Option<&ParseCheckpoint> {
         self.parse_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
     }
