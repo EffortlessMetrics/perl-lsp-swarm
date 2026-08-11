@@ -29,6 +29,7 @@ jobs:
         run: |
           python3 .github/scripts/repair_compiler_concepts.py
           python3 .github/scripts/repair_compiler_concepts_closeout.py
+          python3 .github/scripts/fix_compiler_concept_ast_test.py
           rustfmt --edition 2024 xtask/src/bin/compiler-concepts.rs
           cargo run -p xtask --bin compiler-concepts -- --write-status
       - name: Test committed ledger and status
@@ -39,8 +40,12 @@ jobs:
         run: cargo test -p xtask --bin compiler-concepts invalid_owner_issue_fails_closed -- --nocapture
       - name: Test opaque exact-provider rejection
         run: cargo test -p xtask --bin compiler-concepts opaque_body_hir_cannot_authorize_exact_provider_output -- --nocapture
-      - name: Test inventory completeness closeout
-        run: cargo test -p xtask --bin compiler-concepts inventory_complete_rejects_unresolved_work_after_authority -- --nocapture
+      - name: Test inventory authority requirement
+        run: cargo test -p xtask --bin compiler-concepts inventory_complete_requires_named_authority -- --nocapture
+      - name: Test unresolved ownership closeout
+        run: cargo test -p xtask --bin compiler-concepts inventory_authority_does_not_hide_unresolved_ownership -- --nocapture
+      - name: Test missing proof closeout
+        run: cargo test -p xtask --bin compiler-concepts inventory_authority_does_not_hide_missing_proof -- --nocapture
       - name: Test exact-provider canonical pipeline
         run: cargo test -p xtask --bin compiler-concepts exact_provider_requires_canonical_executable_pipeline_regardless_of_owner -- --nocapture
       - name: Test executable EIR PIR admission
