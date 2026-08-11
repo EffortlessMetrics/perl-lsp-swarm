@@ -65,7 +65,7 @@ mod tests {
     fn fast_command() -> Command {
         #[cfg(windows)]
         {
-            let mut cmd = Command::new("cmd");
+            let mut cmd = Command::new("powershell");
             cmd.args(["-NoProfile", "-Command", "[Console]::Out.Write('hello')"]);
             cmd
         }
