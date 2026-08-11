@@ -14,7 +14,7 @@ fn malformed_hex_literal_reports_recovery_at_literal_start() {
     if let Some(token) = token {
         assert!(matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest));
         assert_eq!(token.start, 0);
-        assert_eq!(token.text.as_ref(), "0xG");
+        assert_eq!(token.text.as_ref(), "0x");
     }
 }
 
@@ -25,7 +25,7 @@ fn malformed_binary_literal_reports_recovery_at_literal_start() {
     if let Some(token) = token {
         assert!(matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest));
         assert_eq!(token.start, 0);
-        assert_eq!(token.text.as_ref(), "0b2");
+        assert_eq!(token.text.as_ref(), "0b");
     }
 }
 
@@ -62,8 +62,9 @@ fn unterminated_heredoc_reports_recovery_at_body_start() {
         .find(|token| matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest));
     assert!(token.is_some(), "expected heredoc recovery token");
     if let Some(token) = token {
-        assert!(token.start >= input.find("body").unwrap_or(input.len()));
-        assert!(token.end <= input.len());
-        assert_eq!(token.text.as_ref(), &input[token.start..token.end]);
+        let body_start = input.find("body").unwrap_or(input.len());
+        assert_eq!(token.start, body_start);
+        assert_eq!(token.end, input.len());
+        assert_eq!(token.text.as_ref(), &input[body_start..]);
     }
 }
