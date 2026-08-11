@@ -1234,51 +1234,91 @@ pub(super) fn receiver_package_from_context_or_source(
         return Some(context.current_package.clone());
     }
 
-    let mut parser = Parser::new(source);
-    let ast = parser.parse().ok()?;
-    let analyzer =
-        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
-    let table = analyzer.symbol_table();
     let position = context.position.min(source.len());
+    let mut parser = Parser::new(source);
+    if let Ok(ast) = parser.parse() {
+        let analyzer =
+            perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
+        let table = analyzer.symbol_table();
 
-    let mut scope_id = table.scope_at_offset(position);
-    loop {
-        let scope = table.scopes.get(&scope_id)?;
-        if scope.kind == ScopeKind::Package
-            && let Some(package) =
-                table.symbols.values().flat_map(|symbols| symbols.iter()).find(|symbol| {
-                    symbol.kind == SymbolKind::Package
-                        && symbol.location.start == scope.location.start
-                })
-        {
-            return Some(package.name.clone());
+        let mut scope_id = table.scope_at_offset(position);
+        loop {
+            let Some(scope) = table.scopes.get(&scope_id) else {
+                break;
+            };
+            if scope.kind == ScopeKind::Package
+                && let Some(package) =
+                    table.symbols.values().flat_map(|symbols| symbols.iter()).find(|symbol| {
+                        symbol.kind == SymbolKind::Package
+                            && symbol.location.start == scope.location.start
+                    })
+            {
+                return Some(package.name.clone());
+            }
+
+            let Some(parent) = scope.parent else {
+                break;
+            };
+            scope_id = parent;
         }
 
-        let Some(parent) = scope.parent else {
-            break;
-        };
-        scope_id = parent;
+        let mut current = "main".to_string();
+        let mut packages: Vec<_> = table
+            .symbols
+            .values()
+            .flat_map(|symbols| symbols.iter())
+            .filter(|symbol| symbol.kind == SymbolKind::Package)
+            .collect();
+        packages.sort_by_key(|symbol| symbol.location.start);
+
+        for package in packages {
+            if package.location.start > position {
+                break;
+            }
+
+            let has_scope = table.scopes.values().any(|scope| {
+                scope.kind == ScopeKind::Package && scope.location.start == package.location.start
+            });
+            if !has_scope {
+                current = package.name.clone();
+            }
+        }
+
+        if current != "main" {
+            return Some(current);
+        }
     }
 
-    let mut current = "main".to_string();
-    let mut packages: Vec<_> = table
-        .symbols
-        .values()
-        .flat_map(|symbols| symbols.iter())
-        .filter(|symbol| symbol.kind == SymbolKind::Package)
-        .collect();
-    packages.sort_by_key(|symbol| symbol.location.start);
+    source_package_fallback(source, position)
+}
 
-    for package in packages {
-        if package.location.start > position {
-            break;
+fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+    let mut current = "main".to_string();
+    let mut brace_depth = 0usize;
+    let mut package_blocks: Vec<(usize, String)> = Vec::new();
+
+    for line in source.get(..position)?.lines() {
+        let trimmed = line.trim_start();
+        if let Some(declaration) = trimmed.strip_prefix("package ") {
+            let mut parts = declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace());
+            let package = parts.next().filter(|package| !package.is_empty())?;
+            if declaration.contains('{') {
+                let previous = current.clone();
+                current = package.to_string();
+                package_blocks.push((brace_depth.saturating_add(1), previous));
+            } else {
+                current = package.to_string();
+            }
         }
 
-        let has_scope = table.scopes.values().any(|scope| {
-            scope.kind == ScopeKind::Package && scope.location.start == package.location.start
-        });
-        if !has_scope {
-            current = package.name.clone();
+        brace_depth = brace_depth.saturating_add(line.chars().filter(|&ch| ch == '{').count());
+        brace_depth = brace_depth.saturating_sub(line.chars().filter(|&ch| ch == '}').count());
+
+        while package_blocks.last().is_some_and(|(depth, _)| *depth > brace_depth) {
+            let Some((_, previous)) = package_blocks.pop() else {
+                break;
+            };
+            current = previous;
         }
     }
 
