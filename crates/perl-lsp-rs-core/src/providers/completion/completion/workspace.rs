@@ -1228,7 +1228,28 @@ fn type_engine_receiver(
 /// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
 /// (static), `$self->` / `$this->` (self), `my $x = Foo->new` (constructor
 /// assignment), and `my $x = bless ..., "Foo"` (literal bless).
-pub(super) fn classify_text_pattern_receiver(
+pub(super) fn receiver_package_from_context_or_source(
+    context: &CompletionContext,
+    source: &str,
+) -> Option<String> {
+    if !context.current_package.is_empty() && context.current_package != "main" {
+        return Some(context.current_package.clone());
+    }
+
+    source
+        .get(..context.position.min(source.len()))?
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let declaration = line.trim_start().strip_prefix("package ")?;
+            let package = declaration
+                .split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace())
+                .next()?;
+            (!package.is_empty()).then(|| package.to_string())
+        })
+}
+
+fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
 ) -> ReceiverEvidence {
@@ -1252,10 +1273,9 @@ pub(super) fn classify_text_pattern_receiver(
     // analyser already sets correctly from the surrounding `package`
     // declaration.
     if matches!(arrow_prefix, "$self" | "$this")
-        && !context.current_package.is_empty()
-        && context.current_package != "main"
+        && let Some(package) = receiver_package_from_context_or_source(context, source)
     {
-        return ReceiverEvidence::SelfOrThis(context.current_package.clone());
+        return ReceiverEvidence::SelfOrThis(package);
     }
 
     // Case 2: Variable method call like `$obj->meth` — try to find the
