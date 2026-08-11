@@ -16,152 +16,58 @@ jobs:
       - name: Checkout exact branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          fetch-depth: 4
+          fetch-depth: 5
           ref: test/lsp-real-process-6720
 
       - name: Install pinned Rust toolchain
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Execute reviewed transformer with syntax-bound insertions
+      - name: Execute reviewed transformer with preserved block indentation
         shell: python
         run: |
-          import ast
           import subprocess
           import textwrap
           from pathlib import Path
 
           carrier = subprocess.run(
-              ["git", "show", "HEAD^^:.github/workflows/workflow-trigger-lint.yml"],
+              ["git", "show", "HEAD^:.github/workflows/workflow-trigger-lint.yml"],
               check=True,
               capture_output=True,
               text=True,
           ).stdout
-          marker = '''      - name: Enforce strict JSON-RPC framing envelopes
+          marker = '''      - name: Execute reviewed transformer with syntax-bound insertions
                   shell: python
                   run: |
           '''
           if marker not in carrier:
-              raise SystemExit("reviewed exact-process transformer was not found")
+              raise SystemExit("syntax-bound transformer wrapper was not found")
           section = carrier.split(marker, 1)[1].split("\n      - name:", 1)[0]
           source = textwrap.dedent(section).lstrip("\n")
-          tree = ast.parse(source)
-
-          replacements = {
-              "header terminator": '''start = text.index('        let line = std::str::from_utf8(&line)')
-          end = text.index('        if line.is_empty()', start)
-          strict_header = ''' + "'''" + '''        ensure!(
-              line.ends_with(b"\\r\\n"),
-              "stdout header line did not end with CRLF"
-          );
-          let line = std::str::from_utf8(&line[..line.len() - 2])
-              .context("stdout header was not valid UTF-8")?;
-          ''' + "'''" + '''
-          text = text[:start] + strict_header + text[end:]''',
-              "LF-only falsifier": '''function_start = text.index(
-              "fn strict_parser_rejects_truncated_oversized_and_lf_only_headers()"
+          source = source.replace(
+              '"HEAD^^:.github/workflows/workflow-trigger-lint.yml"',
+              '"HEAD^^^:.github/workflows/workflow-trigger-lint.yml"',
+              1,
           )
-          insert_at = text.index("    Ok(())", function_start)
-          lf_only = ''' + "'''" + '''    let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
-              let mut frame = format!("Content-Length: {}\\n\\n", body.len()).into_bytes();
-              frame.extend_from_slice(body);
-              let error = RealProcessClient::parse_stdout_frame_for_test(&frame)
-                  .expect_err("LF-only framing must fail");
-              ensure!(
-                  error.to_string().contains("CRLF"),
-                  "LF-only framing failed for the wrong reason: {error:#}"
-              );
-
-          ''' + "'''" + '''
-          text = text[:insert_at] + lf_only + text[insert_at:]''',
-              "notification scalar-params falsifier": '''function_start = text.index("fn terminal_notification_requires_jsonrpc_2()")
-          insert_at = text.index("    let result_hybrid = json!({", function_start)
-          scalar_params = ''' + "'''" + '''    let scalar_params = json!({
-              "jsonrpc": "2.0",
-              "method": "window/logMessage",
-              "params": "not-an-object-or-array"
-          });
-          ensure!(
-              !RealProcessClient::is_valid_server_notification_for_test(&scalar_params),
-              "notification with scalar params was accepted"
-          );
-
-          ''' + "'''" + '''
-          text = text[:insert_at] + scalar_params + text[insert_at:]''',
-              "server-request falsifiers": '''insert_at = text.index(
-              "#[test]\\nfn event_queue_overflow_does_not_deadlock_drop()"
+          source = source.replace(
+              "targets.append((node.lineno, node.end_lineno, label, replacement))",
+              "targets.append((node.lineno, node.end_lineno, node.col_offset, label, replacement))",
+              1,
           )
-          request_test = ''' + "'''" + '''#[test]
-          fn server_request_requires_request_only_members_and_structured_params() -> Result<()> {
-              let method = "client/registerCapability";
-              let valid = json!({
-                  "jsonrpc": "2.0",
-                  "id": 1,
-                  "method": method,
-                  "params": { "registrations": [] }
-              });
-              ensure!(
-                  RealProcessClient::is_valid_server_request_for_test(&valid, method),
-                  "valid server request was rejected"
-              );
-
-              for invalid in [
-                  json!({
-                      "jsonrpc": "2.0",
-                      "id": 2,
-                      "method": method,
-                      "params": true
-                  }),
-                  json!({
-                      "jsonrpc": "2.0",
-                      "id": 3,
-                      "method": method,
-                      "result": null
-                  }),
-                  json!({
-                      "jsonrpc": "2.0",
-                      "id": 4,
-                      "method": method,
-                      "error": { "code": -32603, "message": "hybrid" }
-                  }),
-              ] {
-                  ensure!(
-                      !RealProcessClient::is_valid_server_request_for_test(&invalid, method),
-                      "invalid server request was accepted: {invalid}"
-                  );
-              }
-              Ok(())
-          }
-
-          ''' + "'''" + '''
-          text = text[:insert_at] + request_test + text[insert_at:]''',
-          }
-
-          targets = []
-          for node in ast.walk(tree):
-              if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-                  continue
-              labels = {
-                  argument.value
-                  for argument in node.value.args
-                  if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
-              }
-              for label, replacement in replacements.items():
-                  if label in labels:
-                      if node.end_lineno is None:
-                          raise SystemExit(f"{label} transformation has no end line")
-                      targets.append((node.lineno, node.end_lineno, label, replacement))
-
-          found = {label for _, _, label, _ in targets}
-          missing = set(replacements) - found
-          if missing:
-              raise SystemExit(f"transformation nodes were not found: {sorted(missing)}")
-
-          lines = source.splitlines()
-          for start, end, _, replacement in sorted(targets, reverse=True):
-              lines[start - 1 : end] = replacement.splitlines()
-          patched = ("\n".join(lines) + "\n").encode()
-          path = Path("/tmp/finish_pr6811.py")
+          source = source.replace(
+              "found = {label for _, _, label, _ in targets}",
+              "found = {label for _, _, _, label, _ in targets}",
+              1,
+          )
+          source = source.replace(
+              "for start, end, _, replacement in sorted(targets, reverse=True):\n    lines[start - 1 : end] = replacement.splitlines()",
+              "for start, end, column, _, replacement in sorted(targets, reverse=True):\n    indented = textwrap.indent(replacement, ' ' * column)\n    lines[start - 1 : end] = indented.splitlines()",
+              1,
+          )
+          if "node.col_offset" not in source or "indented = textwrap.indent" not in source:
+              raise SystemExit("transformer indentation patch did not apply")
+          patched = source.encode()
+          path = Path("/tmp/finish_pr6811_wrapper.py")
           path.write_bytes(patched)
           compile(patched, str(path), "exec")
           exec(patched, {"__name__": "__main__"})
