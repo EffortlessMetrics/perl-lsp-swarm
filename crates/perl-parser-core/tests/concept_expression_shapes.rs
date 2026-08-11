@@ -45,24 +45,51 @@ fn multiplication_binds_inside_addition() -> Result<(), String> {
 fn assignment_and_ternary_remain_right_associative() -> Result<(), String> {
     let ast = parse_clean("$a = $b = $c; $a ? $b : $c ? $d : $e;")?;
     let mut right_nested_assignment = false;
+    let mut left_nested_assignment = false;
     let mut right_nested_ternary = false;
+    let mut condition_nested_ternary = false;
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Assignment { op, rhs, .. }
+        NodeKind::Assignment { op, lhs, rhs }
             if op == "=" && matches!(&rhs.kind, NodeKind::Assignment { op, .. } if op == "=") =>
         {
             right_nested_assignment = true;
+            left_nested_assignment = matches!(&lhs.kind, NodeKind::Assignment { .. });
         }
-        NodeKind::Ternary { else_expr, .. }
+        NodeKind::Ternary { condition, else_expr, .. }
             if matches!(&else_expr.kind, NodeKind::Ternary { .. }) =>
         {
             right_nested_ternary = true;
+            condition_nested_ternary = matches!(&condition.kind, NodeKind::Ternary { .. });
         }
         _ => {}
     });
 
     assert!(right_nested_assignment, "assignment must nest on the right");
+    assert!(!left_nested_assignment, "assignment must not fabricate left nesting");
     assert!(right_nested_ternary, "chained ternary must nest in the else branch");
+    assert!(!condition_nested_ternary, "chained ternary must not nest in the condition branch");
+    Ok(())
+}
+
+#[test]
+fn exponentiation_remains_right_associative() -> Result<(), String> {
+    let ast = parse_clean("my $value = 2 ** 3 ** 2;")?;
+    let mut right_nested_power = false;
+    let mut left_nested_power = false;
+
+    walk(&ast, &mut |node| {
+        if let NodeKind::Binary { op, left, right } = &node.kind
+            && op == "**"
+            && matches!(&right.kind, NodeKind::Binary { op, .. } if op == "**")
+        {
+            right_nested_power = true;
+            left_nested_power = matches!(&left.kind, NodeKind::Binary { op, .. } if op == "**");
+        }
+    });
+
+    assert!(right_nested_power, "2 ** 3 ** 2 must nest on the right");
+    assert!(!left_nested_power, "power must not fabricate left nesting");
     Ok(())
 }
 
