@@ -4,8 +4,8 @@
 //! including try/catch, given/when, class/method, signatures, and more.
 
 use perl_parser::{
-    Parser,
     ast::{Node, NodeKind},
+    Parser,
 };
 
 /// Test try/catch with signatures, class methods, and variable declarations
@@ -326,7 +326,11 @@ my $data = $rect->serialize();
         class_nodes
             .iter()
             .filter(|n| {
-                if let NodeKind::Class { name, .. } = &n.kind { name == "Shape" } else { false }
+                if let NodeKind::Class { name, .. } = &n.kind {
+                    name == "Shape"
+                } else {
+                    false
+                }
             })
             .collect();
     assert_eq!(shape_class.len(), 1, "Should have Shape class");
@@ -335,7 +339,11 @@ my $data = $rect->serialize();
     let rect_class: Vec<_> = class_nodes
         .iter()
         .filter(|n| {
-            if let NodeKind::Class { name, .. } = &n.kind { name == "Rectangle" } else { false }
+            if let NodeKind::Class { name, .. } = &n.kind {
+                name == "Rectangle"
+            } else {
+                false
+            }
         })
         .collect();
     assert_eq!(rect_class.len(), 1, "Should have Rectangle class");
@@ -518,11 +526,6 @@ where
         NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
             find_nodes_recursive(target, predicate, results);
             find_nodes_recursive(keys, predicate, results);
-        }
-        NodeKind::ChainedComparison { operands, .. } => {
-            for operand in operands {
-                find_nodes_recursive(operand, predicate, results);
-            }
         }
         NodeKind::Unary { operand, .. } => {
             find_nodes_recursive(operand, predicate, results);
@@ -741,5 +744,6 @@ where
                 find_nodes_recursive(item, predicate, results);
             }
         }
+        &_ => {}
     }
 }
