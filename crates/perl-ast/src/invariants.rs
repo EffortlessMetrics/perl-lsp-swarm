@@ -6,6 +6,7 @@
 
 use crate::ast::MAX_AST_DEPTH;
 use crate::{FieldId, Node, SourceLocation};
+use std::ops::ControlFlow;
 
 /// Stable class of AST structural invariant violation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,6 +26,8 @@ pub enum AstInvariantCode {
     ChildOrderRegression,
     /// Traversal reached a depth greater than the configured structural budget.
     DepthLimitExceeded,
+    /// Traversal discovered more nodes than the configured structural budget.
+    NodeLimitExceeded,
 }
 
 impl AstInvariantCode {
@@ -39,6 +42,7 @@ impl AstInvariantCode {
             Self::ChildOutsideParent => "child_outside_parent",
             Self::ChildOrderRegression => "child_order_regression",
             Self::DepthLimitExceeded => "depth_limit_exceeded",
+            Self::NodeLimitExceeded => "node_limit_exceeded",
         }
     }
 }
@@ -67,10 +71,49 @@ pub struct AstInvariantOptions {
     pub max_findings: usize,
     /// Maximum root-relative depth visited by the iterative traversal.
     pub max_depth: usize,
+    /// Maximum number of nodes visited, including the root.
+    pub max_nodes: usize,
     /// Whether direct children must be emitted in nondecreasing start order.
     pub require_child_source_order: bool,
     /// Whether zero-width source ranges are accepted as synthetic/recovery spans.
     pub allow_empty_ranges: bool,
+}
+
+impl AstInvariantOptions {
+    /// Set the exact maximum number of retained findings.
+    #[must_use]
+    pub const fn with_max_findings(mut self, max_findings: usize) -> Self {
+        self.max_findings = max_findings;
+        self
+    }
+
+    /// Set the maximum root-relative traversal depth.
+    #[must_use]
+    pub const fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
+    /// Set the maximum number of visited nodes, including the root.
+    #[must_use]
+    pub const fn with_max_nodes(mut self, max_nodes: usize) -> Self {
+        self.max_nodes = max_nodes;
+        self
+    }
+
+    /// Select whether direct-child source order is required.
+    #[must_use]
+    pub const fn with_child_source_order(mut self, required: bool) -> Self {
+        self.require_child_source_order = required;
+        self
+    }
+
+    /// Select whether zero-width source ranges are accepted.
+    #[must_use]
+    pub const fn with_empty_ranges(mut self, allowed: bool) -> Self {
+        self.allow_empty_ranges = allowed;
+        self
+    }
 }
 
 impl Default for AstInvariantOptions {
@@ -78,6 +121,7 @@ impl Default for AstInvariantOptions {
         Self {
             max_findings: 64,
             max_depth: MAX_AST_DEPTH,
+            max_nodes: 100_000,
             require_child_source_order: true,
             allow_empty_ranges: true,
         }
@@ -99,7 +143,7 @@ pub struct AstInvariantReport {
 }
 
 impl AstInvariantReport {
-    /// Return `true` when no structural finding was observed.
+    /// Return `true` when no structural finding was observed and traversal completed.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.findings.is_empty() && !self.truncated
@@ -112,19 +156,17 @@ struct PendingNode<'a> {
     depth: usize,
 }
 
-fn source_location(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
-}
-
 fn push_finding(
     report: &mut AstInvariantReport,
     finding_limit: usize,
     finding: AstInvariantFinding,
-) {
+) -> bool {
     if report.findings.len() < finding_limit {
         report.findings.push(finding);
+        true
     } else {
         report.truncated = true;
+        false
     }
 }
 
@@ -135,40 +177,52 @@ fn child_path(parent: &str, field: Option<FieldId>, index: usize, child: &Node) 
 
 /// Validate an AST against the exact source bytes it claims to describe.
 ///
-/// Traversal uses [`Node::for_each_child_with_field`], the canonical exhaustive
-/// child iterator. The walk is iterative so deeply nested or adversarial trees
-/// cannot overflow the Rust call stack while being checked.
+/// Traversal uses [`Node::try_for_each_child_with_field`], the canonical
+/// exhaustive child iterator with short-circuiting. The walk is iterative, and
+/// both depth and node count are bounded, so deep or wide adversarial trees
+/// cannot overflow the call stack or allocate an unbounded child list.
 #[must_use]
 pub fn validate_ast(
     source: &str,
     root: &Node,
     options: AstInvariantOptions,
 ) -> AstInvariantReport {
-    let finding_limit = options.max_findings.max(1);
     let mut report = AstInvariantReport {
         findings: Vec::new(),
         nodes_visited: 0,
         max_depth_reached: 0,
         truncated: false,
     };
-    let mut pending = vec![PendingNode {
-        node: root,
-        path: format!("root:{}", root.kind.kind_name()),
-        depth: 0,
-    }];
+    let root_path = format!("root:{}", root.kind.kind_name());
 
-    while let Some(current) = pending.pop() {
-        if report.truncated {
-            break;
-        }
+    if options.max_nodes == 0 {
+        report.truncated = true;
+        let _ = push_finding(
+            &mut report,
+            options.max_findings,
+            AstInvariantFinding {
+                code: AstInvariantCode::NodeLimitExceeded,
+                node_kind: root.kind.kind_name().to_string(),
+                path: root_path,
+                range: root.location,
+                related_range: None,
+            },
+        );
+        return report;
+    }
 
+    let mut pending = vec![PendingNode { node: root, path: root_path, depth: 0 }];
+    let mut node_limit_reported = false;
+
+    'walk: while let Some(current) = pending.pop() {
         report.nodes_visited = report.nodes_visited.saturating_add(1);
         report.max_depth_reached = report.max_depth_reached.max(current.depth);
 
         if current.depth > options.max_depth {
-            push_finding(
+            report.truncated = true;
+            if !push_finding(
                 &mut report,
-                finding_limit,
+                options.max_findings,
                 AstInvariantFinding {
                     code: AstInvariantCode::DepthLimitExceeded,
                     node_kind: current.node.kind.kind_name().to_string(),
@@ -176,15 +230,17 @@ pub fn validate_ast(
                     range: current.node.location,
                     related_range: None,
                 },
-            );
+            ) {
+                break;
+            }
             continue;
         }
 
         let range = current.node.location;
-        if range.start > range.end {
-            push_finding(
+        if range.start > range.end
+            && !push_finding(
                 &mut report,
-                finding_limit,
+                options.max_findings,
                 AstInvariantFinding {
                     code: AstInvariantCode::ReversedRange,
                     node_kind: current.node.kind.kind_name().to_string(),
@@ -192,12 +248,14 @@ pub fn validate_ast(
                     range,
                     related_range: None,
                 },
-            );
+            )
+        {
+            break;
         }
         if range.start > source.len() || range.end > source.len() {
-            push_finding(
+            if !push_finding(
                 &mut report,
-                finding_limit,
+                options.max_findings,
                 AstInvariantFinding {
                     code: AstInvariantCode::RangeOutOfBounds,
                     node_kind: current.node.kind.kind_name().to_string(),
@@ -205,11 +263,13 @@ pub fn validate_ast(
                     range,
                     related_range: None,
                 },
-            );
-        } else if !source.is_char_boundary(range.start) || !source.is_char_boundary(range.end) {
-            push_finding(
+            ) {
+                break;
+            }
+        } else if (!source.is_char_boundary(range.start) || !source.is_char_boundary(range.end))
+            && !push_finding(
                 &mut report,
-                finding_limit,
+                options.max_findings,
                 AstInvariantFinding {
                     code: AstInvariantCode::NonUtf8Boundary,
                     node_kind: current.node.kind.kind_name().to_string(),
@@ -217,12 +277,15 @@ pub fn validate_ast(
                     range,
                     related_range: None,
                 },
-            );
+            )
+        {
+            break;
         }
-        if !options.allow_empty_ranges && range.start == range.end {
-            push_finding(
+        if !options.allow_empty_ranges
+            && range.start == range.end
+            && !push_finding(
                 &mut report,
-                finding_limit,
+                options.max_findings,
                 AstInvariantFinding {
                     code: AstInvariantCode::UnexpectedEmptyRange,
                     node_kind: current.node.kind.kind_name().to_string(),
@@ -230,23 +293,57 @@ pub fn validate_ast(
                     range,
                     related_range: None,
                 },
-            );
+            )
+        {
+            break;
         }
 
-        let mut children = Vec::new();
-        current
-            .node
-            .for_each_child_with_field(|field, child| children.push((field, child)));
+        let reserved = report.nodes_visited.saturating_add(pending.len());
+        let remaining_slots = options.max_nodes.saturating_sub(reserved);
+        let mut children = Vec::with_capacity(remaining_slots.min(32));
+        let mut child_index = 0usize;
+        let mut suppressed_child: Option<(usize, Option<FieldId>, &Node)> = None;
+        let _ = current.node.try_for_each_child_with_field(|field, child| {
+            let index = child_index;
+            child_index = child_index.saturating_add(1);
+            if children.len() >= remaining_slots {
+                suppressed_child = Some((index, field, child));
+                ControlFlow::Break(())
+            } else {
+                children.push((index, field, child));
+                ControlFlow::Continue(())
+            }
+        });
+
+        if let Some((index, field, child)) = suppressed_child {
+            report.truncated = true;
+            if !node_limit_reported {
+                node_limit_reported = true;
+                if !push_finding(
+                    &mut report,
+                    options.max_findings,
+                    AstInvariantFinding {
+                        code: AstInvariantCode::NodeLimitExceeded,
+                        node_kind: child.kind.kind_name().to_string(),
+                        path: child_path(&current.path, field, index, child),
+                        range: child.location,
+                        related_range: Some(range),
+                    },
+                ) {
+                    break;
+                }
+            }
+        }
 
         let mut previous: Option<SourceLocation> = None;
-        for (index, (field, child)) in children.iter().copied().enumerate() {
+        for (index, field, child) in children.iter().copied() {
             let child_range = child.location;
             let path = child_path(&current.path, field, index, child);
 
-            if child_range.start < range.start || child_range.end > range.end {
-                push_finding(
+            if (child_range.start < range.start || child_range.end > range.end)
+                && !push_finding(
                     &mut report,
-                    finding_limit,
+                    options.max_findings,
                     AstInvariantFinding {
                         code: AstInvariantCode::ChildOutsideParent,
                         node_kind: child.kind.kind_name().to_string(),
@@ -254,15 +351,16 @@ pub fn validate_ast(
                         range: child_range,
                         related_range: Some(range),
                     },
-                );
+                )
+            {
+                break 'walk;
             }
 
             if options.require_child_source_order
                 && previous.is_some_and(|previous_range| child_range.start < previous_range.start)
-            {
-                push_finding(
+                && !push_finding(
                     &mut report,
-                    finding_limit,
+                    options.max_findings,
                     AstInvariantFinding {
                         code: AstInvariantCode::ChildOrderRegression,
                         node_kind: child.kind.kind_name().to_string(),
@@ -270,12 +368,14 @@ pub fn validate_ast(
                         range: child_range,
                         related_range: previous,
                     },
-                );
+                )
+            {
+                break 'walk;
             }
-            previous = Some(source_location(child_range.start, child_range.end));
+            previous = Some(child_range);
         }
 
-        for (index, (field, child)) in children.into_iter().enumerate().rev() {
+        for (index, field, child) in children.into_iter().rev() {
             pending.push(PendingNode {
                 node: child,
                 path: child_path(&current.path, field, index, child),
