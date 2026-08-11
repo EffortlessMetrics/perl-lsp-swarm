@@ -76,9 +76,11 @@ behavior before adopting it — a reviewer's push carries no proof, so restate i
 replace it and say why in the thread. Treat the result as a new authored candidate and
 invalidate the affected review dimensions.
 
-Recreating a closed PR is separate: GitHub refuses to reopen a pull request whose branch
-was force-pushed or rebuilt, so a rebuilt claim needs a fresh PR naming what it
-supersedes. Prefer not rebuilding — see the currentness contract.
+Recreating a closed PR is separate. If the existing head and base branches still exist
+and GitHub permits reopening, reopen and preserve the review record. A fresh PR is needed
+when the branches were deleted or the existing PR cannot be reopened after a structural
+rebuild; name what it supersedes and carry forward only verified findings. Prefer not
+rebuilding — see the currentness contract.
 
 ## Routes
 
