@@ -36,6 +36,43 @@ copy_doc() {
     fi
 }
 
+# Adapt source-relative links when canonical docs are copied into the book.
+copy_lsp_doc() {
+    local source="$1"
+    local dest="$2"
+
+    copy_doc "$source" "$dest"
+    if [ -f "$dest" ]; then
+        sed -i \
+            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
+            -e 's#../reference/ARCHITECTURE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md#g' \
+            -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
+            -e 's#../../features.toml#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/features.toml#g' \
+            -e 's#../project/CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
+            -e 's#../reference/LSP_FEATURES.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/LSP_FEATURES.md#g' \
+            -e 's#../project/protocols/verification.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/protocols/verification.md#g' \
+            "$dest"
+    fi
+}
+
+copy_development_doc() {
+    local source="$1"
+    local dest="$2"
+
+    copy_doc "$source" "$dest"
+    if [ -f "$dest" ]; then
+        sed -i \
+            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
+            -e 's#ORIENTATION.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ORIENTATION.md#g' \
+            -e 's#../reference/ARCHITECTURE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md#g' \
+            -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
+            -e 's#../tutorials/LSP_DEVELOPMENT_GUIDE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md#g' \
+            -e 's#CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
+            -e 's#ROADMAP.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md#g' \
+            "$dest"
+    fi
+}
+
 copy_testing_doc() {
     local source="$1"
     local dest="$2"
@@ -109,7 +146,7 @@ copy_doc "$DOCS_DIR/reference/COMMANDS_REFERENCE.md" "$BOOK_SRC/developer/comman
 copy_testing_doc "$DOCS_DIR/tutorials/COMPREHENSIVE_TESTING_GUIDE.md" "$BOOK_SRC/developer/testing-guide.md"
 copy_doc "$DOCS_DIR/reference/TEST_INFRASTRUCTURE_GUIDE.md" "$BOOK_SRC/developer/test-infrastructure.md"
 copy_doc "$DOCS_DIR/reference/API_DOCUMENTATION_STANDARDS.md" "$BOOK_SRC/developer/api-documentation-standards.md"
-copy_doc "$DOCS_DIR/project/DEVELOPMENT.md" "$BOOK_SRC/developer/development-workflow.md"
+copy_development_doc "$DOCS_DIR/project/DEVELOPMENT.md" "$BOOK_SRC/developer/development-workflow.md"
 
 # LSP Development section
 echo "Setting up LSP Development..."
