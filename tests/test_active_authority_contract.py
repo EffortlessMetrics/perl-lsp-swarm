@@ -82,6 +82,13 @@ class ActiveAuthorityContractTests(unittest.TestCase):
                 "Labels may help navigation. They are not proof or merge permission.",
                 "Behind-only movement requires no action.",
                 "At merge, the current head is used as compare-and-swap protection",
+                "## Specialized contributor workflows",
+                "just semver-check",
+                "just public-api-update",
+                "just publish-allowlist-check",
+                "just bump-version X.Y.Z",
+                "docs/assets/gifs/README.md",
+                "Contributions are licensed under both [MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE).",
             ),
         )
         assert_contains_none(
