@@ -321,12 +321,66 @@
         ]
       },
       "ast_expectations": [
-        { "id": "typeglob_alias_package", "kind": "Package", "line": 1, "span_text": "package Accuracy::TypeglobAlias", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_original", "kind": "Subroutine", "line": 3, "span_text": "sub original", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_assignment", "kind": "Assignment", "line": 7, "span_text": "*alias = \\&original", "parent_kind": null, "depth": null, "operator": "=", "parent_operator": null },
-        { "id": "typeglob_alias_typeglob", "kind": "Typeglob", "line": 7, "span_text": "*alias", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
-        { "id": "typeglob_alias_coderef", "kind": "AmperCall", "line": 7, "span_text": "\\&original", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
-        { "id": "typeglob_alias_call", "kind": "FunctionCall", "line": 8, "span_text": "alias()", "parent_kind": null, "depth": null, "operator": null, "parent_operator": null }
+        {
+          "id": "typeglob_alias_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::TypeglobAlias",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_original",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub original",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_assignment",
+          "kind": "Assignment",
+          "line": 7,
+          "span_text": "*alias = \\&original",
+          "parent_kind": null,
+          "depth": null,
+          "operator": "=",
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_typeglob",
+          "kind": "Typeglob",
+          "line": 7,
+          "span_text": "*alias",
+          "parent_kind": "Assignment",
+          "depth": null,
+          "operator": null,
+          "parent_operator": "="
+        },
+        {
+          "id": "typeglob_alias_coderef",
+          "kind": "AmperCall",
+          "line": 7,
+          "span_text": "\\&original",
+          "parent_kind": "Assignment",
+          "depth": null,
+          "operator": null,
+          "parent_operator": "="
+        },
+        {
+          "id": "typeglob_alias_call",
+          "kind": "FunctionCall",
+          "line": 8,
+          "span_text": "alias()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -2608,7 +2662,79 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "role_method_ast_1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Role",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_ast_2",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub provided",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_ast_3",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_ast_4",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::RoleConsumer",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_ast_5",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub local_method",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_ast_6",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return provided()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_ast_7",
+          "kind": "FunctionCall",
+          "line": 10,
+          "span_text": "provided()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "inherited_method",
@@ -2736,7 +2862,89 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "inherited_method_ast_1",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Parent",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_ast_2",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub inherited",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_ast_3",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_ast_4",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::Child",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_ast_5",
+          "kind": "VariableDeclaration",
+          "line": 9,
+          "span_text": "our @ISA",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_ast_6",
+          "kind": "Subroutine",
+          "line": 11,
+          "span_text": "sub call_parent",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_ast_7",
+          "kind": "Return",
+          "line": 12,
+          "span_text": "return Accuracy::Parent::inherited()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_ast_8",
+          "kind": "FunctionCall",
+          "line": 12,
+          "span_text": "Accuracy::Parent::inherited()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "export_tags",
