@@ -26,12 +26,7 @@ fn classify_paths(accepted_path: &Path, compile_path: &Path) -> Result<Classific
     let accepted = read_accepted_baseline_v2(accepted_path)?;
     validate_accepted_baseline_shape(&accepted)?;
     let compile: RunReport = read_json(compile_path, "compile observation")?;
-    if compile.schema_version != RUN_REPORT_SCHEMA_VERSION {
-        bail!(
-            "compile observation schema_version must be {RUN_REPORT_SCHEMA_VERSION}, found {}",
-            compile.schema_version
-        );
-    }
+    validate_compile_report_shape(&compile)?;
     Ok(classification_output(classify_transition(
         &AcceptedBaseline::V2(Box::new(accepted)),
         &compile,
@@ -80,6 +75,47 @@ fn validate_accepted_baseline_shape(accepted: &CompileBaselineV2) -> Result<()> 
         || accepted.files_passed.saturating_add(accepted.files_failed) != accepted.files_total
     {
         bail!("accepted ratchet file counts are internally inconsistent with file_results");
+    }
+    Ok(())
+}
+
+fn validate_compile_report_shape(report: &RunReport) -> Result<()> {
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!(
+            "compile observation schema_version must be {RUN_REPORT_SCHEMA_VERSION}, found {}",
+            report.schema_version
+        );
+    }
+    if report.harness_status != Some(0) {
+        bail!(
+            "compile observation harness_status must be Some(0) for a complete successful run; found {:?}",
+            report.harness_status
+        );
+    }
+    let passed = report
+        .file_results
+        .iter()
+        .filter(|result| result.status == RunnerStatus::Pass)
+        .count();
+    let failed = report.file_results.len().saturating_sub(passed);
+    if report.summary.files_total != report.file_results.len()
+        || report.summary.files_passed != passed
+        || report.summary.files_failed != failed
+        || report
+            .summary
+            .files_passed
+            .saturating_add(report.summary.files_failed)
+            != report.summary.files_total
+    {
+        bail!("compile observation file counts are internally inconsistent with file_results");
+    }
+    for result in &report.file_results {
+        if result.assertions_passed > result.assertions_total {
+            bail!(
+                "compile observation file {} passes more assertions than it declares",
+                result.path
+            );
+        }
     }
     Ok(())
 }
@@ -140,27 +176,35 @@ fn same_unix_file(_left: &Path, _right: &Path) -> Result<bool> {
 }
 
 fn resolve_destination(path: &Path) -> Result<PathBuf> {
-    if path.exists() {
-        return fs::canonicalize(path)
-            .with_context(|| format!("canonicalizing output {}", path.display()));
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            bail!("classification output must not be a symlink path")
+        }
+        Ok(_) => fs::canonicalize(path)
+            .with_context(|| format!("canonicalizing output {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let absolute = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .context("reading current directory")?
+                    .join(path)
+            };
+            let parent = absolute
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let file_name = absolute.file_name().ok_or_else(|| {
+                color_eyre::eyre::eyre!("classification output path has no file name")
+            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating output directory {}", parent.display()))?;
+            let parent = fs::canonicalize(parent)
+                .with_context(|| format!("canonicalizing output parent {}", parent.display()))?;
+            Ok(parent.join(file_name))
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!("reading classification output metadata {}", path.display())
+        }),
     }
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .context("reading current directory")?
-            .join(path)
-    };
-    let parent = absolute
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let file_name = absolute
-        .file_name()
-        .ok_or_else(|| color_eyre::eyre::eyre!("classification output path has no file name"))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("creating output directory {}", parent.display()))?;
-    let parent = fs::canonicalize(parent)
-        .with_context(|| format!("canonicalizing output parent {}", parent.display()))?;
-    Ok(parent.join(file_name))
 }

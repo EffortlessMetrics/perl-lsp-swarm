@@ -113,6 +113,71 @@ fn classify_cli_creates_missing_output_directories() {
 }
 
 #[test]
+fn classify_cli_rejects_null_harness_status() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let out = dir.path().join("out.json");
+    let mut current = sample_report(2, 1);
+    current.harness_status = None;
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    write_json(&accepted, &sample_v2_baseline(2, 1));
+    write_json(&compile, &current);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8 path"),
+            "--compile",
+            compile.to_str().expect("utf8 path"),
+            "--output",
+            out.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("harness_status must be Some(0)"), "unexpected stderr: {stderr}");
+    assert!(!out.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn classify_cli_rejects_dangling_symlink_output() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let outside = dir.path().join("outside-target.json");
+    let out = dir.path().join("dangling-out.json");
+    write_json(&accepted, &sample_v2_baseline(1, 1));
+    write_json(&compile, &sample_report(1, 1));
+    symlink(&outside, &out).expect("create dangling symlink");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8 path"),
+            "--compile",
+            compile.to_str().expect("utf8 path"),
+            "--output",
+            out.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must not be a symlink path"), "unexpected stderr: {stderr}");
+    assert!(!outside.exists());
+}
+
+#[test]
 fn classify_cli_writes_regression_for_pass_to_fail() {
     let dir = tempdir().expect("tempdir");
     let accepted = dir.path().join("accepted.json");
