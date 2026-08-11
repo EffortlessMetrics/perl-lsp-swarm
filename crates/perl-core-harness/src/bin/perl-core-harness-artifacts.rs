@@ -430,9 +430,16 @@ fn validate_report(report: &RunReport) -> Result<()> {
     if passed != report.summary.files_passed || failed != report.summary.files_failed {
         bail!("run report file status counts do not match its summary");
     }
-    let assertions_total = report.file_results.iter().map(|result| result.assertions_total).sum();
-    let assertions_passed =
-        report.file_results.iter().map(|result| result.assertions_passed).sum();
+    let assertions_total: usize = report
+        .file_results
+        .iter()
+        .map(|result| result.assertions_total)
+        .sum();
+    let assertions_passed: usize = report
+        .file_results
+        .iter()
+        .map(|result| result.assertions_passed)
+        .sum();
     if assertions_total != report.summary.tap_assertions_total
         || assertions_passed != report.summary.tap_assertions_passed
     {
@@ -905,6 +912,24 @@ mod tests {
         };
         if !error.to_string().contains("aliases an input") {
             bail!("unexpected output-alias error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derivation_rejects_output_aliasing_boundaries_report() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = temp.path().join("report.json");
+        let output = temp.path().join("records.jsonl");
+        fs::write(&report, "{}\n")?;
+        let Err(error) = reject_output_aliases(
+            std::slice::from_ref(&report),
+            &[output, report.clone()],
+        ) else {
+            bail!("boundary output aliases must be rejected before writing");
+        };
+        if !error.to_string().contains("aliases an input") {
+            bail!("unexpected boundary-output alias error: {error}");
         }
         Ok(())
     }
