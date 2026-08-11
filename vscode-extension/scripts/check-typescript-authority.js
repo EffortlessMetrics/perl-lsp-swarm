@@ -70,6 +70,7 @@ const TSCONFIG_FILES = [
  * @property {string | undefined} declaredRange devDependencies.typescript
  * @property {{version?: string, resolved?: string, name?: string} | undefined} lockEntry
  *   The `node_modules/typescript` entry from package-lock.json.
+ * @property {string | undefined} lockIntegrity That entry's `integrity` hash.
  * @property {string | undefined} installedVersion node_modules/typescript's own version.
  * @property {string | undefined} binaryVersionOutput Raw `tsc --version` stdout.
  * @property {{resolved?: string, expected?: string, error?: string} | undefined} binShim
@@ -143,6 +144,66 @@ function readRangeFloor(range) {
 }
 
 /**
+ * The npm registry origins a `typescript` tarball may legitimately come from.
+ *
+ * A substituted or mirrored registry is exactly the supply-chain swap this gate
+ * exists to make visible, so the host is checked rather than assumed.
+ */
+const APPROVED_REGISTRY_ORIGINS = ['https://registry.npmjs.org'];
+
+/**
+ * Decides whether `resolved` is a real npm-registry `typescript` tarball.
+ *
+ * A substring test on the path is not enough: `https://attacker.example/
+ * typescript/-/typescript-7.0.2.tgz` satisfies it while resolving the compiler
+ * from an arbitrary host, and the gate would then report it as coming "from the
+ * npm registry". Both the origin and the exact pathname are checked, and the
+ * pathname must name the same version the lockfile records — a tarball path
+ * disagreeing with the recorded version is its own kind of drift.
+ *
+ * @param {unknown} resolved
+ * @param {unknown} version
+ * @returns {{origin: string} | {reason: string}}
+ */
+function readRegistryOrigin(resolved, version) {
+  if (typeof resolved !== 'string' || resolved.length === 0) {
+    return { reason: `records no \`resolved\` URL for node_modules/typescript` };
+  }
+
+  /** @type {URL} */
+  let url;
+  try {
+    url = new URL(resolved);
+  } catch {
+    return {
+      reason: `resolves node_modules/typescript to "${resolved}", which is not a parseable URL`,
+    };
+  }
+
+  if (!APPROVED_REGISTRY_ORIGINS.includes(url.origin)) {
+    return {
+      reason: `resolves node_modules/typescript from the origin "${url.origin}", not the approved npm registry (${APPROVED_REGISTRY_ORIGINS.join(', ')}) — a substituted registry would otherwise satisfy this gate`,
+    };
+  }
+
+  const expectedPath =
+    typeof version === 'string' && version.length > 0
+      ? `/typescript/-/typescript-${version}.tgz`
+      : null;
+  if (expectedPath === null) {
+    return {
+      reason: `records no usable version to match against the tarball path "${url.pathname}"`,
+    };
+  }
+  if (url.pathname !== expectedPath) {
+    return {
+      reason: `resolves node_modules/typescript to the tarball path "${url.pathname}", which is not the registry path for the recorded version (${expectedPath})`,
+    };
+  }
+  return { origin: url.origin };
+}
+
+/**
  * Evaluates the compiler-authority invariants against already-gathered facts.
  *
  * Kept free of I/O so the invariants can be proven against synthetic drifted
@@ -185,9 +246,13 @@ function evaluateTypeScriptAuthority(input) {
         `package-lock.json aliases node_modules/typescript to "${name}" — the migration rules out aliases and shims`,
       );
     }
-    if (typeof resolved !== 'string' || !/\/typescript\/-\/typescript-/.test(resolved)) {
+    const origin = readRegistryOrigin(resolved, version);
+    if ('reason' in origin) {
+      failures.push(`package-lock.json ${origin.reason}`);
+    }
+    if (typeof input.lockIntegrity !== 'string' || input.lockIntegrity.length === 0) {
       failures.push(
-        `package-lock.json resolves node_modules/typescript to "${String(resolved)}", which is not a registry \`typescript\` tarball`,
+        'package-lock.json records no `integrity` for node_modules/typescript — the tarball contents are unpinned',
       );
     }
     const lockMajor = typeof version === 'string' ? leadingMajor(version) : null;
@@ -313,13 +378,24 @@ function resolveBinShim(extensionRoot, typescriptDir) {
   const posixShim = path.join(binDir, 'tsc');
   const windowsShim = path.join(binDir, 'tsc.cmd');
 
+  // Select by PLATFORM first, not by which file happens to exist.
+  //
+  // npm's Windows bin-link generation writes `tsc.cmd`, `tsc.ps1` AND an
+  // extensionless `tsc` shell wrapper side by side. An existence-first probe
+  // therefore picks the extensionless `tsc` on Windows and treats it as the
+  // POSIX symlink case, comparing a text wrapper's own real path against
+  // typescript/bin/tsc — turning a healthy Windows install red. What `npm run`
+  // actually executes there is `tsc.cmd`, so that is what must be inspected.
+  const preferred = process.platform === 'win32' ? windowsShim : posixShim;
+  const fallback = process.platform === 'win32' ? posixShim : windowsShim;
+
   // Absence is its own, clearer diagnosis — check it before anything else, so
   // a tree with no node_modules at all reports "missing" rather than an
   // incidental failure to resolve the package's bin/tsc.
-  const shim = fs.existsSync(posixShim)
-    ? posixShim
-    : fs.existsSync(windowsShim)
-      ? windowsShim
+  const shim = fs.existsSync(preferred)
+    ? preferred
+    : fs.existsSync(fallback)
+      ? fallback
       : undefined;
   if (shim === undefined) {
     return undefined;
@@ -335,7 +411,9 @@ function resolveBinShim(extensionRoot, typescriptDir) {
     };
   }
 
-  if (shim === posixShim) {
+  // A generated text wrapper must be parsed, not realpath'd, whichever name it
+  // carries: on Windows the extensionless `tsc` is also a wrapper, not a link.
+  if (shim === posixShim && process.platform !== 'win32') {
     try {
       return { resolved: fs.realpathSync(posixShim), expected };
     } catch (error) {
@@ -343,14 +421,17 @@ function resolveBinShim(extensionRoot, typescriptDir) {
     }
   }
 
-  if (shim === windowsShim) {
+  {
     // The generated wrapper references its target as a relative path; take the
     // first typescript/bin/tsc mention and resolve it against .bin.
     try {
-      const script = fs.readFileSync(windowsShim, 'utf8');
+      const script = fs.readFileSync(shim, 'utf8');
       const match = /[\w.\\/-]*typescript[\\/]bin[\\/]tsc/i.exec(script);
       if (!match) {
-        return { expected, error: 'the generated tsc.cmd names no typescript/bin/tsc target' };
+        return {
+          expected,
+          error: `the generated shim ${path.basename(shim)} names no typescript/bin/tsc target`,
+        };
       }
       const target = path.resolve(binDir, match[0].replace(/\\/g, path.sep));
       return { resolved: fs.realpathSync(target), expected };
@@ -358,8 +439,6 @@ function resolveBinShim(extensionRoot, typescriptDir) {
       return { expected, error: error instanceof Error ? error.message : String(error) };
     }
   }
-
-  return undefined;
 }
 
 /**
@@ -439,6 +518,7 @@ function checkTypeScriptAuthority(extensionRoot) {
     expectedMajor: TYPESCRIPT_AUTHORITY_MAJOR,
     declaredRange: packageJson.devDependencies?.typescript,
     lockEntry: lockJson.packages?.['node_modules/typescript'],
+    lockIntegrity: lockJson.packages?.['node_modules/typescript']?.integrity,
     installedVersion,
     binaryVersionOutput,
     binShim: resolveBinShim(extensionRoot, typescriptDir),

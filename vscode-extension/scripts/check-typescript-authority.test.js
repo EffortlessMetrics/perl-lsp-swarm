@@ -28,6 +28,7 @@ function healthyInput(overrides = {}) {
       version: '7.0.2',
       resolved: 'https://registry.npmjs.org/typescript/-/typescript-7.0.2.tgz',
     },
+    lockIntegrity: 'sha512-deadbeef',
     installedVersion: '7.0.2',
     binaryVersionOutput: 'Version 7.0.2\n',
     binShim: {
@@ -152,13 +153,16 @@ void test('a lockfile alias redirect is named as an alias, not just a version mi
 });
 
 void test('a lockfile resolving a non-registry tarball is red', () => {
+  // A `file:` specifier has no registry origin, so it is now rejected on the
+  // origin rather than on the path shape — a stricter reason for the same
+  // verdict.
   assertFailedWith(
     evaluateTypeScriptAuthority(
       healthyInput({
         lockEntry: { version: '7.0.2', resolved: 'file:../vendor/typescript-7.0.2.tgz' },
       }),
     ),
-    /not a registry `typescript` tarball/,
+    /not the approved npm registry/,
   );
 });
 
@@ -202,6 +206,46 @@ void test('an unreadable tsc --version is red, never assumed green', () => {
   assertFailedWith(
     evaluateTypeScriptAuthority(healthyInput({ binaryVersionOutput: undefined })),
     /could not run the installed/,
+  );
+});
+
+void test('a tarball from a non-npm host is red even with the right path shape', () => {
+  // The hole this closes: a substring test on the path accepts
+  // https://attacker.example/typescript/-/typescript-7.0.2.tgz, and the gate
+  // would then report that TypeScript resolved "from the npm registry".
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        lockEntry: {
+          version: '7.0.2',
+          resolved: 'https://attacker.example/typescript/-/typescript-7.0.2.tgz',
+        },
+      }),
+    ),
+    /from the origin "https:\/\/attacker\.example", not the approved npm registry/,
+  );
+});
+
+void test('a tarball path naming a different version than the lockfile is red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        lockEntry: {
+          version: '7.0.2',
+          resolved: 'https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz',
+        },
+      }),
+    ),
+    /tarball path "\/typescript\/-\/typescript-6\.0\.3\.tgz", which is not the registry path/,
+  );
+});
+
+void test('a lockfile entry with no integrity hash is red', () => {
+  // Origin plus path pin *where* the tarball came from; integrity pins *what*
+  // is inside it. Without the hash the contents are unverified.
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ lockIntegrity: undefined })),
+    /records no `integrity`/,
   );
 });
 
