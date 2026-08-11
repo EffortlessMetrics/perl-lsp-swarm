@@ -3513,7 +3513,7 @@ impl<'a> PerlLexer<'a> {
             {
                 return self.qw_has_top_level_closer_after(position, close);
             }
-            if ch == '\n' {
+            if matches!(ch, '\n' | '\r') {
                 at_line_prefix = true;
             } else if at_line_prefix && !ch.is_whitespace() {
                 at_line_prefix = false;
@@ -3566,7 +3566,7 @@ impl<'a> PerlLexer<'a> {
 
     fn qw_statement_boundary_at(&self, position: usize) -> bool {
         let consumed = &self.input[..position];
-        let line_start = consumed.rfind('\n').map_or(0, |index| index + 1);
+        let line_start = consumed.rfind(['\n', '\r']).map_or(0, |index| index + 1);
         if !consumed[line_start..].chars().all(char::is_whitespace) {
             return false;
         }
