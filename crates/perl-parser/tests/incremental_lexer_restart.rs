@@ -45,7 +45,7 @@ fn replacing_edit(source: &str, needle: &str, replacement: &str) -> Result<Edit,
 fn empty_edit_batch_reports_unchanged_without_lexer_or_parser_work() -> TestResult {
     let source = "my $before = 1; my $after = 2;";
     let mut state = IncrementalState::new(source.to_string());
-    let token_count = state.tokens.len();
+    let token_count = state.tokens().len();
 
     let result = apply_edits(&mut state, &[])?;
 
@@ -57,8 +57,8 @@ fn empty_edit_batch_reports_unchanged_without_lexer_or_parser_work() -> TestResu
     assert_eq!(result.reused_tokens, token_count);
     assert_eq!(result.reparsed_bytes, 0);
     assert!(result.changed_ranges.is_empty());
-    assert_eq!(state.source, source);
-    assert_tokens_equal(&state.tokens, &fresh_tokens(source));
+    assert_eq!(state.source(), source);
+    assert_tokens_equal(state.tokens(), &fresh_tokens(source));
     Ok(())
 }
 
@@ -81,10 +81,10 @@ fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> Tes
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_eq!(
         result.lex_restart.relexed_bytes,
-        state.source.len() - result.lex_restart.restart_byte
+        state.source().len() - result.lex_restart.restart_byte
     );
     assert_eq!(result.reused_tokens, result.lex_restart.reused_tokens());
-    assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+    assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     Ok(())
 }
 
@@ -121,7 +121,7 @@ fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
             "{name} unexpectedly abandoned the live checkpoint path"
         );
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0, "{name}");
-        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     }
     Ok(())
 }
@@ -141,7 +141,7 @@ fn method_context_edit_matches_fresh_lexing_after_complete_state_restore() -> Te
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
-    assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+    assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     Ok(())
 }
 
@@ -162,7 +162,7 @@ fn large_edit_reports_full_relex_instead_of_checkpoint_reuse() -> TestResult {
     assert_eq!(result.lex_restart.restart_byte, 0);
     assert_eq!(result.lex_restart.reused_prefix_tokens, 0);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
-    assert_eq!(result.lex_restart.relexed_bytes, state.source.len());
-    assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+    assert_eq!(result.lex_restart.relexed_bytes, state.source().len());
+    assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     Ok(())
 }
