@@ -8462,7 +8462,6 @@ sub inspect {
     }
 }
 
-
 #[test]
 fn test_inherited_moo_open_package_survives_unrelated_bare_symbol_match() {
     let code = r#"
