@@ -327,8 +327,8 @@ impl<'a> Parser<'a> {
                             } else {
                                 let followed_by_identifier_statement = token
                                     .text
-                                    .trim_end_matches([' ', '\t', '\r'])
-                                    .ends_with('\n')
+                                    .trim_end_matches([' ', '\t'])
+                                    .ends_with(['\n', '\r'])
                                     && self.tokens.peek().is_ok_and(|next| {
                                         next.kind == TokenKind::Identifier
                                             && next.text.as_ref() == "print"
