@@ -1072,6 +1072,7 @@ pub(super) fn detail_with_evidence(base: String, evidence: &ReceiverEvidence) ->
 /// inherited workspace resolution. Finally falls back to text-pattern
 /// inference. This keeps literal bless and hash-slot evidence authoritative
 /// while preserving the inherited receiver path.
+#[cfg(test)]
 pub(super) fn classify_receiver(
     context: &CompletionContext,
     source: &str,
@@ -1338,6 +1339,7 @@ pub(super) fn source_package_fallback(source: &str, position: usize) -> Option<S
 /// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
 /// (static), `$self->` / `$this->` (self), `my $x = Foo->new` (constructor
 /// assignment), and `my $x = bless ..., "Foo"` (literal bless).
+#[cfg(test)]
 pub(super) fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
