@@ -1,13 +1,7 @@
-# Parser comparison — current-evidence pointer
+# Parser documentation — current-evidence pointer
 
-This page is retained for compatibility with older links. Its former comparison mixed the retired two-crate lexer/parser design with theoretical timings, unsupported coverage percentages, and unverified recommendations.
+This page retires a historical snapshot. It does not define parser coverage, performance, production readiness, or workspace navigation guarantees.
 
-Use these current authorities instead:
+Use the [current parser package README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-parser/README.md), [parser-core README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-parser-core/README.md), [workspace manifest](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml), and [current status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md) for evidence tied to the present workspace.
 
-- [Parser feature matrix](PARSER_FEATURE_MATRIX.md) for feature-level parser status;
-- [Parser limitations](PARSER_LIMITATIONS.md) for known unsupported or partial behavior;
-- [Parser contracts](PARSER_CONTRACTS.md) for contract-level boundaries;
-- [Architecture Overview](ARCHITECTURE.md) for current parser layers and ownership;
-- [benchmark results](../benchmarks/BENCHMARK_RESULTS.md) for measured results with receipts.
-
-The former three-way table, estimated performance values, coverage percentages, test counts, and “recommended modern parser” conclusion are historical. They do not establish current compatibility, performance, or release readiness. When comparing parser implementations, identify the source revision, command, corpus, target, and receipt status before making a claim.
+Performance or coverage claims require a reproducible receipt with source revision, command, corpus, and result; this pointer supplies none.
