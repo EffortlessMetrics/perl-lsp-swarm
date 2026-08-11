@@ -25,9 +25,7 @@ The active development contract is maintained in
 
 - Node 26.x, npm `11.18.0`, and the CI pin Node `26.5.0` as enforceable doctor
   and workflow authority;
-- source, test, integration, published-smoke, and script TypeScript checks — all
-  five now blocking in the extension PR gate via `typecheck:all`, not only at
-  `vscode:prepublish`;
+- source, test, integration, published-smoke, and script TypeScript checks;
 - a standing `typecheck:authority` gate proving the resolved, installed, and
   executing compiler is really registry TypeScript 7, since TS6 and TS7 compile
   and emit identically for this tree and a regression would otherwise be silent;
