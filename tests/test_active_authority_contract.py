@@ -11,6 +11,12 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def read_prose(path: str) -> str:
+    """Normalize Markdown line wrapping without weakening phrase checks."""
+
+    return " ".join(read(path).split())
+
+
 def assert_contains_all(
     case: unittest.TestCase,
     surface: str,
@@ -33,7 +39,7 @@ def assert_contains_none(
 
 class ActiveAuthorityContractTests(unittest.TestCase):
     def test_maintainer_contract_is_current(self) -> None:
-        doctrine = read("docs/reference/MAINTAINER_AGENT_DOCTRINE.md")
+        doctrine = read_prose("docs/reference/MAINTAINER_AGENT_DOCTRINE.md")
 
         assert_contains_all(
             self,
@@ -62,7 +68,7 @@ class ActiveAuthorityContractTests(unittest.TestCase):
         )
 
     def test_contributing_uses_current_review_model(self) -> None:
-        contributing = read("CONTRIBUTING.md")
+        contributing = read_prose("CONTRIBUTING.md")
 
         assert_contains_all(
             self,
@@ -92,7 +98,7 @@ class ActiveAuthorityContractTests(unittest.TestCase):
         )
 
     def test_copilot_is_a_current_route_map(self) -> None:
-        copilot = read(".github/copilot-instructions.md")
+        copilot = read_prose(".github/copilot-instructions.md")
 
         assert_contains_all(
             self,
@@ -121,7 +127,7 @@ class ActiveAuthorityContractTests(unittest.TestCase):
         )
 
     def test_worktree_mutation_has_a_concrete_reason(self) -> None:
-        protocol = read("docs/reference/WORKTREE_PROTOCOL.md")
+        protocol = read_prose("docs/reference/WORKTREE_PROTOCOL.md")
 
         assert_contains_all(
             self,
