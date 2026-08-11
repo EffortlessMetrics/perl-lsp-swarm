@@ -144,7 +144,11 @@ fn assert_observed_expectation(
 }
 
 fn byte_offset_to_line(source: &str, offset: usize) -> usize {
-    source[..offset.min(source.len())].bytes().filter(|byte| *byte == b'\n').count() + 1
+    source[..offset.min(source.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
 }
 
 fn workspace_root() -> PathBuf {
