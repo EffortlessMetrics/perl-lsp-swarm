@@ -545,7 +545,7 @@ mod unclosed_quote_tests {
 
     #[test]
     fn balanced_quote_operators_report_operator_specific_unclosed_delimiters() {
-        for operator in ["q", "qq", "qw", "qx", "m", "s"] {
+        for operator in ["q", "qq", "qr", "qx", "m", "s"] {
             let source = format!("{operator}(foo");
             let result = Parser::new(&source).parse_with_recovery();
             assert!(
