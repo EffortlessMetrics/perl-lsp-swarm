@@ -53,16 +53,93 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p target/agent-6808-artifact
-          cp .ci/gate-policy.yaml target/agent-6808-artifact/gate-policy.yaml
-          sha256sum target/agent-6808-artifact/gate-policy.yaml \
-            > target/agent-6808-artifact/SHA256SUMS
-          printf '%s\n' "$GITHUB_SHA" > target/agent-6808-artifact/source-sha.txt
+          artifact_dir=target/agent-6808-artifact
+          mkdir -p "$artifact_dir"
+          cp .ci/gate-policy.yaml "$artifact_dir/gate-policy.yaml"
+          (
+            cd "$artifact_dir"
+            sha256sum gate-policy.yaml > SHA256SUMS
+          )
+          printf '%s\n' "$GITHUB_SHA" > "$artifact_dir/source-sha.txt"
 
       - name: Upload exact verified artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: agent-6808-required-gate-${{ github.sha }}
           path: target/agent-6808-artifact
+          if-no-files-found: error
+          retention-days: 1
+
+  create-commit-object:
+    needs: generate-and-prove
+    if: needs.generate-and-prove.result == 'success'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download exact verified artifact
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v7.0.0
+        with:
+          name: agent-6808-required-gate-${{ github.sha }}
+          path: candidate
+
+      - name: Validate artifact and create unpublished commit object
+        id: commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(cat candidate/source-sha.txt)" = "$GITHUB_SHA"
+          (
+            cd candidate
+            sha256sum -c SHA256SUMS
+          )
+
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          headers=(
+            -H "Accept: application/vnd.github+json"
+            -H "Authorization: Bearer $GH_TOKEN"
+            -H "X-GitHub-Api-Version: 2022-11-28"
+          )
+
+          base_tree="$({ curl -fsS "${headers[@]}" "$api/git/commits/$GITHUB_SHA"; } | jq -er '.tree.sha')"
+          blob_payload="$(jq -Rs '{content: ., encoding: "utf-8"}' < candidate/gate-policy.yaml)"
+          gate_blob="$({ curl -fsS -X POST "${headers[@]}" -d "$blob_payload" "$api/git/blobs"; } | jq -er '.sha')"
+
+          tree_payload="$(jq -n \
+            --arg base_tree "$base_tree" \
+            --arg gate_blob "$gate_blob" \
+            '{
+              base_tree: $base_tree,
+              tree: [
+                {path: ".ci/gate-policy.yaml", mode: "100644", type: "blob", sha: $gate_blob},
+                {path: ".github/workflows/agent-6808-required-gate-artifact.yml", mode: "100644", type: "blob", sha: null},
+                {path: "scripts/ci/agent_6808_required_gate.py", mode: "100644", type: "blob", sha: null}
+              ]
+            }')"
+          tree_sha="$({ curl -fsS -X POST "${headers[@]}" -d "$tree_payload" "$api/git/trees"; } | jq -er '.sha')"
+
+          commit_payload="$(jq -n \
+            --arg message "test(ci): require textDocumentSync wire contract (#6776)" \
+            --arg tree "$tree_sha" \
+            --arg parent "$GITHUB_SHA" \
+            '{message: $message, tree: $tree, parents: [$parent]}')"
+          commit_sha="$({ curl -fsS -X POST "${headers[@]}" -d "$commit_payload" "$api/git/commits"; } | jq -er '.sha')"
+
+          mkdir -p receipt
+          printf '%s\n' "$GITHUB_SHA" > receipt/source-sha.txt
+          printf '%s\n' "$gate_blob" > receipt/gate-blob-sha.txt
+          printf '%s\n' "$tree_sha" > receipt/tree-sha.txt
+          printf '%s\n' "$commit_sha" > receipt/commit-sha.txt
+          sha256sum candidate/gate-policy.yaml > receipt/gate-policy.sha256
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unpublished commit receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: agent-6808-unpublished-commit-${{ github.sha }}
+          path: receipt
           if-no-files-found: error
           retention-days: 1
