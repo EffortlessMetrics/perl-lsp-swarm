@@ -119,6 +119,7 @@ pub struct TargetSelectionContract {
     pub perl_version_row: String,
     pub target_kind: TargetKind,
     pub authority: TargetAuthority,
+    pub selection_authority: Option<TargetAuthority>,
     pub selectors: Vec<TargetSelector>,
     pub script_forms: Vec<TargetScriptForm>,
     pub preparation: TargetPreparation,
