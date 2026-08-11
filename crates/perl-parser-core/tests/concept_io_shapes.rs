@@ -37,94 +37,140 @@ fn subtree_contains(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> bool
 }
 
 #[test]
-fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
+fn angle_forms_keep_exact_readline_diamond_glob_and_shift_shapes() -> Result<(), String> {
     let source = concat!(
         "my $stdin = <STDIN>;\n",
+        "my $dynamic = <$fh>;\n",
         "my $diamond = <>;\n",
         "my $safe_diamond = <<>>;\n",
         "my @files = <*.pl>;\n",
-        "my $shifted = $value << 2;\n",
+        "my $left = $value << 2;\n",
+        "my $right = $value >> 2;\n",
     );
     let ast = parse_clean(source)?;
-    let mut stdin_readlines = Vec::new();
+    let mut readlines = Vec::new();
     let mut diamonds = Vec::new();
     let mut globs = Vec::new();
     let mut shifts = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Readline { filehandle: Some(filehandle) } if filehandle == "STDIN" => {
-            if let Some(text) = source_text(source, node) {
-                stdin_readlines.push(text);
-            }
+        NodeKind::Readline { filehandle } => {
+            readlines.push((filehandle.clone(), source_text(source, node)));
         }
         NodeKind::Diamond => {
-            if let Some(text) = source_text(source, node) {
-                diamonds.push(text);
-            }
+            diamonds.push(source_text(source, node));
         }
-        NodeKind::Glob { .. } => {
-            if let Some(text) = source_text(source, node) {
-                globs.push(text);
-            }
+        NodeKind::Glob { pattern } => {
+            globs.push((pattern.clone(), source_text(source, node)));
         }
-        NodeKind::Binary { op, left, right } if op == "<<" => {
-            if let (Some(text), Some(left_text), Some(right_text)) = (
+        NodeKind::Binary { op, left, right } if matches!(op.as_str(), "<<" | ">>") => {
+            shifts.push((
+                op.clone(),
                 source_text(source, node),
                 source_text(source, left),
                 source_text(source, right),
-            ) {
-                shifts.push((
-                    text,
-                    left_text,
-                    right_text,
-                    matches!(
-                        &left.kind,
-                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "value"
-                    ),
-                    matches!(&right.kind, NodeKind::Number { value } if value == "2"),
-                ));
-            }
+                matches!(
+                    &left.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "value"
+                ),
+                matches!(&right.kind, NodeKind::Number { value } if value == "2"),
+            ));
         }
         _ => {}
     });
-    diamonds.sort();
 
-    assert_eq!(stdin_readlines, vec!["<STDIN>"]);
-    assert_eq!(diamonds, vec!["<<>>", "<>"]);
-    assert_eq!(globs, vec!["<*.pl>"]);
+    assert_eq!(
+        readlines,
+        vec![
+            (Some("STDIN".to_string()), Some("<STDIN>".to_string())),
+            (Some("$fh".to_string()), Some("<$fh>".to_string())),
+        ],
+        "bareword and scalar-held filehandles must remain distinct Readline payloads"
+    );
+    assert_eq!(
+        diamonds,
+        vec![Some("<>".to_string()), Some("<<>>".to_string())],
+        "ordinary and safe diamond forms share NodeKind but retain exact source geometry"
+    );
+    assert_eq!(
+        globs,
+        vec![("*.pl".to_string(), Some("<*.pl>".to_string()))]
+    );
     assert_eq!(
         shifts,
-        vec![(
-            "$value << 2".to_string(),
-            "$value".to_string(),
-            "2".to_string(),
-            true,
-            true,
-        )]
+        vec![
+            (
+                "<<".to_string(),
+                Some("$value << 2".to_string()),
+                Some("$value".to_string()),
+                Some("2".to_string()),
+                true,
+                true,
+            ),
+            (
+                ">>".to_string(),
+                Some("$value >> 2".to_string()),
+                Some("$value".to_string()),
+                Some("2".to_string()),
+                true,
+                true,
+            ),
+        ],
+        "left and right shifts must retain their operators and owned operands"
     );
     Ok(())
 }
 
 #[test]
-fn heredoc_opener_remains_distinct_from_diamond() -> Result<(), String> {
+fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<(), String> {
     let source = "my $document = <<EOF;\nhello\nEOF\n";
     let ast = parse_clean(source)?;
-    let mut heredoc_spans = Vec::new();
+    let mut heredocs = Vec::new();
     let mut diamonds = 0usize;
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Heredoc { delimiter, .. } if delimiter == "EOF" => {
-            if let Some(text) = source_text(source, node) {
-                heredoc_spans.push(text);
-            }
+        NodeKind::Heredoc {
+            delimiter,
+            content,
+            interpolated,
+            indented,
+            command,
+            body_span,
+        } => {
+            let body_text = body_span
+                .as_ref()
+                .and_then(|span| source.get(span.start..span.end))
+                .map(str::to_owned);
+            heredocs.push((
+                delimiter.clone(),
+                content.clone(),
+                *interpolated,
+                *indented,
+                *command,
+                source_text(source, node),
+                body_text,
+            ));
         }
         NodeKind::Diamond => diamonds += 1,
         _ => {}
     });
 
-    assert_eq!(heredoc_spans.len(), 1, "<<EOF must remain a Heredoc");
-    assert!(heredoc_spans[0].starts_with("<<EOF"));
-    assert!(heredoc_spans[0].contains("hello"));
+    assert_eq!(heredocs.len(), 1, "<<EOF must produce exactly one Heredoc node");
+    let (delimiter, content, interpolated, indented, command, opener, body) = &heredocs[0];
+    assert_eq!(delimiter, "EOF");
+    assert_eq!(content, "hello");
+    assert!(*interpolated, "bare heredoc delimiters permit interpolation");
+    assert!(!*indented, "plain <<EOF must not be marked as an indented heredoc");
+    assert!(!*command, "plain <<EOF must not be marked as command execution");
+    assert!(
+        opener.as_deref().is_some_and(|text| text.starts_with("<<EOF")),
+        "heredoc declaration span must begin at its opener"
+    );
+    assert_eq!(
+        body.as_deref().map(str::trim_end),
+        Some("hello"),
+        "body_span must cover the same body represented by content"
+    );
     assert_eq!(diamonds, 0, "heredoc syntax must not fabricate a Diamond node");
     Ok(())
 }
@@ -142,13 +188,30 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
     let mut scalar_handle_printf = Vec::new();
 
     walk(&ast, &mut |node| {
-        if let NodeKind::IndirectCall { method, object, args } = &node.kind {
+        if let NodeKind::IndirectCall {
+            method,
+            object,
+            args,
+        } = &node.kind
+        {
             match method.as_str() {
-                "print" if matches!(&object.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh") => {
+                "print"
+                    if matches!(
+                        &object.kind,
+                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh"
+                    ) =>
+                {
                     assert_eq!(source_text(source, object).as_deref(), Some("$fh"));
-                    assert_eq!(args.len(), 1, "print scalar handle must retain one output argument");
+                    assert_eq!(
+                        args.len(),
+                        1,
+                        "print scalar handle must retain one output argument"
+                    );
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
-                    assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
+                    assert_eq!(
+                        source_text(source, &args[0]).as_deref(),
+                        Some("\"hello\"")
+                    );
                     if let Some(text) = source_text(source, node) {
                         scalar_handle_print.push(text);
                     }
@@ -162,16 +225,32 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
                         )),
                         "braced print handle lost the $fh expression"
                     );
-                    assert_eq!(args.len(), 1, "print braced handle must retain one output argument");
+                    assert_eq!(
+                        args.len(),
+                        1,
+                        "print braced handle must retain one output argument"
+                    );
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
-                    assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
+                    assert_eq!(
+                        source_text(source, &args[0]).as_deref(),
+                        Some("\"hello\"")
+                    );
                     if let Some(text) = source_text(source, node) {
                         braced_handle_print.push(text);
                     }
                 }
-                "printf" if matches!(&object.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh") => {
+                "printf"
+                    if matches!(
+                        &object.kind,
+                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh"
+                    ) =>
+                {
                     assert_eq!(source_text(source, object).as_deref(), Some("$fh"));
-                    assert_eq!(args.len(), 2, "printf must retain format and value arguments");
+                    assert_eq!(
+                        args.len(),
+                        2,
+                        "printf must retain format and value arguments"
+                    );
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
                     assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"%s\""));
                     assert!(matches!(
