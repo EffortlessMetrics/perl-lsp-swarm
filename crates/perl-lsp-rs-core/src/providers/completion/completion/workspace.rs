@@ -2269,17 +2269,18 @@ fn collect_all_package_members_with_source(
                 // Only suppress the open-document fallback when the indexed text
                 // actually contains the requested package model.
                 for text in indexed_text
+                    .as_deref()
                     .into_iter()
-                    .chain((!source.is_empty()).then_some(source.to_string()))
+                    .chain((!source.is_empty()).then_some(source))
                 {
-                    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+                    let mut parser = perl_semantic_analyzer::Parser::new(text);
                     let Ok(ast) = parser.parse() else {
                         continue;
                     };
 
                     if let Some(model) =
                         perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(
-                            &ast, &text,
+                            &ast, text,
                         )
                         .class_models
                         .into_iter()
