@@ -50,6 +50,8 @@ struct ProofPolicy {
     coverage_scope: String,
     claim_boundary: String,
     complete: bool,
+    #[serde(default)]
+    closure_authority: Option<String>,
     proof_classes: Vec<ProofClass>,
     dimensions: Vec<Dimension>,
     campaigns: Vec<Campaign>,
@@ -112,6 +114,7 @@ enum ClaimStage {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(clippy::enum_variant_names)]
 #[serde(rename_all = "snake_case")]
 enum MissingEffect {
     BlocksClaim,
@@ -213,7 +216,17 @@ impl ProofPolicy {
             }
         }
         validate_issue("controller_issue", &self.controller_issue)?;
-        if self.proof_classes.is_empty() || self.dimensions.is_empty() || self.campaigns.is_empty() {
+        match self.closure_authority.as_deref() {
+            Some(authority) if authority.trim().is_empty() => {
+                bail!("compiler proof policy closure authority must not be empty");
+            }
+            None if self.complete => {
+                bail!("complete compiler proof policy requires closure_authority");
+            }
+            Some(_) | None => {}
+        }
+        if self.proof_classes.is_empty() || self.dimensions.is_empty() || self.campaigns.is_empty()
+        {
             bail!("proof classes, dimensions, and campaigns must all be non-empty");
         }
 
@@ -223,6 +236,32 @@ impl ProofPolicy {
             if !class_ids.insert(proof_class.class_id.as_str()) {
                 bail!("duplicate proof class {:?}", proof_class.class_id);
             }
+        }
+
+        let composition = self
+            .proof_classes
+            .iter()
+            .find(|proof_class| proof_class.class_id == "composition_coverage")
+            .ok_or_else(|| anyhow!("proof policy must define composition_coverage"))?;
+        let expected_composition_stages = [
+            ClaimStage::BodyHir,
+            ClaimStage::PirA,
+            ClaimStage::EffectsWorld,
+            ClaimStage::Eir,
+            ClaimStage::Provider,
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let actual_composition_stages =
+            composition.claim_stages.iter().copied().collect::<BTreeSet<_>>();
+        if composition.authority != Authority::CompositionHarness
+            || composition.circular_output_allowed
+            || composition.missing_effect != MissingEffect::BlocksClaim
+            || actual_composition_stages != expected_composition_stages
+        {
+            bail!(
+                "composition_coverage must retain composition_harness authority, non-circular output, blocks_claim semantics, and canonical claim stages"
+            );
         }
 
         let mut dimension_ids = BTreeSet::new();
@@ -245,20 +284,48 @@ impl ProofPolicy {
                 bail!("duplicate proof campaign {:?}", campaign.campaign_id);
             }
         }
+
+        let referenced_classes = self
+            .campaigns
+            .iter()
+            .flat_map(|campaign| campaign.proof_classes.iter().map(String::as_str))
+            .collect::<BTreeSet<_>>();
+        let referenced_dimensions = self
+            .campaigns
+            .iter()
+            .flat_map(|campaign| campaign.dimensions.iter().map(String::as_str))
+            .collect::<BTreeSet<_>>();
+        let referenced_families = self
+            .campaigns
+            .iter()
+            .flat_map(|campaign| campaign.concept_families.iter().map(String::as_str))
+            .collect::<BTreeSet<_>>();
+        if referenced_classes != class_ids {
+            bail!(
+                "proof policy has unexercised proof classes: {:?}",
+                class_ids.difference(&referenced_classes).copied().collect::<Vec<_>>()
+            );
+        }
+        if referenced_dimensions != dimension_ids {
+            bail!(
+                "proof policy has unexercised dimensions: {:?}",
+                dimension_ids.difference(&referenced_dimensions).copied().collect::<Vec<_>>()
+            );
+        }
+        if referenced_families != concept_families {
+            bail!(
+                "proof policy has unexercised concept families: {:?}",
+                concept_families.difference(&referenced_families).copied().collect::<Vec<_>>()
+            );
+        }
         Ok(())
     }
 
     fn canonicalized(&self) -> Self {
         let mut normalized = self.clone();
-        normalized
-            .proof_classes
-            .sort_by(|left, right| left.class_id.cmp(&right.class_id));
-        normalized
-            .dimensions
-            .sort_by(|left, right| left.dimension_id.cmp(&right.dimension_id));
-        normalized
-            .campaigns
-            .sort_by(|left, right| left.campaign_id.cmp(&right.campaign_id));
+        normalized.proof_classes.sort_by(|left, right| left.class_id.cmp(&right.class_id));
+        normalized.dimensions.sort_by(|left, right| left.dimension_id.cmp(&right.dimension_id));
+        normalized.campaigns.sort_by(|left, right| left.campaign_id.cmp(&right.campaign_id));
         for proof_class in &mut normalized.proof_classes {
             proof_class.claim_stages.sort();
         }
@@ -295,7 +362,12 @@ impl ProofPolicy {
         line(&mut output, &format!("- Policy: `{}`", normalized.policy_id))?;
         line(&mut output, &format!("- Controller: {}", normalized.controller_issue))?;
         line(&mut output, &format!("- Concept schema: `{}`", normalized.concept_ledger_schema))?;
-        line(&mut output, &format!("- Complete: `{}`", normalized.complete))?;
+        line(&mut output, &format!("- Policy vocabulary closed: `{}`", normalized.complete))?;
+        if let Some(authority) = &normalized.closure_authority {
+            line(&mut output, &format!("- Closure authority: `{authority}`"))?;
+        } else {
+            line(&mut output, "- Closure authority: —")?;
+        }
         line(&mut output, &format!("- Proof classes: `{}`", normalized.proof_classes.len()))?;
         line(&mut output, &format!("- Composition dimensions: `{}`", normalized.dimensions.len()))?;
         line(&mut output, &format!("- Campaigns: `{}`", normalized.campaigns.len()))?;
@@ -305,7 +377,10 @@ impl ProofPolicy {
 
         line(&mut output, "## Proof classes")?;
         line(&mut output, "")?;
-        line(&mut output, "| Proof class | Authority | Claim stages | Circular output | Missing effect | Owner |")?;
+        line(
+            &mut output,
+            "| Proof class | Authority | Claim stages | Circular output | Missing effect | Owner |",
+        )?;
         line(&mut output, "| --- | --- | --- | --- | --- | --- |")?;
         for proof_class in &normalized.proof_classes {
             let stages = proof_class
@@ -344,10 +419,7 @@ impl ProofPolicy {
                 &mut output,
                 &format!(
                     "| `{}` | {} | {} | {} |",
-                    dimension.dimension_id,
-                    values,
-                    dimension.owner_issue,
-                    dimension.claim_boundary
+                    dimension.dimension_id, values, dimension.owner_issue, dimension.claim_boundary
                 ),
             )?;
         }
@@ -414,9 +486,7 @@ impl ProofClass {
         if self.claim_stages.is_empty() {
             bail!("proof class {} must name at least one claim stage", self.class_id);
         }
-        if self.circular_output_allowed
-            && !matches!(self.authority, Authority::CompilerSnapshot)
-        {
+        if self.circular_output_allowed && !matches!(self.authority, Authority::CompilerSnapshot) {
             bail!(
                 "proof class {} permits circular output outside compiler_snapshot authority",
                 self.class_id
@@ -459,9 +529,12 @@ impl Campaign {
         validate_unique("concept_families", &self.campaign_id, &self.concept_families)?;
         validate_unique("dimensions", &self.campaign_id, &self.dimensions)?;
         validate_unique("proof_classes", &self.campaign_id, &self.proof_classes)?;
-        if self.concept_families.is_empty() || self.dimensions.len() < 2 || self.proof_classes.is_empty() {
+        if self.concept_families.len() < 2
+            || self.dimensions.len() < 2
+            || self.proof_classes.is_empty()
+        {
             bail!(
-                "campaign {} needs concept families, at least two dimensions, and proof classes",
+                "campaign {} needs at least two concept families, at least two dimensions, and proof classes",
                 self.campaign_id
             );
         }
@@ -476,11 +549,7 @@ impl Campaign {
         }
         for dimension in &self.dimensions {
             if !dimensions.contains(dimension.as_str()) {
-                bail!(
-                    "campaign {} references unknown dimension {:?}",
-                    self.campaign_id,
-                    dimension
-                );
+                bail!("campaign {} references unknown dimension {:?}", self.campaign_id, dimension);
             }
         }
         for proof_class in &self.proof_classes {
@@ -493,10 +562,7 @@ impl Campaign {
             }
         }
         if !self.proof_classes.iter().any(|value| value == "composition_coverage") {
-            bail!(
-                "campaign {} must include composition_coverage",
-                self.campaign_id
-            );
+            bail!("campaign {} must include composition_coverage", self.campaign_id);
         }
         Ok(())
     }
@@ -555,11 +621,7 @@ fn write_status(path: &Path, rendered: &str) -> Result<()> {
 }
 
 fn code_list(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|value| format!("`{value}`"))
-        .collect::<Vec<_>>()
-        .join(", ")
+    values.iter().map(|value| format!("`{value}`")).collect::<Vec<_>>().join(", ")
 }
 
 fn line(output: &mut String, value: &str) -> Result<()> {
@@ -584,9 +646,7 @@ fn validate_id(kind: &str, value: &str) -> Result<()> {
         || value.ends_with('-')
         || value.ends_with('_')
         || value.bytes().any(|byte| {
-            !(byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'_' | b'-'))
+            !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-'))
         })
     {
         bail!("invalid {kind} id {value:?}");
@@ -610,8 +670,7 @@ mod tests {
         include_str!("../../../contracts/compiler/perl_compiler_proof_policy.v1.toml");
     const CONCEPTS: &str =
         include_str!("../../../contracts/compiler/perl_compiler_concepts.v1.toml");
-    const STATUS: &str =
-        include_str!("../../../docs/project/status/perl_compiler_proof_policy.md");
+    const STATUS: &str = include_str!("../../../docs/project/status/perl_compiler_proof_policy.md");
 
     fn concepts() -> Result<ConceptLedgerIndex> {
         toml::from_str(CONCEPTS).context("parse committed concept ledger")
@@ -660,6 +719,64 @@ mod tests {
             .first_mut()
             .ok_or_else(|| anyhow!("committed policy unexpectedly has no campaign"))?;
         campaign.concept_families.push("unknown_family".to_string());
+        assert!(policy.validate(&concepts()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn complete_policy_requires_named_closure_authority() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        policy.complete = true;
+        assert!(policy.validate(&concepts()?).is_err());
+        policy.closure_authority = Some("issue:#6689/policy-closure-v1".to_string());
+        policy.validate(&concepts()?)?;
+        Ok(())
+    }
+
+    #[test]
+    fn single_family_campaign_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let campaign = policy
+            .campaigns
+            .first_mut()
+            .ok_or_else(|| anyhow!("committed policy unexpectedly has no campaign"))?;
+        campaign.concept_families.truncate(1);
+        assert!(policy.validate(&concepts()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn orphaned_policy_vocabulary_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut dimension = policy
+            .dimensions
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow!("committed policy unexpectedly has no dimension"))?;
+        dimension.dimension_id = "unexercised_axis".to_string();
+        dimension.values = vec!["first".to_string(), "second".to_string()];
+        policy.dimensions.push(dimension);
+        assert!(policy.validate(&concepts()?).is_err());
+
+        let policy = ProofPolicy::from_str(POLICY)?;
+        let mut concept_index = concepts()?;
+        concept_index.concepts.push(ConceptIndexRow { family: "unexercised_family".to_string() });
+        assert!(policy.validate(&concept_index).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn composition_coverage_contract_is_canonical() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let composition = policy
+            .proof_classes
+            .iter_mut()
+            .find(|proof_class| proof_class.class_id == "composition_coverage")
+            .ok_or_else(|| anyhow!("committed policy has no composition class"))?;
+        composition.authority = Authority::CompilerSnapshot;
+        composition.circular_output_allowed = true;
+        composition.claim_stages = vec![ClaimStage::Provider];
+        composition.missing_effect = MissingEffect::BlocksStage;
         assert!(policy.validate(&concepts()?).is_err());
         Ok(())
     }

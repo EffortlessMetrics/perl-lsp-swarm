@@ -9,10 +9,11 @@ Closed proof-class, composition-dimension, and campaign vocabulary for the curre
 - Policy: `perl_compiler_proof_policy_seed_v1`
 - Controller: #6689
 - Concept schema: `perl_compiler_concepts.v1`
-- Complete: `false`
+- Policy vocabulary closed: `false`
+- Closure authority: —
 - Proof classes: `11`
 - Composition dimensions: `35`
-- Campaigns: `6`
+- Campaigns: `7`
 
 **Claim boundary:** This policy defines admissible proof shapes. It does not satisfy any concept obligation or authorize provider promotion.
 
@@ -77,10 +78,11 @@ Closed proof-class, composition-dimension, and campaign vocabulary for the curre
 | Campaign | Concept families | Dimensions | Proof classes | Owner |
 | --- | --- | --- | --- | --- |
 | `calls_context_prototypes` | `calls`, `context` | `argument_context`, `call_syntax`, `dispatch_kind`, `dynamic_boundary`, `evaluation_order`, `prototype_contract`, `value_context` | `boundary_gold`, `composition_coverage`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `verifier_mutation` | #6689 |
-| `core_values_context_order` | `operators`, `places`, `values` | `access_mode`, `dynamic_boundary`, `evaluate_once`, `evaluation_demand`, `evaluation_order`, `operator_family`, `value_context` | `boundary_gold`, `composition_coverage`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `verifier_mutation` | #6689 |
+| `core_values_context_order` | `operators`, `places`, `values` | `access_mode`, `dynamic_boundary`, `evaluate_once`, `evaluation_demand`, `evaluation_order`, `operator_family`, `perl_version`, `result_shape`, `value_context`, `value_shape` | `boundary_gold`, `composition_coverage`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `verifier_mutation` | #6689 |
 | `declarations_control_exceptions` | `control`, `declarations`, `exceptions` | `access_mode`, `aliasing`, `cleanup`, `control_flow`, `evaluation_order`, `exception_flow`, `lifecycle`, `localization`, `storage_class` | `boundary_gold`, `composition_coverage`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `recovery_gold`, `verifier_mutation` | #6689 |
+| `dynamic_places_hidden_effects` | `dynamic`, `places` | `access_mode`, `dynamic_boundary`, `hidden_effect`, `lifecycle`, `result_shape`, `storage_class` | `boundary_gold`, `composition_coverage`, `eir_differential`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `verifier_mutation` | #6689 |
 | `phases_modules_effects` | `namespaces`, `objects`, `phases` | `compile_state`, `dynamic_boundary`, `feature_state`, `inheritance`, `module_order`, `object_dispatch`, `package_scope`, `phase` | `boundary_gold`, `composition_coverage`, `effects_world_fixture`, `negative_gold`, `positive_gold`, `real_perl_oracle` | #6689 |
-| `regex_topic_hidden_state` | `control`, `regex` | `access_mode`, `dynamic_boundary`, `evaluation_demand`, `implicit_topic`, `match_state`, `value_context` | `boundary_gold`, `composition_coverage`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `verifier_mutation` | #6689 |
+| `regex_topic_hidden_state` | `control`, `regex` | `access_mode`, `dynamic_boundary`, `evaluation_demand`, `hidden_effect`, `implicit_topic`, `match_state`, `value_context` | `boundary_gold`, `composition_coverage`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `verifier_mutation` | #6689 |
 | `source_regions_incremental` | `formats`, `source` | `dynamic_boundary`, `feature_state`, `incremental_edit`, `io_capability`, `package_scope`, `recovery_state`, `source_region` | `boundary_gold`, `composition_coverage`, `effects_world_fixture`, `hir_snapshot`, `negative_gold`, `positive_gold`, `real_perl_oracle`, `recovery_gold` | #6689 |
 
 ## Coverage counts
@@ -94,5 +96,5 @@ Closed proof-class, composition-dimension, and campaign vocabulary for the curre
 | Proof classes applying to `parser` | 1 |
 | Proof classes applying to `pir_a` | 6 |
 | Proof classes applying to `provider` | 8 |
-| Distinct concept families in campaigns | 14 |
+| Distinct concept families in campaigns | 15 |
 | Concept rows in consumed seed | 28 |

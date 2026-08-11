@@ -318,7 +318,7 @@ claim_boundary = "Static value shape must not imply runtime coercion or executio
 [[campaigns]]
 campaign_id = "core_values_context_order"
 concept_families = ["operators", "values", "places"]
-dimensions = ["value_context", "evaluation_demand", "access_mode", "evaluation_order", "evaluate_once", "operator_family", "dynamic_boundary"]
+dimensions = ["value_context", "evaluation_demand", "access_mode", "evaluation_order", "evaluate_once", "operator_family", "dynamic_boundary", "result_shape", "perl_version", "value_shape"]
 proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "hir_snapshot", "pir_snapshot", "verifier_mutation", "real_perl_oracle", "composition_coverage"]
 owner_issue = "#6689"
 claim_boundary = "Covers value/place behavior without implying EIR execution."
@@ -342,7 +342,7 @@ claim_boundary = "Structural call normalization and runtime dispatch proof remai
 [[campaigns]]
 campaign_id = "regex_topic_hidden_state"
 concept_families = ["regex", "control"]
-dimensions = ["implicit_topic", "match_state", "value_context", "evaluation_demand", "access_mode", "dynamic_boundary"]
+dimensions = ["implicit_topic", "match_state", "value_context", "evaluation_demand", "access_mode", "dynamic_boundary", "hidden_effect"]
 proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "hir_snapshot", "pir_snapshot", "verifier_mutation", "real_perl_oracle", "composition_coverage"]
 owner_issue = "#6689"
 claim_boundary = "Capture and topic state cannot be inferred from regex syntax alone."
@@ -362,3 +362,12 @@ dimensions = ["source_region", "package_scope", "io_capability", "feature_state"
 proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "recovery_gold", "hir_snapshot", "effects_world_fixture", "real_perl_oracle", "composition_coverage"]
 owner_issue = "#6689"
 claim_boundary = "Source preservation and runtime access capability are independent claims."
+
+
+[[campaigns]]
+campaign_id = "dynamic_places_hidden_effects"
+concept_families = ["dynamic", "places"]
+dimensions = ["storage_class", "access_mode", "hidden_effect", "lifecycle", "dynamic_boundary", "result_shape"]
+proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "hir_snapshot", "pir_snapshot", "verifier_mutation", "eir_differential", "real_perl_oracle", "composition_coverage"]
+owner_issue = "#6689"
+claim_boundary = "Typed dynamic and place effects remain distinct from independently proved execution."
