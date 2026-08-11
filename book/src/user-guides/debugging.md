@@ -5,9 +5,9 @@ Perl debugging is available via the `perl-dap` Debug Adapter Protocol (DAP) serv
 ## Current Status (Native Adapter)
 
 - **Launch debugging**: supported
-- **Attach to running process**: not implemented yet
-- **Variables/evaluate**: placeholder output (values are not parsed yet)
-- **BridgeAdapter**: library-only, not wired into the CLI
+- **TCP attach**: supported by the native adapter
+- **Variables/evaluate**: supported by the native adapter; scorecard receipts remain a separate verification gap
+- **Legacy bridge**: compatibility-only; native launch and TCP attach use the built-in runtime
 
 ## Features
 
@@ -15,8 +15,8 @@ Perl debugging is available via the `perl-dap` Debug Adapter Protocol (DAP) serv
 - **Breakpoints**: Set breakpoints in your Perl code (best-effort)
 - **Step Controls**: Step over, step into, step out
 - **Call Stack**: Navigate through the call stack (best-effort)
-- **Variable Inspection**: Placeholder values in the Variables panel
-- **Evaluate**: Placeholder output in the Debug Console
+- **Variable Inspection**: Native adapter values are rendered for the Variables panel
+- **Evaluate**: Native adapter evaluation is available where supported by the active session
 - **Conditional Breakpoints**: Best-effort conditions via Perl debugger
 
 ### Test Debugging
@@ -107,8 +107,8 @@ The Perl Language Server extension automatically detects and uses the debug adap
 - Use the Breakpoints panel to manage all breakpoints
 
 ### Variables
-- Variables are currently placeholder values from the native adapter
-- Hover values and watch expressions are not parsed yet
+- Native adapter sessions render debugger values in the Variables panel.
+- Session correctness and evaluate scorecards are tracked separately in [DAP status](../project/status/dap.md).
 
 ## Configuration Options
 
@@ -123,21 +123,21 @@ The Perl Language Server extension automatically detects and uses the debug adap
 | `env` | object | Environment variables | `{}` |
 | `perlPath` | string | Path to Perl interpreter | `perl` |
 
-> Note: The native adapter supports `launch` only; `attach` is not implemented yet.
+`launch` and TCP `attach` are native adapter modes. See the crate README for the stdio and socket commands.
 
 ## Troubleshooting
 
-### Workspace Build Issues (v0.8.8+)
+### Workspace Build Issues
 
 #### "Cannot find parser.c" or "libclang not found"
-The workspace uses an exclusion strategy to avoid these system dependency issues:
+The old v0.8.8 workspace report is historical. The current workspace excludes legacy `tree-sitter-perl`, `fuzz`, and `archive`; use the current workspace commands below rather than treating that release report as a live contract:
 
 ```bash
 # ✅ This should work (workspace tests only production crates)
 cargo test
 
-# ❌ This may fail if you try to build excluded crates directly
-cargo build -p tree-sitter-perl-c
+# ⚠️ Legacy excluded components are not part of the default workspace
+cargo build -p tree-sitter-perl
 ```
 
 **Solution**: The workspace is configured to exclude problematic crates. Use the standard workspace commands:
@@ -164,7 +164,7 @@ cargo test
 cargo test -p example-crate-with-conflicts
 ```
 
-**Reference**: See [WORKSPACE_TEST_REPORT.md](../WORKSPACE_TEST_REPORT.md) for current workspace status.
+**Reference**: See [workspace status](../../../docs/project/status/workspace.md) for current workspace status.
 
 ### Debug adapter not found
 ```bash
@@ -189,7 +189,7 @@ cargo install --path crates/perl-dap --force
 The debugging system consists of:
 
 1. **Debug Adapter (perl-dap)**: Native DAP adapter (default CLI)
-2. **BridgeAdapter**: Library-only proxy to Perl::LanguageServer (not wired into CLI)
+2. **Legacy bridge compatibility**: Kept separate from the native launch and TCP attach path
 3. **Perl Debugger Integration**: Interfaces with `perl -d`
 4. **VSCode Extension**: Provides UI integration
 5. **Test Integration**: Connects with Test Explorer
@@ -197,8 +197,8 @@ The debugging system consists of:
 ## Limitations
 
 - Remote debugging not yet supported
-- Attach to process not implemented
-- Variables/evaluate output is placeholder (no parsed values yet)
+- Native TCP attach and session scorecards remain distinct verification surfaces
+- Some variable/evaluate edge cases may not be covered by the current scorecard receipts
 - Some Perl internals may not be inspectable
 
 ## Future Enhancements
