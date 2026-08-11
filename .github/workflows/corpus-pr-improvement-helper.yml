@@ -1,0 +1,549 @@
+name: Corpus PR improvement helper
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: topology
+            ref: agent/corpus-topology-6699-current
+          - lane: snapshot
+            ref: agent/hir-snapshot-exact-set-6725
+          - lane: expectations
+            ref: agent/shared-expectation-mode-6703
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Apply topology improvement
+        if: matrix.lane == 'topology'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('crates/perl-corpus/src/api/topology.rs')
+          s = p.read_text()
+          s = s.replace(
+              'use crate::files::{CorpusLayer, CorpusPaths, get_corpus_files_from};',
+              'use crate::files::{CorpusLayer, CorpusPaths};'
+          )
+          old = '''        let mut assets = Vec::new();
+
+        for file in get_corpus_files_from(paths) {
+            assets.push(asset_from_path(paths, &file.path, file.layer.into())?);
+        }
+
+        for path in collect_additional_fuzz_assets(&paths.fuzz)? {
+            assets.push(asset_from_path(paths, &path, CorpusAssetLayer::Fuzz)?);
+        }
+'''
+          new = '''        let mut assets = collect_source_assets(
+            paths,
+            &paths.test_corpus,
+            CorpusAssetLayer::TestCorpus,
+            &["pl", "pm", "plx", "t", "psgi", "cgi"],
+        )?;
+        assets.extend(collect_source_assets(
+            paths,
+            &paths.fuzz,
+            CorpusAssetLayer::Fuzz,
+            &["pl"],
+        )?);
+
+        for path in collect_additional_fuzz_assets(&paths.fuzz)? {
+            assets.push(asset_from_path(paths, &path, CorpusAssetLayer::Fuzz)?);
+        }
+'''
+          if old not in s:
+              raise SystemExit('topology from_paths anchor missing')
+          s = s.replace(old, new)
+          s = s.replace(
+              '    /// A deserialized topology has not been bound to a runtime checkout root.\n    RootNotBound,',
+              '    /// A deserialized topology has not been bound to a runtime checkout root.\n    RootNotBound,\n    /// A supported corpus asset is a symlink and cannot be assigned checkout-stable identity.\n    SymlinkUnsupported {\n        /// Rejected symlink path.\n        path: PathBuf,\n    },'
+          )
+          s = s.replace(
+              '            Self::RootNotBound => formatter.write_str("corpus topology has no bound runtime root"),',
+              '            Self::RootNotBound => formatter.write_str("corpus topology has no bound runtime root"),\n            Self::SymlinkUnsupported { path } => {\n                write!(formatter, "corpus asset symlink is unsupported: {}", path.display())\n            }'
+          )
+          marker = 'fn asset_kind(path: &Path) -> CorpusAssetKind {'
+          helper = r'''fn collect_source_assets(
+    paths: &CorpusPaths,
+    root: &Path,
+    layer: CorpusAssetLayer,
+    extensions: &[&str],
+) -> Result<Vec<CorpusAsset>, CorpusTopologyError> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut assets = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(directory) = stack.pop() {
+        let entries = fs::read_dir(&directory).map_err(|error| CorpusTopologyError::Io {
+            path: directory.clone(),
+            message: error.to_string(),
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|error| CorpusTopologyError::Io {
+                path: directory.clone(),
+                message: error.to_string(),
+            })?;
+            let path = entry.path();
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| CorpusTopologyError::NonUtf8Path { path: path.clone() })?;
+
+            if file_name.starts_with('.') || file_name.starts_with('_') {
+                continue;
+            }
+
+            let file_type = entry.file_type().map_err(|error| CorpusTopologyError::Io {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
+
+            if file_type.is_symlink() {
+                if has_allowed_extension(&path, extensions) {
+                    return Err(CorpusTopologyError::SymlinkUnsupported { path });
+                }
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() && has_allowed_extension(&path, extensions) {
+                assets.push(asset_from_path(paths, &path, layer)?);
+            }
+        }
+    }
+
+    assets.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(assets)
+}
+
+fn has_allowed_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extensions.iter().any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        })
+}
+
+'''
+          if marker not in s:
+              raise SystemExit('topology helper anchor missing')
+          s = s.replace(marker, helper + marker)
+          test_marker = '    #[cfg(unix)]\n    #[test]\n    fn non_utf8_asset_path_fails_closed() {'
+          test = r'''    #[cfg(unix)]
+    #[test]
+    fn supported_source_symlink_fails_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let target = root.path().join("target.pl");
+        let link = root.path().join("test_corpus/linked.pl");
+        write_fixture(&target, "1;");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(&target, &link).expect("create source symlink");
+
+        assert!(matches!(
+            CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf())),
+            Err(CorpusTopologyError::SymlinkUnsupported { path }) if path == link
+        ));
+    }
+
+'''
+          if test_marker not in s:
+              raise SystemExit('topology test anchor missing')
+          s = s.replace(test_marker, test + test_marker)
+          p.write_text(s)
+          PY
+
+      - name: Apply snapshot improvement
+        if: matrix.lane == 'snapshot'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('crates/perl-corpus/src/snapshot.rs')
+          s = p.read_text()
+          s = s.replace(
+              'pub const HIR_SCHEMA_VERSION: &str = "hir.v1";',
+              'pub const HIR_SCHEMA_VERSION: &str = "hir.v1";\n\n/// Stable source-digest algorithm recorded by snapshot manifests.\npub const SOURCE_HASH_ALGORITHM: &str = "fnv1a128.v1";'
+          )
+          s = s.replace(
+              '    /// HIR schema version used for all entries in this manifest.\n    pub hir_schema_version: String,',
+              '    /// HIR schema version used for all entries in this manifest.\n    pub hir_schema_version: String,\n    /// Named, versioned source digest algorithm.\n    #[serde(default = "default_source_hash_algorithm")]\n    pub source_hash_algorithm: String,'
+          )
+          s = s.replace(
+              '            hir_schema_version: HIR_SCHEMA_VERSION.to_string(),\n            generated_on,',
+              '            hir_schema_version: HIR_SCHEMA_VERSION.to_string(),\n            source_hash_algorithm: SOURCE_HASH_ALGORITHM.to_string(),\n            generated_on,'
+          )
+          start = s.index('/// Compute a within-build-deterministic hash of a source string.')
+          end = s.index('#[cfg(test)]', start)
+          replacement = r'''/// Compute the stable FNV-1a 128-bit digest of a source string.
+///
+/// The algorithm identity is [`SOURCE_HASH_ALGORITHM`]. Output is exactly 32
+/// lowercase hexadecimal characters and is stable across Rust versions,
+/// operating systems, and CPU architectures.
+#[must_use]
+pub fn source_hash(source: &str) -> String {
+    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+
+    let hash = source.as_bytes().iter().fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u128::from(*byte)).wrapping_mul(PRIME)
+    });
+    format!("{hash:032x}")
+}
+
+fn default_source_hash_algorithm() -> String {
+    SOURCE_HASH_ALGORITHM.to_string()
+}
+
+'''
+          s = s[:start] + replacement + s[end:]
+          s = s.replace(
+              '        assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);',
+              '        assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);\n        assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);'
+          )
+          s = s.replace(
+              '    fn source_hash_len_is_32() {\n        assert_eq!(source_hash("hello").len(), 32);\n    }',
+              '    fn source_hash_matches_portable_known_vector() {\n        assert_eq!(source_hash("hello"), "e3e1efd54283d94f7081314b599d31b3");\n    }'
+          )
+          p.write_text(s)
+
+          p = Path('xtask/src/tasks/generate_semantic_snapshot.rs')
+          s = p.read_text()
+          s = s.replace(
+              '    HIR_SCHEMA_VERSION, HirSummary, SnapshotEntry, SnapshotManifest, source_hash,',
+              '    HIR_SCHEMA_VERSION, SOURCE_HASH_ALGORITHM, HirSummary, SnapshotEntry,\n    SnapshotManifest, source_hash,'
+          )
+          s = s.replace(
+              '    let fresh_entries = compute_snapshot_entries(&fixtures)?;',
+              '    let fresh_entries = compute_snapshot_entries(&args.fixture_dir, &fixtures)?;'
+          )
+          start = s.index('fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {')
+          end = s.index('/// Parse source and lower AST to HIR.', start)
+          replacement = r'''fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        bail!("Fixture directory not found: {}", dir.display());
+    }
+
+    let mut paths = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let entries = fs::read_dir(&directory)
+            .with_context(|| format!("reading fixture dir {}", directory.display()))?;
+        for entry in entries {
+            let entry = entry
+                .with_context(|| format!("reading fixture entry in {}", directory.display()))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("reading fixture type for {}", path.display()))?;
+            let is_perl_fixture = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"));
+
+            if file_type.is_symlink() && is_perl_fixture {
+                bail!("Snapshot fixture symlink is unsupported: {}", path.display());
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() && is_perl_fixture {
+                paths.push(path);
+            }
+        }
+    }
+
+    paths.sort();
+    Ok(paths)
+}
+
+/// Run `lower_ast()` over each fixture and compute one `SnapshotEntry` per file.
+fn compute_snapshot_entries(root: &Path, fixtures: &[PathBuf]) -> Result<Vec<SnapshotEntry>> {
+    fixtures.iter().map(|path| compute_one_entry(root, path)).collect()
+}
+
+fn compute_one_entry(root: &Path, path: &Path) -> Result<SnapshotEntry> {
+    let source =
+        fs::read_to_string(path).with_context(|| format!("reading fixture {}", path.display()))?;
+    let relative = path
+        .strip_prefix(root)
+        .with_context(|| format!("fixture {} is outside {}", path.display(), root.display()))?;
+    let fixture_id = relative
+        .components()
+        .map(|component| {
+            component.as_os_str().to_str().map(str::to_owned).ok_or_else(|| {
+                color_eyre::eyre::eyre!("fixture path is not UTF-8: {}", path.display())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?
+        .join("/");
+
+    let hash = source_hash(&source);
+    let hir = lower_source(&source);
+    let summary = summarize_hir(&hir);
+
+    Ok(SnapshotEntry {
+        fixture_id,
+        source_hash: hash,
+        hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
+        hir_summary: summary,
+    })
+}
+
+'''
+          s = s[:start] + replacement + s[end:]
+          s = s.replace(
+              '    if recorded.hir_schema_version != HIR_SCHEMA_VERSION {',
+              '    if recorded.source_hash_algorithm != SOURCE_HASH_ALGORITHM {\n        bail!(\n            "Source hash algorithm mismatch: recorded={} current={}; regenerate snapshot",\n            recorded.source_hash_algorithm,\n            SOURCE_HASH_ALGORITHM,\n        );\n    }\n    if recorded.hir_schema_version != HIR_SCHEMA_VERSION {'
+          )
+          s = s.replace('assert_eq!(entry.fixture_id, "minimal");', 'assert_eq!(entry.fixture_id, "minimal.pl");')
+          s = s.replace('compute_snapshot_entries(&fixtures)', 'compute_snapshot_entries(&fixture_dir, &fixtures)')
+          marker = '    #[test]\n    fn snapshot_covers_slice_fixtures() {'
+          test = r'''    #[test]
+    fn recursive_fixture_ids_preserve_relative_paths() {
+        let temporary = TempDir::new().expect("tempdir");
+        let first_dir = temporary.path().join("first");
+        let second_dir = temporary.path().join("second");
+        fs::create_dir_all(&first_dir).expect("create first dir");
+        fs::create_dir_all(&second_dir).expect("create second dir");
+        write_fixture(&first_dir, "same.pl", "1;");
+        write_fixture(&second_dir, "same.pl", "2;");
+
+        let fixtures = collect_fixtures(temporary.path()).expect("collect recursive fixtures");
+        let entries = compute_snapshot_entries(temporary.path(), &fixtures).expect("compute entries");
+        let ids = entries.iter().map(|entry| entry.fixture_id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["first/same.pl", "second/same.pl"]);
+    }
+
+'''
+          if marker not in s:
+              raise SystemExit('snapshot test anchor missing')
+          s = s.replace(marker, test + marker)
+          p.write_text(s)
+          PY
+
+      - name: Apply expectation improvement
+        if: matrix.lane == 'expectations'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('crates/perl-corpus/src/sidecar.rs')
+          s = p.read_text()
+          for target in [
+              'pub struct SidecarConcept {',
+              'pub struct SidecarExpect {',
+              'pub struct SidecarMetrics {',
+              'pub struct SidecarSnapshots {',
+              'pub struct FixtureExpectationSidecar {',
+          ]:
+              s = s.replace(
+                  '#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\n' + target,
+                  '#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\n#[serde(deny_unknown_fields)]\n' + target,
+              )
+          s = s.replace(
+              'pub struct SidecarSnapshots {\n    pub tokens: bool,\n    pub ast: bool,\n    pub spans: bool,',
+              'pub struct SidecarSnapshots {\n    #[serde(default)]\n    pub tokens: bool,\n    #[serde(default)]\n    pub ast: bool,\n    #[serde(default)]\n    pub spans: bool,'
+          )
+          s = s.replace(
+              'impl ConceptRegistry {\n    pub fn load(path: &Path) -> Result<Self> {',
+              'impl ConceptRegistry {\n    pub fn from_ids(ids: impl IntoIterator<Item = String>) -> Self {\n        Self { concept_ids: ids.into_iter().collect() }\n    }\n\n    pub fn load(path: &Path) -> Result<Self> {'
+          )
+          p.write_text(s)
+
+          p = Path('crates/perl-corpus/src/fixture_expectations.rs')
+          s = p.read_text()
+          s = s.replace('use anyhow::{Context, Result};', 'use anyhow::Result;')
+          s = s.replace('use std::fs;\n', '')
+          old = '''pub fn parse_sidecar(path: &Path) -> Result<FixtureExpectation> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read sidecar {}", path.display()))?;
+
+    toml::from_str(&contents)
+        .with_context(|| format!("failed to parse sidecar TOML {}", path.display()))
+}
+'''
+          new = '''pub fn parse_sidecar(path: &Path) -> Result<FixtureExpectation> {
+    Ok(crate::sidecar::parse_sidecar(path)?.into())
+}
+
+impl From<crate::sidecar::FixtureExpectationSidecar> for FixtureExpectation {
+    fn from(value: crate::sidecar::FixtureExpectationSidecar) -> Self {
+        Self {
+            concept: Some(ConceptInfo { id: value.concept.id, tier: value.concept.tier }),
+            expect: ExpectBlock {
+                panic: value.expect.panic,
+                timeout: value.expect.timeout,
+                mode: value.expect.mode,
+            },
+            metrics: value.metrics.map(|metrics| MetricsBlock {
+                max_error_nodes: metrics.max_error_nodes,
+                must_emit_node_kinds: metrics.must_emit_node_kinds,
+            }),
+            snapshots: value.snapshots.map(|snapshots| SnapshotBlock {
+                tokens: Some(snapshots.tokens),
+                ast: Some(snapshots.ast),
+                spans: Some(snapshots.spans),
+            }),
+        }
+    }
+}
+'''
+          if old not in s:
+              raise SystemExit('legacy parse anchor missing')
+          s = s.replace(old, new)
+          start = s.index('pub fn discover_sidecars(root: &Path) -> Result<Vec<PathBuf>> {')
+          end = s.index('pub fn validate_sidecar(', start)
+          s = s[:start] + '''pub fn discover_sidecars(root: &Path) -> Result<Vec<PathBuf>> {
+    crate::sidecar::discover_sidecars(root)
+}
+
+''' + s[end:]
+          start = s.index('pub fn validate_sidecar(')
+          end = s.index('pub fn validate_sidecars_in_dir(', start)
+          replacement = '''pub fn validate_sidecar(
+    path: &Path,
+    concept_registry: Option<&HashSet<String>>,
+) -> SidecarValidation {
+    let fixture_path = fixture_path_for_sidecar(path);
+    let registry = concept_registry
+        .map(|ids| crate::sidecar::ConceptRegistry::from_ids(ids.iter().cloned()));
+
+    match crate::sidecar::parse_sidecar(path) {
+        Ok(sidecar) => {
+            let validation = crate::sidecar::validate_sidecar(path, &sidecar, registry.as_ref());
+            SidecarValidation {
+                sidecar_path: path.to_path_buf(),
+                fixture_path,
+                errors: validation.errors,
+                warnings: validation.warnings,
+            }
+        }
+        Err(error) => SidecarValidation {
+            sidecar_path: path.to_path_buf(),
+            fixture_path,
+            errors: vec![error.to_string()],
+            warnings: Vec::new(),
+        },
+    }
+}
+
+'''
+          s = s[:start] + replacement + s[end:]
+          s = s.replace(
+              '[expect]\npanic = false\ntimeout = false\nmode = "totally_unknown"',
+              '[concept]\nid = "parser.invalid.mode"\ntier = "pr"\n\n[expect]\npanic = false\ntimeout = false\nmode = "totally_unknown"'
+          )
+          s = s.replace(
+              '[expect]\npanic = false\ntimeout = false\nmode = "parse_clean"\n"#,\n        )?;\n\n        let validation = validate_sidecar(&sidecar_path, None);',
+              '[concept]\nid = "parser.missing.fixture"\ntier = "pr"\n\n[expect]\npanic = false\ntimeout = false\nmode = "parse_clean"\n"#,\n        )?;\n\n        let validation = validate_sidecar(&sidecar_path, None);',
+              1
+          )
+          marker = '    #[test]\n    fn rejects_unknown_expectation_mode()'
+          test = '''    #[test]
+    fn legacy_and_canonical_parsers_share_one_schema_authority() -> Result<(), Box<dyn Error>> {
+        let root = temp_dir("perl_corpus_sidecar_parity")?;
+        let sidecar = write_fixture_pair(
+            &root,
+            "parity",
+            "basic",
+            r#"
+[concept]
+id = "parser.parity.basic"
+tier = "pr"
+
+[expect]
+panic = false
+timeout = false
+mode = "parse_clean"
+
+[snapshots]
+ast = true
+"#,
+        )?;
+
+        let legacy = parse_sidecar(&sidecar)?;
+        let canonical = crate::sidecar::parse_sidecar(&sidecar)?;
+        assert_eq!(legacy.expect.mode, canonical.expect.mode);
+        assert_eq!(legacy.concept.as_ref().map(|concept| concept.id.as_str()), Some(canonical.concept.id.as_str()));
+        assert_eq!(legacy.snapshots.as_ref().and_then(|snapshots| snapshots.ast), Some(canonical.snapshots.as_ref().is_some_and(|snapshots| snapshots.ast)));
+
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+'''
+          if marker not in s:
+              raise SystemExit('legacy parity test anchor missing')
+          s = s.replace(marker, test + marker)
+          p.write_text(s)
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Verify candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.lane }}" in
+            topology)
+              cargo test -p perl-corpus topology --locked
+              cargo clippy -p perl-corpus --lib --locked -- -D warnings -A missing_docs
+              ;;
+            snapshot)
+              cargo test -p perl-corpus snapshot --locked
+              cargo test -p xtask generate_semantic_snapshot --locked
+              cargo check -p xtask --locked
+              ;;
+            expectations)
+              cargo test -p perl-corpus fixture_expectations --locked
+              cargo test -p perl-corpus sidecar --locked
+              cargo check -p perl-corpus --all-targets --locked
+              ;;
+          esac
+
+      - name: Commit and push candidate
+        shell: bash
+        env:
+          TARGET_REF: ${{ matrix.ref }}
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "No improvement diff produced."
+            exit 0
+          fi
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -A
+          git commit -m "fix(corpus): address ${LANE} review findings"
+          git push origin "HEAD:refs/heads/${TARGET_REF}"
