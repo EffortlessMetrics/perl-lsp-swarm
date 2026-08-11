@@ -109,11 +109,7 @@ fn apply_incremental_edit(
 }
 
 fn collect_span_fingerprint(node: &Node, fingerprint: &mut Vec<(String, usize, usize)>) {
-    fingerprint.push((
-        node.kind.kind_name().to_string(),
-        node.location.start,
-        node.location.end,
-    ));
+    fingerprint.push((node.kind.kind_name().to_string(), node.location.start, node.location.end));
     for child in node.children() {
         collect_span_fingerprint(child, fingerprint);
     }
@@ -121,20 +117,18 @@ fn collect_span_fingerprint(node: &Node, fingerprint: &mut Vec<(String, usize, u
 
 fn assert_ast_equivalent(incremental: &Node, fresh: &Node, context: &str) -> TestResult {
     if incremental.to_sexp() != fresh.to_sexp() {
-        return Err(format!(
-            "incremental node shape diverged from fresh parse for {context}"
-        )
-        .into());
+        return Err(
+            format!("incremental node shape diverged from fresh parse for {context}").into()
+        );
     }
     let mut incremental_spans = Vec::new();
     let mut fresh_spans = Vec::new();
     collect_span_fingerprint(incremental, &mut incremental_spans);
     collect_span_fingerprint(fresh, &mut fresh_spans);
     if incremental_spans != fresh_spans {
-        return Err(format!(
-            "incremental source geometry diverged from fresh parse for {context}"
-        )
-        .into());
+        return Err(
+            format!("incremental source geometry diverged from fresh parse for {context}").into()
+        );
     }
     Ok(())
 }
@@ -269,11 +263,8 @@ fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
 
 #[test]
 fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
-    let source = concat!(
-        "my $before = 1;\n",
-        "my $value = $left / 2 / $right;\n",
-        "my $after = 3;\n",
-    );
+    let source =
+        concat!("my $before = 1;\n", "my $value = $left / 2 / $right;\n", "my $after = 3;\n",);
     let before_ast = Parser::new(source).parse()?;
     if !contains_division(&before_ast) {
         return Err("the pre-edit source must contain division".into());
