@@ -55,10 +55,10 @@
       "limitation": "Current CODEOWNERS coverage has not been checked against the required release surface list."
     },
     "environments": [
-      {"channel":"github_release","name":"github-release","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
-      {"channel":"crates_io","name":"crates-io","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
-      {"channel":"vscode_marketplace","name":"vscode-marketplace","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
-      {"channel":"open_vsx","name":"open-vsx","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."}
+      {"channel":"github_release","name":"github-release","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
+      {"channel":"crates_io","name":"crates-io","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
+      {"channel":"vscode_marketplace","name":"vscode-marketplace","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."},
+      {"channel":"open_vsx","name":"open-vsx","state":"not_proven","required_reviewers":[],"deployment_branch_policy":null,"secret_scope_verified":false,"publication_jobs":[],"evidence_refs":[],"limitation":"Environment existence, reviewers, branch policy, and secret scope are not proven."}
     ]
   },
   "declared_overall_state": "not_proven",
