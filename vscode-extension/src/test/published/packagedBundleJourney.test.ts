@@ -63,8 +63,19 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
     ? receipt.known_limitations.filter((value): value is string => typeof value === 'string')
     : [];
   const outcome = receipt.outcome;
+  const mandatoryEvidenceIsMissing = knownLimitations.some(
+    (limitation) =>
+      limitation === 'DAP preview is not exercised by this slice.' ||
+      limitation === 'The public VS Code API does not expose index generation or semantic exactness.',
+  );
   const status: VerifiedChildArtifact['status'] =
-    outcome === 'failed' ? 'blocked' : knownLimitations.length > 0 ? 'limited' : 'pass';
+    outcome === 'failed'
+      ? 'blocked'
+      : outcome === 'not_proven' || mandatoryEvidenceIsMissing
+        ? 'not_proven'
+        : knownLimitations.length > 0
+          ? 'limited'
+          : 'pass';
   const artifact: VerifiedChildArtifact = {
     owner_issue: '#4346',
     schema_version: 'verified_child_receipt.v1',
@@ -438,7 +449,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
       ];
-      receipt.outcome = productBlockers.length === 0 ? 'completed' : 'failed';
+      receipt.outcome = productBlockers.length > 0 ? 'failed' : 'not_proven';
       receipt.product_blockers = productBlockers;
 
       fs.writeFileSync(
