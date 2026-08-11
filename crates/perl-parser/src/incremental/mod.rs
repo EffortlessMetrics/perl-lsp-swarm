@@ -94,19 +94,19 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
 fn unchanged_result(state: &IncrementalState) -> ReparseResult {
     let lex_restart = LexRestartReport {
         strategy: LexRestartStrategy::Unchanged,
-        restart_byte: state.source.len(),
+        restart_byte: state.source().len(),
         relexed_bytes: 0,
-        reused_prefix_tokens: state.tokens.len(),
+        reused_prefix_tokens: state.tokens().len(),
         reused_suffix_tokens: 0,
     };
     ReparseResult {
         changed_ranges: Vec::new(),
-        parse_output: state.parse_output.clone(),
+        parse_output: state.parse_output().clone(),
         diagnostics: Vec::new(),
         lex_restart,
         reparsed_bytes: 0,
         reused_tokens: lex_restart.reused_tokens(),
-        token_count: state.tokens.len(),
+        token_count: state.tokens().len(),
     }
 }
 
@@ -130,7 +130,7 @@ fn full_reparse_after_edits(
 
 /// Apply edits incrementally.
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
-    let total_changed = validate_edits(&state.source, edits)?;
+    let total_changed = validate_edits(state.source(), edits)?;
     if edits.is_empty() {
         return Ok(unchanged_result(state));
     }
@@ -160,10 +160,10 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         let reused_tokens = reparse.lex_restart.reused_tokens();
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
-            parse_output: candidate.parse_output.clone(),
+            parse_output: candidate.parse_output().clone(),
             diagnostics: vec![],
             lex_restart: reparse.lex_restart,
-            reparsed_bytes: candidate.source.len(),
+            reparsed_bytes: candidate.source().len(),
             reused_tokens,
             token_count: reparse.token_count,
         };
