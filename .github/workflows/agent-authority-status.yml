@@ -1,0 +1,39 @@
+name: Agent Authority Status
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/agents/AUTHORITY_STATUS.md'
+      - 'docs/agents/authority_status.toml'
+      - 'docs/agents/README.md'
+      - 'tests/test_agent_authority_status.py'
+      - '.github/workflows/agent-authority-status.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/agents/AUTHORITY_STATUS.md'
+      - 'docs/agents/authority_status.toml'
+      - 'docs/agents/README.md'
+      - 'tests/test_agent_authority_status.py'
+      - '.github/workflows/agent-authority-status.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-authority-status-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check agent authority status
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Validate authority registry and mutation controls
+        run: python3 -m unittest tests/test_agent_authority_status.py
