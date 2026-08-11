@@ -66,7 +66,15 @@ function bundledServerVersion(binaryPath: string): BundledServerVersion {
         message: 'bundled server --version did not contain a semantic version',
       };
     }
-    return { status: 'ok', version: match[1], output };
+    const version = match[1];
+    if (!version) {
+      return {
+        status: 'error',
+        output,
+        message: 'bundled server --version contained an empty semantic version capture',
+      };
+    }
+    return { status: 'ok', version, output };
   } catch (error: unknown) {
     return {
       status: 'error',
@@ -495,30 +503,29 @@ suite('Packaged VSIX bundled-server journey', function () {
             metrics,
           },
         }));
-      const productBlockers = [
-        ...(bundledVersion.status === 'ok' && expectedVersion !== null
-          ? bundledVersion.version === expectedVersion
-            ? []
-            : [
-                {
-                  label: 'bundled_server_version',
-                  result: {
-                    expected: expectedVersion,
-                    actual: bundledVersion.version,
-                    output: bundledVersion.output,
-                  },
-                },
-              ]
-          : [
-              {
+      const bundledVersionBlocker =
+        bundledVersion.status === 'error'
+          ? {
+              label: 'bundled_server_version',
+              result: {
+                expected: expectedVersion,
+                actual: null,
+                message: bundledVersion.message,
+                output: bundledVersion.output ?? null,
+              },
+            }
+          : expectedVersion === null || bundledVersion.version !== expectedVersion
+            ? {
                 label: 'bundled_server_version',
                 result: {
                   expected: expectedVersion,
-                  actual: bundledVersion.version ?? null,
-                  message: bundledVersion.message ?? 'bundled server version unavailable',
+                  actual: bundledVersion.version,
+                  output: bundledVersion.output,
                 },
-              },
-            ]),
+              }
+            : null;
+      const productBlockers = [
+        ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
       ];
