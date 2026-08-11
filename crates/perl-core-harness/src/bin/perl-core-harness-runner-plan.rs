@@ -28,7 +28,6 @@ use runner_model::{
     RunnerParityReport, RunnerPlan, RunnerScheduling,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -102,8 +101,9 @@ fn check_command(args: Vec<OsString>) -> Result<()> {
     let schema = value
         .get("schema_version")
         .and_then(serde_json::Value::as_str)
-        .context("receipt has no string schema_version")?;
-    match schema {
+        .context("receipt has no string schema_version")?
+        .to_string();
+    match schema.as_str() {
         RUNNER_PLAN_SCHEMA_VERSION => {
             let plan: RunnerPlan = serde_json::from_value(value)
                 .with_context(|| format!("decoding runner plan {}", path.display()))?;
@@ -175,7 +175,7 @@ fn read_plan(path: &Path) -> Result<RunnerPlan> {
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
