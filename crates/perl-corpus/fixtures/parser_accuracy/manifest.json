@@ -4596,12 +4596,12 @@
       "recovery_expectations": [
         {
           "id": "bad_heredoc_terminator_reports_recovery",
-          "first_error_line": 3,
+          "first_error_line": 5,
           "error_region": {
-            "start": 3,
-            "end": 3
+            "start": 5,
+            "end": 5
           },
-          "recovery_line": 3
+          "recovery_line": 5
         }
       ]
     },
