@@ -199,7 +199,9 @@ fn v1_missing_accepted_file_is_not_proven() -> TestResult {
     if classification.transition != CompatibilityTransition::NotProven
         || classification.requires_candidate
     {
-        bail!("a V1 observation missing an accepted file must classify as NotProven, not Err or NoChange");
+        bail!(
+            "a V1 observation missing an accepted file must classify as NotProven, not Err or NoChange"
+        );
     }
     Ok(())
 }
