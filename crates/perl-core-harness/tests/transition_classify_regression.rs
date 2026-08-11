@@ -153,6 +153,26 @@ fn typed_failure_inventory_change_is_not_no_change() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn unexpected_current_file_is_not_no_change() -> TestResult {
+    let accepted = sample_v2_baseline(1, 1);
+    let mut current = sample_report(1, 1);
+    current.file_results.push(RunFileResult {
+        path: "unexpected/extra.t".into(),
+        status: RunnerStatus::Pass,
+        assertions_passed: 1,
+        assertions_total: 1,
+    });
+    let classification =
+        classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::ContractCorrectionCandidate
+        || !classification.requires_candidate
+    {
+        bail!("an unexpected file result was silently treated as no-change");
+    }
+    Ok(())
+}
+
 fn sample_report(total: usize, passed: usize) -> RunReport {
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
