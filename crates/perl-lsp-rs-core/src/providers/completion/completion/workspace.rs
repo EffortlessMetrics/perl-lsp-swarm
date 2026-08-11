@@ -1249,7 +1249,7 @@ pub(super) fn receiver_package_from_context_or_source(
         })
 }
 
-fn classify_text_pattern_receiver(
+pub(super) fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
 ) -> ReceiverEvidence {
