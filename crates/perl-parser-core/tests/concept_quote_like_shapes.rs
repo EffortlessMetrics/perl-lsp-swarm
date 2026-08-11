@@ -33,7 +33,7 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
         "return qq{$message};\n",
     );
     let ast = parse_clean(source)?;
-    let mut substitution_seen = false;
+    let mut substitution_count = 0usize;
     let mut transliterations = Vec::new();
     let mut quote_spans = Vec::new();
 
@@ -66,7 +66,7 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
                 {
                     return Err("substitution source span was not preserved".into());
                 }
-                substitution_seen = true;
+                substitution_count += 1;
             }
             NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
                 if !matches!(
@@ -99,8 +99,10 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
 
     transliterations.sort();
     quote_spans.sort();
-    if !substitution_seen {
-        return Err("substitution node was not preserved".into());
+    if substitution_count != 1 {
+        return Err(format!(
+            "expected exactly one substitution node, got {substitution_count}"
+        ));
     }
     let expected_transliterations = vec![
         (
