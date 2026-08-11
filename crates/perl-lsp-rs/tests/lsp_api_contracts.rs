@@ -89,6 +89,39 @@ fn test_initialization_contract() -> TestResult {
 }
 
 #[test]
+fn test_text_document_sync_option_keys_use_lsp_camel_case() -> TestResult {
+    let mut harness = LspHarness::new();
+    let response = harness.initialize(Some(json!({
+        "textDocument": {},
+        "workspace": {}
+    })))?;
+
+    let caps = response.get("capabilities").ok_or("capabilities")?;
+    let sync = caps
+        .get("textDocumentSync")
+        .and_then(Value::as_object)
+        .ok_or("textDocumentSync must be an object")?;
+
+    assert_eq!(sync.get("openClose"), Some(&Value::Bool(true)));
+    assert_eq!(sync.get("change").and_then(Value::as_u64), Some(1));
+    assert_eq!(sync.get("willSave"), Some(&Value::Bool(true)));
+    assert_eq!(sync.get("willSaveWaitUntil"), Some(&Value::Bool(true)));
+
+    let save = sync
+        .get("save")
+        .and_then(Value::as_object)
+        .ok_or("textDocumentSync.save must be an object")?;
+    assert_eq!(save.get("includeText"), Some(&Value::Bool(true)));
+
+    for snake_case_key in ["open_close", "will_save", "will_save_wait_until"] {
+        assert!(!sync.contains_key(snake_case_key));
+    }
+    assert!(!save.contains_key("include_text"));
+
+    Ok(())
+}
+
+#[test]
 fn test_minimal_client_initialization() -> TestResult {
     let mut harness = LspHarness::new();
 
