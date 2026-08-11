@@ -70,7 +70,9 @@ const TSCONFIG_FILES = [
  * @property {string | undefined} installedVersion node_modules/typescript's own version.
  * @property {string | undefined} binaryVersionOutput Raw `tsc --version` stdout.
  * @property {boolean} binShimPresent Whether node_modules/.bin/tsc exists.
- * @property {Array<{file: string, ignoreDeprecations: unknown}>} tsconfigs
+ * @property {Array<{file: string, ignoreDeprecations: unknown, error?: string}>} tsconfigs
+ *   One entry per authority tsconfig. `error` is set when the file could not be
+ *   read or parsed, in which case its `ignoreDeprecations` state is unknown.
  */
 
 /**
@@ -95,10 +97,20 @@ function leadingMajor(value) {
  * Decides whether a declared dependency range is a plain registry semver
  * range, and what major it floors at.
  *
- * Only `^`, `~`, `>=`, and exact ranges are accepted. Anything carrying a
- * protocol (`npm:`, `file:`, `git+…`, `http…`) is rejected outright rather
- * than parsed: an alias is precisely the shim shape the migration ruled out,
- * and a range whose floor cannot be read cannot be gated.
+ * Anything carrying a protocol (`npm:`, `file:`, `git+…`, `http…`) is rejected
+ * outright rather than parsed: an alias is precisely the shim shape the
+ * migration ruled out, and a range whose floor cannot be read cannot be gated.
+ *
+ * A union (`||`) is rejected even when its first term floors correctly, because
+ * the later terms can admit a different major — `^6.0.3 || ^7.0.2` would
+ * install either compiler depending on what else is in the tree, which is
+ * exactly the ambiguity this gate exists to remove.
+ *
+ * Otherwise the leading comparator and version are read and trailing range
+ * terms are allowed, so a legitimate bounded range like `>=7.0.2 <8.0.0` is
+ * gated on its floor rather than rejected for its shape. Being stricter than
+ * npm here would produce a confusing red on a valid config, which costs the
+ * gate the credibility its real failures depend on.
  *
  * @param {string} range
  * @returns {{major: number} | {reason: string}}
@@ -110,13 +122,18 @@ function readRangeFloor(range) {
       reason: `must be a plain registry semver range, received the non-registry specifier "${trimmed}"`,
     };
   }
-  const match = /^(\^|~|>=)?(\d+)\.\d+\.\d+$/.exec(trimmed);
-  if (!match) {
+  if (trimmed.includes('||')) {
     return {
-      reason: `must be an exact or ^/~/>= pinned semver range (e.g. "^${TYPESCRIPT_AUTHORITY_MAJOR}.0.0"), received "${trimmed}"`,
+      reason: `must resolve to a single compiler major, received the union range "${trimmed}"`,
     };
   }
-  return { major: Number(match[2]) };
+  const match = /^(?:\^|~|>=|=|v)?\s*(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?(?=$|\s)/.exec(trimmed);
+  if (!match) {
+    return {
+      reason: `must begin with an exact or ^/~/>= pinned semver version (e.g. "^${TYPESCRIPT_AUTHORITY_MAJOR}.0.0"), received "${trimmed}"`,
+    };
+  }
+  return { major: Number(match[1]) };
 }
 
 /**
@@ -218,26 +235,42 @@ function evaluateTypeScriptAuthority(input) {
   }
 
   // 5. No TS6-era deprecation escape hatch.
+  //
+  // A tsconfig that cannot be read or parsed is a failure in its own right, not
+  // a reason to crash: an unreadable authority file means this check did not
+  // run against it, and "did not run" must never look like "passed".
+  let readableTsconfigs = 0;
   for (const tsconfig of input.tsconfigs) {
+    if (tsconfig.error) {
+      failures.push(
+        `${tsconfig.file} could not be read as a TypeScript configuration (${tsconfig.error}) — its \`ignoreDeprecations\` state is therefore unknown, not clean`,
+      );
+      continue;
+    }
+    readableTsconfigs += 1;
     if (tsconfig.ignoreDeprecations !== undefined) {
       failures.push(
         `${tsconfig.file} sets "ignoreDeprecations": ${JSON.stringify(tsconfig.ignoreDeprecations)} — a TS6-era escape hatch removed by the TS7 swap. TypeScript ${expected} tolerates it rather than rejecting it, so its return is otherwise silent.`,
       );
     }
   }
-  if (input.tsconfigs.length > 0) {
-    facts.push(
-      `${input.tsconfigs.length} tsconfig authority files carry no \`ignoreDeprecations\``,
-    );
+  if (readableTsconfigs > 0) {
+    facts.push(`${readableTsconfigs} tsconfig authority files carry no \`ignoreDeprecations\``);
   }
 
   return { ok: failures.length === 0, facts, failures };
 }
 
 /**
- * Strips `//` and block comments from JSONC so the commented tsconfigs in
- * this directory can be read without adding a parser dependency. String
- * literals are preserved, so a `//` inside a path value is not eaten.
+ * Strips `//` and block comments from JSONC, and the trailing commas TypeScript
+ * also accepts, so the commented tsconfigs in this directory can be read
+ * without adding a parser dependency. String literals are preserved, so a `//`
+ * inside a path value is not eaten.
+ *
+ * Trailing commas matter: `tsc` accepts them, so a tsconfig carrying one is
+ * valid to the compiler. Without this, such a file would fail `JSON.parse` and
+ * this gate would report an unreadable authority file for a configuration that
+ * is perfectly legal — a false red on someone else's valid edit.
  *
  * @param {string} source
  * @returns {string}
@@ -280,6 +313,60 @@ function stripJsonComments(source) {
       }
       index += 2;
       continue;
+    }
+    out += char;
+    index += 1;
+  }
+  // Trailing commas, once comments are gone. Run over the comment-free text so
+  // that a comma followed only by a comment before the closing brace is also
+  // caught, but string-aware: a plain regex here would eat the comma inside a
+  // value like "a,]".
+  return stripTrailingCommas(out);
+}
+
+/**
+ * Removes commas that immediately precede a `}` or `]`, ignoring any that occur
+ * inside string literals.
+ *
+ * @param {string} source JSON text with comments already removed.
+ * @returns {string}
+ */
+function stripTrailingCommas(source) {
+  let out = '';
+  let index = 0;
+  let inString = false;
+  while (index < source.length) {
+    const char = source[index];
+    if (inString) {
+      out += char;
+      if (char === '\\') {
+        out += source[index + 1] ?? '';
+        index += 2;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      out += char;
+      index += 1;
+      continue;
+    }
+    if (char === ',') {
+      let lookahead = index + 1;
+      while (lookahead < source.length && /\s/.test(source[lookahead] ?? '')) {
+        lookahead += 1;
+      }
+      const next = source[lookahead];
+      if (next === '}' || next === ']') {
+        // Drop the comma, keep the whitespace so line numbers survive.
+        index += 1;
+        continue;
+      }
     }
     out += char;
     index += 1;
@@ -327,10 +414,23 @@ function checkTypeScriptAuthority(extensionRoot) {
     binaryVersionOutput = undefined;
   }
 
+  // A tsconfig that is missing, unreadable, or unparseable is reported as its
+  // own named failure rather than thrown: an uncaught stack trace here would
+  // still exit nonzero, but it would bury the actionable fact under a crash and
+  // make a routine editing mistake look like a broken gate.
   const tsconfigs = TSCONFIG_FILES.map((file) => {
-    const source = fs.readFileSync(path.join(extensionRoot, file), 'utf8');
-    const parsed = JSON.parse(stripJsonComments(source));
-    return { file, ignoreDeprecations: parsed?.compilerOptions?.ignoreDeprecations };
+    try {
+      const source = fs.readFileSync(path.join(extensionRoot, file), 'utf8');
+      const parsed = JSON.parse(stripJsonComments(source));
+      return { file, ignoreDeprecations: parsed?.compilerOptions?.ignoreDeprecations };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        file,
+        ignoreDeprecations: undefined,
+        error: message.split(/\r?\n/, 1)[0] ?? message,
+      };
+    }
   });
 
   return evaluateTypeScriptAuthority({

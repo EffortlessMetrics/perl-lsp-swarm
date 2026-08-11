@@ -81,6 +81,32 @@ void test('a file: or git specifier is rejected', () => {
   );
 });
 
+void test('a legitimate bounded range is gated on its floor, not rejected for its shape', () => {
+  // `>=7.0.2 <8.0.0` is a valid npm range whose floor is readable. Rejecting it
+  // would be a false red on a valid config, which costs the gate the
+  // credibility its real failures depend on.
+  for (const range of ['>=7.0.2 <8.0.0', '>= 7.0.2', '=7.0.2', 'v7.0.2', '7.0.2-rc.1']) {
+    const result = evaluateTypeScriptAuthority(healthyInput({ declaredRange: range }));
+    assert.equal(result.ok, true, `${range} should pass: ${JSON.stringify(result.failures)}`);
+  }
+});
+
+void test('a bounded range whose floor is a pre-authority major is still red', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: '>=6.0.3 <8.0.0' })),
+    /floors at major 6/,
+  );
+});
+
+void test('a union range is rejected even when its first term floors correctly', () => {
+  // `^7.0.2 || ^6.0.3` floors at 7 but can still install TS6 depending on what
+  // else is in the tree — exactly the ambiguity this gate exists to remove.
+  assertFailedWith(
+    evaluateTypeScriptAuthority(healthyInput({ declaredRange: '^7.0.2 || ^6.0.3' })),
+    /union range/,
+  );
+});
+
 void test('an unpinned range such as * or latest is rejected', () => {
   assertFailedWith(evaluateTypeScriptAuthority(healthyInput({ declaredRange: '*' })), /semver/);
   assertFailedWith(
@@ -198,6 +224,25 @@ void test('a reintroduced ignoreDeprecations escape hatch is red and names the f
   );
 });
 
+void test('an unreadable tsconfig is red, and is not counted as clean', () => {
+  // "did not run" must never look like "passed".
+  const result = evaluateTypeScriptAuthority(
+    healthyInput({
+      tsconfigs: [
+        { file: 'tsconfig.json', ignoreDeprecations: undefined },
+        { file: 'tsconfig.test.json', ignoreDeprecations: undefined, error: 'ENOENT' },
+      ],
+    }),
+  );
+  assertFailedWith(result, /tsconfig\.test\.json could not be read/);
+  assertFailedWith(result, /state is therefore unknown, not clean/);
+  // Only the readable one may be counted in the green-run evidence.
+  assert.ok(
+    result.facts.some((fact) => /^1 tsconfig authority files/.test(fact)),
+    `expected the fact line to count only readable files, got ${JSON.stringify(result.facts)}`,
+  );
+});
+
 void test('every drifted fact is reported, not just the first', () => {
   const result = evaluateTypeScriptAuthority(
     healthyInput({
@@ -221,6 +266,37 @@ void test('every drifted fact is reported, not just the first', () => {
   ]) {
     assertFailedWith(result, pattern);
   }
+});
+
+void test('stripJsonComments tolerates the trailing commas tsc itself accepts', () => {
+  // `tsc` accepts trailing commas, so a tsconfig carrying one is valid to the
+  // compiler. Failing to parse it would be a false red on a legal config.
+  const source = `{
+    "compilerOptions": {
+      "strict": true,
+      "target": "ES2022",
+    },
+    "include": [
+      "src/**/*",
+    ],
+  }`;
+  assert.deepEqual(JSON.parse(stripJsonComments(source)), {
+    compilerOptions: { strict: true, target: 'ES2022' },
+    include: ['src/**/*'],
+  });
+});
+
+void test('stripJsonComments handles a trailing comma followed only by a comment', () => {
+  const source = `{
+    "a": 1,
+    // dangling explanation
+  }`;
+  assert.deepEqual(JSON.parse(stripJsonComments(source)), { a: 1 });
+});
+
+void test('stripJsonComments does not eat a comma inside a string value', () => {
+  const source = '{ "list": "a,]", "b": 2 }';
+  assert.deepEqual(JSON.parse(stripJsonComments(source)), { list: 'a,]', b: 2 });
 });
 
 void test('stripJsonComments keeps string contents while removing real comments', () => {
