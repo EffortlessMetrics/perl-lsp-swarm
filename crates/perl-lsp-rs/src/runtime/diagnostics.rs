@@ -4057,6 +4057,9 @@ print \"unreachable\\n\";\n";
         updated_text: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         server.test_apply_did_open(uri, indexed_text, 1)?;
+        // Drain didOpen's asynchronous push before the fixture clears the
+        // capture after making the workspace index stale.
+        std::thread::sleep(Duration::from_millis(50));
         server
             .test_index_file_in_building_state(uri, indexed_text)
             .map_err(std::io::Error::other)?;
@@ -4195,6 +4198,9 @@ print \"unreachable\\n\";\n";
         let target_source = stale_dead_code_indexed_source();
 
         server.test_apply_did_open(target_uri, target_source, 1)?;
+        // Drain the fresh target's initial push before the stale-contributor
+        // setup clears the capture for the assertion.
+        std::thread::sleep(Duration::from_millis(50));
         server
             .test_index_file_in_building_state(target_uri, target_source)
             .map_err(std::io::Error::other)?;
