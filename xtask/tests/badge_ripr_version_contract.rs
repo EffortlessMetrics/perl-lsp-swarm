@@ -6,8 +6,7 @@ use serde_yaml_ng::Value;
 
 const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] =
     &["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback"];
-const VARIABLE_INSTALL_COMMAND: &str =
-    "cargo install ripr --version \"$RIPR_VERSION\" --locked";
+const VARIABLE_INSTALL_COMMAND: &str = "cargo install ripr --version \"$RIPR_VERSION\" --locked";
 
 fn project_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -15,18 +14,13 @@ fn project_root() -> PathBuf {
     root
 }
 
-fn collect_named_strings(
-    value: &Value,
-    key: &str,
-    output: &mut Vec<String>,
-) -> Result<(), String> {
+fn collect_named_strings(value: &Value, key: &str, output: &mut Vec<String>) -> Result<(), String> {
     match value {
         Value::Mapping(mapping) => {
             for (mapping_key, child) in mapping {
                 if mapping_key.as_str() == Some(key) {
-                    let text = child
-                        .as_str()
-                        .ok_or_else(|| format!("`{key}` must be a YAML string"))?;
+                    let text =
+                        child.as_str().ok_or_else(|| format!("`{key}` must be a YAML string"))?;
                     output.push(text.to_string());
                 }
                 collect_named_strings(child, key, output)?;
@@ -53,12 +47,10 @@ fn job_run_steps(job: &Value) -> Vec<&str> {
 
 #[test]
 fn badge_installer_matches_the_reviewed_ripr_workflow_release()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
-    let ripr_workflow: Value = serde_yaml_ng::from_str(&fs::read_to_string(
-        root.join(".github/workflows/ripr.yml"),
-    )?)?;
+    let ripr_workflow: Value =
+        serde_yaml_ng::from_str(&fs::read_to_string(root.join(".github/workflows/ripr.yml"))?)?;
     let badge_workflow: Value = serde_yaml_ng::from_str(&fs::read_to_string(
         root.join(".github/workflows/badge-endpoints.yml"),
     )?)?;
