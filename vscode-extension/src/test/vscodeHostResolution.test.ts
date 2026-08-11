@@ -22,6 +22,19 @@ describe('VS Code host resolution receipts', () => {
     });
   });
 
+  test('classifies DNS, timeout, and download failures as network blocks', () => {
+    const dnsError = Object.assign(new Error('getaddrinfo ENOTFOUND update.code.visualstudio.com'), {
+      code: 'ENOTFOUND',
+    });
+    expect(classifyHostResolutionError(dnsError)).toBe('network');
+    expect(classifyHostResolutionError(new Error('request timeout while resolving host'))).toBe(
+      'network',
+    );
+    expect(classifyHostResolutionError(new Error('Failed to download and unzip VS Code'))).toBe(
+      'network',
+    );
+  });
+
   test('writes the resolver error and environment identity to a receipt', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-host-resolution-test-'));
     const receiptPath = writeHostResolutionFailureReceipt(
