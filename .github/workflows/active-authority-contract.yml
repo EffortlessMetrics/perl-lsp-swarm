@@ -1,0 +1,55 @@
+name: Active Authority Contract
+
+# Compile the short, high-retrieval maintainer and contributor entrypoints that
+# steer humans and coding agents. Historical documents are outside this workflow.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'CONTRIBUTING.md'
+      - '.github/copilot-instructions.md'
+      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+      - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'xtask/tests/active_authority_contract.rs'
+      - '.github/workflows/active-authority-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'CONTRIBUTING.md'
+      - '.github/copilot-instructions.md'
+      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+      - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'xtask/tests/active_authority_contract.rs'
+      - '.github/workflows/active-authority-contract.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: active-authority-contract-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check active authority contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: stable
+
+      - name: Check xtask formatting
+        run: cargo fmt -p xtask -- --check
+
+      - name: Check current maintainer entrypoints
+        run: cargo test -p xtask --test active_authority_contract --locked
+
+      - name: Check contributor command documentation
+        run: cargo xtask check-devex-docs
