@@ -41,12 +41,11 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
 
     walk(&ast, &mut |node| match &node.kind {
         NodeKind::Class { name, name_span, parents, .. } if name == "Example" => {
-            let span = name_span.ok_or_else(|| "class name span is missing".to_string());
-            let (start, end) = match span {
-                Ok(span) => (span.start, span.end),
-                Err(error) => panic!("{error}"),
-            };
-            assert_eq!(source.get(start..end), Some("Example"));
+            if let Some(name_span) = name_span {
+                assert_eq!(source.get(name_span.start..name_span.end), Some("Example"));
+            } else {
+                panic!("class name span is missing");
+            }
             assert!(parents.iter().any(|parent| parent == "Base"));
             class_seen = true;
         }
