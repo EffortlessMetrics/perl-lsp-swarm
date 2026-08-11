@@ -3566,19 +3566,1188 @@ impl<'a> PerlLexer<'a> {
         for keyword in ["my", "our", "state", "local"] {
             if let Some(after) = remaining.strip_prefix(keyword)
                 && ((after.starts_with(char::is_whitespace)
-                    && after.trim_start().starts_with(['$', '@', '%', '(']))
-                    || after.starts_with(['$', '@', '%']))
+                    && after.trim_start().starts_with(['
+    }
+
+    /// Recognize block-form and parenthesized statement starters that follow an
+    /// unclosed `qw(` (#4491): `sub NAME { … }`, `package NAME;` / `package NAME { … }`,
+    /// `class NAME { … }`, phaser blocks (`BEGIN`/`END`/`INIT`/`CHECK`/`UNITCHECK { … }`),
+    /// and parenthesized `print( … )`.
+    ///
+    /// These are only recovery boundaries in a specific syntactic shape: a block
+    /// opener (`{`), a terminating `;` for `package` only (the parser errors on the
+    /// unbraced `class Foo;` form, so it is not accepted here), and an immediate `(`
+    /// for `print`. The shape requirement is the false-positive guard —
+    /// bare `qw` words like `sub run more` (no block, no `;`) stay quote-word content.
+    /// The block shape is self-contained, so — unlike the whitespace `print` form —
+    /// a following line-start statement does not defeat the boundary.
+    fn qw_block_statement_boundary_at(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let Some(first) = lexer.next_token() else {
+            return false;
+        };
+        let keyword = first.text.as_ref();
+
+        // Parenthesized `print(...)`: the whitespace form is handled by the caller,
+        // so here the distinguishing shape is `print` immediately followed by `(`.
+        if keyword == "print" {
+            return lexer
+                .next_token()
+                .is_some_and(|token| token.token_type == TokenType::LeftParen)
+                && self.qw_statement_terminates(position);
+        }
+
+        let is_phaser = matches!(keyword, "BEGIN" | "END" | "INIT" | "CHECK" | "UNITCHECK");
+        let is_named = matches!(keyword, "sub" | "package" | "class");
+        if !is_phaser && !is_named {
+            return false;
+        }
+        // Only `package Foo;` has a semicolon form the parser recovers into a clean
+        // declaration node; `class`/`sub` require an actual block here (the parser
+        // errors on the unbraced `class Foo;` statement form), so claiming a boundary
+        // for them would only synchronize onto an Error node.
+        let allows_semicolon_form = keyword == "package";
+
+        // The token immediately after the keyword fixes the shape: a phaser opens
+        // its block directly (`BEGIN {`), while a named declaration must be followed
+        // by an identifier name — never an operator such as `->`, which would make
+        // the word a method-call invocant (`class->new(...)`), not a declaration.
+        let Some(second) = lexer.next_token() else {
+            return false;
+        };
+        match (is_phaser, &second.token_type) {
+            (true, TokenType::LeftBrace) => {
+                return Self::header_ends_at_own_terminator(source, second.start)
+                    && Self::block_statement_terminates(&mut lexer);
+            }
+            (true, TokenType::Operator(operator))
+                if operator.as_ref() == ":"
+                    && Self::phaser_attribute_block_boundary(source, &mut lexer) =>
+            {
+                return true;
+            }
+            (false, TokenType::Identifier(_)) => {}
+            (false, TokenType::Operator(operator)) if is_named && operator.as_ref() == "::" => {}
+            (false, TokenType::Keyword(_)) if keyword == "sub" => {}
+            (false, TokenType::Version(version))
+                if keyword == "sub" && !version.as_ref().contains('.') => {}
+            (false, _) => return false,
+            (true, _) => return false,
+        }
+
+        // A real `sub NAME {` / `package NAME;` header may put its terminator on the
+        // next line, but the terminator must be the first non-whitespace token there.
+        // Without that boundary, a bare quote-word keyword followed on a later line
+        // by an unrelated statement could borrow that statement's `{`/`;` and silently
+        // swallow real code as a bogus declaration (#4491 review).
+        //
+        // The block `{` (or the `package` `;` semicolon form) that closes the header on one line
+        // is itself the boundary proof — unlike the whitespace `print`/`my` forms, a
+        // strong block shape does *not* additionally require `qw_statement_terminates`
+        // over the whole tail. Requiring it swallowed the declaration whenever another
+        // line-start statement followed (`sub run { … }\nmy $x = 1;`) (#4491 review).
+        let mut expected_closers = Vec::new();
+        let mut expect_name_segment = matches!(
+            &second.token_type,
+            TokenType::Operator(operator) if operator.as_ref() == "::"
+        );
+        let mut expect_attribute_name = false;
+        let mut package_version_started = false;
+        let mut package_version_needs_component = false;
+        while let Some(token) = lexer.next_token() {
+            if is_named && expected_closers.is_empty() {
+                if expect_name_segment {
+                    if matches!(
+                        &token.token_type,
+                        TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_)
+                    ) {
+                        expect_name_segment = false;
+                        continue;
+                    }
+                    return false;
+                }
+                if expect_attribute_name {
+                    match token.token_type {
+                        TokenType::Identifier(_) | TokenType::Keyword(_) => {
+                            expect_attribute_name = false;
+                            continue;
+                        }
+                        TokenType::Operator(operator) if operator.as_ref() == "::" => continue,
+                        _ => return false,
+                    }
+                }
+                match &token.token_type {
+                    TokenType::Operator(operator) if operator.as_ref() == "::" => {
+                        expect_name_segment = true;
+                        continue;
+                    }
+                    // `after_sub` deliberately lexes `v1.2` as `Identifier("v1")`,
+                    // `.` and `Number("2")` so that the valid single-component
+                    // `sub v5 { ... }` form remains a name.  A dotted v-string is
+                    // not a valid named-sub declaration, however; reject the dot
+                    // instead of allowing a later `{` to create a false recovery
+                    // boundary for an unclosed `qw`.
+                    TokenType::Operator(operator)
+                        if keyword == "sub" && operator.as_ref() == "." =>
+                    {
+                        return false;
+                    }
+                    TokenType::Operator(operator) if operator.as_ref() == ":" => {
+                        expect_attribute_name = true;
+                        continue;
+                    }
+                    TokenType::Number(_) if keyword == "package" => {
+                        if package_version_needs_component {
+                            package_version_needs_component = false;
+                        } else if !package_version_started {
+                            package_version_started = true;
+                        } else {
+                            return false;
+                        }
+                        continue;
+                    }
+                    TokenType::Version(_) if keyword == "package" && !package_version_started => {
+                        package_version_started = true;
+                        continue;
+                    }
+                    TokenType::Operator(operator)
+                        if keyword == "package"
+                            && package_version_started
+                            && operator.as_ref() == "."
+                            && !package_version_needs_component =>
+                    {
+                        package_version_needs_component = true;
+                        continue;
+                    }
+                    TokenType::LeftParen => {}
+                    TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            match token.token_type {
+                TokenType::LeftBrace if expected_closers.is_empty() => {
+                    return !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
+                        && Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(&mut lexer);
+                }
+                TokenType::Semicolon if expected_closers.is_empty() => {
+                    return allows_semicolon_form
+                        && !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
+                        && Self::header_ends_at_own_terminator(source, token.start);
+                }
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Confirm that the already-recognized top-level block closes before the
+    /// candidate source ends. This keeps incomplete editor input inside `qw`
+    /// while allowing a later statement after a complete block to be scanned
+    /// independently (#4491).
+    fn block_statement_terminates(lexer: &mut Self) -> bool {
+        let mut expected_closers = vec![TokenType::RightBrace];
+        while let Some(token) = lexer.next_token() {
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                return false;
+            }
+            match token.token_type {
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Continue a phaser recovery boundary through its optional attribute list,
+    /// such as `BEGIN :lvalue { ... }`, while rejecting malformed headers.
+    fn phaser_attribute_block_boundary(source: &'a str, lexer: &mut Self) -> bool {
+        let mut expect_name = true;
+        while let Some(token) = lexer.next_token() {
+            if expect_name {
+                if !matches!(token.token_type, TokenType::Identifier(_) | TokenType::Keyword(_)) {
+                    return false;
+                }
+                expect_name = false;
+                continue;
+            }
+            match token.token_type {
+                TokenType::Operator(operator) if matches!(operator.as_ref(), ":" | "::") => {
+                    expect_name = true;
+                }
+                TokenType::LeftParen => {
+                    if !Self::attribute_arguments_terminate(lexer) {
+                        return false;
+                    }
+                }
+                TokenType::LeftBrace => {
+                    return Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(lexer);
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Consume a balanced attribute argument list after its opening `(`.
+    fn attribute_arguments_terminate(lexer: &mut Self) -> bool {
+        let mut expected_closers = vec![TokenType::RightParen];
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
+                        return true;
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// The candidate statement header — from the starter keyword at the front of
+    /// `source` up to (but excluding) the terminator token at `terminator_start` —
+    /// may contain a newline when the terminator is the first non-whitespace token
+    /// on that line, or when it follows a balanced prototype line. This accepts
+    /// valid multiline headers while preventing a starter-shaped quote-word from
+    /// borrowing a later statement's `{`/`;`.
+    fn header_ends_at_own_terminator(source: &'a str, terminator_start: usize) -> bool {
+        let header = &source[..terminator_start];
+        let first_line = header.lines().next().unwrap_or_default();
+        let first_line_before_comment =
+            first_line.split_once('#').map_or(first_line, |(code, _)| code);
+        let first_word = first_line_before_comment.split_whitespace().next();
+        if matches!(first_word, Some("sub" | "package" | "class"))
+            && first_line_before_comment.split_whitespace().nth(1).is_none()
+        {
+            return false;
+        }
+        let Some((_, line_prefix)) = header.rsplit_once('\n') else {
+            return true;
+        };
+        if line_prefix.chars().all(char::is_whitespace) {
+            return true;
+        }
+
+        // A prototype may be placed on its own line immediately before the block:
+        // `sub run\n($) { ... }`. That line is part of the declaration header, not
+        // an unrelated statement borrowing the block opener.
+        let trimmed = line_prefix.trim();
+        if !trimmed.starts_with('(') {
+            return false;
+        }
+        let mut lexer = Self::without_qw_recovery(trimmed, LexerConfig::default());
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => depth = depth.saturating_add(1),
+                TokenType::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
+                    }
+                }
+                TokenType::Identifier(text) if depth > 0 && text.ends_with(')') => {
+                    // Compact prototypes may be tokenized as `(` followed by an
+                    // identifier ending in `)`, for example `($)`.
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// A candidate line-start statement inside an unclosed `qw(` is a real recovery
+    /// boundary only when it forms a complete statement: either a top-level semicolon
+    /// terminates it, or it runs cleanly to end-of-file with balanced delimiters. The
+    /// EOF case recovers a semicolonless trailing declaration/print statement (#4494)
+    /// without splitting on keyword-like words that continue into further source.
+    fn qw_statement_terminates(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let mut first = true;
+        let mut delimiter_depth = 0usize;
+        let mut saw_incomplete = false;
+        let mut last_end = 0usize;
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
+                return true;
+            }
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                // A trailing statement carrying its own unclosed quote-like operator or a
+                // degraded construct reaches EOF at balanced delimiter depth but is not a
+                // clean statement; do not let it masquerade as one (this preserves the
+                // nested-qw suffix behavior, where the inner qw emits an Error token).
+                saw_incomplete = true;
+            }
+            if !first && delimiter_depth == 0 {
+                let prefix = &source[..token.start];
+                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                if prefix[line_start..].chars().all(char::is_whitespace)
+                    && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
+                {
+                    return false;
+                }
+            }
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
+                    delimiter_depth = delimiter_depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBrace | TokenType::RightBracket => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            last_end = token.end;
+            first = false;
+        }
+        // No terminating semicolon before EOF: recover only when the candidate ran to
+        // end-of-file cleanly — balanced delimiters, no degraded/unclosed token, and every
+        // trailing byte turned into a real token. The final check rejects constructs that
+        // silently consume to EOF without emitting a token (an unterminated bare `/regex/`
+        // or heredoc body leaves its text after the last token), which would otherwise be
+        // misclassified as a complete statement and split the qw list incorrectly (#4494).
+        delimiter_depth == 0
+            && !saw_incomplete
+            && source[last_end..].chars().all(char::is_whitespace)
+    }
+
+    /// Parse a quote operator after we've seen the delimiter
+    fn parse_quote_operator(&mut self, delimiter: char) -> Option<Token> {
+        let info = self.current_quote_op.as_ref()?;
+        let start = info.start_pos;
+        let operator = info.operator.clone();
+
+        // Clear the quote-op context eagerly so any early-return path (s/tr/y delegations
+        // below) does not leave a stale reference behind. The post-match cleanup at the
+        // bottom of this function would otherwise be skipped for those operators.
+        self.current_quote_op = None;
+
+        // Parse based on operator type; track whether all delimiters were closed.
+        let closed = match operator.as_str() {
+            "s" => {
+                return self.parse_substitution_with_delimiter(start, delimiter);
+            }
+            "tr" | "y" => {
+                return self.parse_transliteration_with_delimiter(start, delimiter);
+            }
+            "qr" => {
+                let (_pattern, body_closed) = self.read_delimited_body(delimiter);
+                self.parse_regex_modifiers(&quote_handler::QR_SPEC);
+                body_closed
+            }
+            "m" => {
+                let (_pattern, body_closed) = self.read_delimited_body(delimiter);
+                self.parse_regex_modifiers(&quote_handler::M_SPEC);
+                body_closed
+            }
+            "qw" if self.qw_recovery_enabled => {
+                let (_body, body_closed) = self.read_qw_body(delimiter);
+                body_closed
+            }
+            _ => {
+                // q, qq, qx - no modifiers
+                let (_body, body_closed) = self.read_delimited_body(delimiter);
+                body_closed
+            }
+        };
+
+        let text = &self.input[start..self.position];
+
+        self.mode = LexerMode::ExpectOperator;
+
+        if !closed {
+            // EOF reached before finding the closing delimiter — emit an error
+            // token so the parser's recovery mechanism records a diagnostic.
+            return Some(Token {
+                token_type: TokenType::Error(Arc::from(format!(
+                    "unclosed {} delimiter '{}'",
+                    operator, delimiter
+                ))),
+                text: Arc::from(text),
+                start,
+                end: self.position,
+            });
+        }
+
+        let token_type = quote_handler::get_quote_token_type(&operator);
+        Some(Token { token_type, text: Arc::from(text), start, end: self.position })
+    }
+
+    /// Parse regex modifiers according to the given spec
+    ///
+    /// This function includes ALL characters that could be intended as modifiers,
+    /// including invalid ones. This allows the parser to properly reject invalid
+    /// modifiers with a clear error message, rather than leaving them as separate
+    /// tokens that could be confusingly parsed.
+    fn parse_regex_modifiers(&mut self, _spec: &quote_handler::ModSpec) {
+        // Consume all alphanumeric characters that could be intended as modifiers
+        // The parser will validate and reject invalid ones
+        while let Some(ch) = self.current_char() {
+            if ch.is_ascii_alphanumeric() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        // Note: We no longer validate here - the parser will validate and provide
+        // clear error messages for invalid modifiers (MUT_005 fix)
+    }
+
+    /// Parse a regex literal starting with `/`
+    ///
+    /// **Budget Protection (Issue #422)**:
+    /// - Budget guards prevent runaway scanning on pathological input
+    /// - `MAX_REGEX_PARSE_STEPS` bounds literal scanning before the byte budget
+    /// - `MAX_REGEX_BYTES` bounds total bytes consumed in a single regex literal
+    /// - Graceful degradation: emit UnknownRest token if budget exceeded
+    ///
+    /// **Performance**:
+    /// - Single-pass scanning with escape handling
+    /// - Budget check per iteration (amortized O(1) via inline fast path)
+    /// - Typical regex: <10μs, Large regex (64KB): ~1ms
+    fn parse_regex(&mut self, start: usize) -> Option<Token> {
+        self.advance(); // Skip opening /
+
+        let mut regex_parse_steps: usize = 0;
+        let mut in_character_class = false;
+
+        while let Some(ch) = self.current_char() {
+            regex_parse_steps += 1;
+            if regex_parse_steps > MAX_REGEX_PARSE_STEPS {
+                #[cfg(debug_assertions)]
+                {
+                    let text = &self.input[start..self.position];
+                    let preview = truncate_preview(text, 50);
+                    tracing::debug!(
+                        limit = MAX_REGEX_PARSE_STEPS,
+                        pattern_preview = %preview,
+                        "Regex parse step budget exceeded"
+                    );
+                }
+                self.position = self.input.len();
+                return Some(Token {
+                    token_type: TokenType::UnknownRest,
+                    text: empty_arc(),
+                    start,
+                    end: self.position,
+                });
+            }
+
+            // Budget guard: prevent timeout on pathological input (Issue #422)
+            // If exceeded, returns UnknownRest token for graceful degradation
+            if let Some(token) = self.budget_guard(start, 0) {
+                return Some(token);
+            }
+
+            match ch {
+                '/' if !in_character_class => {
+                    self.advance();
+                    // Parse flags - include all alphanumeric for proper validation in parser (MUT_005 fix)
+                    while let Some(ch) = self.current_char() {
+                        if ch.is_ascii_alphanumeric() {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+
+                    return Some(Token {
+                        token_type: TokenType::RegexMatch,
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                '\\' => {
+                    // Handle escape sequences: consume backslash + next char
+                    self.advance();
+                    if self.current_char().is_some() {
+                        self.advance();
+                    }
+                }
+                '[' => {
+                    in_character_class = true;
+                    self.advance();
+                }
+                ']' if in_character_class => {
+                    in_character_class = false;
+                    self.advance();
+                }
+                _ => self.advance(),
+            }
+        }
+
+        // Unterminated regex - EOF reached before closing /
+        // Parser will emit diagnostic for unterminated literal
+        None
+    }
+}
+
+// Checkpoint support for incremental parsing
+
+mod checkpoint_impl;
+
+#[cfg(test)]
+mod test_format_debug;
+#[cfg(test)]
+mod tests;
+, '@', '%', '(']))
+                    || after.starts_with(['
+    }
+
+    /// Recognize block-form and parenthesized statement starters that follow an
+    /// unclosed `qw(` (#4491): `sub NAME { … }`, `package NAME;` / `package NAME { … }`,
+    /// `class NAME { … }`, phaser blocks (`BEGIN`/`END`/`INIT`/`CHECK`/`UNITCHECK { … }`),
+    /// and parenthesized `print( … )`.
+    ///
+    /// These are only recovery boundaries in a specific syntactic shape: a block
+    /// opener (`{`), a terminating `;` for `package` only (the parser errors on the
+    /// unbraced `class Foo;` form, so it is not accepted here), and an immediate `(`
+    /// for `print`. The shape requirement is the false-positive guard —
+    /// bare `qw` words like `sub run more` (no block, no `;`) stay quote-word content.
+    /// The block shape is self-contained, so — unlike the whitespace `print` form —
+    /// a following line-start statement does not defeat the boundary.
+    fn qw_block_statement_boundary_at(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let Some(first) = lexer.next_token() else {
+            return false;
+        };
+        let keyword = first.text.as_ref();
+
+        // Parenthesized `print(...)`: the whitespace form is handled by the caller,
+        // so here the distinguishing shape is `print` immediately followed by `(`.
+        if keyword == "print" {
+            return lexer
+                .next_token()
+                .is_some_and(|token| token.token_type == TokenType::LeftParen)
+                && self.qw_statement_terminates(position);
+        }
+
+        let is_phaser = matches!(keyword, "BEGIN" | "END" | "INIT" | "CHECK" | "UNITCHECK");
+        let is_named = matches!(keyword, "sub" | "package" | "class");
+        if !is_phaser && !is_named {
+            return false;
+        }
+        // Only `package Foo;` has a semicolon form the parser recovers into a clean
+        // declaration node; `class`/`sub` require an actual block here (the parser
+        // errors on the unbraced `class Foo;` statement form), so claiming a boundary
+        // for them would only synchronize onto an Error node.
+        let allows_semicolon_form = keyword == "package";
+
+        // The token immediately after the keyword fixes the shape: a phaser opens
+        // its block directly (`BEGIN {`), while a named declaration must be followed
+        // by an identifier name — never an operator such as `->`, which would make
+        // the word a method-call invocant (`class->new(...)`), not a declaration.
+        let Some(second) = lexer.next_token() else {
+            return false;
+        };
+        match (is_phaser, &second.token_type) {
+            (true, TokenType::LeftBrace) => {
+                return Self::header_ends_at_own_terminator(source, second.start)
+                    && Self::block_statement_terminates(&mut lexer);
+            }
+            (true, TokenType::Operator(operator))
+                if operator.as_ref() == ":"
+                    && Self::phaser_attribute_block_boundary(source, &mut lexer) =>
+            {
+                return true;
+            }
+            (false, TokenType::Identifier(_)) => {}
+            (false, TokenType::Operator(operator)) if is_named && operator.as_ref() == "::" => {}
+            (false, TokenType::Keyword(_)) if keyword == "sub" => {}
+            (false, TokenType::Version(version))
+                if keyword == "sub" && !version.as_ref().contains('.') => {}
+            (false, _) => return false,
+            (true, _) => return false,
+        }
+
+        // A real `sub NAME {` / `package NAME;` header may put its terminator on the
+        // next line, but the terminator must be the first non-whitespace token there.
+        // Without that boundary, a bare quote-word keyword followed on a later line
+        // by an unrelated statement could borrow that statement's `{`/`;` and silently
+        // swallow real code as a bogus declaration (#4491 review).
+        //
+        // The block `{` (or the `package` `;` semicolon form) that closes the header on one line
+        // is itself the boundary proof — unlike the whitespace `print`/`my` forms, a
+        // strong block shape does *not* additionally require `qw_statement_terminates`
+        // over the whole tail. Requiring it swallowed the declaration whenever another
+        // line-start statement followed (`sub run { … }\nmy $x = 1;`) (#4491 review).
+        let mut expected_closers = Vec::new();
+        let mut expect_name_segment = matches!(
+            &second.token_type,
+            TokenType::Operator(operator) if operator.as_ref() == "::"
+        );
+        let mut expect_attribute_name = false;
+        let mut package_version_started = false;
+        let mut package_version_needs_component = false;
+        while let Some(token) = lexer.next_token() {
+            if is_named && expected_closers.is_empty() {
+                if expect_name_segment {
+                    if matches!(
+                        &token.token_type,
+                        TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_)
+                    ) {
+                        expect_name_segment = false;
+                        continue;
+                    }
+                    return false;
+                }
+                if expect_attribute_name {
+                    match token.token_type {
+                        TokenType::Identifier(_) | TokenType::Keyword(_) => {
+                            expect_attribute_name = false;
+                            continue;
+                        }
+                        TokenType::Operator(operator) if operator.as_ref() == "::" => continue,
+                        _ => return false,
+                    }
+                }
+                match &token.token_type {
+                    TokenType::Operator(operator) if operator.as_ref() == "::" => {
+                        expect_name_segment = true;
+                        continue;
+                    }
+                    // `after_sub` deliberately lexes `v1.2` as `Identifier("v1")`,
+                    // `.` and `Number("2")` so that the valid single-component
+                    // `sub v5 { ... }` form remains a name.  A dotted v-string is
+                    // not a valid named-sub declaration, however; reject the dot
+                    // instead of allowing a later `{` to create a false recovery
+                    // boundary for an unclosed `qw`.
+                    TokenType::Operator(operator)
+                        if keyword == "sub" && operator.as_ref() == "." =>
+                    {
+                        return false;
+                    }
+                    TokenType::Operator(operator) if operator.as_ref() == ":" => {
+                        expect_attribute_name = true;
+                        continue;
+                    }
+                    TokenType::Number(_) if keyword == "package" => {
+                        if package_version_needs_component {
+                            package_version_needs_component = false;
+                        } else if !package_version_started {
+                            package_version_started = true;
+                        } else {
+                            return false;
+                        }
+                        continue;
+                    }
+                    TokenType::Version(_) if keyword == "package" && !package_version_started => {
+                        package_version_started = true;
+                        continue;
+                    }
+                    TokenType::Operator(operator)
+                        if keyword == "package"
+                            && package_version_started
+                            && operator.as_ref() == "."
+                            && !package_version_needs_component =>
+                    {
+                        package_version_needs_component = true;
+                        continue;
+                    }
+                    TokenType::LeftParen => {}
+                    TokenType::Identifier(_) | TokenType::Keyword(_) | TokenType::Version(_) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            match token.token_type {
+                TokenType::LeftBrace if expected_closers.is_empty() => {
+                    return !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
+                        && Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(&mut lexer);
+                }
+                TokenType::Semicolon if expected_closers.is_empty() => {
+                    return allows_semicolon_form
+                        && !expect_name_segment
+                        && !expect_attribute_name
+                        && !package_version_needs_component
+                        && Self::header_ends_at_own_terminator(source, token.start);
+                }
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Confirm that the already-recognized top-level block closes before the
+    /// candidate source ends. This keeps incomplete editor input inside `qw`
+    /// while allowing a later statement after a complete block to be scanned
+    /// independently (#4491).
+    fn block_statement_terminates(lexer: &mut Self) -> bool {
+        let mut expected_closers = vec![TokenType::RightBrace];
+        while let Some(token) = lexer.next_token() {
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                return false;
+            }
+            match token.token_type {
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Continue a phaser recovery boundary through its optional attribute list,
+    /// such as `BEGIN :lvalue { ... }`, while rejecting malformed headers.
+    fn phaser_attribute_block_boundary(source: &'a str, lexer: &mut Self) -> bool {
+        let mut expect_name = true;
+        while let Some(token) = lexer.next_token() {
+            if expect_name {
+                if !matches!(token.token_type, TokenType::Identifier(_) | TokenType::Keyword(_)) {
+                    return false;
+                }
+                expect_name = false;
+                continue;
+            }
+            match token.token_type {
+                TokenType::Operator(operator) if matches!(operator.as_ref(), ":" | "::") => {
+                    expect_name = true;
+                }
+                TokenType::LeftParen => {
+                    if !Self::attribute_arguments_terminate(lexer) {
+                        return false;
+                    }
+                }
+                TokenType::LeftBrace => {
+                    return Self::header_ends_at_own_terminator(source, token.start)
+                        && Self::block_statement_terminates(lexer);
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Consume a balanced attribute argument list after its opening `(`.
+    fn attribute_arguments_terminate(lexer: &mut Self) -> bool {
+        let mut expected_closers = vec![TokenType::RightParen];
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => expected_closers.push(TokenType::RightParen),
+                TokenType::LeftBracket => expected_closers.push(TokenType::RightBracket),
+                TokenType::LeftBrace => expected_closers.push(TokenType::RightBrace),
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    let Some(expected) = expected_closers.pop() else {
+                        return false;
+                    };
+                    if expected != token.token_type {
+                        return false;
+                    }
+                    if expected_closers.is_empty() {
+                        return true;
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// The candidate statement header — from the starter keyword at the front of
+    /// `source` up to (but excluding) the terminator token at `terminator_start` —
+    /// may contain a newline when the terminator is the first non-whitespace token
+    /// on that line, or when it follows a balanced prototype line. This accepts
+    /// valid multiline headers while preventing a starter-shaped quote-word from
+    /// borrowing a later statement's `{`/`;`.
+    fn header_ends_at_own_terminator(source: &'a str, terminator_start: usize) -> bool {
+        let header = &source[..terminator_start];
+        let first_line = header.lines().next().unwrap_or_default();
+        let first_line_before_comment =
+            first_line.split_once('#').map_or(first_line, |(code, _)| code);
+        let first_word = first_line_before_comment.split_whitespace().next();
+        if matches!(first_word, Some("sub" | "package" | "class"))
+            && first_line_before_comment.split_whitespace().nth(1).is_none()
+        {
+            return false;
+        }
+        let Some((_, line_prefix)) = header.rsplit_once('\n') else {
+            return true;
+        };
+        if line_prefix.chars().all(char::is_whitespace) {
+            return true;
+        }
+
+        // A prototype may be placed on its own line immediately before the block:
+        // `sub run\n($) { ... }`. That line is part of the declaration header, not
+        // an unrelated statement borrowing the block opener.
+        let trimmed = line_prefix.trim();
+        if !trimmed.starts_with('(') {
+            return false;
+        }
+        let mut lexer = Self::without_qw_recovery(trimmed, LexerConfig::default());
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            match token.token_type {
+                TokenType::LeftParen => depth = depth.saturating_add(1),
+                TokenType::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
+                    }
+                }
+                TokenType::Identifier(text) if depth > 0 && text.ends_with(')') => {
+                    // Compact prototypes may be tokenized as `(` followed by an
+                    // identifier ending in `)`, for example `($)`.
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let suffix = trimmed.get(token.end..).unwrap_or_default().trim();
+                        return suffix.is_empty() || suffix.starts_with(':');
+                    }
+                }
+                TokenType::Error(_) | TokenType::UnknownRest => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// A candidate line-start statement inside an unclosed `qw(` is a real recovery
+    /// boundary only when it forms a complete statement: either a top-level semicolon
+    /// terminates it, or it runs cleanly to end-of-file with balanced delimiters. The
+    /// EOF case recovers a semicolonless trailing declaration/print statement (#4494)
+    /// without splitting on keyword-like words that continue into further source.
+    fn qw_statement_terminates(&self, position: usize) -> bool {
+        let source = &self.input[position..];
+        let mut lexer = Self::without_qw_recovery(source, self.config.clone());
+        let mut first = true;
+        let mut delimiter_depth = 0usize;
+        let mut saw_incomplete = false;
+        let mut last_end = 0usize;
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::Semicolon && delimiter_depth == 0 {
+                return true;
+            }
+            if matches!(token.token_type, TokenType::Error(_) | TokenType::UnknownRest) {
+                // A trailing statement carrying its own unclosed quote-like operator or a
+                // degraded construct reaches EOF at balanced delimiter depth but is not a
+                // clean statement; do not let it masquerade as one (this preserves the
+                // nested-qw suffix behavior, where the inner qw emits an Error token).
+                saw_incomplete = true;
+            }
+            if !first && delimiter_depth == 0 {
+                let prefix = &source[..token.start];
+                let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+                if prefix[line_start..].chars().all(char::is_whitespace)
+                    && matches!(token.text.as_ref(), "my" | "our" | "state" | "local" | "print")
+                {
+                    return false;
+                }
+            }
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
+                    delimiter_depth = delimiter_depth.saturating_add(1);
+                }
+                TokenType::RightParen | TokenType::RightBrace | TokenType::RightBracket => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            last_end = token.end;
+            first = false;
+        }
+        // No terminating semicolon before EOF: recover only when the candidate ran to
+        // end-of-file cleanly — balanced delimiters, no degraded/unclosed token, and every
+        // trailing byte turned into a real token. The final check rejects constructs that
+        // silently consume to EOF without emitting a token (an unterminated bare `/regex/`
+        // or heredoc body leaves its text after the last token), which would otherwise be
+        // misclassified as a complete statement and split the qw list incorrectly (#4494).
+        delimiter_depth == 0
+            && !saw_incomplete
+            && source[last_end..].chars().all(char::is_whitespace)
+    }
+
+    /// Parse a quote operator after we've seen the delimiter
+    fn parse_quote_operator(&mut self, delimiter: char) -> Option<Token> {
+        let info = self.current_quote_op.as_ref()?;
+        let start = info.start_pos;
+        let operator = info.operator.clone();
+
+        // Clear the quote-op context eagerly so any early-return path (s/tr/y delegations
+        // below) does not leave a stale reference behind. The post-match cleanup at the
+        // bottom of this function would otherwise be skipped for those operators.
+        self.current_quote_op = None;
+
+        // Parse based on operator type; track whether all delimiters were closed.
+        let closed = match operator.as_str() {
+            "s" => {
+                return self.parse_substitution_with_delimiter(start, delimiter);
+            }
+            "tr" | "y" => {
+                return self.parse_transliteration_with_delimiter(start, delimiter);
+            }
+            "qr" => {
+                let (_pattern, body_closed) = self.read_delimited_body(delimiter);
+                self.parse_regex_modifiers(&quote_handler::QR_SPEC);
+                body_closed
+            }
+            "m" => {
+                let (_pattern, body_closed) = self.read_delimited_body(delimiter);
+                self.parse_regex_modifiers(&quote_handler::M_SPEC);
+                body_closed
+            }
+            "qw" if delimiter == '(' && self.qw_recovery_enabled => {
+                let (_body, body_closed) = self.read_qw_body(delimiter);
+                body_closed
+            }
+            _ => {
+                // q, qq, qx - no modifiers
+                let (_body, body_closed) = self.read_delimited_body(delimiter);
+                body_closed
+            }
+        };
+
+        let text = &self.input[start..self.position];
+
+        self.mode = LexerMode::ExpectOperator;
+
+        if !closed {
+            // EOF reached before finding the closing delimiter — emit an error
+            // token so the parser's recovery mechanism records a diagnostic.
+            return Some(Token {
+                token_type: TokenType::Error(Arc::from(format!(
+                    "unclosed {} delimiter '{}'",
+                    operator, delimiter
+                ))),
+                text: Arc::from(text),
+                start,
+                end: self.position,
+            });
+        }
+
+        let token_type = quote_handler::get_quote_token_type(&operator);
+        Some(Token { token_type, text: Arc::from(text), start, end: self.position })
+    }
+
+    /// Parse regex modifiers according to the given spec
+    ///
+    /// This function includes ALL characters that could be intended as modifiers,
+    /// including invalid ones. This allows the parser to properly reject invalid
+    /// modifiers with a clear error message, rather than leaving them as separate
+    /// tokens that could be confusingly parsed.
+    fn parse_regex_modifiers(&mut self, _spec: &quote_handler::ModSpec) {
+        // Consume all alphanumeric characters that could be intended as modifiers
+        // The parser will validate and reject invalid ones
+        while let Some(ch) = self.current_char() {
+            if ch.is_ascii_alphanumeric() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        // Note: We no longer validate here - the parser will validate and provide
+        // clear error messages for invalid modifiers (MUT_005 fix)
+    }
+
+    /// Parse a regex literal starting with `/`
+    ///
+    /// **Budget Protection (Issue #422)**:
+    /// - Budget guards prevent runaway scanning on pathological input
+    /// - `MAX_REGEX_PARSE_STEPS` bounds literal scanning before the byte budget
+    /// - `MAX_REGEX_BYTES` bounds total bytes consumed in a single regex literal
+    /// - Graceful degradation: emit UnknownRest token if budget exceeded
+    ///
+    /// **Performance**:
+    /// - Single-pass scanning with escape handling
+    /// - Budget check per iteration (amortized O(1) via inline fast path)
+    /// - Typical regex: <10μs, Large regex (64KB): ~1ms
+    fn parse_regex(&mut self, start: usize) -> Option<Token> {
+        self.advance(); // Skip opening /
+
+        let mut regex_parse_steps: usize = 0;
+        let mut in_character_class = false;
+
+        while let Some(ch) = self.current_char() {
+            regex_parse_steps += 1;
+            if regex_parse_steps > MAX_REGEX_PARSE_STEPS {
+                #[cfg(debug_assertions)]
+                {
+                    let text = &self.input[start..self.position];
+                    let preview = truncate_preview(text, 50);
+                    tracing::debug!(
+                        limit = MAX_REGEX_PARSE_STEPS,
+                        pattern_preview = %preview,
+                        "Regex parse step budget exceeded"
+                    );
+                }
+                self.position = self.input.len();
+                return Some(Token {
+                    token_type: TokenType::UnknownRest,
+                    text: empty_arc(),
+                    start,
+                    end: self.position,
+                });
+            }
+
+            // Budget guard: prevent timeout on pathological input (Issue #422)
+            // If exceeded, returns UnknownRest token for graceful degradation
+            if let Some(token) = self.budget_guard(start, 0) {
+                return Some(token);
+            }
+
+            match ch {
+                '/' if !in_character_class => {
+                    self.advance();
+                    // Parse flags - include all alphanumeric for proper validation in parser (MUT_005 fix)
+                    while let Some(ch) = self.current_char() {
+                        if ch.is_ascii_alphanumeric() {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let text = &self.input[start..self.position];
+                    self.mode = LexerMode::ExpectOperator;
+
+                    return Some(Token {
+                        token_type: TokenType::RegexMatch,
+                        text: Arc::from(text),
+                        start,
+                        end: self.position,
+                    });
+                }
+                '\\' => {
+                    // Handle escape sequences: consume backslash + next char
+                    self.advance();
+                    if self.current_char().is_some() {
+                        self.advance();
+                    }
+                }
+                '[' => {
+                    in_character_class = true;
+                    self.advance();
+                }
+                ']' if in_character_class => {
+                    in_character_class = false;
+                    self.advance();
+                }
+                _ => self.advance(),
+            }
+        }
+
+        // Unterminated regex - EOF reached before closing /
+        // Parser will emit diagnostic for unterminated literal
+        None
+    }
+}
+
+// Checkpoint support for incremental parsing
+
+mod checkpoint_impl;
+
+#[cfg(test)]
+mod test_format_debug;
+#[cfg(test)]
+mod tests;
+, '@', '%']))
                 && self.qw_statement_terminates(position)
             {
                 return true;
             }
         }
-        if remaining
-            .strip_prefix("print")
-            .is_some_and(|after| after.starts_with(char::is_whitespace))
-            && self.qw_statement_terminates(position)
-        {
-            return true;
+        for keyword in ["print", "warn", "say"] {
+            if remaining
+                .strip_prefix(keyword)
+                .is_some_and(|after| after.starts_with(char::is_whitespace))
+                && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        if let Some(symbol_table) = &self.config.symbol_table {
+            if remaining.split_whitespace().next().is_some_and(|keyword| {
+                symbol_table.is_known_sub(keyword)
+                    && remaining
+                        .strip_prefix(keyword)
+                        .is_some_and(|after| after.starts_with(char::is_whitespace))
+            }) && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
         }
         self.qw_block_statement_boundary_at(position)
     }
