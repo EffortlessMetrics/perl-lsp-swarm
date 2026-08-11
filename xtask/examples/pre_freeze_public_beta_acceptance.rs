@@ -479,6 +479,14 @@ mod tests {
     }
 
     #[test]
+    fn artifact_from_another_repository_sha_fails_closed() {
+        let mut packet = ready_packet();
+        packet.artifacts.perllsp.repository_sha =
+            "fedcba9876543210fedcba9876543210fedcba98".to_string();
+        assert!(validate(&packet).is_err());
+    }
+
+    #[test]
     fn nonzero_zero_budget_count_requires_blocked_recommendation() {
         let mut packet = ready_packet();
         packet.zero_budget_counts.false_exact = 1;
