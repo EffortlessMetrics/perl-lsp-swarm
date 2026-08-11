@@ -51,7 +51,7 @@ fn strings_preserve_kind_value_and_span() {
 
     visit(&ast, &mut |node| {
         if let NodeKind::String { value, interpolated } = &node.kind {
-            if value == "text" && !interpolated {
+            if value == "text" && !*interpolated {
                 single = true;
                 single_span = node.location.start == 13 && node.location.end == 19;
             }
