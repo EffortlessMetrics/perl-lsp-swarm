@@ -119,8 +119,8 @@ export async function showWorkspaceStatusCommand(dependencies: {
 
   const actions =
     status.mode === 'stopped'
-      ? (['Restart Server', 'Run Health Check', 'Show Output'] as const)
-      : (['Run Health Check', 'Show Output'] as const);
+      ? (['Restart Server', 'Run Health Check', 'Show Output', 'Open Actions'] as const)
+      : (['Run Health Check', 'Show Output', 'Open Actions'] as const);
   const selection =
     status.mode === 'stopped'
       ? await vscode.window.showWarningMessage(lines.join('\n'), ...actions)
@@ -132,6 +132,8 @@ export async function showWorkspaceStatusCommand(dependencies: {
     void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
   } else if (selection === 'Show Output') {
     void vscode.commands.executeCommand('perl-lsp.showOutput');
+  } else if (selection === 'Open Actions') {
+    void vscode.commands.executeCommand('perl-lsp.showStatusMenu');
   }
 }
 
