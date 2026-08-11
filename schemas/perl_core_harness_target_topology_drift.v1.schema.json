@@ -6,37 +6,46 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "status",
     "pinned_matrix_fingerprint",
+    "observed_matrix_fingerprint",
     "observed_perl_ref",
     "observed_perl_resolved_ref",
     "observed_topology_sources",
     "added_target_ids",
     "removed_target_ids",
     "changed_target_ids",
+    "not_proven_reason",
     "claim_boundary"
   ],
   "properties": {
     "schema_version": {
       "const": "perl_core_harness.target_topology_drift.v1"
     },
+    "status": {
+      "enum": ["compared", "not_proven"]
+    },
     "pinned_matrix_fingerprint": {
-      "type": "string",
-      "pattern": "^[0-9a-fA-F]{64}$"
+      "$ref": "#/$defs/sha256"
+    },
+    "observed_matrix_fingerprint": {
+      "anyOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
     },
     "observed_perl_ref": {
       "type": "string",
       "minLength": 1
     },
     "observed_perl_resolved_ref": {
-      "type": "string",
-      "pattern": "^[0-9a-fA-F]{40}$"
+      "$ref": "#/$defs/git_sha"
     },
     "observed_topology_sources": {
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
-        "type": "string",
-        "pattern": "^[0-9a-fA-F]{40}$"
+        "$ref": "#/$defs/git_sha"
       }
     },
     "added_target_ids": {
@@ -48,12 +57,55 @@
     "changed_target_ids": {
       "$ref": "#/$defs/target_ids"
     },
+    "not_proven_reason": {
+      "anyOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "null"}
+      ]
+    },
     "claim_boundary": {
       "type": "string",
       "minLength": 1
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "not_proven"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "observed_matrix_fingerprint": {"const": null},
+          "added_target_ids": {"maxItems": 0},
+          "removed_target_ids": {"maxItems": 0},
+          "changed_target_ids": {"maxItems": 0},
+          "not_proven_reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"status": {"const": "compared"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "observed_matrix_fingerprint": {"$ref": "#/$defs/sha256"},
+          "not_proven_reason": {"const": null}
+        }
+      }
+    }
+  ],
   "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
     "target_ids": {
       "type": "array",
       "uniqueItems": true,
