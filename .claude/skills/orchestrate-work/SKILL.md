@@ -101,6 +101,86 @@ lateral communication changes the result. Use Ultracode inside one coherent clai
 tasks become ready dynamically; it does not become repository state or a cross-claim
 scheduler.
 
+## Capacity admission
+
+Compile the graph to what the host can actually run. Saturation does not merely slow
+work down, it destroys evidence: once builds contend, local timings, flake rates, and
+command timeouts stop meaning anything, and the root starts dispatching diagnostic
+agents into ambiguity it created.
+
+Consume the current local admission result before dispatching a writer, and do not
+dispatch when writer capacity is exhausted, heavy-build capacity is exhausted, the
+workspace-wide Cargo token is held, or disk/process/worktree state is `NOT_PROVEN`.
+
+Capacity limits are a host profile, not a repository invariant: a workstation, a laptop,
+a remote builder, and a read-only review context have different envelopes. Until #3957
+lands an admission command, apply the profile recorded in local configuration. The
+initial profile for a single developer workstation is one build-heavy writer and one
+workspace-wide build.
+
+Cap what consumes the host, which is builds — not how many agents exist. A read-only
+agent reading GitHub and source holds no worktree, no build, and no locks, so its limit
+is the attention available to steer it, and lateral messaging raises that ceiling rather
+than lowering it. Rationing cheap agents while build-heavy work runs unbounded caps the
+wrong thing.
+
+Concurrent writers are likewise not bounded by a number. Two writers on two claims is
+safe when both claims are specified and disjoint, and unsafe when they are vague, because
+vague claims overlap and overlapping writers produce rework rather than parallelism. The
+precondition for a second writer is a specification, not a slot.
+
+Count what the host is actually carrying, not what has been dispatched. These come apart:
+
+```text
+logical WIP    active campaign and lane contexts
+mutation WIP   active writers and candidate worktrees
+compute WIP    live build/test process groups and workspace-wide Cargo tokens
+storage WIP    disk floor, target/cache footprint, safe reclaim state
+```
+
+A lane that has returned but whose process group is still draining is `STOPPING`, not
+finished: its build token is not released until the process tree exits and its locks are
+gone. A claim waiting on GitHub may hold no local resource at all.
+
+- never launch a replacement for the same claim from silence. Another independent claim
+  may proceed when the campaign phase permits it, no equivalent candidate already owns
+  it, admission returns `ADMIT`, and the waiting lane has released the resources the new
+  lane needs;
+- read-only inspection of GitHub or source needs no worktree; allocate one only for a
+  named mutation claim. Ordinary `git worktree` and an optional `worktree-manager` slot
+  are both valid routes, and both consume the same admission result — the helper is a
+  cleanup-lease convenience, not the capacity authority;
+- when admission fails, wait. Doing nothing is a valid orchestration move;
+- treat any local timing or flake-rate measurement taken under saturation as
+  `NOT_PROVEN`, and say so rather than reporting the number.
+
+## A quiet agent is not a result
+
+Only a typed return ends a lane. An idle notification, a stopped agent, an exhausted
+budget, or a long silence carries no information about the claim.
+
+When a lane goes quiet, inspect the artifact rather than the agent — PR state, branch
+head, worktree status, live checks — then:
+
+```text
+typed result returned        → join it
+artifact shows the work done → synthesize the typed result from the artifact,
+                               record that it was synthesized, then release the lane
+stated wait still current    → leave it; an unchanged remote wait is IN_FLIGHT
+no artifact and no return    → FAILED_NO_RETURN; the claim's state is NOT_PROVEN
+```
+
+`FAILED_NO_RETURN` is not a finding of abandonment. Silence establishes nothing about
+whether the agent is dead, the process group has stopped, the worktree is clean, a
+remote head moved, or uncommitted work exists. Read the task handle, process group,
+branch, worktree, remote head, and durable subject, and only then choose to salvage,
+wait, stop, or reassign explicitly. Reassignment is a decision taken after those checks,
+never the default consequence of silence — treating quiet as an unowned claim is what
+produces two writers on one candidate.
+
+Silence is also not spare capacity and not completion. A lane holding a stated wait
+condition is not stalled, and re-tasking it discards work in flight.
+
 ## Runtime-local frontier
 
 A campaign root may keep this in memory only:
@@ -136,6 +216,30 @@ Every brief names:
 Do not ask children to rediscover settled facts or return raw transcripts/private
 reasoning.
 
+Separate the brief's stable part from its observed part. The claim, acceptance criteria,
+non-goals, and authorities are stable. Head SHAs, check results, mergeability, and counts
+go stale faster than a lane can act on them, and an instruction resting on stale state is
+unexecutable rather than merely wrong.
+
+Do not delete the volatile state — the child needs it to see which premise moved. Carry
+it as an observation basis with an entry condition:
+
+```text
+Observed as of <sha>: <pr state, head, the then-discovered required-policy set and its
+results>.
+Re-derive live protection, rulesets, contexts, and results before mutating.
+If materially different, return PREMISE_CHANGED, CANDIDATE_MOVED, or SUPERSEDED rather
+than proceeding.
+```
+
+Discover a required-policy set rather than naming a remembered one. Classic branch
+protection and rulesets are independent and additive, so a brief that asserts a fixed
+count of required checks is stating exactly the kind of premise this section exists to
+prevent.
+
+Write any instruction that names a specific PR, branch, or SHA as conditional, so a
+child that finds the world changed has a defined action instead of a contradiction.
+
 ## Graph-delta returns
 
 Read-only workers return subject identity, conclusion, direct and contradictory
@@ -151,6 +255,28 @@ uncertainty, and suggested disposition.
 The root must join evidence as graph deltas rather than votes. Repeated claims from one
 source are not independent corroboration. Preserve contradictions until direct evidence
 resolves them.
+
+Every dispatched agent owes a typed return. Track what was dispatched, because a lens
+that dies — budget exhausted, process killed, tooling failure — leaves its dimension
+`NOT_PROVEN`, not examined-and-clean. An absent return that nobody notices is
+indistinguishable from a clean one, which is the same failure the review method exists
+to prevent.
+
+Remembering the dead lens is not enough to make merge refusal reliable. Carry the
+dispatch list into the review join as an explicit dimension ledger, so the cumulative
+result rests on enumerated dimensions rather than on the reviews that happened to come
+back:
+
+```text
+claim-vs-code     REVIEWED
+proof             REVIEWED
+shutdown safety   NOT_PROVEN   (lens dispatched, no return)
+external oracle   NOT_APPLICABLE
+```
+
+Wiring that ledger into the convergence predicate that governs merge is tracked
+separately under #3693; this skill only requires that the dispatch be recorded and the
+absence be visible to the join.
 
 ## Useful GitHub publication filter
 
