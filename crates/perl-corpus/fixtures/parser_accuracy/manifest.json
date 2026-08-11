@@ -2302,9 +2302,9 @@
         },
         {
           "line": 12,
-            "expected_tags": [
-              "function_call"
-            ]
+          "expected_tags": [
+            "function_call"
+          ]
         }
       ],
       "symbol_expectations": {
@@ -3303,6 +3303,214 @@
           "span_text": "move($player, 30)",
           "parent_kind": "ExpressionStatement",
           "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
+    },
+    {
+      "id": "continue_redo",
+      "family": "continue_redo",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/continue_redo.pl",
+      "scored_lines": 12,
+      "scored_symbols": 3,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        {
+          "line": 1,
+          "expected_tags": [
+            "package_decl"
+          ]
+        },
+        {
+          "line": 3,
+          "expected_tags": [
+            "sub_decl"
+          ]
+        },
+        {
+          "line": 6,
+          "expected_tags": [
+            "redo"
+          ]
+        },
+        {
+          "line": 7,
+          "expected_tags": [
+            "next"
+          ]
+        },
+        {
+          "line": 8,
+          "expected_tags": [
+            "last"
+          ]
+        },
+        {
+          "line": 9,
+          "expected_tags": [
+            "continue_block"
+          ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "continue_redo_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::ContinueRedo",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "continue_redo_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
+    },
+    {
+      "id": "glob_expression",
+      "family": "glob",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/glob_expression.pl",
+      "scored_lines": 8,
+      "scored_symbols": 3,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        {
+          "line": 1,
+          "expected_tags": [
+            "package_decl"
+          ]
+        },
+        {
+          "line": 3,
+          "expected_tags": [
+            "sub_decl"
+          ]
+        },
+        {
+          "line": 5,
+          "expected_tags": [
+            "glob"
+          ]
+        },
+        {
+          "line": 6,
+          "expected_tags": [
+            "glob",
+            "diamond_read"
+          ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "glob_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::GlobExpression",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "glob_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub collect",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
+    },
+    {
+      "id": "tie_interface",
+      "family": "tie",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/tie_interface.pl",
+      "scored_lines": 9,
+      "scored_symbols": 3,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        {
+          "line": 1,
+          "expected_tags": [
+            "package_decl"
+          ]
+        },
+        {
+          "line": 3,
+          "expected_tags": [
+            "sub_decl"
+          ]
+        },
+        {
+          "line": 4,
+          "expected_tags": [
+            "tie"
+          ]
+        },
+        {
+          "line": 5,
+          "expected_tags": [
+            "tied"
+          ]
+        },
+        {
+          "line": 7,
+          "expected_tags": [
+            "untie"
+          ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "tie_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::TieInterface",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "tie_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub configure",
+          "parent_kind": "Program",
+          "depth": 1,
           "operator": null,
           "parent_operator": null
         }
