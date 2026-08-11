@@ -240,7 +240,7 @@ claim_boundary = "Codex CLI consumes MCP tools; registering perllsp --stdio dire
 id = "codex_desktop"
 display_name = "Codex Desktop"
 integration_mode = "custom_stdio_server"
-tier = "configuration_documented"
+tier = "not_proven_unsupported"
 owner_issue = 6739
 requires_actual_client_receipt = true
 synthetic_profile = false
@@ -249,7 +249,7 @@ evidence = [
 ]
 known_overrides = []
 external_dependency = ""
-claim_boundary = "Configuration is documented; no current actual Codex Desktop receipt is registered."
+claim_boundary = "The documented custom-server flow is unsupported or unverified for Codex Desktop; no current client capability or execution receipt is registered."
 
 [[client]]
 id = "opencode"

@@ -18,7 +18,7 @@
 | Amazon Kiro | `vscode_compatible_or_custom_lsp_host` | `configuration_documented` | Configuration is documented; host-specific activation and provider behavior remain unproven. |
 | Claude Code | `plugin_lsp_bridge` | `bridge_or_plugin_dependency` | Support depends on an external plugin registration surface; perllsp remains an LSP server, not an agent tool protocol. |
 | Codex CLI | `lsp_to_mcp_bridge` | `bridge_or_plugin_dependency` | Codex CLI consumes MCP tools; registering perllsp --stdio directly as MCP is unsupported. |
-| Codex Desktop | `custom_stdio_server` | `configuration_documented` | Configuration is documented; no current actual Codex Desktop receipt is registered. |
+| Codex Desktop | `custom_stdio_server` | `not_proven_unsupported` | The documented custom-server flow is unsupported or unverified for Codex Desktop; no current client capability or execution receipt is registered. |
 | OpenCode | `custom_stdio_server` | `configuration_documented` | The workaround is documented and implemented, but no protocol-profile or actual OpenCode journey is registered. |
 
 No row is currently promoted to `packaged_product_proven` or `real_generic_client_proven`. Promotion requires typed actual-client or packaged-product evidence under issue #6739.

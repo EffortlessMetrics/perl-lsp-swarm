@@ -199,6 +199,38 @@ fn validate_repository_file(
     Ok(canonical_candidate)
 }
 
+fn validate_protocol_profile_evidence(
+    root: &Path,
+    raw: &str,
+    tracked_files: &BTreeSet<String>,
+) -> Result<()> {
+    let relative = validate_relative_path(raw)?;
+    ensure!(
+        relative.extension().and_then(|extension| extension.to_str()) == Some("rs"),
+        "protocol-profile evidence must be a Rust test source: {raw}"
+    );
+    ensure!(
+        relative
+            .components()
+            .any(|component| component.as_os_str() == "tests"),
+        "protocol-profile evidence must live under a tests directory: {raw}"
+    );
+    let path = validate_repository_file(root, raw, tracked_files)?;
+    let source = fs::read_to_string(&path)
+        .with_context(|| format!("read protocol-profile evidence {}", path.display()))?;
+    ensure!(
+        source.contains("#[test]"),
+        "protocol-profile evidence must define at least one Rust test: {raw}"
+    );
+    ensure!(
+        ["initialize", "capabilit", "stdio"]
+            .iter()
+            .any(|marker| source.contains(marker)),
+        "protocol-profile evidence must exercise a recognizable LSP protocol seam: {raw}"
+    );
+    Ok(())
+}
+
 fn validate_execution_receipt_path(raw: &str, kind: &str) -> Result<PathBuf> {
     let relative = validate_relative_path(raw)?;
     let required_root = match kind {
@@ -548,6 +580,8 @@ fn client_registry_rejects_claim_inflation_and_missing_evidence() -> Result<()> 
                     &evidence.kind,
                 )?;
                 validated_execution_kinds.insert(evidence.kind.as_str());
+            } else if evidence.kind == "protocol_profile" {
+                validate_protocol_profile_evidence(&root, &evidence.path, &tracked_files)?;
             } else {
                 let _ = validate_repository_file(&root, &evidence.path, &tracked_files)?;
             }
@@ -652,6 +686,14 @@ fn bridge_boundaries_do_not_misrepresent_lsp_as_mcp_or_native_zed_registration()
     ensure!(codex.tier == "bridge_or_plugin_dependency");
     ensure!(codex.claim_boundary.contains("unsupported"));
 
+    let codex_desktop = registry
+        .client
+        .iter()
+        .find(|client| client.id == "codex_desktop")
+        .context("missing Codex Desktop row")?;
+    ensure!(codex_desktop.tier == "not_proven_unsupported");
+    ensure!(codex_desktop.claim_boundary.contains("unsupported"));
+
     let zed = registry
         .client
         .iter()
@@ -713,6 +755,10 @@ fn repository_paths_reject_absolute_traversal_and_untracked_files() -> Result<()
         )
         .is_err(),
         "untracked regular file was accepted as evidence"
+    );
+    ensure!(
+        validate_protocol_profile_evidence(&root, "Cargo.toml", &tracked_files).is_err(),
+        "an arbitrary tracked manifest was accepted as protocol-profile evidence"
     );
     Ok(())
 }
