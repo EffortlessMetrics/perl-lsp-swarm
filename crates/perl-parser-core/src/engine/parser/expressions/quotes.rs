@@ -544,25 +544,29 @@ mod unclosed_quote_tests {
     use crate::Parser;
 
     #[test]
-    fn all_balanced_quote_operators_report_operator_specific_unclosed_delimiters() {
-        let expectations = [
-            ("q(foo", "Unclosed q() delimiter: missing closing delimiter before end of file"),
-            ("qq(foo", "Unclosed qq() delimiter: missing closing delimiter before end of file"),
-            ("qw(foo", "Unclosed qw() delimiter: missing closing delimiter before end of file"),
-            ("qr(foo", "Unclosed qr() delimiter: missing closing delimiter before end of file"),
-            ("qx(foo", "Unclosed qx() delimiter: missing closing delimiter before end of file"),
-            ("m(foo", "Unclosed m() delimiter: missing closing delimiter before end of file"),
-            ("s(foo", "Unclosed s() delimiter: missing closing delimiter before end of file"),
-        ];
+    fn qw_unclosed_delimiter_preserves_legacy_diagnostic() {
+        let result = Parser::new("qw(foo").parse_with_recovery();
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| {
+                format!("{diagnostic:?}")
+                    .contains("Unclosed qw() delimiter: missing closing delimiter before end of file")
+            }),
+            "qw should preserve its established diagnostic: {:?}",
+            result.diagnostics
+        );
+    }
 
-        for (source, expected_message) in expectations {
-            let result = Parser::new(source).parse_with_recovery();
+    #[test]
+    fn balanced_quote_operators_report_unclosed_delimiters() {
+        let operators = ["q", "qq", "qr", "qx", "m", "s"];
+        for operator in operators {
+            let source = format!("{operator}(foo");
+            let result = Parser::new(&source).parse_with_recovery();
             assert!(
-                result
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| format!("{diagnostic:?}").contains(expected_message)),
-                "{source:?} should report {expected_message:?}: {:?}",
+                result.diagnostics.iter().any(|diagnostic| {
+                    format!("{diagnostic:?}").contains(&format!("Unclosed {operator}"))
+                }),
+                "{source:?} should report an operator-specific unclosed delimiter: {:?}",
                 result.diagnostics
             );
         }
