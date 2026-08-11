@@ -259,9 +259,9 @@ export class HealthWidget {
         this.setWorkspaceLifecycleState(
           'ready_limited',
           {
-              detail: presentIndexReadinessReason(this._readinessReason),
-              reasonCode: 'index_ready_limited',
-            },
+            detail: presentIndexReadinessReason(this._readinessReason),
+            reasonCode: 'index_ready_limited',
+          },
         );
         break;
       case 'ready':
