@@ -6,7 +6,7 @@ use serde_json::Value as JsonValue;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 const CONTRACT_PATH: &str = "policy/product-identity.toml";
@@ -222,7 +222,9 @@ fn validate_contract(
     )?;
     validate_facade_dependency(
         repo_root,
+        &root_manifest,
         &contract.server.package_manifest,
+        &contract.server.implementation_manifest,
         &contract.server.implementation_crate,
     )?;
 
@@ -300,11 +302,13 @@ fn validate_cargo_identity(
 
 fn validate_facade_dependency(
     repo_root: &Path,
+    root_manifest: &toml::Value,
     facade_manifest_path: &Path,
+    implementation_manifest_path: &Path,
     implementation_crate: &str,
 ) -> Result<()> {
-    let manifest = read_toml(repo_root, facade_manifest_path)?;
-    let dependencies = manifest
+    let facade_manifest = read_toml(repo_root, facade_manifest_path)?;
+    let dependencies = facade_manifest
         .get("dependencies")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| {
@@ -314,21 +318,142 @@ fn validate_facade_dependency(
             )
         })?;
 
-    let has_implementation = dependencies.iter().any(|(alias, value)| {
-        let effective_package = value
-            .as_table()
-            .and_then(|table| table.get("package"))
-            .and_then(toml::Value::as_str)
-            .unwrap_or(alias);
-        effective_package == implementation_crate
-    });
-    if !has_implementation {
+    let implementation_dir = implementation_manifest_path.parent().ok_or_else(|| {
+        eyre!(
+            "implementation manifest path {} has no parent directory",
+            implementation_manifest_path.display()
+        )
+    })?;
+    let expected_path = normalize_repo_relative(Path::new(""), implementation_dir)?;
+    let mut matching_package_seen = false;
+
+    for (alias, specification) in dependencies {
+        let effective_package = dependency_package_name(alias, specification);
+        if effective_package != implementation_crate {
+            continue;
+        }
+        matching_package_seen = true;
+
+        if dependency_resolves_to_path(
+            root_manifest,
+            facade_manifest_path,
+            alias,
+            specification,
+            implementation_crate,
+            &expected_path,
+        )? {
+            return Ok(());
+        }
+    }
+
+    if matching_package_seen {
         bail!(
-            "primary server package does not depend on declared implementation crate {:?}",
+            concat!(
+                "primary server package does not depend on declared implementation crate {:?} ",
+                "through the governed in-tree workspace/path source"
+            ),
             implementation_crate
         );
     }
-    Ok(())
+    bail!(
+        "primary server package does not depend on declared implementation crate {:?}",
+        implementation_crate
+    )
+}
+
+fn dependency_resolves_to_path(
+    root_manifest: &toml::Value,
+    facade_manifest_path: &Path,
+    alias: &str,
+    specification: &toml::Value,
+    implementation_crate: &str,
+    expected_path: &Path,
+) -> Result<bool> {
+    let Some(table) = specification.as_table() else {
+        return Ok(false);
+    };
+
+    if table
+        .get("workspace")
+        .and_then(toml::Value::as_bool)
+        == Some(true)
+    {
+        let workspace_dependencies = root_manifest
+            .get("workspace")
+            .and_then(|workspace| workspace.get("dependencies"))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| eyre!("workspace manifest has no [workspace.dependencies] table"))?;
+        let workspace_specification = workspace_dependencies.get(alias).ok_or_else(|| {
+            eyre!(
+                "workspace dependency {:?} referenced by the primary server is missing",
+                alias
+            )
+        })?;
+        if dependency_package_name(alias, workspace_specification) != implementation_crate {
+            return Ok(false);
+        }
+        return dependency_path_matches(
+            Path::new(""),
+            workspace_specification,
+            expected_path,
+        );
+    }
+
+    let facade_dir = facade_manifest_path.parent().ok_or_else(|| {
+        eyre!(
+            "primary server manifest path {} has no parent directory",
+            facade_manifest_path.display()
+        )
+    })?;
+    dependency_path_matches(facade_dir, specification, expected_path)
+}
+
+fn dependency_package_name<'a>(alias: &'a str, specification: &'a toml::Value) -> &'a str {
+    specification
+        .as_table()
+        .and_then(|table| table.get("package"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or(alias)
+}
+
+fn dependency_path_matches(
+    base: &Path,
+    specification: &toml::Value,
+    expected_path: &Path,
+) -> Result<bool> {
+    let Some(path) = specification
+        .as_table()
+        .and_then(|table| table.get("path"))
+        .and_then(toml::Value::as_str)
+    else {
+        return Ok(false);
+    };
+    Ok(normalize_repo_relative(base, Path::new(path))? == expected_path)
+}
+
+fn normalize_repo_relative(base: &Path, path: &Path) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in base.join(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(segment) => normalized.push(segment),
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    bail!(
+                        "Cargo dependency path escapes the repository: {}",
+                        base.join(path).display()
+                    );
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "Cargo dependency path must remain repository-relative: {}",
+                    base.join(path).display()
+                );
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 fn effective_package_repository<'a>(
