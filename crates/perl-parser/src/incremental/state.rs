@@ -1,6 +1,6 @@
 use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
-use crate::incremental::lex::create_lex_checkpoints;
-use perl_lexer::{PerlLexer, Token, TokenType};
+use crate::incremental::lex::lex_source_with_checkpoints;
+use perl_lexer::Token;
 use perl_line_index::LineIndex;
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::error::ParseOutput;
@@ -92,15 +92,7 @@ impl IncrementalState {
         let mut parser = Parser::new(&source);
         let parse_output = parser.parse_with_recovery();
         let ast = parse_output.ast.clone();
-        let mut lexer = PerlLexer::new(&source);
-        let mut tokens = Vec::new();
-        while let Some(token) = lexer.next_token() {
-            if token.token_type == TokenType::EOF {
-                break;
-            }
-            tokens.push(token);
-        }
-        let lex_checkpoints = create_lex_checkpoints(&tokens, &line_index);
+        let lexed = lex_source_with_checkpoints(&source, &line_index);
         let parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
 
         Self {
@@ -108,11 +100,11 @@ impl IncrementalState {
                 source,
                 rope,
                 line_index,
-                lex_checkpoints,
+                lex_checkpoints: lexed.checkpoints,
                 parse_checkpoints,
                 parse_output,
                 ast,
-                tokens,
+                tokens: lexed.tokens,
             },
         }
     }
