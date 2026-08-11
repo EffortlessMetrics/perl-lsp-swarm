@@ -2302,9 +2302,9 @@
         },
         {
           "line": 12,
-            "expected_tags": [
-              "function_call"
-            ]
+          "expected_tags": [
+            "function_call"
+          ]
         }
       ],
       "symbol_expectations": {
@@ -3157,6 +3157,108 @@
           }
         ]
       }
+    },
+    {
+      "id": "control_flow_core",
+      "family": "control_flow",
+      "label_mode": "partial",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/control_flow_core.pl",
+      "scored_lines": 2,
+      "scored_symbols": 7,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        {
+          "line": 1,
+          "expected_tags": [
+            "package_decl"
+          ]
+        },
+        {
+          "line": 3,
+          "expected_tags": [
+            "sub_decl"
+          ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "control_flow_core_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::ControlFlow",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_if",
+          "kind": "If",
+          "line": 5,
+          "span_text": "if ($value) { return $value; }",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return $value",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_while",
+          "kind": "While",
+          "line": 6,
+          "span_text": "while ($value) { last; }",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_loop_control",
+          "kind": "LoopControl",
+          "line": 6,
+          "span_text": "last",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_variable",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $value",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     }
   ]
-}
+}\n
