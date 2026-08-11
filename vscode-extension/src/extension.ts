@@ -122,7 +122,10 @@ import {
 } from './startupDiagnosis';
 import type { StartupErrorDiagnosis } from './startupDiagnosis';
 import type { ManagedBinarySource, ReinstallCommandResult } from './commandResults';
-import { ActiveDocumentReadiness } from './activeDocumentReadiness';
+import {
+  ActiveDocumentReadiness,
+  type ActiveDocumentReadinessSnapshot,
+} from './activeDocumentReadiness';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -152,6 +155,10 @@ export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsS
 
 export function getFeatureActivationMetrics(): FeatureActivationMetricsSnapshot {
   return featureActivationMetrics.snapshot();
+}
+
+export function getActiveDocumentReadiness(): ActiveDocumentReadinessSnapshot {
+  return activeDocumentReadiness.snapshot();
 }
 
 export function markLanguageClientStartupMilestone(
@@ -846,6 +853,7 @@ export async function activate(context: vscode.ExtensionContext) {
     return {
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
+      getActiveDocumentReadiness,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: deactivate,
@@ -879,6 +887,7 @@ export async function activate(context: vscode.ExtensionContext) {
     return {
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
+      getActiveDocumentReadiness,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: deactivate,
@@ -890,6 +899,7 @@ export async function activate(context: vscode.ExtensionContext) {
   return {
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
+    getActiveDocumentReadiness,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
     stop: deactivate,

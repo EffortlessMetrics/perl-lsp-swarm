@@ -582,6 +582,7 @@ fn validate_installed_acceptance_source(
         .unwrap_or(0);
     let derived_status = match outcome {
         "failed" => InputStatus::Blocked,
+        "not_proven" => InputStatus::NotProven,
         "completed" if known_limitations > 0 => InputStatus::Limited,
         "completed" => InputStatus::Pass,
         _ => bail!("child_receipts.{name} installed-acceptance source has unknown outcome"),
@@ -901,6 +902,33 @@ mod tests {
             &receipt,
             &source,
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_not_proven_source_cannot_be_declared_pass() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.installed_acceptance.status = super::InputStatus::NotProven;
+        let source: serde_json::Value = serde_json::from_slice(
+            br#"{"schema_version":1,"outcome":"not_proven","repository_sha":"0123456789abcdef0123456789abcdef01234567","known_limitations":["DAP preview is not exercised"]}"#,
+        )?;
+        super::validate_installed_acceptance_source(
+            "installed_acceptance",
+            &receipt.child_receipts.installed_acceptance,
+            &receipt,
+            &source,
+        )?;
+        receipt.child_receipts.installed_acceptance.status = super::InputStatus::Pass;
+        assert!(
+            super::validate_installed_acceptance_source(
+                "installed_acceptance",
+                &receipt.child_receipts.installed_acceptance,
+                &receipt,
+                &source,
+            )
+            .is_err()
+        );
         Ok(())
     }
 
