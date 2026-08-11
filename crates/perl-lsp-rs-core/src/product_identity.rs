@@ -99,7 +99,7 @@ pub struct BuildIdentity {
     pub identity_state: BuildIdentityState,
 }
 
-/// Artifact and installation identity supplied by a trusted packager or installer.
+/// Artifact and installation identity supplied by a trusted external observer.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArtifactIdentity {
     /// Installation role.
@@ -141,7 +141,7 @@ pub struct BinaryIdentityPacketV1 {
     pub limitations: Vec<String>,
 }
 
-/// Explicit construction inputs used by tests and trusted packaging adapters.
+/// Explicit construction inputs used by tests and trusted external adapters.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BinaryIdentityInput {
     /// Source revision embedded by the build.
@@ -154,7 +154,7 @@ pub struct BinaryIdentityInput {
     pub profile: Option<String>,
     /// Installation role supplied by a trusted caller.
     pub artifact_role: Option<ArtifactRole>,
-    /// Artifact digest supplied by a trusted caller.
+    /// Artifact digest supplied by an external observer.
     pub artifact_digest: Option<String>,
     /// Candidate identity supplied by a trusted caller.
     pub candidate_identity: Option<String>,
@@ -201,6 +201,7 @@ impl BinaryIdentityPacketV1 {
         version: String,
         input: BinaryIdentityInput,
     ) -> Self {
+        let input = normalize_input(input);
         let identity_state = build_identity_state(&input);
         let mut limitations = Vec::new();
         if input.source_revision.is_none() {
@@ -303,24 +304,53 @@ pub fn requested_identity_output(args: &[String]) -> Option<IdentityOutputFormat
 
 fn embedded_build_input() -> BinaryIdentityInput {
     BinaryIdentityInput {
-        source_revision: option_env!("PERL_LSP_BUILD_REVISION").map(str::to_owned),
-        source_tree_digest: option_env!("PERL_LSP_SOURCE_TREE_DIGEST").map(str::to_owned),
-        target: option_env!("PERL_LSP_TARGET_TRIPLE").map(str::to_owned),
-        profile: option_env!("PERL_LSP_BUILD_PROFILE").map(str::to_owned),
+        source_revision: embedded_value(option_env!("PERL_LSP_BUILD_REVISION")),
+        source_tree_digest: embedded_value(option_env!("PERL_LSP_SOURCE_TREE_DIGEST")),
+        target: embedded_value(option_env!("PERL_LSP_TARGET_TRIPLE")),
+        profile: embedded_value(option_env!("PERL_LSP_BUILD_PROFILE")),
         artifact_role: embedded_artifact_role(),
-        artifact_digest: option_env!("PERL_LSP_ARTIFACT_SHA256").map(str::to_owned),
-        candidate_identity: option_env!("PERL_LSP_CANDIDATE_ID").map(str::to_owned),
+        // The final executable digest cannot truthfully be embedded into the
+        // executable whose bytes it measures. Installed/release observers bind
+        // this field after hashing the staged artifact.
+        artifact_digest: None,
+        candidate_identity: embedded_value(option_env!("PERL_LSP_CANDIDATE_ID")),
     }
 }
 
+fn embedded_value(value: Option<&str>) -> Option<String> {
+    value.and_then(|item| {
+        let normalized = item.trim();
+        (!normalized.is_empty()).then(|| normalized.to_owned())
+    })
+}
+
 fn embedded_artifact_role() -> Option<ArtifactRole> {
-    match option_env!("PERL_LSP_ARTIFACT_ROLE") {
+    match option_env!("PERL_LSP_ARTIFACT_ROLE").map(str::trim) {
         Some("managed") => Some(ArtifactRole::Managed),
         Some("user_supplied") => Some(ArtifactRole::UserSupplied),
         Some("package_install") => Some(ArtifactRole::PackageInstall),
         Some("archive") => Some(ArtifactRole::Archive),
         _ => None,
     }
+}
+
+fn normalize_input(input: BinaryIdentityInput) -> BinaryIdentityInput {
+    BinaryIdentityInput {
+        source_revision: normalize_value(input.source_revision),
+        source_tree_digest: normalize_value(input.source_tree_digest),
+        target: normalize_value(input.target),
+        profile: normalize_value(input.profile),
+        artifact_role: input.artifact_role,
+        artifact_digest: normalize_value(input.artifact_digest),
+        candidate_identity: normalize_value(input.candidate_identity),
+    }
+}
+
+fn normalize_value(value: Option<String>) -> Option<String> {
+    value.and_then(|item| {
+        let normalized = item.trim();
+        (!normalized.is_empty()).then(|| normalized.to_owned())
+    })
 }
 
 fn build_identity_state(input: &BinaryIdentityInput) -> BuildIdentityState {
@@ -394,11 +424,28 @@ mod tests {
     }
 
     #[test]
+    fn blank_build_inputs_cannot_claim_exact_identity() {
+        let packet = BinaryIdentityPacketV1::server(
+            "0.18.0",
+            BinaryIdentityInput {
+                source_revision: Some("  ".to_owned()),
+                target: Some(String::new()),
+                ..BinaryIdentityInput::default()
+            },
+        );
+
+        assert_eq!(packet.build.identity_state, BuildIdentityState::NotProven);
+        assert_eq!(packet.build.source_revision, None);
+        assert_eq!(packet.build.target, None);
+    }
+
+    #[test]
     fn workspace_identity_is_honestly_not_proven() {
         let packet = BinaryIdentityPacketV1::server("0.18.0", BinaryIdentityInput::default());
         assert_eq!(packet.build.identity_state, BuildIdentityState::NotProven);
         assert!(packet.limitations.iter().any(|value| value == "source_revision_not_embedded"));
         assert!(packet.limitations.iter().any(|value| value == "target_triple_not_embedded"));
+        assert_eq!(packet.artifact.digest, None);
     }
 
     #[test]
@@ -418,6 +465,12 @@ mod tests {
         let reversed_json = vec!["perllsp".to_owned(), "--json".to_owned(), "--info".to_owned()];
         let human = vec!["perllsp".to_owned(), "--identity".to_owned()];
         let mixed_server = vec!["perllsp".to_owned(), "--stdio".to_owned(), "--identity".to_owned()];
+        let terminated = vec![
+            "perllsp".to_owned(),
+            "--check".to_owned(),
+            "--".to_owned(),
+            "--identity".to_owned(),
+        ];
         let mixed_dap = vec![
             "perl-dap".to_owned(),
             "--external-peer".to_owned(),
@@ -431,6 +484,7 @@ mod tests {
         assert_eq!(requested_identity_output(&reversed_json), Some(IdentityOutputFormat::Json));
         assert_eq!(requested_identity_output(&human), Some(IdentityOutputFormat::Human));
         assert_eq!(requested_identity_output(&mixed_server), None);
+        assert_eq!(requested_identity_output(&terminated), None);
         assert_eq!(requested_identity_output(&mixed_dap), None);
     }
 }
