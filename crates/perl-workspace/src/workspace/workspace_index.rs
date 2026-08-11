@@ -4498,7 +4498,6 @@ impl WorkspaceIndex {
     /// responses, so completion can traverse indexed generated members without
     /// treating them as source-defined methods.
     pub fn get_generated_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
-        let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
         let mut members = Vec::new();
 
@@ -4506,7 +4505,6 @@ impl WorkspaceIndex {
             for entity in &shard.entities {
                 if entity.kind != EntityKind::GeneratedMember
                     || !is_framework_generated_member_entity(entity)
-                    || source_backed_qualified_names.contains(&entity.canonical_name)
                 {
                     continue;
                 }
