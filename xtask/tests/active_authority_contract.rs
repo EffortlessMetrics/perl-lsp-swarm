@@ -16,10 +16,7 @@ fn read(root: &Path, path: &str) -> Result<String, Box<dyn std::error::Error>> {
 
 fn assert_contains_all(surface: &str, name: &str, required: &[&str]) {
     for marker in required {
-        assert!(
-            surface.contains(marker),
-            "{name} must retain current-authority marker {marker:?}"
-        );
+        assert!(surface.contains(marker), "{name} must retain current-authority marker {marker:?}");
     }
 }
 
