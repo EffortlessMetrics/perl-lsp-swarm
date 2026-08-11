@@ -20,6 +20,32 @@ struct ParserAccuracyFixture {
     source_path: PathBuf,
     #[serde(default)]
     ast_expectations: Vec<AstExpectation>,
+    #[serde(default)]
+    forbidden_nodes: Vec<ForbiddenNode>,
+}
+
+/// A node shape that must NOT appear at a given position.
+///
+/// Positive expectations cannot reject an *extra* wrong node: the matcher asks
+/// whether some node matches, so a parser that emits the right node plus a
+/// spurious one still passes. Disambiguation fixtures need the other half —
+/// "the `q{}` braces did not open a block" is a different claim from "a String
+/// is present".
+///
+/// `line` is required, unlike the optional refinements on `AstExpectation`. A
+/// forbidden entry without a position would ban a kind across the whole file,
+/// and the kinds worth forbidding here (`Block`, `ExpressionStatement`) all
+/// occur legitimately elsewhere in the same fixture — `quote_like` contains
+/// `sub quote { ... }`, whose body is a perfectly good `Block`.
+#[derive(Debug, Deserialize)]
+struct ForbiddenNode {
+    id: String,
+    kind: String,
+    line: usize,
+    #[serde(default)]
+    parent_kind: Option<String>,
+    #[serde(default)]
+    depth: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +120,11 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
             assert_observed_expectation(&fixture.id, expectation, &observed);
             exercised += 1;
         }
+
+        for forbidden in &fixture.forbidden_nodes {
+            assert_node_absent(&fixture.id, forbidden, &observed);
+            exercised += 1;
+        }
     }
 
     assert!(exercised > 0, "selected parser accuracy e2e fixtures should include AST expectations");
@@ -159,6 +190,27 @@ fn assert_observed_expectation(
         matched,
         "fixture `{fixture_id}` missing AST expectation `{}`: expected kind `{}` on line {} containing {:?}",
         expectation.id, expectation.kind, expectation.line, expectation.span_text
+    );
+}
+
+fn assert_node_absent(fixture_id: &str, forbidden: &ForbiddenNode, observed: &[ObservedNode<'_>]) {
+    let offender = observed.iter().find(|node| {
+        node.kind == forbidden.kind
+            && node.line == forbidden.line
+            && forbidden
+                .parent_kind
+                .as_deref()
+                .is_none_or(|parent| node.parent_kind == Some(parent))
+            && forbidden.depth.is_none_or(|depth| node.depth == depth)
+    });
+
+    assert!(
+        offender.is_none(),
+        "fixture `{fixture_id}` violates forbidden node `{}`: found kind `{}` on line {} spanning {:?}",
+        forbidden.id,
+        forbidden.kind,
+        forbidden.line,
+        offender.map(|node| node.span_text).unwrap_or_default(),
     );
 }
 
