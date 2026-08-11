@@ -109,11 +109,8 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
 #[test]
 fn span_fixtures_preserve_the_bytes_they_measure() -> TestResult {
     let workspace_root = workspace_root();
-    let fixture_root = workspace_root
-        .join("crates")
-        .join("perl-corpus")
-        .join("fixtures")
-        .join("parser_accuracy");
+    let fixture_root =
+        workspace_root.join("crates").join("perl-corpus").join("fixtures").join("parser_accuracy");
 
     let crlf = fs::read(fixture_root.join("span_crlf.pl"))?;
     assert!(
@@ -122,16 +119,14 @@ fn span_fixtures_preserve_the_bytes_they_measure() -> TestResult {
     );
 
     let bom = fs::read(fixture_root.join("span_bom.pl"))?;
-    assert!(
-        bom.starts_with(b"\xef\xbb\xbf"),
-        "span_bom must begin with a UTF-8 BOM"
-    );
+    assert!(bom.starts_with(b"\xef\xbb\xbf"), "span_bom must begin with a UTF-8 BOM");
 
     let mixed = fs::read(fixture_root.join("span_mixed_newlines.pl"))?;
     let has_crlf = mixed.windows(2).any(|window| window == b"\r\n");
-    let has_lone_lf = mixed.iter().enumerate().any(|(index, byte)| {
-        *byte == b'\n' && (index == 0 || mixed[index - 1] != b'\r')
-    });
+    let has_lone_lf = mixed
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| *byte == b'\n' && (index == 0 || mixed[index - 1] != b'\r'));
     assert!(
         has_crlf && has_lone_lf,
         "span_mixed_newlines must contain both LF and CRLF line endings"
@@ -217,7 +212,9 @@ fn assert_observed_expectation(
                 .as_deref()
                 .is_none_or(|operator| node.operator.as_deref() == Some(operator))
             && match expectation.operator.as_deref() {
-                Some(_) => node.parent_operator.as_deref() == expectation.parent_operator.as_deref(),
+                Some(_) => {
+                    node.parent_operator.as_deref() == expectation.parent_operator.as_deref()
+                }
                 None => expectation
                     .parent_operator
                     .as_deref()

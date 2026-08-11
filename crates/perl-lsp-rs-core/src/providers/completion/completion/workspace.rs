@@ -2135,10 +2135,6 @@ fn semantic_file_id(uri: &str) -> FileId {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "policy:#2064: visible-symbol completion tests stay beside their filter seam"
-)]
 mod visible_symbol_completion_tests {
     use super::{VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate};
     use perl_semantic_facts::{Confidence, EntityId};
@@ -2442,9 +2438,11 @@ mod collect_all_tests {
 
     fn inherited_moo_parent_index() -> Arc<WorkspaceIndex> {
         let index = Arc::new(WorkspaceIndex::new());
-        must(index.index_file(
-            Url::parse("file:///workspace/Parent.pm").expect("parent url"),
-            r#"package Parent;
+        let parent_uri = must(Url::parse("file:///workspace/Parent.pm"));
+        must(
+            index.index_file(
+                parent_uri,
+                r#"package Parent;
 use Moo;
 has 'name' => (is => 'ro', isa => 'Str');
 has 'status' => (
@@ -2455,8 +2453,9 @@ has 'status' => (
 );
 1;
 "#
-            .to_string(),
-        ));
+                .to_string(),
+            ),
+        );
         index
     }
 
@@ -2478,7 +2477,7 @@ sub greet {
             collect_all_package_members_with_source(index.as_ref(), "Child", child_source);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
-            names.iter().any(|name| *name == "name"),
+            names.contains(&"name"),
             "expected inherited generated reader from Parent, got {names:?}"
         );
     }

@@ -7244,36 +7244,38 @@ has display_name => (is => 'rw');
     fn has_symbols_true_for_fact_shard_only_index() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///lib/Generated/FactOnly.pm"));
-        must(index.index_file(
-            uri,
-            r#"package Generated::FactOnly;
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::FactOnly;
 use Moo;
 has status => (is => 'rw');
 1;
 "#
-            .to_string(),
-        ));
-
-        assert!(
-            index.has_symbols(),
-            "fact-shard-only indexes must still be treated as populated"
+                .to_string(),
+            ),
         );
+
+        assert!(index.has_symbols(), "fact-shard-only indexes must still be treated as populated");
         Ok(())
     }
 
     #[test]
-    fn package_members_include_generated_framework_members() -> Result<(), Box<dyn std::error::Error>> {
+    fn package_members_include_generated_framework_members()
+    -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///lib/Generated/PackageMembers.pm"));
-        must(index.index_file(
-            uri,
-            r#"package Generated::PackageMembers;
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::PackageMembers;
 use Moo;
 has status => (is => 'rw', predicate => 1);
 1;
 "#
-            .to_string(),
-        ));
+                .to_string(),
+            ),
+        );
 
         let members = index.get_generated_package_members("Generated::PackageMembers");
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
@@ -7703,7 +7705,7 @@ sub other { foo(); return 1; }
             !refs.iter().any(|location| location.uri == uri_b),
             "bare foo() in PkgB must not appear in PkgA::foo references"
         );
-        assert!(refs.len() >= 1, "PkgA::foo references must include same-package sites");
+        assert!(!refs.is_empty(), "PkgA::foo references must include same-package sites");
     }
 
     #[test]
@@ -9254,8 +9256,9 @@ sub hello {
     /// task (`LspServer::run_post_parse_side_effects`'s `spawn_blocking`)
     /// completing after a later generation was merely attempted, not
     /// after it committed. Without rollback, the early guard's high-water
-    /// check (`existing.generation.max(existing.pending_generation) = 10
-    /// > 7`) rejects generation 7 outright -- `index_file_with_generation`
+    /// check (`existing.generation.max(existing.pending_generation) = 10,
+    /// which is greater than 7`) rejects generation 7 outright --
+    /// `index_file_with_generation`
     /// returns `Ok(())` but SILENTLY skips indexing it, permanently
     /// stranding the index at generation 3 even though generation 7's
     /// content was never anything but valid. With the rollback (this PR's

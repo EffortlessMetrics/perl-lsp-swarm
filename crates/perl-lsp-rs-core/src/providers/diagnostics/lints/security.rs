@@ -373,7 +373,7 @@ fn walk_security_node(
                 current_shadowed = walk_security_node(child, diagnostics, current_shadowed);
             });
             current_shadowed
-        },
+        }
     }
 }
 

@@ -99,7 +99,9 @@ impl CompletionContext {
             });
 
             match package_scope {
-                Some(scope) if scope.location.start <= position && position <= scope.location.end => {
+                Some(scope)
+                    if scope.location.start <= position && position <= scope.location.end =>
+                {
                     current = sym.name.clone();
                 }
                 Some(_) => {}
