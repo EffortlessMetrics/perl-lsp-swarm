@@ -8382,7 +8382,6 @@ has 'name' => (is => 'ro', isa => 'Str');
     Ok(index)
 }
 
-
 /// Index the parent package separately so these tests prove the workspace
 /// inheritance edge rather than merely finding declarations in one AST.
 fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
