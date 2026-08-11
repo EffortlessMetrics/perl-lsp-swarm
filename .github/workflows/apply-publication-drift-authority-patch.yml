@@ -1,0 +1,409 @@
+name: Apply publication drift authority patch
+
+on:
+  push:
+    branches:
+      - agent/publication-drift-classifier-6743
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-publication-drift-authority-patch
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          ref: agent/publication-drift-classifier-6743
+
+      - name: Apply authority and command repairs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from pathlib import Path
+
+          ROOT = Path.cwd()
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = ROOT / path
+              text = target.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement anchor, found {count}")
+              target.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "xtask/src/main.rs",
+              '''    /// Run version-sync checks from `perl-ci-hygiene`.
+              CheckVersionSync,
+
+              /// Sync active release narrative docs from workspace version and publish count.
+''',
+              '''    /// Run version-sync checks from `perl-ci-hygiene`.
+              CheckVersionSync,
+
+              /// Classify an exact-SHA publication-drift observation.
+              #[command(name = "publication-drift")]
+              PublicationDrift {
+                  /// Comparison observation JSON.
+                  #[arg(long)]
+                  input: PathBuf,
+
+                  /// Repository root used to resolve the authority manifest.
+                  #[arg(long, default_value = ".")]
+                  repo_root: PathBuf,
+
+                  /// Receipt JSON retained for clean and blocking verdicts.
+                  #[arg(long, default_value = "target/receipts/publication-drift.json")]
+                  out: PathBuf,
+              },
+
+              /// Sync active release narrative docs from workspace version and publish count.
+''',
+          )
+          replace_once(
+              "xtask/src/main.rs",
+              '''        Commands::CheckVersionSync => check_version_sync::run(),
+              Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
+''',
+              '''        Commands::CheckVersionSync => check_version_sync::run(),
+              Commands::PublicationDrift { input, repo_root, out } => {
+                  xtask::publication_drift::run_with_paths(input, repo_root, out)
+              }
+              Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
+''',
+          )
+
+          replace_once(
+              "xtask/src/publication_drift/mod.rs",
+              '''pub fn run_from_env() -> Result<()> {
+              color_eyre::install()?;
+              let args = Args::parse();
+              let observation = load_observation(&args.input)?;
+              let authority = load_authority(&args.repo_root, observation.manifest.as_ref());
+              let receipt = classify(observation, authority);
+              write_receipt(&args.out, &receipt)?;
+
+              match receipt.verdict {
+                  Verdict::Clean => {
+                      println!(
+                          "publication-drift: clean comparison {} -> {} at version {}",
+                          receipt.swarm.sha,
+                          receipt.public.sha,
+                          receipt.comparison_version.as_deref().unwrap_or("not-proven")
+                      );
+                      Ok(())
+                  }
+                  Verdict::Drift => bail!(
+                      "publication-drift: product drift detected; see {}",
+                      args.out.display()
+                  ),
+                  Verdict::NotProven => bail!(
+                      "publication-drift: comparison not proven; see {}",
+                      args.out.display()
+                  ),
+              }
+          }
+''',
+              '''pub fn run_from_env() -> Result<()> {
+              color_eyre::install()?;
+              let args = Args::parse();
+              run_with_paths(args.input, args.repo_root, args.out)
+          }
+
+          pub fn run_with_paths(input: PathBuf, repo_root: PathBuf, out: PathBuf) -> Result<()> {
+              let observation = load_observation(&input)?;
+              let authority = load_authority(&repo_root, observation.manifest.as_ref());
+              let receipt = classify(observation, authority);
+              write_receipt(&out, &receipt)?;
+
+              match receipt.verdict {
+                  Verdict::Clean => {
+                      println!(
+                          "publication-drift: clean comparison {} -> {} at version {}",
+                          receipt.swarm.sha,
+                          receipt.public.sha,
+                          receipt.comparison_version.as_deref().unwrap_or("not-proven")
+                      );
+                      Ok(())
+                  }
+                  Verdict::Drift => bail!(
+                      "publication-drift: product drift detected; see {}",
+                      out.display()
+                  ),
+                  Verdict::NotProven => bail!(
+                      "publication-drift: comparison not proven; see {}",
+                      out.display()
+                  ),
+              }
+          }
+''',
+          )
+
+          replace_once(
+              "xtask/src/publication_drift/model.rs",
+              '''pub(crate) struct PublicationManifest {
+              pub(crate) schema_version: u32,
+              pub(crate) swarm_sha: String,
+              pub(crate) public_sha: String,
+              pub(crate) version: String,
+''',
+              '''pub(crate) struct PublicationManifest {
+              pub(crate) schema_version: u32,
+              pub(crate) swarm_repository: String,
+              pub(crate) public_repository: String,
+              pub(crate) swarm_sha: String,
+              pub(crate) public_sha: String,
+              pub(crate) swarm_tree_digest: String,
+              pub(crate) public_tree_digest: String,
+              pub(crate) version: String,
+''',
+          )
+
+          replace_once(
+              "xtask/src/publication_drift/authority.rs",
+              '''    if document.schema_version != SUPPORTED_MANIFEST_SCHEMA_VERSION {
+                  valid = false;
+                  state.mark_not_proven(
+                      "unsupported_manifest_schema_version",
+                      format!(
+                          "unsupported comparison manifest schema version {}; expected {}",
+                          document.schema_version, SUPPORTED_MANIFEST_SCHEMA_VERSION
+                      ),
+                      "release-engineering",
+                  );
+              }
+              if document.swarm_sha != identity.swarm_sha || document.swarm_sha != swarm.sha {
+''',
+              '''    if document.schema_version != SUPPORTED_MANIFEST_SCHEMA_VERSION {
+                  valid = false;
+                  state.mark_not_proven(
+                      "unsupported_manifest_schema_version",
+                      format!(
+                          "unsupported comparison manifest schema version {}; expected {}",
+                          document.schema_version, SUPPORTED_MANIFEST_SCHEMA_VERSION
+                      ),
+                      "release-engineering",
+                  );
+              }
+              if !valid_repository_slug(&document.swarm_repository)
+                  || document.swarm_repository != swarm.repository
+              {
+                  valid = false;
+                  state.mark_not_proven(
+                      "manifest_swarm_repository_mismatch",
+                      format!(
+                          "comparison manifest swarm repository {:?} does not match {:?}",
+                          document.swarm_repository, swarm.repository
+                      ),
+                      "release-engineering",
+                  );
+              }
+              if !valid_repository_slug(&document.public_repository)
+                  || document.public_repository != public.repository
+              {
+                  valid = false;
+                  state.mark_not_proven(
+                      "manifest_public_repository_mismatch",
+                      format!(
+                          "comparison manifest public repository {:?} does not match {:?}",
+                          document.public_repository, public.repository
+                      ),
+                      "release-engineering",
+                  );
+              }
+              if !is_lower_hex(&document.swarm_tree_digest, 64)
+                  || document.swarm_tree_digest != swarm.tree_digest
+              {
+                  valid = false;
+                  state.mark_not_proven(
+                      "manifest_swarm_tree_digest_mismatch",
+                      format!(
+                          "comparison manifest swarm tree digest {:?} does not match {:?}",
+                          document.swarm_tree_digest, swarm.tree_digest
+                      ),
+                      "release-engineering",
+                  );
+              }
+              if !is_lower_hex(&document.public_tree_digest, 64)
+                  || document.public_tree_digest != public.tree_digest
+              {
+                  valid = false;
+                  state.mark_not_proven(
+                      "manifest_public_tree_digest_mismatch",
+                      format!(
+                          "comparison manifest public tree digest {:?} does not match {:?}",
+                          document.public_tree_digest, public.tree_digest
+                      ),
+                      "release-engineering",
+                  );
+              }
+              if document.swarm_sha != identity.swarm_sha || document.swarm_sha != swarm.sha {
+''',
+          )
+
+          replace_once(
+              "xtask/src/publication_drift/tests.rs",
+              '''#[test]
+          fn manifest_version_must_match_comparison_version() -> Result<()> {
+''',
+              '''#[test]
+          fn manifest_repository_identity_must_match_subjects() -> Result<()> {
+              let observation = clean_observation()?;
+              let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
+              document.swarm_repository = "other/repository".to_string();
+              let source = AuthoritySource::Loaded(LoadedManifest {
+                  document,
+                  actual_sha256: manifest_digest(),
+              });
+              let receipt = classify(observation, source);
+              if receipt.verdict != Verdict::NotProven {
+                  bail!("manifest repository mismatch returned {:?}", receipt.verdict);
+              }
+              assert_blocker(&receipt, "manifest_swarm_repository_mismatch")
+          }
+
+          #[test]
+          fn manifest_tree_digest_must_match_subjects() -> Result<()> {
+              let observation = clean_observation()?;
+              let mut document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
+              document.public_tree_digest = "f".repeat(64);
+              let source = AuthoritySource::Loaded(LoadedManifest {
+                  document,
+                  actual_sha256: manifest_digest(),
+              });
+              let receipt = classify(observation, source);
+              if receipt.verdict != Verdict::NotProven {
+                  bail!("manifest tree mismatch returned {:?}", receipt.verdict);
+              }
+              assert_blocker(&receipt, "manifest_public_tree_digest_mismatch")
+          }
+
+          #[test]
+          fn manifest_version_must_match_comparison_version() -> Result<()> {
+''',
+          )
+
+          replace_once(
+              "xtask/tests/publication_drift_cli.rs",
+              '''#[test]
+          fn known_windows_drift_blocks_after_writing_drift_receipt() -> Result<()> {
+''',
+              '''#[test]
+          fn cargo_xtask_surface_uses_the_same_clean_authority() -> Result<()> {
+              let root = repo_root();
+              let temp = TempDir::new()?;
+              let receipt_path = temp.path().join("xtask-clean-receipt.json");
+
+              let mut command = cargo_bin_cmd!("xtask");
+              let output = command
+                  .arg("publication-drift")
+                  .arg("--input")
+                  .arg(root.join("fixtures/publication_drift/clean.json"))
+                  .arg("--repo-root")
+                  .arg(&root)
+                  .arg("--out")
+                  .arg(&receipt_path)
+                  .output()?;
+
+              assert!(
+                  output.status.success(),
+                  "cargo xtask publication-drift failed; stderr={}",
+                  String::from_utf8_lossy(&output.stderr)
+              );
+              let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
+              assert_eq!(receipt["verdict"].as_str(), Some("clean"));
+              assert_eq!(receipt["authority_valid"].as_bool(), Some(true));
+              Ok(())
+          }
+
+          #[test]
+          fn known_windows_drift_blocks_after_writing_drift_receipt() -> Result<()> {
+''',
+          )
+
+          schema_path = ROOT / "schemas/publication_manifest.v1.schema.json"
+          schema = json.loads(schema_path.read_text())
+          required = schema["required"]
+          for field in [
+              "swarm_repository",
+              "public_repository",
+              "swarm_tree_digest",
+              "public_tree_digest",
+          ]:
+              if field not in required:
+                  required.append(field)
+          schema["properties"]["swarm_repository"] = {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          }
+          schema["properties"]["public_repository"] = {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          }
+          schema["properties"]["swarm_tree_digest"] = {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+          }
+          schema["properties"]["public_tree_digest"] = {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+          }
+          schema_path.write_text(json.dumps(schema, indent=2) + "\n")
+
+          manifest_path = ROOT / "fixtures/publication_drift/publication_manifest.v1.json"
+          old_manifest = json.loads(manifest_path.read_text())
+          manifest = {
+              "schema_version": old_manifest["schema_version"],
+              "swarm_repository": "EffortlessMetrics/perl-lsp-swarm",
+              "public_repository": "EffortlessMetrics/perl-lsp",
+              "swarm_sha": old_manifest["swarm_sha"],
+              "public_sha": old_manifest["public_sha"],
+              "swarm_tree_digest": "d" * 64,
+              "public_tree_digest": "e" * 64,
+              "version": old_manifest["version"],
+              "rules": old_manifest["rules"],
+              "required_invariants": old_manifest["required_invariants"],
+          }
+          manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode()
+          manifest_path.write_bytes(manifest_bytes)
+          digest = hashlib.sha256(manifest_bytes).hexdigest()
+
+          fixture_root = ROOT / "fixtures/publication_drift"
+          for fixture_path in sorted(fixture_root.glob("*.json")):
+              if fixture_path == manifest_path:
+                  continue
+              document = json.loads(fixture_path.read_text())
+              identity = document.get("manifest")
+              if isinstance(identity, dict):
+                  identity["sha256"] = digest
+                  fixture_path.write_text(json.dumps(document, indent=2) + "\n")
+          PY
+
+      - name: Verify focused formatting and tests
+        shell: bash
+        run: |
+          cargo fmt -p xtask -- --check
+          cargo test -p xtask --lib --locked publication_drift
+          cargo test -p xtask --test publication_drift_cli --locked
+
+      - name: Commit the verified repair and remove this executor
+        shell: bash
+        run: |
+          git rm .github/workflows/apply-publication-drift-authority-patch.yml
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git commit -m "fix(release): bind publication drift command authority (#6743)"
+          git push origin HEAD:agent/publication-drift-classifier-6743
