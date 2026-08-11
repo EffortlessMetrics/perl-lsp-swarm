@@ -122,10 +122,7 @@ running anything:
   candidate's merge base — `git merge-base --is-ancestor <repair> <pr-merge-base>` —
   rather than whether `main` is currently green. A red that predates the merge base is
   base-owned, and refreshing the branch is the repair, not more proof;
-- **by construction.** A gate derived from a property the candidate cannot affect cannot
-  be candidate-owned. A check keyed on the tracked path set, for example, is not
-  reachable by a candidate that adds and deletes no files, which the changed-file list
-  settles without a build.
+- **by construction.** A gate derived from a property the candidate cannot affect is not candidate-owned. For path-based gates, compare against the full changed-path set, including modified and renamed paths, not only additions and deletions; the changed paths can settle the question without a build.
 
 State which discriminator was used. An unclassified red is `NOT_PROVEN`, not someone
 else's problem: "this also fails on main" is a claim about the wrong tree unless the
