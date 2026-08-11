@@ -4163,7 +4163,7 @@ print \"unreachable\\n\";\n";
 
         Ok(())
     }
-    
+
     /// Regression: workspace-wide dead-code analysis must not publish from a
     /// fresh target URI while another edited open document is stale.
     #[cfg(feature = "workspace")]
@@ -4201,5 +4201,4 @@ print \"unreachable\\n\";\n";
 
         Ok(())
     }
-
 }
