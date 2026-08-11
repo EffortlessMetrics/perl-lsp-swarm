@@ -504,7 +504,7 @@ export async function activate(context: vscode.ExtensionContext) {
     registerMcpSupport(outputChannel),
   );
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.command = 'perl-lsp.showStatusMenu';
+  statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
     label: 'Perl Language Server',
     role: 'button',
@@ -613,6 +613,17 @@ export async function activate(context: vscode.ExtensionContext) {
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
             ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
+            ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
+            ...(widget?.readinessState ? { readinessState: widget.readinessState } : {}),
+            ...(widget?.readinessReason ? { readinessReason: widget.readinessReason } : {}),
+            ...(widget?.experienceAction ? { nextAction: widget.experienceAction } : {}),
+            ...(vscode.window.activeTextEditor
+              ? {
+                  activeDocumentReady: activeDocumentReadiness.isReady(
+                    vscode.window.activeTextEditor.document.uri.toString(),
+                  ),
+                }
+              : {}),
           };
         },
       }),
