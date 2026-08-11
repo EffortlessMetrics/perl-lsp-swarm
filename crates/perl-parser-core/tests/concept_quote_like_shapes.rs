@@ -28,11 +28,12 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
         "my $message = q{hello};\n",
         "$message =~ s/hello/hello world/g;\n",
         "$message =~ tr/a-z/A-Z/;\n",
+        "$message =~ y{a-z}{A-Z}r;\n",
         "return qq{$message};\n",
     );
     let ast = parse_clean(source)?;
     let mut substitution_seen = false;
-    let mut transliteration_seen = false;
+    let mut transliterations = Vec::new();
     let mut quote_spans = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
@@ -64,15 +65,15 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
                 &expr.kind,
                 NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
             ));
-            assert_eq!(search, "a-z");
-            assert_eq!(replace, "A-Z");
-            assert!(modifiers.is_empty());
-            assert!(!negated);
-            assert_eq!(
-                source.get(node.location.start..node.location.end),
-                Some("$message =~ tr/a-z/A-Z/")
-            );
-            transliteration_seen = true;
+            if let Some(text) = source.get(node.location.start..node.location.end) {
+                transliterations.push((
+                    text.to_owned(),
+                    search.clone(),
+                    replace.clone(),
+                    modifiers.clone(),
+                    *negated,
+                ));
+            }
         }
         NodeKind::String { .. } => {
             if let Some(text) = source.get(node.location.start..node.location.end)
@@ -84,9 +85,29 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
         _ => {}
     });
 
+    transliterations.sort();
     quote_spans.sort();
     assert!(substitution_seen, "substitution node was not preserved");
-    assert!(transliteration_seen, "transliteration node was not preserved");
+    assert_eq!(
+        transliterations,
+        vec![
+            (
+                "$message =~ tr/a-z/A-Z/".to_string(),
+                "a-z".to_string(),
+                "A-Z".to_string(),
+                String::new(),
+                false,
+            ),
+            (
+                "$message =~ y{a-z}{A-Z}r".to_string(),
+                "a-z".to_string(),
+                "A-Z".to_string(),
+                "r".to_string(),
+                false,
+            ),
+        ],
+        "tr and y spellings must retain the same payload contract with their own modifiers"
+    );
     assert_eq!(quote_spans, vec!["q{hello}", "qq{$message}"]);
     Ok(())
 }
