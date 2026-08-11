@@ -66,6 +66,23 @@ fn same_character_qw_stops_before_declaration_keywords() -> Result<(), String> {
 }
 
 #[test]
+fn self_delimited_qw_handles_cr_only_recovery_and_closer_preservation() -> Result<(), String> {
+    let input = "my @items = qw[word1\\rwarn foo;\\r];";
+    let span = qw_recovery_span(input, LexerConfig::default())?;
+    if span != "qw[word1\\r" {
+        return Err(format!("CR-only qw recovery consumed its follower: {span:?}"));
+    }
+
+    let tokens = PerlLexer::new(input).collect_tokens();
+    if tokens.iter().any(|token| {
+        matches!(token.token_type, TokenType::Error(_)) && token.text.starts_with("qw")
+    }) {
+        return Err(format!("valid closer was not preserved for CR-only input: {tokens:?}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn self_delimited_qw_preserves_a_valid_closer_after_recovery() {
     let input = "my @items = qw[word1\nwarn foo;\n];";
     let tokens = PerlLexer::new(input).collect_tokens();
