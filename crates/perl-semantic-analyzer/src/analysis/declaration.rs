@@ -367,7 +367,6 @@ impl<'a> DeclarationProvider<'a> {
                             _ => None,
                         }
                     }
-                    GotoTargetForm::Expr => None,
                     _ => None,
                 }
             }
