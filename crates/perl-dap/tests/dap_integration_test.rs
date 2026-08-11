@@ -3,7 +3,7 @@ use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::json;
 use std::fs::write;
 use std::sync::mpsc::sync_channel;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -40,14 +40,19 @@ print "x=$x\n";
         _ => return Err("Expected initialize response".into()),
     }
 
-    // The adapter must complete the protocol lifecycle before launch is considered valid.
-    let initialized = rx
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| "Timed out waiting for initialized event")?;
-    assert!(
-        matches!(&initialized, DapMessage::Event { event, .. } if event == "initialized"),
-        "Expected initialized event, got {initialized:?}"
-    );
+    // Require the lifecycle event, while tolerating unrelated protocol events.
+    let initialized_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = initialized_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Timed out waiting for initialized event".into());
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(DapMessage::Event { event, .. }) if event == "initialized" => break,
+            Ok(_) => continue,
+            Err(_) => return Err("Timed out waiting for initialized event".into()),
+        }
+    }
 
     // Launch
     let launch_args = json!({
@@ -60,13 +65,18 @@ print "x=$x\n";
         DapMessage::Response { success, message, .. } => {
             assert!(success, "Launch should succeed, got: {message:?}");
 
-            let stopped = rx
-                .recv_timeout(Duration::from_secs(3))
-                .map_err(|_| "Timed out waiting for stopped event")?;
-            assert!(
-                matches!(&stopped, DapMessage::Event { event, .. } if event == "stopped"),
-                "Expected stopped event, got {stopped:?}"
-            );
+            let stopped_deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let remaining = stopped_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err("Timed out waiting for stopped event".into());
+                }
+                match rx.recv_timeout(remaining) {
+                    Ok(DapMessage::Event { event, .. }) if event == "stopped" => break,
+                    Ok(_) => continue,
+                    Err(_) => return Err("Timed out waiting for stopped event".into()),
+                }
+            }
         }
         _ => return Err("Expected launch response".into()),
     }
