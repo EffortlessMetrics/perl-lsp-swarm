@@ -96,7 +96,27 @@ def main() -> int:
         command = cargo_command(targets)
         print("parser integration targets:", ", ".join(f"{package}:{target}" for package, target in targets))
         print("running:", " ".join(command))
-        return subprocess.run(command, cwd=ROOT, check=False).returncode
+        result = subprocess.run(command, cwd=ROOT, check=False)
+        if result.returncode != 0:
+            return result.returncode
+
+        # Feature-gated parser tests are not exercised by the default target
+        # command. Keep this explicit proof in the same bounded parser gate.
+        incremental_command = [
+            "cargo",
+            "test",
+            "--locked",
+            "--package",
+            "perl-parser",
+            "--features",
+            "incremental",
+            "--test",
+            "incremental_parser_accuracy",
+            "--",
+            "--test-threads=4",
+        ]
+        print("running:", " ".join(incremental_command))
+        return subprocess.run(incremental_command, cwd=ROOT, check=False).returncode
     except (OSError, RuntimeError, ValueError) as error:
         print(f"parser integration guard failed: {error}", file=sys.stderr)
         return 2

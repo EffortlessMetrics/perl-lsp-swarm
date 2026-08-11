@@ -519,11 +519,6 @@ where
             find_nodes_recursive(target, predicate, results);
             find_nodes_recursive(keys, predicate, results);
         }
-        NodeKind::ChainedComparison { operands, .. } => {
-            for operand in operands {
-                find_nodes_recursive(operand, predicate, results);
-            }
-        }
         NodeKind::Unary { operand, .. } => {
             find_nodes_recursive(operand, predicate, results);
         }
@@ -741,5 +736,6 @@ where
                 find_nodes_recursive(item, predicate, results);
             }
         }
+        &_ => {}
     }
 }
