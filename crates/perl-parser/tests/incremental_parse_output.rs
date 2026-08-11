@@ -69,6 +69,28 @@ fn initial_malformed_state_keeps_the_native_recovered_tree_and_diagnostics() -> 
 }
 
 #[test]
+fn empty_edit_batch_preserves_the_current_generation_without_parser_work() -> TestResult {
+    let source = "my $x = ; print 1;";
+    let mut state = IncrementalState::new(source.to_string());
+    let before = state.parse_output.clone();
+    let token_count = state.tokens.len();
+    assert!(!before.diagnostics.is_empty(), "fixture must preserve recovered output");
+
+    let result = apply_edits(&mut state, &[])?;
+
+    assert_eq!(state.source, source);
+    assert!(result.changed_ranges.is_empty());
+    assert_eq!(result.reparsed_bytes, 0);
+    assert_eq!(result.reused_tokens, token_count);
+    assert_eq!(result.token_count, token_count);
+    assert_eq!(state.tokens.len(), token_count);
+    assert_output_equivalent(&state.parse_output, &before);
+    assert_output_equivalent(&result.parse_output, &before);
+
+    Ok(())
+}
+
+#[test]
 fn clean_to_malformed_edit_returns_the_current_native_parse_output() -> TestResult {
     let source = "my $x = 1; print 2;";
     let start = source.find("= 1").ok_or("clean fixture lost its initializer")? + 2;
