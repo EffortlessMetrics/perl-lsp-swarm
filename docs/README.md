@@ -74,7 +74,7 @@ For complete workspace membership and canonical crate/version truth, use [`../Ca
 | choose the right Diátaxis doc type before writing | [reference/DOCUMENTATION_GUIDE.md](reference/DOCUMENTATION_GUIDE.md) |
 | tune performance or threading | [how-to/PERFORMANCE_TUNING.md](how-to/PERFORMANCE_TUNING.md), [how-to/THREADING_CONFIGURATION_GUIDE.md](how-to/THREADING_CONFIGURATION_GUIDE.md) |
 | work with DAP workflows | [tutorials/DAP_USER_GUIDE.md](tutorials/DAP_USER_GUIDE.md) |
-| understand project architecture | [reference/ARCHITECTURE.md](reference/ARCHITECTURE.md), [reference/CRATE_ARCHITECTURE_GUIDE.md](reference/ARCHITECTURE.md) |
+| understand project architecture | [reference/ARCHITECTURE.md](reference/ARCHITECTURE.md), [reference/CRATE_ARCHITECTURE_GUIDE.md](reference/CRATE_ARCHITECTURE_GUIDE.md) |
 | understand measured editor trust and the long-term Rust Perl path | [explanation/MEASURED_PERL_EDITOR_TRUST.md](explanation/MEASURED_PERL_EDITOR_TRUST.md) |
 | check known limitations and parser support | [reference/KNOWN_LIMITATIONS.md](reference/KNOWN_LIMITATIONS.md), [reference/PARSER_FEATURE_MATRIX.md](reference/PARSER_FEATURE_MATRIX.md) |
 | see what is true now | [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) |
