@@ -59,7 +59,8 @@ pub fn classify_transition(
             }
             if current.mode != value.mode {
                 identity_mismatches.push(format!(
-                    "mode differs (accepted {}, current {})", value.mode, current.mode
+                    "mode differs (accepted {}, current {})",
+                    value.mode, current.mode
                 ));
             }
             if current.profile != value.profile {
