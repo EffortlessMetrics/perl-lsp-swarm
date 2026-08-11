@@ -238,7 +238,31 @@ fn expected_topology_asset(receipt: &Receipt) -> Result<String> {
     Ok(format!("perllsp-{}-{}.{}", candidate.candidate_version, candidate.target, extension))
 }
 
+fn expected_platform_for_topology_target(target: &serde_json::Value) -> Option<String> {
+    let os = target.get("os")?.as_str()?;
+    let architecture = target.get("architecture")?.as_str()?;
+    Some(format!("{os}-{architecture}"))
+}
+
+fn validate_platform_target_pair(receipt: &Receipt) -> Result<()> {
+    if receipt.candidate.platform.is_empty() || receipt.candidate.target.is_empty() {
+        bail!("candidate platform and target must both be present");
+    }
+    if receipt.candidate.platform.contains('-') && receipt.candidate.target.contains('-') {
+        let platform_os = receipt.candidate.platform.split('-').next().unwrap_or("");
+        if receipt.candidate.target.contains("windows") != (platform_os == "windows") {
+            bail!(
+                "candidate platform {} is inconsistent with target {}",
+                receipt.candidate.platform,
+                receipt.candidate.target
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_topology_path(receipt: &Receipt) -> Result<()> {
+    validate_platform_target_pair(receipt)?;
     let expected_path_id =
         format!("{}-{}", receipt.transition.path.topology_prefix(), receipt.candidate.platform);
     if receipt.transition.topology_path_id != expected_path_id {
@@ -296,6 +320,7 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 }
 
 fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
+    validate_platform_target_pair(receipt)?;
     let bytes =
         fs::read(path).with_context(|| format!("reading release topology {}", path.display()))?;
     let digest = sha256_bytes(&bytes);
@@ -352,6 +377,20 @@ fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
                 receipt.candidate.target
             )
         })?;
+    let expected_platform = expected_platform_for_topology_target(target).ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "release topology target {} is missing os/architecture identity",
+            receipt.candidate.target
+        )
+    })?;
+    if receipt.candidate.platform != expected_platform {
+        bail!(
+            "receipt platform {} does not match topology target {} (expected platform {})",
+            receipt.candidate.platform,
+            receipt.candidate.target,
+            expected_platform
+        );
+    }
     if target["archive_name"] != receipt.transition.expected_asset {
         bail!("release topology archive does not match expected asset");
     }
@@ -622,6 +661,12 @@ mod tests {
     }
 
     fn topology_for(receipt: &Receipt) -> serde_json::Value {
+        let windows = receipt.candidate.platform.starts_with("windows-");
+        let binary_members = if windows {
+            ["perllsp.exe", "perl-dap.exe"]
+        } else {
+            ["perllsp", "perl-dap"]
+        };
         serde_json::json!({
             "schema": 1,
             "release": receipt.candidate.candidate_version,
@@ -630,13 +675,19 @@ mod tests {
             "prepared_swarm_sha": receipt.candidate.prepared_swarm_sha,
             "binary_targets": [{
                 "target": receipt.candidate.target,
+                "os": if windows { "windows" } else { "linux" },
+                "architecture": if receipt.candidate.target.starts_with("aarch64") { "aarch64" } else { "x86_64" },
+                "libc": if windows { serde_json::Value::Null } else { serde_json::json!("gnu") },
+                "runner": if windows { "windows-latest" } else { "ubuntu-latest" },
                 "archive_name": receipt.transition.expected_asset,
-                "required_members": ["perllsp.exe", "perl-dap.exe"]
+                "required_members": binary_members,
             }],
             "vsix": {
                 "version": receipt.candidate.extension_version,
                 "asset_name": format!("perl-lsp-rs-{}.vsix", receipt.candidate.extension_version),
-                "package_path": "vscode-extension"
+                "package_path": "vscode-extension",
+                "managed_targets": [receipt.candidate.target.clone()],
+                "bundled_targets": [receipt.candidate.target.clone()],
             }
         })
     }
@@ -681,6 +732,27 @@ mod tests {
             Ok(()) => bail!("topology digest mismatch unexpectedly passed"),
             Err(error) => {
                 assert!(format!("{error:#}").contains("digest mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn platform_target_mismatch_is_rejected() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        receipt.candidate.platform = "linux-x86_64".to_string();
+        receipt.candidate.target = "x86_64-pc-windows-msvc".to_string();
+        let directory = tempdir()?;
+        let topology = serde_json::to_vec(&topology_for(&receipt))?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &topology)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&topology);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("platform/target mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("inconsistent with target"));
             }
         }
         Ok(())
