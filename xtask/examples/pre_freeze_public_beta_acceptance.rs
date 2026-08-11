@@ -4,7 +4,10 @@
 //! artifact, platform, journey, and mechanism evidence without claiming that
 //! the packet itself proves the underlying runtime observations.
 
-#![expect(clippy::print_stdout, reason = "packet validator emits one concise machine-readable result")]
+#![expect(
+    clippy::print_stdout,
+    reason = "packet validator emits one concise machine-readable result"
+)]
 
 use clap::Parser;
 use color_eyre::eyre::{bail, Result};
