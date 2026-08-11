@@ -343,7 +343,7 @@ fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs
 fn write_runtime_identity(format: IdentityOutputFormat) -> anyhow::Result<()> {
     let packet = BinaryIdentityPacketV1::embedded_dap(env!("CARGO_PKG_VERSION"));
     match format {
-        IdentityOutputFormat::Human => writeln!(std::io::stdout(), "{}", packet.to_human())?,
+        IdentityOutputFormat::Human => write!(std::io::stdout(), "{}", packet.to_human())?,
         IdentityOutputFormat::Json => writeln!(std::io::stdout(), "{}", packet.to_json()?)?,
     }
     Ok(())
@@ -483,7 +483,7 @@ mod tests {
             rendered.contains("DAP socket transport"),
             "must name which listener failed: {rendered}"
         );
-        assert!(assert!(rendered.contains("perl-dap --socket --port"), "must suggest a remedy: {rendered}"));
+        assert!(rendered.contains("perl-dap --socket --port"), "must suggest a remedy: {rendered}");
         assert!(
             !rendered.contains("perllsp"),
             "must not send a debug-adapter user to the language server binary: {rendered}"
