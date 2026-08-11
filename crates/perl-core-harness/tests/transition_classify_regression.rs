@@ -5,7 +5,9 @@ use perl_core_harness::transition::{AcceptedBaseline, classify_transition};
 use perl_core_harness_types::{
     COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition,
     CompileBaseline, CompileBaselineV2, HarnessMode, HarnessProfile, HarnessRunner,
-    RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunSummary, RunnerStatus,
+    ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunSummary,
+    RunnerStatus, SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
+    SemanticBoundarySourceSpan,
 };
 use std::collections::BTreeMap;
 
@@ -151,6 +153,69 @@ fn typed_failure_inventory_change_is_not_no_change() -> TestResult {
         bail!("typed failure inventory change was not a correction candidate");
     }
     Ok(())
+}
+
+
+#[test]
+fn aggregate_summary_regression_is_not_hidden_by_file_results() -> TestResult {
+    let accepted = sample_v2_baseline(2, 2);
+    let mut current = sample_report(2, 2);
+    current.summary.files_passed = 1;
+    current.summary.files_failed = 1;
+    current.summary.tap_assertions_passed = 1;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::Regression
+        || classification.requires_candidate
+    {
+        bail!("aggregate summary regression was not classified as a non-candidate regression");
+    }
+    Ok(())
+}
+
+#[test]
+fn semantic_boundary_inventory_change_requires_candidate() -> TestResult {
+    let accepted = sample_v2_baseline(2, 2);
+    let mut current = sample_report(2, 2);
+    current.semantic_boundaries.push(sample_boundary());
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::ContractCorrectionCandidate
+        || !classification.requires_candidate
+        || !classification.semantic_boundary_change
+    {
+        bail!("semantic boundary change was not retained as a correction candidate");
+    }
+    Ok(())
+}
+
+#[test]
+fn file_result_metadata_change_requires_candidate() -> TestResult {
+    let accepted = sample_v2_baseline(2, 2);
+    let mut current = sample_report(2, 2);
+    current.file_results[0].assertions_total += 1;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    if classification.transition != CompatibilityTransition::ContractCorrectionCandidate
+        || !classification.requires_candidate
+    {
+        bail!("file-result metadata change was silently treated as no-change");
+    }
+    Ok(())
+}
+
+fn sample_boundary() -> ObservedSemanticBoundary {
+    ObservedSemanticBoundary {
+        path: "base/0.t".into(),
+        id: "dynamic-source".into(),
+        disposition: SemanticBoundaryDisposition::Unknown,
+        reason: "test boundary".into(),
+        source_span: SemanticBoundarySourceSpan { start: 0, end: 1 },
+        source_kind: "test".into(),
+        confidence: SemanticBoundaryConfidence::Unresolved,
+        blocks_compilation: false,
+        blocks_downstream_static_facts: true,
+        lock_scope: SemanticBoundaryLockScope::None,
+        owner_workstream: "compiler_conformance".into(),
+        supporting_test: "transition_classify_regression".into(),
+    }
 }
 
 fn sample_report(total: usize, passed: usize) -> RunReport {
