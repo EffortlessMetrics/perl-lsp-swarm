@@ -231,9 +231,13 @@ pub fn run_staged() -> Result<()> {
         // The config actually being committed — see `staged_rustfmt_config`.
         let config_text = staged_rustfmt_config()?;
 
+        // Index modes, so a staged symlink is recognised before it is read.
+        let index_modes = staged_index_modes()?;
+
         // Phase 1 — format in memory. Nothing on disk is touched yet.
         let mut pending: Vec<FormattedFile> = Vec::new();
         let mut unowned: Vec<&Path> = Vec::new();
+        let mut irregular: Vec<&Path> = Vec::new();
         for path in &to_format {
             let Some(package) = owning_package(path, &packages) else {
                 // No package means no edition, and guessing one would format
@@ -244,6 +248,30 @@ pub fn run_staged() -> Result<()> {
             // git paths are repository-relative and this may run from a
             // subdirectory, so resolve against the git root.
             let absolute = root.join(path);
+
+            // Only ever rewrite a regular file, checked on both sides.
+            //
+            // `read_to_string` follows a symlink, but the commit phase renames
+            // a regular temp file over the link — so a staged `foo.rs` symlink
+            // became a regular file holding its target's bytes, and `git add`
+            // recorded that as a 120000 -> 100644 type change. Measured before
+            // the fix, with a target outside the source tree.
+            //
+            // The worktree type alone is not enough: the index is what gets
+            // committed, so an entry the index calls a symlink is refused even
+            // if the worktree copy currently looks regular (and vice versa).
+            let worktree_regular = std::fs::symlink_metadata(&absolute)
+                .with_context(|| format!("failed to stat staged file {}", path.display()))?
+                .file_type()
+                .is_file();
+            let index_regular = index_modes
+                .get(path.as_path())
+                .is_none_or(|mode| mode == "100644" || mode == "100755");
+            if !worktree_regular || !index_regular {
+                irregular.push(path.as_path());
+                continue;
+            }
+
             let original = std::fs::read_to_string(&absolute)
                 .with_context(|| format!("failed to read staged file {}", path.display()))?;
             let formatted = rustfmt_text(
@@ -270,6 +298,18 @@ pub fn run_staged() -> Result<()> {
                 "Left {} staged Rust file(s) outside every workspace package to the gate.",
                 unowned.len()
             );
+        }
+
+        if !irregular.is_empty() {
+            println!();
+            println!(
+                "Left {} staged path(s) untouched — they are not regular files, and formatting",
+                irregular.len()
+            );
+            println!("one would replace it with a regular file holding its target's bytes:");
+            for path in &irregular {
+                println!("   {}", path.display());
+            }
         }
     }
 
@@ -564,14 +604,61 @@ fn write_file_atomically(path: &Path, text: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| eyre!("cannot write {} — it has no parent directory", path.display()))?;
+
+    // The destination's mode must be carried onto the replacement. `persist`
+    // renames, so the file the author ends up with is the *temp* file, and
+    // `NamedTempFile` creates at 0600. Without this, every formatted file
+    // silently became owner-only — and an executable `.rs` lost its exec bit,
+    // which `git add` then recorded as a real 100755 -> 100644 index change.
+    // Measured before the fix: 644 -> 600, and 755/100755 -> 600/100644.
+    //
+    // Read before writing anything, so a mode we cannot determine aborts the
+    // write instead of silently downgrading the file.
+    let permissions = std::fs::metadata(path)
+        .with_context(|| format!("failed to read the current mode of {}", path.display()))?
+        .permissions();
+
     // Same directory, because a rename across filesystems is not atomic (and
     // on many systems simply fails).
     let mut file = tempfile::NamedTempFile::new_in(parent)
         .with_context(|| format!("failed to create a temp file beside {}", path.display()))?;
     file.write_all(text.as_bytes())
         .with_context(|| format!("failed to write formatted bytes for {}", path.display()))?;
+    file.as_file().set_permissions(permissions).with_context(|| {
+        format!("failed to carry the mode of {} onto its replacement", path.display())
+    })?;
     file.persist(path).map_err(|error| eyre!("failed to replace {}: {error}", path.display()))?;
     Ok(())
+}
+
+/// Staged entries as `path -> index mode`, e.g. `100644`, `100755`, `120000`.
+///
+/// `git ls-files -s -z` emits `<mode> <object> <stage>\t<path>\0`, so the mode
+/// is the leading field and the path is everything past the first tab —
+/// NUL-terminated, and therefore safe for paths containing newlines.
+fn staged_index_modes() -> Result<HashMap<PathBuf, String>> {
+    let out = cmd("git", ["-c", "core.quotePath=false", "ls-files", "-s", "-z"])
+        .stdout_capture()
+        .unchecked()
+        .run()
+        .context("failed to run git ls-files -s -z")?;
+    if !out.status.success() {
+        return Err(eyre!("git ls-files -s -z failed"));
+    }
+
+    let mut modes = HashMap::new();
+    for record in out.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+        let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let (meta, path) = record.split_at(tab);
+        let Some(mode) = String::from_utf8_lossy(meta).split_whitespace().next().map(String::from)
+        else {
+            continue;
+        };
+        modes.insert(bytes_to_path(&path[1..])?, mode);
+    }
+    Ok(modes)
 }
 
 fn git_add_paths(paths: &[&Path]) -> Result<()> {
@@ -893,6 +980,30 @@ mod tests {
     #[test]
     fn nothing_staged_yields_no_actions() {
         assert!(classify_staged_paths(&[], &unstaged(&["crates/a/src/lib.rs"])).is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn writing_a_file_preserves_its_mode_including_the_executable_bit() -> Result<()> {
+        // `persist` renames, so the file the author keeps is the *temp* file,
+        // and NamedTempFile creates at 0600. Measured before this was fixed:
+        // 644 -> 600, and an executable 755/100755 -> 600/100644, which `git
+        // add` recorded as a real index-mode change in the commit.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        for mode in [0o644, 0o755] {
+            let path = dir.path().join(format!("probe{mode:o}.rs"));
+            std::fs::write(&path, "fn a() {}\n")?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+
+            super::write_file_atomically(&path, "fn b() {}\n")?;
+
+            let after = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+            assert_eq!(after, mode, "mode {mode:o} must survive the atomic replace, got {after:o}");
+            assert_eq!(std::fs::read_to_string(&path)?, "fn b() {}\n");
+        }
+        Ok(())
     }
 
     #[test]
