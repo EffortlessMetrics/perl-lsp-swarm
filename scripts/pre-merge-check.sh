@@ -78,7 +78,7 @@ if [[ "$REVIEW_RC" -ge 2 || -z "$REVIEW_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<
     FAILED=1
 else
     REVIEW_CURRENTNESS="$(jq -r '.review_currentness // empty' <<<"$REVIEW_JSON")"
-    EXACT_HEAD_REQUIRED="$(jq -r '.exact_head_review_required // empty' <<<"$REVIEW_JSON")"
+    EXACT_HEAD_REQUIRED="$(jq -r '.exact_head_review_required' <<<"$REVIEW_JSON")"
 
     if [[ "$REVIEW_CURRENTNESS" != "semantic_changed_seam" || "$EXACT_HEAD_REQUIRED" != "false" ]]; then
         echo "FAIL PR #$PR: review facts did not come from the semantic convergence authority" >&2
