@@ -89,8 +89,9 @@ fn incremental_state_records_lex_and_parse_restart_points() -> Result<()> {
         "the lexer must retain a checkpoint at the document end"
     );
 
-    let package_start =
-        source.find("package").ok_or_else(|| anyhow::anyhow!("package declaration not found in source"))?;
+    let package_start = source
+        .find("package")
+        .ok_or_else(|| anyhow::anyhow!("package declaration not found in source"))?;
     let package_checkpoint = state
         .find_parse_checkpoint(package_start)
         .ok_or_else(|| anyhow::anyhow!("package declarations create parse checkpoints"))?;

@@ -559,7 +559,6 @@ fn static_typeglob_is_still_emitted_after_dynamic_fix() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
     let goto_package = Node::new(
@@ -593,9 +592,7 @@ fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
         loc(38, 57),
     );
     let program = Node::new(
-        NodeKind::Program {
-            statements: vec![goto_package, backslash_qualified, goto_deep],
-        },
+        NodeKind::Program { statements: vec![goto_package, backslash_qualified, goto_deep] },
         loc(0, 57),
     );
 

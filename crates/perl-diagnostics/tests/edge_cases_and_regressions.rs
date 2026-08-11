@@ -386,12 +386,8 @@ fn edge_case_diagnostic_code_tags_consistent() {
 // Edge case: Diagnostic struct Clone and PartialEq work correctly
 #[test]
 fn edge_case_diagnostic_clone_and_equality() {
-    let diag1 = Diagnostic::new(
-        DiagnosticCode::SyntaxError,
-        DiagnosticSeverity::Warning,
-        (10, 20),
-        "Test",
-    );
+    let diag1 =
+        Diagnostic::new(DiagnosticCode::SyntaxError, DiagnosticSeverity::Warning, (10, 20), "Test");
 
     let diag2 = diag1.clone();
 
