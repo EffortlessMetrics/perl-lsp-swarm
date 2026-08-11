@@ -49,7 +49,7 @@ Local `t/` paths and root `lib`, `dist`, `ext`, and `cpan` paths remain distinct
 
 ## Authority-check one plan
 
-A plan is not trusted merely because its digests look hexadecimal. Checking rebuilds it from the supplied matrix, target contract, raw discovery, and serialized scheduling declarations, then requires byte-equivalent typed state:
+A plan is not trusted merely because its digests look hexadecimal. Checking rebuilds it from the supplied matrix, target contract, raw discovery, and serialized scheduling declarations, then requires exact typed-state equality:
 
 ```bash
 cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
@@ -74,7 +74,7 @@ cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   target/perl-core/runner-plans/base-parity.json
 ```
 
-The command authority-checks both plans before comparing them. The parity receipt retains SHA-256 digests for the exact left and right plan bytes and both raw-discovery streams.
+The command authority-checks both plans before comparing them. The parity receipt retains SHA-256 digests for the canonical typed content of the left and right plans plus exact digests for both raw-discovery byte streams. JSON whitespace or object-key spelling does not change a plan digest after parsing; a typed field change does.
 
 `membership_status: parity` requires exact set equality between two **distinct non-fallback upstream runner kinds**, normally `test` and `harness`. A missing or extra file produces `mismatch`. A direct-fallback input or same-runner comparison produces `not_proven`, even when the visible file sets match. The corresponding limitation is mandatory and a forged `parity` or `mismatch` report fails validation.
 
@@ -93,7 +93,7 @@ cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   target/perl-core/runner-plans/base-parity.json
 ```
 
-This rebuilds both plans from their authorities, recomputes the comparison, and requires the serialized parity report to equal that result exactly. A detached report cannot survive plan, discovery, order, declared scheduling, runner, or limitation changes.
+This rebuilds both plans from their authorities, recomputes the comparison, and requires the serialized parity report to equal that result exactly. A detached report cannot survive typed plan-content, discovery, order, declared scheduling, runner, or limitation changes.
 
 ## Current claim boundary
 
