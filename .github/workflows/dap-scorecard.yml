@@ -44,6 +44,53 @@ env:
   DAP_SCORECARD_RAW_RECEIPT: target/dap_scorecard_receipt.json
 
 jobs:
+  repair_lexical_pagination:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/dap-scorecard-same-sha-6680'
+    name: Apply bounded lexical pagination repair once
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repair branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: agent/dap-scorecard-same-sha-6680
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Apply and verify bounded product repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/apply-dap-lexical-pagination-fix.py
+          cargo fmt --all
+          cargo test -p perl-dap build_locals_b_eval_cmd --locked
+          cargo test -p perl-dap parsed_lexical_array_preserves_a_deep_page --locked
+          python3 scripts/tests/test_dap_scorecard_runtime.py
+          python3 scripts/tests/test_dap_scorecard_packet.py
+          git diff --check
+
+      - name: Commit product repair and remove write-capable scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show HEAD^:.github/workflows/dap-scorecard.yml > .github/workflows/dap-scorecard.yml
+          git rm .github/workflows/dap-lexical-pagination-once.yml
+          git rm .github/scripts/apply-dap-lexical-pagination-fix.py
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix(dap): preserve lexical collection pagination'
+          git push origin HEAD:agent/dap-scorecard-same-sha-6680
+
   scorecard:
     name: DAP runtime scorecard
     runs-on: ubuntu-24.04
