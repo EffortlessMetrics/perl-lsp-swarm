@@ -325,7 +325,7 @@
         { "id": "typeglob_alias_original", "kind": "Subroutine", "line": 3, "span_text": "sub original", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
         { "id": "typeglob_alias_assignment", "kind": "Assignment", "line": 7, "span_text": "*alias = \\&original", "parent_kind": null, "depth": null, "operator": "=", "parent_operator": null },
         { "id": "typeglob_alias_typeglob", "kind": "Typeglob", "line": 7, "span_text": "*alias", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
-        { "id": "typeglob_alias_coderef", "kind": "AmperCall", "line": 7, "span_text": "\\&original", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
+        { "id": "typeglob_alias_coderef", "kind": "AmperCall", "line": 7, "span_text": "&original", "parent_kind": "Unary", "depth": 4, "operator": null, "parent_operator": null },
         { "id": "typeglob_alias_call", "kind": "FunctionCall", "line": 8, "span_text": "alias()", "parent_kind": null, "depth": null, "operator": null, "parent_operator": null }
       ]
     },
@@ -1410,7 +1410,7 @@
           "id": "qualified_refs_target_subroutine",
           "kind": "Subroutine",
           "line": 3,
-          "span_text": "sub target {\\n    return 1;\\n}",
+          "span_text": "sub target {\n    return 1;\n}",
           "parent_kind": "Program",
           "depth": 1,
           "operator": null,
@@ -1420,7 +1420,7 @@
           "id": "qualified_refs_caller_subroutine",
           "kind": "Subroutine",
           "line": 7,
-          "span_text": "sub caller {\\n    target();\\n    Accuracy::Refs::target();\\n}",
+          "span_text": "sub caller {\n    target();\n    Accuracy::Refs::target();\n}",
           "parent_kind": "Program",
           "depth": 1,
           "operator": null,

@@ -328,6 +328,7 @@ jobs:
               cargo fetch --locked
               cargo check --workspace --locked
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
               scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
               test "$scorecard_tests" -gt 0
@@ -485,6 +486,7 @@ jobs:
               cargo fetch --locked
               cargo check --workspace --locked
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
               scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
               test "$scorecard_tests" -gt 0
@@ -540,6 +542,7 @@ jobs:
           cargo fetch --locked
           cargo check --workspace --locked
           cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
           cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
           scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
           test "$scorecard_tests" -gt 0
@@ -611,6 +614,7 @@ jobs:
           cargo fetch --locked
           cargo check --workspace --locked
           cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
           cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
           scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
           test "$scorecard_tests" -gt 0
