@@ -229,7 +229,7 @@ mod tests {
         let body = lexed
             .tokens
             .iter()
-            .find(|token| matches!(token.token_type, TokenType::HeredocBody(_)))
+            .find(|token| matches!(&token.token_type, TokenType::HeredocBody(_)))
             .ok_or_else(|| anyhow::anyhow!("heredoc body token is missing"))?;
 
         assert!(
