@@ -231,10 +231,18 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
             "recovery fixture '{fixture_id}' produced no diagnostics ({})",
             expectation.id
         );
+        let expected_region = expectation.error_region.start..=expectation.error_region.end;
+        let error_node_spillover: Vec<_> = error_node_lines
+            .iter()
+            .filter(|line| !expected_region.contains(line))
+            .copied()
+            .collect();
         assert!(
-            error_node_lines.contains(&expectation.first_error_line),
-            "recovery fixture '{fixture_id}' produced no Error AST node on declared first error line {} ({})",
-            expectation.first_error_line,
+            error_node_spillover.is_empty(),
+            "recovery fixture '{fixture_id}' emitted Error AST nodes outside declared region {}..={}: {:?} ({})",
+            expectation.error_region.start,
+            expectation.error_region.end,
+            error_node_spillover,
             expectation.id
         );
         let mut error_lines = diagnostic_lines.clone();
