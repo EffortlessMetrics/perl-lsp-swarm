@@ -158,6 +158,7 @@ export class HealthWidget {
   seedIndexReadinessState(state: IndexReadinessState): void {
     this._readinessState = state;
     this._readinessReason = undefined;
+    this._clearProviderOutcome();
     if (this._activeTokens.size === 0) {
       this._applyReadinessLifecycle();
     }
@@ -168,6 +169,7 @@ export class HealthWidget {
     this._enhancedReadinessAvailable = true;
     this._readinessState = state;
     this._readinessReason = reason;
+    this._clearProviderOutcome();
     if (this._activeTokens.size === 0) {
       this._applyReadinessLifecycle();
     }
