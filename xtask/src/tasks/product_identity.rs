@@ -328,20 +328,19 @@ fn validate_facade_dependency(
     let mut matching_package_seen = false;
 
     for (alias, specification) in dependencies {
-        let effective_package = dependency_package_name(alias, specification);
-        if effective_package != implementation_crate {
-            continue;
-        }
-        matching_package_seen = true;
-
-        if dependency_resolves_to_path(
+        let (matches_package, resolves_to_source) = dependency_source_match(
             root_manifest,
             facade_manifest_path,
             alias,
             specification,
             implementation_crate,
             &expected_path,
-        )? {
+        )?;
+        if !matches_package {
+            continue;
+        }
+        matching_package_seen = true;
+        if resolves_to_source {
             return Ok(());
         }
     }
@@ -361,16 +360,16 @@ fn validate_facade_dependency(
     )
 }
 
-fn dependency_resolves_to_path(
+fn dependency_source_match(
     root_manifest: &toml::Value,
     facade_manifest_path: &Path,
     alias: &str,
     specification: &toml::Value,
     implementation_crate: &str,
     expected_path: &Path,
-) -> Result<bool> {
+) -> Result<(bool, bool)> {
     let Some(table) = specification.as_table() else {
-        return Ok(false);
+        return Ok((alias == implementation_crate, false));
     };
 
     if table
@@ -389,23 +388,23 @@ fn dependency_resolves_to_path(
                 alias
             )
         })?;
-        if dependency_package_name(alias, workspace_specification) != implementation_crate {
-            return Ok(false);
-        }
-        return dependency_path_matches(
-            Path::new(""),
-            workspace_specification,
-            expected_path,
-        );
+        let matches_package =
+            dependency_package_name(alias, workspace_specification) == implementation_crate;
+        let resolves_to_source = matches_package
+            && dependency_path_matches(Path::new(""), workspace_specification, expected_path)?;
+        return Ok((matches_package, resolves_to_source));
     }
 
+    let matches_package = dependency_package_name(alias, specification) == implementation_crate;
     let facade_dir = facade_manifest_path.parent().ok_or_else(|| {
         eyre!(
             "primary server manifest path {} has no parent directory",
             facade_manifest_path.display()
         )
     })?;
-    dependency_path_matches(facade_dir, specification, expected_path)
+    let resolves_to_source =
+        matches_package && dependency_path_matches(facade_dir, specification, expected_path)?;
+    Ok((matches_package, resolves_to_source))
 }
 
 fn dependency_package_name<'a>(alias: &'a str, specification: &'a toml::Value) -> &'a str {
