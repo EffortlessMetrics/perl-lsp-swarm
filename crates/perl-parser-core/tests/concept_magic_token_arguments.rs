@@ -155,10 +155,7 @@ fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(
     });
     observed.sort();
 
-    assert_eq!(
-        observed,
-        vec!["__FILE__", "__FILE__", "__LINE__", "__PACKAGE__", "__SUB__"]
-    );
+    assert_eq!(observed, vec!["__FILE__", "__FILE__", "__LINE__", "__PACKAGE__", "__SUB__"]);
     assert_eq!(hash_magic_keys, vec!["__FILE__"]);
     Ok(())
 }
