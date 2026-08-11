@@ -596,7 +596,7 @@ fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
         NodeKind::Program {
             statements: vec![goto_package, backslash_qualified, goto_deep],
         },
-        loc(0, 56),
+        loc(0, 57),
     );
 
     let refs = extract_symbol_refs(&program);
