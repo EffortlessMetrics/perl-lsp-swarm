@@ -176,6 +176,12 @@ test_currentness_policy_surfaces() {
     prose_has "$PR_TEMPLATE" 'Do not describe hosted CI as an "exact-head proof authority."' || ok=false
     prose_has "$CONVERGENCE_WRAPPER" 'This is the only policy-bearing review-convergence entrypoint.' || ok=false
 
+    # A required status is recorded against the commit it ran on, so an earlier
+    # green cannot satisfy it on the current head. Without this, the no-churn rule
+    # reads as "older green still counts" — the inverse error.
+    prose_has "$CURRENTNESS_DOC" 'Required live statuses remain head-bound integration facts.' || ok=false
+    prose_has "$CURRENTNESS_DOC" 'is **pending**, not' || ok=false
+
     if prose_has "$AGENT_VERIFY" 'Success on an older candidate is stale evidence, not current green.' || prose_has "$CLAUDE_VERIFY" 'Success on an older candidate is stale evidence, not current green.'; then
         ok=false
     fi

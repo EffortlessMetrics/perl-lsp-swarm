@@ -27,20 +27,41 @@ Keep three questions distinct:
 
 Movement in one does not automatically invalidate the others.
 
-## Three identities
+## Four identities
 
-Do not collapse three different identities into one freshness rule.
+Do not collapse these identities into one freshness rule.
 
 | Subject | Identity | What can invalidate it |
 | --- | --- | --- |
 | semantic candidate and proof | the cumulative PR change and the named claim/proof subjects | a later PR commit that can change the claim, implementation, production route, or tested seam |
 | base integration | the candidate combined with the current base | an actual conflict or demonstrated combined-tree interaction |
+| live integration status | the current PR head SHA, as the commit GitHub attaches status contexts to | any branch push; required contexts are recorded against a SHA, so a new head has no statuses until runs report against it |
 | merge race | the current PR head SHA | any branch push; this identity is used only for compare-and-swap protection at merge |
 
 `main` advancing without a conflict or concrete combined-tree interaction changes none
 of the candidate's semantic evidence. A new PR head does not erase completed proof for
-subjects the new commit cannot affect. The merge-race SHA is not a review or CI
-freshness policy.
+subjects the new commit cannot affect. The merge-race SHA is not a review freshness
+policy.
+
+The third and fourth rows share a SHA but are not the same claim, and the difference
+decides real cases. **Required live statuses remain head-bound integration facts.**
+GitHub records a required context against the commit it ran on, so a successful run on
+an earlier head does not satisfy that context on the current head — not as a matter of
+this contract's preference, but because branch protection reads the current head's
+statuses and finds nothing there.
+
+That is not a licence to churn, and the distinction is exactly where the two rules meet:
+
+- semantic proof from an earlier head stays usable when the later commits cannot affect
+  its subject. Do not re-review or re-run it to manufacture a receipt;
+- a *required* status that has not reported on the current head is **pending**, not
+  green-by-inheritance and not stale. The resolution is to let the run report, which
+  yields `PR_IN_FLIGHT` — never a rebase, an empty commit, or a push to retrigger.
+
+Reading an older green as satisfying a live required check is the failure this row
+exists to prevent. It looks like the no-churn rule and is its opposite: the no-churn
+rule declines to *invalidate* evidence a later commit cannot affect, while this would
+*fabricate* an integration fact GitHub never recorded.
 
 ## Review is semantic, not exact-head
 
