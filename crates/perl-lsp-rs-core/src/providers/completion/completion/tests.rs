@@ -8422,6 +8422,20 @@ sub greet {
     let index = must(inherited_moo_parent_index());
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    let evidence =
+        super::workspace::classify_receiver(&context, code, provider.type_engine.as_ref());
+    assert_eq!(evidence.package(), Some("Child"));
+    let members = super::workspace::collect_all_package_members_with_source(
+        provider.workspace_index.as_ref().expect("test index"),
+        "Child",
+        code,
+    );
+    assert!(
+        members.iter().any(|symbol| symbol.name == "name"),
+        "collector must include inherited generated accessor, got {:?}",
+        members.iter().map(|symbol| &symbol.name).collect::<Vec<_>>()
+    );
     let completions = provider.get_completions(code, pos);
 
     assert!(
