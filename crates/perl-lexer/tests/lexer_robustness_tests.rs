@@ -2,14 +2,16 @@ use perl_lexer::{PerlLexer, Token, TokenType};
 
 fn recovery_token(input: &str, expected_start: usize) -> Token {
     let tokens = PerlLexer::new(input).collect_tokens();
-    tokens
-        .into_iter()
+    match tokens
+        .iter()
         .find(|token| token.start == expected_start && token.token_type.is_recovery_token())
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a recovery token at byte {expected_start} for {input:?}; tokens={tokens:?}"
-            )
-        })
+        .cloned()
+    {
+        Some(token) => token,
+        None => panic!(
+            "expected a recovery token at byte {expected_start} for {input:?}; tokens={tokens:?}"
+        ),
+    }
 }
 
 #[test]
