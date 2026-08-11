@@ -45,7 +45,7 @@ print "x=$x\n";
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| "Timed out waiting for initialized event")?;
     assert!(
-        matches!(initialized, DapMessage::Event { event, .. } if event == "initialized"),
+        matches!(&initialized, DapMessage::Event { event, .. } if event == "initialized"),
         "Expected initialized event, got {initialized:?}"
     );
 
@@ -64,7 +64,7 @@ print "x=$x\n";
                 .recv_timeout(Duration::from_secs(3))
                 .map_err(|_| "Timed out waiting for stopped event")?;
             assert!(
-                matches!(stopped, DapMessage::Event { event, .. } if event == "stopped"),
+                matches!(&stopped, DapMessage::Event { event, .. } if event == "stopped"),
                 "Expected stopped event, got {stopped:?}"
             );
         }
