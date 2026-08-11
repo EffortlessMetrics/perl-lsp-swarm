@@ -2608,7 +2608,79 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "role_method_role_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Role",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_provided",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub provided",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_provided_return",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_consumer_package",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::RoleConsumer",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_local_method",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub local_method",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_provided_call",
+          "kind": "FunctionCall",
+          "line": 10,
+          "span_text": "provided()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_local_return",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return provided()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "inherited_method",
@@ -2736,7 +2808,79 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "inherited_method_parent_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Parent",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_inherited_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub inherited",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_parent_return",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_child_package",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::Child",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_call_parent_subroutine",
+          "kind": "Subroutine",
+          "line": 11,
+          "span_text": "sub call_parent",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_qualified_call",
+          "kind": "FunctionCall",
+          "line": 12,
+          "span_text": "Accuracy::Parent::inherited()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_call_return",
+          "kind": "Return",
+          "line": 12,
+          "span_text": "return Accuracy::Parent::inherited()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "export_tags",
