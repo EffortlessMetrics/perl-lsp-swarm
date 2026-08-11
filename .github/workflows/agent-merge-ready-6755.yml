@@ -14,7 +14,7 @@ jobs:
       github.event.pull_request.number == 6755 &&
       github.event.pull_request.head.ref == 'agent/lexer-symbol-prepass-6732'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     outputs:
       patch_b64: ${{ steps.patch.outputs.patch_b64 }}
       patch_sha256: ${{ steps.patch.outputs.patch_sha256 }}
@@ -61,15 +61,53 @@ jobs:
           diff -u /tmp/expected-files /tmp/changed-files
           git diff --check
 
-      - name: Verify the repaired candidate without write credentials
+      - name: Verify symbol-table formatting
+        shell: bash
+        run: rustfmt --edition 2024 --check crates/perl-lexer/src/symbol_table.rs
+
+      - name: Verify symbol-table unit contracts
         shell: bash
         run: |
           set -euo pipefail
-          rustfmt --edition 2024 --check crates/perl-lexer/src/symbol_table.rs
-          cargo test -p perl-lexer --lib symbol_table --locked
-          cargo test -p perl-lexer --test ripr_seam_proof_qw_self_delimited --locked
-          cargo test -p perl-lexer --tests --locked
-          cargo clippy -p perl-lexer --all-targets --locked -- -D warnings
+          log=/tmp/symbol-table-tests.log
+          if ! cargo test -p perl-lexer --lib symbol_table --locked >"$log" 2>&1; then
+            tail -n 300 "$log"
+            exit 1
+          fi
+          tail -n 40 "$log"
+
+      - name: Verify self-delimited qw recovery contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          log=/tmp/qw-recovery-tests.log
+          if ! cargo test -p perl-lexer --test ripr_seam_proof_qw_self_delimited --locked >"$log" 2>&1; then
+            tail -n 300 "$log"
+            exit 1
+          fi
+          tail -n 40 "$log"
+
+      - name: Verify all lexer integration contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          log=/tmp/lexer-integration-tests.log
+          if ! cargo test -p perl-lexer --tests --locked >"$log" 2>&1; then
+            tail -n 300 "$log"
+            exit 1
+          fi
+          tail -n 60 "$log"
+
+      - name: Verify lexer clippy contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          log=/tmp/lexer-clippy.log
+          if ! cargo clippy -p perl-lexer --all-targets --locked -- -D warnings >"$log" 2>&1; then
+            tail -n 300 "$log"
+            exit 1
+          fi
+          tail -n 60 "$log"
 
       - name: Export the exact verified patch
         id: patch
