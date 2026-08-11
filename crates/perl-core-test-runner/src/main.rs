@@ -686,17 +686,24 @@ fn is_comp_final_line_num_syntax_error_probe(
     source: &str,
     diagnostics: &[ParseError],
 ) -> bool {
-    if normalize_display_path(&invocation.display_path) != "comp/final_line_num.t"
-        || !diagnostics.iter().any(|diagnostic| {
-            matches!(
-                diagnostic,
-                ParseError::Recovered {
-                    site: RecoverySite::InfixRhs,
-                    kind: RecoveryKind::MissingOperand,
-                    ..
-                }
-            )
-        })
+    if normalize_display_path(&invocation.display_path) != "comp/final_line_num.t" {
+        return false;
+    }
+
+    let is_target_recovery = |diagnostic: &ParseError| {
+        matches!(
+            diagnostic,
+            ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                ..
+            }
+        )
+    };
+    if !diagnostics.iter().any(is_target_recovery)
+        || diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.blocks_clean_parse() && !is_target_recovery(diagnostic))
     {
         return false;
     }
