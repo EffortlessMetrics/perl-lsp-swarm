@@ -487,7 +487,7 @@ fn contains_variable_declaration(node: &perl_parser_core::Node, name: &str) -> b
         NodeKind::VariableDeclaration { variable, .. }
             if matches!(&variable.kind, NodeKind::Variable { name: declared, .. } if declared == name)
     );
-    declared_here || node.children().any(|child| contains_variable_declaration(child, name))
+    declared_here || node.children().into_iter().any(|child| contains_variable_declaration(child, name))
 }
 
 #[test]
