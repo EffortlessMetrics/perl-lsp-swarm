@@ -180,7 +180,9 @@ fn accepted_spec_has_closed_semantic_model() -> Result<(), Box<dyn std::error::E
         "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
     )?;
 
-    validate_contract(&spec).map_err(|error| format!("PLSP-SPEC-0006: {error}"))?;
+    if let Err(error) = validate_contract(&spec) {
+        panic!("PLSP-SPEC-0006: {error}");
+    }
     Ok(())
 }
 
@@ -208,9 +210,7 @@ fn ratchet_rejects_age_driven_disposition() -> Result<(), Box<dyn std::error::Er
         "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
     )?;
     let anchor = "| `NOT_PROVEN` | Required source, review, proof, policy, or tool evidence could not be established |";
-    let replacement = format!(
-        "| `NEEDS_REBASE` | The branch is behind `main` |\n{anchor}"
-    );
+    let replacement = format!("| `NEEDS_REBASE` | The branch is behind `main` |\n{anchor}");
     let mutated = spec.replacen(anchor, &replacement, 1);
 
     assert_ne!(mutated, spec, "disposition mutation fixture must apply");
