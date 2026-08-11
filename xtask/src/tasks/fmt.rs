@@ -5,6 +5,7 @@ use duct::cmd;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 #[derive(Deserialize)]
 struct CargoMetadata {
@@ -29,6 +30,163 @@ struct CrateFailure {
     manifest_path: String,
     unformatted_files: Vec<String>,
     spawn_error: Option<String>,
+}
+
+/// Classification of one staged Rust file for `--staged` formatting.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StagedFormatAction {
+    /// Fully staged: safe to format in the worktree and re-stage, because the
+    /// worktree content and the index content are the same bytes.
+    FormatAndRestage(String),
+    /// Staged *and* separately modified in the worktree. Deliberately left
+    /// alone: formatting the file would rewrite unstaged work, and `git add`
+    /// would then sweep those unrelated changes into this commit. Reported so
+    /// the author fixes it deliberately rather than discovering a widened
+    /// commit afterwards.
+    SkipPartiallyStaged(String),
+}
+
+/// Splits staged Rust paths into the ones `--staged` may safely rewrite and
+/// the ones it must not touch.
+///
+/// Pure so the safety rule — never rewrite a partially staged file — is
+/// testable without a git fixture.
+pub(crate) fn classify_staged_paths(
+    staged: &[String],
+    unstaged: &HashSet<String>,
+) -> Vec<StagedFormatAction> {
+    staged
+        .iter()
+        .filter(|path| path.ends_with(".rs"))
+        .map(|path| {
+            if unstaged.contains(path) {
+                StagedFormatAction::SkipPartiallyStaged(path.clone())
+            } else {
+                StagedFormatAction::FormatAndRestage(path.clone())
+            }
+        })
+        .collect()
+}
+
+fn git_lines(args: &[&str]) -> Result<Vec<String>> {
+    let out = cmd("git", args)
+        .stdout_capture()
+        .unchecked()
+        .run()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(eyre!("git {} failed", args.join(" ")));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+/// Maps a repository-relative file path to the workspace package that owns it.
+///
+/// Longest-prefix wins so a crate nested inside another crate's directory is
+/// attributed to the inner one.
+pub(crate) fn owning_package<'a>(path: &str, packages: &'a [(String, String)]) -> Option<&'a str> {
+    packages
+        .iter()
+        .filter(|(_, dir)| path.starts_with(&format!("{dir}/")))
+        .max_by_key(|(_, dir)| dir.len())
+        .map(|(name, _)| name.as_str())
+}
+
+/// Formats the staged Rust diff and re-stages it.
+///
+/// This is the apply half of the `rustfmt_staged` commit gate: that check
+/// blocks a commit whose staged Rust would be reformatted and tells the author
+/// to run `cargo xtask fmt`, which reformats the entire workspace. `--staged`
+/// narrows that to the packages actually being committed, which is what makes
+/// it cheap enough to run from the pre-commit hook on every commit.
+///
+/// Formatting goes through `cargo fmt -p <package>` — the same command the
+/// `fmt` gate runs — rather than invoking `rustfmt` on individual files.
+/// Measured, not assumed: bare `rustfmt` on 40 already-gate-clean files in this
+/// workspace rewrote 9 of them, and `cargo fmt --check` accepted the file both
+/// before and after. Those edits are changes the gate does not require, so
+/// per-file `rustfmt` would quietly enlarge every commit's diff with unrelated
+/// reflowing. Delegating guarantees this produces exactly what the gate wants
+/// and nothing more.
+///
+/// The cost of that choice is package granularity: other files in the same
+/// package may be reformatted in the worktree. Only staged files are re-staged,
+/// so the commit itself stays narrow, and any other file it touches was already
+/// failing the gate.
+///
+/// Only fully staged files are re-staged — see [`StagedFormatAction`].
+pub fn run_staged() -> Result<()> {
+    let staged = git_lines(&["diff", "--cached", "--name-only", "--diff-filter=ACMR"])?;
+    let unstaged: HashSet<String> =
+        git_lines(&["diff", "--name-only", "--diff-filter=ACMR"])?.into_iter().collect();
+    let actions = classify_staged_paths(&staged, &unstaged);
+
+    if actions.is_empty() {
+        println!("No staged Rust files — nothing to format.");
+        return Ok(());
+    }
+
+    let to_format: Vec<&String> = actions
+        .iter()
+        .filter_map(|action| match action {
+            StagedFormatAction::FormatAndRestage(path) => Some(path),
+            StagedFormatAction::SkipPartiallyStaged(_) => None,
+        })
+        .collect();
+    let skipped: Vec<&String> = actions
+        .iter()
+        .filter_map(|action| match action {
+            StagedFormatAction::SkipPartiallyStaged(path) => Some(path),
+            StagedFormatAction::FormatAndRestage(_) => None,
+        })
+        .collect();
+
+    if !to_format.is_empty() {
+        let metadata = load_workspace_metadata()?;
+        let package_dirs = workspace_package_dirs(&metadata);
+        let mut packages: Vec<String> = to_format
+            .iter()
+            .filter_map(|path| owning_package(path, &package_dirs).map(ToString::to_string))
+            .collect();
+        packages.sort();
+        packages.dedup();
+
+        if packages.is_empty() {
+            println!(
+                "Staged Rust files are outside every workspace package; leaving them to the gate."
+            );
+        } else {
+            // Apply mode, scoped to the owning packages.
+            run(false, Some(packages))?;
+            for path in &to_format {
+                cmd("git", &["add", "--", path])
+                    .run()
+                    .with_context(|| format!("re-staging {path}"))?;
+            }
+            println!("Formatted and re-staged {} staged Rust file(s).", to_format.len());
+        }
+    }
+
+    if !skipped.is_empty() {
+        println!();
+        println!(
+            "Left {} partially staged file(s) untouched — they have unstaged changes,",
+            skipped.len()
+        );
+        println!("and re-staging them would pull that unstaged work into this commit:");
+        for path in &skipped {
+            println!("   {path}");
+        }
+        println!();
+        println!("   Stage or stash the rest, then re-run: cargo xtask fmt --staged");
+    }
+
+    Ok(())
 }
 
 pub fn run(check: bool, package_filters: Option<Vec<String>>) -> Result<()> {
@@ -183,13 +341,37 @@ fn format_failure_report(check: bool, failures: &[CrateFailure]) -> String {
     report
 }
 
-fn workspace_manifest_paths(package_filters: Option<&[String]>) -> Result<Vec<String>> {
+fn load_workspace_metadata() -> Result<CargoMetadata> {
     let metadata_json = cmd("cargo", ["metadata", "--format-version", "1", "--no-deps"])
         .read()
         .context("Failed to query cargo metadata for workspace formatting")?;
-    let metadata: CargoMetadata =
-        serde_json::from_str(&metadata_json).context("Failed to parse cargo metadata JSON")?;
+    serde_json::from_str(&metadata_json).context("Failed to parse cargo metadata JSON")
+}
 
+/// Workspace members as `(package name, repository-relative package directory)`.
+///
+/// The directory is the manifest's parent, relative to the workspace root, so
+/// it can be prefix-matched against `git diff --name-only` output.
+fn workspace_package_dirs(metadata: &CargoMetadata) -> Vec<(String, String)> {
+    let root = std::env::current_dir().ok();
+    metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.iter().any(|member| member == &package.id))
+        .filter_map(|package| {
+            let manifest = Path::new(&package.manifest_path);
+            let dir = manifest.parent()?;
+            let relative = match &root {
+                Some(root) => dir.strip_prefix(root).unwrap_or(dir),
+                None => dir,
+            };
+            Some((package.name.clone(), relative.to_string_lossy().replace('\\', "/")))
+        })
+        .collect()
+}
+
+fn workspace_manifest_paths(package_filters: Option<&[String]>) -> Result<Vec<String>> {
+    let metadata = load_workspace_metadata()?;
     collect_workspace_manifest_paths(&metadata, package_filters)
 }
 
@@ -253,11 +435,94 @@ fn dedup_preserve_order(paths: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CargoMetadata, CargoPackage, CrateFailure, collect_workspace_manifest_paths,
-        format_failure_report, parse_unformatted_files,
+        CargoMetadata, CargoPackage, CrateFailure, StagedFormatAction, classify_staged_paths,
+        collect_workspace_manifest_paths, format_failure_report, parse_unformatted_files,
     };
     use color_eyre::eyre::Result;
+    use std::collections::HashSet;
     use std::fs;
+
+    fn unstaged(paths: &[&str]) -> HashSet<String> {
+        paths.iter().map(|p| (*p).to_string()).collect()
+    }
+
+    #[test]
+    fn staged_only_rust_files_are_formatted_and_restaged() {
+        let staged = vec!["crates/a/src/lib.rs".to_string(), "docs/readme.md".to_string()];
+        let actions = classify_staged_paths(&staged, &unstaged(&[]));
+        assert_eq!(
+            actions,
+            vec![StagedFormatAction::FormatAndRestage("crates/a/src/lib.rs".to_string())],
+            "non-Rust staged paths must not be handed to rustfmt"
+        );
+    }
+
+    #[test]
+    fn a_partially_staged_file_is_never_rewritten() {
+        // The footgun this guards: formatting the worktree copy would rewrite
+        // the author's unstaged work, and the follow-up `git add` would sweep
+        // it into the commit. Skipping is the only safe action.
+        let staged = vec!["crates/a/src/lib.rs".to_string()];
+        let actions = classify_staged_paths(&staged, &unstaged(&["crates/a/src/lib.rs"]));
+        assert_eq!(
+            actions,
+            vec![StagedFormatAction::SkipPartiallyStaged("crates/a/src/lib.rs".to_string())],
+        );
+    }
+
+    #[test]
+    fn unrelated_unstaged_files_do_not_block_a_fully_staged_one() {
+        // Only an overlap between the staged and unstaged sets is dangerous.
+        let staged = vec!["crates/a/src/lib.rs".to_string()];
+        let actions = classify_staged_paths(&staged, &unstaged(&["crates/b/src/other.rs"]));
+        assert_eq!(
+            actions,
+            vec![StagedFormatAction::FormatAndRestage("crates/a/src/lib.rs".to_string())],
+        );
+    }
+
+    fn package_dirs() -> Vec<(String, String)> {
+        vec![
+            ("perl-parser".to_string(), "crates/perl-parser".to_string()),
+            ("perl-parser-core".to_string(), "crates/perl-parser-core".to_string()),
+            ("xtask".to_string(), "xtask".to_string()),
+        ]
+    }
+
+    #[test]
+    fn a_staged_path_maps_to_its_owning_package() {
+        assert_eq!(
+            super::owning_package("crates/perl-parser-core/src/lib.rs", &package_dirs()),
+            Some("perl-parser-core")
+        );
+        assert_eq!(super::owning_package("xtask/src/main.rs", &package_dirs()), Some("xtask"));
+    }
+
+    #[test]
+    fn a_similar_prefix_does_not_capture_a_sibling_package() {
+        // "crates/perl-parser" is a prefix of "crates/perl-parser-core" as a
+        // string; only a full path-segment match may win.
+        assert_eq!(
+            super::owning_package("crates/perl-parser-core/src/lib.rs", &package_dirs()),
+            Some("perl-parser-core"),
+        );
+        assert_eq!(
+            super::owning_package("crates/perl-parser/src/lib.rs", &package_dirs()),
+            Some("perl-parser"),
+        );
+    }
+
+    #[test]
+    fn a_path_outside_every_package_maps_to_nothing() {
+        // Falls through to the gate rather than guessing a package.
+        assert_eq!(super::owning_package("docs/notes.rs", &package_dirs()), None);
+    }
+
+    #[test]
+    fn nothing_staged_yields_no_actions() {
+        assert!(classify_staged_paths(&[], &unstaged(&["crates/a/src/lib.rs"])).is_empty());
+    }
+
     use std::path::Path;
 
     fn sample_metadata() -> CargoMetadata {

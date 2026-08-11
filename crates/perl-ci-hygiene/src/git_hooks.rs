@@ -26,6 +26,23 @@ if [ "$GIT_USER_NAME" = "Codex Release Validation" ] || \
     exit 1
 fi
 
+# Format the staged Rust diff before the gate inspects it.
+#
+# `rustfmt_staged` in the commit gate below blocks a commit whose staged Rust
+# would be reformatted. Formatting the diff first turns that block into a
+# self-heal: the common case (a few unformatted lines in the files you are
+# already committing) is fixed and re-staged instead of bouncing you out to
+# run a workspace-wide `cargo xtask fmt` by hand.
+#
+# Only fully staged files are rewritten. A file that is staged *and*
+# separately modified in the worktree is reported and left alone, so this can
+# never sweep unstaged work into the commit.
+#
+# Non-fatal on its own: if rustfmt is unavailable the gate below still blocks,
+# so a missing formatter cannot turn into a silently unformatted commit.
+echo "Formatting staged Rust diff: cargo xtask fmt --staged"
+cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the commit gate below still applies"
+
 echo "Running exact staged commit gate: cargo xtask precommit"
 cargo xtask precommit
 "#;
@@ -33,7 +50,8 @@ cargo xtask precommit
     pub(super) fn print_install_summary() {
         println!("✅ Installed pre-commit and pre-push hooks");
         println!(
-            "   The pre-commit hook blocks placeholder identities, then runs 'cargo xtask precommit'"
+            "   The pre-commit hook blocks placeholder identities, formats the staged Rust diff \
+             ('cargo xtask fmt --staged'), then runs 'cargo xtask precommit'"
         );
         println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
         println!("   Skip with: git commit --no-verify / git push --no-verify");
