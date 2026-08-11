@@ -197,7 +197,7 @@ struct MechanismDisposition {
     claim_boundary: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Packet {
     check: String,
