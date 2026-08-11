@@ -134,11 +134,12 @@ fn paired_quote_delimiters_do_not_fabricate_block_nodes() -> Result<(), String> 
     let mut fabricated_blocks = Vec::new();
 
     walk(&ast, &mut |node| {
-        if matches!(&node.kind, NodeKind::Block { .. })
-            && let Some(text) = source.get(node.location.start..node.location.end)
-            && (text == "{hello}" || text == "{$literal}")
-        {
-            fabricated_blocks.push(text.to_owned());
+        if matches!(&node.kind, NodeKind::Block { .. }) {
+            let text = source.get(node.location.start..node.location.end).map_or_else(
+                || format!("<unmapped {}..{}>", node.location.start, node.location.end),
+                ToOwned::to_owned,
+            );
+            fabricated_blocks.push(text);
         }
         Ok(())
     })?;
