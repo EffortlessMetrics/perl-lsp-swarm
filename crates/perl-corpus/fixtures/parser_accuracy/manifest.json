@@ -2302,9 +2302,9 @@
         },
         {
           "line": 12,
-            "expected_tags": [
-              "function_call"
-            ]
+          "expected_tags": [
+            "function_call"
+          ]
         }
       ],
       "symbol_expectations": {
@@ -3157,6 +3157,156 @@
           }
         ]
       }
+    },
+    {
+      "id": "indirect_call",
+      "family": "indirect_call",
+      "label_mode": "partial",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/indirect_call.pl",
+      "scored_lines": 20,
+      "scored_symbols": 10,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 1,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        {
+          "line": 1,
+          "expected_tags": [
+            "package_decl"
+          ]
+        },
+        {
+          "line": 3,
+          "expected_tags": [
+            "sub_decl",
+            "indirect_call"
+          ]
+        },
+        {
+          "line": 8,
+          "expected_tags": [
+            "sub_decl",
+            "indirect_call"
+          ]
+        },
+        {
+          "line": 12,
+          "expected_tags": [
+            "indirect_call"
+          ]
+        },
+        {
+          "line": 13,
+          "expected_tags": [
+            "indirect_call"
+          ]
+        },
+        {
+          "line": 14,
+          "expected_tags": [
+            "indirect_call"
+          ]
+        },
+        {
+          "line": 17,
+          "expected_tags": [
+            "indirect_call"
+          ]
+        },
+        {
+          "line": 20,
+          "expected_tags": [
+            "function_call"
+          ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "indirect_call_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::IndirectCall",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "indirect_call_move_decl",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub move",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "indirect_call_run_decl",
+          "kind": "Subroutine",
+          "line": 8,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "indirect_call_user_defined",
+          "kind": "IndirectCall",
+          "line": 12,
+          "span_text": "move $player",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "indirect_call_builtin_filehandle",
+          "kind": "IndirectCall",
+          "line": 13,
+          "span_text": "print $fh",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "indirect_call_constructor",
+          "kind": "IndirectCall",
+          "line": 14,
+          "span_text": "new Accuracy::IndirectCall::Runner",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "indirect_call_control_flow",
+          "kind": "IndirectCall",
+          "line": 17,
+          "span_text": "move $player",
+          "parent_kind": "ExpressionStatement",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "indirect_call_parenthesized_negative",
+          "kind": "FunctionCall",
+          "line": 20,
+          "span_text": "move($player, 30)",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     }
   ]
 }
