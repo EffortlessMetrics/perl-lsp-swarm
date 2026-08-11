@@ -150,6 +150,10 @@ impl RealProcessClient {
         read_frame(&mut reader)
     }
 
+    pub fn is_valid_server_notification_for_test(message: &Value) -> bool {
+        is_server_notification(message)
+    }
+
     pub fn send_raw_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         ensure!(!self.finished, "cannot write after candidate exit");
         let stdin = self
@@ -238,6 +242,16 @@ impl RealProcessClient {
         }
     }
 
+    pub fn receive_response_and_retain(
+        &mut self,
+        id: &Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let response = self.receive_response(id, timeout)?;
+        self.push_pending(response.clone())?;
+        Ok(response)
+    }
+
     pub fn receive_server_request(
         &mut self,
         method: &str,
@@ -267,7 +281,10 @@ impl RealProcessClient {
     }
 
     pub fn assert_no_response_pending(&self) -> Result<()> {
-        let unexpected = self.pending.iter().find(|message| is_response(message));
+        let unexpected = self
+            .pending
+            .iter()
+            .find(|message| is_response_like(message));
         ensure!(
             unexpected.is_none(),
             "notification produced an unmatched response: {unexpected:?}"
@@ -451,9 +468,22 @@ fn take_pipe<T>(
     }
 }
 
-fn is_response(message: &Value) -> bool {
+fn is_jsonrpc_2(message: &Value) -> bool {
+    message.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+}
+
+fn is_response_like(message: &Value) -> bool {
     message.get("method").is_none()
         && (message.get("result").is_some() || message.get("error").is_some())
+}
+
+fn is_response(message: &Value) -> bool {
+    is_jsonrpc_2(message)
+        && is_response_like(message)
+        && message.get("id").is_some_and(|id| {
+            id.is_number() || id.is_string() || id.is_null()
+        })
+        && (message.get("result").is_some() ^ message.get("error").is_some())
 }
 
 fn is_response_for(message: &Value, id: &Value) -> bool {
@@ -461,14 +491,16 @@ fn is_response_for(message: &Value, id: &Value) -> bool {
 }
 
 fn is_server_request_for(message: &Value, method: &str) -> bool {
-    message.get("method").and_then(Value::as_str) == Some(method)
+    is_jsonrpc_2(message)
+        && message.get("method").and_then(Value::as_str) == Some(method)
         && message
             .get("id")
             .is_some_and(|id| id.is_number() || id.is_string())
 }
 
 fn is_server_notification(message: &Value) -> bool {
-    message.get("method").and_then(Value::as_str).is_some()
+    is_jsonrpc_2(message)
+        && message.get("method").and_then(Value::as_str).is_some()
         && message.get("id").is_none()
 }
 
