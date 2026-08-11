@@ -84,13 +84,17 @@ jobs:
 
       - name: Run core parse+compile smoke (advisory)
         continue-on-error: true
+        env:
+          PERL_REF: ${{ steps.upstream.outputs.ref }}
+          PERL_MODES: ${{ steps.upstream.outputs.modes }}
+          PERL_TREE: target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5
         run: |
           cargo run -p xtask -- perl-core-harness smoke \
-            --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
+            --perl-tree "$PERL_TREE" \
             --host-perl perl \
             --profile core \
-            --modes "${{ steps.upstream.outputs.modes }}" \
-            --perl-ref "${{ steps.upstream.outputs.ref }}" \
+            --modes "$PERL_MODES" \
+            --perl-ref "$PERL_REF" \
             --output-dir target/perl-core/smoke/core
       - name: Check upstream compile ratchets
         run: |
