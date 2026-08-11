@@ -106,7 +106,7 @@ function effectiveLifecycle(snapshot: WorkspaceExperienceSnapshot): WorkspaceLif
  * States that have one obvious repair name it, so a user in a broken state is
  * told what clicking does rather than being offered generic "options".
  */
-type ClickAffordance = 'click for options' | 'click to restart';
+type ClickAffordance = 'click for options' | 'click for restart options';
 
 function detailTooltip(
   snapshot: WorkspaceExperienceSnapshot,
@@ -228,7 +228,11 @@ export function presentWorkspaceExperience(
       return {
         mode: 'stopped',
         text: snapshot.detail ? '$(error) perl-lsp: failed' : '$(error) perl-lsp: stopped',
-        tooltip: detailTooltip(snapshot, 'Perl Language Server has stopped', 'click to restart'),
+        tooltip: detailTooltip(
+          snapshot,
+          'Perl Language Server has stopped; choose Restart Server from the status menu',
+          'click for restart options',
+        ),
         background: 'error',
       };
   }
