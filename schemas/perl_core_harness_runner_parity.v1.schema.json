@@ -9,6 +9,10 @@
     "matrix_fingerprint",
     "target_id",
     "target_contract_digest",
+    "left_plan_digest",
+    "right_plan_digest",
+    "left_raw_discovery_digest",
+    "right_raw_discovery_digest",
     "left_runner",
     "right_runner",
     "membership_status",
@@ -22,9 +26,13 @@
   ],
   "properties": {
     "schema_version": {"const": "perl_core_harness.runner_parity.v1"},
-    "matrix_fingerprint": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "matrix_fingerprint": {"$ref": "#/$defs/sha256"},
     "target_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
-    "target_contract_digest": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "target_contract_digest": {"$ref": "#/$defs/sha256"},
+    "left_plan_digest": {"$ref": "#/$defs/sha256"},
+    "right_plan_digest": {"$ref": "#/$defs/sha256"},
+    "left_raw_discovery_digest": {"$ref": "#/$defs/sha256"},
+    "right_raw_discovery_digest": {"$ref": "#/$defs/sha256"},
     "left_runner": {"enum": ["test", "harness", "direct_fallback"]},
     "right_runner": {"enum": ["test", "harness", "direct_fallback"]},
     "membership_status": {"enum": ["parity", "mismatch", "not_proven"]},
@@ -48,5 +56,11 @@
       "items": {"type": "string", "minLength": 1}
     },
     "claim_boundary": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    }
   }
 }
