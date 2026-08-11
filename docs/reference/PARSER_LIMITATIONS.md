@@ -12,4 +12,4 @@ Current parser behavior and boundaries are maintained in:
 
 Static parsing cannot establish runtime-generated source, compile-time side effects, dynamic symbol-table effects, or general semantic correctness without separate evidence. Do not turn those boundaries into a parser completeness percentage.
 
-For a new limitation, attach a minimal source example, the parser subject and revision, the observed result, and the narrowest claim the evidence supports.
+For a new limitation, attach a minimal source example, the parser subject and revision, the observed result, and the narrowest claim the evidence supports.\n## Retired limitation anchors\n\nThe former limitation sections remain addressable for older links; their details are now maintained in the current parser status and feature-policy authorities above.\n\n<a id="11-source-filters"></a>\n<a id="12-eval-string"></a>\n<a id="13-dynamic-symbol-table-manipulation"></a>\n<a id="14-begin-block-side-effects"></a>\n
