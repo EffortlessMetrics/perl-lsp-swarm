@@ -355,7 +355,7 @@ mod heredoc_fuzz_tests {
 
 #[cfg(test)]
 mod heredoc_branch_tests {
-    use super::{after_line_break, map_heredoc_quote_kind, parse_heredoc_delimiter, unescape_label};
+    use super::{after_line_break, map_heredoc_quote_kind, parse_heredoc_delimiter};
     use crate::engine::parser::heredoc_collector::QuoteKind;
 
     #[test]
