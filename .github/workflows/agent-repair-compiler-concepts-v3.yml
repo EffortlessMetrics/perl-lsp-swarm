@@ -86,12 +86,17 @@ jobs:
       - name: Regenerate status
         run: cargo run -p xtask --bin compiler-concepts -- --write-status
 
-      - name: Verify candidate
-        run: |
-          rustfmt --edition 2024 --check xtask/src/bin/compiler-concepts.rs
-          cargo test -p xtask --bin compiler-concepts
-          cargo clippy -p xtask --bin compiler-concepts -- -D warnings
-          cargo run -p xtask --bin compiler-concepts -- --check
+      - name: Verify formatting
+        run: rustfmt --edition 2024 --check xtask/src/bin/compiler-concepts.rs
+
+      - name: Verify unit tests
+        run: cargo test -p xtask --bin compiler-concepts
+
+      - name: Verify Clippy
+        run: cargo clippy -p xtask --bin compiler-concepts -- -D warnings
+
+      - name: Verify generated status
+        run: cargo run -p xtask --bin compiler-concepts -- --check
 
       - name: Commit improvement pass
         run: |
