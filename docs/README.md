@@ -24,10 +24,15 @@ If a doc starts mixing multiple intents, split it and cross-link the parts.
 | Current release line | [`../Cargo.toml`](../Cargo.toml) | Workspace manifest |
 | Metrics and receipts | [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) | `just status-update` and `just status-check` |
 | Roadmap and active milestone | [project/ROADMAP.md](project/ROADMAP.md) | Human review |
+| Distribution and install-channel matrix | [project/DISTRIBUTION_MATRIX.md](project/DISTRIBUTION_MATRIX.md) | Release status + channel receipts |
 | Capability catalog | [`../features.toml`](../features.toml) | `just ci-gate` |
 | Local validation flow | [project/CI_LOCAL_VALIDATION.md](project/CI_LOCAL_VALIDATION.md) | `just ci-gate` |
 
 Rule: if a project metric appears outside [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md), treat it as stale until reverified.
+## Compatibility posture
+
+The current product line is public beta, not stable or GA. Published crate compatibility follows [the stability policy](reference/STABILITY.md): patch releases preserve the public API, while pre-1.0 minor releases may contain intentional breaking changes with migration guidance. CLI flags, advertised LSP capabilities, DAP preview boundaries, and distribution-channel status are separate claims; verify each against its owning source before treating it as supported.
+
 
 ## Repository Map (Code + Docs)
 
