@@ -8367,3 +8367,72 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
     );
     Ok(())
 }
+
+#[test]
+fn test_inherited_moo_accessor_completion_from_parent_class() {
+    let code = r#"
+package Parent;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        completions.iter().any(|item| item.label == "name"),
+        "expected inherited Moo accessor name in Child completion, got {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_inherited_moo_generated_accessor_methods_are_completed() {
+    let code = r#"
+package Parent;
+use Moo;
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
+
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub inspect {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let labels: Vec<_> =
+        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+
+    for expected in ["status", "has_status", "_build_status", "clear_status"] {
+        assert!(
+            labels.iter().any(|label| label == expected),
+            "expected inherited generated accessor {} in Child completion, got {:?}",
+            expected,
+            labels
+        );
+    }
+}
