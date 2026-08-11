@@ -28,6 +28,10 @@ struct AstExpectation {
     kind: String,
     line: usize,
     span_text: String,
+    #[serde(default)]
+    parent_kind: Option<String>,
+    #[serde(default)]
+    depth: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -35,6 +39,8 @@ struct ObservedNode<'a> {
     kind: &'static str,
     line: usize,
     span_text: &'a str,
+    parent_kind: Option<&'static str>,
+    depth: usize,
 }
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -107,7 +113,7 @@ fn find_fixture<'a>(
 
 fn collect_observed_nodes<'a>(node: &'a Node, source: &'a str) -> Vec<ObservedNode<'a>> {
     let mut nodes = Vec::new();
-    collect_observed_nodes_rec(node, source, &mut nodes);
+    collect_observed_nodes_rec(node, source, &mut nodes, None, 0);
     nodes
 }
 
@@ -115,15 +121,22 @@ fn collect_observed_nodes_rec<'a>(
     node: &'a Node,
     source: &'a str,
     nodes: &mut Vec<ObservedNode<'a>>,
+    parent_kind: Option<&'static str>,
+    depth: usize,
 ) {
     let span_text = source.get(node.location.start..node.location.end).unwrap_or_default();
     nodes.push(ObservedNode {
         kind: node.kind.kind_name(),
         line: byte_offset_to_line(source, node.location.start),
         span_text,
+        parent_kind,
+        depth,
     });
 
-    node.for_each_child(|child| collect_observed_nodes_rec(child, source, nodes));
+    let current_kind = node.kind.kind_name();
+    node.for_each_child(|child| {
+        collect_observed_nodes_rec(child, source, nodes, Some(current_kind), depth + 1)
+    });
 }
 
 fn assert_observed_expectation(
@@ -135,6 +148,11 @@ fn assert_observed_expectation(
         node.kind == expectation.kind
             && node.line == expectation.line
             && node.span_text.contains(&expectation.span_text)
+            && expectation
+                .parent_kind
+                .as_deref()
+                .is_none_or(|parent| node.parent_kind == Some(parent))
+            && expectation.depth.is_none_or(|depth| node.depth == depth)
     });
 
     assert!(
