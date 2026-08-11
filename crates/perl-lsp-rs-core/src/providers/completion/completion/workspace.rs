@@ -18,8 +18,8 @@ use perl_semantic_analyzer::{
         ReceiverFact, ReceiverFactContext, ReceiverFactFreshness, ReceiverFallbackState,
         ReceiverKind, receiver_fact_for_method_call,
     },
-    symbol::{ScopeKind, SymbolKind},
     semantic::SemanticModel,
+    symbol::{ScopeKind, SymbolKind},
     type_facts::TypeEvidence,
     type_inference::{PerlType, TypeInferenceEngine},
 };
@@ -1236,7 +1236,8 @@ pub(super) fn receiver_package_from_context_or_source(
 
     let mut parser = Parser::new(source);
     let ast = parser.parse().ok()?;
-    let analyzer = perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
+    let analyzer =
+        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
     let table = analyzer.symbol_table();
     let position = context.position.min(source.len());
 
@@ -1244,12 +1245,10 @@ pub(super) fn receiver_package_from_context_or_source(
     loop {
         let scope = table.scopes.get(&scope_id)?;
         if scope.kind == ScopeKind::Package
-            && let Some(package) = table
-                .symbols
-                .values()
-                .flat_map(|symbols| symbols.iter())
-                .find(|symbol| {
-                    symbol.kind == SymbolKind::Package && symbol.location.start == scope.location.start
+            && let Some(package) =
+                table.symbols.values().flat_map(|symbols| symbols.iter()).find(|symbol| {
+                    symbol.kind == SymbolKind::Package
+                        && symbol.location.start == scope.location.start
                 })
         {
             return Some(package.name.clone());
