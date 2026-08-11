@@ -3,7 +3,7 @@ use color_eyre::eyre::Result;
 use perl_core_harness_types::{
     CompatibilityTransition, ObservedSemanticBoundary, RunFailure, RunReport, RunnerStatus,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Classification {
@@ -27,6 +27,92 @@ pub fn classify_transition(
         .iter()
         .map(|result| (result.path.as_str(), result))
         .collect::<BTreeMap<_, _>>();
+
+    let mut identity_mismatches = Vec::new();
+    match accepted {
+        AcceptedBaseline::V1(value) => {
+            if current.schema_version != value.report_schema_version {
+                identity_mismatches.push(format!(
+                    "report schema differs (accepted {}, current {})",
+                    value.report_schema_version, current.schema_version
+                ));
+            }
+            if current.mode != value.mode {
+                identity_mismatches.push(format!(
+                    "mode differs (accepted {}, current {})", value.mode, current.mode
+                ));
+            }
+            if current.profile != value.profile {
+                identity_mismatches.push(format!(
+                    "profile differs (accepted {}, current {})",
+                    value.profile, current.profile
+                ));
+            }
+        }
+        AcceptedBaseline::V2(value) => {
+            if current.schema_version != value.report_schema_version {
+                identity_mismatches.push(format!(
+                    "report schema differs (accepted {}, current {})",
+                    value.report_schema_version, current.schema_version
+                ));
+            }
+            if current.mode != value.mode {
+                identity_mismatches.push(format!(
+                    "mode differs (accepted {}, current {})", value.mode, current.mode
+                ));
+            }
+            if current.profile != value.profile {
+                identity_mismatches.push(format!(
+                    "profile differs (accepted {}, current {})",
+                    value.profile, current.profile
+                ));
+            }
+            if current.runner != value.runner {
+                identity_mismatches.push(format!(
+                    "runner differs (accepted {}, current {})",
+                    value.runner, current.runner
+                ));
+            }
+            if current.commit != value.repository_commit {
+                identity_mismatches.push(format!(
+                    "repository commit differs (accepted {}, current {})",
+                    value.repository_commit, current.commit
+                ));
+            }
+            if current.perl_ref != value.perl_resolved_ref {
+                identity_mismatches.push(format!(
+                    "Perl reference differs (accepted {}, current {})",
+                    value.perl_resolved_ref, current.perl_ref
+                ));
+            }
+            let expected_membership = value
+                .file_membership
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            let observed_membership = current
+                .file_results
+                .iter()
+                .map(|result| result.path.as_str())
+                .collect::<BTreeSet<_>>();
+            if expected_membership != observed_membership {
+                identity_mismatches.push(
+                    "file membership differs from the immutable v2 denominator".into(),
+                );
+            }
+        }
+    }
+    if !identity_mismatches.is_empty() {
+        return Ok(Classification {
+            transition: CompatibilityTransition::NotProven,
+            reason: format!(
+                "accepted and current observations are not comparable: {}",
+                identity_mismatches.join("; ")
+            ),
+            requires_candidate: false,
+            semantic_boundary_change: false,
+        });
+    }
 
     let accepted_paths =
         accepted_by_path.keys().copied().collect::<std::collections::BTreeSet<_>>();
@@ -86,8 +172,9 @@ pub fn classify_transition(
 
     let accepted_boundaries = accepted.semantic_boundaries().map(sorted_boundaries);
     let current_boundaries = sorted_boundaries(&current.semantic_boundaries);
-    let semantic_boundary_change =
-        accepted_boundaries.as_ref().is_none_or(|boundaries| boundaries != &current_boundaries);
+    let semantic_boundary_change = accepted_boundaries
+        .as_ref()
+        .is_some_and(|boundaries| boundaries != &current_boundaries);
     let failure_inventory_change =
         sorted_failures(accepted.failures()) != sorted_failures(&current.failures);
     // Increases are regressions (handled above). Any remaining bucket-map delta is a
