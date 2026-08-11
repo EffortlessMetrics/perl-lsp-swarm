@@ -417,7 +417,69 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "generated_accessor_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::GeneratedAccessor",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_use_moo",
+          "kind": "Use",
+          "line": 3,
+          "span_text": "use Moo",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_has_call",
+          "kind": "FunctionCall",
+          "line": 5,
+          "span_text": "has name => (is => 'ro')",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_has_options",
+          "kind": "HashLiteral",
+          "line": 5,
+          "span_text": "(is => 'ro')",
+          "parent_kind": "FunctionCall",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_constructor_call",
+          "kind": "MethodCall",
+          "line": 12,
+          "span_text": "Accuracy::GeneratedAccessor->new()",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_accessor_call",
+          "kind": "MethodCall",
+          "line": 13,
+          "span_text": "$obj->name",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "heuristic_generated_member",
@@ -490,7 +552,49 @@
           }
         ],
         "edges": []
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "heuristic_generated_member_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::HeuristicGeneratedMember",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heuristic_generated_member_use_moo",
+          "kind": "Use",
+          "line": 3,
+          "span_text": "use Moo",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heuristic_generated_member_has_call",
+          "kind": "FunctionCall",
+          "line": 5,
+          "span_text": "has name => (is => 'ro')",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heuristic_generated_member_has_options",
+          "kind": "HashLiteral",
+          "line": 5,
+          "span_text": "(is => 'ro')",
+          "parent_kind": "FunctionCall",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "negative_symbol_regions",
