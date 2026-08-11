@@ -259,9 +259,11 @@ fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
         false,
     )?;
 
-    assert!(contains_variable_declaration(&fresh_ast, "before"));
-    assert!(contains_variable_declaration(&fresh_ast, "value"));
-    assert!(contains_variable_declaration(&fresh_ast, "after"));
+    for name in ["before", "value", "after"] {
+        if !contains_variable_declaration(&fresh_ast, name) {
+            return Err(format!("fresh parse lost variable declaration {name}").into());
+        }
+    }
     Ok(())
 }
 
