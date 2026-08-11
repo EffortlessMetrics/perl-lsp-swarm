@@ -30,7 +30,7 @@ struct CargoPackage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspacePackage {
     pub(crate) name: String,
-    pub(crate) dir: String,
+    pub(crate) dir: PathBuf,
     pub(crate) edition: String,
 }
 
@@ -51,13 +51,13 @@ struct CrateFailure {
 pub(crate) enum StagedFormatAction {
     /// Fully staged: safe to format in the worktree and re-stage, because the
     /// worktree content and the index content are the same bytes.
-    FormatAndRestage(String),
+    FormatAndRestage(PathBuf),
     /// Staged *and* separately modified in the worktree. Deliberately left
     /// alone: formatting the file would rewrite unstaged work, and `git add`
     /// would then sweep those unrelated changes into this commit. Reported so
     /// the author fixes it deliberately rather than discovering a widened
     /// commit afterwards.
-    SkipPartiallyStaged(String),
+    SkipPartiallyStaged(PathBuf),
 }
 
 /// Splits staged Rust paths into the ones `--staged` may safely rewrite and
@@ -66,12 +66,12 @@ pub(crate) enum StagedFormatAction {
 /// Pure so the safety rule — never rewrite a partially staged file — is
 /// testable without a git fixture.
 pub(crate) fn classify_staged_paths(
-    staged: &[String],
-    unstaged: &HashSet<String>,
+    staged: &[PathBuf],
+    unstaged: &HashSet<PathBuf>,
 ) -> Vec<StagedFormatAction> {
     staged
         .iter()
-        .filter(|path| path.ends_with(".rs"))
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
         .map(|path| {
             if unstaged.contains(path) {
                 StagedFormatAction::SkipPartiallyStaged(path.clone())
@@ -82,15 +82,20 @@ pub(crate) fn classify_staged_paths(
         .collect()
 }
 
-/// Runs git and returns its stdout as lines.
+/// Runs git and returns its NUL-delimited output as paths.
 ///
-/// `core.quotePath=false` because git's default quotes and octal-escapes any
-/// path containing non-ASCII bytes — `"cr\303\251es/a.rs"`, literal quotes
-/// included. That string names no file on disk, so it would reach rustfmt and
-/// fail the whole run. Paths are also not trimmed: leading and trailing spaces
-/// are legal in filenames, and trimming them yields a path that does not exist.
-/// Empty lines are still dropped, since git emits a trailing newline.
-fn git_lines(args: &[&str]) -> Result<Vec<String>> {
+/// `-z` rather than newline-delimited output, and raw bytes rather than text,
+/// because git guarantees neither a newline-free nor a UTF-8 filename:
+///
+/// - a filename may legally contain `\n` on Unix, so splitting on lines turns
+///   one staged path into two paths that do not exist;
+/// - a Unix filename is an arbitrary byte string, so `from_utf8_lossy` would
+///   replace the offending bytes and yield a path naming a different file (or
+///   none), silently formatting and staging the wrong thing.
+///
+/// `core.quotePath=false` keeps git from quoting and octal-escaping non-ASCII
+/// paths; combined with `-z` the output is the exact bytes, NUL-separated.
+fn git_paths(args: &[&str]) -> Result<Vec<PathBuf>> {
     let mut full: Vec<&str> = vec!["-c", "core.quotePath=false"];
     full.extend_from_slice(args);
     let out = cmd("git", &full)
@@ -101,11 +106,34 @@ fn git_lines(args: &[&str]) -> Result<Vec<String>> {
     if !out.status.success() {
         return Err(eyre!("git {} failed", args.join(" ")));
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect())
+    split_nul_paths(&out.stdout)
+}
+
+/// Splits NUL-delimited git output into paths, preserving the original bytes.
+///
+/// Separate from the process call so the delimiter handling is testable without
+/// creating a repository containing a newline-bearing filename.
+fn split_nul_paths(stdout: &[u8]) -> Result<Vec<PathBuf>> {
+    stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()).map(bytes_to_path).collect()
+}
+
+/// A git path record as a `PathBuf`, without lossy conversion.
+#[cfg(unix)]
+fn bytes_to_path(bytes: &[u8]) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
+}
+
+/// On Windows a path is UTF-16 and git reports it as UTF-8, so invalid UTF-8
+/// here is a genuine anomaly. Reported rather than replaced: a mangled path
+/// would name a different file, and formatting the wrong file is worse than
+/// refusing.
+#[cfg(not(unix))]
+fn bytes_to_path(bytes: &[u8]) -> Result<PathBuf> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        eyre!("git reported a non-UTF-8 path this platform cannot represent: {error}")
+    })?;
+    Ok(PathBuf::from(text))
 }
 
 /// Maps a repository-relative file path to the workspace package that owns it.
@@ -121,13 +149,17 @@ fn git_lines(args: &[&str]) -> Result<Vec<String>> {
 /// silently attributed root-package files to no package would skip formatting
 /// them, which is the failure this whole task exists to prevent.
 pub(crate) fn owning_package<'a>(
-    path: &str,
+    path: &Path,
     packages: &'a [WorkspacePackage],
 ) -> Option<&'a WorkspacePackage> {
     packages
         .iter()
-        .filter(|package| package.dir.is_empty() || path.starts_with(&format!("{}/", package.dir)))
-        .max_by_key(|package| package.dir.len())
+        // `Path::starts_with` matches whole components, so "crates/perl-parser"
+        // cannot capture "crates/perl-parser-core/src/lib.rs" the way a string
+        // prefix would. An empty dir (a workspace-root package) prefixes every
+        // path, which is the intended "owns anything unclaimed" behaviour.
+        .filter(|package| path.starts_with(&package.dir))
+        .max_by_key(|package| package.dir.as_os_str().len())
 }
 
 /// Formats the staged Rust diff and re-stages it.
@@ -167,9 +199,9 @@ pub(crate) fn owning_package<'a>(
 ///
 /// Only fully staged files are re-staged — see [`StagedFormatAction`].
 pub fn run_staged() -> Result<()> {
-    let staged = git_lines(&["diff", "--cached", "--name-only", "--diff-filter=ACMR"])?;
-    let unstaged: HashSet<String> =
-        git_lines(&["diff", "--name-only", "--diff-filter=ACMR"])?.into_iter().collect();
+    let staged = git_paths(&["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"])?;
+    let unstaged: HashSet<PathBuf> =
+        git_paths(&["diff", "--name-only", "-z", "--diff-filter=ACMR"])?.into_iter().collect();
     let actions = classify_staged_paths(&staged, &unstaged);
 
     if actions.is_empty() {
@@ -177,14 +209,14 @@ pub fn run_staged() -> Result<()> {
         return Ok(());
     }
 
-    let to_format: Vec<&String> = actions
+    let to_format: Vec<&PathBuf> = actions
         .iter()
         .filter_map(|action| match action {
             StagedFormatAction::FormatAndRestage(path) => Some(path),
             StagedFormatAction::SkipPartiallyStaged(_) => None,
         })
         .collect();
-    let skipped: Vec<&String> = actions
+    let skipped: Vec<&PathBuf> = actions
         .iter()
         .filter_map(|action| match action {
             StagedFormatAction::SkipPartiallyStaged(path) => Some(path),
@@ -201,21 +233,25 @@ pub fn run_staged() -> Result<()> {
 
         // Phase 1 — format in memory. Nothing on disk is touched yet.
         let mut pending: Vec<FormattedFile> = Vec::new();
-        let mut unowned: Vec<&str> = Vec::new();
+        let mut unowned: Vec<&Path> = Vec::new();
         for path in &to_format {
             let Some(package) = owning_package(path, &packages) else {
                 // No package means no edition, and guessing one would format
                 // against the wrong language rules. Leave it to the gate.
-                unowned.push(path.as_str());
+                unowned.push(path.as_path());
                 continue;
             };
             // git paths are repository-relative and this may run from a
             // subdirectory, so resolve against the git root.
             let absolute = root.join(path);
             let original = std::fs::read_to_string(&absolute)
-                .with_context(|| format!("failed to read staged file {path}"))?;
-            let formatted =
-                rustfmt_text(config_text.as_deref(), &package.edition, &original, path)?;
+                .with_context(|| format!("failed to read staged file {}", path.display()))?;
+            let formatted = rustfmt_text(
+                config_text.as_deref(),
+                &package.edition,
+                &original,
+                &path.display().to_string(),
+            )?;
             if formatted != original {
                 pending.push(FormattedFile { path: absolute, original, formatted });
             }
@@ -245,7 +281,7 @@ pub fn run_staged() -> Result<()> {
         );
         println!("and re-staging them would pull that unstaged work into this commit:");
         for path in &skipped {
-            println!("   {path}");
+            println!("   {}", path.display());
         }
         println!();
         println!("   Stage or stash the rest, then re-run: cargo xtask fmt --staged");
@@ -438,7 +474,7 @@ fn workspace_packages(metadata: &CargoMetadata, repo_root: &Path) -> Vec<Workspa
             let relative = dir.strip_prefix(repo_root).unwrap_or(dir);
             Some(WorkspacePackage {
                 name: package.name.clone(),
-                dir: relative.to_string_lossy().replace('\\', "/"),
+                dir: relative.to_path_buf(),
                 edition: package.edition.clone(),
             })
         })
@@ -644,11 +680,26 @@ fn staged_rustfmt_config() -> Result<Option<String>> {
 /// directory stays absolute, no staged path matches any package, and staged
 /// formatting silently becomes a no-op.
 fn repo_root() -> Result<PathBuf> {
-    git_lines(&["rev-parse", "--show-toplevel"])?
-        .into_iter()
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| eyre!("git rev-parse --show-toplevel returned no path"))
+    // Not `git_paths`: `git rev-parse` has no `-z`, and passing one makes it
+    // echo "-z" back as a second output line (verified). Its output is a single
+    // path terminated by exactly one newline, so strip that and keep the rest of
+    // the bytes verbatim — a repository path may itself contain a newline.
+    let out = cmd("git", ["rev-parse", "--show-toplevel"])
+        .stdout_capture()
+        .unchecked()
+        .run()
+        .context("failed to run git rev-parse --show-toplevel")?;
+    if !out.status.success() {
+        return Err(eyre!("git rev-parse --show-toplevel failed"));
+    }
+    let mut bytes = out.stdout;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        return Err(eyre!("git rev-parse --show-toplevel returned no path"));
+    }
+    bytes_to_path(&bytes)
 }
 
 fn workspace_manifest_paths(package_filters: Option<&[String]>) -> Result<Vec<String>> {
@@ -724,17 +775,21 @@ mod tests {
     use std::collections::HashSet;
     use std::fs;
 
-    fn unstaged(paths: &[&str]) -> HashSet<String> {
-        paths.iter().map(|p| (*p).to_string()).collect()
+    fn unstaged(paths: &[&str]) -> HashSet<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    fn staged(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
     }
 
     #[test]
     fn staged_only_rust_files_are_formatted_and_restaged() {
-        let staged = vec!["crates/a/src/lib.rs".to_string(), "docs/readme.md".to_string()];
-        let actions = classify_staged_paths(&staged, &unstaged(&[]));
+        let paths = staged(&["crates/a/src/lib.rs", "docs/readme.md"]);
+        let actions = classify_staged_paths(&paths, &unstaged(&[]));
         assert_eq!(
             actions,
-            vec![StagedFormatAction::FormatAndRestage("crates/a/src/lib.rs".to_string())],
+            vec![StagedFormatAction::FormatAndRestage(PathBuf::from("crates/a/src/lib.rs"))],
             "non-Rust staged paths must not be handed to rustfmt"
         );
     }
@@ -744,29 +799,29 @@ mod tests {
         // The footgun this guards: formatting the worktree copy would rewrite
         // the author's unstaged work, and the follow-up `git add` would sweep
         // it into the commit. Skipping is the only safe action.
-        let staged = vec!["crates/a/src/lib.rs".to_string()];
-        let actions = classify_staged_paths(&staged, &unstaged(&["crates/a/src/lib.rs"]));
+        let paths = staged(&["crates/a/src/lib.rs"]);
+        let actions = classify_staged_paths(&paths, &unstaged(&["crates/a/src/lib.rs"]));
         assert_eq!(
             actions,
-            vec![StagedFormatAction::SkipPartiallyStaged("crates/a/src/lib.rs".to_string())],
+            vec![StagedFormatAction::SkipPartiallyStaged(PathBuf::from("crates/a/src/lib.rs"))],
         );
     }
 
     #[test]
     fn unrelated_unstaged_files_do_not_block_a_fully_staged_one() {
         // Only an overlap between the staged and unstaged sets is dangerous.
-        let staged = vec!["crates/a/src/lib.rs".to_string()];
-        let actions = classify_staged_paths(&staged, &unstaged(&["crates/b/src/other.rs"]));
+        let paths = staged(&["crates/a/src/lib.rs"]);
+        let actions = classify_staged_paths(&paths, &unstaged(&["crates/b/src/other.rs"]));
         assert_eq!(
             actions,
-            vec![StagedFormatAction::FormatAndRestage("crates/a/src/lib.rs".to_string())],
+            vec![StagedFormatAction::FormatAndRestage(PathBuf::from("crates/a/src/lib.rs"))],
         );
     }
 
     fn package(name: &str, dir: &str, edition: &str) -> WorkspacePackage {
         WorkspacePackage {
             name: name.to_string(),
-            dir: dir.to_string(),
+            dir: PathBuf::from(dir),
             edition: edition.to_string(),
         }
     }
@@ -780,7 +835,7 @@ mod tests {
     }
 
     fn owner_name(path: &str, packages: &[WorkspacePackage]) -> Option<String> {
-        super::owning_package(path, packages).map(|package| package.name.clone())
+        super::owning_package(Path::new(path), packages).map(|package| package.name.clone())
     }
 
     #[test]
@@ -830,7 +885,7 @@ mod tests {
         // gate-clean files: `rustfmt --check` rewrote 29, `rustfmt --edition
         // 2024 --check` rewrote 0.
         let packages = vec![package("legacy-crate", "crates/legacy", "2021")];
-        let owner = super::owning_package("crates/legacy/src/lib.rs", &packages)
+        let owner = super::owning_package(Path::new("crates/legacy/src/lib.rs"), &packages)
             .expect("legacy path must resolve to its package");
         assert_eq!(owner.edition, "2021", "each file must be formatted at its own package edition");
     }
@@ -838,6 +893,26 @@ mod tests {
     #[test]
     fn nothing_staged_yields_no_actions() {
         assert!(classify_staged_paths(&[], &unstaged(&["crates/a/src/lib.rs"])).is_empty());
+    }
+
+    #[test]
+    fn a_newline_in_a_filename_stays_one_path() -> Result<()> {
+        // A Unix filename may legally contain a newline. Splitting git output on
+        // lines would turn this single staged file into two paths that do not
+        // exist, and the run would fail trying to read them. `-z` plus NUL
+        // splitting is what makes that impossible.
+        let stdout = b"crates/a/src/we\nird.rs\0crates/a/src/lib.rs\0";
+        let paths = super::split_nul_paths(stdout)?;
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("crates/a/src/we\nird.rs"), PathBuf::from("crates/a/src/lib.rs"),],
+            "a newline inside a filename must not split it into two paths"
+        );
+
+        // ...and such a file is still classified normally.
+        let actions = classify_staged_paths(&paths, &unstaged(&[]));
+        assert_eq!(actions.len(), 2, "both .rs paths must be classified");
+        Ok(())
     }
 
     use std::path::{Path, PathBuf};
@@ -1231,12 +1306,18 @@ mod tests {
         let metadata = sample_metadata();
         let packages = super::workspace_packages(&metadata, Path::new("/repo"));
 
-        let mut dirs: Vec<(&str, &str)> =
-            packages.iter().map(|package| (package.name.as_str(), package.dir.as_str())).collect();
+        let mut dirs: Vec<(&str, PathBuf)> =
+            packages.iter().map(|package| (package.name.as_str(), package.dir.clone())).collect();
         dirs.sort_unstable();
-        assert_eq!(dirs, vec![("perl-parser", "crates/perl-parser"), ("xtask", "xtask")]);
         assert_eq!(
-            super::owning_package("crates/perl-parser/src/lib.rs", &packages)
+            dirs,
+            vec![
+                ("perl-parser", PathBuf::from("crates/perl-parser")),
+                ("xtask", PathBuf::from("xtask")),
+            ]
+        );
+        assert_eq!(
+            super::owning_package(Path::new("crates/perl-parser/src/lib.rs"), &packages)
                 .map(|package| package.name.as_str()),
             Some("perl-parser"),
         );
@@ -1250,10 +1331,13 @@ mod tests {
         let metadata = sample_metadata();
         let packages = super::workspace_packages(&metadata, Path::new("/somewhere/else"));
         assert!(
-            packages.iter().all(|package| package.dir.starts_with('/')),
+            packages.iter().all(|package| package.dir.is_absolute()),
             "packages outside the given root must keep absolute dirs: {packages:?}"
         );
-        assert_eq!(super::owning_package("crates/perl-parser/src/lib.rs", &packages), None);
+        assert_eq!(
+            super::owning_package(Path::new("crates/perl-parser/src/lib.rs"), &packages),
+            None
+        );
     }
 
     #[test]
