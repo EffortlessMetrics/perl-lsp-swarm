@@ -15,14 +15,14 @@ jobs:
       - name: Checkout exact branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           ref: test/lsp-client-support-registry-6739
 
       - name: Install pinned Rust toolchain
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Pin registry vocabularies and remove tautological path check
+      - name: Pin registry vocabularies and simplify executable path proof
         shell: python
         run: |
           from pathlib import Path
@@ -51,41 +51,49 @@ jobs:
                   raise SystemExit("receipt-root marker not found")
               text = text.replace(marker, marker + constants, 1)
 
-          anchor = '''    let registry = load_registry(&root)?;
-              let tracked_files = load_tracked_files(&root)?;
-              let allowed_tiers = registry
+          current_vocab = '''    let allowed_tiers = registry
+              .meta
+              .allowed_tiers
+              .iter()
+              .map(String::as_str)
+              .collect::<BTreeSet<_>>();
+              let allowed_evidence = registry
+              .meta
+              .allowed_evidence_kinds
+              .iter()
+              .map(String::as_str)
+              .collect::<BTreeSet<_>>();
           '''
-          replacement = '''    let registry = load_registry(&root)?;
-              let tracked_files = load_tracked_files(&root)?;
-              let declared_tiers = registry
-                  .meta
-                  .allowed_tiers
-                  .iter()
-                  .map(String::as_str)
-                  .collect::<BTreeSet<_>>();
+          pinned_vocab = '''    let declared_tiers = registry
+              .meta
+              .allowed_tiers
+              .iter()
+              .map(String::as_str)
+              .collect::<BTreeSet<_>>();
               let expected_tiers = ALLOWED_TIERS.into_iter().collect::<BTreeSet<_>>();
               ensure!(
-                  declared_tiers == expected_tiers,
-                  "registry tier vocabulary drifted: declared={declared_tiers:?} expected={expected_tiers:?}"
+              declared_tiers == expected_tiers,
+              "registry tier vocabulary drifted: declared={declared_tiers:?} expected={expected_tiers:?}"
               );
               let declared_evidence_kinds = registry
-                  .meta
-                  .allowed_evidence_kinds
-                  .iter()
-                  .map(String::as_str)
-                  .collect::<BTreeSet<_>>();
+              .meta
+              .allowed_evidence_kinds
+              .iter()
+              .map(String::as_str)
+              .collect::<BTreeSet<_>>();
               let expected_evidence_kinds =
-                  ALLOWED_EVIDENCE_KINDS.into_iter().collect::<BTreeSet<_>>();
+              ALLOWED_EVIDENCE_KINDS.into_iter().collect::<BTreeSet<_>>();
               ensure!(
-                  declared_evidence_kinds == expected_evidence_kinds,
-                  "registry evidence vocabulary drifted: declared={declared_evidence_kinds:?} expected={expected_evidence_kinds:?}"
+              declared_evidence_kinds == expected_evidence_kinds,
+              "registry evidence vocabulary drifted: declared={declared_evidence_kinds:?} expected={expected_evidence_kinds:?}"
               );
-              let allowed_tiers = registry
+              let allowed_tiers = declared_tiers;
+              let allowed_evidence = declared_evidence_kinds;
           '''
-          if replacement.strip() not in text:
-              if anchor not in text:
-                  raise SystemExit("claim-inflation anchor not found")
-              text = text.replace(anchor, replacement, 1)
+          if pinned_vocab.strip() not in text:
+              if current_vocab not in text:
+                  raise SystemExit("registry vocabulary block not found")
+              text = text.replace(current_vocab, pinned_vocab, 1)
 
           tautology = '''                let expected_relative =
                           validate_execution_receipt_path(&evidence.path, &evidence.kind)?;
@@ -97,13 +105,14 @@ jobs:
                           "executable receipt path normalization drifted"
                       );
           '''
-          simplified = '''                let _ = validate_execution_receipt_path(&evidence.path, &evidence.kind)?;
+          simplified = '''                let _ =
+                          validate_execution_receipt_path(&evidence.path, &evidence.kind)?;
                       let receipt_path =
                           validate_repository_file(&root, &evidence.path, &tracked_files)?;
           '''
           if simplified.strip() not in text:
               if tautology not in text:
-                  raise SystemExit("tautological path check not found")
+                  raise SystemExit("executable path proof block not found")
               text = text.replace(tautology, simplified, 1)
 
           path.write_text(text)
@@ -120,6 +129,12 @@ jobs:
             --config-path . \
             crates/perl-lsp-rs/tests/lsp_client_support_registry.rs \
             crates/perl-lsp-rs/tests/semantic_definition.rs
+
+      - name: Run focused authority tests
+        shell: bash
+        run: |
+          cargo test -p perl-lsp-rs --test lsp_client_support_registry --locked
+          cargo test -p perl-lsp-rs --test semantic_definition --locked
 
       - name: Remove one-shot workflow and push result
         shell: bash
