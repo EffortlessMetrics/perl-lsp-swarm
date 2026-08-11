@@ -39,60 +39,66 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
 
     walk(&ast, &mut |node| {
         match &node.kind {
-        NodeKind::Substitution {
-            expr,
-            pattern,
-            replacement,
-            modifiers,
-            has_embedded_code,
-            negated,
-        } => {
-            if !matches!(
-                &expr.kind,
-                NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
-            ) {
-                return Err("substitution target was not $message".into());
+            NodeKind::Substitution {
+                expr,
+                pattern,
+                replacement,
+                modifiers,
+                has_embedded_code,
+                negated,
+            } => {
+                if !matches!(
+                    &expr.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
+                ) {
+                    return Err("substitution target was not $message".into());
+                }
+                if pattern != "hello" || replacement != "hello world" || modifiers != "g" {
+                    return Err(format!(
+                        "unexpected substitution payload: pattern={pattern:?}, replacement={replacement:?}, modifiers={modifiers:?}"
+                    ));
+                }
+                if *has_embedded_code || *negated {
+                    return Err("substitution flags were not preserved".into());
+                }
+                if source.get(node.location.start..node.location.end)
+                    != Some("$message =~ s/hello/hello world/g")
+                {
+                    return Err("substitution source span was not preserved".into());
+                }
+                substitution_seen = true;
             }
-            if pattern != "hello" || replacement != "hello world" || modifiers != "g" {
-                return Err(format!(
-                    "unexpected substitution payload: pattern={pattern:?}, replacement={replacement:?}, modifiers={modifiers:?}"
-                ));
+            NodeKind::Transliteration {
+                expr,
+                search,
+                replace,
+                modifiers,
+                negated,
+            } => {
+                if !matches!(
+                    &expr.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
+                ) {
+                    return Err("transliteration target was not $message".into());
+                }
+                if let Some(text) = source.get(node.location.start..node.location.end) {
+                    transliterations.push((
+                        text.to_owned(),
+                        search.clone(),
+                        replace.clone(),
+                        modifiers.clone(),
+                        *negated,
+                    ));
+                }
             }
-            if *has_embedded_code || *negated {
-                return Err("substitution flags were not preserved".into());
+            NodeKind::String { .. } => {
+                if let Some(text) = source.get(node.location.start..node.location.end)
+                    && (text.starts_with("q{") || text.starts_with("qq{"))
+                {
+                    quote_spans.push(text.to_owned());
+                }
             }
-            if source.get(node.location.start..node.location.end)
-                != Some("$message =~ s/hello/hello world/g")
-            {
-                return Err("substitution source span was not preserved".into());
-            }
-            substitution_seen = true;
-        }
-        NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
-            if !matches!(
-                &expr.kind,
-                NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
-            ) {
-                return Err("transliteration target was not $message".into());
-            }
-            if let Some(text) = source.get(node.location.start..node.location.end) {
-                transliterations.push((
-                    text.to_owned(),
-                    search.clone(),
-                    replace.clone(),
-                    modifiers.clone(),
-                    *negated,
-                ));
-            }
-        }
-        NodeKind::String { .. } => {
-            if let Some(text) = source.get(node.location.start..node.location.end)
-                && (text.starts_with("q{") || text.starts_with("qq{"))
-            {
-                quote_spans.push(text.to_owned());
-            }
-        }
-        _ => {}
+            _ => {}
         }
         Ok(())
     })?;
