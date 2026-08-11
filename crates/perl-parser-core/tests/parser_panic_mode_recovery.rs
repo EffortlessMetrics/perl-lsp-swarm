@@ -481,7 +481,7 @@ fn parser_recovery_profiles_error_nodes_as_accuracy_issue() -> ParseResult<()> {
 }
 
 
-(node: &perl_parser_core::Node, name: &str) -> bool {
+fn contains_variable_declaration(node: &perl_parser_core::Node, name: &str) -> bool {
     let declared_here = matches!(
         &node.kind,
         NodeKind::VariableDeclaration { variable, .. }
