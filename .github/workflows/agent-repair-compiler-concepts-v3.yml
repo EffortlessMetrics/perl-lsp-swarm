@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/agent-repair-compiler-concepts-v3.yml
       - .github/scripts/repair_compiler_concepts.py
+      - .github/scripts/repair_compiler_concepts_closeout.py
 
 permissions:
   contents: write
@@ -38,7 +39,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Apply reviewed repairs
-        run: python3 .github/scripts/repair_compiler_concepts.py
+        run: |
+          python3 .github/scripts/repair_compiler_concepts.py
+          python3 .github/scripts/repair_compiler_concepts_closeout.py
 
       - name: Normalize candidate lints
         run: |
@@ -96,6 +99,7 @@ jobs:
           git config user.email "git@effortlesssteven.com"
           git rm .github/workflows/agent-repair-compiler-concepts-v3.yml
           git rm .github/scripts/repair_compiler_concepts.py
+          git rm .github/scripts/repair_compiler_concepts_closeout.py
           git add contracts/compiler/perl_compiler_concepts.v1.toml
           git add docs/project/status/perl_compiler_concepts.md
           git add schemas/perl_compiler_concepts.v1.schema.json
