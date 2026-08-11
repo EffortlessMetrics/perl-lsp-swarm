@@ -641,7 +641,6 @@ print $message;
     Ok(())
 }
 
-
 #[test]
 fn golden_five_level_closure_captures_lexicals_from_each_enclosing_scope()
 -> Result<(), Box<dyn std::error::Error>> {
