@@ -522,6 +522,30 @@
           "depth": 4,
           "operator": null,
           "parent_operator": null
+        },
+        {
+          "id": "generated_accessor_has_options_hash",
+          "kind": "HashLiteral",
+          "line": 5,
+          "span_text": "is => 'ro'"
+        },
+        {
+          "id": "generated_accessor_has_options_key",
+          "kind": "String",
+          "line": 5,
+          "span_text": "is"
+        },
+        {
+          "id": "generated_accessor_has_options_value",
+          "kind": "String",
+          "line": 5,
+          "span_text": "'ro'"
+        },
+        {
+          "id": "generated_accessor_return_parent",
+          "kind": "Return",
+          "line": 13,
+          "span_text": "return $obj->name"
         }
       ]
     },
