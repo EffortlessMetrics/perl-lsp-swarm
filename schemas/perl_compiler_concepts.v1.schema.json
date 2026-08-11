@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.com/schemas/perl_compiler_concepts.v1.schema.json",
+  "title": "Perl compiler concepts ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ledger_id",
+    "controller_issue",
+    "coverage_scope",
+    "claim_boundary",
+    "complete",
+    "concepts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "perl_compiler_concepts.v1"
+    },
+    "ledger_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "controller_issue": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "coverage_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "concepts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/concept"
+      }
+    }
+  },
+  "$defs": {
+    "parser_state": {
+      "enum": [
+        "parsed",
+        "recovered",
+        "absent",
+        "not_applicable"
+      ]
+    },
+    "representation_state": {
+      "enum": [
+        "modeled",
+        "migration_adapter",
+        "bridge",
+        "opaque",
+        "boundary",
+        "skipped",
+        "absent",
+        "not_applicable"
+      ]
+    },
+    "eir_state": {
+      "enum": [
+        "executable",
+        "boundary",
+        "absent",
+        "not_applicable"
+      ]
+    },
+    "proof_state": {
+      "enum": [
+        "proven",
+        "missing",
+        "not_observable",
+        "not_applicable"
+      ]
+    },
+    "provider_eligibility": {
+      "enum": [
+        "exact",
+        "qualified",
+        "fallback_only",
+        "ineligible"
+      ]
+    },
+    "ownership_state": {
+      "enum": [
+        "active",
+        "deferred",
+        "boundary",
+        "not_applicable"
+      ]
+    },
+    "concept": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "concept_id",
+        "family",
+        "title",
+        "ast_kinds",
+        "parser_ast",
+        "flat_hir",
+        "body_hir",
+        "pir_a",
+        "compile_effects_world",
+        "eir_profile",
+        "gold",
+        "oracle",
+        "composition",
+        "provider_eligibility",
+        "ownership",
+        "owner_issue",
+        "claim_boundary",
+        "evidence"
+      ],
+      "properties": {
+        "concept_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.-]*[a-z0-9]$"
+        },
+        "family": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ast_kinds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "parser_ast": {
+          "$ref": "#/$defs/parser_state"
+        },
+        "flat_hir": {
+          "$ref": "#/$defs/representation_state"
+        },
+        "body_hir": {
+          "$ref": "#/$defs/representation_state"
+        },
+        "pir_a": {
+          "$ref": "#/$defs/representation_state"
+        },
+        "compile_effects_world": {
+          "$ref": "#/$defs/representation_state"
+        },
+        "eir_profile": {
+          "$ref": "#/$defs/eir_state"
+        },
+        "gold": {
+          "$ref": "#/$defs/proof_state"
+        },
+        "oracle": {
+          "$ref": "#/$defs/proof_state"
+        },
+        "composition": {
+          "$ref": "#/$defs/proof_state"
+        },
+        "provider_eligibility": {
+          "$ref": "#/$defs/provider_eligibility"
+        },
+        "ownership": {
+          "$ref": "#/$defs/ownership_state"
+        },
+        "owner_issue": {
+          "type": "string",
+          "pattern": "^#[1-9][0-9]*$"
+        },
+        "claim_boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
