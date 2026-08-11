@@ -258,11 +258,7 @@ fn validate_provenance(
     Ok(())
 }
 
-fn validate_platform(
-    name: &str,
-    platform: &PlatformEvidence,
-    packet: &Packet,
-) -> Result<()> {
+fn validate_platform(name: &str, platform: &PlatformEvidence, packet: &Packet) -> Result<()> {
     if platform.evidence_refs.is_empty() {
         bail!("platforms.{name}.evidence_refs must not be empty");
     }
@@ -432,9 +428,8 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         ArtifactEvidence, ArtifactProvenance, Artifacts, EvidenceProvenance, EvidenceStatus,
-        FreezeRecommendation, JourneyCell, MechanismDisposition, Packet, PlatformEvidence, Platforms,
-        ZeroBudgetCounts,
-        computed_recommendation, validate,
+        FreezeRecommendation, JourneyCell, MechanismDisposition, Packet, PlatformEvidence,
+        Platforms, ZeroBudgetCounts, computed_recommendation, validate,
     };
     use color_eyre::eyre::Result;
 
