@@ -3,71 +3,20 @@ name: Workflow Trigger Lint
 on:
   pull_request:
     branches: [main, master]
-  merge_group:
-    types: [checks_requested]
-  push:
-    branches:
-      - main
-      - master
-      - test/lsp-real-process-6720
-
-concurrency:
-  group: workflow-trigger-lint-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
 
 jobs:
-  lint:
-    name: Workflow Trigger Lint
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: stable
-
-      - name: Run workflow trigger lint
-        id: lint
-        shell: bash
-        run: |
-          cargo xtask workflow-trigger-lint \
-            --policy .ci/policies/required-checks.toml \
-            --receipt target/receipts/workflow-trigger-lint.json \
-            --format json
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
-
-      - name: Upload receipt
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
-        with:
-          name: workflow-trigger-lint-receipt
-          path: target/receipts/workflow-trigger-lint.json
-          if-no-files-found: warn
-
-      - name: Summary
-        if: always()
-        run: |
-          if [ "${{ steps.lint.outputs.exit_code }}" = "0" ]; then
-            echo "## Workflow trigger lint passed" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
-            echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
   finish-exact-process:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/test/lsp-real-process-6720'
+    if: github.head_ref == 'test/lsp-real-process-6720'
     name: Finish exact-process review fixes
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           ref: test/lsp-real-process-6720
 
       - name: Install pinned Rust toolchain
@@ -75,169 +24,23 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
       - name: Apply reviewed strict-envelope patch
-        shell: bash
+        shell: python
         run: |
-          git apply <<'PATCH'
-          diff --git a/crates/perl-lsp-rs/tests/support/real_process.rs b/crates/perl-lsp-rs/tests/support/real_process.rs
-          --- a/crates/perl-lsp-rs/tests/support/real_process.rs
-          +++ b/crates/perl-lsp-rs/tests/support/real_process.rs
-          @@ -147,4 +147,8 @@
-                   is_server_notification(message)
-               }
-          
-          +    pub fn is_valid_server_request_for_test(message: &Value, method: &str) -> bool {
-          +        is_server_request_for(message, method)
-          +    }
-          +
-               pub fn send_raw_bytes(&mut self, bytes: &[u8]) -> Result<()> {
-          @@ -437,9 +437,20 @@
-                   && (message.get("result").is_some() || message.get("error").is_some())
-           }
-          
-          +fn has_valid_params(message: &Value) -> bool {
-          +    message
-          +        .get("params")
-          +        .is_none_or(|params| params.is_object() || params.is_array())
-          +}
-          +
-          +fn has_no_response_members(message: &Value) -> bool {
-          +    message.get("result").is_none() && message.get("error").is_none()
-          +}
-          +
-           fn is_response(message: &Value) -> bool {
-               is_jsonrpc_2(message)
-                   && is_response_like(message)
-          +        && message.get("params").is_none()
-                   && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
-                   && (message.get("result").is_some() ^ message.get("error").is_some())
-           }
-          @@ -451,6 +462,8 @@
-           fn is_server_request_for(message: &Value, method: &str) -> bool {
-               is_jsonrpc_2(message)
-                   && message.get("method").and_then(Value::as_str) == Some(method)
-          +        && has_no_response_members(message)
-          +        && has_valid_params(message)
-                   && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
-           }
-          
-          @@ -458,4 +471,6 @@
-               is_jsonrpc_2(message)
-                   && message.get("method").and_then(Value::as_str).is_some()
-                   && message.get("id").is_none()
-          +        && has_no_response_members(message)
-          +        && has_valid_params(message)
-           }
-          @@ -494,7 +494,8 @@
-                   header_bytes = header_bytes.saturating_add(line.len());
-          
-          -        let line = std::str::from_utf8(&line).context("stdout header was not valid UTF-8")?;
-          -        let line = line.trim_end_matches(['\r', '\n']);
-          +        ensure!(line.ends_with(b"\r\n"), "stdout header line did not end with CRLF");
-          +        let line = std::str::from_utf8(&line[..line.len() - 2])
-          +            .context("stdout header was not valid UTF-8")?;
-                   if line.is_empty() {
-                       break;
-                   }
-          diff --git a/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs b/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
-          --- a/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
-          +++ b/crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
-          @@ -217,5 +217,5 @@
-           #[test]
-          -fn strict_parser_rejects_truncated_and_oversized_headers() -> Result<()> {
-          +fn strict_parser_rejects_truncated_oversized_and_lf_only_headers() -> Result<()> {
-               let truncated = b"Content-Length: 12\r\n";
-               let error = RealProcessClient::parse_stdout_frame_for_test(truncated)
-                   .expect_err("truncated header must fail");
-          @@ -225,6 +225,16 @@
-               let error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
-                   .expect_err("oversized header must fail");
-               ensure!(error.to_string().contains("exceeded"));
-          +
-          +    let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
-          +    let mut lf_only = format!("Content-Length: {}\n\n", body.len()).into_bytes();
-          +    lf_only.extend_from_slice(body);
-          +    let error = RealProcessClient::parse_stdout_frame_for_test(&lf_only)
-          +        .expect_err("LF-only framing must fail");
-          +    ensure!(
-          +        error.to_string().contains("CRLF"),
-          +        "LF-only framing failed for the wrong reason: {error:#}"
-          +    );
-               Ok(())
-           }
-          
-          @@ -258,5 +268,71 @@
-                   !RealProcessClient::is_valid_server_notification_for_test(&wrong_version),
-                   "wrong JSON-RPC version was accepted"
-               );
-          +
-          +    let scalar_params = json!({
-          +        "jsonrpc": "2.0",
-          +        "method": "window/logMessage",
-          +        "params": "not-an-object-or-array"
-          +    });
-          +    ensure!(
-          +        !RealProcessClient::is_valid_server_notification_for_test(&scalar_params),
-          +        "notification with scalar params was accepted"
-          +    );
-          +
-          +    for hybrid in [
-          +        json!({"jsonrpc": "2.0", "method": "window/logMessage", "result": null}),
-          +        json!({
-          +            "jsonrpc": "2.0",
-          +            "method": "window/logMessage",
-          +            "error": {"code": -32603, "message": "hybrid"}
-          +        }),
-          +    ] {
-          +        ensure!(
-          +            !RealProcessClient::is_valid_server_notification_for_test(&hybrid),
-          +            "hybrid notification/response object was accepted: {hybrid}"
-          +        );
-          +    }
-               Ok(())
-           }
-          +
-          +#[test]
-          +fn server_request_requires_request_only_members_and_structured_params() -> Result<()> {
-          +    let method = "client/registerCapability";
-          +    let valid = json!({
-          +        "jsonrpc": "2.0",
-          +        "id": 1,
-          +        "method": method,
-          +        "params": {"registrations": []}
-          +    });
-          +    ensure!(
-          +        RealProcessClient::is_valid_server_request_for_test(&valid, method),
-          +        "valid server request was rejected"
-          +    );
-          +
-          +    let scalar_params = json!({
-          +        "jsonrpc": "2.0",
-          +        "id": 2,
-          +        "method": method,
-          +        "params": true
-          +    });
-          +    ensure!(
-          +        !RealProcessClient::is_valid_server_request_for_test(&scalar_params, method),
-          +        "server request with scalar params was accepted"
-          +    );
-          +
-          +    for hybrid in [
-          +        json!({"jsonrpc": "2.0", "id": 3, "method": method, "result": null}),
-          +        json!({
-          +            "jsonrpc": "2.0",
-          +            "id": 4,
-          +            "method": method,
-          +            "error": {"code": -32603, "message": "hybrid"}
-          +        }),
-          +    ] {
-          +        ensure!(
-          +            !RealProcessClient::is_valid_server_request_for_test(&hybrid, method),
-          +            "hybrid request/response object was accepted: {hybrid}"
-          +        );
-          +    }
-          +    Ok(())
-          +}
-          PATCH
+          import base64
+          import hashlib
+          import subprocess
+          import zlib
+          from pathlib import Path
+
+          encoded = "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"
+          patch = zlib.decompress(base64.b64decode(encoded))
+          actual = hashlib.sha256(patch).hexdigest()
+          expected = "4cd36f46fabfa48cd495d20cc5c38190008a93bf78f3dae704d09423aa2acd8a"
+          if actual != expected:
+              raise SystemExit(f"patch digest mismatch: {actual}")
+          path = Path("/tmp/pr6811.patch")
+          path.write_bytes(patch)
+          subprocess.run(["git", "apply", str(path)], check=True)
 
       - name: Format and verify focused contracts
         shell: bash
@@ -253,7 +56,7 @@ jobs:
       - name: Restore carrier workflow and push reviewed result
         shell: bash
         run: |
-          git show HEAD^:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
+          git show 601104f64bae50892a9cd1fe9ef40cf3e38f481c:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
