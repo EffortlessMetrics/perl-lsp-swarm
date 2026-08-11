@@ -2043,7 +2043,7 @@
             "confidence": "High"
           }
         ]
-      }
+      },
       "ast_expectations": [
         {
           "id": "method_call_package",
@@ -2125,7 +2125,7 @@
           "operator": null,
           "parent_operator": null
         }
-      ],
+      ]
     },
     {
       "id": "method_decl",
