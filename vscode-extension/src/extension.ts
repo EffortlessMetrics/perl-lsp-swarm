@@ -608,7 +608,7 @@ export async function activate(context: vscode.ExtensionContext) {
         getWorkspaceStatus: () => {
           const widget = healthWidget;
           const mode = widget?.mode ?? 'starting';
-          const hasLiveServer = mode === 'running' || mode === 'indexing';
+          const hasLiveServer = mode === 'running' || mode === 'indexing' || mode === 'ready_limited';
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
