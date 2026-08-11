@@ -42,7 +42,7 @@ fn numeric_literals_preserve_kind_value_and_span() {
 
 #[test]
 fn strings_preserve_kind_value_and_span() {
-    let source = r#"my $single = 'text'; my $double = "text";"#;
+    let source = r#"my $single = 'text'; my $double = "hello $name";"#;
     let ast = parse(source);
     let mut single = false;
     let mut double = false;
@@ -57,7 +57,7 @@ fn strings_preserve_kind_value_and_span() {
             }
             if value == "\"text\"" && *interpolated {
                 double = true;
-                double_span = node.location.start == 34 && node.location.end == 40;
+                double_span = node.location.start == 34 && node.location.end == 47;
             }
         }
     });
