@@ -14,12 +14,29 @@ const AUTHORITY: &[u8] =
 const MANIFEST_SCHEMA: &str = include_str!("../../../schemas/publication_manifest.v1.schema.json");
 const RECEIPT_SCHEMA: &str =
     include_str!("../../../schemas/publication_drift_receipt.v1.schema.json");
+const SUPPORTED_SCHEMA_KEYWORDS: &[&str] = &[
+    "$ref",
+    "oneOf",
+    "const",
+    "enum",
+    "type",
+    "required",
+    "properties",
+    "additionalProperties",
+    "items",
+    "minItems",
+    "minLength",
+    "pattern",
+    "minimum",
+    "not",
+];
+const SCHEMA_ANNOTATIONS: &[&str] = &["$schema", "$id", "$defs", "title", "description"];
 
 #[test]
 fn publication_manifest_fixture_conforms_to_schema() -> Result<()> {
     let schema: Value = serde_json::from_str(MANIFEST_SCHEMA)?;
     let manifest: Value = serde_json::from_slice(AUTHORITY)?;
-    validate_schema(&manifest, &schema, &schema, "publication_manifest")
+    validate_schema_document(&manifest, &schema, "publication_manifest")
 }
 
 #[test]
@@ -32,7 +49,7 @@ fn emitted_clean_drift_and_not_proven_receipts_conform_to_schema() -> Result<()>
     ];
 
     for (name, receipt, expected_verdict) in cases {
-        validate_schema(&receipt, &schema, &schema, name)?;
+        validate_schema_document(&receipt, &schema, name)?;
         let verdict = receipt
             .get("verdict")
             .and_then(Value::as_str)
@@ -53,7 +70,7 @@ fn receipt_schema_rejects_missing_and_extra_top_level_fields() -> Result<()> {
         .as_object_mut()
         .ok_or_else(|| eyre!("clean receipt is not an object"))?
         .remove("comparison_version");
-    if validate_schema(&missing, &schema, &schema, "missing-field receipt").is_ok() {
+    if validate_schema_document(&missing, &schema, "missing-field receipt").is_ok() {
         bail!("receipt without comparison_version passed schema validation");
     }
 
@@ -62,8 +79,52 @@ fn receipt_schema_rejects_missing_and_extra_top_level_fields() -> Result<()> {
         .as_object_mut()
         .ok_or_else(|| eyre!("clean receipt is not an object"))?
         .insert("unexpected".to_string(), Value::Bool(true));
-    if validate_schema(&extra, &schema, &schema, "extra-field receipt").is_ok() {
+    if validate_schema_document(&extra, &schema, "extra-field receipt").is_ok() {
         bail!("receipt with an unexpected field passed schema validation");
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_validator_applies_ref_and_one_of_sibling_constraints() -> Result<()> {
+    let one_of_schema = serde_json::json!({
+        "oneOf": [{"type": "object"}],
+        "required": ["required_by_sibling"]
+    });
+    if validate_schema_document(&serde_json::json!({}), &one_of_schema, "oneOf sibling").is_ok() {
+        bail!("oneOf sibling required constraint was skipped");
+    }
+
+    let ref_schema = serde_json::json!({
+        "$defs": {"object": {"type": "object"}},
+        "$ref": "#/$defs/object",
+        "required": ["required_by_sibling"]
+    });
+    if validate_schema_document(&serde_json::json!({}), &ref_schema, "$ref sibling").is_ok() {
+        bail!("$ref sibling required constraint was skipped");
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_validator_rejects_unsupported_assertion_keywords() -> Result<()> {
+    let schema = serde_json::json!({"type": "string", "maxLength": 3});
+    let error = match validate_schema_document(&serde_json::json!("toolong"), &schema, "keyword") {
+        Ok(()) => bail!("unsupported schema keyword was silently accepted"),
+        Err(error) => error,
+    };
+    if !format!("{error:#}").contains("unsupported schema keyword") {
+        bail!("unexpected error: {error:#}");
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_validator_compares_fractional_minimum_values() -> Result<()> {
+    let schema = serde_json::json!({"type": "number", "minimum": 1.5});
+    validate_schema_document(&serde_json::json!(1.5), &schema, "fractional minimum")?;
+    if validate_schema_document(&serde_json::json!(1.25), &schema, "fractional minimum").is_ok() {
+        bail!("number below a fractional minimum was accepted");
     }
     Ok(())
 }
@@ -78,6 +139,51 @@ fn fixture_authority() -> Result<AuthoritySource> {
     Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: sha256_hex(AUTHORITY) }))
 }
 
+fn validate_schema_document(value: &Value, schema: &Value, context: &str) -> Result<()> {
+    validate_schema_keywords(schema, context)?;
+    validate_schema(value, schema, schema, context)
+}
+
+fn validate_schema_keywords(schema: &Value, context: &str) -> Result<()> {
+    let object = schema
+        .as_object()
+        .ok_or_else(|| eyre!("{context}: schema node must be an object"))?;
+    for keyword in object.keys() {
+        if !SUPPORTED_SCHEMA_KEYWORDS.contains(&keyword.as_str())
+            && !SCHEMA_ANNOTATIONS.contains(&keyword.as_str())
+        {
+            bail!("{context}: unsupported schema keyword {keyword:?}");
+        }
+    }
+
+    for map_keyword in ["$defs", "properties"] {
+        if let Some(entries) = object.get(map_keyword).and_then(Value::as_object) {
+            for (name, child) in entries {
+                validate_schema_keywords(child, &format!("{context}.{map_keyword}.{name}"))?;
+            }
+        }
+    }
+    if let Some(items) = object.get("items") {
+        validate_schema_keywords(items, &format!("{context}.items"))?;
+    }
+    if let Some(forbidden) = object.get("not") {
+        validate_schema_keywords(forbidden, &format!("{context}.not"))?;
+    }
+    if let Some(candidates) = object.get("oneOf").and_then(Value::as_array) {
+        for (index, candidate) in candidates.iter().enumerate() {
+            validate_schema_keywords(candidate, &format!("{context}.oneOf[{index}]"))?;
+        }
+    }
+    if let Some(additional) = object.get("additionalProperties") {
+        if !additional.is_boolean() {
+            bail!(
+                "{context}: schema-valued additionalProperties is not supported by this validator"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -> Result<()> {
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
         let pointer = reference.strip_prefix('#').ok_or_else(|| {
@@ -86,7 +192,7 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
         let target = root
             .pointer(pointer)
             .ok_or_else(|| eyre!("{context}: unresolved schema reference {reference:?}"))?;
-        return validate_schema(value, target, root, context);
+        validate_schema(value, target, root, context)?;
     }
 
     if let Some(candidates) = schema.get("oneOf").and_then(Value::as_array) {
@@ -97,7 +203,6 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
         if matches != 1 {
             bail!("{context}: expected exactly one oneOf branch, matched {matches}");
         }
-        return Ok(());
     }
 
     if let Some(expected) = schema.get("const") {
@@ -173,12 +278,12 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
     }
 
     if value.is_number() {
-        if let Some(minimum) = schema.get("minimum").and_then(Value::as_i64) {
+        if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64) {
             let number = value
-                .as_i64()
-                .ok_or_else(|| eyre!("{context}: minimum applies to a non-integer value"))?;
+                .as_f64()
+                .ok_or_else(|| eyre!("{context}: value {value} is not a comparable number"))?;
             if number < minimum {
-                bail!("{context}: integer {number} is below minimum {minimum}");
+                bail!("{context}: number {number} is below minimum {minimum}");
             }
         }
     }
