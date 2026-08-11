@@ -1386,7 +1386,69 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "qualified_refs_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Refs",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_target_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub target",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_target_return",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_caller_subroutine",
+          "kind": "Subroutine",
+          "line": 7,
+          "span_text": "sub caller",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_local_call",
+          "kind": "FunctionCall",
+          "line": 8,
+          "span_text": "target()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_qualified_call",
+          "kind": "FunctionCall",
+          "line": 9,
+          "span_text": "Accuracy::Refs::target()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "same_bare_subs",
