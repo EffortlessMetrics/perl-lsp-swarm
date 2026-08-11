@@ -12,6 +12,7 @@ use super::{
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
 use perl_module::path::module_name_to_path;
 use perl_parser_core::SourceLocation;
+use perl_lexer::{PerlLexer, TokenType};
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
     receiver_facts::{
@@ -19,7 +20,7 @@ use perl_semantic_analyzer::{
         ReceiverKind, receiver_fact_for_method_call,
     },
     semantic::SemanticModel,
-    symbol::{ScopeKind, SymbolKind},
+    symbol::{ScopeKind, SymbolKind, SymbolTable},
     type_facts::TypeEvidence,
     type_inference::{PerlType, TypeInferenceEngine},
 };
@@ -1076,6 +1077,15 @@ pub(super) fn classify_receiver(
     source: &str,
     type_engine: Option<&TypeInferenceEngine>,
 ) -> ReceiverEvidence {
+    classify_receiver_with_symbol_table(context, source, type_engine, None)
+}
+
+pub(super) fn classify_receiver_with_symbol_table(
+    context: &CompletionContext,
+    source: &str,
+    type_engine: Option<&TypeInferenceEngine>,
+    symbol_table: Option<&SymbolTable>,
+) -> ReceiverEvidence {
     if let Some(evidence) = source_backed_receiver_fact_evidence(context, source, type_engine) {
         if matches!(evidence, ReceiverEvidence::SelfOrThis(_))
             && let Some(pkg) = type_engine_receiver(context, type_engine)
@@ -1087,7 +1097,7 @@ pub(super) fn classify_receiver(
     if let Some(pkg) = type_engine_receiver(context, type_engine) {
         return ReceiverEvidence::TypeEngine(pkg);
     }
-    classify_text_pattern_receiver(context, source)
+    classify_text_pattern_receiver_with_symbol_table(context, source, symbol_table)
 }
 
 fn source_backed_receiver_fact_evidence(
@@ -1239,87 +1249,82 @@ pub(super) fn receiver_package_from_context_or_source(
     if let Ok(ast) = parser.parse() {
         let analyzer =
             perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
-        let table = analyzer.symbol_table();
-
-        let mut scope_id = table.scope_at_offset(position);
-        loop {
-            let Some(scope) = table.scopes.get(&scope_id) else {
-                break;
-            };
-            if scope.kind == ScopeKind::Package
-                && let Some(package) =
-                    table.symbols.values().flat_map(|symbols| symbols.iter()).find(|symbol| {
-                        symbol.kind == SymbolKind::Package
-                            && symbol.location.start == scope.location.start
-                    })
-            {
-                return Some(package.name.clone());
-            }
-
-            let Some(parent) = scope.parent else {
-                break;
-            };
-            scope_id = parent;
-        }
-
-        let mut current = "main".to_string();
-        let mut packages: Vec<_> = table
-            .symbols
-            .values()
-            .flat_map(|symbols| symbols.iter())
-            .filter(|symbol| symbol.kind == SymbolKind::Package)
-            .collect();
-        packages.sort_by_key(|symbol| symbol.location.start);
-
-        for package in packages {
-            if package.location.start > position {
-                break;
-            }
-
-            let has_scope = table.scopes.values().any(|scope| {
-                scope.kind == ScopeKind::Package && scope.location.start == package.location.start
-            });
-            if !has_scope {
-                current = package.name.clone();
-            }
-        }
-
-        if current != "main" {
-            return Some(current);
-        }
+        return receiver_package_from_symbol_table_or_source(context, source, analyzer.symbol_table());
     }
 
     source_package_fallback(source, position)
 }
 
-fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+pub(super) fn receiver_package_from_symbol_table_or_source(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+) -> Option<String> {
+    if !context.current_package.is_empty() && context.current_package != "main" {
+        return Some(context.current_package.clone());
+    }
+
+    let position = context.position.min(source.len());
+    let current = CompletionContext::detect_current_package(symbol_table, position);
+    if current != "main" {
+        return Some(current);
+    }
+
+    source_package_fallback(source, position)
+}
+
+pub(super) fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+    let prefix = source.get(..position)?;
+    let mut lexer = PerlLexer::new(prefix);
     let mut current = "main".to_string();
     let mut brace_depth = 0usize;
     let mut package_blocks: Vec<(usize, String)> = Vec::new();
+    let mut package_name: Option<String> = None;
+    let mut in_package_declaration = false;
 
-    for line in source.get(..position)?.lines() {
-        let trimmed = line.trim_start();
-        if let Some(declaration) = trimmed.strip_prefix("package ") {
-            let mut parts =
-                declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace());
-            let package = parts.next().filter(|package| !package.is_empty())?;
-            if declaration.contains('{') {
-                let previous = current.clone();
-                current = package.to_string();
-                package_blocks.push((brace_depth.saturating_add(1), previous));
-            } else {
-                current = package.to_string();
+    while let Some(token) = lexer.next_token() {
+        match &token.token_type {
+            TokenType::Keyword(name) if name.as_ref() == "package" => {
+                package_name = None;
+                in_package_declaration = true;
             }
-        }
-
-        brace_depth = brace_depth.saturating_add(line.chars().filter(|&ch| ch == '{').count());
-        brace_depth = brace_depth.saturating_sub(line.chars().filter(|&ch| ch == '}').count());
-
-        while package_blocks.last().is_some_and(|(depth, _)| *depth > brace_depth) {
-            let Some((_, previous)) = package_blocks.pop() else {
-                break;
-            };
-            current = previous;
+            TokenType::Identifier(name) if in_package_declaration && package_name.is_none() => {
+                package_name = Some(name.to_string());
+            }
+            TokenType::LeftBrace if in_package_declaration => {
+                let Some(package) = package_name.take() else {
+                    in_package_declaration = false;
+                    brace_depth = brace_depth.saturating_add(1);
+                    continue;
+                };
+                let previous = current.clone();
+                current = package;
+                brace_depth = brace_depth.saturating_add(1);
+                package_blocks.push((brace_depth, previous));
+                in_package_declaration = false;
+            }
+            TokenType::Semicolon if in_package_declaration => {
+                if let Some(package) = package_name.take() {
+                    current = package;
+                }
+                in_package_declaration = false;
+            }
+            TokenType::LeftBrace => {
+                brace_depth = brace_depth.saturating_add(1);
+            }
+            TokenType::RightBrace => {
+                brace_depth = brace_depth.saturating_sub(1);
+                while let Some((depth, _)) = package_blocks.last() {
+                    if *depth <= brace_depth {
+                        break;
+                    }
+                    let Some((_, previous)) = package_blocks.pop() else {
+                        break;
+                    };
+                    current = previous;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1332,6 +1337,14 @@ fn source_package_fallback(source: &str, position: usize) -> Option<String> {
 pub(super) fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
+) -> ReceiverEvidence {
+    classify_text_pattern_receiver_with_symbol_table(context, source, None)
+}
+
+pub(super) fn classify_text_pattern_receiver_with_symbol_table(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: Option<&SymbolTable>,
 ) -> ReceiverEvidence {
     let arrow_prefix = context.receiver_prefix().trim_end_matches("->");
 
@@ -1353,7 +1366,12 @@ pub(super) fn classify_text_pattern_receiver(
     // analyser already sets correctly from the surrounding `package`
     // declaration.
     if matches!(arrow_prefix, "$self" | "$this")
-        && let Some(package) = receiver_package_from_context_or_source(context, source)
+        && let Some(package) = match symbol_table {
+            Some(symbol_table) => {
+                receiver_package_from_symbol_table_or_source(context, source, symbol_table)
+            }
+            None => receiver_package_from_context_or_source(context, source),
+        }
     {
         return ReceiverEvidence::SelfOrThis(package);
     }
@@ -1724,6 +1742,7 @@ pub fn add_workspace_method_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     source: &str,
+    symbol_table: &SymbolTable,
     type_engine: Option<&TypeInferenceEngine>,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     used_modules: &HashSet<String>,
@@ -1739,7 +1758,8 @@ pub fn add_workspace_method_completions(
     // Prefer semantic receiver facts only when they meet the narrow live pilot
     // bar. Medium, dynamic, unknown, and unsupported facts fall back through the
     // existing receiver classifier instead of suppressing legacy behavior.
-    let evidence = classify_receiver(context, source, type_engine);
+    let evidence =
+        classify_receiver_with_symbol_table(context, source, type_engine, Some(symbol_table));
     let Some(package_name) = evidence.package().map(str::to_string) else {
         // No exact receiver package. Trigger bounded Unknown-receiver
         // fallback (#7929) only for `Unknown` evidence; `Dynamic` stays
