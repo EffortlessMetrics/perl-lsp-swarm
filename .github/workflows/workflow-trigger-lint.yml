@@ -1,15 +1,15 @@
 name: Workflow Trigger Lint
 
 on:
-  pull_request:
-    branches: [main, master, test/lsp-real-process-6720]
+  push:
+    branches:
+      - test/lsp-capability-matrix-6735
 
 permissions:
   contents: write
 
 jobs:
   finish-capability-matrix:
-    if: github.head_ref == 'test/lsp-capability-matrix-6735'
     name: Finish sparse capability matrix
     runs-on: ubuntu-24.04
     steps:
@@ -26,18 +26,20 @@ jobs:
       - name: Add absent inline-completion declaration row
         shell: python
         run: |
-          import re
           from pathlib import Path
 
           path = Path("crates/perl-lsp-rs/tests/lsp_capability_negotiation_process.rs")
           text = path.read_text()
           if '"absent declaration"' not in text:
-              pattern = r'''(    let cases = \[\n)(        \(\n            json!\(\{\n                "textDocument": \{\n                    "inlineCompletion": \{ "dynamicRegistration": true \}\n                \}\n            \}\),)'''
-              replacement = r'''\1        (json!({}), true, false, "absent declaration"),
-          \2'''
-              text, count = re.subn(pattern, replacement, text, count=1)
-              if count != 1:
-                  raise SystemExit(f"inline-completion case matrix: expected one match, found {count}")
+              function_start = text.index(
+                  "fn inline_completion_initialize_shape_selects_static_or_dynamic_mode()"
+              )
+              insert_at = text.index("    let cases = [\n", function_start) + len("    let cases = [\n")
+              text = (
+                  text[:insert_at]
+                  + '        (json!({}), true, false, "absent declaration"),\n'
+                  + text[insert_at:]
+              )
           path.write_text(text)
 
       - name: Format and verify focused contracts
