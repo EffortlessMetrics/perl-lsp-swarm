@@ -47,7 +47,12 @@ fn behavioral_translation_is_promoted_to_product_drift() -> Result<()> {
     if receipt.verdict != Verdict::Drift {
         bail!("behavioral translation returned {:?}", receipt.verdict);
     }
-    if receipt.differences[0].effective_classification != "product_drift" {
+    let effective = receipt
+        .differences
+        .first()
+        .map(|difference| difference.effective_classification.as_str())
+        .ok_or_else(|| eyre!("behavioral translation receipt has no difference"))?;
+    if effective != "product_drift" {
         bail!("behavioral translation was not promoted to product drift");
     }
     assert_blocker(&receipt, "behavioral_translation_is_product_drift")
@@ -280,14 +285,43 @@ fn unknown_observed_invariant_is_not_proven() -> Result<()> {
 #[test]
 fn receipt_collections_are_deterministically_ordered() -> Result<()> {
     let mut observation = clean_observation()?;
+    let second = observation
+        .differences
+        .as_ref()
+        .and_then(|differences| differences.first())
+        .cloned()
+        .ok_or_else(|| eyre!("clean fixture difference missing"))?;
+    let mut second = second;
+    second.path = "vscode-extension/src/downloader.ts".to_string();
+    second.manifest_rule = Some("managed_downloader.declared_translation".to_string());
+    second.owner = "vscode-extension".to_string();
+    let differences = observation
+        .differences
+        .as_mut()
+        .ok_or_else(|| eyre!("clean fixture differences missing"))?;
+    differences.push(second);
+    differences.reverse();
     observation
         .invariants
         .as_mut()
         .ok_or_else(|| eyre!("clean fixture invariants missing"))?
         .reverse();
+
     let receipt = classify(observation, fixture_authority()?);
+    if !receipt.differences.windows(2).all(|window| window[0].path <= window[1].path) {
+        bail!("differences were not sorted in the receipt");
+    }
     if !receipt.invariants.windows(2).all(|window| window[0].id <= window[1].id) {
         bail!("invariants were not sorted in the receipt");
+    }
+
+    let mut incomplete = clean_observation()?;
+    incomplete.manifest = None;
+    incomplete.differences = None;
+    incomplete.invariants = None;
+    let blocked = classify(incomplete, AuthoritySource::Missing);
+    if !blocked.blockers.windows(2).all(|window| window[0] <= window[1]) {
+        bail!("blockers were not sorted in the receipt");
     }
     Ok(())
 }
