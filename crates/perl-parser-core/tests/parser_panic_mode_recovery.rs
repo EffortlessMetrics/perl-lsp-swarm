@@ -15,6 +15,10 @@ fn parser_ac1_sync_point_detection_semicolon() -> ParseResult<()> {
     let mut parser = Parser::new(code);
     let ast = parser.parse()?;
 
+    assert!(
+        matches!(&ast.kind, NodeKind::Program { .. }),
+        "panic-mode recovery must return a Program node"
+    );
     if let NodeKind::Program { statements } = &ast.kind {
         // Should have 2 statements: 1 recovered decl (Phase 2: VariableDeclaration
         // with MissingExpression, not a raw Error node) + 1 valid
@@ -262,8 +266,6 @@ fn parser_ac8_error_location_accuracy() -> ParseResult<()> {
             "statement after the error must remain a variable declaration: {:?}",
             statements[2].kind
         );
-    } else {
-        return Err("panic-mode recovery must return a Program node".into());
     }
 
     let errors = parser.errors();
