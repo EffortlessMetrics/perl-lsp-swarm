@@ -59,11 +59,8 @@ fn assert_incremental_edit_matches_fresh(
         .ok_or_else(|| format!("{expectation_id}: edit old_text is absent from source"))?;
     let old_chars: Vec<char> = old_text.chars().collect();
     let new_chars: Vec<char> = new_text.chars().collect();
-    let common_prefix = old_chars
-        .iter()
-        .zip(&new_chars)
-        .take_while(|(old, new)| old == new)
-        .count();
+    let common_prefix =
+        old_chars.iter().zip(&new_chars).take_while(|(old, new)| old == new).count();
     let common_suffix = old_chars[common_prefix..]
         .iter()
         .rev()
@@ -76,10 +73,8 @@ fn assert_incremental_edit_matches_fresh(
         return Err(format!("{expectation_id}: edit has no changed character range").into());
     }
 
-    let old_prefix_bytes: usize = old_chars[..common_prefix]
-        .iter()
-        .map(|character| character.len_utf8())
-        .sum();
+    let old_prefix_bytes: usize =
+        old_chars[..common_prefix].iter().map(|character| character.len_utf8()).sum();
     let old_changed_end = common_prefix + old_changed_chars;
     let new_changed_end = common_prefix + new_changed_chars;
     let old_changed_bytes: usize = old_chars[common_prefix..old_changed_end]
@@ -135,8 +130,7 @@ fn assert_incremental_edit_matches_fresh(
 }
 
 fn contains_match(node: &Node) -> bool {
-    matches!(&node.kind, NodeKind::Match { .. })
-        || node.children().into_iter().any(contains_match)
+    matches!(&node.kind, NodeKind::Match { .. }) || node.children().into_iter().any(contains_match)
 }
 
 fn contains_division(node: &Node) -> bool {
@@ -179,10 +173,7 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         .incremental_expectations
         .first()
         .ok_or("incremental_small_edit has no incremental expectation")?;
-    let edit = expectation
-        .edits
-        .first()
-        .ok_or("incremental_small_edit expectation has no edit")?;
+    let edit = expectation.edits.first().ok_or("incremental_small_edit expectation has no edit")?;
 
     let source = fs::read_to_string(root.join(&fixture.source_path))?;
     let _fresh_ast = assert_incremental_edit_matches_fresh(
@@ -197,11 +188,7 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
 
 #[test]
 fn pure_insertion_edit_matches_fresh_parse() -> TestResult {
-    let source = concat!(
-        "my $before = 1;\n",
-        "my $value = 20;\n",
-        "my $after = 3;\n",
-    );
+    let source = concat!("my $before = 1;\n", "my $value = 20;\n", "my $after = 3;\n",);
     let fresh_ast = assert_incremental_edit_matches_fresh(
         source,
         "$value = 20",
@@ -218,11 +205,7 @@ fn pure_insertion_edit_matches_fresh_parse() -> TestResult {
 
 #[test]
 fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
-    let source = concat!(
-        "my $before = 1;\n",
-        "my $value = 200;\n",
-        "my $after = 3;\n",
-    );
+    let source = concat!("my $before = 1;\n", "my $value = 200;\n", "my $after = 3;\n",);
     let fresh_ast = assert_incremental_edit_matches_fresh(
         source,
         "$value = 200",
@@ -239,11 +222,7 @@ fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
 
 #[test]
 fn slash_reclassification_edit_matches_fresh_parse() -> TestResult {
-    let source = concat!(
-        "my $before = 1;\n",
-        "my $value = $left / 2;\n",
-        "my $after = 3;\n",
-    );
+    let source = concat!("my $before = 1;\n", "my $value = $left / 2;\n", "my $after = 3;\n",);
     let before_ast = Parser::new(source).parse()?;
     assert!(contains_division(&before_ast), "the pre-edit source must contain division");
     assert!(!contains_match(&before_ast), "the pre-edit source must not contain a regex Match");
