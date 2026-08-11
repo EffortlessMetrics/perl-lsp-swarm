@@ -964,7 +964,9 @@ impl SemanticAnalyzer {
             }
 
             _ => {
-                // Preserve forward compatibility for future AST node kinds.
+                // Future AST variants may wrap existing constructs. Continue the
+                // semantic walk so new containers do not hide known descendants.
+                node.for_each_child(|child| self.analyze_node(child, scope_id));
             }
         }
     }
