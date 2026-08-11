@@ -85,15 +85,10 @@ fn status_generator_keeps_target_artifacts_out_of_the_shared_cache()
         Some(&Value::Bool(true)),
         "dependency/tool cache reuse should remain available after failed generation"
     );
-
-    let shared_key = cache_with
-        .get("shared-key")
-        .and_then(Value::as_str)
-        .ok_or("the status generator cache must retain a shared dependency key")?;
-    assert!(
-        shared_key.starts_with("post-merge-status-")
-            && shared_key.contains("hashFiles('Cargo.lock')"),
-        "the cache must remain scoped to post-merge status dependencies and Cargo.lock"
+    assert_eq!(
+        cache_with.get("shared-key").and_then(Value::as_str),
+        Some("post-merge-status-${{ hashFiles('Cargo.lock') }}"),
+        "the cache must preserve the exact post-merge status dependency identity"
     );
 
     Ok(())
