@@ -45,52 +45,68 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
     let mut method_span = None;
     let mut adjust_span = None;
 
-    walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Class { name, name_span, parents, .. } if name == "Example" => {
-            assert_eq!(
-                name_span.and_then(|span| source.get(span.start..span.end)),
-                Some("Example"),
-                "class name span must identify only the declared name"
-            );
-            assert_eq!(parents, &["Base".to_string()]);
-            class_span = source_text(source, node);
+    walk(&ast, &mut |node| {
+        let NodeKind::Class { name, name_span, parents, .. } = &node.kind else {
+            return;
+        };
+        if name != "Example" {
+            return;
         }
-        NodeKind::VariableDeclaration { declarator, variable, attributes, .. }
-            if declarator == "field"
-                && matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "value") =>
-        {
-            assert!(attributes.iter().any(|attribute| attribute == "param"));
-            assert!(attributes.iter().any(|attribute| attribute == "reader"));
-            field_span = source_text(source, node);
-        }
-        NodeKind::Method { name, name_span: Some(name_span), signature, attributes, .. }
-            if name == "get" =>
-        {
-            assert_eq!(source.get(name_span.start..name_span.end), Some("get"));
-            assert!(signature.is_some(), "method signature must remain attached");
-            assert!(attributes.iter().any(|attribute| attribute == "lvalue"));
-            method_span = source_text(source, node);
-        }
-        NodeKind::Method { name, name_span: None, .. } if name == "ADJUST" => {
-            adjust_span = source_text(source, node);
-        }
-        _ => {}
+
+        assert_eq!(
+            name_span.and_then(|span| source.get(span.start..span.end)),
+            Some("Example"),
+            "class name span must identify only the declared name"
+        );
+        assert_eq!(parents, &["Base".to_string()]);
+        class_span = source_text(source, node);
+
+        let class_bodies: Vec<&Node> = node
+            .children()
+            .into_iter()
+            .filter(|child| matches!(&child.kind, NodeKind::Block { .. }))
+            .collect();
+        assert_eq!(class_bodies.len(), 1, "class must expose exactly one direct body block");
+        let body = class_bodies[0];
+
+        walk(body, &mut |member| match &member.kind {
+            NodeKind::VariableDeclaration { declarator, variable, attributes, .. }
+                if declarator == "field"
+                    && matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "value") =>
+            {
+                assert!(attributes.iter().any(|attribute| attribute == "param"));
+                assert!(attributes.iter().any(|attribute| attribute == "reader"));
+                field_span = source_text(source, member);
+            }
+            NodeKind::Method { name, name_span: Some(name_span), signature, attributes, .. }
+                if name == "get" =>
+            {
+                assert_eq!(source.get(name_span.start..name_span.end), Some("get"));
+                assert!(signature.is_some(), "method signature must remain attached");
+                assert!(attributes.iter().any(|attribute| attribute == "lvalue"));
+                method_span = source_text(source, member);
+            }
+            NodeKind::Method { name, name_span: None, .. } if name == "ADJUST" => {
+                adjust_span = source_text(source, member);
+            }
+            _ => {}
+        });
     });
 
     let class_span = class_span.ok_or_else(|| "class declaration was not preserved".to_string())?;
     assert!(class_span.starts_with("class Example 1.23 :isa(Base) {"));
     assert!(class_span.ends_with("}\n") || class_span.ends_with('}'));
 
-    let field_span = field_span.ok_or_else(|| "class field was not preserved".to_string())?;
+    let field_span = field_span.ok_or_else(|| "class field was not preserved in its body".to_string())?;
     assert_eq!(field_span.trim_end_matches(';'), "field $value :param :reader = 1");
 
-    let method_span = method_span.ok_or_else(|| "method declaration was not preserved".to_string())?;
+    let method_span = method_span.ok_or_else(|| "method was not preserved in its class body".to_string())?;
     assert_eq!(
         method_span,
         "method get($fallback = 0) :lvalue { return $value // $fallback; }"
     );
 
-    let adjust_span = adjust_span.ok_or_else(|| "ADJUST block was not preserved".to_string())?;
+    let adjust_span = adjust_span.ok_or_else(|| "ADJUST was not preserved in its class body".to_string())?;
     assert_eq!(adjust_span, "ADJUST { $value = 2; }");
     Ok(())
 }
