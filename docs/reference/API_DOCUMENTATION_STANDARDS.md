@@ -1,5 +1,7 @@
 # API Documentation Standards - perl-parser crate
 
+> Currentness note: the original baseline and four-phase remediation plan below are historical context, not current status. Use [MISSING_DOCUMENTATION_GUIDE.md](MISSING_DOCUMENTATION_GUIDE.md) for the current public-surface workflow and example contract; compiled-example enforcement remains tracked separately in issue #4947.
+
 *Diataxis: How-to Guide* - Comprehensive API documentation requirements for production-quality perl-parser crate.
 
 ## Overview
@@ -12,7 +14,7 @@ As of **Draft PR 159 (SPEC-149)**, the perl-parser crate **successfully implemen
 
 The perl-parser crate has **`#![warn(missing_docs)]` successfully enabled** in `/crates/perl-parser/src/lib.rs` at line 38, providing:
 
-- **605+ Warning Baseline**: Systematic tracking of documentation violations across all modules
+- **Historical 605+ Warning Baseline**: Systematic tracking of documentation violations across all modules
 - **All public items flagged**: Comprehensive coverage detection for undocumented APIs
 - **CI build warnings**: Automated enforcement preventing documentation regression
 - **Zero performance impact**: <1% overhead validated, revolutionary LSP improvements preserved
@@ -31,10 +33,10 @@ The perl-parser crate has **`#![warn(missing_docs)]` successfully enabled** in `
 | Component | Status | Details |
 |-----------|--------|---------|
 | **Infrastructure** | ✅ **DEPLOYED** | `#![warn(missing_docs)]` enabled, 25 test suite operational |
-| **Baseline Tracking** | ✅ **ESTABLISHED** | 605+ violations identified and systematically tracked |
+| **Baseline Tracking** | ✅ **ESTABLISHED** | historical 605+ violations identified and systematically tracked |
 | **Quality Gates** | ✅ **ACTIVE** | CI enforcement preventing regression |
 | **Performance** | ✅ **VALIDATED** | <1% overhead, revolutionary LSP improvements preserved |
-| **Content Implementation** | 📝 **IN PROGRESS** | 4-phase systematic resolution strategy active |
+| **Content Implementation** | 📝 **IN PROGRESS** | historical four-phase strategy; current workflow is in MISSING_DOCUMENTATION_GUIDE.md |
 
 ## Documentation Requirements by Item Type
 
@@ -368,7 +370,7 @@ cargo test --doc -p perl-parser
 ### Progress Monitoring
 
 ```bash
-# Check current documentation violation count (baseline: 605+)
+# Check current documentation violation count (historical baseline: 605+)
 cargo build -p perl-parser 2>&1 | grep "warning: missing documentation" | wc -l
 
 # Detailed violation analysis by file
