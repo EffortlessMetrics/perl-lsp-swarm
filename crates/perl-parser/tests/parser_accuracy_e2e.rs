@@ -122,9 +122,8 @@ fn span_fixtures_preserve_the_bytes_they_measure() -> TestResult {
     );
 
     let bom = fs::read(fixture_root.join("span_bom.pl"))?;
-    assert_eq!(
-        bom.get(..3),
-        Some([0xef, 0xbb, 0xbf].as_slice()),
+    assert!(
+        bom.starts_with(b"\xef\xbb\xbf"),
         "span_bom must begin with a UTF-8 BOM"
     );
 

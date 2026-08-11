@@ -2,6 +2,7 @@
 
 # Parser accuracy span fixture intentionally preserves BOM and mixed newlines.
 crates/perl-corpus/fixtures/parser_accuracy/span_coordinates.pl -text !eol whitespace=-blank-at-eol
+crates/perl-corpus/fixtures/parser_accuracy/span_bom.pl -text !eol whitespace=-blank-at-eol
 crates/perl-corpus/fixtures/parser_accuracy/span_crlf.pl -text !eol whitespace=-blank-at-eol
 crates/perl-corpus/fixtures/parser_accuracy/span_mixed_newlines.pl -text !eol whitespace=-blank-at-eol
 
