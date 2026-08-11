@@ -19,7 +19,7 @@
 //!
 //! The example is covered by a focused compile test below because this crate's
 //! package configuration does not currently run doctests.
-//use perl_position_tracking::LineIndex;
+use perl_position_tracking::LineIndex;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
