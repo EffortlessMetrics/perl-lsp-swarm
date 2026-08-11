@@ -90,8 +90,11 @@ rg 'pub(\\s+(async|unsafe|const|extern\\s+"[^"]+"))*\\s+(fn|struct|enum|trait|ty
 ```
 
 Read the owning crate's `lib.rs`, its public re-exports, and the nearest
-tests. If the item is part of a generated or compatibility surface, identify
-the source of truth before editing prose.
+tests. The inventory expression includes qualified declarations such as
+`pub async fn`; confirm matches against the syntax and re-export surface rather
+than treating a text search as proof of completeness. If the item is part of a
+generated or compatibility surface, identify the source of truth before editing
+prose.
 
 ### 2. Write the smallest useful contract
 
