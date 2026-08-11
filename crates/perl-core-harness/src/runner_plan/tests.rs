@@ -1,7 +1,8 @@
 //! Runner-plan and parity falsifiers over the pinned target matrix.
 
 use crate::build::{
-    build_runner_plan, validate_runner_plan, validate_runner_plan_against,
+    build_runner_plan, runner_plan_digest, validate_runner_plan,
+    validate_runner_plan_against,
 };
 use crate::compare::{
     compare_runner_plans, compare_runner_plans_against, validate_runner_parity,
@@ -9,7 +10,7 @@ use crate::compare::{
 };
 use crate::io::read_matrix;
 use crate::runner_model::{
-    MembershipParityStatus, RunnerKind, RunnerScheduling, SourceForm,
+    MembershipParityStatus, RunnerKind, RunnerPlan, RunnerScheduling, SourceForm,
 };
 use color_eyre::eyre::Result;
 use std::collections::BTreeMap;
@@ -31,7 +32,7 @@ fn base_plan(
     matrix: &crate::model::UpstreamTargetMatrix,
     runner: RunnerKind,
     raw: &[u8],
-) -> Result<crate::runner_model::RunnerPlan> {
+) -> Result<RunnerPlan> {
     build_runner_plan(
         matrix,
         "component_base",
@@ -280,7 +281,26 @@ fn scheduling_limitations_are_mandatory() -> Result<()> {
 }
 
 #[test]
-fn parity_check_is_bound_to_exact_plan_bytes() -> Result<()> {
+fn plan_digest_binds_canonical_typed_content_not_json_spelling() -> Result<()> {
+    let matrix = matrix()?;
+    let plan = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
+    let compact = serde_json::to_vec(&plan)?;
+    let pretty = serde_json::to_vec_pretty(&plan)?;
+    assert_ne!(compact, pretty);
+
+    let compact_plan: RunnerPlan = serde_json::from_slice(&compact)?;
+    let pretty_plan: RunnerPlan = serde_json::from_slice(&pretty)?;
+    assert_eq!(
+        runner_plan_digest(&compact_plan)
+            .map_err(|error| color_eyre::eyre::eyre!(error))?,
+        runner_plan_digest(&pretty_plan)
+            .map_err(|error| color_eyre::eyre::eyre!(error))?
+    );
+    Ok(())
+}
+
+#[test]
+fn parity_check_is_bound_to_canonical_plan_content() -> Result<()> {
     let matrix = matrix()?;
     let left = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
     let right = base_plan(&matrix, RunnerKind::Harness, b"t/base/if.t\n")?;
