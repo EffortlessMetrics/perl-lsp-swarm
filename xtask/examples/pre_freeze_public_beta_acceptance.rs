@@ -87,6 +87,7 @@ struct ArtifactEvidence {
     sha256: String,
     repository_sha: String,
     artifact_set_id: String,
+    topology_digest: String,
     provenance: ArtifactProvenance,
 }
 
@@ -117,9 +118,16 @@ struct EvidenceProvenance {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct EvidenceReference {
+    id: String,
+    provenance: EvidenceProvenance,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PlatformEvidence {
     status: EvidenceStatus,
-    evidence_refs: Vec<String>,
+    evidence_refs: Vec<EvidenceReference>,
     provenance: EvidenceProvenance,
     claim_boundary: String,
 }
@@ -137,7 +145,7 @@ struct Platforms {
 struct JourneyCell {
     id: String,
     status: EvidenceStatus,
-    evidence_refs: Vec<String>,
+    evidence_refs: Vec<EvidenceReference>,
     provenance: EvidenceProvenance,
     limitation: Option<String>,
 }
@@ -183,10 +191,13 @@ struct MechanismDisposition {
     issue: String,
     status: EvidenceStatus,
     candidate_id: String,
+    repository_sha: String,
+    artifact_set_id: String,
+    topology_digest: String,
     claim_boundary: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)
 #[serde(deny_unknown_fields)]
 struct Packet {
     check: String,
@@ -232,6 +243,9 @@ fn validate_artifact(name: &str, artifact: &ArtifactEvidence, packet: &Packet) -
     if artifact.artifact_set_id != packet.artifact_set_id {
         bail!("artifacts.{name} belongs to a different artifact set");
     }
+    if artifact.topology_digest != packet.topology_digest {
+        bail!("artifacts.{name} belongs to a different topology");
+    }
     if artifact.provenance != ArtifactProvenance::ReleaseShaped {
         bail!("artifacts.{name} is not declared as release-shaped provenance");
     }
@@ -267,7 +281,12 @@ fn validate_platform(
         bail!("platforms.{name}.evidence_refs must not be empty");
     }
     for evidence in &platform.evidence_refs {
-        non_empty(evidence, &format!("platforms.{name}.evidence_refs[]"))?;
+        non_empty(&evidence.id, &format!("platforms.{name}.evidence_refs[].id"))?;
+        validate_provenance(
+            &format!("platforms.{name}.evidence_refs[{}]", evidence.id),
+            &evidence.provenance,
+            packet,
+        )?;
     }
     validate_provenance(&format!("platforms.{name}"), &platform.provenance, packet)?;
     non_empty(&platform.claim_boundary, &format!("platforms.{name}.claim_boundary"))?;
@@ -292,7 +311,15 @@ fn validate_journey_cells(cells: &[JourneyCell], packet: &Packet) -> Result<()> 
             bail!("journey cell {} has no evidence references", cell.id);
         }
         for evidence in &cell.evidence_refs {
-            non_empty(evidence, &format!("journey_cells.{}.evidence_refs[]", cell.id))?;
+            non_empty(
+                &evidence.id,
+                &format!("journey_cells.{}.evidence_refs[].id", cell.id),
+            )?;
+            validate_provenance(
+                &format!("journey_cells.{}.evidence_refs[{}]", cell.id, evidence.id),
+                &evidence.provenance,
+                packet,
+            )?;
         }
         match cell.status {
             EvidenceStatus::Limited | EvidenceStatus::NotProven => {
@@ -323,6 +350,15 @@ fn validate_mechanisms(dispositions: &[MechanismDisposition], packet: &Packet) -
         if disposition.candidate_id != packet.candidate_id {
             bail!(
                 "mechanism {} candidate identity does not match packet candidate",
+                disposition.issue
+            );
+        }
+        if disposition.repository_sha != packet.repository_sha
+            || disposition.artifact_set_id != packet.artifact_set_id
+            || disposition.topology_digest != packet.topology_digest
+        {
+            bail!(
+                "mechanism {} provenance does not match packet identity",
                 disposition.issue
             );
         }
@@ -431,7 +467,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactEvidence, ArtifactProvenance, Artifacts, EvidenceProvenance, EvidenceStatus,
+        ArtifactEvidence, ArtifactProvenance, Artifacts, EvidenceProvenance, EvidenceReference, EvidenceStatus,
         FreezeRecommendation, JourneyCell, MechanismDisposition, Packet, PlatformEvidence, Platforms,
         ZeroBudgetCounts,
         computed_recommendation, validate,
@@ -444,6 +480,7 @@ mod tests {
             sha256: "a".repeat(64),
             repository_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
             artifact_set_id: "candidate-v0.18.0".to_string(),
+            topology_digest: format!("sha256:{}", "b".repeat(64)),
             provenance: ArtifactProvenance::ReleaseShaped,
         };
         let provenance = || EvidenceProvenance {
@@ -454,7 +491,10 @@ mod tests {
         };
         let platform = |status| PlatformEvidence {
             status,
-            evidence_refs: vec!["receipt/candidate-v0.18.0".to_string()],
+            evidence_refs: vec![EvidenceReference {
+                id: "receipt/candidate-v0.18.0".to_string(),
+                provenance: provenance(),
+            }],
             provenance: provenance(),
             claim_boundary: "bounded platform evidence".to_string(),
         };
@@ -464,6 +504,9 @@ mod tests {
                 issue: issue.to_string(),
                 status: EvidenceStatus::Pass,
                 candidate_id: "candidate-v0.18.0".to_string(),
+                repository_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                artifact_set_id: "candidate-v0.18.0".to_string(),
+                topology_digest: format!("sha256:{}", "b".repeat(64)),
                 claim_boundary: "bounded mechanism receipt".to_string(),
             })
             .collect();
@@ -472,7 +515,10 @@ mod tests {
             .map(|id| JourneyCell {
                 id: id.to_string(),
                 status: EvidenceStatus::Pass,
-                evidence_refs: vec![format!("journey/{id}/candidate-v0.18.0")],
+                evidence_refs: vec![EvidenceReference {
+                    id: format!("journey/{id}/candidate-v0.18.0"),
+                    provenance: provenance(),
+                }],
                 provenance: provenance(),
                 limitation: None,
             })
