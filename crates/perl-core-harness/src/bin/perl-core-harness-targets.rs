@@ -22,7 +22,7 @@ fn main() -> Result<()> {
     let mut args = env::args_os().skip(1);
     let Some(command) = args.next() else {
         bail!(
-            "usage: perl-core-harness-targets check <matrix.json|matrix-directory> [drift.json]"
+            "usage: perl-core-harness-targets check <pinned-matrix> [drift.json] [observed-matrix]"
         );
     };
     if command.as_os_str() != OsStr::new("check") {
@@ -31,8 +31,9 @@ fn main() -> Result<()> {
     let matrix_path = args
         .next()
         .map(PathBuf::from)
-        .context("check requires a target matrix path")?;
+        .context("check requires a pinned target matrix path")?;
     let drift_path = args.next().map(PathBuf::from);
+    let observed_matrix_path = args.next().map(PathBuf::from);
     if let Some(extra) = args.next() {
         bail!("unexpected extra argument {:?}", extra);
     }
@@ -43,9 +44,15 @@ fn main() -> Result<()> {
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     if let Some(path) = drift_path.as_deref() {
         let drift = read_drift(path)?;
+        let observed = observed_matrix_path
+            .as_deref()
+            .map(read_matrix)
+            .transpose()?;
         drift
-            .validate_against(&matrix, &fingerprint)
+            .validate_against(&matrix, &fingerprint, observed.as_ref())
             .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    } else if observed_matrix_path.is_some() {
+        bail!("an observed matrix requires a drift receipt");
     }
     println!("target matrix valid: {fingerprint}");
     Ok(())
