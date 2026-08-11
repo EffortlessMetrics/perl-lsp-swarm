@@ -73,8 +73,7 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
-        let source =
-            "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
+        let source = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
         let stmt = first_statement(source);
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
