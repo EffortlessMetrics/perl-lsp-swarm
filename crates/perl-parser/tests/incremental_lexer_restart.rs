@@ -2,9 +2,8 @@
 //! Public-contract tests for correctness-first live lexer restart.
 
 use perl_lexer::{PerlLexer, Token, TokenType};
-use perl_parser::{
-    Edit, IncrementalState, LexRestartStrategy, apply_edits,
-};
+use perl_parser::incremental::LexRestartStrategy;
+use perl_parser::{Edit, IncrementalState, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
