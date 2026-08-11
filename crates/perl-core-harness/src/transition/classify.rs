@@ -28,6 +28,7 @@ pub fn classify_transition(
         .map(|result| (result.path.as_str(), result))
         .collect::<BTreeMap<_, _>>();
 
+    let accepted_paths = accepted_by_path.keys().copied().collect::<std::collections::BTreeSet<_>>();
     let mut regressions = Vec::new();
     let mut improvements = Vec::new();
     let mut other_result_change = false;
@@ -77,7 +78,7 @@ pub fn classify_transition(
     }
 
     for path in current_by_path.keys() {
-        if !accepted_by_path.contains_key(path) {
+        if !accepted_paths.contains(path) {
             other_result_change = true;
         }
     }
