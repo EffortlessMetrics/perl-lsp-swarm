@@ -2226,6 +2226,23 @@ fn rapid_burst_does_not_permanently_degrade_the_workspace_index_coordinator()
     Ok(())
 }
 
+fn wait_for_pending_parse_count<T, F>(mut current: F, expected: T) -> bool
+where
+    T: PartialEq,
+    F: FnMut() -> T,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if current() == expected {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// #3660 follow-up (factory-droid): a NEW-lifecycle job that ends WITHOUT
 /// publishing must still credit its pending-parse settle. `notify_change`
 /// fires once per new lifecycle (`ParseWorker::enqueue` returning `true`);
@@ -2278,11 +2295,10 @@ fn panicking_new_lifecycle_job_still_credits_the_pending_parse_settle()
         "the panic injector must have actually fired for this test to prove anything; metrics={metrics:?}"
     );
 
-    assert_eq!(
-        coordinator.pending_parse_count(),
-        baseline,
+    assert!(
+        wait_for_pending_parse_count(|| coordinator.pending_parse_count(), baseline),
         "a panicking job's pending-parse increment must still be credited a matching decrement \
-         even though it never reaches on_published; got pending_parse_count={}, baseline={baseline}",
+         within the callback-settle timeout; got pending_parse_count={}, baseline={baseline}",
         coordinator.pending_parse_count()
     );
     assert!(
@@ -2361,12 +2377,10 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
          prove anything; metrics={metrics:?}"
     );
 
-    assert_eq!(
-        coordinator.pending_parse_count(),
-        baseline,
-        "a terminally-stale-rejected job's pending-parse increment must still be credited a \
-         matching decrement even though it never reaches on_published; got \
-         pending_parse_count={}, baseline={baseline}",
+    assert!(
+        wait_for_pending_parse_count(|| coordinator.pending_parse_count(), baseline),
+        "a terminally-stale-rejected job's pending-parse increment must still be credited a matching decrement \
+         within the callback-settle timeout; got pending_parse_count={}, baseline={baseline}",
         coordinator.pending_parse_count()
     );
     assert!(
