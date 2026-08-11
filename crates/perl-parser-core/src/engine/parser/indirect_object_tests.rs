@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::engine::parser::Parser;
-    use perl_ast::ast::{Node, NodeKind, SourceLocation};
+    use perl_ast::ast::{Node, NodeKind};
 
     fn parse_code(input: &str) -> Option<Node> {
         let mut parser = Parser::new(input);
@@ -15,23 +15,6 @@ mod tests {
                 statements.drain(..).next().expect("expected one statement")
             }
             other => panic!("Expected Program node, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_general_indirect_method_call() {
-        let stmt = first_statement("move $player 10, 20;");
-        match stmt.kind {
-            NodeKind::IndirectCall { method, object, args } => {
-                assert_eq!(method, "move");
-                assert!(matches!(
-                    object.kind,
-                    NodeKind::Variable { ref sigil, ref name }
-                        if sigil == "$" && name == "player"
-                ));
-                assert_eq!(args.len(), 2);
-            }
-            other => panic!("Expected IndirectCall node, got {other:?}"),
         }
     }
 

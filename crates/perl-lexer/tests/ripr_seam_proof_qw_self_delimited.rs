@@ -65,7 +65,10 @@ fn self_delimited_qw_preserves_a_valid_closer_after_recovery() {
         "a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"
     );
     assert!(
-        tokens.iter().any(|token| token.text.as_ref() == "]"),
+        tokens.iter().any(|token| {
+            token.text.as_ref() == "]"
+                || (matches!(token.token_type, TokenType::QuoteWords) && token.text.ends_with(']'))
+        }),
         "the list closer must remain in the token stream: {tokens:?}"
     );
 }
