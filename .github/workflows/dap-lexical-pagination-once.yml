@@ -1,6 +1,7 @@
 name: DAP lexical pagination repair (one shot)
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - agent/dap-scorecard-same-sha-6680
