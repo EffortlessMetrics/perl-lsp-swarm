@@ -1300,7 +1300,8 @@ fn source_package_fallback(source: &str, position: usize) -> Option<String> {
     for line in source.get(..position)?.lines() {
         let trimmed = line.trim_start();
         if let Some(declaration) = trimmed.strip_prefix("package ") {
-            let mut parts = declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace());
+            let mut parts =
+                declaration.split(|ch: char| ch == ';' || ch == '{' || ch.is_whitespace());
             let package = parts.next().filter(|package| !package.is_empty())?;
             if declaration.contains('{') {
                 let previous = current.clone();
