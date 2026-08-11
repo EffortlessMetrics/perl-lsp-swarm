@@ -1884,7 +1884,7 @@
           "line": 5,
           "span_text": "$total / $count",
           "parent_kind": "VariableDeclaration",
-          "depth": 3,
+          "depth": 4,
           "operator": "/",
           "parent_operator": null
         },
@@ -1894,7 +1894,7 @@
           "line": 6,
           "span_text": "/,/",
           "parent_kind": "FunctionCall",
-          "depth": 4,
+          "depth": 5,
           "operator": null,
           "parent_operator": null
         },
@@ -1904,7 +1904,7 @@
           "line": 7,
           "span_text": "$line =~ /^ok:/",
           "parent_kind": "VariableDeclaration",
-          "depth": 3,
+          "depth": 4,
           "operator": "=~",
           "parent_operator": null
         },
@@ -1914,7 +1914,7 @@
           "line": 8,
           "span_text": "$maybe // $ratio",
           "parent_kind": "VariableDeclaration",
-          "depth": 3,
+          "depth": 4,
           "operator": "//",
           "parent_operator": null
         }
@@ -2089,7 +2089,7 @@
           "line": 4,
           "span_text": "shift",
           "parent_kind": "VariableDeclaration",
-          "depth": 2,
+          "depth": 4,
           "operator": null,
           "parent_operator": null
         },
