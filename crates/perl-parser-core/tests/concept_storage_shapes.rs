@@ -95,7 +95,7 @@ fn typeglob_alias_keeps_both_storage_and_coderef_identity() -> Result<(), String
     let mut coderefs = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::TypeGlob { .. } => {
+        NodeKind::Typeglob { .. } => {
             if let Some(text) = source_text(source, node) {
                 typeglobs.push(text);
             }
