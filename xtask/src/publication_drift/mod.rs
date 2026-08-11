@@ -8,6 +8,8 @@ mod authorization_tests;
 #[cfg(test)]
 mod schema_tests;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 
 use authority::load_authority;
