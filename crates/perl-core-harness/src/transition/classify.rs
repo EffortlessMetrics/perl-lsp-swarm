@@ -28,10 +28,8 @@ pub fn classify_transition(
         .map(|result| (result.path.as_str(), result))
         .collect::<BTreeMap<_, _>>();
 
-    let accepted_paths = accepted_by_path
-        .keys()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
+    let accepted_paths =
+        accepted_by_path.keys().copied().collect::<std::collections::BTreeSet<_>>();
     let mut regressions = Vec::new();
     let mut improvements = Vec::new();
     let mut other_result_change = false;
