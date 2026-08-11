@@ -1,1 +1,7 @@
-package Accuracy::ControlFlow;\n\nsub run {\n    my $value = 1;\n    if ($value) { return $value; }\n    while ($value) { last; }\n}\n
+package Accuracy::ControlFlow;
+
+sub run {
+    my $value = 1;
+    if ($value) { return $value; }
+    while ($value) { last; }
+}
