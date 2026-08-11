@@ -108,6 +108,34 @@ fn apply_incremental_edit(
     Ok(new_source)
 }
 
+fn collect_span_fingerprint(node: &Node, fingerprint: &mut Vec<(String, usize, usize)>) {
+    fingerprint.push((
+        node.kind.kind_name().to_string(),
+        node.location.start,
+        node.location.end,
+    ));
+    for child in node.children() {
+        collect_span_fingerprint(child, fingerprint);
+    }
+}
+
+fn assert_ast_equivalent(incremental: &Node, fresh: &Node, context: &str) {
+    assert_eq!(
+        incremental.to_sexp(),
+        fresh.to_sexp(),
+        "incremental node shape diverged from fresh parse for {context}"
+    );
+
+    let mut incremental_spans = Vec::new();
+    let mut fresh_spans = Vec::new();
+    collect_span_fingerprint(incremental, &mut incremental_spans);
+    collect_span_fingerprint(fresh, &mut fresh_spans);
+    assert_eq!(
+        incremental_spans, fresh_spans,
+        "incremental source geometry diverged from fresh parse for {context}"
+    );
+}
+
 fn assert_incremental_edit_matches_fresh(
     source: &str,
     old_text: &str,
@@ -133,11 +161,7 @@ fn assert_incremental_edit_matches_fresh(
     }
 
     let fresh_ast = Parser::new(&new_source).parse()?;
-    assert_eq!(
-        incremental_ast.to_sexp(),
-        fresh_ast.to_sexp(),
-        "incremental result diverged from fresh parse for expectation {expectation_id}"
-    );
+    assert_ast_equivalent(&incremental_ast, &fresh_ast, expectation_id);
     Ok(fresh_ast)
 }
 
@@ -270,10 +294,10 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
 
     let incremental_ast = incremental.parse(&final_source)?;
     let fresh_ast = Parser::new(&final_source).parse()?;
-    assert_eq!(
-        incremental_ast.to_sexp(),
-        fresh_ast.to_sexp(),
-        "incremental result diverged from fresh parse after preserving slash tokens"
+    assert_ast_equivalent(
+        &incremental_ast,
+        &fresh_ast,
+        "slash-preserving division-to-regex edit sequence",
     );
     assert!(
         contains_match(&fresh_ast),
