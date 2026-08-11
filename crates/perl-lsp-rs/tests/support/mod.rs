@@ -10,6 +10,7 @@ pub mod lsp_harness;
 pub mod lsp_ux_harness;
 pub mod message_framing;
 pub mod notification_queue;
+pub mod real_process;
 pub mod test_helpers;
 pub mod test_workspace;
 pub mod ux_bdd;
