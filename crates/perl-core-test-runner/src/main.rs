@@ -2590,6 +2590,33 @@ mod tests {
     }
 
     #[test]
+    fn comp_final_line_num_classifier_rejects_unrelated_blocking_diagnostic() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(comp_final_line_num_probe_source()),
+            display_path: "comp/final_line_num.t".to_string(),
+        };
+        let diagnostics = [
+            ParseError::UnexpectedToken {
+                expected: "expression".to_string(),
+                found: ";".to_string(),
+                location: COMP_FINAL_LINE_NUM_PROBE_SOURCE.len().saturating_sub(1),
+            },
+            ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location: COMP_FINAL_LINE_NUM_PROBE_SOURCE.len(),
+            },
+        ];
+
+        assert!(!is_comp_final_line_num_syntax_error_probe(
+            &invocation,
+            &comp_final_line_num_probe_source(),
+            &diagnostics,
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn compile_dynamic_boundary_fails_with_compile_effect_bucket() -> TestResult {
         let invocation = Invocation {
             source: SourceInput::Inline("require $module;\n".to_string()),
