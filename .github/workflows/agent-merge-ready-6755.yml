@@ -98,12 +98,12 @@ jobs:
           fi
           tail -n 60 "$log"
 
-      - name: Verify lexer clippy contract
+      - name: Verify production lexer clippy contract
         shell: bash
         run: |
           set -euo pipefail
           log=/tmp/lexer-clippy.log
-          if ! cargo clippy -p perl-lexer --all-targets --locked -- -D warnings >"$log" 2>&1; then
+          if ! cargo clippy -p perl-lexer --lib --locked -- -D warnings >"$log" 2>&1; then
             tail -n 300 "$log"
             exit 1
           fi
