@@ -60,6 +60,7 @@ Hands-on guides for learning the system by doing (learning-oriented).
 - [DAP User Guide](tutorials/DAP_USER_GUIDE.md)
 - [Comprehensive Testing Guide](tutorials/COMPREHENSIVE_TESTING_GUIDE.md)
 - [AI Build Guide](tutorials/AI_BUILD_GUIDE.md)
+- [Worked lanes](agents/README.md)
 
 ### How-to Guides
 Task-focused instructions for common workflows (goal-oriented).
