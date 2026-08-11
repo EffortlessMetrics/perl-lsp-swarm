@@ -27,7 +27,7 @@ pub use crate::inventory::*;
 pub use crate::loading::{parse_dir, parse_file};
 pub use crate::metadata::{Section, find_by_flag, find_by_tag};
 pub use crate::sidecar::*;
-pub use crate::tie_interface::{
+pub use crate::topology::{\n    AssetRequirement, CorpusAsset, CorpusAssetKind, CorpusTopology, CORPUS_TOPOLOGY_SCHEMA_VERSION,\n};\npub use crate::tie_interface::{
     TieInterfaceCase, find_tie_case, tie_cases_by_tag, tie_cases_by_tags_all,
     tie_cases_by_tags_any, tie_interface_cases,
 };
