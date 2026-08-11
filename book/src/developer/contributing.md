@@ -13,7 +13,7 @@ Thank you for your interest in contributing to Perl LSP! This guide will help yo
 2. **Install Dependencies**
    ```bash
    # Rust toolchain (if not already installed)
-   # The project pins its toolchain via rust-toolchain.toml (MSRV 1.92)
+   # The project pins its toolchain via rust-toolchain.toml (MSRV 1.95)
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
    # Recommended: use Nix for a reproducible dev environment
@@ -310,15 +310,10 @@ fn status_round_trip() {
 
 #### Pre-Commit Hook (Optional)
 
-To catch policy violations before pushing, install the pre-commit hook:
+To install the generated commit and pre-push gates, run:
 
 ```bash
-# Option 1: Copy hook (manual updates needed)
-cp .ci/hooks/pre-commit .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-
-# Option 2: Symlink hook (auto-updates with git pull)
-ln -sf ../../.ci/hooks/pre-commit .git/hooks/pre-commit
+cargo xtask ci-hygiene install-githooks
 ```
 
 #### Manual Policy Check

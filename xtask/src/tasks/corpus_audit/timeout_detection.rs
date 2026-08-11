@@ -248,8 +248,17 @@ pub fn parse_with_timeout(
 }
 
 pub fn run_parse_one(path: PathBuf) -> Result<()> {
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read parser corpus file {}", path.display()))?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let outcome = ParseOutcome::Error {
+                message: format!("failed to read parser corpus file {}: {error}", path.display()),
+            };
+            println!("{}", serde_json::to_string(&outcome)?);
+            return Ok(());
+        }
+    };
+    let content = String::from_utf8_lossy(&bytes);
     let start = Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut parser = Parser::new(&content);

@@ -10,7 +10,11 @@
 //! - Test discovery
 //! - Execute command
 
-use super::super::*;
+use super::super::{
+    CodeLensProvider, INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, METHOD_NOT_FOUND,
+    Node, NodeKind, TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset,
+    resolve_code_lens,
+};
 use crate::protocol::{invalid_params, req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
@@ -20,12 +24,17 @@ use crate::runtime::window::RequestProgressGuard;
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
 use perl_lsp_rs_core::providers::inline_completion::{
-    InlineCompletionEnvironment, InlinePackageMethodFact,
+    BackendError, InlineCompletionEnvironment, InlinePackageMethodFact,
 };
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
 
 mod debug_launch;
 mod inline_values;
@@ -423,12 +432,16 @@ impl LspServer {
                 None
             };
 
-            let documents = self.documents_guard();
-            let doc = self.get_document(&documents, uri).ok_or_else(|| JsonRpcError {
-                code: INVALID_REQUEST,
-                message: format!("Document not open: {}", uri),
-                data: None,
-            })?;
+            // Clone the current document snapshot and release the mutex before
+            // parameter-hint resolution can query the workspace index.
+            let doc = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned().ok_or_else(|| JsonRpcError {
+                    code: INVALID_REQUEST,
+                    message: format!("Document not open: {}", uri),
+                    data: None,
+                })?
+            };
             let parsed = doc.current_parsed();
             if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                 let mut hints = Vec::new();
@@ -462,7 +475,7 @@ impl LspServer {
 
                     hints.extend(crate::inlay_hints::parameter_hints_with_resolver(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                         Some(&ws_resolver),
                     ));
@@ -470,7 +483,7 @@ impl LspServer {
                 if type_hints {
                     hints.extend(crate::inlay_hints::trivial_type_hints(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                     ));
                 }
@@ -589,15 +602,13 @@ impl LspServer {
                 .map(|props| props.contains("label.location"))
                 .unwrap_or(false);
 
-            if hint.get("labelDetails").is_none() && kind == 2 && client_supports_label_location {
-                if let Some(label_location) = self.resolve_hint_label_location(&hint) {
-                    if let Some(obj) = hint.as_object_mut() {
-                        obj.insert(
-                            "labelDetails".to_string(),
-                            json!({ "location": label_location }),
-                        );
-                    }
-                }
+            if hint.get("labelDetails").is_none()
+                && kind == 2
+                && client_supports_label_location
+                && let Some(label_location) = self.resolve_hint_label_location(&hint)
+                && let Some(obj) = hint.as_object_mut()
+            {
+                obj.insert("labelDetails".to_string(), json!({ "location": label_location }));
             }
 
             Ok(Some(hint))
@@ -736,7 +747,7 @@ impl LspServer {
                 let deadline = code_lens_resolve_deadline();
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let provider = CodeLensProvider::with_source(doc.text.clone())
+                    let provider = CodeLensProvider::with_source(doc.text_arc.to_string())
                         .with_file_path(uri.to_string());
                     let mut lenses = provider.extract(ast);
 
@@ -841,7 +852,11 @@ impl LspServer {
         deadline: Duration,
     ) -> usize {
         #[cfg(feature = "workspace")]
-        let index_count = self.coordinator().map(|coord| coord.index().count_usages(symbol_name));
+        let index_count = if self.workspace_index_stale_for_any_open_document() {
+            None
+        } else {
+            self.coordinator().map(|coord| coord.index().count_usages(symbol_name))
+        };
         #[cfg(not(feature = "workspace"))]
         let index_count: Option<usize> = None;
 
@@ -884,42 +899,42 @@ impl LspServer {
         let start = Instant::now();
         let deadline = code_lens_resolve_deadline();
 
-        if let Some(params) = params {
-            // Parse the code lens
-            if let Ok(lens) =
-                serde_json::from_value::<crate::code_lens_provider::CodeLens>(params.clone())
-            {
-                // Extract the symbol name and kind from the lens data
-                let symbol_name = lens
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("");
+        let params = params.ok_or_else(|| {
+            invalid_params("codeLens/resolve: missing required parameter 'params'")
+        })?;
 
-                let symbol_kind = lens
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("kind"))
-                    .and_then(|k| k.as_str())
-                    .unwrap_or("unknown");
+        // Parse the code lens
+        if let Ok(lens) = serde_json::from_value::<crate::code_lens_provider::CodeLens>(params) {
+            // Extract the symbol name and kind from the lens data
+            let symbol_name = lens
+                .data
+                .as_ref()
+                .and_then(|d| d.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
 
-                let total_references =
-                    self.count_code_lens_references(symbol_name, symbol_kind, start, deadline);
+            let symbol_kind = lens
+                .data
+                .as_ref()
+                .and_then(|d| d.get("kind"))
+                .and_then(|k| k.as_str())
+                .unwrap_or("unknown");
 
-                let resolved = resolve_code_lens(lens, total_references);
-                return Ok(Some(json!(resolved)));
-            }
+            let total_references =
+                self.count_code_lens_references(symbol_name, symbol_kind, start, deadline);
+
+            let resolved = resolve_code_lens(lens, total_references);
+            return Ok(Some(json!(resolved)));
         }
 
-        Err(JsonRpcError { code: -32602, message: "Invalid parameters".to_string(), data: None })
+        Err(invalid_params("codeLens/resolve: parameter 'params' must be a code lens object"))
     }
 
     /// Handle textDocument/inlineCompletion request.
     ///
     /// When an AI backend is registered and AI completion is enabled in config,
     /// the handler tries the backend first. On failure or empty results, it
-    /// falls back to deterministic completions (controlled by `ai_config.fallback`).
+    /// falls back to deterministic completions (controlled by the `fallback` config field).
     pub(crate) fn handle_inline_completion(
         &self,
         params: Option<Value>,
@@ -940,7 +955,7 @@ impl LspServer {
             let text = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text.clone(),
+                    Some(doc) => doc.text_arc.to_string(),
                     None => {
                         return Ok(Some(json!({ "items": [] })));
                     }
@@ -950,46 +965,53 @@ impl LspServer {
             let provider = InlineCompletionProvider::new();
 
             // Try AI backend if enabled
-            let ai_config = self.config.lock().ai_completion.clone();
-            if ai_config.enabled {
-                if let Some(context) = provider.prepare_context(&text, line, character) {
-                    let backend_result = self.try_ai_inline_completion(&context, &ai_config);
-                    match backend_result {
-                        Ok(ref items) if !items.is_empty() => {
-                            let list = perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+            let (ai_enabled, ai_fallback, ai_max_output_tokens, ai_timeout_ms) = {
+                let cfg = self.config.lock();
+                let a = &cfg.ai_completion;
+                (a.enabled, a.fallback, a.max_output_tokens, a.timeout_ms)
+            };
+            if ai_enabled && let Some(context) = provider.prepare_context(&text, line, character) {
+                let backend_result =
+                    self.try_ai_inline_completion(&context, ai_max_output_tokens, ai_timeout_ms);
+                match backend_result {
+                    Ok(ref items) if !items.is_empty() => {
+                        let list =
+                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
                                 items: items.clone(),
                             };
-                            let list = provider.apply_replacement_ranges_for_context(
-                                list, &context, line, character,
-                            );
-                            let list = constrain_inline_completions_to_selected_info(
-                                list,
-                                selected_completion.as_ref(),
-                                line,
-                                character,
-                            );
-                            let list = apply_inline_completion_trigger_policy(list, trigger_kind);
-                            if !list.items.is_empty() || !ai_config.fallback {
-                                return Ok(Some(serde_json::to_value(list).map_err(|e| {
-                                    crate::protocol::internal_error(&format!(
-                                        "Failed to serialize inline completions: {}",
-                                        e
-                                    ))
-                                })?));
-                            }
+                        let list = provider
+                            .apply_replacement_ranges_for_context(list, &context, line, character);
+                        let list = provider.filter_parse_safe_items(list, &text, line, character);
+                        let list = constrain_inline_completions_to_selected_info(
+                            list,
+                            selected_completion.as_ref(),
+                            line,
+                            character,
+                        );
+                        let list = apply_inline_completion_trigger_policy(list, trigger_kind);
+                        if !list.items.is_empty() || !ai_fallback {
+                            return Ok(Some(serde_json::to_value(list).map_err(|e| {
+                                crate::protocol::internal_error(&format!(
+                                    "Failed to serialize inline completions: {}",
+                                    e
+                                ))
+                            })?));
                         }
-                        Err(ref e) => {
-                            tracing::debug!("AI inline completion failed: {}", e);
-                            if !ai_config.fallback {
-                                return Ok(Some(json!({ "items": [] })));
-                            }
-                            // Fall through to deterministic
+                    }
+                    Err(ref e) => {
+                        if matches!(e, BackendError::Auth(_)) {
+                            self.notify_ai_auth_failure();
                         }
-                        _ => {
-                            // Ok(empty) — fall through to deterministic if fallback enabled
-                            if !ai_config.fallback {
-                                return Ok(Some(json!({ "items": [] })));
-                            }
+                        tracing::debug!("AI inline completion failed: {}", e);
+                        if !ai_fallback {
+                            return Ok(Some(json!({ "items": [] })));
+                        }
+                        // Fall through to deterministic
+                    }
+                    _ => {
+                        // Ok(empty) — fall through to deterministic if fallback enabled
+                        if !ai_fallback {
+                            return Ok(Some(json!({ "items": [] })));
                         }
                     }
                 }
@@ -1124,10 +1146,10 @@ impl LspServer {
                 if !is_inline_workspace_module_symbol(&symbol) {
                     continue;
                 }
-                if let Some(ref context) = inc_context {
-                    if !context.symbol_uri_reachable(&symbol.uri) {
-                        continue;
-                    }
+                if let Some(ref context) = inc_context
+                    && !context.symbol_uri_reachable(&symbol.uri)
+                {
+                    continue;
                 }
 
                 let module_name = inline_workspace_module_name(&symbol);
@@ -1182,7 +1204,8 @@ impl LspServer {
     fn try_ai_inline_completion(
         &self,
         context: &perl_lsp_rs_core::providers::inline_completion::PreparedInlineCompletionContext,
-        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
+        max_output_tokens: u32,
+        timeout_ms: u64,
     ) -> Result<
         Vec<perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem>,
         perl_lsp_rs_core::providers::inline_completion::BackendError,
@@ -1196,8 +1219,8 @@ impl LspServer {
 
         let req = perl_lsp_rs_core::providers::inline_completion::BackendRequest {
             context: context.clone(),
-            max_output_tokens: ai_config.max_output_tokens,
-            timeout_ms: ai_config.timeout_ms,
+            max_output_tokens,
+            timeout_ms,
         };
 
         let texts = backend.complete(&req)?;
@@ -1245,7 +1268,15 @@ impl LspServer {
 
                 let mut inline_values = Vec::new();
 
-                let lines: Vec<&str> = doc.text.lines().collect();
+                let source_text = doc.text.as_str();
+                // Build the AST-aware source-region index once for the entire
+                // document so we can classify each match's byte range and skip
+                // matches inside string literals, quote-like bodies, and
+                // heredocs (#4630).
+                let region_index =
+                    perl_parser_core::syntax::source_context::SourceRegionIndex::build(source_text);
+
+                let lines: Vec<&str> = source_text.lines().collect();
                 let requested_line_count = effective_end
                     .checked_sub(start_line)
                     .map_or(0, |line_delta| line_delta.saturating_add(1) as usize);
@@ -1298,9 +1329,41 @@ impl LspServer {
                     }
 
                     // Find $scalar, @array, and %hash variables
+                    // Compute the byte offset of this line's start in the
+                    // full source so we can classify match ranges against the
+                    // SourceRegionIndex.
+                    let line_byte_start = source_text
+                        .lines()
+                        .take(line_num as usize)
+                        .map(|l| l.len() + 1) // +1 for the \n
+                        .sum::<usize>();
                     for cap in re.captures_iter(line_text) {
                         if let Some(m) = cap.get(0) {
                             let var_text = m.as_str();
+
+                            // Classify this match against the source-region
+                            // index. Skip matches inside string literals,
+                            // quote-like bodies, and heredocs to prevent the
+                            // DAP client from resolving inline values for
+                            // variables embedded in strings (#4630).
+                            let abs_start = line_byte_start + m.start();
+                            let abs_end = line_byte_start + m.end();
+                            use perl_parser_core::syntax::source_context::RangeClassification;
+                            match region_index.classify_range(abs_start, abs_end) {
+                                RangeClassification::Proven {
+                                    kind: perl_parser_core::syntax::source_context::SourceRegionKind::StringLiteral
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::QuoteLike
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::Heredoc
+                                        | perl_parser_core::syntax::source_context::SourceRegionKind::RegexLike,
+                                } => {
+                                    continue;
+                                }
+                                RangeClassification::Ambiguous | RangeClassification::OutOfBounds => {
+                                    // Skip uncertain regions
+                                    continue;
+                                }
+                                _ => {} // Code or other proven kinds: keep
+                            }
                             // Convert byte positions to UTF-16 code units for LSP compliance
                             let start_utf16 = byte_to_utf16_col(line_text, m.start());
                             let end_utf16 = byte_to_utf16_col(line_text, m.end());
@@ -1458,7 +1521,7 @@ impl LspServer {
             if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let runner = TestRunner::new(doc.text.clone(), uri.to_string());
+                    let runner = TestRunner::new(doc.text_arc.to_string(), uri.to_string());
                     let tests = runner.discover_tests(ast);
 
                     // Convert test items to JSON
@@ -1513,7 +1576,7 @@ impl LspServer {
 
                     tracing::debug!(count = test_items.len(), "Found test items");
 
-                    return Ok(Some(json!(test_items)));
+                    return Ok(Some(to_json_array(&test_items)));
                 }
             }
         }
@@ -1563,12 +1626,11 @@ impl LspServer {
             {
                 let folders = self.workspace_folders.lock();
                 for folder in folders.iter() {
-                    if let Ok(parsed) = url::Url::parse(&folder.uri) {
-                        if let Ok(path) = parsed.to_file_path() {
-                            if !workspace_roots.contains(&path) {
-                                workspace_roots.push(path);
-                            }
-                        }
+                    if let Ok(parsed) = url::Url::parse(&folder.uri)
+                        && let Ok(path) = parsed.to_file_path()
+                        && !workspace_roots.contains(&path)
+                    {
+                        workspace_roots.push(path);
                     }
                 }
             }
@@ -1818,11 +1880,11 @@ impl LspServer {
 
         // Missing params entirely
         Err(JsonRpcError {
-            code: -32602, // InvalidParams
-            message: "Missing parameters for executeCommand request".to_string(),
+            code: INVALID_PARAMS,
+            message: "workspace/executeCommand: missing required parameter 'params'".to_string(),
             data: Some(json!({
                 "errorType": "executeCommand",
-                "originalError": "Missing params"
+                "originalError": "workspace/executeCommand: missing required parameter 'params'"
             })),
         })
     }
@@ -1893,19 +1955,19 @@ impl LspServer {
     pub(crate) fn workspace_roots(&self) -> Vec<url::Url> {
         let mut results = Vec::new();
 
-        if let Some(ref path) = *self.root_path.lock() {
-            if let Ok(url) = url::Url::from_file_path(path) {
-                results.push(url);
-            }
+        if let Some(ref path) = *self.root_path.lock()
+            && let Ok(url) = url::Url::from_file_path(path)
+        {
+            results.push(url);
         }
 
         {
             let folders = self.workspace_folders.lock();
             for folder in folders.iter() {
-                if let Ok(parsed) = url::Url::parse(&folder.uri) {
-                    if !results.contains(&parsed) {
-                        results.push(parsed);
-                    }
+                if let Ok(parsed) = url::Url::parse(&folder.uri)
+                    && !results.contains(&parsed)
+                {
+                    results.push(parsed);
                 }
             }
         }
@@ -1958,6 +2020,40 @@ mod tests {
             LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(Vec::<u8>::new()));
         *server.client_capabilities.lock() = caps;
         server
+    }
+
+    #[test]
+    fn code_lens_resolve_invalid_params_name_method_and_shape() {
+        let err = LspServer::new()
+            .handle_code_lens_resolve(None)
+            .expect_err("missing code lens params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "codeLens/resolve: missing required parameter 'params'");
+
+        let err = LspServer::new()
+            .handle_code_lens_resolve(Some(json!({})))
+            .expect_err("malformed code lens params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "codeLens/resolve: parameter 'params' must be a code lens object");
+    }
+
+    #[test]
+    fn execute_command_missing_params_name_method_and_field() {
+        let err = LspServer::new()
+            .handle_execute_command(None)
+            .expect_err("missing execute command params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(err.message, "workspace/executeCommand: missing required parameter 'params'");
+        assert_eq!(
+            err.data,
+            Some(json!({
+                "errorType": "executeCommand",
+                "originalError": "workspace/executeCommand: missing required parameter 'params'"
+            }))
+        );
     }
 
     #[test]
@@ -2382,5 +2478,88 @@ mod tests {
             err.message
         );
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn code_lens_skips_workspace_index_tier_when_open_document_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/stale_code_lens_source.pl";
+        let caller_uri = "file:///workspace/stale_code_lens_caller.pl";
+        let source_text = "package StaleCount::Source;\nsub count_me { return 1; }\n1;\n";
+        let caller_v1 = "package StaleCount::Caller;\nsub a { count_me(); count_me(); }\n1;\n";
+        let caller_v2 =
+            "package StaleCount::Caller;\nsub a { count_me(); count_me(); count_me(); }\n1;\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(caller_uri, caller_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh_title = resolve_code_lens_reference_title(&server, source_uri, "count_me")?;
+        assert_eq!(
+            fresh_title, "2 references",
+            "fresh workspace index should supply tier-1 count_usages before the edit: {fresh_title}"
+        );
+
+        server
+            .test_replace_document_without_index(caller_uri, caller_v2, 2)
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale_title = resolve_code_lens_reference_title(&server, source_uri, "count_me")?;
+        assert_ne!(
+            stale_title, "2 references",
+            "stale workspace index must not supply tier-1 count_usages; got stale index count: \
+             {stale_title}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn resolve_code_lens_reference_title(
+        server: &LspServer,
+        uri: &str,
+        symbol_name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let lenses = server
+            .handle_code_lens(Some(json!({
+                "textDocument": { "uri": uri }
+            })))?
+            .ok_or("expected code lens response")?;
+        let lenses = lenses.as_array().ok_or("expected code lens array")?;
+        let lens = lenses
+            .iter()
+            .find(|lens| {
+                lens.get("data").and_then(|d| d.get("name")).and_then(|n| n.as_str())
+                    == Some(symbol_name)
+            })
+            .ok_or_else(|| format!("expected {symbol_name} code lens"))?;
+
+        let resolved = if lens.get("command").is_some() {
+            lens.clone()
+        } else {
+            server
+                .handle_code_lens_resolve(Some(lens.clone()))?
+                .ok_or("expected resolved code lens")?
+        };
+
+        resolved
+            .get("command")
+            .and_then(|c| c.get("title"))
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "expected resolved command title".into())
     }
 }

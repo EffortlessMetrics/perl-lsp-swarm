@@ -4,8 +4,8 @@
 //! into structured [`PerlValue`] representations.
 
 use crate::value::PerlValue;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 use thiserror::Error;
 
 /// Errors that can occur during variable parsing.
@@ -32,43 +32,59 @@ pub enum VariableParseError {
     RegexError(#[from] regex::Error),
 }
 
+impl perl_parser_core::ErrorClass for VariableParseError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Nesting safety limit exceeded — a resource-protection guard.
+            Self::MaxDepthExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
+            // All other variants are adapter/parser gaps: malformed engine
+            // output or constant regex compilation failures.
+            Self::UnrecognizedFormat(_)
+            | Self::UnterminatedString
+            | Self::UnterminatedCollection
+            | Self::RegexError(_) => perl_parser_core::ErrorCategory::Bug,
+        }
+    }
+}
+
 // Compiled regex patterns for variable parsing.
 // Stored as Results to avoid panics. All patterns are compile-time constants,
 // so failure is not expected, but this provides graceful degradation.
 
-static SCALAR_VAR_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^\s*(?P<name>[\$\@\%][\w:]+)\s*=\s*(?P<value>.*?)$"));
+static SCALAR_VAR_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^\s*(?P<name>[\$\@\%][\w:]+)\s*=\s*(?P<value>.*?)$"));
 
-static UNDEF_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| Regex::new(r"^undef$"));
+static UNDEF_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::new(r"^undef$"));
 
-static INTEGER_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| Regex::new(r"^-?\d+$"));
+static INTEGER_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::new(r"^-?\d+$"));
 
-static NUMBER_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$"));
+static NUMBER_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$"));
 
-static QUOTED_STRING_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r#"^'(?:[^'\\]|\\.)*'|^"(?:[^"\\]|\\.)*""#));
+static QUOTED_STRING_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r#"^'(?:[^'\\]|\\.)*'|^"(?:[^"\\]|\\.)*""#));
 
-static ARRAY_REF_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^ARRAY\(0x[0-9a-fA-F]+\)$"));
+static ARRAY_REF_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^ARRAY\(0x[0-9a-fA-F]+\)$"));
 
-static HASH_REF_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^HASH\(0x[0-9a-fA-F]+\)$"));
+static HASH_REF_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^HASH\(0x[0-9a-fA-F]+\)$"));
 
-static CODE_REF_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^CODE\(0x[0-9a-fA-F]+\)$"));
+static CODE_REF_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^CODE\(0x[0-9a-fA-F]+\)$"));
 
-static OBJECT_RE: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+static OBJECT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(r"^(?P<class>[\w:]+)=(?P<type>ARRAY|HASH|SCALAR|GLOB)\(0x[0-9a-fA-F]+\)$")
 });
 
-static GLOB_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^\*(?P<name>[\w:]+)$"));
+static GLOB_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^\*(?P<name>[\w:]+)$"));
 
 /// Regex for parsing compiled regexp values (reserved for future use)
 #[allow(dead_code)]
-static REGEX_RE: Lazy<Result<Regex, regex::Error>> =
-    Lazy::new(|| Regex::new(r"^(?:\(\?(?P<flags>[xism-]*)(?:-[xism]+)?:)?(?P<pattern>.*?)\)?$"));
+static REGEX_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(r"^(?:\(\?(?P<flags>[xism-]*)(?:-[xism]+)?:)?(?P<pattern>.*?)\)?$")
+});
 
 // Accessor functions - return Option<&Regex>, treating compile failure as "no match"
 fn scalar_var_re() -> Option<&'static Regex> {
@@ -185,17 +201,17 @@ impl VariableParser {
         }
 
         // Check for integer
-        if integer_re().is_some_and(|re| re.is_match(text)) {
-            if let Ok(i) = text.parse::<i64>() {
-                return Ok(PerlValue::Integer(i));
-            }
+        if integer_re().is_some_and(|re| re.is_match(text))
+            && let Ok(i) = text.parse::<i64>()
+        {
+            return Ok(PerlValue::Integer(i));
         }
 
         // Check for number
-        if number_re().is_some_and(|re| re.is_match(text)) {
-            if let Ok(n) = text.parse::<f64>() {
-                return Ok(PerlValue::Number(n));
-            }
+        if number_re().is_some_and(|re| re.is_match(text))
+            && let Ok(n) = text.parse::<f64>()
+        {
+            return Ok(PerlValue::Number(n));
         }
 
         // Check for quoted string

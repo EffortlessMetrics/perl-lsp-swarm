@@ -9,6 +9,46 @@ use perl_position_tracking::offset_to_utf16_line_col;
 use serde_json::{Value, json};
 use url::Url;
 
+/// Build a typed LSP DocumentLink JSON value from structured fields (#4995).
+///
+/// Replaces repeated `json!({...})` blocks with a single typed constructor
+/// so the link shape is defined in one place and cannot drift between
+/// the four call sites in this module.
+fn document_link(
+    line: u32,
+    col_start: u32,
+    col_end: u32,
+    tooltip: &str,
+    data_type: &str,
+    data_fields: Vec<(&str, String)>,
+) -> Value {
+    let mut data = serde_json::Map::new();
+    data.insert("type".to_string(), Value::String(data_type.to_string()));
+    for (key, val) in data_fields {
+        data.insert(key.to_string(), Value::String(val));
+    }
+    json!({
+        "range": {
+            "start": {"line": line, "character": col_start},
+            "end": {"line": line, "character": col_end}
+        },
+        "tooltip": tooltip,
+        "data": Value::Object(data)
+    })
+}
+
+/// Build a typed LSP DocumentLink with a `target` field instead of `data`.
+fn document_link_target(line: u32, start: u32, end: u32, target: &str, tooltip: &str) -> Value {
+    json!({
+        "range": {
+            "start": {"line": line, "character": start},
+            "end": {"line": line, "character": end}
+        },
+        "target": target,
+        "tooltip": tooltip
+    })
+}
+
 /// Computes document links for a given Perl document.
 ///
 /// This function scans the text for `use` and `require` statements plus POD
@@ -62,32 +102,28 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                         Some(RequireForm::FilePath) if import.token.ends_with(".pm") => {
                             // Quoted .pm require → treat as a module link (Foo/Bar.pm → Foo::Bar)
                             let module_name = import.token_as_module_name();
-                            if !is_pragma(&module_name) {
-                                if let Some(link) = make_deferred_module_link(
+                            if !is_pragma(&module_name)
+                                && let Some(link) = make_deferred_module_link(
                                     uri,
                                     i as u32,
                                     &module_name,
                                     col_start,
                                     col_end,
-                                ) {
-                                    out.push(link);
-                                }
+                                )
+                            {
+                                out.push(link);
                             }
                         }
                         Some(RequireForm::FilePath) => {
                             // Quoted file path that is NOT a .pm (e.g. .pl, extensionless) → file link
-                            out.push(json!({
-                                "range": {
-                                    "start": {"line": i as u32, "character": col_start},
-                                    "end":   {"line": i as u32, "character": col_end}
-                                },
-                                "tooltip": format!("Open {}", import.token),
-                                "data": {
-                                    "type": "file",
-                                    "path": import.token,
-                                    "baseUri": uri
-                                }
-                            }));
+                            out.push(document_link(
+                                i as u32,
+                                col_start,
+                                col_end,
+                                &format!("Open {}", import.token),
+                                "file",
+                                vec![("path", import.token.into()), ("baseUri", uri.to_string())],
+                            ));
                         }
                         Some(RequireForm::ModuleName) | None => {
                             // Bare module name form — existing behavior
@@ -548,18 +584,14 @@ fn make_deferred_module_link(
         return None;
     }
 
-    Some(json!({
-        "range": {
-            "start": {"line": line, "character": col_start},
-            "end": {"line": line, "character": col_end}
-        },
-        "tooltip": format!("Open {}", module),
-        "data": {
-            "type": "module",
-            "module": module,
-            "baseUri": uri
-        }
-    }))
+    Some(document_link(
+        line,
+        col_start,
+        col_end,
+        &format!("Open {}", module),
+        "module",
+        vec![("module", module.to_string()), ("baseUri", uri.to_string())],
+    ))
 }
 
 fn make_deferred_pod_section_link(
@@ -573,18 +605,14 @@ fn make_deferred_pod_section_link(
         return None;
     }
 
-    Some(json!({
-        "range": {
-            "start": {"line": line, "character": col_start},
-            "end": {"line": line, "character": col_end}
-        },
-        "tooltip": format!("Open POD section {}", section),
-        "data": {
-            "type": "pod_section",
-            "section": section,
-            "baseUri": uri
-        }
-    }))
+    Some(document_link(
+        line,
+        col_start,
+        col_end,
+        &format!("Open POD section {}", section),
+        "pod_section",
+        vec![("section", section.to_string()), ("baseUri", uri.to_string())],
+    ))
 }
 
 fn collect_pod_document_links(
@@ -809,14 +837,7 @@ fn make_link(_src: &str, line: u32, line_text: &str, pkg: &str, target: String) 
     if let Some(idx) = line_text.find(pkg) {
         let start = idx as u32;
         let end = (idx + pkg.len()) as u32;
-        Some(json!({
-            "range": {
-                "start": {"line": line, "character": start},
-                "end":   {"line": line, "character": end}
-            },
-            "target": target,
-            "tooltip": format!("Open {}", pkg)
-        }))
+        Some(document_link_target(line, start, end, &target, &format!("Open {}", pkg)))
     } else {
         None
     }

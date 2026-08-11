@@ -41,6 +41,11 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
     );
     assert!(
+        workflow.contains("PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}")
+            && workflow.matches("--pr-head \"$PR_HEAD_SHA\"").count() >= 8,
+        "every receipt generation/check route must carry the PR head separately from evaluated HEAD"
+    );
+    assert!(
         workflow.contains("cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json")
             && workflow.contains(
                 "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check"
@@ -105,7 +110,13 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing()
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
 
     assert_eq!(
-        workflow.matches("docker image inspect em-ci-rust:1.95").count(),
+        workflow
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| {
+                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.95")
+            })
+            .count(),
         2,
         "CX53 and CX43 preflight must both check the required Docker image before running ripr"
     );

@@ -29,14 +29,28 @@ name = "ripr+ New Gap Gate"
 workflow = ".github/workflows/ripr.yml"
 required = true
 enforcement = "github-branch-protection"
-reason = "Proof lane blocks new RIPR gaps and stale/missing RIPR receipts."
+reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"
 workflow = ".github/workflows/ci.yml"
 required = true
-enforcement = "github-branch-protection"
-reason = "Live main protection requires all targets to compile before merge, catching integration-test and bench bit-rot."
+enforcement = "github-ruleset"
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, catching integration-test and bench bit-rot."
+
+[[checks]]
+name = "Conflict marker check"
+workflow = ".github/workflows/ci.yml"
+required = true
+enforcement = "github-ruleset"
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge."
+
+[[checks]]
+name = "validate-title"
+workflow = ".github/workflows/pr-title-check.yml"
+required = true
+enforcement = "github-ruleset"
+reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
 
 [[checks]]
 name = "Codecov / Patch 95"

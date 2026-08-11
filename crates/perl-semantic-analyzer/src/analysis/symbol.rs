@@ -256,6 +256,29 @@ impl SymbolTable {
         *self.scope_stack.last().unwrap_or(&0)
     }
 
+    /// Return the nearest enclosing package-level scope ID.
+    ///
+    /// Named Perl subroutines are always package-scoped regardless of the
+    /// lexical block they appear in (`BEGIN { sub foo {} }` still makes `foo`
+    /// available as a package symbol). This method walks the live scope stack
+    /// from innermost to outermost and returns the first scope whose kind is
+    /// `Global` or `Package`, skipping over `Block`, `Subroutine`, and `Eval`
+    /// scopes.  Falls back to `0` (the file-level global scope) when no
+    /// Package scope is found, which is the correct answer for top-level code.
+    fn nearest_package_scope(&self) -> ScopeId {
+        for &scope_id in self.scope_stack.iter().rev() {
+            if let Some(scope) = self.scopes.get(&scope_id) {
+                match scope.kind {
+                    ScopeKind::Global | ScopeKind::Package => return scope_id,
+                    ScopeKind::Block | ScopeKind::Subroutine | ScopeKind::Eval => {
+                        // keep walking up
+                    }
+                }
+            }
+        }
+        0 // fallback: global scope
+    }
+
     /// Push a new scope
     fn push_scope(&mut self, kind: ScopeKind, location: SourceLocation) -> ScopeId {
         let parent = self.current_scope();
@@ -601,7 +624,7 @@ impl SymbolExtractor {
                 attributes,
                 body,
                 name_span: _,
-                declarator: _,
+                declarator,
             } => {
                 let sub_name =
                     name.as_ref().map(|n| n.to_string()).unwrap_or_else(|| "<anon>".to_string());
@@ -639,13 +662,24 @@ impl SymbolExtractor {
                     } else {
                         documentation
                     };
+                    // Named subroutines in Perl are package-scoped by default,
+                    // regardless of the lexical block they appear in.  A `sub`
+                    // inside a `BEGIN`, `END`, or any bare block is still
+                    // callable as a package symbol — it is NOT confined to the
+                    // enclosing `Block` scope.  Lexical `my`/`state` subs are
+                    // the exception and remain bound to the enclosing scope.
+                    // See issue #1794.
+                    let scope_id = match declarator.as_deref() {
+                        Some("my") | Some("state") => self.table.current_scope(),
+                        _ => self.table.nearest_package_scope(),
+                    };
                     let symbol = Symbol {
                         name: sub_name.clone(),
                         qualified_name: format!("{}::{}", self.table.current_package, sub_name),
                         kind: SymbolKind::Subroutine,
                         location: node.location,
-                        scope_id: self.table.current_scope(),
-                        declaration: None,
+                        scope_id,
+                        declaration: declarator.clone(),
                         documentation,
                         attributes: symbol_attributes,
                     };

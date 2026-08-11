@@ -213,14 +213,14 @@ reason = "Line iteration must not hide repeated IO errors."
 [[lint]]
 name = "clippy::await_holding_lock"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "async"
 reason = "Do not hold locks across await points."
 
 [[lint]]
 name = "clippy::await_holding_refcell_ref"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "async"
 reason = "Do not hold RefCell borrows across await points."
 
@@ -760,11 +760,9 @@ status = "active"
 class = "numeric"
 reason = "Avoid stale numeric type drift."
 
-[[planned]]
-name = "clippy::disallowed_fields"
-level = "deny"
-activate_when_msrv = "1.95"
-reason = "Allow architecture policy to ban direct field access across protected seams."
+# disallowed_fields activated (#6114): architectural seam protection.
+# The empty denylist in clippy.toml (`disallowed-fields = []`) is the hook;
+# concrete field classes will be added incrementally via DF-2 through DF-4.
 
 [[planned]]
 name = "clippy::manual_checked_ops"

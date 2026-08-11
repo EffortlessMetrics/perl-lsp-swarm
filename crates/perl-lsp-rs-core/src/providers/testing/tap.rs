@@ -10,8 +10,8 @@
 //! nested-subtest indentation) and does not attempt to statically reconstruct
 //! anything the producer did not print.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// A TODO/SKIP directive attached to a test line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,32 +175,32 @@ pub fn focus_subtest(report: &TapReport, name: &str) -> Option<SubtestFocus> {
     })
 }
 
-static PLAN_RE: Lazy<Regex> = Lazy::new(|| {
+static PLAN_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^1\.\.(\d+)\s*(?:#\s*[Ss][Kk][Ii][Pp]\S*\s*(.*))?$")
         .unwrap_or_else(|_| unreachable!("static TAP plan pattern is valid"))
 });
 
-static TEST_RE: Lazy<Regex> = Lazy::new(|| {
+static TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(not )?ok\b[ \t]*(\d+)?[ \t]*(?:-[ \t]*)?(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP test pattern is valid"))
 });
 
-static DIRECTIVE_RE: Lazy<Regex> = Lazy::new(|| {
+static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)#\s*(todo|skip)\b\s*(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP directive pattern is valid"))
 });
 
-static AT_LINE_RE: Lazy<Regex> = Lazy::new(|| {
+static AT_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bat\s+(.+?)\s+line\s+(\d+)")
         .unwrap_or_else(|_| unreachable!("static TAP at-line pattern is valid"))
 });
 
-static GOT_RE: Lazy<Regex> = Lazy::new(|| {
+static GOT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:got|received):\s*(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP got pattern is valid"))
 });
 
-static EXPECTED_RE: Lazy<Regex> = Lazy::new(|| {
+static EXPECTED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:expected|wanted):\s*(.*)$")
         .unwrap_or_else(|_| unreachable!("static TAP expected pattern is valid"))
 });
@@ -320,15 +320,15 @@ fn apply_diagnostic(test: &mut TapTest, diag: &str) {
             test.line = caps.get(2).and_then(|m| m.as_str().parse().ok());
         }
     }
-    if let Some(caps) = GOT_RE.captures(diag) {
-        if test.got.is_none() {
-            test.got = caps.get(1).map(|m| m.as_str().trim().to_string());
-        }
+    if let Some(caps) = GOT_RE.captures(diag)
+        && test.got.is_none()
+    {
+        test.got = caps.get(1).map(|m| m.as_str().trim().to_string());
     }
-    if let Some(caps) = EXPECTED_RE.captures(diag) {
-        if test.expected.is_none() {
-            test.expected = caps.get(1).map(|m| m.as_str().trim().to_string());
-        }
+    if let Some(caps) = EXPECTED_RE.captures(diag)
+        && test.expected.is_none()
+    {
+        test.expected = caps.get(1).map(|m| m.as_str().trim().to_string());
     }
     test.diagnostics.push(diag.to_string());
 }

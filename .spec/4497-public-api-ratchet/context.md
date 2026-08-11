@@ -61,7 +61,7 @@ Currently, **there is no hard-fail CI guardrail** that prevents accidental publi
 - Impact: A cosmetic change like adding `#[derive(Debug)]` to a DAP struct changes ~100 lines without `-s`
 - Verdict: `-s` reduces noise and baseline churn; use consistently in both capture and check
 
-**Who verified:** Plan-reviewer tested locally on stable 1.92.0.
+**Historical verification:** Plan-reviewer tested locally on stable 1.92.0; this is not the current workspace support baseline.
 
 ### `perllsp.txt` will be ~2 lines
 
@@ -166,7 +166,7 @@ Currently, **there is no hard-fail CI guardrail** that prevents accidental publi
 - This is intentional — baseline should only contain module-level public items
 
 ### Version pin: cargo-public-api 0.50.1
-- Tested on Rust stable 1.92.0
+- Historically tested on Rust stable 1.92.0; current support is governed by `rust-toolchain.toml`.
 - No nightly features required
 - Pinned via `--locked` flag to ensure deterministic installs
 - Verify locally: `cargo install cargo-public-api --locked --version 0.50.1`
@@ -185,7 +185,7 @@ Currently, **there is no hard-fail CI guardrail** that prevents accidental publi
 - Root cause verified (no hard-fail gate exists)
 - Command correctness verified (capture-and-diff pattern tested locally)
 - Baseline size estimates measured (`perl-dap` with/without `-s`)
-- Tool stability confirmed (cargo-public-api 0.50.1 on stable 1.92.0)
+- Historical tool stability confirmed (cargo-public-api 0.50.1 on stable 1.92.0); rerun against the current toolchain before treating this as current proof.
 
 ### MEDIUM confidence areas
 - Perllsp baseline at 2 lines (documented as expected, but unusual)

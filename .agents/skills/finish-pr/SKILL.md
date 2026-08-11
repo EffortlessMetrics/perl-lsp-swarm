@@ -1,128 +1,218 @@
 ---
 name: finish-pr
-description: Use when one publication-ready candidate or existing pull request needs state-aware GitHub publication, feedback repair, final challenge, formal review, live integration proof, squash merge, or reconciliation.
+description: Carry one selected pull request through publication, feedback repair, Codex-native substantive review, live integration, squash merge, and reconciliation.
 ---
 
 # Finish PR
 
-## Purpose
+Carry one coherent acceptance-and-rollback candidate through its current GitHub state.
+The Codex root remains the accountable lane owner. Do not inspect sibling
+implementations or treat nearby files, crates, branches, or worktrees as ownership.
 
-Carry one coherent acceptance-and-rollback candidate from its actual current GitHub state through convergence and current-main reconciliation.
+Read the selected PR, controlling issue, governing authority, cumulative diff, proof
+and limitations, submitted reviews, inline threads, current substantive review result,
+required checks, draft purpose, mergeability, and explicit prerequisites.
 
-This flow owns only the selected PR lane. It does not inspect sibling implementations, reserve overlapping files or semantic surfaces, or coordinate other candidates.
+A shared method document, green CI, zero open threads, bot output, textual
+mergeability, or the author reading the diff does not establish substantive review.
+Codex's operational path is this skill together with `$orchestrate-work`,
+`$final-challenge`, `$review-pr`, and `$verify-live-ci`.
 
-## State inspection and entry
+## Orchestration affordances
 
-Before invoking a child skill:
+### Lane-root decisions
 
-1. resolve the exact PR head and normalized material claim/review-index digest;
-2. inspect live PR state, review threads, formal-review receipts, checks, and mergeability;
-3. enter at the earliest absent or stale useful judgment.
+The lane root retains:
 
-```text
-no PR + publication-ready candidate
-  → publish-pr
+- the earliest still-useful entry point in the PR route;
+- whether a finding is valid, stale, refuted, superseded, or a bounded follow-up;
+- which repairs materially change proof or review dimensions;
+- substantive review sufficiency and cumulative candidate judgment;
+- candidate/base/integration failure ownership;
+- whether a remote state is in flight, blocked, or not proven;
+- the protected merge and current-main reconciliation decision.
 
-draft PR whose named remote/collaboration purpose is still active
-  → remain draft and complete that purpose
+### Delegable read-only work
 
-draft PR whose named purpose is complete
-  → publish-pr readiness transition
+Use focused workers where useful for:
 
-ready PR with substantive findings or failed candidate proof
-  → address-review-comments
+- complete review-thread and submitted-review inventory;
+- source-backed verification of human/bot findings;
+- high-output CI log and artifact classification;
+- live required-check/ruleset discovery;
+- production-path, external-oracle, proof, candidate, security, package, migration,
+  persistence, support, or release review;
+- merged-effect and residual-claim verification after integration.
 
-candidate without a current formal review
-  → final-challenge
-  → review-pr
+Each worker receives the exact PR/candidate, accepted claim, current GitHub snapshot,
+named `$skill` where applicable, one bounded question, falsifiers, sufficient evidence,
+uncertainty, and non-goals. Workers return graph deltas, not merge verdicts.
 
-current formal review + no unresolved substantive findings
-  → verify-live-ci
+### Mutation owner and join
 
-merged or deliberately closed but unreconciled
-  → merge-reconcile closeout-only path
+One writer integrates accepted candidate repairs. Read-only reviewers and CI evidence
+workers do not mutate the candidate.
 
-already reconciled
-  → return RECONCILED
-```
+The lane root joins current findings/dispositions, affected proof, cumulative review,
+live integration facts, contradictions, and limitations into one typed route result.
+Repeated bot findings or several workers reading one artifact are not independent
+evidence.
 
-A candidate or material-claim change makes formal-review evidence stale. Final challenge is a runtime-local pre-review pass, not a second durable stage. If a session resumes before current formal review exists, rerun the bounded challenge and continue directly to `review-pr`. Do not infer formal review from conversation, task state, or agent identity. Do not review or merge an already merged/closed PR.
+### Return packet
 
-## Candidate boundary
-
-One writer applies accepted repairs to this candidate branch/worktree at a time. Read-only finding verification, CI classification, and differentiated review may assist without becoming rival candidates.
-
-This lane owns its actual integration work:
-
-- behind-only movement on `main` requires no action;
-- a Git conflict is resolved in this lane's worktree;
-- an explicit stacked prerequisite is rebased or retargeted after it lands;
-- a combined-tree interaction is repaired in the smallest affected candidate;
-- only affected proof/review is refreshed.
-
-Use a direct issue or PR comment when a prerequisite, ruling, supersession, or real integration finding materially affects another lane. No overlap map, reservation system, or sibling-lane monitoring is part of this flow.
-
-## Remote-owned waits
-
-When the candidate is coherent and GitHub owns the next transition—pending checks, requested review, merge queue, or armed auto-merge—do not poll unchanged state or keep the root trapped in this flow.
-
-Record the exact remaining action once and return `PR_IN_FLIGHT` to the invoking `deliver-pr`/`deliver-goal` flow so another distinct claim may proceed.
+Return PR/candidate identity, claim and non-goals, current finding dispositions,
+proof/review dimensions current or stale, substantive review result, integration
+posture, exact remote wait and wake event, limitations/`NOT_PROVEN`, merge/closeout
+result, and next route.
 
 ## Procedure
 
-Follow the state-selected child skill and the complete outcome routes below. After any candidate or material-claim change, rerun affected supporting proof/review, perform the bounded final challenge, and obtain a fresh formal-review record before merge.
+Enter at the earliest useful point:
 
-## What this establishes
+```text
+no PR + publication-ready candidate
+→ `$publish-pr`
 
-A merged or deliberately closed claim with durable GitHub evidence and reconciled remaining work, or one coherent candidate explicitly left in flight under GitHub authority.
+draft with a real remote-proof, collaboration, or protected-experiment purpose
+→ complete that purpose
+→ `$publish-pr`
 
-## What this does not establish
+substantive human/bot/CI findings or failed candidate proof
+→ `$address-review-comments`
+→ rerun affected proof
 
-A broader umbrella goal is complete unless current-main reconciliation proves it.
+candidate is mutable and no useful current substantive review exists
+→ `$final-challenge`
+→ `$orchestrate-work` for the applicable review subgraph
+→ `$review-pr`
 
-## Child outcome routing
+`CHANGES_REQUIRED`
+→ `$address-review-comments`
+→ one writer repairs
+→ affected proof
+→ affected `$final-challenge`
+→ affected `$review-pr`
+
+`REVIEW_CURRENT`
+→ `$verify-live-ci`
+
+`INTEGRATION_READY`
+→ `$merge-reconcile`
+
+merged or deliberately closed but unreconciled
+→ `$merge-reconcile`
+```
+
+Do not skip directly from “no open findings” to live CI unless a useful cumulative
+`REVIEW_CURRENT` judgment exists. The review must be evidence-backed and semantically
+current; it need not be repeated merely because the head SHA changed.
+
+## Codex-native review handoff
+
+Before `$review-pr`, the root uses `$orchestrate-work` to select only review lenses
+that can change the decision. It may delegate `$review-tests`, `$review-candidate`, a
+production-path trace, an external oracle, or a focused
+security/package/migration/persistence/support question to read-only native subagents.
+Each child receives the exact candidate, controlling claim, established facts,
+authority, `$skill`, falsifiers, read-only boundary, sufficient evidence, and
+non-goals.
+
+The root joins evidence rather than votes, inspects the load-bearing seams, and
+publishes one cumulative `$review-pr` judgment. Reviewers do not authorize merge. One
+integrating writer repairs accepted findings.
+
+## Review-forward repair
+
+Review is cumulative and semantic:
+
+- verify each repair against the finding, proof, and seam it changes;
+- revisit claim, production reachability, authority, compatibility, risk, rollback, or
+  proof only when the repair materially changes that dimension;
+- formatting, editorial cleanup, generated receipt refresh, and stronger tests do not
+  automatically invalidate prior review;
+- actual conflict or combined-tree repair receives focused review of the affected
+  interaction.
+
+Do not compute a claim digest, require a review receipt tied to the current head, or
+restart a full deep review merely because another commit was pushed.
+
+## Candidate and integration boundary
+
+One writer mutates this candidate branch/worktree at a time. Read-only research,
+review, CI classification, and oracle work may assist.
+
+- behind-only movement on `main` requires no action;
+- a real Git conflict is resolved in this lane;
+- an explicit stack is retargeted after its prerequisite lands;
+- a combined-tree interaction is repaired in the smallest affected candidate;
+- only affected proof and review are refreshed.
+
+When GitHub owns the next transition—pending checks, requested review, merge queue, or
+armed auto-merge—record the exact pending fact and wake event once when useful and
+return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
+remote integration wait does not make a still-current substantive review stale.
+
+## Useful GitHub boundary
+
+Publish candidate-wide route/proof/limitation changes in the PR body or a compact PR
+comment; localized findings inline; finding dispositions in replies before resolution;
+one cumulative submitted review; one material remote wait/wake update when another
+context needs it; and landed-effect/residual-claim closeout on the issue.
+
+Keep worker topology, task progress, raw bot/CI logs, repeated check snapshots, retries,
+unchanged polls, and routine route transitions runtime-local. Link stable artifacts
+rather than copying them.
+
+## Routes
 
 ### Publication
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `$address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` → complete the named remote proof or collaboration, then repeat `$publish-pr`
-- `DRAFT_REASON_COMPLETE` / `DRAFT` → `$publish-pr` to recheck the full threshold and perform the explicit ready transition
-- `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` → `$build-candidate`
-- `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume the equivalent candidate or resolve the actual same-branch/worktree collision
-- `IDENTITY_NOT_PROVEN` → establish branch/candidate identity; if reliable identity cannot be restored, return `NOT_PROVEN`
+- `DRAFT_FOR_NAMED_REASON` → complete the reason, then `$publish-pr`
+- `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` →
+  `$build-candidate`
+- `DUPLICATE_OR_WRITER_COLLISION` → reuse the equivalent candidate or resolve the
+  actual same-branch/worktree collision
+- `IDENTITY_NOT_PROVEN` → establish candidate identity or return `NOT_PROVEN`
 
-### Feedback and mutable challenge
+### Findings and challenge
 
-- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `$final-challenge`
-- `MUTABLE_FINDINGS_OPEN` → `$build-candidate`, then repeat affected proof and `$final-challenge`
-- `PROOF_WEAKENED` / `PROOF_REVISE` → `$prepare-proof`, then repeat affected candidate passes
-- `MATERIAL_PREMISE_CHANGED` → `$prepare-issue`
-- `SPLIT_CLAIM` → `$prepare-issue` to narrow the current claim and preserve the independent residual claim
-- `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up, then continue this PR within its current claim
-- `DISPOSITION_INSTRUMENT_FAILURE` → leave the finding unresolved, repair the disposition instrument, and retry; otherwise return `NOT_PROVEN`
+- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → affected proof, then `$final-challenge`
+- `MUTABLE_FINDINGS_OPEN` → `$build-candidate`
+- `PROOF_WEAKENED` / `PROOF_REVISE` → `$prepare-proof`
+- `MATERIAL_PREMISE_CHANGED` / `SPLIT_CLAIM` → `$prepare-issue`
+- `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up and continue
+- `DISPOSITION_INSTRUMENT_FAILURE` → preserve the finding and return `NOT_PROVEN`
 
-### Formal review
+### Substantive review
 
-- `CANDIDATE_FIXED_FOR_FORMAL_REVIEW` → `$review-pr`
+- `CANDIDATE_READY_FOR_REVIEW` → `$final-challenge`, `$orchestrate-work`, then
+  `$review-pr`
 - `REVIEW_CURRENT` → `$verify-live-ci`
-- `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
-- `REVIEW_NOT_PROVEN` → resolve the named candidate/claim identity, evidence, or receipt-instrument failure, then repeat `$review-pr`; if reliable evidence cannot be restored, return `NOT_PROVEN`
-- `CLAIM_REVIEW_STALE` → rerun affected proof, `$final-challenge`, then `$review-pr`
+- `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
+- `REVIEW_SCOPE_CHANGED` → review the affected dimensions; use `$prepare-issue` only
+  when claim or owner changed
+- `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite in the invoking flow
+- `SUPERSEDED_OR_CLOSE` → `$merge-reconcile` for durable closeout
+- `NOT_PROVEN` / `REVIEW_NOT_PROVEN` → resolve missing evidence or authority
 
 ### Live integration
 
-- `PRODUCT_OR_TEST_FAILURE` → `$build-candidate`, then repeat affected proof, `$final-challenge`, and `$review-pr`
-- `PENDING` / `PENDING_REMOTE` / `PR_IN_FLIGHT` → record the exact pending transition once and return control to `$deliver-pr` or `$deliver-goal`
-- `CONFLICT` → resolve this lane's conflict, then `$build-candidate` for affected repair/proof followed by `$final-challenge` and `$review-pr`
-- `INTEGRATION_INTERACTION` → repair the smallest affected candidate through `$build-candidate`, then rerun affected proof, `$final-challenge`, and `$review-pr`
-- `INSTRUMENT_FAILURE` → identify and repair the failed evidence instrument; if trustworthy evidence cannot be restored, return `NOT_PROVEN`
+- `REVIEW_REQUIRED` → `$final-challenge`, `$orchestrate-work`, then `$review-pr`
+- `PRODUCT_OR_TEST_FAILURE` → `$build-candidate`, then affected proof and review
+- `PENDING` / `PENDING_REMOTE` / `PR_IN_FLIGHT` → return to `$deliver-pr` or
+  `$deliver-goal`
+- `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam, then affected
+  proof and review
+- `INSTRUMENT_FAILURE` / `NOT_PROVEN` → preserve the missing reliable evidence
 - `INTEGRATION_READY` → `$merge-reconcile`
 
 ### Merge and closeout
 
-- `RECONCILED` → return the bounded closeout to the invoking flow
-- `PARTIAL` → preserve remaining acceptance and return the residual graph
-- `SUPERSEDED` / `DELIBERATELY_CLOSED` → preserve the durable disposition and return the residual graph
-- `CANDIDATE_MOVED` / `CLAIM_REVIEW_STALE` → rerun affected proof, `$final-challenge`, and `$review-pr`
-- `MERGE_BLOCKED` → preserve the exact live blocker; return `PR_IN_FLIGHT` when GitHub owns the pending transition, otherwise return `BLOCKED`
-- `BLOCKED` / `NOT_PROVEN` → preserve the exact live blocker or missing evidence
+- `RECONCILED` → return the closeout
+- `PARTIAL` → preserve remaining acceptance
+- `SUPERSEDED` / `DELIBERATELY_CLOSED` → preserve the durable disposition
+- `CANDIDATE_MOVED` → re-read live state and refresh only affected proof/review
+- `MERGE_BLOCKED` → return `PR_IN_FLIGHT` for GitHub-owned waits; otherwise preserve
+  the real blocker
+- `BLOCKED` / `NOT_PROVEN` → preserve the exact blocker or missing evidence

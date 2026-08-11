@@ -24,10 +24,15 @@ If a doc starts mixing multiple intents, split it and cross-link the parts.
 | Current release line | [`../Cargo.toml`](../Cargo.toml) | Workspace manifest |
 | Metrics and receipts | [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) | `just status-update` and `just status-check` |
 | Roadmap and active milestone | [project/ROADMAP.md](project/ROADMAP.md) | Human review |
+| Distribution and install-channel matrix | [project/DISTRIBUTION_MATRIX.md](project/DISTRIBUTION_MATRIX.md) | Release status + channel receipts |
 | Capability catalog | [`../features.toml`](../features.toml) | `just ci-gate` |
 | Local validation flow | [project/CI_LOCAL_VALIDATION.md](project/CI_LOCAL_VALIDATION.md) | `just ci-gate` |
 
 Rule: if a project metric appears outside [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md), treat it as stale until reverified.
+## Compatibility posture
+
+The current product line is public beta, not stable or GA. Published crate compatibility follows [the stability policy](reference/STABILITY.md): patch releases preserve the public API, while pre-1.0 minor releases may contain intentional breaking changes with migration guidance. CLI flags, advertised LSP capabilities, DAP preview boundaries, and distribution-channel status are separate claims; verify each against its owning source before treating it as supported.
+
 
 ## Repository Map (Code + Docs)
 
@@ -64,7 +69,7 @@ For complete workspace membership and canonical crate/version truth, use [`../Ca
 | configure an editor | [how-to/EDITOR_SETUP.md](how-to/EDITOR_SETUP.md) |
 | troubleshoot a broken setup | [how-to/TROUBLESHOOTING.md](how-to/TROUBLESHOOTING.md) |
 | understand editor trust, fallbacks, and copyable receipts | [how-to/EDITOR_TRUST.md](how-to/EDITOR_TRUST.md) |
-| enforce public API docs coverage in CI | [reference/MISSING_DOCUMENTATION_GUIDE.md](reference/MISSING_DOCUMENTATION_GUIDE.md) |
+| review and improve public API documentation | [reference/MISSING_DOCUMENTATION_GUIDE.md](reference/MISSING_DOCUMENTATION_GUIDE.md) |
 | learn API docs writing standards | [reference/API_DOCUMENTATION_STANDARDS.md](reference/API_DOCUMENTATION_STANDARDS.md) |
 | choose the right Diátaxis doc type before writing | [reference/DOCUMENTATION_GUIDE.md](reference/DOCUMENTATION_GUIDE.md) |
 | tune performance or threading | [how-to/PERFORMANCE_TUNING.md](how-to/PERFORMANCE_TUNING.md), [how-to/THREADING_CONFIGURATION_GUIDE.md](how-to/THREADING_CONFIGURATION_GUIDE.md) |

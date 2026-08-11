@@ -196,7 +196,16 @@ impl RenameProvider {
             edits.extend(additional_edits);
         }
 
-        edits.sort_by_key(|edit| edit.location.start);
+        // Sort by full range (start, end) so duplicates from both the symbol
+        // and reference tables become adjacent, then dedup by full equality.
+        // Vec::dedup() only removes consecutive duplicates (#1863).
+        edits.sort_by(|a, b| {
+            a.location
+                .start
+                .cmp(&b.location.start)
+                .then_with(|| a.location.end.cmp(&b.location.end))
+                .then_with(|| a.new_text.cmp(&b.new_text))
+        });
         edits.dedup();
 
         RenameResult { edits, is_valid: true, error: None }
@@ -304,7 +313,16 @@ impl RenameProvider {
             }
         }
 
-        edits.sort_by_key(|edit| edit.location.start);
+        // Sort by full range (start, end) so duplicates from both the symbol
+        // and reference tables become adjacent, then dedup by full equality.
+        // Vec::dedup() only removes consecutive duplicates (#1863).
+        edits.sort_by(|a, b| {
+            a.location
+                .start
+                .cmp(&b.location.start)
+                .then_with(|| a.location.end.cmp(&b.location.end))
+                .then_with(|| a.new_text.cmp(&b.new_text))
+        });
         edits.dedup();
 
         RenameResult { edits, is_valid: true, error: None }
@@ -326,14 +344,14 @@ impl RenameProvider {
         if offset < node.location.start || offset > node.location.end {
             return None;
         }
-        if let NodeKind::Binary { op, left, .. } = &node.kind {
-            if op == expected_op && offset >= left.location.start && offset <= left.location.end {
-                if let NodeKind::Variable { sigil, .. } = &left.kind {
-                    if sigil == "$" {
-                        return Some(());
-                    }
-                }
-            }
+        if let NodeKind::Binary { op, left, .. } = &node.kind
+            && op == expected_op
+            && offset >= left.location.start
+            && offset <= left.location.end
+            && let NodeKind::Variable { sigil, .. } = &left.kind
+            && sigil == "$"
+        {
+            return Some(());
         }
         for child in node.children() {
             if Self::find_subscript_at(child, offset, expected_op).is_some() {

@@ -1,5 +1,7 @@
 # ADR-002: API Documentation Infrastructure Implementation (SPEC-149)
 
+> Historical record: the implementation and baseline claims in this ADR describe the original documentation-infrastructure decision. For current public examples and contributor workflow, use [the current public API documentation guide](../reference/MISSING_DOCUMENTATION_GUIDE.md). Do not read the historical 605+ baseline or four-phase plan below as current status.
+
 ## Status
 **Accepted - Successfully Implemented in PR #160** with comprehensive documentation enforcement infrastructure and systematic 4-phase resolution strategy
 
@@ -28,7 +30,7 @@ We will implement comprehensive API documentation infrastructure through systema
 
 1. **Infrastructure Enablement**: Enable `#![warn(missing_docs)]` in `/crates/perl-parser/src/lib.rs` with comprehensive test-driven validation
 2. **Quality Standards Framework**: Establish comprehensive documentation standards in `/docs/reference/API_DOCUMENTATION_STANDARDS.md`
-3. **Systematic Resolution Strategy**: Implement 4-phase approach targeting 605+ violations with priority-based module focus
+3. **Systematic Resolution Strategy**: Implement 4-phase approach targeting historical 605+ violations with priority-based module focus
 4. **Automated Validation**: Deploy comprehensive test suite with 12 acceptance criteria and property-based testing
 5. **CI Integration**: Ensure documentation quality gates prevent regression and maintain enterprise standards
 
@@ -129,8 +131,8 @@ cargo doc --no-deps --package perl-parser 2>&1 | grep -c "warning:" || echo "0"
 
 ### Quality Metrics and Progress Tracking
 - **Baseline**: 605+ missing documentation warnings (initial state)
-- **Current Status**: 605 violations (comprehensive baseline established for systematic resolution)
-- **Target**: 0 violations with systematic 4-phase resolution
+- **Historical Status**: 605 violations (baseline recorded for the original implementation effort)
+- **Historical Target**: 0 violations with systematic four-phase resolution
 - **Quality Score**: 17/25 tests passing (infrastructure deployed), 8/25 failing (content implementation targets)
 
 ## Implementation Results ✅ **SUCCESSFULLY COMPLETED**
@@ -158,7 +160,7 @@ cargo doc --no-deps --package perl-parser 2>&1 | grep -c "warning:" || echo "0"
 - ✅ Error type documentation with recovery strategies
 
 **Systematic Resolution Strategy**:
-- ✅ 4-phase implementation plan with priority-based module targeting
+- ✅ historical four-phase implementation plan with priority-based module targeting
 - ✅ Progress tracking with real-time violation counting
 - ✅ Quality gates preventing regression during implementation
 
@@ -198,7 +200,7 @@ cargo doc --no-deps --package perl-parser 2>&1 | grep -c "warning:" || echo "0"
 - **Maintainability**: Comprehensive documentation reduces maintenance overhead and knowledge transfer burden
 
 ### Negative
-- **Initial Implementation Overhead**: 605+ violations require systematic resolution across 8 weeks
+- **Initial Implementation Overhead**: historical 605+ violations require systematic resolution across 8 weeks
 - **Documentation Maintenance**: Comprehensive standards require ongoing attention during API evolution
 - **Compilation Warning Noise**: Missing documentation warnings visible during development (addressed through phased approach)
 - **Quality Gate Strictness**: High standards may slow rapid prototyping (mitigated through `#[allow(missing_docs)]` escape hatch)
@@ -233,8 +235,7 @@ The test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` provides:
 
 ## Related Documents
 - [API_DOCUMENTATION_STANDARDS.md](../reference/API_DOCUMENTATION_STANDARDS.md) - Enterprise-grade documentation requirements
-- [MISSING_DOCUMENTATION_GUIDE.md](../reference/MISSING_DOCUMENTATION_GUIDE.md) - 4-phase systematic resolution strategy
-- [CLAUDE.md](../CLAUDE.md) - Project overview with documentation command integration
+- [MISSING_DOCUMENTATION_GUIDE.md](../reference/MISSING_DOCUMENTATION_GUIDE.md) - historical four-phase resolution strategy
 - [LSP_IMPLEMENTATION_GUIDE.md](../reference/LSP_IMPLEMENTATION_GUIDE.md) - LSP feature documentation context
 - [CRATE_ARCHITECTURE_GUIDE.md](../reference/CRATE_ARCHITECTURE_GUIDE.md) - System design documentation integration
 
@@ -261,7 +262,7 @@ The test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` provides:
    - Property-based testing revealed edge cases that manual testing would have missed
 
 2. **Phased Implementation Strategy**:
-   - 4-phase approach successfully managed the scale of 605+ violations
+   - 4-phase approach successfully managed the scale of historical 605+ violations
    - Separating infrastructure deployment from content implementation reduced complexity
    - Phase-based targeting allowed continued development without blocking existing workflows
 
@@ -278,7 +279,7 @@ The test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` provides:
 ### Implementation Challenges
 
 1. **Scale of Documentation Debt**:
-   - 605+ violations required comprehensive baseline establishment
+   - historical 605+ violations required comprehensive baseline establishment
    - Systematic tracking needed sophisticated test infrastructure
    - Balancing implementation speed with quality standards proved complex
 

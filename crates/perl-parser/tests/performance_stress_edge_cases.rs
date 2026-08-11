@@ -377,9 +377,26 @@ fn test_concurrent_parsing_stress() {
         );
     }
 
-    // At least some parses should succeed even under stress
-    let success_count = results.iter().filter(|(_, _, _, _, success)| *success).count();
-    assert!(success_count > 0, "At least some parses should succeed");
+    // Some stress fixtures intentionally exercise parser recovery and therefore
+    // return errors. The concurrency contract is that each fixture has a
+    // deterministic outcome across workers, with no cross-thread contamination.
+    assert_eq!(
+        error_count,
+        results.iter().filter(|(_, _, _, _, success)| !success).count(),
+        "error counter must match recorded parse outcomes"
+    );
+    for case_index in 0..test_cases.len() {
+        let outcomes: Vec<bool> = results
+            .iter()
+            .filter(|(_, _, observed_case, _, _)| *observed_case == case_index)
+            .map(|(_, _, _, _, success)| *success)
+            .collect();
+        assert!(!outcomes.is_empty(), "stress case {case_index} must be exercised");
+        assert!(
+            outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+            "stress case {case_index} produced nondeterministic parse outcomes: {outcomes:?}"
+        );
+    }
 }
 
 /// Test memory pressure scenarios

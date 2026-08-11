@@ -48,7 +48,7 @@
 //!
 //! - **Invariant.** `recovery_artifact == true` implies
 //!   `safe_for_breakpoint == false`. This is enforced by the table and
-//!   verified by [`NodeKindFlags::validate`].
+//!   verified by `NodeKindFlags::validate()`.
 //!
 //! # Usage
 //!
@@ -278,6 +278,28 @@ impl NodeKind {
             | NodeKind::MissingBlock
             | NodeKind::UnknownRest => NodeKindCategory::Recovery,
         }
+    }
+
+    /// Whether this node kind should appear in document outline / symbol results.
+    ///
+    /// Centralizes the eligibility predicate used by SymbolExtractor and
+    /// LSP document-symbol providers. Only nodes that declare a named
+    /// entity (subroutines, packages, classes, methods) are outlinable.
+    /// This avoids scattered match arms checking `NodeKindCategory::Declaration`
+    /// and then re-matching specific variants (#6298).
+    ///
+    /// Anonymous subs (name == None) are handled at the extraction site,
+    /// not here — `outline_visible` says "this kind is eligible", not
+    /// "this specific instance has a name".
+    #[must_use]
+    pub fn outline_visible(&self) -> bool {
+        matches!(
+            self,
+            NodeKind::Subroutine { .. }
+                | NodeKind::Package { .. }
+                | NodeKind::Class { .. }
+                | NodeKind::Method { .. }
+        )
     }
 
     /// Return the full [`NodeKindFlags`] for this variant.

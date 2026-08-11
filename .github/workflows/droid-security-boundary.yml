@@ -1,0 +1,40 @@
+name: Droid Security Boundary
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/droid-security-scan.yml'
+      - '.github/workflows/droid-security-boundary.yml'
+      - 'scripts/ci/test_droid_security_boundary.py'
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/droid-security-scan.yml'
+      - '.github/workflows/droid-security-boundary.yml'
+      - 'scripts/ci/test_droid_security_boundary.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droid-security-boundary-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  contract:
+    name: Paused Droid security boundary contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Prove the paused boundary
+        run: python3 -m unittest scripts/ci/test_droid_security_boundary.py

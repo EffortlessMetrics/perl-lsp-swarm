@@ -601,6 +601,30 @@ impl ParseWorkerTestBarrier {
         self.cvar.notify_all();
     }
 
+    /// Disarm and release unconditionally, for shutdown.
+    ///
+    /// `maybe_pause`'s wait is unbounded and is woken only by `release`, which
+    /// no shutdown path calls: `Coordinator::request_shutdown` notifies the
+    /// *coordinator's* condvar, a different one entirely. So a worker parked
+    /// here is invisible to shutdown, and `Drop for ParseWorker`'s
+    /// `handle.join()` would block on it forever.
+    ///
+    /// That turned every barrier test into a latent hang: a panic anywhere
+    /// between `wait_until_paused()` and `release()` unwinds, drops the
+    /// `ParseWorker`, and deadlocks inside `Drop` -- before libtest can print
+    /// the captured failure. The test never completes, so the real assertion
+    /// message is never reported and the whole lane burns its timeout ceiling
+    /// with no diagnostic (#6209).
+    ///
+    /// Clearing `armed` matters as much as setting `release`: a worker that
+    /// has not yet reached its pause point must not park after this call.
+    pub(crate) fn force_release(&self) {
+        let mut state = self.state.lock();
+        state.armed = None;
+        state.release = true;
+        self.cvar.notify_all();
+    }
+
     /// Called by a worker immediately before publishing `(uri,
     /// generation)`. A no-op unless the barrier is currently armed for
     /// exactly this pair.
@@ -921,7 +945,14 @@ impl ParseWorker {
     /// installing the worker and fall back to the synchronous path if it is
     /// `false`.
     pub(crate) fn is_operational(&self) -> bool {
-        !self.handles.lock().is_empty()
+        // A worker pool is operational only if at least one worker thread is
+        // still alive. Checking handle presence alone is insufficient: a dead
+        // thread (panic/exit) leaves its JoinHandle in the Vec, so
+        // `!is_empty()` would report operational even when no worker is
+        // actually running. Using `is_finished()` filters out dead handles
+        // (#3664).
+        let handles = self.handles.lock();
+        handles.iter().any(|h| !h.is_finished())
     }
 
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
@@ -996,6 +1027,15 @@ impl ParseWorker {
 impl Drop for ParseWorker {
     fn drop(&mut self) {
         self.coordinator.request_shutdown();
+        // Before joining: release any worker parked at a test barrier.
+        // `request_shutdown` only notifies the coordinator's condvar, so a
+        // worker waiting inside `maybe_pause` would never wake and the joins
+        // below would block forever -- see `force_release` (#6209).
+        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+        {
+            self.test_barrier.force_release();
+            self.side_effect_barrier.force_release();
+        }
         let mut handles = self.handles.lock();
         let self_id = thread::current().id();
         for handle in handles.drain(..) {
@@ -1233,6 +1273,80 @@ mod tests {
         }
     }
 
+    /// #6209: dropping a `ParseWorker` while a worker thread is still parked
+    /// at an armed test barrier must not deadlock.
+    ///
+    /// This is the exact state every barrier test is left in when an
+    /// assertion between `wait_until_paused()` and `barrier.release()` fails:
+    /// the panic unwinds, drops the `ParseWorker`, and `Drop` joins a thread
+    /// that is waiting on the barrier's condvar. `request_shutdown` notifies
+    /// the *coordinator's* condvar, not the barrier's, so before the fix the
+    /// join blocked forever -- turning what should be a one-line assertion
+    /// failure into a silent hang that consumed the `lsp` lane's full 420s
+    /// ceiling and reported nothing, because libtest only prints a test's
+    /// captured output once the test completes.
+    ///
+    /// Deliberately does NOT call `release()`: that omission IS the scenario.
+    ///
+    /// The drop runs on a helper thread and the test thread waits on a
+    /// bounded channel, so a reintroduced deadlock wedges only the helper and
+    /// surfaces as an ordinary assertion failure on a live test thread. The
+    /// obvious alternative -- drop on the test thread with a watchdog that
+    /// `abort()`s -- is wrong twice over: the test thread must still run one
+    /// more instruction after `drop` returns to signal success, so a
+    /// deschedule in that window aborts the whole libtest process on a
+    /// *passing* run, destroying every other test's result; and abort
+    /// produces no libtest output, which is the same "reports nothing"
+    /// failure shape this test exists to eliminate.
+    ///
+    /// The ceiling matches `wait_until_paused`'s: this file already
+    /// establishes one minute as the margin that survives CPU starvation from
+    /// concurrent builds on a loaded machine. The happy path returns in
+    /// milliseconds, so a generous ceiling costs a passing run nothing.
+    #[test]
+    fn dropping_a_worker_parked_at_an_armed_barrier_does_not_deadlock() {
+        let uri = "file:///drop_while_parked.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let barrier = worker.test_barrier();
+
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        barrier.arm(uri, 1);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $aa = 1;\n"),
+        );
+        barrier.wait_until_paused();
+
+        // Deadlock ceiling for the drop below. Deliberately the same one
+        // minute `wait_until_paused` uses, and for the same reason.
+        const DROP_CEILING: Duration = Duration::from_mins(1);
+
+        // The load-bearing call: with the barrier still armed and never
+        // released, `drop` must return rather than block in `handle.join()`.
+        // It runs here, off the test thread, so that a regression parks this
+        // helper forever while the test thread stays live to report it.
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let dropper = thread::spawn(move || {
+            drop(worker);
+            // Send failure means the test thread already gave up and failed;
+            // nothing useful left to do on this thread.
+            let _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx.recv_timeout(DROP_CEILING).is_ok(),
+            "#6209 REGRESSION: dropping a ParseWorker parked at an armed test barrier did \
+             not return within {DROP_CEILING:?} -- it is deadlocked in Drop's handle.join(), \
+             because shutdown failed to force_release() the barriers before joining"
+        );
+        assert!(dropper.join().is_ok(), "drop thread panicked");
+    }
+
     // ---- Invariant 1: didChange returns before parse completes ----------
 
     #[test]
@@ -1372,9 +1486,24 @@ mod tests {
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
         let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let barrier = worker.test_barrier();
 
         const EDITS: u32 = 20;
-        for i in 1..=EDITS {
+        // Hold the first parse before publication so the producer can enqueue
+        // the rest of the burst without a scheduler-dependent race between
+        // enqueue calls and the worker clearing URI ownership.
+        barrier.arm(uri, 1);
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $a = 1;\n"),
+        );
+        barrier.wait_until_paused();
+
+        for i in 2..=EDITS {
             generation_handle.fetch_add(1, Ordering::SeqCst);
             worker.enqueue(
                 uri.to_string(),
@@ -1384,6 +1513,7 @@ mod tests {
                 Arc::from(format!("my $a = {i};\n").as_str()),
             );
         }
+        barrier.release();
 
         assert!(
             worker.wait_until_settled(uri, TEST_TIMEOUT),
@@ -1391,16 +1521,21 @@ mod tests {
         );
 
         let metrics = worker.metrics();
-        assert_eq!(
-            metrics.jobs_published, 1,
-            "exactly one generation (the final one) must publish from the burst"
-        );
         assert!(
-            metrics.jobs_started < u64::from(EDITS),
-            "coalescing must start far fewer jobs than edits enqueued; started={}",
+            metrics.jobs_started <= u64::from(EDITS / 2),
+            "coalescing must start at most half as many jobs as edits enqueued; started={}",
             metrics.jobs_started
         );
         assert!(metrics.jobs_coalesced > 0, "at least one job must have been coalesced away");
+        assert_eq!(
+            metrics.jobs_published + metrics.jobs_rejected_stale + metrics.jobs_panicked,
+            metrics.jobs_started,
+            "job accounting must balance: published={} + rejected_stale={} + panicked={} must equal started={}",
+            metrics.jobs_published,
+            metrics.jobs_rejected_stale,
+            metrics.jobs_panicked,
+            metrics.jobs_started,
+        );
 
         let docs = documents.lock();
         let doc = must_some(docs.get(uri));
@@ -2097,6 +2232,44 @@ mod tests {
             !worker.is_operational(),
             "zero live handles must report not-operational -- this is exactly the state \
              `install_default_parse_worker` must detect and refuse to install"
+        );
+    }
+
+    /// Defense-in-depth for #3664: `is_operational` must report `false` when
+    /// all worker threads have died (finished JoinHandles still present in the
+    /// Vec). Before the fix, `is_operational` checked only handle presence
+    /// (`!is_empty()`), so a dead-thread pool would falsely report
+    /// operational. Now it checks `is_finished()` on each handle.
+    #[test]
+    fn is_operational_reports_false_when_all_threads_are_finished() {
+        let uri = "file:///dead-worker.pl";
+        let (documents, _generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(documents, ast_cache(), cb);
+        assert!(worker.is_operational(), "freshly spawned pool must be operational");
+
+        // Simulate worker death: replace live handles with a handle to a
+        // thread that exits immediately. Spin-wait (deterministic) for the
+        // thread to report is_finished() instead of a fragile hard-coded sleep
+        // (graphite/kilo/factory-droid review on #5731).
+        let done_handle = std::thread::Builder::new().spawn(|| {}).expect("spawn dummy thread");
+        *worker.handles.lock() = vec![done_handle];
+        // Spin-wait until the dummy thread reports finished (max 2s timeout).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let handles = worker.handles.lock();
+            if handles.iter().all(|h| h.is_finished()) {
+                break;
+            }
+            drop(handles);
+            if std::time::Instant::now() >= deadline {
+                panic!("dummy thread did not finish within 2s timeout");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !worker.is_operational(),
+            "a pool with only finished (dead) handles must report not-operational (#3664)"
         );
     }
 

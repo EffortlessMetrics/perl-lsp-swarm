@@ -1,5 +1,6 @@
 use super::variable_cache::VariableCache;
 use crate::types::StackFrame;
+use std::collections::HashMap;
 use std::process::Child;
 
 /// Active debug session
@@ -10,6 +11,8 @@ pub(super) struct DebugSession {
     pub(super) state: DebugState,
     /// Stack frames
     pub(super) stack_frames: Vec<StackFrame>,
+    /// Best-effort arguments captured from verbose stack output, keyed by frame id.
+    pub(super) stack_frame_arguments: HashMap<i32, Vec<String>>,
     /// Variables in current scope, including root scopes and child expansions.
     pub(super) variable_cache: VariableCache,
     /// Thread ID

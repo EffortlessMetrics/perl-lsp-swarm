@@ -8,6 +8,7 @@ mod data_breakpoints;
 mod evaluation;
 mod execution;
 mod frames;
+mod logpoint;
 mod output;
 mod patterns;
 mod process;
@@ -67,13 +68,17 @@ use std::time::{Duration, Instant};
 use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
 use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
 use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
-use crate::debug_adapter::variable_cache::{VariableCache, VariableCacheKind, slice_variables};
+#[cfg(any(test, feature = "test-helpers"))]
+use crate::debug_adapter::variable_cache::VariableCache;
+use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 use crate::security;
-#[cfg(unix)]
-use nix::sys::signal::{self, Signal};
-#[cfg(unix)]
-use nix::unistd::Pid;
-use patterns::*;
+use patterns::{
+    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
+    EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
+    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, error_re,
+    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
+    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+};
 use safe_eval::validate_safe_expression;
 use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
 
@@ -302,21 +307,19 @@ impl DebugAdapter {
                 // an elevated warning.  We cannot hard-reject because no workspace
                 // boundary is known and temp files / explicit user paths are
                 // legitimate pre-launch use cases.
-                if p.is_absolute() {
-                    if let Ok(cwd) = std::env::current_dir() {
-                        let canonical_p =
-                            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-                        let canonical_cwd =
-                            std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-                        if !canonical_p.starts_with(&canonical_cwd) {
-                            tracing::warn!(
-                                target = "debug_adapter.security",
-                                path = %resolved,
-                                "Pre-launch absolute path outside current working directory \
-                                 accepted without workspace boundary check"
-                            );
-                            return Ok(PathBuf::from(path));
-                        }
+                if p.is_absolute()
+                    && let Ok(cwd) = std::env::current_dir()
+                {
+                    let canonical_p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                    let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+                    if !canonical_p.starts_with(&canonical_cwd) {
+                        tracing::warn!(
+                            target = "debug_adapter.security",
+                            path = %resolved,
+                            "Pre-launch absolute path outside current working directory \
+                             accepted without workspace boundary check"
+                        );
+                        return Ok(PathBuf::from(path));
                     }
                 }
 
@@ -550,6 +553,7 @@ impl DebugAdapter {
                     process: child,
                     state: DebugState::Running,
                     stack_frames: vec![],
+                    stack_frame_arguments: HashMap::new(),
                     variable_cache: VariableCache::default(),
                     thread_id: 1,
                     last_resume_mode: ResumeMode::Continue,
@@ -572,25 +576,27 @@ impl DebugAdapter {
     }
 
     #[cfg(test)]
-    fn seed_session_for_test(&self) {
+    fn seed_session_for_test(&self) -> io::Result<()> {
         // Spawn a cheap no-op subprocess so we have a real Child (no unsafe zeroed memory).
-        let child = Self::spawn_noop_child_for_test();
+        let child = Self::spawn_noop_child_for_test()?;
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
         *session = Some(DebugSession {
             process: child,
             state: DebugState::Stopped,
             stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
         });
+        Ok(())
     }
 
     /// Spawn the cheapest available no-op child process for use in unit tests.
-    /// Tries perl first, then a platform-native no-op.  The test panics if no
+    /// Tries perl first, then a platform-native no-op. Returns an error if no
     /// subprocess can be spawned at all — that indicates a broken CI environment.
     #[cfg(test)]
-    fn spawn_noop_child_for_test() -> std::process::Child {
+    fn spawn_noop_child_for_test() -> io::Result<Child> {
         use std::process::{Command, Stdio};
         // perl -e 1 exits immediately with no output.
         if let Ok(c) = Command::new("perl")
@@ -601,7 +607,7 @@ impl DebugAdapter {
             .stderr(Stdio::piped())
             .spawn()
         {
-            return c;
+            return Ok(c);
         }
         // Platform-native fallback when perl is not on PATH.
         #[cfg(windows)]
@@ -609,17 +615,14 @@ impl DebugAdapter {
         #[cfg(not(windows))]
         let (prog, args): (&str, &[&str]) = ("true", &[]);
         // SAFETY NOTE: no unsafe — uses only std::process::Command.
-        // The panic here is intentional: if *neither* perl nor the OS no-op
-        // binary is available the test environment is fundamentally broken and
-        // proceeding would produce meaningless results.
         Command::new(prog)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap_or_else(|e| {
-                panic!("seed_session_for_test: cannot spawn any noop subprocess ({prog}): {e}")
+            .map_err(|e| {
+                io::Error::new(e.kind(), format!("cannot spawn noop subprocess ({prog}): {e}"))
             })
     }
 
@@ -678,10 +681,20 @@ impl DebugAdapter {
             process: child,
             state: DebugState::Stopped,
             stack_frames: frames,
+            stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
         });
+    }
+
+    /// Seed captured stack-frame arguments for scope/variables protocol tests.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_stack_frame_arguments_for_test(&self, frame_id: i32, arguments: Vec<String>) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_frame_arguments");
+        if let Some(ref mut sess) = *session {
+            sess.stack_frame_arguments.insert(frame_id, arguments);
+        }
     }
 }
 #[cfg(test)]
@@ -867,7 +880,7 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_initialize_capabilities_follow_feature_catalog()
+    fn test_initialize_capabilities_mirror_feature_catalog()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let init = adapter.handle_request(1, "initialize", None);
@@ -917,13 +930,25 @@ print "result: $final\n";
             ("supportsDataBreakpoints", crate::feature_catalog::has_feature("dap.watchpoints")),
             (
                 "supportsTerminateThreadsRequest",
-                crate::feature_catalog::has_feature("dap.terminate_threads"),
+                // Handler unconditionally returns success: false — do not
+                // advertise (#5045).
+                false,
             ),
             ("supportsGotoTargetsRequest", crate::feature_catalog::has_feature("dap.core")),
-            ("supportsRestartFrame", crate::feature_catalog::has_feature("dap.restart_frame")),
+            (
+                "supportsRestartFrame",
+                // Handler unconditionally returns success: false — do not
+                // advertise (#5045).
+                false,
+            ),
             (
                 "supportsStepInTargetsRequest",
                 crate::feature_catalog::has_feature("dap.step_in_targets"),
+            ),
+            ("supportsRestartRequest", crate::feature_catalog::has_feature("dap.restart")),
+            (
+                "supportsLoadedSourcesRequest",
+                crate::feature_catalog::has_feature("dap.loaded_sources"),
             ),
         ];
 
@@ -1106,13 +1131,14 @@ print "result: $final\n";
             }
         }
 
-        // supportsTerminateThreadsRequest matches feature advertising (now enabled)
-        let terminate_threads_expected =
-            crate::feature_catalog::has_feature("dap.terminate_threads");
+        // supportsTerminateThreadsRequest is not advertised because the handler
+        // unconditionally returns success: false (#5045). The feature catalog
+        // entry exists for future use, but the capability is suppressed until
+        // a real implementation lands.
         assert_eq!(
             capability_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
-            Some(terminate_threads_expected),
-            "supportsTerminateThreadsRequest must match dap.terminate_threads feature setting"
+            Some(false),
+            "supportsTerminateThreadsRequest must not be advertised (handler always fails)"
         );
 
         Ok(())
@@ -1383,7 +1409,7 @@ print "result: $final\n";
     fn test_attach_custom_port() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": "192.168.1.100",
+            "host": "127.0.0.1",
             "port": 9000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
@@ -1394,7 +1420,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("192.168.1.100:9000"));
+                assert!(msg.contains("127.0.0.1:9000"));
             }
             _ => return Err("Expected response".into()),
         }
@@ -1405,7 +1431,7 @@ print "result: $final\n";
     fn test_attach_trims_host_for_tcp_target() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": " 192.168.1.100 ",
+            "host": " 127.0.0.1 ",
             "port": 9000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
@@ -1416,7 +1442,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("192.168.1.100:9000"));
+                assert!(msg.contains("127.0.0.1:9000"));
             }
             _ => return Err("Expected response".into()),
         }
@@ -1568,8 +1594,10 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_terminate_threads_capability_is_advertised_when_feature_enabled()
+    fn test_terminate_threads_capability_is_not_advertised()
     -> Result<(), Box<dyn std::error::Error>> {
+        // #5045: supportsTerminateThreadsRequest is not advertised because the
+        // handler unconditionally returns success: false.
         let mut adapter = DebugAdapter::new();
         let init = adapter.handle_request(1, "initialize", None);
         let capabilities = match init {
@@ -1577,11 +1605,30 @@ print "result: $final\n";
             _ => return Err("Expected successful initialize response".into()),
         };
         let cap_map = capabilities.as_object().ok_or("body must be object")?;
-        let expected = crate::feature_catalog::has_feature("dap.terminate_threads");
         assert_eq!(
             cap_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
-            Some(expected),
-            "supportsTerminateThreadsRequest must match dap.terminate_threads feature setting"
+            Some(false),
+            "supportsTerminateThreadsRequest must not be advertised (handler always fails)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_restart_frame_capability_is_not_advertised() -> Result<(), Box<dyn std::error::Error>> {
+        // #5045: supportsRestartFrame is not advertised because the handler
+        // unconditionally returns failure ("Perl does not support restarting
+        // execution from a specific stack frame").
+        let mut adapter = DebugAdapter::new();
+        let init = adapter.handle_request(1, "initialize", None);
+        let capabilities = match init {
+            DapMessage::Response { success: true, body: Some(body), .. } => body,
+            _ => return Err("Expected successful initialize response".into()),
+        };
+        let cap_map = capabilities.as_object().ok_or("body must be object")?;
+        assert_eq!(
+            cap_map.get("supportsRestartFrame").and_then(|v| v.as_bool()),
+            Some(false),
+            "supportsRestartFrame must not be advertised (handler always fails)"
         );
         Ok(())
     }
@@ -2018,7 +2065,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_continue_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         // Precondition: frames are present
@@ -2043,7 +2090,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_next_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2059,7 +2106,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_step_in_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2075,7 +2122,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_step_out_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2091,7 +2138,7 @@ print "result: $final\n";
     #[test]
     fn test_handle_pause_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
@@ -2110,7 +2157,7 @@ print "result: $final\n";
         // It clears inside the `if let Some(session) && stdin` arm, so a seeded session
         // and a resolvable goto target are both required to exercise the clear path.
         let adapter = DebugAdapter::new();
-        adapter.seed_session_for_test();
+        adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         // Precondition: stale frames are present

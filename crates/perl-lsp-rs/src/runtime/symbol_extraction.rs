@@ -4,7 +4,37 @@
 //! references to a given symbol. They are used by code-lens resolve,
 //! workspace/symbol, and related features.
 
-use super::*;
+/// Case-insensitive ASCII substring check without allocating (#5053 item 5).
+///
+/// Equivalent to `haystack.to_lowercase().contains(&needle.to_lowercase())`
+/// but avoids the per-call String allocations.
+#[cfg(not(feature = "workspace"))]
+fn ascii_contains_ci(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if needle_lower.len() > haystack.len() {
+        return false;
+    }
+    // Use a char-level scan to find the first matching position
+    let needle_bytes = needle_lower.as_bytes();
+    let h_len = haystack.len();
+    let n_len = needle_lower.len();
+    for i in 0..=(h_len - n_len) {
+        let window = &haystack.as_bytes()[i..i + n_len];
+        if window.iter().zip(needle_bytes).all(|(h, n)| h.to_ascii_lowercase() == *n) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(feature = "workspace"))]
+use super::json;
+use super::{
+    LspServer, LspWorkspaceSymbol, WireLocation, WirePosition, WireRange, byte_to_line_col,
+    normalize_package_separator,
+};
 
 #[allow(dead_code)]
 impl LspServer {
@@ -252,27 +282,27 @@ impl LspServer {
                         NodeKind::Identifier { name: id } => Some(id.clone()),
                         _ => None,
                     };
-                    if let Some(attr) = attr_name {
-                        if !attr.is_empty() {
-                            let (start_line, start_char) =
-                                byte_to_line_col(source, node.location.start);
-                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    if let Some(attr) = attr_name
+                        && !attr.is_empty()
+                    {
+                        let (start_line, start_char) =
+                            byte_to_line_col(source, node.location.start);
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
-                            symbols.push(LspWorkspaceSymbol {
-                                name: attr,
-                                kind: 7, // Property
-                                location: WireLocation::new(
-                                    uri.to_string(),
-                                    WireRange::new(
-                                        WirePosition::new(start_line, start_char),
-                                        WirePosition::new(end_line, end_char),
-                                    ),
+                        symbols.push(LspWorkspaceSymbol {
+                            name: attr,
+                            kind: 7, // Property
+                            location: WireLocation::new(
+                                uri.to_string(),
+                                WireRange::new(
+                                    WirePosition::new(start_line, start_char),
+                                    WirePosition::new(end_line, end_char),
                                 ),
-                                container_name: container
-                                    .map(|s| normalize_package_separator(s).into_owned()),
-                                workspace_folder_uri: folder_uri.map(ToOwned::to_owned),
-                            });
-                        }
+                            ),
+                            container_name: container
+                                .map(|s| normalize_package_separator(s).into_owned()),
+                            workspace_folder_uri: folder_uri.map(ToOwned::to_owned),
+                        });
                     }
                 }
             }
@@ -323,7 +353,7 @@ impl LspServer {
         match &node.kind {
             NodeKind::Subroutine { name, body, .. } => {
                 if let Some(sub_name) = name {
-                    if sub_name.to_lowercase().contains(&query_lower) {
+                    if ascii_contains_ci(sub_name, &query_lower) {
                         let (start_line, start_char) =
                             byte_to_line_col(source, node.location.start);
                         let (end_line, end_char) = byte_to_line_col(source, node.location.end);
@@ -346,7 +376,7 @@ impl LspServer {
             }
 
             NodeKind::Package { name, block, .. } => {
-                if name.to_lowercase().contains(&query_lower) {
+                if ascii_contains_ci(name, &query_lower) {
                     let (start_line, start_char) = byte_to_line_col(source, node.location.start);
                     let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
@@ -370,7 +400,7 @@ impl LspServer {
 
             // Perl 5.38+ native class declaration
             NodeKind::Class { name, body, .. } => {
-                if name.to_lowercase().contains(&query_lower) {
+                if ascii_contains_ci(name, &query_lower) {
                     let (start_line, start_char) = byte_to_line_col(source, node.location.start);
                     let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
@@ -392,7 +422,7 @@ impl LspServer {
 
             // Perl 5.38+ native method declaration
             NodeKind::Method { name, body, .. } => {
-                if name.to_lowercase().contains(&query_lower) {
+                if ascii_contains_ci(name, &query_lower) {
                     let (start_line, start_char) = byte_to_line_col(source, node.location.start);
                     let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
@@ -523,14 +553,13 @@ impl LspServer {
 
             NodeKind::Unary { op, operand } => {
                 // Check if this is a reference to a subroutine (\&function)
-                if op == "\\" && symbol_kind == "subroutine" {
-                    if let NodeKind::Identifier { name } = &operand.kind {
-                        if perl_parser::qualified_name::split_qualified_name(name).1
-                            == perl_parser::qualified_name::split_qualified_name(symbol_name).1
-                        {
-                            count += 1;
-                        }
-                    }
+                if op == "\\"
+                    && symbol_kind == "subroutine"
+                    && let NodeKind::Identifier { name } = &operand.kind
+                    && perl_parser::qualified_name::split_qualified_name(name).1
+                        == perl_parser::qualified_name::split_qualified_name(symbol_name).1
+                {
+                    count += 1;
                 }
                 count += self.count_references(operand, symbol_name, symbol_kind);
             }

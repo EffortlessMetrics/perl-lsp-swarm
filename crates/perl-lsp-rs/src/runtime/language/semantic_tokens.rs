@@ -4,9 +4,13 @@
 //!
 //! Includes deadline enforcement to prevent blocking on large files.
 
-use super::super::*;
+use super::super::{
+    GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
+    PerlLspCancellationToken, SemanticTokensCacheEntry, Value, json,
+};
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{REQUEST_CANCELLED, req_uri};
+use crate::runtime::window::RequestProgressGuard;
 use crate::state::semantic_tokens_deadline;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::ProviderFallbackState;
@@ -57,6 +61,13 @@ impl LspServer {
                 crate::runtime::timing::ScopedSpan::start("provider.semantic_tokens.analyze", uri);
             let parsed = doc.current_parsed();
             if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                // Coarse workDoneProgress for the tokenization work. Initialized
+                // here (after the document-existence and AST-availability checks)
+                // so that immediately-failing or empty requests don't trigger an
+                // unnecessary workDoneProgress/create round-trip (#4626, gemini
+                // review).
+                let _progress =
+                    RequestProgressGuard::new(self, "semantic-tokens", "Computing semantic tokens");
                 let data =
                     crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
                         self.offset_to_pos16(doc, off)
@@ -1558,10 +1569,9 @@ fn first_named_function_call_span(source: &str) -> Option<(usize, usize, usize)>
                         if !is_call_prefix_blocker(prev)
                             && !is_non_call_keyword(name)
                             && !is_declaration_name_context(source, run_start)
+                            && let Some(call_end) = string_aware_call_end(source, paren_open)
                         {
-                            if let Some(call_end) = string_aware_call_end(source, paren_open) {
-                                return Some((run_start, paren_open, call_end));
-                            }
+                            return Some((run_start, paren_open, call_end));
                         }
                     }
 

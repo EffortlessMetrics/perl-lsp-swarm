@@ -1,7 +1,7 @@
 //! Native critic rule registry and profile orchestration.
 
 use super::super::{CriticConfig, Severity, Violation};
-use super::native_contract::{CriticContext, CriticFinding, CriticRule};
+use super::native_contract::{CriticContext, CriticFinding, CriticRule, PragmaEntries};
 use super::native_suppressions::CriticSuppressionMap;
 use super::{
     AssignmentInConditionRule, BacktickExecRule, BarewordFilehandleRule,
@@ -89,6 +89,53 @@ impl NativeCriticRegistry {
         }
     }
 
+    /// Create a native critic registry for `profile`, widened by `config.include`.
+    ///
+    /// `profile` supplies the base rule set. Any rule ID listed in
+    /// `config.include` that the profile does not already carry is resolved
+    /// against the full rule catalog and appended, so `include` can name a
+    /// strict-only rule (for example `native.variables.unused_lexical`)
+    /// without switching the whole profile to `strict`.
+    ///
+    /// `include` remains a whitelist: [`NativeCriticRegistry::check`] still
+    /// runs only the listed rules when the list is non-empty. Widening the
+    /// registry changes exactly one case — an `include` entry outside the
+    /// profile used to resolve to nothing at all, and now resolves to the rule
+    /// it names. IDs that match no catalog rule are ignored here; config load
+    /// warns about them.
+    ///
+    /// Call this on the paths that honor user configuration. Use
+    /// [`NativeCriticRegistry::for_profile`] when you want the profile roster
+    /// itself (receipts, readiness tooling, the known-ID catalog).
+    #[must_use]
+    pub fn for_profile_with_config(profile: NativeCriticProfile, config: &CriticConfig) -> Self {
+        let mut registry = Self::for_profile(profile);
+        if config.include.is_empty() {
+            return registry;
+        }
+
+        let already_present = registry.rule_ids();
+        for rule in Self::catalog() {
+            let id = rule.id();
+            if already_present.contains(&id) {
+                continue;
+            }
+            if config.include.iter().any(|policy| policy == id) {
+                registry.add_rule(rule);
+            }
+        }
+
+        registry
+    }
+
+    /// Every native rule this build ships, in stable catalog order.
+    ///
+    /// The strict profile is the full catalog by construction, so it is the
+    /// single roster both entry points read.
+    fn catalog() -> Vec<Box<dyn CriticRule>> {
+        Self::strict_profile().rules
+    }
+
     fn recommended_profile() -> Self {
         Self::with_rules(vec![
             Box::new(RequireUseStrictRule),
@@ -171,11 +218,37 @@ impl NativeCriticRegistry {
     pub fn check(&self, ctx: &CriticContext<'_>) -> Vec<CriticFinding> {
         let mut findings = Vec::new();
 
+        // Pre-compute scope analysis once and share it across all scope-based
+        // rules, instead of each rule independently rebuilding the pragma map
+        // and re-walking the AST (#4999 item 3).
+        let pragma_map_owned;
+        let scope_issues_owned;
+        let (scope_issues_ref, pragma_map_ref): (
+            Option<&[perl_semantic_analyzer::scope_analyzer::ScopeIssue]>,
+            Option<&PragmaEntries>,
+        ) = if ctx.scope_issues.is_some() && ctx.pragma_map.is_some() {
+            // Caller already pre-computed; reuse.
+            (ctx.scope_issues, ctx.pragma_map)
+        } else {
+            pragma_map_owned = perl_pragma::PragmaTracker::build(ctx.ast);
+            scope_issues_owned = perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer::new()
+                .analyze(ctx.ast, ctx.source, &pragma_map_owned);
+            (Some(&scope_issues_owned[..]), Some(&pragma_map_owned[..]))
+        };
+
+        // Build a context that carries the pre-computed scope results.
+        let rich_ctx = match (scope_issues_ref, pragma_map_ref) {
+            (Some(si), Some(pm)) => {
+                CriticContext::with_scope(ctx.source, ctx.ast, ctx.config, si, pm)
+            }
+            _ => CriticContext::new(ctx.source, ctx.ast, ctx.config),
+        };
+
         for rule in &self.rules {
-            if !rule_enabled(rule.as_ref(), ctx.config) {
+            if !rule_enabled(rule.as_ref(), rich_ctx.config) {
                 continue;
             }
-            rule.check(ctx, &mut findings);
+            rule.check(&rich_ctx, &mut findings);
         }
 
         let suppressions = CriticSuppressionMap::from_source(ctx.source);
@@ -201,6 +274,13 @@ impl NativeCriticRegistry {
     }
 }
 
+/// Whitelist/blacklist gate applied to the rules the registry actually holds.
+///
+/// A non-empty `include` narrows execution to the listed IDs. Rules the
+/// profile does not carry are added by
+/// [`NativeCriticRegistry::for_profile_with_config`] before this runs, so an
+/// `include` entry from outside the profile reaches this gate as a real rule
+/// rather than resolving to nothing.
 fn rule_enabled(rule: &dyn CriticRule, config: &CriticConfig) -> bool {
     let id = rule.id();
     let included = config.include.is_empty() || config.include.iter().any(|policy| policy == id);

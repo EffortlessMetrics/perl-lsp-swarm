@@ -74,6 +74,8 @@ Once all five steps succeed, you're ready to make changes. Before pushing, run `
 
 If you are contributing from an agentic coding environment, use the repo's bounded build profiles so target directories and caches do not grow inside disposable worktrees:
 
+For the provider-native contribution path, read the [agent contributing guide](docs/how-to/AGENT_CONTRIBUTING.md) first, then use the preparation and build profiles below.
+
 ```bash
 just agent-preflight
 just agent-check
@@ -125,6 +127,20 @@ Exit code **75** means the disk-space gate fired — free up space or lower
 ```bash
 cargo build -p perl-lsp-rs --release  # Build the LSP server binary
 cargo test --workspace --lib          # Run all library tests
+```
+
+#### Windows: Exclude `target/` from Defender
+
+On Windows, Microsoft Defender real-time protection scans every artifact
+written to `target/` during a build, adding 30–50% to build times. Exclude
+the build directories to avoid this tax:
+
+```powershell
+# Run in an elevated PowerShell — adds exclusions for the repo's target/ dirs
+Add-MpPreference -ExclusionPath (Resolve-Path "target").Path
+Add-MpPreference -ExclusionProcess "cargo.exe"
+Add-MpPreference -ExclusionProcess "rustc.exe"
+Add-MpPreference -ExclusionProcess "cl.exe"
 ```
 
 If something looks broken, `just doctor` diagnoses common environment issues (missing tools, stale worktrees, drift between generated files and source):

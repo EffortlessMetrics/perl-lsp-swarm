@@ -2,7 +2,7 @@
 //!
 //! Keeps document-link feature logic isolated from other language handlers.
 
-use super::super::*;
+use super::super::{INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, Value, json};
 use crate::documentation_targets::PerlDocumentationTarget;
 use crate::protocol::req_uri;
 use std::borrow::Cow;
@@ -22,10 +22,10 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
         return url::Url::parse(&format!("file:///{file_path}")).ok().map(|url| url.to_string());
     }
 
-    if Path::new(file_path).is_absolute() {
-        if let Ok(target_url) = url::Url::from_file_path(file_path) {
-            return Some(target_url.to_string());
-        }
+    if Path::new(file_path).is_absolute()
+        && let Ok(target_url) = url::Url::from_file_path(file_path)
+    {
+        return Some(target_url.to_string());
     }
 
     let base_url = url::Url::parse(base_uri).ok()?;
@@ -106,7 +106,7 @@ impl LspServer {
                     message: format!("Document not open: {}", uri),
                     data: None,
                 })?;
-                doc.text.clone()
+                doc.text_arc.to_string()
             };
             // documents lock released here
 

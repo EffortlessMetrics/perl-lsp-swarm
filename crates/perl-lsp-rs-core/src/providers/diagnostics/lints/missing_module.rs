@@ -286,7 +286,7 @@ fn format_labeled_path_list(search_context: &[ModuleSearchPathDisplay]) -> Strin
             .map(|e| format!("{} ({})", e.path, e.source))
             .collect();
         let remaining = total - MAX_LABELED_SHOWN;
-        format!(" {}, ... and {} more", shown.join(", "), remaining)
+        format!("{}, ... and {} more", shown.join(", "), remaining)
     }
 }
 
@@ -448,7 +448,7 @@ pub fn check_missing_modules_with_search_context<F>(
             format!("Module '{module_str}' not found in workspace or configured include paths")
         } else {
             let path_list = format_labeled_path_list(search_context);
-            format!("Module '{module_str}' not found. Searched @INC:{path_list}")
+            format!("Module '{module_str}' not found. Searched @INC: {path_list}")
         };
 
         let suggestion = choose_context_suggestion(module_str, search_context);
@@ -1062,6 +1062,10 @@ mod tests {
             "message should contain source label; got: {msg:?}"
         );
         assert!(msg.contains("PERL5LIB"), "message should contain PERL5LIB label; got: {msg:?}");
+        assert!(
+            msg.contains("Searched @INC: \n"),
+            "labeled @INC paths should have a space after the colon; got: {msg:?}"
+        );
     }
 
     #[test]
@@ -1111,6 +1115,14 @@ mod tests {
         assert!(
             msg.contains("more"),
             "long path list should be truncated with '... and N more'; got: {msg:?}"
+        );
+        assert!(
+            msg.contains("Searched @INC: "),
+            "truncated @INC paths should have a space after the colon; got: {msg:?}"
+        );
+        assert!(
+            !msg.contains("Searched @INC:\n"),
+            "truncated @INC paths should not run into the colon; got: {msg:?}"
         );
         assert!(
             !msg.contains("/path/dir10"),

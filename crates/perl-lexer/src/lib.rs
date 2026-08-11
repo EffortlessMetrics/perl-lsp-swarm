@@ -405,7 +405,11 @@ impl<'a> PerlLexer<'a> {
                 return Some(token);
             }
 
-            if let Some(token) = self.try_vstring() {
+            // Only try v-string when NOT immediately after `sub` keyword —
+            // `sub v5 { }` should parse `v5` as an identifier, not a v-string (#2189)
+            if !self.after_sub
+                && let Some(token) = self.try_vstring()
+            {
                 return Some(token);
             }
 
@@ -2694,6 +2698,18 @@ impl<'a> PerlLexer<'a> {
                                             )));
                                         }
                                         Some(ch) if is_perl_identifier_start(ch) => {
+                                            // Perl does NOT interpolate a bare
+                                            // method call inside a double-quoted
+                                            // string: `"$foo->bar"` interpolates
+                                            // `$foo` then prints a literal
+                                            // `->bar`. Only arrow *subscripts*
+                                            // (`->[]`, `->{}`, `->()`) genuinely
+                                            // interpolate and are handled by the
+                                            // arms above (#5428). Leave the arrow
+                                            // and method name in the literal
+                                            // bucket so downstream consumers do
+                                            // not treat a never-performed call as
+                                            // a real interpolation.
                                             while self.position < self.input_bytes.len() {
                                                 let byte = self.input_bytes[self.position];
                                                 if byte.is_ascii_alphanumeric() || byte == b'_' {
@@ -2712,19 +2728,20 @@ impl<'a> PerlLexer<'a> {
                                                     break;
                                                 }
                                             }
-                                            if self.current_char() == Some('(') {
-                                                let _ = self.consume_balanced_segment_in_string(
-                                                    '(', ')', '"',
-                                                );
+                                            let tail_text = &self.input[tail_start..self.position];
+                                            if !tail_text.is_empty() {
+                                                current_literal.reserve(tail_text.len());
+                                                current_literal.push_str(tail_text);
                                             }
-                                            parts.push(StringPart::MethodCall(Arc::from(
-                                                &self.input[tail_start..self.position],
-                                            )));
                                         }
                                         _ => {
-                                            parts.push(StringPart::MethodCall(Arc::from(
-                                                &self.input[tail_start..self.position],
-                                            )));
+                                            // `->` not followed by a subscript or
+                                            // identifier — also literal (#5428).
+                                            let tail_text = &self.input[tail_start..self.position];
+                                            if !tail_text.is_empty() {
+                                                current_literal.reserve(tail_text.len());
+                                                current_literal.push_str(tail_text);
+                                            }
                                         }
                                     }
                                 } else if self.current_char() == Some('[') {
@@ -3522,17 +3539,23 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn qw_has_top_level_closer_after(&self, position: usize, close: char) -> bool {
-        if close != ')' {
-            return false;
-        }
+        let (open, close) = match close {
+            ')' => ("(", ")"),
+            ']' => ("[", "]"),
+            '}' => ("{", "}"),
+            '>' => ("<", ">"),
+            _ => return false,
+        };
         let mut lexer = Self::without_qw_recovery(&self.input[position..], self.config.clone());
         let mut depth = 0usize;
         while let Some(token) = lexer.next_token() {
-            match token.token_type {
-                TokenType::LeftParen => depth = depth.saturating_add(1),
-                TokenType::RightParen if depth == 0 => return true,
-                TokenType::RightParen => depth = depth.saturating_sub(1),
-                _ => {}
+            if token.text.as_ref() == open {
+                depth = depth.saturating_add(1);
+            } else if token.text.as_ref() == close {
+                if depth == 0 {
+                    return true;
+                }
+                depth = depth.saturating_sub(1);
             }
         }
         false
@@ -3556,9 +3579,22 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
-        if remaining
-            .strip_prefix("print")
-            .is_some_and(|after| after.starts_with(char::is_whitespace))
+        for keyword in ["print", "warn", "say"] {
+            if remaining
+                .strip_prefix(keyword)
+                .is_some_and(|after| after.starts_with(char::is_whitespace))
+                && self.qw_statement_terminates(position)
+            {
+                return true;
+            }
+        }
+        if let Some(symbol_table) = &self.config.symbol_table
+            && remaining.split_whitespace().next().is_some_and(|keyword| {
+                symbol_table.is_known_sub(keyword)
+                    && remaining
+                        .strip_prefix(keyword)
+                        .is_some_and(|after| after.starts_with(char::is_whitespace))
+            })
             && self.qw_statement_terminates(position)
         {
             return true;
@@ -3678,6 +3714,17 @@ impl<'a> PerlLexer<'a> {
                     TokenType::Operator(operator) if operator.as_ref() == "::" => {
                         expect_name_segment = true;
                         continue;
+                    }
+                    // `after_sub` deliberately lexes `v1.2` as `Identifier("v1")`,
+                    // `.` and `Number("2")` so that the valid single-component
+                    // `sub v5 { ... }` form remains a name.  A dotted v-string is
+                    // not a valid named-sub declaration, however; reject the dot
+                    // instead of allowing a later `{` to create a false recovery
+                    // boundary for an unclosed `qw`.
+                    TokenType::Operator(operator)
+                        if keyword == "sub" && operator.as_ref() == "." =>
+                    {
+                        return false;
                     }
                     TokenType::Operator(operator) if operator.as_ref() == ":" => {
                         expect_attribute_name = true;
@@ -3976,7 +4023,7 @@ impl<'a> PerlLexer<'a> {
                 self.parse_regex_modifiers(&quote_handler::M_SPEC);
                 body_closed
             }
-            "qw" if delimiter == '(' && self.qw_recovery_enabled => {
+            "qw" if self.qw_recovery_enabled => {
                 let (_body, body_closed) = self.read_qw_body(delimiter);
                 body_closed
             }

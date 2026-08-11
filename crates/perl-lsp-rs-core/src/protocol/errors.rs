@@ -126,7 +126,7 @@ pub const SERVER_NOT_INITIALIZED: i32 = -32002;
 /// Create a standard cancelled response
 pub fn cancelled_response(id: &Value) -> JsonRpcResponse {
     JsonRpcResponse {
-        jsonrpc: "2.0".to_string(),
+        jsonrpc: "2.0",
         id: JsonRpcId::from_value(id),
         result: None,
         error: Some(JsonRpcError {
@@ -156,7 +156,7 @@ pub fn cancelled_response_with_method(id: &Value, method: &str) -> JsonRpcRespon
     });
 
     JsonRpcResponse {
-        jsonrpc: "2.0".to_string(),
+        jsonrpc: "2.0",
         id: JsonRpcId::from_value(id),
         result: None,
         error: Some(JsonRpcError { code: REQUEST_CANCELLED, message, data: Some(data) }),
@@ -189,8 +189,7 @@ pub fn enhanced_error(
         "context": "Enhanced LSP error response with comprehensive context",
         "server_info": {
             "name": "perl-lsp",
-            "version": env!("CARGO_PKG_VERSION"),
-            "capabilities": "Enhanced error handling and concurrent request management"
+            "version": env!("CARGO_PKG_VERSION")
         },
         "timestamp": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -588,6 +587,10 @@ mod tests {
         let data = e.data.ok_or("expected data")?;
         assert_eq!(data["error_type"], json!("etype"));
         assert_eq!(data["server_info"]["name"], json!("perl-lsp"));
+        assert!(
+            data["server_info"].get("capabilities").is_none(),
+            "server_info must not contain marketing prose in capabilities"
+        );
         assert_eq!(data["method"], json!("textDocument/hover"));
         Ok(())
     }

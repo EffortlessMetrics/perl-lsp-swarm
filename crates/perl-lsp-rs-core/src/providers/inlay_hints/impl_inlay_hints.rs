@@ -256,10 +256,10 @@ fn collect_user_sub_signatures(ast: &Node) -> HashMap<String, Vec<String>> {
             NodeKind::Subroutine { name: Some(sub_name), signature: None, body, .. } => {
                 // No formal signature — try to extract params from @_ unpacking. (#5078)
                 // Pattern: my ($a, $b) = @_ or my $self = shift
-                if !map.contains_key(sub_name) {
-                    if let Some(params) = extract_params_from_at_underscore(body) {
-                        map.insert(sub_name.clone(), params);
-                    }
+                if !map.contains_key(sub_name)
+                    && let Some(params) = extract_params_from_at_underscore(body)
+                {
+                    map.insert(sub_name.clone(), params);
                 }
             }
             NodeKind::Method { name: method_name, signature: Some(sig), .. } => {
@@ -267,10 +267,10 @@ fn collect_user_sub_signatures(ast: &Node) -> HashMap<String, Vec<String>> {
                     .or_insert_with(|| param_names_from_signature_node(sig));
             }
             NodeKind::Method { name: method_name, signature: None, body, .. } => {
-                if !map.contains_key(method_name) {
-                    if let Some(params) = extract_params_from_at_underscore(body) {
-                        map.insert(method_name.clone(), params);
-                    }
+                if !map.contains_key(method_name)
+                    && let Some(params) = extract_params_from_at_underscore(body)
+                {
+                    map.insert(method_name.clone(), params);
                 }
             }
             _ => {}
@@ -287,82 +287,72 @@ fn extract_params_from_at_underscore(body: &Node) -> Option<Vec<String>> {
     let first = statements.first()?;
 
     // Check for: my ($x, $y, ...) = @_
-    if let NodeKind::VariableListDeclaration { variables, initializer, .. } = &first.kind {
-        if let Some(init) = initializer {
-            // Check if initializer is @_ (Variable { sigil: "@", name: "_" })
-            if let NodeKind::Variable { sigil, name } = &init.kind {
-                if sigil == "@" && name == "_" {
-                    let params: Vec<String> = variables
-                        .iter()
-                        .filter_map(|v| {
-                            if let NodeKind::Variable { name, .. } = &v.kind {
-                                // Skip undef slots
-                                if name.is_empty() {
-                                    return None;
-                                }
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    if !params.is_empty() {
-                        return Some(params);
+    if let NodeKind::VariableListDeclaration { variables, initializer, .. } = &first.kind
+        && let Some(init) = initializer
+    {
+        // Check if initializer is @_ (Variable { sigil: "@", name: "_" })
+        if let NodeKind::Variable { sigil, name } = &init.kind
+            && sigil == "@"
+            && name == "_"
+        {
+            let params: Vec<String> = variables
+                .iter()
+                .filter_map(|v| {
+                    if let NodeKind::Variable { name, .. } = &v.kind {
+                        // Skip undef slots
+                        if name.is_empty() {
+                            return None;
+                        }
+                        Some(name.clone())
+                    } else {
+                        None
                     }
-                }
+                })
+                .collect();
+            if !params.is_empty() {
+                return Some(params);
             }
         }
     }
 
     // Check for: my $self = shift (method invocant)
-    if let NodeKind::VariableDeclaration { variable, initializer, .. } = &first.kind {
-        if let Some(init) = initializer {
-            // Check if initializer is a call to `shift` (the most common Perl
-            // OO unpacking idiom: `my $self = shift;`).
-            // Previously this used `format!("{}", init.kind).contains("shift")`
-            // which never matched because Display for NodeKind returns the
-            // kind name ("FunctionCall"), not the function name.
-            let is_shift = match &init.kind {
-                NodeKind::FunctionCall { name, .. } => name == "shift",
-                _ => false,
-            };
-            if is_shift {
-                if let NodeKind::Variable { name: invocant_name, .. } = &variable.kind {
-                    // This is likely a method — self is the invocant.
-                    // Check next statement for more @_ unpacking.
-                    if statements.len() > 1 {
-                        if let NodeKind::VariableListDeclaration {
-                            variables,
-                            initializer: list_init,
-                            ..
-                        } = &statements[1].kind
-                        {
-                            if let Some(init2) = list_init {
-                                if let NodeKind::Variable { sigil, name } = &init2.kind {
-                                    if sigil == "@" && name == "_" {
-                                        // Use the invocant name (e.g. "self"),
-                                        // not "_" which is the name of @_.
-                                        let mut params = vec![invocant_name.clone()];
-                                        params.extend(variables.iter().filter_map(|v| {
-                                            if let NodeKind::Variable { name, .. } = &v.kind {
-                                                if name.is_empty() {
-                                                    None
-                                                } else {
-                                                    Some(name.clone())
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        }));
-                                        return Some(params);
-                                    }
-                                }
-                            }
-                        }
+    if let NodeKind::VariableDeclaration { variable, initializer, .. } = &first.kind
+        && let Some(init) = initializer
+    {
+        // Check if initializer is a call to `shift` (the most common Perl
+        // OO unpacking idiom: `my $self = shift;`).
+        // Previously this used `format!("{}", init.kind).contains("shift")`
+        // which never matched because Display for NodeKind returns the
+        // kind name ("FunctionCall"), not the function name.
+        let is_shift = match &init.kind {
+            NodeKind::FunctionCall { name, .. } => name == "shift",
+            _ => false,
+        };
+        if is_shift && let NodeKind::Variable { name: invocant_name, .. } = &variable.kind {
+            // This is likely a method — self is the invocant.
+            // Check next statement for more @_ unpacking.
+            if statements.len() > 1
+                && let NodeKind::VariableListDeclaration {
+                    variables, initializer: list_init, ..
+                } = &statements[1].kind
+                && let Some(init2) = list_init
+                && let NodeKind::Variable { sigil, name } = &init2.kind
+                && sigil == "@"
+                && name == "_"
+            {
+                // Use the invocant name (e.g. "self"),
+                // not "_" which is the name of @_.
+                let mut params = vec![invocant_name.clone()];
+                params.extend(variables.iter().filter_map(|v| {
+                    if let NodeKind::Variable { name, .. } = &v.kind {
+                        if name.is_empty() { None } else { Some(name.clone()) }
+                    } else {
+                        None
                     }
-                    return Some(vec![invocant_name.clone()]);
-                }
+                }));
+                return Some(params);
             }
+            return Some(vec![invocant_name.clone()]);
         }
     }
 
@@ -492,10 +482,10 @@ pub fn parameter_hints_with_resolver(
                     });
 
                     // For builtins: embed perldoc summary for tooltip resolution.
-                    if is_builtin {
-                        if let Some(doc) = builtin_doc_summary(name.as_str(), &param_names[i], i) {
-                            hint["data"]["docSummary"] = json!(doc);
-                        }
+                    if is_builtin
+                        && let Some(doc) = builtin_doc_summary(name.as_str(), &param_names[i], i)
+                    {
+                        hint["data"]["docSummary"] = json!(doc);
                     }
 
                     out.push(hint);
@@ -610,6 +600,65 @@ pub fn trivial_type_hints(
             NodeKind::Subroutine { name: None, .. } => {
                 Some(("CodeRef".to_string(), Some("Anonymous subroutine (code reference)")))
             }
+            // Variable declarations with initializers: infer the type from the
+            // initializer and show it at the variable position (#1692).
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                if let Some(init) = initializer {
+                    // Infer the type from the initializer expression.
+                    let inferred = match &init.kind {
+                        NodeKind::Number { .. } => {
+                            Some(("Num".to_string(), Some("Numeric literal")))
+                        }
+                        NodeKind::String { .. } => {
+                            Some(("Str".to_string(), Some("String literal")))
+                        }
+                        NodeKind::HashLiteral { .. } => {
+                            Some(("Hash".to_string(), Some("Hash reference")))
+                        }
+                        NodeKind::ArrayLiteral { .. } => {
+                            Some(("Array".to_string(), Some("Array reference")))
+                        }
+                        NodeKind::Regex { .. } => {
+                            Some(("Regex".to_string(), Some("Regular expression")))
+                        }
+                        NodeKind::Subroutine { name: None, .. } => Some((
+                            "CodeRef".to_string(),
+                            Some("Anonymous subroutine (code reference)"),
+                        )),
+                        _ => infer_semantic_type(init).map(|t| (t, None)),
+                    };
+                    if let Some((hint, tooltip)) = inferred {
+                        // Emit the hint at the variable's position, not the
+                        // initializer's. This shows `: Num` after the declarator.
+                        let (vl, vc) = to_pos16(variable.location.end);
+                        if let Some(filter_range) = range {
+                            let hint_pos = Position::new(vl, vc);
+                            if !pos_in_range(hint_pos, filter_range) {
+                                return true;
+                            }
+                        }
+                        let mut val = json!({
+                            "position": {"line": vl, "character": vc},
+                            "label": format!(": {}", hint),
+                            "kind": 1, // type
+                            "paddingLeft": true,
+                            "paddingRight": false
+                        });
+                        if let Some(tt) = tooltip {
+                            val["data"] = json!({ "tooltip": tt });
+                        }
+                        out.push(val);
+                    }
+                }
+                // Return true to continue walking siblings and children. The
+                // initializer literal will also get its own hint at its
+                // position — this is intentional and not a duplicate: the
+                // declaration hint shows the type at the variable, while the
+                // initializer hint shows the type at the value. Clients can
+                // deduplicate by position if desired. Returning false would
+                // incorrectly stop the entire walk (factory-droid P1 review).
+                return true;
+            }
             // Fall through to semantic type inference for non-literal nodes
             _ => infer_semantic_type(node).map(|t| (t, None)),
         };
@@ -662,6 +711,8 @@ pub fn infer_semantic_type(node: &Node) -> Option<String> {
     match &node.kind {
         NodeKind::FunctionCall { name, .. } => function_return_type(name),
         NodeKind::MethodCall { method, .. } => method_return_type(method),
+        // Reference constructors: \@array, \%hash, \$scalar → Ref (#1692).
+        NodeKind::Unary { op, .. } if op == "\\" => Some("Ref".to_string()),
         NodeKind::Variable { name, sigil } => {
             // Infer from common naming conventions
             match (sigil.as_str(), name.as_str()) {
@@ -1085,6 +1136,66 @@ $obj->render("hello", 10);"#;
         assert!(
             no_method_labels.is_empty(),
             "tiny range should suppress all method hints via `continue`; labels: {no_method_labels:?}"
+        );
+    }
+
+    // ── Variable declaration type hints (#1692) ─────────────────────────────
+
+    #[test]
+    fn test_variable_declaration_num_hint() {
+        let ast = ast_for("my $x = 42;");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": Num"),
+            "my $x = 42 should emit a : Num type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_str_hint() {
+        let ast = ast_for("my $s = \"hello\";");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": Str"),
+            "my $s = \"hello\" should emit a : Str type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_no_hint_without_initializer() {
+        // my $uninit; should NOT emit a type hint.
+        let ast = ast_for("my $uninit;");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            !labels.iter().any(|l| l.starts_with(": ")),
+            "my $uninit; (no initializer) should not emit any type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_coderef_hint() {
+        // my $coderef = sub { ... } should emit : CodeRef.
+        let ast = ast_for("my $coderef = sub { 1 };");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": CodeRef"),
+            "my $coderef = sub {{ ... }} should emit a : CodeRef type hint, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn test_variable_declaration_ref_hint() {
+        // my $ref = \@data should emit : Ref (#1692 acceptance).
+        let ast = ast_for("my @data; my $ref = \\@data;");
+        let hints = trivial_type_hints(&ast, &dummy_pos, None);
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&": Ref"),
+            "my $ref = \\@data should emit a : Ref type hint, got: {labels:?}"
         );
     }
 }

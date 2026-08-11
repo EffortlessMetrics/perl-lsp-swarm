@@ -5,13 +5,13 @@
 //! The DAP protocol uses a single `i32` field (`variablesReference`) to encode
 //! references to three logically distinct spaces:
 //!
-//! - **Scope** references: identify a scope (locals/package/globals) within a stack frame
+//! - **Scope** references: identify a scope (locals/package/globals/arguments) within a stack frame
 //! - **EvalResult** references: identify a structured evaluation result (HASH/ARRAY)
 //! - **Child** references: identify a nested child variable within a parent
 //!
 //! Prior to this module, encoding was done with ad-hoc arithmetic scattered across
 //! multiple call sites. Issue #1219 identified a collision hazard: `frame_id * 10 + kind`
-//! (where kind ∈ [1,3]) can produce values that overlap EvalResult counters.
+//! (where kind ∈ [1,4]) can produce values that overlap EvalResult counters.
 //!
 //! # Solution: pure-range disjoint bands
 //!
@@ -20,7 +20,7 @@
 //!
 //! | Variant | Wire Range | Encoding |
 //! |---------|-----------|----------|
-//! | `Scope` | [1, 999_999] | `frame_id * 10 + kind` (kind ∈ [1,3], frame_id ∈ [0, 99_999]) |
+//! | `Scope` | [1, 999_999] | `frame_id * 10 + kind` (kind ∈ [1,4], frame_id ∈ [0, 99_999]) |
 //! | `EvalResult` | [1_000_000, 1_999_999_999] | `1_000_000 + counter` |
 //! | `Child` | [2_000_000_000, i32::MAX] | `2_000_000_000 + (parent << 16 \| index)` |
 //!
@@ -31,7 +31,7 @@
 //! # Scope frame_id bound
 //!
 //! Scope wire = `frame_id * 10 + kind` must stay in `[1, 999_999]`.
-//! With kind ∈ [1, 3], the maximum Scope wire is `99_999 * 10 + 3 = 999_993`.
+//! With kind ∈ [1, 4], the maximum Scope wire is `99_999 * 10 + 4 = 999_994`.
 //! Therefore `frame_id` must be in `[0, 99_999]`.
 //! Encoding a Scope with `frame_id > 99_999` returns `None` (safely rejected,
 //! never produces a wire value in the EvalResult or Child band).
@@ -41,7 +41,7 @@
 //! 1. `raw <= 0` → `None`
 //! 2. `raw >= 2_000_000_000` → `Child`
 //! 3. `raw >= 1_000_000` → `EvalResult` (counter = raw − 1_000_000)
-//! 4. `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ [1,3]`, else `None`
+//! 4. `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ [1,4]`, else `None`
 //! 5. Otherwise → `None`
 //!
 //! No value can match more than one band, so decode is unambiguous without any
@@ -74,9 +74,17 @@ impl fmt::Display for VariableReferenceError {
 
 impl std::error::Error for VariableReferenceError {}
 
+impl perl_parser_core::ErrorClass for VariableReferenceError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // Fires only from ScopeKind::try_from with an invalid discriminant —
+        // an internal contract violation, not user input.
+        perl_parser_core::ErrorCategory::Bug
+    }
+}
+
 /// The kind of scope a `Scope` variable reference points to within a stack frame.
 ///
-/// Wire values: Locals=1, Package=2, Globals=3.
+/// Wire values: Locals=1, Package=2, Globals=3, Arguments=4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeKind {
     /// Lexical (my) variables in the current frame.
@@ -85,6 +93,8 @@ pub enum ScopeKind {
     Package = 2,
     /// All global variables.
     Globals = 3,
+    /// Captured arguments for the current frame.
+    Arguments = 4,
 }
 
 impl TryFrom<i32> for ScopeKind {
@@ -95,8 +105,9 @@ impl TryFrom<i32> for ScopeKind {
             1 => Ok(ScopeKind::Locals),
             2 => Ok(ScopeKind::Package),
             3 => Ok(ScopeKind::Globals),
+            4 => Ok(ScopeKind::Arguments),
             other => Err(VariableReferenceError::new(format!(
-                "invalid ScopeKind discriminant: {other}; expected 1 (Locals), 2 (Package), or 3 (Globals)"
+                "invalid ScopeKind discriminant: {other}; expected 1 (Locals), 2 (Package), 3 (Globals), or 4 (Arguments)"
             ))),
         }
     }
@@ -106,7 +117,7 @@ impl TryFrom<i32> for ScopeKind {
 ///
 /// ## Wire ranges (pairwise disjoint)
 ///
-/// - `Scope`:      [1, 999_999]            — `frame_id * 10 + kind` (frame_id ∈ [0, 99_999], kind ∈ [1,3])
+/// - `Scope`:      [1, 999_999]            — `frame_id * 10 + kind` (frame_id ∈ [0, 99_999], kind ∈ [1,4])
 /// - `EvalResult`: [1_000_000, 1_999_999_999] — `1_000_000 + counter`
 /// - `Child`:      [2_000_000_000, i32::MAX]  — `2_000_000_000 + (parent << 16 | index)`
 ///
@@ -249,7 +260,7 @@ impl VariableReference {
             return Some(VariableReference::EvalResult { counter });
         }
 
-        // 3. Scope band: [1, 999_999] — kind discriminant must be 1, 2, or 3.
+        // 3. Scope band: [1, 999_999] — kind discriminant must be 1, 2, 3, or 4.
         if (SCOPE_MIN..=SCOPE_MAX).contains(&raw) {
             let kind_disc = raw % 10;
             let frame_id = raw / 10;
@@ -276,12 +287,13 @@ mod codec_unit_tests {
         assert_eq!(ScopeKind::try_from(1), Ok(ScopeKind::Locals));
         assert_eq!(ScopeKind::try_from(2), Ok(ScopeKind::Package));
         assert_eq!(ScopeKind::try_from(3), Ok(ScopeKind::Globals));
+        assert_eq!(ScopeKind::try_from(4), Ok(ScopeKind::Arguments));
     }
 
     #[test]
     fn scope_kind_tryfrom_invalid() {
         assert!(ScopeKind::try_from(0).is_err());
-        assert!(ScopeKind::try_from(4).is_err());
+        assert!(ScopeKind::try_from(5).is_err());
         assert!(ScopeKind::try_from(-1).is_err());
     }
 

@@ -5,19 +5,7 @@
 
 use std::cmp::Ordering;
 
-/// Minimum query length (in `char`s of the lowercased query) that admits the
-/// loose match tiers -- substring and subsequence. (#5335)
-///
-/// A one-character query is too weak to justify loose matching: every symbol
-/// whose name contains that character anywhere would match, which is nearly
-/// the whole workspace. Such queries are restricted to the exact and prefix
-/// tiers instead.
-///
-/// The same threshold is applied to the indexed workspace-symbol search in
-/// `perl_workspace::workspace::workspace_index::search_source_symbols`. The
-/// two matchers are independent implementations, so the constant is
-/// deliberately duplicated rather than shared across the crate boundary.
-pub const MIN_LOOSE_MATCH_QUERY_CHARS: usize = 2;
+pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 
 /// Returns `true` when a symbol name matches the provided query.
 ///

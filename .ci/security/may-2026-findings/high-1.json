@@ -1,0 +1,106 @@
+[
+  [
+    "MAY2026-HIGH-001",
+    "HIGH",
+    "Composite action inputs are injected into shell commands",
+    "rce",
+    ".github/actions/rust-checks/action.yml",
+    [92,105,119],
+    "sha256:c91268bef1aca9abe4820a244ae93fe38d649e5f7cab5233febace43b919505e",
+    "Caller-controlled Cargo argument strings can become shell syntax in a reusable action.",
+    "No in-repo caller was found in the report, but the documented reusable action accepted untrusted caller data.",
+    null,
+    "#5969","open","#6096","candidate","open",null,"not_checked",null,null,null,[],"open","#5969",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ],
+  [
+    "MAY2026-HIGH-002","HIGH","Receipt path input is interpolated into Bash and Python code","rce",
+    ".github/actions/upload-receipt/action.yml",[52,54,57,81,90],
+    "sha256:ff18a39603080318093100f20c43b285129456a4161d166261c6a190b1a936a4",
+    "A receipt path can break out of Bash or inline Python source and execute runner commands.",
+    "Reachable through any workflow caller that passes PR, dispatch, or other attacker-controlled text.",
+    null,"#5969","open",null,"none","none",null,"not_checked",null,null,null,[],"open","#6124",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ],
+  [
+    "MAY2026-HIGH-003","HIGH","Privileged workflow runs mutable action refs with a write token","other-ci-supply-chain-rce",
+    ".github/workflows/aggregate-ci-lane-history.yml",[24,25,35,37,108],
+    "sha256:1302c85172d9c369166f23114a3272dd16d9ed5db82153b4bbbc351f3b673e21",
+    "Mutable action code can execute with repository write authority and tamper with history data or repository contents.",
+    "Scheduled/manual trusted workflow with contents write and persisted checkout credentials.",
+    null,"#5995","open","#6133","candidate","open",null,"not_checked",null,null,null,[],"open","#5995",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ],
+  [
+    "MAY2026-HIGH-004","HIGH","Badge refresh runs mutable supply-chain code with repository write permissions","other-ci-supply-chain-rce",
+    ".github/workflows/badge-endpoints.yml",[10,11,12,22,24,26,30,31,37],
+    "sha256:4a2ee6c4f98da8618d43a0654b9222fd4ab645e8fc2ab737906b25ff6275d5de",
+    "Mutable actions or an unpinned Cargo install can obtain the persisted write token and alter badge PRs or repository contents.",
+    "Trusted badge refresh job with contents and pull-request write authority.",
+    null,"#6001","open","#6141","candidate","open",null,"not_checked",null,null,null,[],"open","#6001",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ],
+  [
+    "MAY2026-HIGH-005","HIGH","Homebrew tap token is exposed in a job that uses mutable checkout actions","other-ci-secret-exposure",
+    ".github/workflows/brew-bump.yml",[40,241,252,255,296],
+    "sha256:ecd4ecc410ae40830b91b8f0c130255854dc09557313be0a9cb11cea464ba7a2",
+    "Mutable checkout code can exfiltrate the Homebrew tap token or alter formula publication.",
+    "Release workflow eventually exposes HOMEBREW_TAP_TOKEN in the same job.",
+    null,"#6013","open","#6016","candidate","open",null,"not_checked",null,null,null,[],"open","#6013",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ],
+  [
+    "MAY2026-HIGH-006","HIGH","Workflow dispatch version input is interpolated directly into shell commands","rce",
+    ".github/workflows/docker-publish.yml",[43,266,273],
+    "sha256:e0d7ec0320830811dc937fd2684f3f7030ec6bf165ba164518b54d67695aff15",
+    "A manual version value can execute shell syntax before image publication.",
+    "Reachable to users allowed to dispatch a workflow that later uses registry credentials and packages write authority.",
+    null,"#5987","open","#5988","candidate","open",null,"not_checked",null,null,null,[],"open","#5987",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ],
+  [
+    "MAY2026-HIGH-007","HIGH","workflow_dispatch input is interpolated into bash before execution","rce",
+    ".github/workflows/flake-detection.yml",[7,8,13,14,15,16,52,53,54],
+    "sha256:818edfa9f825c89c38c173938ebee75f38e2c0282e942594578a828e125ecf05",
+    "A crafted test filter can execute runner commands and abuse repository, issue, or PR write authority.",
+    "Reachable through workflow_dispatch to authorized workflow users.",
+    null,"#5979","open","#5980","candidate","open",null,"not_checked",null,null,null,[],"open","#5979",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ],
+  [
+    "MAY2026-HIGH-008","HIGH","pull_request runs PR-controlled xtask code with label-write token","other-github-actions-privilege-escalation",
+    ".github/workflows/merge-ready-reconciler.yml",[10,15,23,26,48,64,69,70],
+    "sha256:1087a2b50ea852ef662deccf743c5965ea74d949b498292dd2f4fd4a2944bf25",
+    "PR-controlled Rust code can use a writable token to alter PR and issue orchestration state.",
+    "The report observed a pull_request workflow that checked out and executed the PR merge commit with write scopes.",
+    null,"#5205","open","#5626","merged","merged","c77cfab5fde042279216dc9f4599fe998e83c395","not_checked",null,null,null,[],"landed_not_proven","#6124",
+    ["The implementation PR is merged, but this row still lacks current-source and discriminating closure proof."]
+  ],
+  [
+    "MAY2026-HIGH-009","HIGH","merge-ready can be granted without current-head gate evidence","other-ci-merge-gate-bypass",
+    ".github/workflows/pipeline-labels.yml",[57,58,153,160,167,172],
+    "sha256:70dc094a26e65ee1acb6bb4146df217453f1cd4d29a18bcd964fc0ad3e3e0375",
+    "A persistent merge-ready label can survive later unreviewed pushes and mislead downstream automation.",
+    "The report observed approval and label state without current-head CI or receipt binding.",
+    null,"#5205","open","#5628","merged","merged","3cd7147aefe535f18ac2fade6882392924cbc394","not_checked",null,null,null,[],"landed_not_proven","#6124",
+    ["The implementation PR is merged, but this row still lacks current-source and discriminating closure proof."]
+  ],
+  [
+    "MAY2026-HIGH-010","HIGH","Mutable github-script action runs with label-write permissions","other-ci-supply-chain",
+    ".github/workflows/pipeline-labels.yml",[15,16,20,37,39,42,60,62,65],
+    "sha256:f9a7f56f31af12ae04e4dae944a3a0311fff5adf52f0c990e6db82b593d89194",
+    "A moved github-script tag can mutate workflow-control labels with issue and PR write authority.",
+    "Every pipeline-label job ran the mutable action in a write-capable context.",
+    null,"#5205","open","#5628","merged","merged","3cd7147aefe535f18ac2fade6882392924cbc394","not_checked",null,null,null,[],"landed_not_proven","#6124",
+    ["The implementation PR is merged, but this row still lacks current-source and discriminating closure proof."]
+  ],
+  [
+    "MAY2026-HIGH-011","HIGH","Mutable actions execute in a contents-write scheduled job","other-ci-supply-chain",
+    ".github/workflows/post-merge-corpus-ratchet.yml",[29,30,39,41,63,94,104],
+    "sha256:03890882659d00cb533ec1dd3486eab94c62939d7dbe180cc23ed45cb3621d29",
+    "Mutable checkout/cache code can tamper with committed corpus receipts or other repository content.",
+    "Trusted scheduled/default-branch job with a write token and direct push.",
+    null,"#6014","open","#6017","candidate","open",null,"not_checked",null,null,null,[],"open","#6014",
+    ["Initial import: landed/current-source proof has not yet been attached to this row."]
+  ]
+]

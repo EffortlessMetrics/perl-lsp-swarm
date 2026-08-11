@@ -19,7 +19,7 @@ verify the binary before wiring it into shared automation.
 Use one of the public install paths that matches how you work:
 
 - VS Code: install the `EffortlessMetrics.perl-lsp-rs` extension and let it download the matching `perllsp` binary.
-- macOS or Linux: run the [installer script](#installer-script-macos-and-linux), or install via the [EffortlessMetrics Homebrew tap](#homebrew-via-the-effortlessmetrics-tap).
+- macOS or Linux: use the [manual archive](#manual-archive) until the release packet publishes an immutable installer identity and digest. The identity-bound [installer wrapper](#installer-script-macos-and-linux) becomes usable when those values exist.
 - Windows: install from the [manual archive](#manual-archive). The PowerShell installer script does not work against the published assets yet ([#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461)).
 - Other editors: download a prebuilt binary from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and put it on your `PATH`.
 - Local testing or pre-release validation: install from this repo with `cargo install --path crates/perllsp`.
@@ -27,47 +27,85 @@ Use one of the public install paths that matches how you work:
 Do not install the unrelated crates.io package named `perl-lsp`. That package
 name is owned by another project, so the supported Cargo package is `perllsp`.
 
-Verify the install before wiring it into an editor:
+Inspect the install before wiring it into an editor. `--doctor` reports the
+local Perl and workspace setup; it is a diagnostic report, not a CI gate.
+`--health` is only a liveness probe that confirms the binary can execute:
 
 ```bash
 perllsp --version
-perllsp --health
-perllsp --info
+perllsp --doctor
 ```
 
 ## Installer Script (macOS and Linux)
 
-The repository maintains the installer at
-[`scripts/install.sh`](../../scripts/install.sh); the root
-[`install.sh`](../../install.sh) is a thin wrapper that forwards to it. The
-script detects your platform, downloads the matching GitHub release archive,
-verifies it against the release `SHA256SUMS` when that file is available, and
-installs both `perllsp` and `perl-dap`.
+The repository maintains the installer logic at
+[`scripts/install.sh`](../../scripts/install.sh). The root
+[`install.sh`](../../install.sh) is only a bootstrap and argument-compatibility
+wrapper.
+
+From a clone, the wrapper executes the sibling `scripts/install.sh` directly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+git clone https://github.com/EffortlessMetrics/perl-lsp.git
+cd perl-lsp
+bash install.sh --help
 ```
 
-Supported platforms are Linux x86_64 and aarch64 (gnu or musl), macOS x86_64,
-and macOS aarch64.
+A remote or piped wrapper is deliberately **non-authoritative**. It cannot
+select installer logic from mutable `master`, `main`, `HEAD`, another branch,
+or an arbitrary ref. Before it executes any downloaded installer logic, it
+requires:
 
-Options are environment variables, so they work with the piped form too:
+1. `PERL_LSP_INSTALLER_REF`: a full lowercase 40-character commit SHA for both
+   the piped wrapper URL and the canonical `scripts/install.sh` fetch; and
+2. `PERL_LSP_INSTALLER_SHA256`: the reviewed 64-character lowercase SHA-256
+   digest of that exact ref's `scripts/install.sh`.
+
+The wrapper downloads only the exact repository/ref/path, refuses redirects
+and non-200 responses, requires `sha256sum` or `shasum`, and executes the
+installer only after the content digest matches.
+
+Once a release closeout publishes both values, use this command shape:
 
 ```bash
-# Pin a release instead of taking the latest.
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | VERSION=v0.17.0 bash
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
 
-# Choose the install directory (default: /usr/local/bin if writable, else ~/.local/bin).
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | INSTALL_DIR="$HOME/.local/bin" bash
-
-# Force the gnu or musl Linux archive instead of autodetecting.
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | PERL_LSP_LINUX_LIBC=musl bash
-
-# Build from source instead of downloading a release archive.
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | BUILD_FROM_SOURCE=1 bash
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 ```
 
-From a clone, run `bash scripts/install.sh --help` for the current option list.
+Do not substitute a digest downloaded from the same unverified mutable source
+at runtime. The digest must come from the reviewed release/topology closeout or
+another independently reviewed repository record. Until such a digest is
+published, use a manual release archive or a reviewed clone.
+
+Installer options remain environment variables on the `bash` side of the
+pipeline:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" \
+    VERSION=v0.18.0 \
+    INSTALL_DIR="$HOME/.local/bin" \
+    PERL_LSP_LINUX_LIBC=musl bash
+```
+
+Supported release-archive platforms are Linux x86_64 and aarch64 (gnu or
+musl), macOS x86_64, and macOS aarch64.
+
+This bootstrap boundary proves only the identity of the downloaded
+`scripts/install.sh`. It does **not** by itself prove the later release archive,
+member layout, server/DAP pair, extraction, promotion, or rollback path. The
+current canonical installer still treats missing `SHA256SUMS`, a missing asset
+row, or the absence of a checksum tool as warning-and-continue conditions. The
+PowerShell installer has a similar fail-open checksum boundary. Safe archive
+inspection and atomic pair replacement also remain open under
+[#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097).
+Use the manual archive plus an explicit checksum check for release-sensitive
+installation until those remaining boundaries land.
 
 `BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode
 runs `cargo install perllsp`, and the `perllsp` package declares just the one
@@ -75,10 +113,6 @@ binary, so the debug adapter is skipped without an error. If you need the
 debugger, use a release archive instead — the archives ship both binaries — or
 build `perl-dap` yourself from a clone with
 `cargo build -p perl-dap --release`.
-
-If the script warns that no checksum entry was found, or that neither
-`sha256sum` nor `shasum` is available, it installs without verifying the
-archive. Prefer a manual archive download and checksum check in that case.
 
 ## Windows
 
@@ -118,7 +152,8 @@ Two further limits apply to the script even after that sync:
 - Only `x86_64-pc-windows-msvc` is built by the release workflow, so there is
   no native ARM64 Windows binary. The script installs the x64 build on ARM64,
   which runs under the x64 emulation in Windows 11 on ARM. Windows 10 on ARM
-  emulates x86 but not x64, so build from source there
+  emulates x86 but not x64, so the extension and PowerShell installer reject
+  the fallback before downloading and you must build from source there
   ([#5007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5007)).
 
 Once the sync lands and the script works, pinning a version or changing the
@@ -241,11 +276,16 @@ Once `perllsp` is installed, add it to your editor with the command:
 perllsp --stdio
 ```
 
-Then confirm the install from a shell before debugging editor integration:
+Then inspect the install from a shell before debugging editor integration:
 
 ```bash
-perllsp --health
+perllsp --doctor
 ```
+
+`perllsp --health` is also available as a liveness probe. It prints `ok <version>`
+but does not inspect Perl, workspace, or module-lookup
+configuration. For CI, use explicit checks for the environment paths your job
+requires rather than treating the doctor report or its exit status as a gate.
 
 ## Release Maintainers
 

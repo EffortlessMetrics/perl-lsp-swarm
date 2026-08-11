@@ -17,13 +17,55 @@ Turn the accepted issue plan or durable contract into the cheapest executable pr
 - existing tests, fixtures, receipts, and known regressions;
 - independent external authority where the claim depends on Perl, LSP, DAP, packaging, or dependency behavior.
 
-## Proof-candidate boundary
+## Orchestration affordances
 
-Proof design, independent oracle challenge, realistic wrong-implementation construction, opposite-direction analysis, production-path review, and proof economics may be investigated independently when useful.
+### Lane-root decisions
 
-When tests, fixtures, schemas, or proof receipts require mutation, use the selected claim's current branch/worktree and one proof writer at a time. Read-only adversaries and oracles return evidence to that writer; they do not create competing proof candidates.
+The lane root retains:
 
-Do not inspect sibling worktrees or neighbouring PR overlap merely to reserve a proof surface.
+- accepted behavior and semantic owner;
+- the production seam the proof must reach;
+- what a sufficient proof must discriminate;
+- acceptable proof cost and which evidence may remain remote;
+- whether the claim genuinely has no executable proof subject.
+
+### Delegable read-only questions
+
+Run independently where useful:
+
+- retrieve a competent external oracle;
+- construct realistic wrong implementations that should fail;
+- identify opposite-direction, stale, failure, refusal, and recovery controls;
+- trace the production route from real caller to changed seam;
+- challenge denominator, fixture, schema, receipt, or instrument integrity;
+- compare cheaper proof layers and hosted-CI cost.
+
+### Mutation owner
+
+One proof writer mutates tests, fixtures, schemas, or proof receipts in the selected
+claim's current branch/worktree. Read-only adversaries and oracles return evidence to
+that writer; they do not create competing proof candidates.
+
+### Join predicate
+
+The proof boundary is ready only when:
+
+- the instrument executed and its identity/result are observable;
+- a realistic wrong implementation or current defect fails for the intended reason;
+- the intended behavior can pass;
+- relevant controls prove the test is non-vacuous;
+- the named production seam is exercised or the limitation is explicit;
+- the proof's exclusions and `NOT_PROVEN` boundaries are named.
+
+### Return packet and proof budget
+
+Return proof identity, fixture/subject, command or instrument, observed result,
+realistic falsifiers, controls, production-route evidence, proof deliberately not run,
+cost/remote boundary, limitations, and typed result.
+
+Prefer the smallest command that can falsify the claim. Run focused proof first,
+affected package/semantic proof next, and broad or platform proof only when the claim or
+integration policy requires it.
 
 ## Procedure
 
@@ -32,6 +74,17 @@ Do not inspect sibling worktrees or neighbouring PR overlap merely to reserve a 
 3. Run `$review-tests` against the observed execution and realistic wrong implementations.
 4. Strengthen and re-execute the proof until adequate or a material premise changes.
 5. Continue to `$build-candidate`.
+
+## GitHub boundary
+
+Publish when the proof changes the accepted behavior, owner, obligation, route, or
+support boundary; when a reusable oracle/falsifier will help later work; or when a
+material `NOT_PROVEN` remote/platform boundary must survive handoff. Link stable logs or
+artifacts rather than copying them.
+
+Keep proof-agent identity, topology, retries, temporary experiments, raw output,
+intermediate mutations, and routine reruns runtime-local. Do not write proof workflow
+state to tracked files or post one comment per run.
 
 ## What this establishes
 

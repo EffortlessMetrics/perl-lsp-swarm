@@ -377,8 +377,8 @@ impl ParsedSnapshot {
             #[cfg(test)]
             self.source_region_index_build_count
                 .set(self.source_region_index_build_count.get() + 1);
-            Arc::new(perl_parser_core::SourceRegionIndex::build_with_hash(
-                &self.source,
+            Arc::new(perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(
+                Arc::clone(&self.source),
                 self.content_hash,
             ))
         }))
@@ -474,6 +474,13 @@ pub struct DocumentState {
     /// subsystems that operate on `&str`. Updated lazily when rope changes.
     pub text: String,
 
+    /// `Arc<str>` handle to the same content as `text`, maintained in sync.
+    /// Cloning this handle is O(1) (vs O(n) for `text.clone()`), so the
+    /// diagnostic publish path and other snapshot consumers clone the `Arc`
+    /// instead of deep-copying the full document text on every keystroke
+    /// (#5053).
+    pub text_arc: std::sync::Arc<str>,
+
     /// LSP document version number for synchronization
     pub version: i32,
 
@@ -536,6 +543,7 @@ impl DocumentState {
 
         Self {
             rope,
+            text_arc: std::sync::Arc::from(content),
             text,
             version,
             parsed: None,
@@ -546,6 +554,21 @@ impl DocumentState {
             #[cfg(feature = "incremental")]
             incremental_state: None,
         }
+    }
+
+    /// Returns the document text as `&str` from the `text_arc` field (#4999).
+    ///
+    /// Callers that need `&str` access (most providers) should use this
+    /// accessor instead of cloning `self.text` to a `String`. This avoids
+    /// a full-document heap copy on the hot path.
+    ///
+    /// Callers that need an owned `String` (e.g., passing to a function that
+    /// consumes it, or handing it to a background thread) should clone from
+    /// `text_arc` via `self.text_arc.to_string()` rather than `self.text.clone()`,
+    /// since `text_arc` is the canonical copy and `text` may eventually be
+    /// removed once all callers migrate.
+    pub fn text_str(&self) -> &str {
+        &self.text_arc
     }
 
     /// Construct a document state from raw rope/text/version parts while
@@ -566,6 +589,7 @@ impl DocumentState {
         let line_starts = LineStartsCache::new_rope(&rope);
         Self {
             rope,
+            text_arc: std::sync::Arc::from(text.as_str()),
             text,
             version,
             parsed: None,
@@ -589,7 +613,8 @@ impl DocumentState {
     /// clearing `parsed` on every edit would violate it.
     pub fn update_content(&mut self, content: &str, version: i32) {
         self.rope = ropey::Rope::from_str(content);
-        self.text = content.to_string();
+        self.text_arc = std::sync::Arc::from(content);
+        self.text = self.text_arc.to_string();
         self.version = version;
         self.line_starts = LineStartsCache::new(content);
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -630,7 +655,12 @@ impl DocumentState {
     pub(crate) fn replace_text_state(&mut self, rope: ropey::Rope, text: String, version: i32) {
         self.line_starts = LineStartsCache::new_rope(&rope);
         self.rope = rope;
-        self.text = text;
+        // Create the Arc first (consuming `text`) then clone from Arc for the
+        // owned String field. This is one allocation (Arc::from) + one refcount
+        // bump + one string copy, vs the previous two full copies
+        // (text.clone() + Arc::from(text)) (#5005).
+        self.text_arc = std::sync::Arc::from(text);
+        self.text = self.text_arc.to_string();
         self.version = version;
     }
 
@@ -733,7 +763,10 @@ impl DocumentState {
 
         // Update cached string and caches. `parsed` is deliberately
         // preserved -- see the doc comment on `update_content`.
-        self.text = self.rope.to_string();
+        // Create Arc first, then derive String from Arc to avoid the
+        // double-store pattern (#5005).
+        self.text_arc = std::sync::Arc::<str>::from(self.rope.to_string().as_str());
+        self.text = self.text_arc.to_string();
         self.version = version;
         self.line_starts = LineStartsCache::new(&self.text);
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -1395,7 +1428,7 @@ pub fn normalize_package_separator(s: &str) -> Cow<'_, str> {
 }
 
 /// Client capabilities received during initialization
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ClientCapabilities {
     /// Supports LocationLink for goto declaration
     pub declaration_link_support: bool,
@@ -1530,4 +1563,55 @@ pub struct ClientCapabilities {
     /// handle `{defaultBehavior: true}` PrepareRenameResult responses; the server
     /// may delegate word-boundary selection to the client when this is set.
     pub prepare_support_default_behavior: u8,
+    /// Client supports markdown in MarkupContent responses (hover, completion,
+    /// signature help). Parsed from `capabilities.general.markup.contentFormat`
+    /// or `capabilities.textDocument.hover.contentFormat` — defaults to `true`
+    /// since most modern LSP clients support markdown (#1724).
+    pub markdown_support: bool,
+}
+
+impl Default for ClientCapabilities {
+    fn default() -> Self {
+        Self {
+            declaration_link_support: false,
+            definition_link_support: false,
+            type_definition_link_support: false,
+            implementation_link_support: false,
+            dynamic_registration_support: false,
+            file_watcher_relative_pattern_support: false,
+            inline_completion_support: false,
+            inline_completion_dynamic_registration_support: false,
+            workspace_configuration_support: false,
+            workspace_apply_edit_support: false,
+            workspace_folders_support: false,
+            snippet_support: false,
+            workspace_edit_document_changes_support: false,
+            workspace_edit_snippet_edit_support: false,
+            workspace_edit_metadata_support: false,
+            completion_commit_characters_support: false,
+            markup_message_support: false,
+            code_action_documentation_support: false,
+            code_action_disabled_support: false,
+            code_action_llm_generated_tag_support: false,
+            code_lens_refresh_support: false,
+            semantic_tokens_refresh_support: false,
+            inlay_hint_refresh_support: false,
+            inlay_hint_support: false,
+            code_lens_resolve_support: None,
+            inline_value_refresh_support: false,
+            diagnostic_refresh_support: false,
+            folding_range_refresh_support: false,
+            show_document_support: false,
+            work_done_progress_support: false,
+            inlay_hint_resolve_support: None,
+            label_details_support: false,
+            completion_list_item_defaults_data_support: false,
+            completion_list_apply_kind_support: false,
+            position_encoding: crate::textdoc::PosEnc::default(),
+            prepare_support_default_behavior: 0,
+            // Markdown support defaults to true: most LSP clients support
+            // markdown, and the LSP spec treats it as the default (#1724).
+            markdown_support: true,
+        }
+    }
 }

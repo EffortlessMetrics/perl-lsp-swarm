@@ -5,6 +5,7 @@ use super::DiagnosticCode;
 /// Category of diagnostic codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DiagnosticCategory {
     /// Parser-related diagnostics (PL001-PL099)
     Parser,
@@ -24,6 +25,8 @@ pub enum DiagnosticCategory {
     Import,
     /// Heredoc anti-patterns (PL800-PL899)
     Heredoc,
+    /// Version compatibility (PL900-PL999)
+    VersionCompatibility,
 }
 
 impl fmt::Display for DiagnosticCategory {
@@ -38,6 +41,7 @@ impl fmt::Display for DiagnosticCategory {
             Self::Security => write!(f, "Security"),
             Self::Import => write!(f, "Import"),
             Self::Heredoc => write!(f, "Heredoc"),
+            Self::VersionCompatibility => write!(f, "Version Compatibility"),
         }
     }
 }
@@ -74,7 +78,8 @@ impl DiagnosticCode {
             | Self::MissingReturn
             | Self::InvalidPrototype
             | Self::RoleConflict
-            | Self::MissingPodCoverage => DiagnosticCategory::Subroutine,
+            | Self::MissingPodCoverage
+            | Self::UnresolvedQualifiedCall => DiagnosticCategory::Subroutine,
 
             Self::BarewordFilehandle
             | Self::TwoArgOpen
@@ -86,8 +91,9 @@ impl DiagnosticCode {
             | Self::EvalErrorFlow
             | Self::DuplicateHashKey
             | Self::GotoUndefinedLabel
-            | Self::LoopControlUndefinedLabel
-            | Self::VersionIncompatFeature => DiagnosticCategory::BestPractices,
+            | Self::LoopControlUndefinedLabel => DiagnosticCategory::BestPractices,
+
+            Self::VersionIncompatFeature => DiagnosticCategory::VersionCompatibility,
 
             Self::DeprecatedDefined | Self::DeprecatedArrayBase => DiagnosticCategory::Deprecated,
 

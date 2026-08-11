@@ -1,7 +1,12 @@
 package Database;
 use strict;
 use warnings;
-use DBI;
+
+# DBI is optional for this demo — the save() stub prints rather than
+# connecting to a real database, so don't hard-require it.
+BEGIN {
+    eval { require DBI };
+}
 
 sub connect {
     # Database connection logic

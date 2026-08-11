@@ -16,7 +16,7 @@ use perl_parser::Parser;
 fn diagnostics_for(source: &str) -> Vec<Diagnostic> {
     let output = Parser::new(source).parse_with_recovery();
     let ast = Arc::new(output.ast);
-    let provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let provider = DiagnosticsProvider::new();
     provider.get_diagnostics(&ast, &output.diagnostics, source, None)
 }
 
@@ -26,6 +26,7 @@ fn severity_name(severity: DiagnosticSeverity) -> &'static str {
         DiagnosticSeverity::Warning => "Warning",
         DiagnosticSeverity::Information => "Information",
         DiagnosticSeverity::Hint => "Hint",
+        _ => "Other",
     }
 }
 

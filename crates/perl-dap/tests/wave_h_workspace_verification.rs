@@ -5,26 +5,25 @@
 //!
 //! Run with: `cargo test -p perl-dap --test wave_h_workspace_verification`
 
-// Tests use panic! as structured test failure reporters.
-#![allow(clippy::panic)]
-
 use std::process::Command;
 
 #[test]
-fn test_perl_lsp_can_build_with_new_imports() {
+fn test_perl_lsp_can_build_with_new_imports() -> Result<(), Box<dyn std::error::Error>> {
     // Verify that perl-lsp crate builds successfully with the new import paths
     // It should depend on perl_dap instead of perl_dap_platform
 
     let output = Command::new("cargo")
         .args(["build", "-p", "perl-lsp-rs", "--message-format=short"])
-        .output();
-    match output {
-        Ok(out) if !out.status.success() => {
-            panic!("perl-lsp-rs build failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        Err(e) => panic!("cargo build failed to start: {e}"),
-        _ => {}
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "perl-lsp-rs build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
+
+    Ok(())
 }
 
 #[test]
@@ -47,50 +46,67 @@ fn test_rs_core_config_can_build_after_absorption() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn test_executable_binary_builds_successfully() {
+fn test_executable_binary_builds_successfully() -> Result<(), Box<dyn std::error::Error>> {
     // Verify that the perl-dap binary itself builds successfully
     // with the new module structure
 
     let output =
-        Command::new("cargo").args(["build", "-p", "perl-dap", "--bin", "perl-dap"]).output();
-    match output {
-        Ok(out) if !out.status.success() => {
-            panic!("perl-dap binary build failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        Err(e) => panic!("cargo build failed: {e}"),
-        _ => {}
+        Command::new("cargo").args(["build", "-p", "perl-dap", "--bin", "perl-dap"]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "perl-dap binary build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_clippy_has_no_warnings_in_new_modules() {
-    // Verify that the new module code doesn't introduce clippy warnings
+fn test_clippy_has_no_warnings_in_new_modules() -> Result<(), Box<dyn std::error::Error>> {
+    // Verify that the new module code doesn't introduce clippy warnings.
+    // This test MUST fail on clippy warnings — a silent-pass version that
+    // only logs was identified as a false-confidence pattern (#954).
+    //
+    // Temporarily allows wildcard_imports warnings until Phase 2 of #2333
+    // (crate-by-crate wildcard fix) reaches perl-dap's 19 use super::* sites.
 
     let output = Command::new("cargo")
-        .args(["clippy", "-p", "perl-dap", "--lib", "--", "-D", "warnings"])
-        .output();
-    match output {
-        Ok(out) => {
-            if !out.status.success() {
-                // Log but don't fail (pre-existing warnings may exist)
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                eprintln!("clippy warnings detected (may be pre-existing):\n{}", stderr);
-            }
-        }
-        Err(e) => panic!("cargo clippy failed to start: {e}"),
+        .args([
+            "clippy",
+            "-p",
+            "perl-dap",
+            "--lib",
+            "--",
+            "-D",
+            "warnings",
+            "-A",
+            "clippy::wildcard_imports",
+        ])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "clippy warnings detected in perl-dap lib (run: cargo clippy -p perl-dap --lib -- -D warnings):\n{stderr}"
+        )
+        .into());
     }
+    Ok(())
 }
 
 #[test]
-fn test_formatting_is_correct() {
+fn test_formatting_is_correct() -> Result<(), Box<dyn std::error::Error>> {
     // Verify code formatting is consistent
 
-    let output = Command::new("cargo").args(["fmt", "-p", "perl-dap", "--", "--check"]).output();
-    match output {
-        Ok(out) if !out.status.success() => {
-            panic!("code formatting issues found:\n{}", String::from_utf8_lossy(&out.stderr));
-        }
-        Err(e) => panic!("cargo fmt failed to start: {e}"),
-        _ => {}
+    let output = Command::new("cargo").args(["fmt", "-p", "perl-dap", "--", "--check"]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "code formatting issues found:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
+    Ok(())
 }

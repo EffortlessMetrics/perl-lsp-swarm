@@ -20,7 +20,7 @@
   <!-- perl-lsp:vs-marketplace-installs-badge:start -->
   <a href="https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/badge/VS%20Marketplace-313%20installs-0078D4" alt="VS Marketplace installs" /></a>
   <!-- perl-lsp:vs-marketplace-installs-badge:end -->
-  <a href="https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs"><img src="https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads" alt="Open VSX downloads" /></a>
+  <a href="https://open-vsx.org/extension/EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads" alt="Open VSX downloads" /></a>
 </p>
 
 <p align="center">
@@ -72,10 +72,20 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-**macOS and Linux** — installer script; installs `perllsp` and `perl-dap`, and verifies the release archive against the published `SHA256SUMS` when that file and a checksum tool are both available ([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
+**macOS and Linux** — use a manual archive from
+[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
+the release closeout publishes an immutable installer ref and the reviewed
+SHA-256 digest of `scripts/install.sh`. The remote wrapper no longer executes
+installer logic selected from mutable `master`. Once a release packet supplies
+both values, the identity-bound bootstrap has this shape
+([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 ```
 
 **Homebrew** (macOS, Linux via Linuxbrew) — from the owned EffortlessMetrics tap, not Homebrew/core:
@@ -96,11 +106,13 @@ has not been promoted to the publication repo
 ([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)). Use
 the manual archive until it has.
 
-Then confirm the install before wiring it into an editor or CI:
+Then inspect the install before wiring it into an editor. `--doctor` reports
+the local Perl and workspace setup; it is a diagnostic report, not a CI gate.
+`--health` is only a liveness probe that confirms the binary can execute:
 
 ```bash
 perllsp --version
-perllsp --health
+perllsp --doctor
 ```
 
 Full options, prebuilt-archive downloads, Windows package managers, and
@@ -109,7 +121,10 @@ Editor configuration: [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md)
 
 The verified GitHub `v0.17.0` release assets are public beta. Other distribution
 channels are independently versioned and are not proven current by that receipt;
-verify `perllsp --version` and `perllsp --health` before editor or CI use.
+inspect `perllsp --version` and `perllsp --doctor` before editor use. For CI,
+run explicit checks for the Perl, workspace, and module paths your job requires;
+the doctor report's exit status is not a readiness gate. Use `perllsp --health`
+when you only need to confirm that the executable starts; it prints `ok <version>`.
 
 Other editors use the `perllsp --stdio` server command after installing a release binary.
 

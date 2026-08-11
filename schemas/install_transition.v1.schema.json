@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/install_transition.v1.schema.json",
+  "title": "install_transition.v1",
+  "description": "Topology-bound install, upgrade, rejection, recovery, rollback, or channel-identity receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "check",
+    "schema_version",
+    "status",
+    "claim_boundary",
+    "candidate",
+    "transition",
+    "limitations"
+  ],
+  "properties": {
+    "check": {
+      "const": "install-transition"
+    },
+    "schema_version": {
+      "const": "install_transition.v1"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "blocked",
+        "not_proven"
+      ]
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidate"
+    },
+    "transition": {
+      "$ref": "#/$defs/transition"
+    },
+    "limitations": {
+      "$ref": "#/$defs/non_empty_strings"
+    }
+  },
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "optional_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "optional_string": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "non_empty_strings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_set_id",
+        "frozen_product_sha",
+        "prepared_swarm_sha",
+        "release_repo_sha",
+        "release_topology_sha256",
+        "candidate_id",
+        "previous_version",
+        "candidate_version",
+        "extension_version",
+        "server_version",
+        "dap_version",
+        "platform",
+        "target"
+      ],
+      "properties": {
+        "artifact_set_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*"
+        },
+        "frozen_product_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "prepared_swarm_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "release_repo_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "release_topology_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "previous_version": {
+          "$ref": "#/$defs/optional_string"
+        },
+        "candidate_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "extension_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "server_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dap_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "topology_path_id",
+        "path",
+        "class",
+        "documented_primary",
+        "expected_asset",
+        "resolved_asset",
+        "intended_disposition",
+        "observed_disposition",
+        "outcome",
+        "observed_release_identity",
+        "artifact_verified",
+        "artifact_sha256",
+        "known_good_preserved",
+        "partial_artifact_promoted",
+        "mixed_version_reported_ready",
+        "unsupported_target_selected",
+        "rollback_completed",
+        "candidate_process_left_running",
+        "compatibility_mismatch_detected",
+        "user_action",
+        "limitations"
+      ],
+      "properties": {
+        "topology_path_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "enum": [
+            "vsix",
+            "github_archive",
+            "posix_installer",
+            "powershell_installer",
+            "cargo_install",
+            "manual_archive"
+          ]
+        },
+        "class": {
+          "enum": [
+            "clean_install",
+            "normal_upgrade",
+            "cached_old_binary",
+            "version_or_target_mismatch",
+            "interrupted_install",
+            "rollback",
+            "channel_identity"
+          ]
+        },
+        "documented_primary": {
+          "type": "boolean"
+        },
+        "expected_asset": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolved_asset": {
+          "$ref": "#/$defs/optional_string"
+        },
+        "intended_disposition": {
+          "enum": [
+            "applied",
+            "rejected",
+            "rolled_back"
+          ]
+        },
+        "observed_disposition": {
+          "enum": [
+            "applied",
+            "rejected",
+            "rolled_back"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "failed",
+            "not_proven"
+          ]
+        },
+        "observed_release_identity": {
+          "$ref": "#/$defs/optional_string"
+        },
+        "artifact_verified": {
+          "type": "boolean"
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/optional_sha256"
+        },
+        "known_good_preserved": {
+          "type": "boolean"
+        },
+        "partial_artifact_promoted": {
+          "type": "boolean"
+        },
+        "mixed_version_reported_ready": {
+          "type": "boolean"
+        },
+        "unsupported_target_selected": {
+          "type": "boolean"
+        },
+        "rollback_completed": {
+          "type": "boolean"
+        },
+        "candidate_process_left_running": {
+          "type": "boolean"
+        },
+        "compatibility_mismatch_detected": {
+          "type": "boolean"
+        },
+        "user_action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limitations": {
+          "$ref": "#/$defs/non_empty_strings"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "artifact_verified": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "artifact_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

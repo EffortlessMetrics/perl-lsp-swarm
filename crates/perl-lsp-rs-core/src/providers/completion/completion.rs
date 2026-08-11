@@ -124,6 +124,7 @@ use perl_semantic_analyzer::semantic::{BuiltinDoc, get_moose_type_documentation}
 use perl_semantic_analyzer::symbol::{SymbolExtractor, SymbolKind, SymbolTable};
 use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 use perl_workspace::workspace_index::WorkspaceIndex;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -190,6 +191,10 @@ pub struct CompletionProvider {
     /// by `LspServer` and survives across requests; this field holds a cheap
     /// `Arc` clone valid for the lifetime of this provider instance.
     scan_cache: Option<Arc<ModuleCompletionScanCache>>,
+    /// Range-indexed pragma map built from the AST at provider construction
+    /// time. Used by `filter_pragma_gated` in `complete_general_context` to
+    /// gate `say` and `use builtin` completions on active pragma state.
+    pub(super) pragma_map: Vec<(std::ops::Range<usize>, perl_pragma::PragmaState)>,
 }
 
 fn method_receiver_start(source: &str, arrow_start: usize) -> usize {
@@ -375,6 +380,7 @@ impl CompletionProvider {
         let type_engine = Self::build_type_engine(ast, workspace_index.is_some());
         let import_map = import_map::extract_import_map(ast);
         let used_modules = import_map::collect_used_module_names(ast);
+        let pragma_map = perl_pragma::PragmaTracker::build(ast);
 
         CompletionProvider {
             symbol_table,
@@ -387,6 +393,7 @@ impl CompletionProvider {
             system_inc_paths,
             include_system_inc,
             scan_cache: None,
+            pragma_map,
         }
     }
 
@@ -1284,10 +1291,11 @@ impl CompletionProvider {
                 .find(|c: char| !c.is_alphanumeric() && c != '_')
                 .unwrap_or(after_brace.len());
             let key = &after_brace[..key_end];
-            if !key.is_empty() && after_brace[key_end..].trim_start().starts_with('}') {
-                if seen.insert(key.to_string()) {
-                    keys.push(key.to_string());
-                }
+            if !key.is_empty()
+                && after_brace[key_end..].trim_start().starts_with('}')
+                && seen.insert(key.to_string())
+            {
+                keys.push(key.to_string());
             }
             search_start = abs_pos + 1;
             if search_start >= source.len() {
@@ -1371,13 +1379,13 @@ impl CompletionProvider {
             }
             let key_prefix_len = key_prefix.len();
             completions.push(CompletionItem {
-                label: key.clone(),
+                label: Cow::Owned(key.clone()),
                 kind: CompletionItemKind::Property,
-                detail: Some(format!("key of %{varname}")),
+                detail: Some(Cow::Owned(format!("key of %{varname}"))),
                 documentation: None,
-                insert_text: Some(key.clone()),
-                sort_text: Some(format!("0h_{key}")),
-                filter_text: Some(key.clone()),
+                insert_text: Some(Cow::Owned(key.clone())),
+                sort_text: Some(Cow::Owned(format!("0h_{key}"))),
+                filter_text: Some(Cow::Owned(key.clone())),
                 additional_edits: vec![],
                 text_edit_range: Some((context.position - key_prefix_len, context.position)),
                 commit_characters: None,
@@ -1395,7 +1403,8 @@ impl CompletionProvider {
     ) {
         let raw_prefix = context.prefix.trim();
         let prefix = raw_prefix.trim_start_matches(['\'', '"']);
-        let mut seen: HashSet<String> = completions.iter().map(|item| item.label.clone()).collect();
+        let mut seen: HashSet<String> =
+            completions.iter().map(|item| item.label.to_string()).collect();
 
         let mut push_completion =
             |label: &str, detail: String, documentation: String, kind: CompletionItemKind| {
@@ -1404,13 +1413,13 @@ impl CompletionProvider {
                 }
 
                 completions.push(CompletionItem {
-                    label: label.to_string(),
+                    label: Cow::Owned(label.to_string()),
                     kind,
-                    detail: Some(detail),
-                    documentation: Some(documentation),
-                    insert_text: Some(label.to_string()),
-                    sort_text: Some(format!("0t_{label}")),
-                    filter_text: Some(label.to_string()),
+                    detail: Some(Cow::Owned(detail)),
+                    documentation: Some(Cow::Owned(documentation)),
+                    insert_text: Some(Cow::Owned(label.to_string())),
+                    sort_text: Some(Cow::Owned(format!("0t_{label}"))),
+                    filter_text: Some(Cow::Owned(label.to_string())),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
@@ -1508,13 +1517,13 @@ impl CompletionProvider {
         for (label, doc) in options {
             if prefix.is_empty() || label.starts_with(prefix) {
                 completions.push(CompletionItem {
-                    label: label.to_string(),
+                    label: Cow::Borrowed(label),
                     kind: CompletionItemKind::Property,
-                    detail: Some("Moo/Moose option".to_string()),
-                    documentation: Some(doc.to_string()),
-                    insert_text: Some(format!("{label} => ")),
-                    sort_text: Some(format!("0o_{label}")),
-                    filter_text: Some(label.to_string()),
+                    detail: Some(Cow::Borrowed("Moo/Moose option")),
+                    documentation: Some(Cow::Borrowed(doc)),
+                    insert_text: Some(Cow::Owned(format!("{label} => "))),
+                    sort_text: Some(Cow::Owned(format!("0o_{label}"))),
+                    filter_text: Some(Cow::Borrowed(label)),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
@@ -1556,13 +1565,13 @@ impl CompletionProvider {
             }
 
             completions.push(CompletionItem {
-                label: field_name.to_string(),
+                label: Cow::Owned(field_name.to_string()),
                 kind: CompletionItemKind::Property,
-                detail: Some(detail.clone()),
-                documentation: Some(documentation.clone()),
-                insert_text: Some(format!("{field_name} => ")),
-                sort_text: Some(format!("0f_{field_name}")),
-                filter_text: Some(field_name.to_string()),
+                detail: Some(Cow::Owned(detail.clone())),
+                documentation: Some(Cow::Owned(documentation.clone())),
+                insert_text: Some(Cow::Owned(format!("{field_name} => "))),
+                sort_text: Some(Cow::Owned(format!("0f_{field_name}"))),
+                filter_text: Some(Cow::Owned(field_name.to_string())),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,

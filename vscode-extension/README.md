@@ -139,9 +139,14 @@ The extension automatically downloads the correct `perllsp` binary for your plat
 
 | Platform    | Architectures                      |
 | ----------- | ---------------------------------- |
-| **Windows** | x64, ARM64                         |
+| **Windows** | x64                                |
 | **macOS**   | Intel (x64), Apple Silicon (ARM64) |
 | **Linux**   | x64, ARM64 (glibc and musl)        |
+
+There is no native ARM64 Windows build. On ARM64 the extension installs the x64
+binary on Windows 11, where x64 emulation is available. Windows 10 on ARM
+emulates x86 but not x64; the extension rejects that fallback and you must
+[build from source](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md).
 
 On Linux, `auto` selects the GNU/glibc archive for mainstream distributions and
 the musl archive for Alpine Linux or musl-based containers. Set
@@ -164,8 +169,12 @@ If you prefer to manage the binary yourself:
 # Homebrew via the EffortlessMetrics tap (macOS/Linux)
 brew install effortlessmetrics/tap/perllsp
 
-# One-liner (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+# Identity-bound remote bootstrap once release closeout publishes ref+digest
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 
 # From source
 cargo install --git https://github.com/EffortlessMetrics/perl-lsp --package perllsp
@@ -235,7 +244,7 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 ## Commands
 
 Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
-"Perl". All 35 commands the extension contributes:
+"Perl". All 36 commands the extension contributes:
 
 ### Server and setup
 
@@ -251,6 +260,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show What's New**              | Show release notes for the installed version               |
 | **Perl: Show Output Channel**          | Open the extension output log                              |
 | **Perl: Show Status Menu**             | Quick-access menu for all actions                          |
+| **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
 
 ### Editing and refactoring

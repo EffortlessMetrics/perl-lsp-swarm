@@ -348,6 +348,22 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
+impl perl_parser_core::ErrorClass for BackendError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Network/IO or external service error — infrastructure.
+            Self::Transport(_) | Self::Provider(_) => perl_parser_core::ErrorCategory::Infra,
+            // Bad key or expired token — user configuration issue.
+            Self::Auth(_) => perl_parser_core::ErrorCategory::UserError,
+            // All three may succeed on retry after backoff or cancellation
+            // resolution.
+            Self::Timeout | Self::RateLimited | Self::Cancelled => {
+                perl_parser_core::ErrorCategory::Transient
+            }
+        }
+    }
+}
+
 /// Request payload sent to an AI completion backend.
 #[derive(Debug, Clone)]
 pub struct BackendRequest {
@@ -1004,7 +1020,11 @@ impl InlineCompletionProvider {
         list
     }
 
-    fn filter_parse_safe_items(
+    /// Retain completion items that do not worsen the current parse damage.
+    ///
+    /// This is shared by deterministic and AI-backed completion paths so an
+    /// external completion provider cannot bypass the parser-safety boundary.
+    pub fn filter_parse_safe_items(
         &self,
         list: InlineCompletionList,
         text: &str,

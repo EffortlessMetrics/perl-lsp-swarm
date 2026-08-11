@@ -8,6 +8,11 @@ pub enum FormatterMode {
     #[default]
     Native,
     /// Run native formatting with compatibility defaults for common legacy profiles.
+    ///
+    /// **Note:** Currently produces identical output to [`Native`](Self::Native) —
+    /// no compatibility-specific defaults are implemented yet (#5054 item 6).
+    /// When implemented, this mode will apply less aggressive reformatting
+    /// (preserve existing whitespace, only fix syntax-level issues).
     Compat,
     /// Explicitly use an external legacy formatter adapter.
     ExternalLegacy,

@@ -7,6 +7,7 @@ use super::{
     context::CompletionContext, items::CompletionItem, items::CompletionItemKind,
     items::InsertTextFormat,
 };
+use std::borrow::Cow;
 
 struct XsApiEntry {
     name: &'static str,
@@ -219,13 +220,13 @@ pub fn add_xs_api_completions_for_prefix(
     for entry in XS_API_ENTRIES {
         if prefix.is_empty() || entry.name.starts_with(prefix) {
             completions.push(CompletionItem {
-                label: entry.name.to_string(),
+                label: Cow::Borrowed(entry.name),
                 kind: entry.kind,
-                detail: Some(entry.detail.to_string()),
-                documentation: Some(entry.description.to_string()),
-                insert_text: Some(entry.insert_text.to_string()),
-                sort_text: Some(format!("2_xs_{}", entry.name)),
-                filter_text: Some(entry.name.to_string()),
+                detail: Some(Cow::Borrowed(entry.detail)),
+                documentation: Some(Cow::Borrowed(entry.description)),
+                insert_text: Some(Cow::Borrowed(entry.insert_text)),
+                sort_text: Some(Cow::Owned(format!("2_xs_{}", entry.name))),
+                filter_text: Some(Cow::Borrowed(entry.name)),
                 additional_edits: vec![],
                 text_edit_range: Some((prefix_start, position)),
                 commit_characters: None,

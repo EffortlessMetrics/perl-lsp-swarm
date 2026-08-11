@@ -57,7 +57,7 @@ fn pl303_diags_cross_file(
 
     index
         .with_semantic_queries_for_uri_and_graph(consumer_uri, &scoped_graph, |file_id, queries| {
-            let provider = DiagnosticsProvider::new(&ast, source.to_string());
+            let provider = DiagnosticsProvider::new();
             let all_diags = provider.get_diagnostics_with_search_context_and_semantics(
                 &ast,
                 &[],

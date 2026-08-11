@@ -1,118 +1,24 @@
-//! Error types for the Perl parser within the Perl parsing workflow pipeline
+//! Error types for the Perl parser.
 //!
-//! This module defines comprehensive error handling for Perl parsing operations that occur
-//! throughout the Perl parsing workflow workflow: Parse → Index → Navigate → Complete → Analyze.
+//! This module defines the public error and result types used by parser
+//! consumers. Recovery can preserve partial information for editor workflows,
+//! but recovery is not semantic validation or runtime execution.
 //!
-//! # Error Recovery Strategy
+//! ## Handling a parser result
 //!
-//! When parsing errors occur during Perl parsing:
-//! 1. **Parse stage**: Parsing failures indicate corrupted or malformed Perl source
-//! 2. **Analyze stage**: Syntax errors suggest script inconsistencies requiring fallback processing
-//! 3. **Navigate stage**: Parse failures can break thread analysis - graceful degradation applies
-//! 4. **Complete stage**: Errors impact output generation but preserve original content
-//! 5. **Analyze stage**: Parse failures affect search indexing but maintain basic metadata
+//! ```rust
+//! use perl_parser_core::syntax::error::ParseResult;
 //!
-//! # Performance Context
-//!
-//! Error handling is optimized for large Perl codebase processing scenarios with minimal memory overhead
-//! and fast recovery paths to maintain enterprise-scale performance targets.
-//!
-//! # Usage Examples
-//!
-//! ## Basic Error Handling
-//!
-//! ```ignore
-//! use perl_parser::{Parser, ParseError, ParseResult};
-//!
-//! fn parse_with_error_handling(code: &str) -> ParseResult<()> {
-//!     let mut parser = Parser::new(code);
-//!     match parser.parse() {
-//!         Ok(ast) => {
-//!             println!("Parsing successful");
-//!             Ok(())
-//!         }
-//!         Err(ParseError::UnexpectedEof) => {
-//!             eprintln!("Incomplete code: unexpected end of input");
-//!             Err(ParseError::UnexpectedEof)
-//!         }
-//!         Err(ParseError::UnexpectedToken { found, expected, location }) => {
-//!             eprintln!("Syntax error at position {}: found '{}', expected '{}'",
-//!                      location, found, expected);
-//!             Err(ParseError::UnexpectedToken { found, expected, location })
-//!         }
-//!         Err(e) => {
-//!             eprintln!("Parse error: {}", e);
-//!             Err(e)
-//!         }
+//! fn report(result: ParseResult<()>) {
+//!     match result {
+//!         Ok(()) => println!("parse completed"),
+//!         Err(error) => eprintln!("parse failed: {error}"),
 //!     }
 //! }
 //! ```
 //!
-//! ## Error Recovery in LSP Context
-//!
-//! ```ignore
-//! use perl_parser::{Parser, ParseError, error_recovery::ErrorRecovery};
-//!
-//! fn parse_with_recovery(code: &str) -> Vec<String> {
-//!     let mut parser = Parser::new(code);
-//!     let mut errors = Vec::new();
-//!
-//!     match parser.parse() {
-//!         Ok(_) => println!("Parse successful"),
-//!         Err(err) => {
-//!             // Log error for diagnostics
-//!             errors.push(format!("Parse error: {}", err));
-//!
-//!             // Attempt error recovery for LSP
-//!             match err {
-//!                 ParseError::UnexpectedToken { .. } => {
-//!                     // Continue parsing from next statement
-//!                     println!("Attempting recovery...");
-//!                 }
-//!                 ParseError::RecursionLimit => {
-//!                     // Use iterative parsing approach
-//!                     println!("Switching to iterative parsing...");
-//!                 }
-//!                 _ => {
-//!                     // Use fallback parsing strategy
-//!                     println!("Using fallback parsing...");
-//!                 }
-//!             }
-//!         }
-//!     }
-//!     errors
-//! }
-//! ```
-//!
-//! ## Comprehensive Error Context
-//!
-//! ```
-//! use perl_error::ParseError;
-//!
-//! fn create_detailed_error() -> ParseError {
-//!     ParseError::UnexpectedToken {
-//!         found: "number".to_string(),
-//!         expected: "identifier".to_string(),
-//!         location: 10, // byte position 10
-//!     }
-//! }
-//!
-//! fn handle_error_with_context(error: &ParseError) {
-//!     match error {
-//!         ParseError::UnexpectedToken { found, expected, location } => {
-//!             println!("Syntax error at byte position {}: found '{}', expected '{}'",
-//!                     location, found, expected);
-//!         }
-//!         ParseError::UnexpectedEof => {
-//!             println!("Incomplete input: unexpected end of file");
-//!         }
-//!         _ => {
-//!             println!("Parse error: {}", error);
-//!         }
-//!     }
-//! }
-//! ```
-
+//! The example is covered by a focused compile test below because this crate's
+//! package configuration does not currently run doctests.
 use perl_position_tracking::LineIndex;
 use thiserror::Error;
 
@@ -158,6 +64,9 @@ pub enum RecoverySite {
     PostfixChain,
     /// After a binary infix operator (right-hand side missing).
     InfixRhs,
+    /// At a statement boundary — one statement ended and the next began with no
+    /// `;` between them.
+    Statement,
 }
 
 /// What kind of recovery was applied at a [`RecoverySite`].
@@ -186,7 +95,7 @@ pub enum RecoveryKind {
 /// # Usage
 ///
 /// ```
-/// use perl_error::ParseBudget;
+/// use perl_parser_core::syntax::error::ParseBudget;
 ///
 /// // Use defaults for normal parsing
 /// let budget = ParseBudget::default();
@@ -642,7 +551,11 @@ pub struct ParseOutput {
 pub enum RecoverySalvageClass {
     /// No diagnostics and no `ERROR` AST nodes.
     Clean,
-    /// Only structured recovery diagnostics were emitted; no `ERROR` nodes.
+    /// No `ERROR` nodes were produced, but blocking diagnostics were emitted.
+    ///
+    /// This includes both structured recovery diagnostics and blocking
+    /// diagnostics that did not materialize an `ERROR` node. Callers that
+    /// need the structured-recovery subset should use `recovered_count`.
     StructuredRecoveryOnly,
     /// Parse produced one or more `ERROR` AST nodes.
     ErrorNodesPresent,
@@ -694,11 +607,17 @@ impl RecoverySalvageProfile {
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
 
+        // Count diagnostics that block a clean parse but do not produce an AST
+        // Error node and are not the structured-recovery variant. This catches
+        // SyntaxError, UnexpectedToken, UnexpectedEof, etc. which were
+        // previously invisible to the gate (they fell through to `Clean`).
+        let blocking_non_recovered_count = count_blocking_non_recovered(diagnostics);
+
         let class = if catastrophic {
             RecoverySalvageClass::CatastrophicFailure
         } else if error_node_count > 0 {
             RecoverySalvageClass::ErrorNodesPresent
-        } else if recovered_count > 0 {
+        } else if recovered_count > 0 || blocking_non_recovered_count > 0 {
             RecoverySalvageClass::StructuredRecoveryOnly
         } else {
             RecoverySalvageClass::Clean
@@ -712,6 +631,19 @@ impl RecoverySalvageProfile {
             class,
         }
     }
+}
+
+/// Count blocking diagnostics that are not structured recovery diagnostics.
+///
+/// This remains a standalone helper so adding the corpus-gate signal does not
+/// change the public field layout of [`RecoverySalvageProfile`].
+pub(crate) fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|error| {
+            error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. })
+        })
+        .count()
 }
 
 impl ParseOutput {
@@ -1241,6 +1173,28 @@ mod tests {
     }
 
     #[test]
+    fn blocking_non_recovered_counter_covers_blocking_families_only() {
+        let diagnostics = [
+            ParseError::syntax("syntax", 0),
+            ParseError::UnexpectedEof,
+            ParseError::UnexpectedToken {
+                expected: "identifier".to_string(),
+                found: "}".to_string(),
+                location: 3,
+            },
+            ParseError::LexerError { message: "invalid byte".to_string() },
+            ParseError::Advisory { message: "style".to_string(), location: 0 },
+            ParseError::Recovered {
+                site: RecoverySite::ArgList,
+                kind: RecoveryKind::InsertedCloser,
+                location: 0,
+            },
+        ];
+
+        assert_eq!(count_blocking_non_recovered(&diagnostics), 4);
+    }
+
+    #[test]
     fn parse_error_routing_distinguishes_operational_classes() {
         let cases = [
             (ParseError::UnexpectedEof, ErrorCategory::UserError),
@@ -1294,6 +1248,7 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         RecoverySite::HashSubscript => "hash subscript",
         RecoverySite::PostfixChain => "method chain",
         RecoverySite::InfixRhs => "expression",
+        RecoverySite::Statement => "statement",
     };
     match kind {
         RecoveryKind::InsertedCloser => {
@@ -1305,6 +1260,8 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         RecoveryKind::TruncatedChain => {
             format!("Incomplete {site_desc} — expected a continuation")
         }
-        RecoveryKind::InferredSemicolon => "Inferred a missing semicolon".to_string(),
+        RecoveryKind::InferredSemicolon => {
+            format!("Missing `;` at the end of the {site_desc}")
+        }
     }
 }

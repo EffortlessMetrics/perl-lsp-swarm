@@ -18,10 +18,19 @@ describe('README command coverage', () => {
   ) as {
     contributes: { commands: Array<{ command: string; title: string; category?: string }> };
   };
+  const localizationCatalog = JSON.parse(
+    fs.readFileSync(path.join(extensionRoot, 'package.nls.json'), 'utf8'),
+  ) as Record<string, string>;
   const readme = fs.readFileSync(path.join(extensionRoot, 'README.md'), 'utf8');
 
-  const paletteLabel = (cmd: { title: string; category?: string }): string =>
-    cmd.category ? `${cmd.category}: ${cmd.title}` : cmd.title;
+  const paletteLabel = (cmd: { command: string; title: string; category?: string }): string => {
+    const match = /^%([^%]+)%$/.exec(cmd.title);
+    const title = match?.[1] ? localizationCatalog[match[1]] : cmd.title;
+    if (!title) {
+      throw new Error(`Missing localization catalog entry for ${cmd.command}`);
+    }
+    return cmd.category ? `${cmd.category}: ${title}` : title;
+  };
 
   it('documents every contributed command', () => {
     const missing = packageJson.contributes.commands

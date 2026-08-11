@@ -3,11 +3,13 @@
 //! README badges stay repo-scoped. These commands produce diff-scoped artifacts
 //! under `target/` for PR review, annotations, and mutation routing.
 
+use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -24,6 +26,7 @@ const DEFAULT_HEAD: &str = "HEAD";
 const PR_EVIDENCE_JSON: &str = "target/ripr/pr/repo-exposure.json";
 const PR_EVIDENCE_MD: &str = "target/ripr/pr/repo-exposure.md";
 const PR_DIFF: &str = "target/ripr/pr/pr.diff";
+const PR_DIFF_RECEIPT: &str = "target/ripr/pr/committed-diff.json";
 /// Raw `ripr check --format json` output, uploaded as a CI artifact for diagnostics (#1346).
 /// The `repo-exposure.json` summary only contains per-bucket counts, not the `findings[]`
 /// array.  Without `findings[]` it is impossible to diagnose suppression mismatches offline.
@@ -36,12 +39,19 @@ const IMPACTED_JSON: &str = "target/xtask/impacted-evidence/latest.json";
 const IMPACTED_MD: &str = "target/xtask/impacted-evidence/latest.md";
 const DEFAULT_RIPR_SUPPRESSIONS: &str = "policy/ripr-suppressions.toml";
 
-pub fn ripr_pr(root: &str, base: &str, head: &str, check: bool) -> Result<()> {
+pub fn ripr_pr(
+    root: &str,
+    base: &str,
+    head: &str,
+    pr_head: Option<&str>,
+    check: bool,
+) -> Result<()> {
     let repo = repo_root()?;
     let options = PrEvidenceOptions {
         root: normalized_option(root, DEFAULT_ROOT),
         base: normalized_option(base, DEFAULT_BASE),
         head: normalized_option(head, DEFAULT_HEAD),
+        pr_head_sha: normalized_optional(pr_head),
     };
     if check { check_pr_evidence(&repo, &options) } else { write_pr_evidence(&repo, &options) }
 }
@@ -78,6 +88,7 @@ pub fn ripr_review_comments(
     root: &str,
     base: &str,
     head: &str,
+    pr_head: Option<&str>,
     timeout_seconds: Option<u64>,
     check: bool,
 ) -> Result<()> {
@@ -86,6 +97,7 @@ pub fn ripr_review_comments(
         root: normalized_option(root, DEFAULT_ROOT),
         base: normalized_option(base, DEFAULT_BASE),
         head: normalized_option(head, DEFAULT_HEAD),
+        pr_head_sha: normalized_optional(pr_head),
         timeout_seconds: timeout_seconds.filter(|seconds| *seconds > 0),
     };
     if check {
@@ -182,6 +194,14 @@ fn normalized_option(value: &str, default: &str) -> String {
     if value.trim().is_empty() { default.to_string() } else { value.to_string() }
 }
 
+fn normalized_optional(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
+fn optional_sha_value(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |sha| json!(sha))
+}
+
 fn repo_root() -> Result<PathBuf> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -195,6 +215,7 @@ struct PrEvidenceOptions {
     root: String,
     base: String,
     head: String,
+    pr_head_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -670,10 +691,14 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let changed_files = changed_files(repo, &options.base, &options.head)?;
-    write_pr_diff(repo, &options.base, &options.head)?;
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let changed_file_count = diff_receipt.entries.len();
+    write_pr_diff(repo, &diff_receipt)?;
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
@@ -683,15 +708,17 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
-    let packet = pr_evidence_packet(
+    let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
+    let packet = pr_evidence_packet_with_count(
         options,
-        &changed_files,
         &check_value,
         &base_sha,
         &head_sha,
         &suppressions,
+        changed_file_count,
+        Some(&head_extents),
     );
-    validate_pr_evidence_packet(&packet, options, changed_files.len(), true, &base_sha, &head_sha)?;
+    validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
     write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
     println!("Wrote {PR_RAW_CHECK_JSON}");
@@ -703,9 +730,20 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let changed_files = changed_files(repo, &options.base, &options.head)?;
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let changed_file_count = diff_receipt.entries.len();
+    let committed_diff_text = fs::read_to_string(repo.join(PR_DIFF_RECEIPT))
+        .with_context(|| format!("missing or unreadable {PR_DIFF_RECEIPT}"))?;
+    let committed_diff: CommittedDiffReceipt = serde_json::from_str(&committed_diff_text)
+        .with_context(|| format!("{PR_DIFF_RECEIPT} is invalid"))?;
+    if committed_diff != diff_receipt {
+        bail!("{PR_DIFF_RECEIPT} is stale for the requested base/head range");
+    }
     let text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))
         .with_context(|| format!("missing or unreadable {PR_EVIDENCE_JSON}"))?;
     let packet: Value =
@@ -713,7 +751,7 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     validate_pr_evidence_packet(
         &packet,
         options,
-        changed_files.len(),
+        changed_file_count,
         repo.join(PR_EVIDENCE_MD).exists(),
         &base_sha,
         &head_sha,
@@ -746,25 +784,32 @@ struct RiprPrSummaryCounts {
     /// to a specific bucket, but their paths matched a suppression rule.  Used to decrement
     /// `severe_gaps` after per-bucket suppression has been applied.
     suppressed_unclassified: usize,
+    /// Findings on a `(file, line)` that does not exist in the head revision (#6260) —
+    /// probes on code the change removes. Reported for transparency; not a suppression.
+    outside_head_revision: usize,
+    /// Same, for findings whose classification was not recognized. Decrements
+    /// `severe_gaps` directly, like `suppressed_unclassified`.
+    outside_head_unclassified: usize,
 }
 
 fn ripr_pr_summary_counts(
     check_value: &Value,
     check_summary: Option<&Map<String, Value>>,
     suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
 ) -> RiprPrSummaryCounts {
     let summary_counts = RiprPrSummaryCounts {
         weakly_exposed: count_field(check_summary, "weakly_exposed"),
         reachable_unrevealed: count_field(check_summary, "reachable_unrevealed"),
         no_static_path: count_field(check_summary, "no_static_path"),
-        suppressed_by_policy: 0,
-        suppressed_unclassified: 0,
+        ..RiprPrSummaryCounts::default()
     };
     let Some(findings) = check_value.get("findings").and_then(Value::as_array) else {
         return summary_counts;
     };
 
     let mut suppressed = RiprPrSummaryCounts::default();
+    let mut outside_head = RiprPrSummaryCounts::default();
     let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
     for finding in findings {
         // ripr 0.5.x: "classification" field, values "weakly_exposed" | "reachable_unrevealed" | "no_static_path".
@@ -784,6 +829,10 @@ fn ripr_pr_summary_counts(
             Some("no_static_path") => Some("no_static_path"),
             _ => None,
         };
+        // A finding is discounted for exactly one reason: suppression policy takes
+        // precedence so `suppressed_by_policy` keeps its established meaning, and
+        // head-range filtering (#6260) applies only to what policy left standing.
+        let outside = head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding));
         // Path suppression is checked BEFORE the classification guard (#1346).
         // A finding whose classification is unrecognized must still be suppressed if its
         // path matches a policy rule — skipping only path-unknown findings, not
@@ -792,12 +841,18 @@ fn ripr_pr_summary_counts(
             if suppression_matches_finding(suppressions, finding) {
                 suppressed.suppressed_by_policy += 1;
                 suppressed.suppressed_unclassified += 1;
+            } else if outside {
+                outside_head.outside_head_revision += 1;
+                outside_head.outside_head_unclassified += 1;
             }
             continue;
         };
         let counts = if suppression_matches_finding(suppressions, finding) {
             suppressed.suppressed_by_policy += 1;
             &mut suppressed
+        } else if outside {
+            outside_head.outside_head_revision += 1;
+            &mut outside_head
         } else {
             &mut unsuppressed_from_findings
         };
@@ -812,14 +867,24 @@ fn ripr_pr_summary_counts(
         // Per-bucket suppression: subtract classified suppressions from their respective buckets.
         // Unclassified suppressions (suppressed_unclassified) cannot be attributed to a bucket,
         // so they are carried through for the caller to subtract from severe_gaps directly.
+        // Findings outside the head revision (#6260) are subtracted the same way.
         return RiprPrSummaryCounts {
-            weakly_exposed: summary_counts.weakly_exposed.saturating_sub(suppressed.weakly_exposed),
+            weakly_exposed: summary_counts
+                .weakly_exposed
+                .saturating_sub(suppressed.weakly_exposed)
+                .saturating_sub(outside_head.weakly_exposed),
             reachable_unrevealed: summary_counts
                 .reachable_unrevealed
-                .saturating_sub(suppressed.reachable_unrevealed),
-            no_static_path: summary_counts.no_static_path.saturating_sub(suppressed.no_static_path),
+                .saturating_sub(suppressed.reachable_unrevealed)
+                .saturating_sub(outside_head.reachable_unrevealed),
+            no_static_path: summary_counts
+                .no_static_path
+                .saturating_sub(suppressed.no_static_path)
+                .saturating_sub(outside_head.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
+            outside_head_revision: outside_head.outside_head_revision,
+            outside_head_unclassified: outside_head.outside_head_unclassified,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -830,6 +895,8 @@ fn ripr_pr_summary_counts(
     RiprPrSummaryCounts {
         suppressed_by_policy: suppressed.suppressed_by_policy,
         suppressed_unclassified: 0,
+        outside_head_revision: outside_head.outside_head_revision,
+        outside_head_unclassified: 0,
         ..unsuppressed_from_findings
     }
 }
@@ -876,6 +943,144 @@ fn ripr_finding_path(finding: &Value) -> Option<String> {
         .filter(|path| !path.trim().is_empty())
 }
 
+/// Line a RIPR finding points at, across the receipt shapes xtask accepts.
+///
+/// ripr 0.5.x carries it under `probe.line`; 0.9.x under `seam.line`. A finding
+/// with no line cannot be located in the head revision and is never filtered.
+fn ripr_finding_line(finding: &Value) -> Option<u64> {
+    ["probe", "seam"]
+        .into_iter()
+        .find_map(|key| finding.get(key).and_then(|node| node.get("line")))
+        .or_else(|| finding.get("line"))
+        .and_then(Value::as_u64)
+        .filter(|line| *line > 0)
+}
+
+/// Where a finding's path sits in the head revision of the change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadPathState {
+    /// The path exists at head with this many lines.
+    Present(usize),
+    /// The change removes the path (deleted outright, or renamed away).
+    Removed,
+    /// The path could not be tied to the change's file set. Never filtered.
+    Unknown,
+}
+
+/// Line extents of the changed files as they exist in the **head** revision (#6260).
+///
+/// `ripr check --diff` probes both sides of the diff and reports findings by line
+/// number, so a probe on a line the change *deletes* is emitted against the head
+/// path. Counting those as new gaps produces an unsatisfiable required check: no
+/// test can cover a line that no longer exists, and the guidance generator
+/// correctly names no seam for them, so the count and the guidance disagree.
+///
+/// This index answers "does `(file, line)` exist at head?" for the change's own
+/// file set. It is built from the committed-diff receipt, so it costs one
+/// `git show` per changed file and needs no second ripr run.
+///
+/// Every ambiguous answer is `Unknown`, which does **not** filter: an unreadable
+/// blob, a finding with no path or no line, and a path that cannot be tied to
+/// the change all keep their finding counted. The gate keeps failing closed on
+/// real new gaps; it stops counting probes on code the change removes.
+#[derive(Debug, Default, Clone)]
+struct HeadLineExtents {
+    /// Repo-relative path -> line count in the head revision.
+    present: BTreeMap<String, usize>,
+    /// Repo-relative paths the change removes.
+    removed: BTreeSet<String>,
+}
+
+impl HeadLineExtents {
+    fn from_committed_diff(repo: &Path, diff: &CommittedDiffReceipt) -> Self {
+        let mut present = BTreeMap::new();
+        let mut removed = BTreeSet::new();
+        for entry in &diff.entries {
+            if let Some(new_path) = entry.new_path.as_deref() {
+                // An unreadable blob yields no entry, so its findings resolve to
+                // `Unknown` and stay counted.
+                if let Some(lines) = head_file_line_count(repo, &diff.head_sha, new_path) {
+                    present.insert(normalize_repo_relative_path(new_path), lines);
+                }
+            }
+            // Removal is read from the status code, never inferred from "has an old
+            // path but no extent". `M` and `T` carry `old_path == new_path`, so
+            // inferring would turn a failed `git show` on a *modified* file into a
+            // phantom deletion and silently drop its findings — fail-open, the one
+            // direction this filter must never take. `C` leaves its source in place;
+            // only `D` and `R` remove one.
+            if entry.status.starts_with(['D', 'R']) {
+                if let Some(old_path) = entry.old_path.as_deref() {
+                    removed.insert(normalize_repo_relative_path(old_path));
+                }
+            }
+        }
+        // A path some other entry adds back still exists at head and keeps its extent.
+        removed.retain(|path| !present.contains_key(path));
+        Self { present, removed }
+    }
+
+    fn resolve(&self, raw_path: &str) -> HeadPathState {
+        let normalized = normalize_repo_relative_path(raw_path);
+        if let Some(lines) = self.present.get(&normalized) {
+            return HeadPathState::Present(*lines);
+        }
+        if self.removed.contains(&normalized) {
+            return HeadPathState::Removed;
+        }
+        // Findings may carry an absolute or checkout-prefixed path. Accept a
+        // unique repo-relative suffix; anything ambiguous stays `Unknown`.
+        let candidates = self
+            .present
+            .iter()
+            .map(|(path, lines)| (path, HeadPathState::Present(*lines)))
+            .chain(self.removed.iter().map(|path| (path, HeadPathState::Removed)))
+            .filter(|(path, _)| path_suffix_matches(&normalized, path))
+            .map(|(_, state)| state)
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [state] => *state,
+            _ => HeadPathState::Unknown,
+        }
+    }
+
+    /// True only when the finding is positively known to sit outside the head revision.
+    fn finding_is_outside_head(&self, finding: &Value) -> bool {
+        let Some(path) = ripr_finding_path(finding) else {
+            return false;
+        };
+        let Some(line) = ripr_finding_line(finding) else {
+            return false;
+        };
+        match self.resolve(&path) {
+            HeadPathState::Present(lines) => line > lines as u64,
+            HeadPathState::Removed => true,
+            HeadPathState::Unknown => false,
+        }
+    }
+}
+
+fn head_file_line_count(repo: &Path, head_sha: &str, path: &str) -> Option<usize> {
+    let spec = format!("{head_sha}:{path}");
+    run_git_output(repo, &["show", spec.as_str()]).ok().map(|blob| blob.lines().count())
+}
+
+fn normalize_repo_relative_path(path: &str) -> String {
+    let normalized = normalize_path_text(path);
+    normalized.strip_prefix("./").unwrap_or(&normalized).to_string()
+}
+
+/// True when `candidate` ends with `repo_path` at a path boundary.
+fn path_suffix_matches(candidate: &str, repo_path: &str) -> bool {
+    if repo_path.is_empty() {
+        return false;
+    }
+    let Some(prefix) = candidate.strip_suffix(repo_path) else {
+        return false;
+    };
+    prefix.is_empty() || prefix.ends_with('/')
+}
+
 fn normalize_suppression_match_path(path: &str) -> String {
     let normalized = normalize_path_text(path);
     let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
@@ -894,8 +1099,28 @@ fn pr_evidence_packet(
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
 ) -> Value {
+    pr_evidence_packet_with_count(
+        options,
+        check_value,
+        base_sha,
+        head_sha,
+        suppressions,
+        changed_files.len(),
+        None,
+    )
+}
+
+fn pr_evidence_packet_with_count(
+    options: &PrEvidenceOptions,
+    check_value: &Value,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+    changed_file_count: usize,
+    head_extents: Option<&HeadLineExtents>,
+) -> Value {
     let check_summary = check_value.get("summary").and_then(Value::as_object);
-    let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions);
+    let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions, head_extents);
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
     let no_static_path = summary.no_static_path;
@@ -905,7 +1130,8 @@ fn pr_evidence_packet(
     let severe_gaps = weakly_exposed
         .saturating_add(reachable_unrevealed)
         .saturating_add(no_static_path)
-        .saturating_sub(summary.suppressed_unclassified);
+        .saturating_sub(summary.suppressed_unclassified)
+        .saturating_sub(summary.outside_head_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
     let warnings = if check_summary.is_some() {
         Vec::new()
@@ -927,8 +1153,11 @@ fn pr_evidence_packet(
         "base_sha": base_sha,
         "head": options.head,
         "head_sha": head_sha,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": head_sha,
         "summary": {
-            "changed_files": changed_files.len(),
+            "changed_files": changed_file_count,
             "comments": 0,
             "summary_only": 0,
             "suppressed": 0,
@@ -940,6 +1169,7 @@ fn pr_evidence_packet(
             "ripr_severe_gap": ripr_severe_gap,
             "routing_reason": if ripr_severe_gap { json!("ripr severe gap") } else { Value::Null },
             "suppressed_by_policy": summary.suppressed_by_policy,
+            "outside_head_revision": summary.outside_head_revision,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "artifacts": [
@@ -964,6 +1194,14 @@ fn pr_evidence_packet(
                 "kind": "other",
                 "scope": "diff",
                 "available": true
+            },
+            {
+                "label": "Committed diff status receipt",
+                "path": PR_DIFF_RECEIPT,
+                "kind": "json",
+                "scope": "diff",
+                "available": true,
+                "required": true
             }
         ],
         "warnings": warnings,
@@ -993,6 +1231,19 @@ fn validate_pr_evidence_packet(
     expect_string(packet, "base_sha", expected_base_sha, &mut violations);
     expect_string(packet, "head", &options.head, &mut violations);
     expect_string(packet, "head_sha", expected_head_sha, &mut violations);
+    match (&options.pr_head_sha, packet.get("pr_head_sha")) {
+        (Some(expected), Some(value)) => {
+            expect_string_value(value, "pr_head_sha", expected, &mut violations)
+        }
+        (Some(_), None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(value)) if !value.is_null() => {
+            violations.push("pr_head_sha must be null when no PR head was supplied".to_string())
+        }
+        (None, None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(_)) => {}
+    }
+    expect_string(packet, "evaluated_head", &options.head, &mut violations);
+    expect_string(packet, "evaluated_head_sha", expected_head_sha, &mut violations);
     match packet.get("status").and_then(Value::as_str) {
         Some("advisory" | "incomplete" | "error") => {}
         Some(other) => violations.push(format!("status {other:?} is not valid")),
@@ -1037,7 +1288,7 @@ fn validate_pr_evidence_packet(
         Some(values) if !values.is_empty() => {}
         _ => violations.push("advisory_limits is missing or empty".to_string()),
     }
-    for required in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD] {
+    for required in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_DIFF_RECEIPT] {
         if !artifact_available(packet, required) {
             violations.push(format!("artifacts[] is missing {required}"));
         }
@@ -1076,6 +1327,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
         "- suppressed_by_policy: {}\n",
         count_field(summary, "suppressed_by_policy")
     ));
+    out.push_str(&format!(
+        "- outside_head_revision: {}\n",
+        count_field(summary, "outside_head_revision")
+    ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
     out.push_str(&format!(
@@ -1111,12 +1366,16 @@ struct ReviewCommentsOptions {
     root: String,
     base: String,
     head: String,
+    pr_head_sha: Option<String>,
     timeout_seconds: Option<u64>,
 }
 
 fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     let root = command_root_arg(repo, &options.root)?;
     if current_pr_evidence_has_no_severe_gaps(repo, options)? {
         write_clean_review_comments(repo, options, &root)?;
@@ -1133,6 +1392,9 @@ fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result
 fn check_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     validate_review_comments(repo, options, true)?;
     println!("Review comments contract ok: {REVIEW_COMMENTS_JSON}");
     Ok(())
@@ -1184,8 +1446,10 @@ fn current_pr_evidence_has_no_severe_gaps(
     }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
+    let packet_pr_head = packet.get("pr_head_sha").and_then(Value::as_str);
     if packet.get("base_sha").and_then(Value::as_str) != Some(base_sha.as_str())
         || packet.get("head_sha").and_then(Value::as_str) != Some(head_sha.as_str())
+        || packet_pr_head != options.pr_head_sha.as_deref()
     {
         return Ok(false);
     }
@@ -1208,6 +1472,24 @@ fn validate_review_comments(
     expect_string(&packet, "base_sha", &revision_sha(repo, &options.base)?, &mut violations);
     expect_string(&packet, "head", &options.head, &mut violations);
     expect_string(&packet, "head_sha", &revision_sha(repo, &options.head)?, &mut violations);
+    match (&options.pr_head_sha, packet.get("pr_head_sha")) {
+        (Some(expected), Some(value)) => {
+            expect_string_value(value, "pr_head_sha", expected, &mut violations)
+        }
+        (Some(_), None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(value)) if !value.is_null() => {
+            violations.push("pr_head_sha must be null when no PR head was supplied".to_string())
+        }
+        (None, None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(_)) => {}
+    }
+    expect_string(&packet, "evaluated_head", &options.head, &mut violations);
+    expect_string(
+        &packet,
+        "evaluated_head_sha",
+        &revision_sha(repo, &options.head)?,
+        &mut violations,
+    );
     match packet.get("status").and_then(Value::as_str) {
         Some("advisory" | "incomplete" | "error") => {}
         Some(other) => violations.push(format!("status {other:?} is not valid")),
@@ -1242,6 +1524,9 @@ fn stamp_review_comments_receipt(repo: &Path, options: &ReviewCommentsOptions) -
     };
     object.insert("base_sha".to_string(), json!(revision_sha(repo, &options.base)?));
     object.insert("head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
+    object.insert("pr_head_sha".to_string(), optional_sha_value(options.pr_head_sha.as_deref()));
+    object.insert("evaluated_head".to_string(), json!(options.head));
+    object.insert("evaluated_head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
     write_text(&path, &format_json(&packet)?)
 }
 
@@ -1257,6 +1542,9 @@ fn write_clean_review_comments(
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": revision_sha(repo, &options.head)?,
         "mode": "pr_evidence_clean",
         "rendering_limits": {
             "max_inline_comments": 0,
@@ -1301,6 +1589,9 @@ fn write_error_review_comments(
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": revision_sha(repo, &options.head)?,
         "mode": "fast",
         "rendering_limits": {
             "max_inline_comments": 0,
@@ -1803,16 +2094,124 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
 }
 
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
-    let range = format!("{base}...{head}");
-    // A shallow clone (Claude Code on the web, default Actions checkout) has no
-    // common history, so `base...head` has no merge base and git diff fails with
-    // an opaque message. Attach actionable guidance as context while preserving
-    // the underlying git error as the cause; CI is unaffected (ripr.yml uses
-    // fetch-depth: 0).
-    let output =
-        run_git_output(repo, &["diff", "--name-only", "--diff-filter=ACMR", range.as_str()])
-            .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
-    Ok(output.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+    Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CommittedDiffEntry {
+    status: String,
+    old_path: Option<String>,
+    new_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CommittedDiffReceipt {
+    schema_version: String,
+    base: String,
+    head: String,
+    base_sha: String,
+    head_sha: String,
+    diff_digest: String,
+    changed_paths: Vec<String>,
+    entries: Vec<CommittedDiffEntry>,
+}
+
+fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<CommittedDiffReceipt> {
+    let resolved = change_set::resolve_change_set(
+        ArtifactIdentity::CommitRange { base: base.to_string(), head: head.to_string() },
+        repo,
+    )
+    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    let (resolved_base, resolved_head) = match resolved.identity {
+        ArtifactIdentity::CommitRange { base, head } => (base, head),
+        ArtifactIdentity::StagedTree { .. } => {
+            return Err(eyre!("committed diff resolver returned a staged-tree identity"));
+        }
+    };
+    let base_sha = resolved.base_sha.ok_or_else(|| eyre!("committed diff has no base SHA"))?;
+    let head_sha = resolved.head_sha.ok_or_else(|| eyre!("committed diff has no head SHA"))?;
+    let range = format!("{resolved_base}...{resolved_head}");
+    let raw = run_git_bytes(
+        repo,
+        &[
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+            "--find-copies-harder",
+            "--diff-filter=ACDMRT",
+            range.as_str(),
+        ],
+    )
+    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    let entries = parse_name_status_z(&raw)?;
+    let changed_paths = entries
+        .iter()
+        .flat_map(|entry| [entry.old_path.as_deref(), entry.new_path.as_deref()])
+        .flatten()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut hasher = Sha256::new();
+    hasher.update(base_sha.as_bytes());
+    hasher.update([0]);
+    hasher.update(head_sha.as_bytes());
+    hasher.update(serde_json::to_vec(&entries)?);
+    let diff_digest = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(CommittedDiffReceipt {
+        schema_version: "ripr_committed_diff.v1".to_string(),
+        base: resolved_base,
+        head: resolved_head,
+        base_sha,
+        head_sha,
+        diff_digest,
+        changed_paths,
+        entries,
+    })
+}
+
+fn parse_name_status_z(raw: &[u8]) -> Result<Vec<CommittedDiffEntry>> {
+    let fields = raw.split(|byte| *byte == 0).filter(|field| !field.is_empty()).collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let status = String::from_utf8(fields[index].to_vec())
+            .context("git name-status output contained a non-UTF-8 status")?;
+        let code = status.as_bytes().first().copied().unwrap_or_default() as char;
+        let path = |field: &[u8]| {
+            String::from_utf8(field.to_vec())
+                .context("git name-status output contained a non-UTF-8 path")
+        };
+        match code {
+            'R' | 'C' => {
+                let old_path =
+                    fields.get(index + 1).ok_or_else(|| eyre!("missing old path for {status}"))?;
+                let new_path =
+                    fields.get(index + 2).ok_or_else(|| eyre!("missing new path for {status}"))?;
+                entries.push(CommittedDiffEntry {
+                    status,
+                    old_path: Some(path(old_path)?),
+                    new_path: Some(path(new_path)?),
+                });
+                index += 3;
+            }
+            'A' | 'D' | 'M' | 'T' => {
+                let value =
+                    fields.get(index + 1).ok_or_else(|| eyre!("missing path for {status}"))?;
+                let value = path(value)?;
+                entries.push(CommittedDiffEntry {
+                    old_path: (code == 'D' || code == 'M' || code == 'T').then_some(value.clone()),
+                    new_path: (code != 'D').then_some(value),
+                    status,
+                });
+                index += 2;
+            }
+            other => bail!("unsupported git name-status code {other:?} in {status:?}"),
+        }
+    }
+    Ok(entries)
 }
 
 fn is_shallow_clone(repo: &Path) -> bool {
@@ -1840,10 +2239,25 @@ fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String 
     message
 }
 
-fn write_pr_diff(repo: &Path, base: &str, head: &str) -> Result<()> {
-    let range = format!("{base}...{head}");
+fn write_pr_diff(repo: &Path, receipt: &CommittedDiffReceipt) -> Result<()> {
+    let range = format!("{}...{}", receipt.base, receipt.head);
     let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
-    write_text(&repo.join(PR_DIFF), &diff)
+    write_text(&repo.join(PR_DIFF), &diff)?;
+    let receipt_json = format_json(&serde_json::to_value(receipt)?)?;
+    write_text(&repo.join(PR_DIFF_RECEIPT), &receipt_json)
+}
+
+fn run_git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = git_output_with_mount_root(repo, args, default_windows_drive_mount_root())?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed with status {}\nstderr:\n{}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
 }
 
 fn run_git_output(repo: &Path, args: &[&str]) -> Result<String> {
@@ -2001,6 +2415,14 @@ fn format_json(value: &Value) -> Result<String> {
 
 fn expect_string(packet: &Value, key: &str, expected: &str, violations: &mut Vec<String>) {
     match packet.get(key).and_then(Value::as_str) {
+        Some(actual) if actual == expected => {}
+        Some(actual) => violations.push(format!("{key} is {actual:?}, expected {expected:?}")),
+        None => violations.push(format!("{key} is missing or not a string")),
+    }
+}
+
+fn expect_string_value(value: &Value, key: &str, expected: &str, violations: &mut Vec<String>) {
+    match value.as_str() {
         Some(actual) if actual == expected => {}
         Some(actual) => violations.push(format!("{key} is {actual:?}, expected {expected:?}")),
         None => violations.push(format!("{key} is missing or not a string")),
@@ -2758,6 +3180,12 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn optional_sha_value_preserves_string_or_null_contract() {
+        assert_eq!(optional_sha_value(Some("abc123")), json!("abc123"));
+        assert_eq!(optional_sha_value(None), Value::Null);
+    }
+
+    #[test]
     fn revision_sha_reads_current_head() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
@@ -2786,6 +3214,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: Some("pr-head-sha".to_string()),
         };
         let check_value = json!({
             "summary": {
@@ -2806,6 +3235,9 @@ paths = ["archive/["]
 
         assert_eq!(packet["base_sha"], json!("base-sha"));
         assert_eq!(packet["head_sha"], json!("head-sha"));
+        assert_eq!(packet["pr_head_sha"], json!("pr-head-sha"));
+        assert_eq!(packet["evaluated_head"], json!("HEAD"));
+        assert_eq!(packet["evaluated_head_sha"], json!("head-sha"));
         validate_pr_evidence_packet(&packet, &options, 1, true, "base-sha", "head-sha")?;
         Ok(())
     }
@@ -2816,6 +3248,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let check_value = json!({
             "summary": {
@@ -2921,6 +3354,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // Simulate ripr 0.9.x check output: summary.reachable_unrevealed=3, findings use grip_class+seam.
         let check_value = json!({
@@ -2991,6 +3425,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // ripr 0.9.x output: 2 weakly_gripped findings on a file not in any suppression.
         let check_value = json!({
@@ -3044,6 +3479,353 @@ paths = ["archive/["]
         Ok(())
     }
 
+    fn no_suppressions() -> RiprSuppressionRules {
+        RiprSuppressionRules {
+            display_patterns: Vec::new(),
+            path_patterns: Vec::new(),
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        }
+    }
+
+    fn packet_with_extents(
+        check_value: &Value,
+        suppressions: &RiprSuppressionRules,
+        extents: &HeadLineExtents,
+    ) -> Value {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        pr_evidence_packet_with_count(
+            &options,
+            check_value,
+            "base-sha",
+            "head-sha",
+            suppressions,
+            1,
+            Some(extents),
+        )
+    }
+
+    /// #6260 reproduction, from the `raw-check.json` of run 31273961774 on #6161:
+    /// two `no_static_path` probes at `check_version_sync.rs:29`, a line the change
+    /// deletes — the file is 13 lines long at head. No test can cover a line that no
+    /// longer exists, so the required gate was unsatisfiable.
+    #[test]
+    fn deleted_line_findings_do_not_count_as_new_gaps() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 2 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "kind": "call_deletion",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 29 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "kind": "return_value",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 29 }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(false)));
+        // Head-range filtering is not suppression and must not inflate the policy count.
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Gate teeth: the filter is bounded to lines that do not exist at head. A probe on a
+    /// line the head revision still has must keep blocking, or #6260's fix would be worse
+    /// than the bug it closes.
+    #[test]
+    fn findings_inside_the_head_revision_still_count_as_new_gaps() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 2 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 12 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs", "line": 13 }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    /// A file the change deletes outright has no coverable line at all, whatever the
+    /// reported line number.
+    #[test]
+    fn findings_on_a_deleted_file_do_not_count_as_new_gaps() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-lsp-rs/src/removed.rs", "line": 4 }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::new(),
+            removed: BTreeSet::from(["crates/perl-lsp-rs/src/removed.rs".to_string()]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(1)));
+        Ok(())
+    }
+
+    /// Fail closed on every ambiguity: a path outside the change's file set, and a finding
+    /// with no line at all, are both still counted.
+    #[test]
+    fn unlocatable_findings_stay_counted() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 2 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "crates/perl-lsp-rs/src/untracked_by_the_diff.rs", "line": 900 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "xtask/src/tasks/check_version_sync.rs" }
+                }
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// A suppressed finding that is also outside the head revision is discounted once, and
+    /// stays attributed to policy so `suppressed_by_policy` keeps its established meaning.
+    #[test]
+    fn suppression_takes_precedence_over_head_range_filtering() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 1 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "archive/old.rs", "line": 99 }
+                }
+            ]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["archive/**".to_string()],
+            path_patterns: vec![Pattern::new("archive/**")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([("archive/old.rs".to_string(), 4usize)]),
+            removed: BTreeSet::new(),
+        };
+
+        let packet = packet_with_extents(&check_value, &suppressions, &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Findings carry checkout-prefixed and Windows-separator paths (see the 0.9.x
+    /// suppression cases above), so head-range resolution must survive both.
+    #[test]
+    fn head_extents_resolve_absolute_and_windows_finding_paths() {
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+
+        assert_eq!(
+            extents
+                .resolve("/home/runner/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
+            HeadPathState::Present(13)
+        );
+        assert_eq!(
+            extents.resolve("C:\\code\\perl-lsp-swarm\\xtask/src/tasks/check_version_sync.rs"),
+            HeadPathState::Present(13)
+        );
+        // Suffix matching respects path boundaries rather than raw string ends.
+        assert_eq!(extents.resolve("vendored_check_version_sync.rs"), HeadPathState::Unknown);
+        assert_eq!(extents.resolve("some/other/file.rs"), HeadPathState::Unknown);
+    }
+
+    fn diff_receipt(head_sha: &str, entries: Vec<CommittedDiffEntry>) -> CommittedDiffReceipt {
+        CommittedDiffReceipt {
+            schema_version: "ripr_committed_diff.v1".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            base_sha: "base-sha".to_string(),
+            head_sha: head_sha.to_string(),
+            diff_digest: "digest".to_string(),
+            changed_paths: Vec::new(),
+            entries,
+        }
+    }
+
+    /// `git diff --name-status` gives `M` and `T` entries the same value for `old_path`
+    /// and `new_path`. Treating "has an old path, has no extent" as removal therefore
+    /// turns any failed `git show` on a *modified* file into a phantom deletion, which
+    /// would drop every real finding on it — fail-open, the one direction this filter
+    /// must never take. Removal is read from the status code instead, so a modified file
+    /// whose blob cannot be read resolves `Unknown` and keeps its findings counted.
+    #[test]
+    fn a_modified_file_with_an_unreadable_blob_is_unknown_not_removed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let head = run_git(repo, &["rev-parse", "HEAD"])?;
+        // `absent.rs` is not in this revision, so the extent lookup fails the same way an
+        // unreadable blob would.
+        let diff = diff_receipt(
+            &head,
+            vec![CommittedDiffEntry {
+                status: "M".to_string(),
+                old_path: Some("absent.rs".to_string()),
+                new_path: Some("absent.rs".to_string()),
+            }],
+        );
+
+        let extents = HeadLineExtents::from_committed_diff(repo, &diff);
+
+        assert_eq!(extents.resolve("absent.rs"), HeadPathState::Unknown);
+        assert!(!extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "absent.rs", "line": 4 }
+        })));
+        Ok(())
+    }
+
+    /// A copy leaves its source in place, so `C` must not remove the source path — the
+    /// old-path inference this commit replaced would have. The source is not indexed at
+    /// all (the index covers head-side paths), so it resolves `Unknown` and its findings
+    /// stay counted; what matters is that it is never `Removed`.
+    #[test]
+    fn a_copy_source_is_not_treated_as_removed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let head = run_git(repo, &["rev-parse", "HEAD"])?;
+        let diff = diff_receipt(
+            &head,
+            vec![CommittedDiffEntry {
+                status: "C100".to_string(),
+                old_path: Some("tracked.txt".to_string()),
+                new_path: Some("copy.txt".to_string()),
+            }],
+        );
+
+        let extents = HeadLineExtents::from_committed_diff(repo, &diff);
+
+        assert_eq!(extents.resolve("tracked.txt"), HeadPathState::Unknown);
+        assert!(!extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "tracked.txt", "line": 1 }
+        })));
+        // `copy.txt` is not in this fixture's head revision, so its extent lookup fails
+        // and it too stays `Unknown` rather than becoming a phantom deletion.
+        assert_eq!(extents.resolve("copy.txt"), HeadPathState::Unknown);
+        Ok(())
+    }
+
+    /// Wiring proof: the extents actually come from the change's committed diff, so the
+    /// filter sees the real head line count rather than a hand-built map.
+    #[test]
+    fn head_extents_are_built_from_the_committed_diff() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let shrunk = repo.join("shrunk.rs");
+        let deleted = repo.join("deleted.rs");
+        fs::write(&shrunk, (1..=30).map(|n| format!("// line {n}\n")).collect::<String>())?;
+        fs::write(&deleted, "// gone\n")?;
+        init_git_repo(repo)?;
+        run_git(repo, &["add", "shrunk.rs", "deleted.rs"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "base"],
+        )?;
+        let base = run_git(repo, &["rev-parse", "HEAD"])?;
+        fs::write(&shrunk, (1..=13).map(|n| format!("// line {n}\n")).collect::<String>())?;
+        fs::remove_file(&deleted)?;
+        run_git(repo, &["add", "-A"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "head"],
+        )?;
+
+        let diff = resolve_committed_diff(repo, &base, "HEAD")?;
+        let extents = HeadLineExtents::from_committed_diff(repo, &diff);
+
+        assert_eq!(extents.resolve("shrunk.rs"), HeadPathState::Present(13));
+        assert_eq!(extents.resolve("deleted.rs"), HeadPathState::Removed);
+        assert!(extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "shrunk.rs", "line": 29 }
+        })));
+        assert!(!extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "shrunk.rs", "line": 13 }
+        })));
+        assert!(extents.finding_is_outside_head(&json!({
+            "classification": "no_static_path",
+            "probe": { "path": "deleted.rs", "line": 1 }
+        })));
+        Ok(())
+    }
+
     #[test]
     fn write_review_comments_skips_ripr_when_current_pr_evidence_has_no_severe_gaps() -> Result<()>
     {
@@ -3056,12 +3838,14 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: Some(1),
         };
         let pr_options = PrEvidenceOptions {
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let head = revision_sha(repo, "HEAD")?;
         let pr_packet = pr_evidence_packet(
@@ -3121,6 +3905,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3156,6 +3941,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3181,6 +3967,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3218,6 +4005,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3234,6 +4022,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3311,12 +4100,14 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
         let pr_options = PrEvidenceOptions {
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let head = revision_sha(repo, "HEAD")?;
         let pr_packet = pr_evidence_packet(
@@ -3697,6 +4488,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let packet = json!({
             "schema_version": "0.1",
@@ -3774,6 +4566,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -4044,6 +4837,27 @@ esac
     }
 
     #[test]
+    fn name_status_parser_preserves_acdmrt_entries() -> Result<()> {
+        let raw = b"A\0added.rs\0C75\0source.rs\0copy.rs\0D\0deleted.rs\0M\0modified.rs\0R100\0old.rs\0renamed.rs\0T\0typed.rs\0";
+        let entries = parse_name_status_z(raw)?;
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0].status, "A");
+        assert_eq!(entries[0].new_path.as_deref(), Some("added.rs"));
+        assert_eq!(entries[1].status, "C75");
+        assert_eq!(entries[1].old_path.as_deref(), Some("source.rs"));
+        assert_eq!(entries[1].new_path.as_deref(), Some("copy.rs"));
+        assert_eq!(entries[2].old_path.as_deref(), Some("deleted.rs"));
+        assert_eq!(entries[3].new_path.as_deref(), Some("modified.rs"));
+        assert_eq!(entries[3].old_path.as_deref(), Some("modified.rs"));
+        assert_eq!(entries[4].old_path.as_deref(), Some("old.rs"));
+        assert_eq!(entries[4].new_path.as_deref(), Some("renamed.rs"));
+        assert_eq!(entries[5].status, "T");
+        assert_eq!(entries[5].old_path.as_deref(), Some("typed.rs"));
+        assert_eq!(entries[5].new_path.as_deref(), Some("typed.rs"));
+        Ok(())
+    }
+
+    #[test]
     fn split_labels_splits_on_comma_semicolon_and_newline_with_trim() {
         let labels = split_labels(" mutation , needs-ci-fix ;size/M\nsize/L ");
         assert_eq!(labels, vec!["mutation", "needs-ci-fix", "size/M", "size/L"]);
@@ -4099,6 +4913,7 @@ esac
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // Simulate ripr output with an unrecognized classification that is counted in the
         // summary but whose path is covered by our suppression policy.
@@ -4178,6 +4993,7 @@ esac
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let check_value = json!({
             "summary": {
@@ -4236,6 +5052,7 @@ esac
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // No summary object — triggers Path B (findings-only mode).
         let check_value = json!({

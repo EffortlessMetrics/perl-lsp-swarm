@@ -319,7 +319,15 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        { "id": "typeglob_alias_package", "kind": "Package", "line": 1, "span_text": "package Accuracy::TypeglobAlias", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
+        { "id": "typeglob_alias_original", "kind": "Subroutine", "line": 3, "span_text": "sub original", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
+        { "id": "typeglob_alias_assignment", "kind": "Assignment", "line": 7, "span_text": "*alias = \\&original", "parent_kind": null, "depth": null, "operator": "=", "parent_operator": null },
+        { "id": "typeglob_alias_typeglob", "kind": "Typeglob", "line": 7, "span_text": "*alias", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
+        { "id": "typeglob_alias_coderef", "kind": "AmperCall", "line": 7, "span_text": "\\&original", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
+        { "id": "typeglob_alias_call", "kind": "FunctionCall", "line": 8, "span_text": "alias()", "parent_kind": null, "depth": null, "operator": null, "parent_operator": null }
+      ]
     },
     {
       "id": "generated_accessor",
@@ -1152,7 +1160,119 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "imports_exports_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::ImportsExports",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_use_strict",
+          "kind": "Use",
+          "line": 3,
+          "span_text": "use strict",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_use_warnings",
+          "kind": "Use",
+          "line": 4,
+          "span_text": "use warnings",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_export_variable",
+          "kind": "VariableDeclaration",
+          "line": 6,
+          "span_text": "our @EXPORT_OK",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_answer_subroutine",
+          "kind": "Subroutine",
+          "line": 8,
+          "span_text": "sub answer",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_answer_return",
+          "kind": "Return",
+          "line": 9,
+          "span_text": "return 42",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_consumer_package",
+          "kind": "Package",
+          "line": 12,
+          "span_text": "package Accuracy::ImportsConsumer",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_import_use",
+          "kind": "Use",
+          "line": 16,
+          "span_text": "use Accuracy::ImportsExports",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_consumer_subroutine",
+          "kind": "Subroutine",
+          "line": 18,
+          "span_text": "sub call_imported",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_imported_call",
+          "kind": "FunctionCall",
+          "line": 19,
+          "span_text": "answer()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_consumer_return",
+          "kind": "Return",
+          "line": 19,
+          "span_text": "return answer()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "qualified_refs",
@@ -1274,7 +1394,59 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "qualified_refs_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Refs",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_target_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub target {\\n    return 1;\\n}",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_caller_subroutine",
+          "kind": "Subroutine",
+          "line": 7,
+          "span_text": "sub caller {\\n    target();\\n    Accuracy::Refs::target();\\n}",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_local_call",
+          "kind": "FunctionCall",
+          "line": 8,
+          "span_text": "target()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "qualified_refs_qualified_call",
+          "kind": "FunctionCall",
+          "line": 9,
+          "span_text": "Accuracy::Refs::target()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "same_bare_subs",
@@ -1404,7 +1576,109 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "same_bare_subs_package_a",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Same::A",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_run_a",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_return_a",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return \"A\"",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_package_b",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::Same::B",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_run_b",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_return_b",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return \"B\"",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_package_main",
+          "kind": "Package",
+          "line": 13,
+          "span_text": "package Accuracy::Same::Main",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_call_both",
+          "kind": "Subroutine",
+          "line": 15,
+          "span_text": "sub call_both",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_call_a",
+          "kind": "FunctionCall",
+          "line": 16,
+          "span_text": "Accuracy::Same::A::run()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "same_bare_subs_call_b",
+          "kind": "FunctionCall",
+          "line": 17,
+          "span_text": "Accuracy::Same::B::run()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "heredoc_basic",
@@ -1777,7 +2051,89 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "method_call_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::MethodCall",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_invoke",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub invoke",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_variable",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $object",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_shift",
+          "kind": "FunctionCall",
+          "line": 4,
+          "span_text": "shift",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_receiver",
+          "kind": "MethodCall",
+          "line": 5,
+          "span_text": "$object->run",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_qualified",
+          "kind": "MethodCall",
+          "line": 6,
+          "span_text": "Accuracy::MethodCall->run()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_run",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "method_call_return",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "method_decl",
@@ -1884,7 +2240,29 @@
           }
         ],
         "edges": []
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "medium_method_call_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::MediumMethodCall",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "medium_method_call_receiver",
+          "kind": "MethodCall",
+          "line": 3,
+          "span_text": "$object->run",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "autoload_boundary",
@@ -2252,7 +2630,79 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "role_method_role_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Role",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_provided",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub provided",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_provided_return",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_consumer_package",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::RoleConsumer",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_local_method",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub local_method",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_provided_call",
+          "kind": "FunctionCall",
+          "line": 10,
+          "span_text": "provided()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "role_method_local_return",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return provided()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "inherited_method",
@@ -2302,9 +2752,9 @@
         },
         {
           "line": 12,
-            "expected_tags": [
-              "function_call"
-            ]
+          "expected_tags": [
+            "function_call"
+          ]
         }
       ],
       "symbol_expectations": {
@@ -2380,7 +2830,79 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "inherited_method_parent_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Parent",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_inherited_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub inherited",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_parent_return",
+          "kind": "Return",
+          "line": 4,
+          "span_text": "return 1",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_child_package",
+          "kind": "Package",
+          "line": 7,
+          "span_text": "package Accuracy::Child",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_call_parent_subroutine",
+          "kind": "Subroutine",
+          "line": 11,
+          "span_text": "sub call_parent",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_qualified_call",
+          "kind": "FunctionCall",
+          "line": 12,
+          "span_text": "Accuracy::Parent::inherited()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "inherited_method_call_return",
+          "kind": "Return",
+          "line": 12,
+          "span_text": "return Accuracy::Parent::inherited()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "export_tags",
@@ -3157,6 +3679,108 @@
           }
         ]
       }
+    },
+    {
+      "id": "control_flow_core",
+      "family": "control_flow",
+      "label_mode": "partial",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/control_flow_core.pl",
+      "scored_lines": 2,
+      "scored_symbols": 7,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        {
+          "line": 1,
+          "expected_tags": [
+            "package_decl"
+          ]
+        },
+        {
+          "line": 3,
+          "expected_tags": [
+            "sub_decl"
+          ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "control_flow_core_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::ControlFlow",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub run",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_if",
+          "kind": "If",
+          "line": 5,
+          "span_text": "if ($value) { return $value; }",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return $value",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_while",
+          "kind": "While",
+          "line": 6,
+          "span_text": "while ($value) { last; }",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_loop_control",
+          "kind": "LoopControl",
+          "line": 6,
+          "span_text": "last",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "control_flow_core_variable",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $value",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     }
   ]
 }

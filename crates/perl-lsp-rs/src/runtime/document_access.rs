@@ -3,7 +3,12 @@
 //! Methods that look up documents, normalize URIs, convert between byte
 //! offsets and LSP positions, and provide text-based fallback extractors.
 
-use super::*;
+use super::{
+    Arc, CONTENT_MODIFIED, DocumentState, HashMap, JsonRpcError, LspServer, LspWorkspaceSymbol,
+    extract_module_reference, extract_module_reference_extended, extract_text_based_code_lenses,
+    extract_text_based_symbols, get_text_around_offset, get_text_window_around_offset,
+    offset_to_position, position_to_offset,
+};
 
 #[allow(dead_code)]
 impl LspServer {
@@ -77,10 +82,10 @@ impl LspServer {
     ) -> Result<(), JsonRpcError> {
         if let Some(v) = req_version {
             let documents = self.documents.lock();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                if v < doc.version {
-                    return Err(Self::content_modified());
-                }
+            if let Some(doc) = self.get_document(&documents, uri)
+                && v < doc.version
+            {
+                return Err(Self::content_modified());
             }
         }
         Ok(())
@@ -274,7 +279,7 @@ impl LspServer {
     pub(crate) fn buffer_text(&self, uri: &str) -> Option<String> {
         let docs = self.documents.lock();
         let normalized = self.normalize_uri_key(uri);
-        docs.get(&normalized).map(|d| d.text.clone())
+        docs.get(&normalized).map(|d| d.text_arc.to_string())
     }
 
     /// Current document generation counter for `uri`, if the document is open.
@@ -323,7 +328,7 @@ impl LspServer {
     /// Iterate over all open buffers (for reference search)
     pub(crate) fn iter_open_buffers(&self) -> Vec<(String, String)> {
         let docs = self.documents.lock();
-        docs.iter().map(|(uri, doc)| (uri.clone(), doc.text.clone())).collect()
+        docs.iter().map(|(uri, doc)| (uri.clone(), doc.text_arc.to_string())).collect()
     }
 }
 
@@ -611,9 +616,11 @@ mod tests {
 
         // Real production edit that drives the binary guard: generation is
         // bumped, `parsed` is reset to `None`, and no re-index is scheduled.
+        // Uses dense NUL content (>5% ratio) to trigger the binary guard
+        // under the ratio heuristic (#5209).
         let changed = json!({
             "textDocument": { "uri": uri, "version": 2 },
-            "contentChanges": [{ "text": "package BecomesUnparseable;\u{0000}\n" }]
+            "contentChanges": [{ "text": "package BecomesUnparseable;\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\u{0000}\n" }]
         });
         server.test_handle_did_change(Some(changed))?;
 

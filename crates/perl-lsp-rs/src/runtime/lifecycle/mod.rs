@@ -53,7 +53,9 @@ mod tools;
 mod watchers;
 mod workspace;
 
-use super::*;
+use super::{LspServer, io};
+#[cfg(feature = "workspace")]
+use perl_parser::workspace_index::IndexState;
 use serde_json::json;
 
 impl LspServer {
@@ -111,7 +113,7 @@ impl LspServer {
                 // temporarily degraded.  window/logMessage (Info=3) is non-intrusive
                 // — it appears in the Output panel without a popup dialog.
                 // Sent exactly once per Building transition (no per-file spam).
-                let msg = "Perl Language Server: Indexing workspace files. \
+                let msg = "Perl LSP: Indexing workspace files. \
                            Go-to-definition, completion, and workspace search will be \
                            available when indexing completes.";
                 if let Err(e) = self.log_message(super::window::MessageType::Info, msg) {
@@ -120,11 +122,29 @@ impl LspServer {
             }
         }
 
-        self.notify(
-            "perl-lsp/index-ready",
-            json!({
-                "ready": has_symbols
-            }),
-        )
+        #[cfg(feature = "workspace")]
+        let (readiness_state, readiness_reason) = self
+            .coordinator()
+            .map(|coordinator| match coordinator.state() {
+                IndexState::Ready { .. } => ("ready", None),
+                IndexState::Degraded { reason, .. } => {
+                    ("ready_limited", Some(format!("{reason:?}")))
+                }
+                IndexState::Building { .. } => ("building", None),
+            })
+            .unwrap_or(("building", None));
+
+        #[cfg(not(feature = "workspace"))]
+        let (readiness_state, readiness_reason): (&str, Option<String>) = ("ready", None);
+
+        let mut payload = json!({
+            "ready": readiness_state == "ready",
+            "state": readiness_state,
+        });
+        if let Some(reason) = readiness_reason {
+            payload["reason"] = json!(reason);
+        }
+
+        self.notify("perl-lsp/index-ready", payload)
     }
 }

@@ -3,6 +3,7 @@
 //! This module provides a high-performance incremental parser that achieves significant
 //! performance improvements over full parsing through intelligent AST node reuse.
 //! Designed for integration with LSP servers and real-time editing scenarios.
+
 //!
 //! ## Performance Characteristics
 //!
@@ -52,6 +53,11 @@
 //! println!("Nodes reparsed: {}", parser.reparsed_nodes);
 //! # Ok::<(), perl_parser::error::ParseError>(())
 //! ```
+/// Safely convert an isize to usize, clamping negative values to 0.
+/// Prevents wrap-around from unchecked `as usize` casts.
+fn isize_to_usize_clamped(v: isize) -> usize {
+    v.max(0) as usize
+}
 
 use super::incremental_advanced_reuse::{AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig};
 use perl_parser_core::{
@@ -396,8 +402,10 @@ impl IncrementalParserV2 {
         let mut cumulative_shift: isize = 0;
 
         for edit in self.pending_edits.edits() {
-            let original_start = (edit.start_byte as isize - cumulative_shift) as usize;
-            let original_end = (edit.old_end_byte as isize - cumulative_shift) as usize;
+            let original_start =
+                isize_to_usize_clamped(edit.start_byte as isize - cumulative_shift);
+            let original_end =
+                isize_to_usize_clamped(edit.old_end_byte as isize - cumulative_shift);
 
             let affected_node = tree.find_containing_node(original_start, original_end);
 
@@ -721,7 +729,7 @@ impl IncrementalParserV2 {
                     .map(|stmt| self.clone_and_update_node(stmt, new_source, old_source))
                     .collect();
 
-                let new_start = (node.location.start as isize + shift) as usize;
+                let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
                 let new_end = (node.location.end as isize
                     + shift
                     + self.calculate_content_delta(node)) as usize;
@@ -738,7 +746,7 @@ impl IncrementalParserV2 {
                     .as_ref()
                     .map(|init| self.clone_and_update_node(init, new_source, old_source));
 
-                let new_start = (node.location.start as isize + shift) as usize;
+                let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
                 let new_end = (node.location.end as isize
                     + shift
                     + self.calculate_content_delta(node)) as usize;
@@ -762,7 +770,7 @@ impl IncrementalParserV2 {
                 // Direct value nodes - extract new value from source
                 NodeKind::Number { .. } => {
                     // Extract the new value from source
-                    let new_start = (node.location.start as isize + shift) as usize;
+                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
                     let new_end =
                         (node.location.end as isize + shift + self.calculate_content_delta(node))
                             as usize;
@@ -777,7 +785,7 @@ impl IncrementalParserV2 {
                     }
                 }
                 NodeKind::String { interpolated, .. } => {
-                    let new_start = (node.location.start as isize + shift) as usize;
+                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
                     let new_end =
                         (node.location.end as isize + shift + self.calculate_content_delta(node))
                             as usize;
@@ -801,8 +809,8 @@ impl IncrementalParserV2 {
                         .map(|stmt| self.clone_and_update_node(stmt, new_source, old_source))
                         .collect();
                     let new_location = SourceLocation {
-                        start: (node.location.start as isize + shift) as usize,
-                        end: (node.location.end as isize + shift) as usize,
+                        start: isize_to_usize_clamped(node.location.start as isize + shift),
+                        end: isize_to_usize_clamped(node.location.end as isize + shift),
                     };
                     return Node::new(
                         NodeKind::Program { statements: new_statements },
@@ -816,8 +824,8 @@ impl IncrementalParserV2 {
                         Box::new(self.clone_and_update_node(init, new_source, old_source))
                     });
                     let new_location = SourceLocation {
-                        start: (node.location.start as isize + shift) as usize,
-                        end: (node.location.end as isize + shift) as usize,
+                        start: isize_to_usize_clamped(node.location.start as isize + shift),
+                        end: isize_to_usize_clamped(node.location.end as isize + shift),
                     };
                     return Node::new(
                         NodeKind::VariableDeclaration {
@@ -844,7 +852,7 @@ impl IncrementalParserV2 {
     fn calculate_shift_at(&self, position: usize) -> isize {
         let mut shift = 0;
         for edit in self.pending_edits.edits() {
-            let original_old_end = (edit.old_end_byte as isize - shift) as usize;
+            let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
 
             if original_old_end <= position {
                 let edit_shift = edit.byte_shift();
@@ -954,8 +962,8 @@ impl IncrementalParserV2 {
         let mut delta = 0;
         let mut shift = 0;
         for edit in self.pending_edits.edits() {
-            let start = (edit.start_byte as isize - shift) as usize;
-            let end = (edit.old_end_byte as isize - shift) as usize;
+            let start = isize_to_usize_clamped(edit.start_byte as isize - shift);
+            let end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
             if start >= node.location.start && end <= node.location.end {
                 delta += edit.byte_shift();
             }

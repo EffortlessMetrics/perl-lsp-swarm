@@ -596,6 +596,24 @@ impl fmt::Display for LaunchParseError {
 
 impl Error for LaunchParseError {}
 
+impl perl_parser_core::ErrorClass for LaunchParseError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // All LaunchParseError variants represent invalid CLI input from the
+        // user — unknown options, invalid values, missing arguments. None are
+        // infrastructure, protocol, or transient failures.
+        match self {
+            Self::UnknownOption { .. }
+            | Self::ParserDiagnostic { .. }
+            | Self::MissingValue { .. }
+            | Self::InvalidFeatureProfile { .. }
+            | Self::InvalidPort { .. }
+            | Self::InvalidShell { .. }
+            | Self::InvalidRuntimeMode { .. }
+            | Self::InvalidDiagnosticMode { .. } => perl_parser_core::ErrorCategory::UserError,
+        }
+    }
+}
+
 /// Parse command line arguments for the Perl LSP launcher.
 pub fn parse_args<I>(args: I) -> Result<LaunchPlan, LaunchParseError>
 where
@@ -863,7 +881,8 @@ pub fn help_text() -> String {
     out.push('\n');
     out.push_str("Tool options:\n");
     out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
-    out.push_str("  --check-project [dir] Scan project directory for parsability report\n");
+    out.push_str("  --check-project [dir]\n");
+    out.push_str("                       Scan project directory for parsability report\n");
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
     out.push_str(
         "  --json               Machine-readable JSON output (currently affects --doctor)\n",
@@ -890,18 +909,18 @@ pub fn help_text() -> String {
     );
     out.push('\n');
     out.push_str("Examples:\n");
-    out.push_str("  perllsp --stdio                        # stdio mode (default)\n");
-    out.push_str("  perllsp --mcp                          # stdio mode alias for MCP clients\n");
+    out.push_str("  perllsp --stdio                         # stdio mode (default)\n");
+    out.push_str("  perllsp --mcp                           # stdio mode alias for MCP clients\n");
     out.push_str("  perllsp --stdio --log                   # with logging\n");
     out.push_str("  perllsp --socket --port 9257            # TCP socket mode\n");
     out.push_str("  perllsp --stdio --feature-profile=prod  # production profile\n");
     out.push_str("  perllsp --check lib/MyModule.pm         # syntax check\n");
-    out.push_str("  perllsp --check-project lib/             # project scan\n");
-    out.push_str("  perllsp --doctor .                       # first-run setup report\n");
+    out.push_str("  perllsp --check-project lib/            # project scan\n");
+    out.push_str("  perllsp --doctor .                      # first-run setup report\n");
     out.push_str("  perllsp --perltidy-compat-report .perltidyrc\n");
     out.push_str("  perllsp --perlcritic-compat-report .perlcriticrc\n");
     out.push_str("  perllsp --info                          # server information\n");
-    out.push_str("  perllsp --completion bash >> ~/.bashrc   # install completions\n");
+    out.push_str("  perllsp --completion bash >> ~/.bashrc  # install completions\n");
     out.push('\n');
     out.push_str("Environment:\n");
     out.push_str("  PERL_LSP_LOG=1       Enable logging (alternative to --log)\n");
@@ -1261,10 +1280,32 @@ fn parse_feature_profile(raw_profile: &str) -> Result<FeatureProfile, LaunchPars
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, RuntimeMode, RuntimeTuning, TransportMode,
-        parse_args,
+        DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, LaunchParseError, RuntimeMode,
+        RuntimeTuning, TransportMode, parse_args,
     };
+    use perl_parser_core::{ErrorCategory, ErrorClass};
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn launch_parse_errors_are_user_errors_for_every_variant() {
+        let errors = [
+            LaunchParseError::UnknownOption { option: "--wat".into(), suggestion: None },
+            LaunchParseError::ParserDiagnostic { rendered: "conflict".into() },
+            LaunchParseError::MissingValue { option: "--port".into() },
+            LaunchParseError::InvalidFeatureProfile { raw_profile: "bad".into() },
+            LaunchParseError::InvalidPort {
+                raw_port: "nope".into(),
+                reason: "not a number".into(),
+            },
+            LaunchParseError::InvalidShell { raw_shell: "tcsh".into() },
+            LaunchParseError::InvalidRuntimeMode { raw_mode: "bad".into() },
+            LaunchParseError::InvalidDiagnosticMode { raw_mode: "bad".into() },
+        ];
+
+        for error in errors {
+            assert_eq!(error.error_class(), ErrorCategory::UserError);
+        }
+    }
 
     #[test]
     fn init_logging_does_not_panic_without_log_file() {

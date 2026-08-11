@@ -744,11 +744,8 @@ fn test_comprehensive_edge_cases() -> TestResult {
 fn test_supported_commands_structure() -> TestResult {
     let commands = get_supported_commands();
 
-    // MUTATION KILLER: Verify not empty/default list
-    assert!(!commands.is_empty(), "Supported commands should not be empty");
-    assert_eq!(commands.len(), 20, "Should have exactly 20 supported commands");
-
-    // Verify specific commands are present
+    // Verify specific commands are present. Keep this expected list independent
+    // of the production result so its length remains an anti-drift oracle.
     let expected_commands = vec![
         "perl.runTests",
         "perl.runFile",
@@ -771,6 +768,14 @@ fn test_supported_commands_structure() -> TestResult {
         "perl.previewPackageRename",
         "perl.explainMissingModuleLookup",
     ];
+
+    // MUTATION KILLER: Verify not empty/default list and reject additions/removals.
+    assert!(!commands.is_empty(), "Supported commands should not be empty");
+    assert_eq!(
+        commands.len(),
+        expected_commands.len(),
+        "Supported command surface drifted from the expected contract"
+    );
 
     for expected in &expected_commands {
         assert!(commands.contains(&expected.to_string()), "Should contain command: {}", expected);
@@ -923,8 +928,10 @@ fn test_provider_and_protocol_command_lists_are_in_sync() -> TestResult {
 }
 
 // ============= RUN SUBTEST HANDLER SHAPE =============
-// Verifies the perl.runSubtest dispatch arm returns the correct JSON shape
-// (not just that the command is in the supported list).
+// Verifies the perl.runSubtest dispatch arm does not fabricate a success
+// response when only a subtest name is supplied and no executable file target
+// exists.  The command remains capability-visible for the two-argument,
+// whole-file-focused provider path.
 
 #[test]
 fn test_run_subtest_handler_returns_correct_shape() -> TestResult {
@@ -943,12 +950,12 @@ fn test_run_subtest_handler_returns_correct_shape() -> TestResult {
     };
 
     let response = server.handle_request(request).ok_or("No response from perl.runSubtest")?;
-    let result = response.result.ok_or("perl.runSubtest returned error, expected Ok result")?;
-
-    assert_eq!(result["status"], "success", "perl.runSubtest should return status=success");
-    assert_eq!(
-        result["subtest"], "my fancy subtest",
-        "perl.runSubtest should echo back the subtest name"
+    let error =
+        response.error.ok_or("perl.runSubtest returned success for an unsupported target")?;
+    assert_eq!(error.code, -32601, "unsupported selective execution should be MethodNotFound");
+    assert!(
+        error.message.contains("not implemented server-side"),
+        "unsupported selective execution should explain the capability boundary"
     );
     Ok(())
 }
@@ -978,5 +985,56 @@ fn test_run_subtest_missing_argument_returns_error() -> TestResult {
     );
     let error = response.error.ok_or("error field missing")?;
     assert_eq!(error.code, -32602, "Missing argument should return InvalidParams (-32602)");
+    Ok(())
+}
+
+#[test]
+fn test_run_test_preserves_requested_file_identity() -> TestResult {
+    use perl_lsp::JsonRpcRequest;
+
+    let server = setup_initialized_server();
+    let uri = "file:///workspace/requested.t";
+    let source = "use Test::More;\nok(1, 'requested');\ndone_testing();\n";
+
+    server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "textDocument/didOpen".to_string(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": source,
+            }
+        })),
+        id: None,
+    });
+
+    let response = server
+        .handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            method: "workspace/executeCommand".to_string(),
+            params: Some(json!({
+                "command": "perl.runTest",
+                "arguments": [format!("{uri}::test_basic")],
+            })),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+        })
+        .ok_or("No response from perl.runTest")?;
+    let result = response.result.ok_or("perl.runTest result missing")?;
+    let results =
+        result.get("results").and_then(Value::as_array).ok_or("perl.runTest results missing")?;
+    let test_ids: Vec<&str> =
+        results.iter().filter_map(|item| item.get("testId").and_then(Value::as_str)).collect();
+
+    assert!(!test_ids.is_empty(), "perl.runTest should return a result record");
+    assert!(
+        test_ids.iter().any(|test_id| test_id.contains("requested.t")),
+        "runTest must preserve the requested file target, got {test_ids:?}"
+    );
+    assert!(
+        test_ids.iter().all(|test_id| !test_id.eq_ignore_ascii_case("test_basic")),
+        "runTest must not pass a bare test name to the file-level runner, got {test_ids:?}"
+    );
     Ok(())
 }

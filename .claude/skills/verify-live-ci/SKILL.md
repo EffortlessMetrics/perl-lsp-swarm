@@ -1,35 +1,168 @@
 ---
 name: verify-live-ci
-description: Evaluate one current PR candidate's live checks, review/thread convergence, material-claim currentness, draft state, mergeability, and policy without branch churn or sibling-lane surveillance.
+description: Evaluate one substantively reviewed PR's live checks, threads, draft state, mergeability, and policy without treating CI as review or creating exact-head churn.
 user-invocable: false
 ---
 
 # Verify live CI
 
-Resolve the selected PR's current head/base and reject integration readiness while draft.
+This is Claude's live-integration fact skill. It does not perform, infer, or replace the
+substantive review owned by `review-pr`.
 
-Run the canonical composite checker in enforced protocol mode:
+Read one current GitHub snapshot for the selected PR:
+
+- cumulative substantive review result;
+- draft/ready state and any still-valid draft purpose;
+- required checks discovered from live policy and relevant advisory checks;
+- unresolved review threads and current `CHANGES_REQUESTED` reviews;
+- deliberately requested reviewers still pending;
+- mergeability, conflicts, queue/ruleset state, and explicit prerequisites;
+- applicable changelog, support, release, or publication disposition.
+
+Use repository helpers where they report these facts truthfully. Do not require a
+review-run comment, claim digest, review submitted on the latest SHA solely because the
+SHA changed, or review-receipt convergence.
+
+## Orchestration affordances
+
+### Lane-root decisions
+
+The lane root retains the substantive-review prerequisite, required/advisory policy
+interpretation, failure ownership, whether candidate/review meaning changed, whether a
+remote state is in flight or blocked, and whether integration is ready.
+
+### Useful evidence agents
+
+Use focused subagents or context forks where useful for:
+
+- enumerating required checks from live ruleset/policy;
+- downloading and classifying high-output logs/receipts/artifacts;
+- separating candidate, base, integration, oracle, instrument, environment/capacity,
+  pending, and `NOT_PROVEN` outcomes;
+- checking platform/package/release evidence identity and evaluated SHA;
+- verifying unresolved threads, requested reviews, or merge-queue facts.
+
+Children return exact run/check/artifact identity, observed conclusion, failure class,
+direct evidence, contradictions, candidate ownership, what the evidence does/not prove,
+and recommended route. They do not mutate the candidate or decide merge readiness.
+
+### Join predicate and return packet
+
+Join one current snapshot only after substantive review is `REVIEW_CURRENT`; required/
+advisory status and evaluated candidate identity are known; relevant check/review/thread/
+queue facts have honest classification; candidate/base/integration/oracle/instrument/
+environment/pending/not-proven remain distinct; and one integration posture plus wake
+event can be stated.
+
+Return PR/head identity, review result, required-policy source, current facts, failure
+classifications, contradictions, limitations, integration posture, exact remote wait/
+wake event, and next route.
+
+## Review sufficiency boundary
 
 ```text
-REVIEW_PROTOCOL_ENFORCE=1 scripts/ci/check-pr-review-convergence <pr-number> [owner/repo]
+no useful current substantive review
+→ REVIEW_REQUIRED
+→ `review-pr`
+
+CHANGES_REQUIRED
+→ `address-review-comments`
+
+NOT_PROVEN
+→ preserve missing review evidence or authority
+
+BLOCKED_BY_PREREQUISITE
+→ preserve the exact prerequisite
+
+SUPERSEDED_OR_CLOSE
+→ preserve durable closeout
+
+REVIEW_CURRENT
+→ evaluate live integration facts
 ```
 
-Do not invoke the internal claim-currentness helper as a parallel authority. The public convergence command owns review/thread/receipt/disposition state and proves material-claim currentness against the same current candidate snapshot. Enforced mode makes running-review receipts, stale receipt heads, missing disposition markers, and required independent verification blocking rather than advisory. Failure, candidate movement, or partial data is `NOT_PROVEN`.
+Green checks, textual mergeability, zero open threads, bot approval, or author
+self-certification cannot promote a candidate to `REVIEW_CURRENT`.
 
-Discover required checks from live policy and bind evidence to the candidate it evaluated. Preserve failure, pending, stale, missing, cancelled, instrument-failure, and not-proven states distinctly. Read the draft's named purpose and completion condition as part of live state.
+## Integration postures
 
-Do not inspect sibling PR implementations, touched-file overlap, or neighbouring worktrees. A conflict-free branch is not defective merely because `main` advanced. An interaction exists only when Git reports a conflict, an explicit prerequisite changed, or actual merge-group/synthetic integration proof failed.
+```text
+INTEGRATION_READY
+PR_IN_FLIGHT
+MERGE_BLOCKED
+NOT_PROVEN
+```
 
-This lane resolves its own actual conflict or integration repair and reruns only affected evidence/review. Unrelated `main` movement requires no action.
+- `INTEGRATION_READY` means current protection/integration facts permit the irreversible
+  transition.
+- `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
+  requested review, queue state, or armed auto-merge.
+- `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
+  substantive thread/change request, ruleset failure, or prerequisite blocks merge.
+- `NOT_PROVEN` means API/check/policy/instrument identity is missing or unreliable.
+
+Pending checks leave substantive review current while integration is `PR_IN_FLIGHT`.
+
+## Live evidence classification
+
+Preserve success, failure, pending, not-applicable, cancelled, stale-check-result,
+missing, instrument-failure, and not-proven distinctly. Success on an older candidate is
+stale evidence, not current green.
+
+Classify failures as candidate-owned, base-owned, integration interaction,
+test/oracle defect, instrument failure, environment/capacity, pending, or
+`NOT_PROVEN`. Do not widen the PR to absorb unrelated baseline failures, and do not
+ignore current evidence contradicting the reviewed claim.
+
+Prefer a cheap discriminator over a rebuild. Two settle most inherited reds without
+running anything:
+
+- **merge-base ancestry.** A candidate inherits whatever was broken at its merge base,
+  not whatever `main` looks like now. Ask whether the repair is an ancestor of this
+  candidate's merge base — `git merge-base --is-ancestor <repair> <pr-merge-base>` —
+  rather than whether `main` is currently green. A red that predates the merge base is
+  only a candidate for base ownership: require matching check identity and failure
+  evidence at that merge base before assigning `base-owned`; otherwise retain
+  `NOT_PROVEN`. Refreshing the branch may be the repair, but ancestry alone is not
+  more proof;
+- **by construction.** A gate derived from a property the candidate cannot affect is not candidate-owned. For path-based gates, compare against the full changed-path set, including modified and renamed paths, not only additions and deletions; the changed paths can settle the question without a build.
+
+State which discriminator was used. An unclassified red is `NOT_PROVEN`, not someone
+else's problem: "this also fails on main" is a claim about the wrong tree unless the
+merge base was the thing compared.
+
+## GitHub and wake boundary
+
+Read live state when the skill is entered or a named wake event occurs. When GitHub owns
+the next transition, update one existing route/PR summary only if another context needs
+the exact pending fact and wake event, then return `PR_IN_FLIGHT`.
+
+Do not poll unchanged state, post repeated check summaries, copy raw logs, or write an
+integration frontier/state file. Post only for a material candidate-owned failure,
+changed prerequisite/route, corrected instrument classification, `INTEGRATION_READY`
+synthesis, or closeout-relevant limitation.
+
+## Semantic currentness
+
+- finding repair → check affected finding, proof, and seam;
+- material claim, production route, authority, proof, compatibility, risk, or rollback
+  change → `review-pr` for affected dimensions;
+- formatting, editorial cleanup, generated receipt refresh, or stronger tests → no
+  automatic full-review restart;
+- conflict/combined-tree repair → focused proof/review of affected seam.
+
+Do not update/rebase/merge `main` or replay all proof merely because a conflict-free
+branch is behind.
 
 ## Routes
 
+- `REVIEW_REQUIRED` → `review-pr`
+- `REVIEW_FINDINGS_OPEN` / `CHANGES_REQUIRED` → `address-review-comments`
+- `REVIEW_SCOPE_CHANGED` → `review-pr` for affected dimensions
+- `DRAFT` → `publish-pr`
+- `PENDING` / `PR_IN_FLIGHT` → return exact pending transition to `finish-pr` or `deliver-goal`
+- `PRODUCT_OR_TEST_FAILURE` → `build-candidate`, then affected proof/review
+- `CONFLICT` / `INTEGRATION_INTERACTION` → repair affected seam, then affected proof and `review-pr`
+- `BLOCKED_BY_PREREQUISITE` / `MERGE_BLOCKED` → preserve exact blocker
+- `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name missing reliable evidence
 - `INTEGRATION_READY` → `merge-reconcile`
-- `DRAFT` → `publish-pr` to evaluate the named purpose and perform the explicit ready transition when complete
-- `PENDING` → record the exact pending transition once and return `PR_IN_FLIGHT` to the invoking flow
-- `PRODUCT_OR_TEST_FAILURE` → `build-candidate`
-- `REVIEW_FINDINGS_OPEN` → `address-review-comments`
-- `CLAIM_REVIEW_STALE` → `final-challenge`, then `review-pr`
-- `CONFLICT` → resolve this lane's conflict and rerun affected evidence/review
-- `INTEGRATION_INTERACTION` → repair the smallest affected candidate and rerun affected evidence/review
-- `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name the missing evidence

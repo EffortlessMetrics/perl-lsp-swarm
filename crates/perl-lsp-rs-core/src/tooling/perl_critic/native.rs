@@ -26,6 +26,26 @@ pub use native_contract::{
 pub use native_registry::{NativeCriticProfile, NativeCriticRegistry};
 pub use native_suppressions::{CriticSuppression, CriticSuppressionMap, CriticSuppressionScope};
 
+/// Resolve scope analysis issues for a rule, using pre-computed results from
+/// the context when available (the common path after #4999 item 3), or
+/// falling back to a fresh analysis when the context doesn't carry one.
+///
+/// Returns a slice of issues. When the context carries pre-computed results,
+/// this is a zero-allocation borrow; otherwise it builds the pragma map and
+/// runs the analyzer fresh.
+fn resolve_scope_analysis_owned<'a>(
+    ctx: &'a CriticContext<'a>,
+) -> std::borrow::Cow<'a, [ScopeIssue]> {
+    use std::borrow::Cow;
+    if let Some(si) = ctx.scope_issues {
+        Cow::Borrowed(si)
+    } else {
+        let pm = PragmaTracker::build(ctx.ast);
+        let si = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pm);
+        Cow::Owned(si)
+    }
+}
+
 /// Native rule that requires a file-level `use strict;` pragma.
 ///
 /// This is the first built-in rule expressed through the native critic
@@ -489,14 +509,13 @@ impl CriticRule for UnusedLexicalVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UnusedVariable)
-                .map(|issue| unused_lexical_finding(self, ctx.source, &issue)),
+                .map(|issue| unused_lexical_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -522,14 +541,13 @@ impl CriticRule for UnusedParameterRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UnusedParameter)
-                .map(|issue| unused_parameter_finding(self, ctx.source, &issue)),
+                .map(|issue| unused_parameter_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -555,14 +573,13 @@ impl CriticRule for DuplicateParameterRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::DuplicateParameter)
-                .map(|issue| duplicate_parameter_finding(self, ctx.source, &issue)),
+                .map(|issue| duplicate_parameter_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -588,14 +605,13 @@ impl CriticRule for ParameterShadowsGlobalRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::ParameterShadowsGlobal)
-                .map(|issue| parameter_shadows_global_finding(self, ctx.source, &issue)),
+                .map(|issue| parameter_shadows_global_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -621,14 +637,13 @@ impl CriticRule for DuplicateLexicalDeclarationRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::VariableRedeclaration)
-                .map(|issue| duplicate_lexical_finding(self, ctx.source, &issue)),
+                .map(|issue| duplicate_lexical_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -654,14 +669,13 @@ impl CriticRule for ShadowedLexicalVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::VariableShadowing)
-                .map(|issue| shadowed_lexical_finding(self, ctx.source, &issue)),
+                .map(|issue| shadowed_lexical_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -687,14 +701,13 @@ impl CriticRule for CaptureVarWithoutRegexMatchRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::CaptureVarWithoutRegexMatch)
-                .map(|issue| capture_var_without_match_finding(self, ctx.source, &issue)),
+                .map(|issue| capture_var_without_match_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -720,14 +733,13 @@ impl CriticRule for UndeclaredVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UndeclaredVariable)
-                .map(|issue| undeclared_variable_finding(self, ctx.source, &issue)),
+                .map(|issue| undeclared_variable_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -753,14 +765,13 @@ impl CriticRule for UninitializedVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UninitializedVariable)
-                .map(|issue| uninitialized_variable_finding(self, ctx.source, &issue)),
+                .map(|issue| uninitialized_variable_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -786,15 +797,14 @@ impl CriticRule for UnquotedBarewordRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UnquotedBareword)
                 .filter(|issue| !bareword_is_fat_comma_key(ctx.source, issue))
-                .map(|issue| unquoted_bareword_finding(self, ctx.source, &issue)),
+                .map(|issue| unquoted_bareword_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -2437,10 +2447,10 @@ fn collect_leading_zeros_findings(
     node: &Node,
     out: &mut Vec<CriticFinding>,
 ) {
-    if let NodeKind::Number { value } = &node.kind {
-        if is_octal_leading_zero(value) {
-            out.push(leading_zeros_finding(rule, source, node, value));
-        }
+    if let NodeKind::Number { value } = &node.kind
+        && is_octal_leading_zero(value)
+    {
+        out.push(leading_zeros_finding(rule, source, node, value));
     }
 
     for child in node.children() {
@@ -2759,6 +2769,121 @@ mod tests {
         assert!(strict_ids.contains(&"native.documentation.require_pod_sections"));
         assert!(!recommended_ids.contains(&"native.documentation.require_pod_sections"));
         assert_eq!(recommended_ids.len(), NativeCriticRegistry::recommended().len());
+    }
+
+    #[test]
+    fn native_include_adds_strict_only_rule_to_recommended_profile() {
+        // The reported bug: `profile = "recommended"` plus
+        // `include = ["native.variables.unused_lexical"]` produced no findings
+        // at all, because the rule was never in the profile registry for the
+        // include whitelist to select.
+        let source = "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig {
+            include: vec!["native.variables.unused_lexical".to_string()],
+            ..Default::default()
+        };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert!(registry.rule_ids().contains(&"native.variables.unused_lexical"));
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "native.variables.unused_lexical");
+    }
+
+    #[test]
+    fn native_include_of_in_profile_rule_does_not_duplicate_it() {
+        let config = CriticConfig {
+            include: vec!["native.testing.require_use_strict".to_string()],
+            ..Default::default()
+        };
+        let widened = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert_eq!(
+            widened.rule_ids(),
+            NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended).rule_ids()
+        );
+    }
+
+    #[test]
+    fn native_include_of_unknown_rule_id_leaves_the_profile_roster_alone() {
+        // Unknown IDs are reported by config load, not silently resolved to a
+        // neighbouring rule here.
+        let config = CriticConfig {
+            include: vec!["native.variables.unused_lexicals".to_string()],
+            ..Default::default()
+        };
+        let widened = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert_eq!(
+            widened.rule_ids(),
+            NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended).rule_ids()
+        );
+    }
+
+    #[test]
+    fn native_empty_include_keeps_the_plain_profile_roster() {
+        for profile in [NativeCriticProfile::Recommended, NativeCriticProfile::Strict] {
+            let config = CriticConfig::default();
+            assert_eq!(
+                NativeCriticRegistry::for_profile_with_config(profile, &config).rule_ids(),
+                NativeCriticRegistry::for_profile(profile).rule_ids(),
+                "empty include changed the {} roster",
+                profile.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn native_exclude_still_wins_over_an_include_widened_rule() {
+        let source = "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig {
+            include: vec!["native.variables.unused_lexical".to_string()],
+            exclude: vec!["native.variables.unused_lexical".to_string()],
+            ..Default::default()
+        };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        assert!(registry.check(&ctx).is_empty());
+    }
+
+    #[test]
+    fn native_include_still_narrows_execution_within_the_profile() {
+        // Widening the registry must not turn `include` into a no-op: with a
+        // non-empty include list the other profile rules stay silent.
+        let source = "print 1;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig {
+            include: vec!["native.testing.require_use_strict".to_string()],
+            ..Default::default()
+        };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "native.testing.require_use_strict");
     }
 
     #[test]

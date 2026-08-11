@@ -93,6 +93,64 @@ fn quality_gate_cli_still_blocks_genuine_gap_alongside_weakly_exposed() -> TestR
     Ok(())
 }
 
+#[test]
+fn quality_gate_cli_rejects_malformed_changed_production_files() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt_classes(&ripr_pr, &head, 0, 1, 0)?;
+    write_json(
+        &review,
+        json!({
+            "schema_version": "0.1",
+            "tool": "ripr",
+            "status": "advisory",
+            "base": "quality-gate-cli-test-base",
+            "base_sha": "quality-gate-cli-test-base-sha",
+            "head": "HEAD",
+            "head_sha": head,
+            "analysis_scope": {
+                "scope": "diff_scoped_changed_files",
+                "run_status": "limited_diff_scope",
+                "production_files_considered": 1,
+                "changed_production_files": [null],
+                "scoped_production_files": [],
+                "limitation": "review_comments_diff_scope_only"
+            },
+            "summary": {
+                "comments": 0,
+                "summary_only": 0,
+                "suppressed": 0
+            },
+            "comments": [],
+            "summary_only": [],
+            "suppressed": [],
+            "warnings": []
+        }),
+    )?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(
+        !output.status.success(),
+        "malformed changed_production_files must fail closed (stderr: {})",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/review_guidance/status").and_then(Value::as_str), Some("invalid"));
+    next_action(&payload, "ripr_review_receipt_not_current")?;
+    Ok(())
+}
+
 /// #2015 / Codex P2: the actionable count must not exceed the producer's
 /// post-suppression `severe_gaps`. When `suppressed_unclassified` findings are
 /// subtracted from `severe_gaps` only (leaving the `reachable_unrevealed` bucket
@@ -461,7 +519,7 @@ fn quality_gate_cli_passes_nonproduction_only_new_ripr_scope() -> TestResult {
     assert_eq!(payload.pointer("/ripr_pr/new_unresolved").and_then(Value::as_u64), Some(126));
     assert_eq!(
         payload.pointer("/review_guidance/production_files_considered").and_then(Value::as_u64),
-        Some(0)
+        Some(9)
     );
     assert_eq!(payload.get("next_actions").and_then(Value::as_array).map(Vec::len), Some(0));
 
@@ -1385,7 +1443,8 @@ fn write_nonproduction_only_review_guidance_receipt(path: &Path, head: &str) -> 
             "analysis_scope": {
                 "scope": "diff_scoped_changed_files",
                 "run_status": "limited_diff_scope",
-                "production_files_considered": 0,
+                "production_files_considered": 9,
+                "changed_production_files": [],
                 "scoped_production_files": [],
                 "limitation": "review_comments_diff_scope_only"
             },

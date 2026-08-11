@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (`perl-lsp-rs-core`): `JsonRpcResponse::jsonrpc` is now
+  `&'static str`.** Always `"2.0"` (see `JSONRPC_VERSION`); removes a
+  per-response `String` allocation (#5053 item 7). Struct literals that
+  passed `"2.0".to_string()` must pass `"2.0"`. Wire JSON is unchanged
+  (serde serializes `&str` identically to `String`).
+
 - **Breaking (`perl-lsp-rs-core`): `AiCompletionConfig` / `AiStreamingConfig`
   authority fields.** Public structs now carry `user_enabled` /
   `project_opt_out` (and streaming `user_enabled`) so project `.perl-lsp.toml`

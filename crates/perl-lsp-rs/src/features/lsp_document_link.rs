@@ -116,25 +116,26 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
             if let Some(idx) = line.find(kw) {
                 let rest = &line[idx + kw.len()..];
                 let quote = rest.chars().next().unwrap_or(' ');
-                if quote == '\'' || quote == '"' {
-                    if let Some(endq) = rest[1..].find(quote) {
-                        let path = &rest[1..1 + endq];
-                        let s = line_start + idx + kw.len() + 1;
-                        let e = s + path.len();
-                        // Try to resolve relative to current file
-                        let target = if PathBuf::from(path).is_absolute() {
-                            // Absolute path - works on both Unix and Windows
-                            Url::from_file_path(path)
-                                .map_err(|()| {
-                                    tracing::debug!(
-                                        path,
-                                        "document link: failed to convert absolute path to URL"
-                                    );
-                                })
-                                .ok()
-                        } else {
-                            // Relative to current file's directory
-                            uri.to_file_path().map_err(|()| {
+                if (quote == '\'' || quote == '"')
+                    && let Some(endq) = rest[1..].find(quote)
+                {
+                    let path = &rest[1..1 + endq];
+                    let s = line_start + idx + kw.len() + 1;
+                    let e = s + path.len();
+                    // Try to resolve relative to current file
+                    let target = if PathBuf::from(path).is_absolute() {
+                        // Absolute path - works on both Unix and Windows
+                        Url::from_file_path(path)
+                            .map_err(|()| {
+                                tracing::debug!(
+                                    path,
+                                    "document link: failed to convert absolute path to URL"
+                                );
+                            })
+                            .ok()
+                    } else {
+                        // Relative to current file's directory
+                        uri.to_file_path().map_err(|()| {
                                 tracing::debug!(uri = %uri, "document link: URI is not a file path");
                             }).ok().and_then(|base_path| {
                                 base_path.parent().and_then(|parent| {
@@ -145,15 +146,15 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
                                     }).ok()
                                 })
                             })
+                    };
+                    if let Some(target_url) = target {
+                        // Get display path for tooltip
+                        let display_path = if let Ok(file_path) = target_url.to_file_path() {
+                            file_path.display().to_string()
+                        } else {
+                            path.to_string()
                         };
-                        if let Some(target_url) = target {
-                            // Get display path for tooltip
-                            let display_path = if let Ok(file_path) = target_url.to_file_path() {
-                                file_path.display().to_string()
-                            } else {
-                                path.to_string()
-                            };
-                            links.push(DocumentLink {
+                        links.push(DocumentLink {
                                 range: to_range(text, s, e),
                                 target: target_url.to_string().parse::<Uri>().map_err(|e| {
                                     tracing::debug!(error = %e, "document link: failed to parse file URI");
@@ -161,7 +162,6 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
                                 tooltip: Some(format!("Open {}", display_path)),
                                 data: None,
                             });
-                        }
                     }
                 }
             }

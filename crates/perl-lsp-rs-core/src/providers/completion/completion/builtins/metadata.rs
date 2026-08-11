@@ -492,6 +492,27 @@ fn misc_info(name: &'static str) -> Option<BuiltinInfo> {
             "prototype FUNCTION",
             Some("Return the prototype string of a function, or undef if none."),
         ),
+        // Deprecated/discouraged builtins — include deprecation notes (#5050 item 3).
+        "dump" => (
+            "dump ",
+            "dump LABEL",
+            Some("⚠ Deprecated: Core dump and abort. Largely obsolete; no direct modern replacement."),
+        ),
+        "study" => (
+            "study ",
+            "study SCALAR",
+            Some("⚠ Deprecated: No-op since Perl 5.16. Previously optimized regex matching; now has no effect."),
+        ),
+        "dbmopen" => (
+            "dbmopen ",
+            "dbmopen HASH, DBNAME, MASK",
+            Some("⚠ Deprecated: Use tied hashes with DB_File or MLDBM instead."),
+        ),
+        "dbmclose" => (
+            "dbmclose ",
+            "dbmclose HASH",
+            Some("⚠ Deprecated: Use tied hashes with DB_File or MLDBM instead."),
+        ),
     })
 }
 

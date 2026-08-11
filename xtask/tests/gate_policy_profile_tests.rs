@@ -183,6 +183,87 @@ fn routed_integration_test_gate_has_cold_ci_headroom() -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// Contract guard for issue #5934: `unit_parser_stack_full` must remain a required
+/// merge_gate tier gate that is not quarantined.
+///
+/// This gate covers lib tests for perl-parser, perl-lexer, and perl-parser-core —
+/// the only required gate that runs these packages. Quarantining or demoting it
+/// would silently remove coverage from the entire parser stack.
+#[test]
+fn parser_stack_gate_stays_required_merge_gate() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let gate = parsed.gates.into_iter().find(|gate| gate.name == "unit_parser_stack_full").ok_or(
+        "missing unit_parser_stack_full gate — it covers parser/lexer/parser-core lib tests",
+    )?;
+
+    assert_eq!(gate.tier, "merge_gate", "unit_parser_stack_full must stay in the merge_gate tier");
+    assert!(gate.required, "unit_parser_stack_full must stay PR-blocking");
+    assert!(
+        !gate.quarantine,
+        "unit_parser_stack_full must not be quarantined — quarantine silently removes \
+         the only required coverage for the parser/lexer/parser-core lib surface"
+    );
+
+    // Verify the gate exercises --lib with locking (not --tests, which is deferred to
+    // the scoped integration lane; not unlocked, which would allow dep drift).
+    let tokens: Vec<&str> = gate.command.split_whitespace().collect();
+    for flag in ["--lib", "--locked"] {
+        assert!(
+            tokens.contains(&flag),
+            "unit_parser_stack_full must keep {flag} as an exact argument"
+        );
+    }
+
+    Ok(())
+}
+
+/// Contract guard for issue #6107: the bounded parser integration proof stays
+/// required, manifest-driven, and above its initial denominator.
+#[test]
+fn parser_integration_gate_is_required_and_manifest_driven()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    let gate = parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "parser_integration")
+        .ok_or("missing parser_integration gate — #6107 proof is not wired")?;
+
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "parser integration proof must be required");
+    assert!(!gate.quarantine, "parser integration proof must not be quarantined");
+    assert!(
+        gate.command.contains("scripts/ci/run_parser_integration.py"),
+        "parser integration gate must use the manifest-driven runner; current command: {}",
+        gate.command
+    );
+    assert!(
+        gate.timeout_seconds.unwrap_or_default() >= 900,
+        "parser integration gate needs cold-build headroom"
+    );
+
+    let manifest = root.join(".ci/parser-integration-targets.json");
+    let manifest_content = fs::read_to_string(manifest)?;
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest_content)?;
+    let targets = manifest_json
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("parser integration manifest must contain targets")?;
+    assert!(
+        targets.len() >= 7,
+        "parser integration manifest must not shrink below its initial proof set"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn inline_completion_contract_scope_stays_on_lsp_crates() -> Result<(), Box<dyn std::error::Error>>
 {

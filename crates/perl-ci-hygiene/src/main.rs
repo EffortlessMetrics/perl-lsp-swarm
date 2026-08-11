@@ -28,7 +28,7 @@ mod git_hooks;
 mod process;
 
 use crate::cli::{Cli, CliCommand};
-use crate::commands::panic_test::check_panic_test;
+use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
 use crate::commands::print_in_lib::check_print_in_lib;
 use crate::commands::regex_static::check_regex_static;
 #[cfg(test)]
@@ -37,9 +37,9 @@ use crate::commands::todos::{
     has_unlinked_todo_in_rust_line_with_block_context, has_unlinked_todo_in_rust_line_with_state,
     linked_marker,
 };
-use crate::git_hooks::cmd_install_githooks;
 #[cfg(test)]
 use crate::git_hooks::pre_push_hook_script;
+use crate::git_hooks::{check_githooks, cmd_install_githooks};
 use crate::process::*;
 
 const RED: &str = "\x1b[0;31m";
@@ -69,6 +69,9 @@ fn run() -> Result<i32> {
         CliCommand::CheckDocPaths { docs_dir } => {
             cmd_check_doc_paths(&repo_root, docs_dir.as_deref())?
         }
+        CliCommand::CheckDocLinks { docs_dir } => {
+            commands::doc_links::check_doc_links(&repo_root, docs_dir.as_deref())?
+        }
         CliCommand::CheckDocDrift => commands::doc_drift::check_doc_drift(&repo_root)?,
         CliCommand::Preflight => cmd_preflight(&repo_root)?,
         CliCommand::TestCapped { cargo_args } => cmd_test_capped(&repo_root, &cargo_args)?,
@@ -77,6 +80,7 @@ fn run() -> Result<i32> {
         CliCommand::RunParserComparison => cmd_run_parser_comparison(&repo_root)?,
         CliCommand::GenerateBadges { check } => cmd_generate_badges(&repo_root, check)?,
         CliCommand::InstallGithooks => cmd_install_githooks(&repo_root)?,
+        CliCommand::CheckGithooks => check_githooks(&repo_root)?,
         CliCommand::VerifyStacker => cmd_verify_stacker(&repo_root)?,
         CliCommand::TestIterativeParser => cmd_test_iterative_parser(&repo_root)?,
         CliCommand::CheckV2BundleSync => cmd_check_v2_bundle_sync(&repo_root)?,
@@ -114,7 +118,15 @@ fn run() -> Result<i32> {
         CliCommand::CheckUnsafeProd => cmd_check_unsafe_prod(&repo_root)?,
         CliCommand::CheckUnwrapsModules => cmd_check_unwraps_modules(&repo_root)?,
         CliCommand::CheckUnwrapsProd => cmd_check_unwraps_prod(&repo_root)?,
-        CliCommand::CheckPanicTest => check_panic_test(&repo_root)?,
+        CliCommand::CheckPanicTest { inventory, identity_registry } => {
+            if inventory {
+                commands::panic_test::write_inventory(&repo_root)?
+            } else if let Some(identity_registry) = identity_registry {
+                check_panic_test_with_registry(&repo_root, &identity_registry)?
+            } else {
+                check_panic_test(&repo_root)?
+            }
+        }
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,
@@ -610,7 +622,7 @@ fn cmd_quick_bench(repo_root: &Path) -> Result<i32> {
         "  facade     : bench_facade        (tree-sitter-perl-rs, v3 wrapped in tree-sitter ergonomics)"
     );
     println!(
-        "  c-grammar  : bench_parser_c      (tree-sitter C grammar binding, requires libclang)"
+        "  c-grammar  : bench_parser_c      (tree-sitter C grammar binding, requires a C toolchain)"
     );
     println!();
     println!("Building benchmark binaries...");
@@ -727,7 +739,9 @@ fn cmd_quick_bench(repo_root: &Path) -> Result<i32> {
 
     println!();
     println!("Quick benchmark complete!");
-    println!("Note: c-grammar requires libclang; N/A means libclang was not found.");
+    println!(
+        "Note: c-grammar requires a C toolchain; N/A means its optional build or run was unavailable."
+    );
     println!(
         "Note: facade overhead vs native-v3 should be near epsilon (facade wraps same v3 parser)."
     );
@@ -899,8 +913,8 @@ const RUST_BENCH_BIN: &str = "perl-parser-bench";
 
 /// Binary identifier for the legacy C tree-sitter parser benchmark.
 ///
-/// Lives in the workspace-EXCLUDED `tree-sitter-perl-c` crate (libclang-dev
-/// dependency), so it must be invoked via `--manifest-path` rather than `-p`.
+/// Lives in the workspace-member `tree-sitter-perl-c` crate. Keep the explicit
+/// manifest path so this benchmark remains pinned to the intended package.
 const C_BENCH_BIN: &str = "bench_parser_c";
 
 /// Relative path (from repo root) to the C tree-sitter crate's Cargo.toml.
@@ -927,7 +941,7 @@ const QUICK_BENCH_SAMPLES: usize = 3;
 
 /// Build the quick-bench parser binaries ahead of timing.
 ///
-/// The C grammar bench is optional because it depends on libclang. Failures
+/// The C grammar bench is optional because it depends on a usable C toolchain. Failures
 /// while building that bench are treated as "N/A" at measurement time.
 fn build_quick_bench_binaries(repo_root: &Path) -> Result<()> {
     command_status_strict(
@@ -990,14 +1004,13 @@ fn run_rust_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
 
 /// Run the legacy C tree-sitter parser bench binary against `file`.
 ///
-/// `tree-sitter-perl-c` is in `[workspace.exclude]` because of its libclang
-/// build dependency, so this helper invokes cargo with `--manifest-path`
-/// pointing at that crate's Cargo.toml. The `test-utils` feature is required
-/// for the binary target.
+/// `tree-sitter-perl-c` is a workspace member, but this helper invokes cargo
+/// with `--manifest-path` to keep the benchmark package selection explicit.
+/// The `test-utils` feature is required for the binary target.
 ///
 /// Returns wall-clock duration in microseconds, or `None` if the bench
-/// binary fails to build or exits non-zero (e.g. on systems without
-/// libclang installed). Quick-bench treats `None` as N/A in the speedup
+/// binary fails to build or exits non-zero (e.g. on systems without a usable
+/// C toolchain). Quick-bench treats `None` as N/A in the speedup
 /// column rather than failing the whole run.
 fn run_c_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
     let binary = repo_root
@@ -3563,8 +3576,8 @@ mod tests {
         // Pin the manifest path for the C bench so a rename of the C crate
         // directory is caught here rather than silently producing wrong timings.
         assert_eq!(C_BENCH_MANIFEST, "crates/tree-sitter-perl-c/Cargo.toml");
-        // The C bench must use a manifest path (workspace-excluded crate) while
-        // the Rust bench uses a workspace package selector — they must diverge in
+        // The C bench uses a manifest path while the Rust bench uses a workspace
+        // package selector — they must diverge in
         // invocation style, not just binary name.
         assert!(!C_BENCH_MANIFEST.is_empty());
     }

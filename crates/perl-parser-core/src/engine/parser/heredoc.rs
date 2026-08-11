@@ -80,14 +80,15 @@ fn parse_heredoc_delimiter(s: &str) -> (String, bool, bool, bool) {
         if let Some(label) = rest.strip_prefix('\\') {
             (label.to_string(), false, false)
         } else if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
-            // Double-quoted: interpolated, unescape label
-            (unescape_label(&rest[1..rest.len() - 1]), true, false)
+            // Double-quoted: interpolated body, but the delimiter label itself is
+            // literal (Perl 5.38 keeps escape sequences like \n as two bytes).
+            (rest[1..rest.len() - 1].to_string(), true, false)
         } else if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2 {
             // Single-quoted: not interpolated, no unescape
             (rest[1..rest.len() - 1].to_string(), false, false)
         } else if rest.starts_with('`') && rest.ends_with('`') && rest.len() >= 2 {
-            // Backtick: interpolated, command execution, unescape label
-            (unescape_label(&rest[1..rest.len() - 1]), true, true)
+            // Backtick: interpolated command body; delimiter label stays literal.
+            (rest[1..rest.len() - 1].to_string(), true, true)
         } else {
             // Bare word: interpolated, no unescape (except maybe explicit escapes?)
             // Bare identifiers don't usually have escapes, but can have weird chars?
@@ -380,5 +381,221 @@ mod heredoc_fuzz_tests {
             let backtick = format!("<<`{label}`");
             prop_assert!(matches!(map_heredoc_quote_kind(&backtick, true), QuoteKind::Backtick));
         }
+    }
+}
+
+#[cfg(test)]
+mod heredoc_branch_tests {
+    use super::{after_line_break, map_heredoc_quote_kind, parse_heredoc_delimiter, unescape_label};
+    use crate::engine::parser::heredoc_collector::QuoteKind;
+
+    #[test]
+    fn parses_empty_and_semicolon_terminated_labels() {
+        assert_eq!(parse_heredoc_delimiter("<<"), (String::new(), true, false, false));
+        assert_eq!(
+            parse_heredoc_delimiter("<<;"),
+            (String::new(), true, false, false)
+        );
+    }
+
+    #[test]
+    fn parses_indented_and_quoted_labels() {
+        assert_eq!(
+            parse_heredoc_delimiter("<<~EOF"),
+            ("EOF".to_string(), true, true, false)
+        );
+        assert_eq!(
+            parse_heredoc_delimiter("<<'EOF'"),
+            ("EOF".to_string(), false, false, false)
+        );
+        // <<"E\nOF" keeps the backslash-n pair literal in the delimiter name;
+        // quoting controls body interpolation, not label unescaping.
+        assert_eq!(
+            parse_heredoc_delimiter("<<\"E\\nOF\""),
+            ("E\\nOF".to_string(), true, false, false)
+        );
+    }
+
+    #[test]
+    fn parses_literal_and_command_labels() {
+        assert_eq!(
+            parse_heredoc_delimiter(r"<<\EOF"),
+            ("EOF".to_string(), false, false, false)
+        );
+        let command = format!("<<{}echo EOF{}", 96 as char, 96 as char);
+        assert_eq!(
+            parse_heredoc_delimiter(&command),
+            ("echo EOF".to_string(), true, false, true)
+        );
+    }
+
+    #[test]
+    fn maps_quote_kinds_for_supported_delimiters() {
+        assert!(matches!(
+            map_heredoc_quote_kind(r"<<\EOF", false),
+            QuoteKind::Single
+        ));
+        assert!(matches!(
+            map_heredoc_quote_kind("<<'EOF'", false),
+            QuoteKind::Single
+        ));
+        assert!(matches!(
+            map_heredoc_quote_kind("<<\"EOF\"", true),
+            QuoteKind::Double
+        ));
+        let command = format!("<<{}EOF{}", 96 as char, 96 as char);
+        assert!(matches!(
+            map_heredoc_quote_kind(&command, true),
+            QuoteKind::Backtick
+        ));
+        assert!(matches!(
+            map_heredoc_quote_kind("<<EOF", true),
+            QuoteKind::Unquoted
+        ));
+    }
+
+    #[test]
+    fn advances_over_lf_crlf_and_end_of_input() {
+        assert_eq!(after_line_break(b"abc\ndef", 0), 4);
+        assert_eq!(after_line_break(b"abc\r\ndef", 0), 5);
+        assert_eq!(after_line_break(b"abc\rdef", 0), 4);
+        assert_eq!(after_line_break(b"abcdef", 0), 6);
+        assert_eq!(after_line_break(b"abc\ndef", 99), 99);
+    }
+
+    // --- unescape_label branch coverage ---
+
+    /// Every named escape sequence that unescape_label handles must round-trip
+    /// correctly. Each branch in the match arm is exercised independently so a
+    /// regression in any single arm is immediately visible.
+    #[test]
+    fn unescape_label_named_escapes_round_trip() {
+        // \r → carriage return (ASCII 0x0D)
+        assert_eq!(unescape_label("A\\rB"), "A\rB");
+        // \t → horizontal tab (ASCII 0x09)
+        assert_eq!(unescape_label("A\\tB"), "A\tB");
+        // \\ → literal backslash
+        assert_eq!(unescape_label("A\\\\B"), "A\\B");
+        // \" → double-quote character
+        assert_eq!(unescape_label("A\\\"B"), "A\"B");
+        // \' → single-quote character
+        assert_eq!(unescape_label("A\\'B"), "A'B");
+        // \$ → dollar sign (prevents variable interpolation in the label)
+        assert_eq!(unescape_label("A\\$B"), "A$B");
+        // \@ → at-sign (prevents array interpolation in the label)
+        assert_eq!(unescape_label("A\\@B"), "A@B");
+    }
+
+    /// An unrecognised escape sequence (\x for any x not in the named set) must
+    /// be passed through verbatim — both the backslash and the following
+    /// character are preserved in the output.
+    #[test]
+    fn unescape_label_unknown_escape_passthrough() {
+        // \x is not a recognised escape; both chars should appear in the output.
+        assert_eq!(unescape_label("A\\xB"), "A\\xB");
+        // \z likewise
+        assert_eq!(unescape_label("A\\zB"), "A\\zB");
+        // digit not in the set
+        assert_eq!(unescape_label("A\\1B"), "A\\1B");
+    }
+
+    /// A trailing backslash at the very end of the input string (i.e. the
+    /// escape character has no successor) must be preserved as a literal
+    /// backslash — the `else` branch after `chars.next()` returns None.
+    #[test]
+    fn unescape_label_trailing_backslash_preserved() {
+        assert_eq!(unescape_label("A\\"), "A\\");
+        // Standalone backslash — no prefix either
+        assert_eq!(unescape_label("\\"), "\\");
+    }
+
+    // --- parse_heredoc_delimiter indented-combination branch coverage ---
+
+    /// Indented heredoc (`<<~`) combined with every quoting style must set
+    /// `indented = true` while preserving the correct interpolated / command
+    /// semantics for each quote kind.  The non-indented variants are already
+    /// covered by `parses_indented_and_quoted_labels` and
+    /// `parses_literal_and_command_labels`; this test targets the previously
+    /// missing `indented = true` × quote-kind cross product.
+    #[test]
+    fn parses_indented_combined_with_every_quote_style() {
+        // <<~'EOF'  — indented + single-quoted → not interpolated, not command
+        assert_eq!(
+            parse_heredoc_delimiter("<<~'EOF'"),
+            ("EOF".to_string(), false, true, false)
+        );
+
+        // <<~"EOF"  — indented + double-quoted → interpolated, not command
+        assert_eq!(
+            parse_heredoc_delimiter("<<~\"EOF\""),
+            ("EOF".to_string(), true, true, false)
+        );
+
+        // <<~`cmd`  — indented + backtick → interpolated, command execution
+        let indented_backtick = format!("<<~{}cmd{}", 96u8 as char, 96u8 as char);
+        assert_eq!(
+            parse_heredoc_delimiter(&indented_backtick),
+            ("cmd".to_string(), true, true, true)
+        );
+
+        // <<~\EOF  — indented + backslash-quoted → not interpolated, not command
+        assert_eq!(
+            parse_heredoc_delimiter("<<~\\EOF"),
+            ("EOF".to_string(), false, true, false)
+        );
+    }
+
+    /// `<<~;` and `<<~` (empty after the tilde) must trigger the early-return
+    /// path with `indented = true`.  The non-indented equivalents (`<<;`, `<<`)
+    /// are already covered; this test proves the indented flag is preserved even
+    /// on the early-exit path.
+    #[test]
+    fn parses_indented_empty_and_semicolon_labels() {
+        // <<~   — nothing after the tilde
+        assert_eq!(
+            parse_heredoc_delimiter("<<~"),
+            (String::new(), true, true, false)
+        );
+        // <<~;  — semicolon acts as the statement terminator, not part of the label
+        assert_eq!(
+            parse_heredoc_delimiter("<<~;"),
+            (String::new(), true, true, false)
+        );
+    }
+
+    // --- map_heredoc_quote_kind indented-prefix branch coverage ---
+
+    /// `map_heredoc_quote_kind` strips both `<` characters and the optional `~`
+    /// before inspecting the quote delimiter.  Callers can pass the raw token
+    /// text with the `~` prefix; the function must resolve to the same
+    /// QuoteKind as the non-indented equivalent.
+    #[test]
+    fn maps_quote_kinds_for_indented_delimiters() {
+        // <<~'EOF' → Single (same as <<\EOF and <<'EOF')
+        assert!(matches!(
+            map_heredoc_quote_kind("<<~'EOF'", false),
+            QuoteKind::Single
+        ));
+        // <<~"EOF" → Double
+        assert!(matches!(
+            map_heredoc_quote_kind("<<~\"EOF\"", true),
+            QuoteKind::Double
+        ));
+        // <<~`EOF` → Backtick
+        let indented_backtick = format!("<<~{}EOF{}", 96u8 as char, 96u8 as char);
+        assert!(matches!(
+            map_heredoc_quote_kind(&indented_backtick, true),
+            QuoteKind::Backtick
+        ));
+        // <<~EOF   → Unquoted (bare word)
+        assert!(matches!(
+            map_heredoc_quote_kind("<<~EOF", true),
+            QuoteKind::Unquoted
+        ));
+        // <<~\EOF  → Single (backslash-quoted is mapped to Single)
+        assert!(matches!(
+            map_heredoc_quote_kind("<<~\\EOF", false),
+            QuoteKind::Single
+        ));
     }
 }

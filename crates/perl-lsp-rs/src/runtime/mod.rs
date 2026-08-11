@@ -27,6 +27,8 @@ mod latency;
 mod lifecycle;
 mod notebook;
 pub(crate) mod outbound;
+#[allow(unused_imports)]
+use outbound::OutboundSink;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
@@ -179,6 +181,12 @@ pub struct LspServer {
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
+    /// Request IDs that are queued or executing in the async scheduler.
+    ///
+    /// This lets bounded cancellation-marker cleanup distinguish stale
+    /// tombstones from cancellation signals that still belong to work the
+    /// scheduler has not fully settled.
+    pending_request_ids: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Workspace folders with full state representation
     ///
     /// This replaces the previous `Vec<String>` approach to support multi-root
@@ -375,6 +383,12 @@ pub struct LspServer {
     /// users with identical `window/showMessage` warnings.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Deduplication set for invalid enum warnings from editor-provided settings.
+    ///
+    /// The same client payload can arrive through initialization, configuration
+    /// pulls, and repeated `didChangeConfiguration` notifications. Warn once per
+    /// setting/value pair per server session so a typo is visible without toast spam.
+    pub(crate) client_setting_warnings_sent: Mutex<std::collections::HashSet<String>>,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
@@ -389,6 +403,12 @@ pub struct LspServer {
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
+    /// Deduplication set for user-facing AI backend warnings.
+    ///
+    /// Authentication failures are actionable but can recur on every
+    /// completion request. Keep the notification session-scoped so a broken
+    /// credential does not spam the editor while preserving one clear signal.
+    pub(crate) ai_backend_warnings_sent: Mutex<HashSet<String>>,
     /// When `true`, eagerly maintain the per-document incremental parsing state
     /// (`incremental_doc` / `incremental_state`) inside the `didChange` mutation
     /// critical section.
@@ -540,6 +560,27 @@ impl LspServer {
         self.ai_inline_backend.lock().clone()
     }
 
+    /// Notify the user once when AI completion authentication fails.
+    ///
+    /// The provider error is intentionally not included in the editor-facing
+    /// message: provider responses may contain sensitive or noisy details.
+    /// The detailed error remains available to the debug log at the call site.
+    pub(crate) fn notify_ai_auth_failure(&self) {
+        let mut warnings = self.ai_backend_warnings_sent.lock();
+        if warnings.contains("auth") {
+            return;
+        }
+        warnings.insert("auth".to_string());
+
+        if let Err(error) = self.show_message(
+            MessageType::Warning,
+            "AI inline completion authentication failed. Check the configured API key and provider settings.",
+        ) {
+            warnings.remove("auth");
+            tracing::warn!(%error, "failed to notify client about AI authentication failure");
+        }
+    }
+
     /// Runtime feature gate for future next-edit suggestions.
     ///
     /// This boundary is intentionally default-off. Even when explicit config
@@ -679,12 +720,12 @@ impl LspServer {
         push_unique(&mut uri_keys, uri.to_string());
         push_unique(&mut uri_keys, self.normalize_uri_key(uri));
 
-        if let Some(path) = source_path_from_uri(uri) {
-            if let Ok(file_url) = url::Url::from_file_path(&path) {
-                let file_uri = file_url.to_string();
-                push_unique(&mut uri_keys, file_uri.clone());
-                push_unique(&mut uri_keys, self.normalize_uri_key(&file_uri));
-            }
+        if let Some(path) = source_path_from_uri(uri)
+            && let Ok(file_url) = url::Url::from_file_path(&path)
+        {
+            let file_uri = file_url.to_string();
+            push_unique(&mut uri_keys, file_uri.clone());
+            push_unique(&mut uri_keys, self.normalize_uri_key(&file_uri));
         }
 
         for key in uri_keys.clone() {
@@ -1039,9 +1080,21 @@ impl LspServer {
         self.workspace_folders.lock().len()
     }
 
-    /// Send a notification to the client via the outbound channel
+    /// Send a notification to the client via the outbound channel.
+    ///
+    /// Delegates through the `OutboundSink` trait so that the same code path
+    /// works with both the production `OutboundSender` and test `RecordingSink`
+    /// (#5015 PR-3).
     fn notify(&self, method: &str, params: Value) -> io::Result<()> {
-        self.outbound.send_notification(method, params)
+        self.outbound_sink().send_notification(method, params)
+    }
+
+    /// Returns a reference to the outbound sink trait object.
+    ///
+    /// This enables handlers to accept `&dyn OutboundSink` for testability
+    /// without needing access to the full `LspServer` (#5015 PR-3).
+    pub(crate) fn outbound_sink(&self) -> &dyn OutboundSink {
+        &self.outbound
     }
 
     /// Acquire a lock on the documents map
@@ -1069,7 +1122,7 @@ impl LspServer {
     #[inline]
     pub(crate) fn documents_text_snapshot(&self) -> Vec<(String, String)> {
         let docs = self.documents_guard();
-        docs.iter().map(|(k, v)| (k.clone(), v.text.clone())).collect()
+        docs.iter().map(|(k, v)| (k.clone(), v.text_arc.to_string())).collect()
     }
 
     /// Create a snapshot for scan operations that may need AST access
@@ -1089,7 +1142,7 @@ impl LspServer {
         docs.iter()
             .map(|(k, v)| DocumentScanView {
                 uri: k.clone(),
-                text: v.text.clone(),
+                text: v.text_arc.to_string(),
                 ast: v.current_parsed().and_then(|p| p.ast().cloned()),
             })
             .collect()

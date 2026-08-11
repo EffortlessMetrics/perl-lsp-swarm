@@ -96,3 +96,70 @@ cargo bench -p perl-parser --bench parser_benchmark -- --baseline v0.9.1-baselin
 ---
 
 Last Updated: 2026-01-22
+
+## Receipt template
+
+Every new committed benchmark result should carry enough metadata to reproduce
+and interpret the measurement. Use the YAML shape below for an adjacent Markdown/YAML receipt. For a `.json`
+file, use the valid JSON form that follows:
+
+    schema: benchmark-result.v1
+    change:
+      issue: "#<issue>"
+      pr: "#<pr>"
+      before_sha: "<40-char SHA or null for a new baseline>"
+      after_sha: "<40-char SHA>"
+    command: "<exact command and arguments>"
+    machine:
+      os: "<name and version>"
+      kernel: "<version>"
+      cpu: "<model>"
+      memory_gib: <number>
+      architecture: "<target triple>"
+    runtime:
+      rustc: "<rustc -Vv summary>"
+      cargo_target_dir: "<path policy or isolated>"
+      relevant_env: []
+    result:
+      artifact: "<repository-relative path>"
+      summary: "<what was measured>"
+      comparison: "<baseline and delta, or not applicable>"
+      status: "measured|not_comparable|not_proven"
+
+Do not put a target number in a receipt unless the command and baseline make
+the comparison meaningful. Link the result back to the initiating issue or
+PR, and keep generated/raw output separate from the short interpretation.
+
+
+### JSON form
+
+```json
+{
+  "schema": "benchmark-result.v1",
+  "change": {
+    "issue": "#<issue>",
+    "pr": "#<pr>",
+    "before_sha": "<40-char SHA or null for a new baseline>",
+    "after_sha": "<40-char SHA>"
+  },
+  "command": "<exact command and arguments>",
+  "machine": {
+    "os": "<name and version>",
+    "kernel": "<version>",
+    "cpu": "<model>",
+    "memory_gib": 0,
+    "architecture": "<target triple>"
+  },
+  "runtime": {
+    "rustc": "<rustc -Vv summary>",
+    "cargo_target_dir": "<path policy or isolated>",
+    "relevant_env": []
+  },
+  "result": {
+    "artifact": "<repository-relative path>",
+    "summary": "<what was measured>",
+    "comparison": "<baseline and delta, or not applicable>",
+    "status": "measured"
+  }
+}
+```

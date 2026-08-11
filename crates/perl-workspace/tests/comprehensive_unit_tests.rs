@@ -2,16 +2,11 @@
 //!
 //! Covers: WorkspaceIndex indexing, search, dual indexing (qualified + bare),
 //! multi-file scenarios, DocumentStore, BoundedLruCache, IndexStateMachine,
-//! ProductionIndexCoordinator, and IndexCoordinator.
+//! and IndexCoordinator.
 
 use perl_tdd_support::must_some;
-use perl_workspace::workspace::cache::{
-    BoundedLruCache, CacheConfig, CombinedWorkspaceCacheConfig, EstimateSize,
-};
+use perl_workspace::workspace::cache::{BoundedLruCache, CacheConfig, EstimateSize};
 use perl_workspace::workspace::document_store::DocumentStore;
-use perl_workspace::workspace::production_coordinator::{
-    ProductionCoordinatorConfig, ProductionIndexCoordinator, WorkspaceCacheManager,
-};
 use perl_workspace::workspace::state_machine::{
     BuildPhase, DegradationReason, IndexState, IndexStateKind, IndexStateMachine,
     InvalidationReason, ResourceKind, TransitionResult,
@@ -770,153 +765,6 @@ fn test_invalidation_reason_eq() {
 fn test_resource_kind_eq() {
     assert_eq!(ResourceKind::MaxFiles, ResourceKind::MaxFiles);
     assert_ne!(ResourceKind::MaxSymbols, ResourceKind::MaxCacheBytes);
-}
-
-// =========================================================================
-// ProductionIndexCoordinator
-// =========================================================================
-
-#[test]
-fn test_coordinator_new_is_idle() {
-    let coord = ProductionIndexCoordinator::new();
-    assert!(matches!(coord.state(), IndexState::Idle { .. }));
-}
-
-#[test]
-fn test_coordinator_default_is_idle() {
-    let coord = ProductionIndexCoordinator::default();
-    assert!(matches!(coord.state(), IndexState::Idle { .. }));
-}
-
-#[test]
-fn test_coordinator_initialize() -> Result<(), String> {
-    let coord = ProductionIndexCoordinator::new();
-    coord.initialize()?;
-    assert!(coord.state().is_ready());
-    Ok(())
-}
-
-#[test]
-fn test_coordinator_index_and_find_definition() -> Result<(), String> {
-    let coord = ProductionIndexCoordinator::new();
-    coord.initialize()?;
-
-    let uri = Url::parse("file:///coord_test.pl").map_err(|e| e.to_string())?;
-    coord.index_file(uri, "sub coord_func { 99 }".to_string())?;
-
-    let def = coord.find_definition("coord_func");
-    assert!(def.is_some());
-    Ok(())
-}
-
-#[test]
-fn test_coordinator_find_references() -> Result<(), String> {
-    let coord = ProductionIndexCoordinator::new();
-    coord.initialize()?;
-
-    let uri = Url::parse("file:///ref_test.pl").map_err(|e| e.to_string())?;
-    coord.index_file(uri, "sub ref_func { 1 }\nref_func();".to_string())?;
-
-    let refs = coord.find_references("ref_func");
-    assert!(!refs.is_empty());
-    Ok(())
-}
-
-#[test]
-fn test_coordinator_invalidate_clears_state() -> Result<(), String> {
-    let coord = ProductionIndexCoordinator::new();
-    coord.initialize()?;
-
-    let uri = Url::parse("file:///inv.pl").map_err(|e| e.to_string())?;
-    coord.index_file(uri, "sub inv_func { 1 }".to_string())?;
-
-    coord.invalidate(InvalidationReason::ManualRequest);
-    assert!(matches!(coord.state(), IndexState::Idle { .. }));
-    Ok(())
-}
-
-#[test]
-fn test_coordinator_statistics() {
-    let coord = ProductionIndexCoordinator::new();
-    let stats = coord.statistics();
-
-    assert!(matches!(stats.state, IndexState::Idle { .. }));
-    assert_eq!(stats.cache_stats.len(), 3); // ast, symbol, workspace
-}
-
-#[test]
-fn test_coordinator_with_config() {
-    let config = ProductionCoordinatorConfig::default();
-    let coord = ProductionIndexCoordinator::with_config(config);
-    assert!(matches!(coord.state(), IndexState::Idle { .. }));
-}
-
-// =========================================================================
-// WorkspaceCacheManager
-// =========================================================================
-
-#[test]
-fn test_cache_manager_ast_round_trip() {
-    let config = CombinedWorkspaceCacheConfig::default();
-    let mgr = WorkspaceCacheManager::new(&config);
-
-    mgr.insert_ast("file1".to_string(), vec![1, 2, 3]);
-    assert_eq!(mgr.get_ast("file1"), Some(vec![1, 2, 3]));
-    assert_eq!(mgr.get_ast("missing"), None);
-}
-
-#[test]
-fn test_cache_manager_symbol_round_trip() {
-    let config = CombinedWorkspaceCacheConfig::default();
-    let mgr = WorkspaceCacheManager::new(&config);
-
-    mgr.insert_symbol("sym1".to_string(), vec![4, 5]);
-    assert_eq!(mgr.get_symbol("sym1"), Some(vec![4, 5]));
-}
-
-#[test]
-fn test_cache_manager_workspace_round_trip() {
-    let config = CombinedWorkspaceCacheConfig::default();
-    let mgr = WorkspaceCacheManager::new(&config);
-
-    mgr.insert_workspace("ws1".to_string(), vec![6]);
-    assert_eq!(mgr.get_workspace("ws1"), Some(vec![6]));
-}
-
-#[test]
-fn test_cache_manager_clear_all() {
-    let config = CombinedWorkspaceCacheConfig::default();
-    let mgr = WorkspaceCacheManager::new(&config);
-
-    mgr.insert_ast("a".to_string(), vec![1]);
-    mgr.insert_symbol("s".to_string(), vec![2]);
-    mgr.insert_workspace("w".to_string(), vec![3]);
-
-    mgr.clear_all();
-    assert!(mgr.get_ast("a").is_none());
-    assert!(mgr.get_symbol("s").is_none());
-    assert!(mgr.get_workspace("w").is_none());
-}
-
-#[test]
-fn test_cache_manager_stats() {
-    let config = CombinedWorkspaceCacheConfig::default();
-    let mgr = WorkspaceCacheManager::new(&config);
-    let stats = mgr.stats();
-
-    assert!(stats.contains_key("ast"));
-    assert!(stats.contains_key("symbol"));
-    assert!(stats.contains_key("workspace"));
-}
-
-#[test]
-fn test_cache_manager_total_memory() {
-    let config = CombinedWorkspaceCacheConfig::default();
-    let mgr = WorkspaceCacheManager::new(&config);
-    assert_eq!(mgr.total_memory_usage(), 0);
-
-    mgr.insert_ast("k".to_string(), vec![0; 100]);
-    assert!(mgr.total_memory_usage() >= 100);
 }
 
 // =========================================================================
@@ -1878,62 +1726,6 @@ fn test_estimate_size_u8_slice() {
 fn test_estimate_size_str_ref() {
     let s = "hello";
     assert_eq!(s.estimate_size(), 5);
-}
-
-// =========================================================================
-// ProductionIndexCoordinator – additional tests
-// =========================================================================
-
-#[test]
-fn test_production_coordinator_search_symbols() -> Result<(), String> {
-    let coord = ProductionIndexCoordinator::new();
-    coord.initialize()?;
-
-    let uri = Url::parse("file:///search_prod.pl").map_err(|e| e.to_string())?;
-    coord.index_file(uri, "sub searchable { 1 }".to_string())?;
-
-    let results = coord.index().search_symbols("searchable");
-    assert!(!results.is_empty());
-    Ok(())
-}
-
-#[test]
-fn test_production_coordinator_all_symbols() -> Result<(), String> {
-    let coord = ProductionIndexCoordinator::new();
-    coord.initialize()?;
-
-    let uri = Url::parse("file:///all_prod.pl").map_err(|e| e.to_string())?;
-    coord.index_file(uri, "sub s1 { 1 }\nsub s2 { 2 }".to_string())?;
-
-    let all = coord.index().all_symbols();
-    assert!(all.len() >= 2);
-    Ok(())
-}
-
-#[test]
-fn test_production_coordinator_slo_tracker_accessor() {
-    let coord = ProductionIndexCoordinator::new();
-    let tracker = coord.slo_tracker();
-    assert!(tracker.all_slos_met());
-}
-
-#[test]
-fn test_production_coordinator_cache_accessor() {
-    let coord = ProductionIndexCoordinator::new();
-    let _cache = coord.cache();
-}
-
-#[test]
-fn test_production_coordinator_config_accessor() {
-    let coord = ProductionIndexCoordinator::new();
-    let _config = coord.config();
-}
-
-#[test]
-fn test_production_coordinator_index_accessor() {
-    let coord = ProductionIndexCoordinator::new();
-    let idx = coord.index();
-    assert_eq!(idx.file_count(), 0);
 }
 
 // =========================================================================

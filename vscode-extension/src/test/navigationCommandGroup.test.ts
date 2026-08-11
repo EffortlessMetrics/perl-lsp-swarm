@@ -8,12 +8,14 @@ function makeDependencies(): NavigationCommandContext & {
   openDemoProject: jest.Mock;
   organizeImports: jest.Mock;
   showVersion: jest.Mock;
+  showWorkspaceStatus: jest.Mock;
   showStatusMenu: jest.Mock;
 } {
   return {
     openDemoProject: jest.fn(async () => undefined),
     organizeImports: jest.fn(async () => undefined),
     showVersion: jest.fn(async () => undefined),
+    showWorkspaceStatus: jest.fn(async () => undefined),
     showStatusMenu: jest.fn(async () => undefined),
   };
 }
@@ -37,15 +39,17 @@ describe('registerNavigationCommandGroup', () => {
 
     registeredDisposables = registerNavigationCommandGroup(dependencies);
 
-    expect(registeredDisposables).toHaveLength(4);
+    expect(registeredDisposables).toHaveLength(5);
     await vscode.commands.executeCommand('perl-lsp.openDemoProject');
     await vscode.commands.executeCommand('perl-lsp.organizeImports');
     await vscode.commands.executeCommand('perl-lsp.showVersion');
+    await vscode.commands.executeCommand('perl-lsp.showWorkspaceStatus');
     await vscode.commands.executeCommand('perl-lsp.showStatusMenu');
 
     expect(dependencies.openDemoProject).toHaveBeenCalledTimes(1);
     expect(dependencies.organizeImports).toHaveBeenCalledTimes(1);
     expect(dependencies.showVersion).toHaveBeenCalledTimes(1);
+    expect(dependencies.showWorkspaceStatus).toHaveBeenCalledTimes(1);
     expect(dependencies.showStatusMenu).toHaveBeenCalledTimes(1);
   });
 
@@ -57,6 +61,7 @@ describe('registerNavigationCommandGroup', () => {
     expect(dependencies.openDemoProject).not.toHaveBeenCalled();
     expect(dependencies.organizeImports).not.toHaveBeenCalled();
     expect(dependencies.showVersion).not.toHaveBeenCalled();
+    expect(dependencies.showWorkspaceStatus).not.toHaveBeenCalled();
     expect(dependencies.showStatusMenu).not.toHaveBeenCalled();
   });
 });

@@ -2217,7 +2217,10 @@ fn score_method_completion_provider_expectations(
             let query_start = Instant::now();
             let completions = provider.get_completions(&provider_source, cursor);
             score.completion_query_micros.push(query_start.elapsed().as_micros() as u64);
-            let labels = completions.iter().map(|item| item.label.clone()).collect::<BTreeSet<_>>();
+            let labels = completions
+                .iter()
+                .map(|item| item.label.as_ref().to_owned())
+                .collect::<BTreeSet<_>>();
             score_method_completion_expectation(expectation, &labels, &mut score);
         }
     }
@@ -2298,7 +2301,7 @@ fn score_diagnostic_provider_expectations(
         let mut parser = Parser::new(&provider_source);
         let output = parser.parse_with_recovery();
         let ast = Arc::new(output.ast);
-        let provider = DiagnosticsProvider::new(&ast, provider_source.clone());
+        let provider = DiagnosticsProvider::new();
         let diagnostics = index
             .with_semantic_queries_for_uri(&source_path_text, |file_id, semantic_queries| {
                 provider.get_diagnostics_with_path_and_semantics(
@@ -3172,11 +3175,40 @@ fn parse_determinism_hashes(source: &str) -> ParseDeterminismHashes {
     let output = parser.parse_with_recovery();
     let ast_debug = format!("{:?}", output.ast);
     let diagnostics_debug = format!("{:?}", output.diagnostics);
+    // Normalize byte offsets in the diagnostic debug output so that
+    // whitespace/newline-style variants (which shift every offset after the
+    // first line) produce the same hash when the diagnostic *content* is
+    // unchanged (#5548). Without this, the whitespace-invariance scorer
+    // always reads ~0.3 because every diagnostic-bearing fixture's hash
+    // differs purely from offset shifts.
+    let diagnostics_debug_normalized = normalize_offsets(&diagnostics_debug);
     ParseDeterminismHashes {
-        parse_hash: stable_hash(&(ast_debug.as_str(), diagnostics_debug.as_str())),
+        parse_hash: stable_hash(&(ast_debug.as_str(), diagnostics_debug_normalized.as_str())),
         ast_hash: stable_hash(&ast_debug),
-        diagnostic_hash: stable_hash(&diagnostics_debug),
+        diagnostic_hash: stable_hash(&diagnostics_debug_normalized),
     }
+}
+
+/// Replace numeric values that represent byte offsets in a Debug string with a
+/// fixed placeholder. This is conservative — it replaces ALL numbers in the
+/// diagnostic debug output, which could over-normalize if a diagnostic carries
+/// a meaningful numeric value that is NOT an offset. In practice, diagnostic
+/// Debug output carries only offsets and message text, so this is safe.
+fn normalize_offsets(debug: &str) -> String {
+    let mut result = String::with_capacity(debug.len());
+    let mut chars = debug.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_digit() {
+            // Skip the entire number run.
+            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                chars.next();
+            }
+            result.push_str("<N>");
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }
 
 fn semantic_fact_hash(source_path: &Path, source: &str) -> Result<u64> {
@@ -3640,7 +3672,11 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::Method { .. }
             | NodeKind::VariableDeclaration { .. }
             | NodeKind::VariableListDeclaration { .. }
+            | NodeKind::Assignment { .. }
+            | NodeKind::Typeglob { .. }
+            | NodeKind::AmperCall { .. }
             | NodeKind::FunctionCall { .. }
+            | NodeKind::Return { .. }
             | NodeKind::MethodCall { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Match { .. }

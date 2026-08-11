@@ -441,6 +441,10 @@ export function showPodPreview(
     podPreviewPanel = vscode.window.createWebviewPanel('perlPodPreview', 'POD Preview', column, {
       enableScripts: false,
       retainContextWhenHidden: true,
+      // Defense in depth: POD preview renders workspace text, so restrict
+      // resource access to prevent any content injection from loading
+      // external resources (#6047).
+      localResourceRoots: [],
     });
 
     podPreviewPanel.onDidDispose(

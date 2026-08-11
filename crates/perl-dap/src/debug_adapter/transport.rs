@@ -1,6 +1,11 @@
 //! Transport layer: run (stdin/stdout), run_socket, run_with_io.
 
-use super::*;
+use super::{
+    Arc, AtomicBool, BufReader, ContentLengthFramer, DapMessage, DebugAdapter,
+    EVENT_QUEUE_CAPACITY, Mutex, Read, TcpListener, Write, dispatch_event, io, lock_or_recover,
+    sync_channel, thread,
+};
+use crate::server::DapSocketBindError;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
 
@@ -8,6 +13,7 @@ const EVENT_WRITE_BATCH_MAX: usize = 64;
 const WRITE_FAILURE_THRESHOLD: usize = 3;
 
 fn write_framed_payload<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
+    tracing::debug!(payload_len = payload.len(), "Writing DAP frame");
     writer.write_all(b"Content-Length: ")?;
     writer.write_all(payload.len().to_string().as_bytes())?;
     writer.write_all(b"\r\n\r\n")?;
@@ -70,15 +76,15 @@ impl DebugAdapter {
     ///
     /// This binds to `127.0.0.1:<port>`, accepts one client connection, and
     /// serves the DAP session on that stream.
-    pub(crate) fn run_socket(&mut self, port: u16) -> io::Result<()> {
-        let listener = TcpListener::bind(("127.0.0.1", port))?;
+    pub(crate) fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
+        let listener = bind_socket_listener(port)?;
         tracing::info!(port, "DAP socket transport listening on 127.0.0.1");
 
         let (stream, peer_addr) = listener.accept()?;
         tracing::info!(peer_addr = %peer_addr, "DAP socket client connected");
 
         let reader_stream = stream.try_clone()?;
-        self.run_with_io(reader_stream, stream)
+        self.run_with_io(reader_stream, stream).map_err(Into::into)
     }
 
     /// Shared DAP transport loop used by stdio and socket modes.
@@ -256,6 +262,17 @@ impl DebugAdapter {
     }
 }
 
+fn bind_socket_listener(port: u16) -> anyhow::Result<TcpListener> {
+    bind_socket_listener_with(port, |port| TcpListener::bind(("127.0.0.1", port)))
+}
+
+fn bind_socket_listener_with<F>(port: u16, bind: F) -> anyhow::Result<TcpListener>
+where
+    F: FnOnce(u16) -> io::Result<TcpListener>,
+{
+    bind(port).map_err(|source| anyhow::Error::new(source).context(DapSocketBindError { port }))
+}
+
 /// Write a framed response payload, then — if `notify_initialized` is set — dispatch the
 /// `initialized` event. DAP requires `initialized` only after a successful `initialize`
 /// response is sent.
@@ -293,9 +310,10 @@ fn write_response_then_notify_initialized<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::sync_utils;
     use std::io::Cursor;
     use std::sync::atomic::{AtomicUsize, Ordering as AOrdering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     // ── Minimal Write impl that always fails ──────────────────────────────────
 
@@ -335,6 +353,23 @@ mod tests {
     #[derive(Default)]
     struct FlushFailingWriter {
         bytes: Vec<u8>,
+    }
+
+    struct ChunkedWriter {
+        bytes: Vec<u8>,
+        max_chunk: usize,
+    }
+
+    impl Write for ChunkedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let chunk_len = buf.len().min(self.max_chunk);
+            self.bytes.extend_from_slice(&buf[..chunk_len]);
+            Ok(chunk_len)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     impl Write for FlushFailingWriter {
@@ -401,6 +436,26 @@ mod tests {
         let writer = FailingWriter::always_failing();
         let result = adapter.run_with_io(input, writer);
         assert!(result.is_err(), "run_with_io must return Err when writer is broken immediately");
+    }
+
+    #[test]
+    fn native_socket_bind_failure_preserves_marker_and_io_downcast() -> anyhow::Result<()> {
+        let error = match bind_socket_listener_with(13_603, |_port| {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"))
+        }) {
+            Ok(_) => anyhow::bail!("injected bind failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        let marker = error.downcast_ref::<DapSocketBindError>().ok_or_else(|| {
+            io::Error::other("injected bind failure did not preserve the DAP bind marker")
+        })?;
+        assert_eq!(marker.port, 13_603, "bind marker must preserve the requested port");
+        let source = error.downcast_ref::<io::Error>().ok_or_else(|| {
+            io::Error::other("injected bind failure did not preserve its I/O source")
+        })?;
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+        Ok(())
     }
 
     /// Regression for issue #5149 / PR #5318 defect 1, exercised against the actual
@@ -671,6 +726,44 @@ mod tests {
             String::from_utf8_lossy(&writer).starts_with("Content-Length:"),
             "event payload must be written as a DAP frame"
         );
+    }
+
+    #[test]
+    fn test_write_framed_payload_uses_exact_byte_length_for_truncated_payload() -> io::Result<()> {
+        let payload = br#"{"type":"response","body":"unterminated"#;
+        let mut writer = Vec::new();
+
+        write_framed_payload(&mut writer, payload)?;
+
+        let separator = writer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "frame separator missing"))?;
+        let header = &writer[..separator];
+        let length =
+            std::str::from_utf8(header.strip_prefix(b"Content-Length: ").ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "length header missing")
+            })?)
+            .map_err(io::Error::other)?
+            .parse::<usize>()
+            .map_err(io::Error::other)?;
+
+        assert_eq!(length, payload.len(), "header must count payload bytes exactly");
+        assert_eq!(&writer[separator + 4..], payload, "frame body must be unmodified");
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_framed_payload_retries_short_writes_without_truncation() -> io::Result<()> {
+        let payload = "{\"message\":\"café\"}".as_bytes();
+        let mut writer = ChunkedWriter { bytes: Vec::new(), max_chunk: 2 };
+
+        write_framed_payload(&mut writer, payload)?;
+
+        let expected_header = format!("Content-Length: {}\r\n\r\n", payload.len());
+        assert!(writer.bytes.starts_with(expected_header.as_bytes()));
+        assert_eq!(&writer.bytes[expected_header.len()..], payload);
+        Ok(())
     }
 
     #[test]

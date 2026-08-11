@@ -3,6 +3,25 @@ use crate::debug_adapter::DebugAdapter;
 use crate::server::config::DapConfig;
 use crate::server::mode::DapMode;
 
+/// Marks a failure opening the native DAP TCP listener, before a client session exists.
+///
+/// The operating-system error remains the source in the `anyhow` chain so
+/// callers that historically downcast socket failures to `std::io::Error`
+/// keep that compatibility surface.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to bind DAP socket on 127.0.0.1:{port}")]
+pub struct DapSocketBindError {
+    /// The requested local port.
+    pub port: u16,
+}
+
+impl perl_parser_core::ErrorClass for DapSocketBindError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // OS-level socket bind failure — external resource/port unavailable.
+        perl_parser_core::ErrorCategory::Infra
+    }
+}
+
 /// DAP server
 ///
 /// Supports two operating modes:
@@ -72,6 +91,6 @@ impl DapServer {
         if self.config.mode == DapMode::Bridge {
             anyhow::bail!("Socket transport is not supported in bridge mode");
         }
-        self.adapter.run_socket(port).map_err(Into::into)
+        self.adapter.run_socket(port)
     }
 }

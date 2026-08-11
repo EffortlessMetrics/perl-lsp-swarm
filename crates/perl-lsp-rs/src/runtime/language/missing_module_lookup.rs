@@ -3,7 +3,7 @@
 //! This command exposes the existing module-resolution state as a user-facing
 //! receipt. It does not perform a new workspace scan or change PL701 behavior.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Value, json, md5};
 use crate::protocol::invalid_params;
 use perl_module::is_lookup_safe_module_name;
 use perl_module::module_name_to_path;
@@ -150,7 +150,7 @@ impl LspServer {
         };
 
         let offset = position.map(|(line, character)| self.pos16_to_offset(doc, line, character));
-        (Some(doc.text.clone()), offset, true)
+        (Some(doc.text_str().to_string()), offset, true)
     }
 }
 

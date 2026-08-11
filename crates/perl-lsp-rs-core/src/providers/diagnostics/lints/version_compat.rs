@@ -41,6 +41,13 @@ use perl_diagnostics::codes::DiagnosticSeverity;
 ///
 /// If a feature's minimum version is met by the declared version (either
 /// directly or via bundle implication), no warning is emitted.
+///
+/// Covers only the features whose remediation is a plain version bump. The
+/// pragma-gated constructs (`class`, `defer`, `try`) need both a version and a
+/// pragma, so their minimums live on [`CLASS_MIN_VERSION`],
+/// [`DEFER_MIN_VERSION`] and [`TRY_MIN_VERSION`] next to the two-part
+/// remediation that reads them; duplicating them here would let the two
+/// diverge.
 const FEATURE_VERSIONS: &[(&str, u32, u32)] = &[
     ("say", 5, 10),
     ("state", 5, 10),
@@ -51,17 +58,11 @@ const FEATURE_VERSIONS: &[(&str, u32, u32)] = &[
     // remains available via `use feature 'smartmatch';`.
     ("smartmatch", 5, 10),
     ("postfix_deref", 5, 20),
-    ("try", 5, 34),
     // signatures: experimental since v5.20 but only stable-bundled at v5.36.
     // We use 5.36 as the effective minimum to match features_enabled_by_version,
     // preventing false-positive warnings on `use v5.20` files that rely on the
     // experimental pragma (`use feature 'signatures'`).
     ("signatures", 5, 36),
-    // defer block: experimental since v5.36.
-    // Detected only when the AST matches the parser's `defer { ... }` shape,
-    // not for arbitrary helpers/imports named `defer`.
-    ("defer", 5, 36),
-    ("class", 5, 38),
     ("field", 5, 38),
     // isa: experimental in v5.32, stable-bundled at v5.36.
     // `$obj isa 'ClassName'` — infix operator for class membership testing.
@@ -98,6 +99,17 @@ const BUILTIN_FUNCTION_VERSIONS: &[(&str, u32, u32)] = &[
     ("export_lexically", 5, 38),
     ("load_module", 5, 40),
 ];
+
+/// Releases that introduced the pragma-gated constructs this lint reports.
+///
+/// These are the versions at which `use feature 'NAME';` starts being accepted:
+/// perl rejects the pragma outright on an older interpreter (v5.38.2 answers
+/// `use feature 'field';` with `Feature "field" is not supported by Perl
+/// 5.38.2`), so a declared version below the minimum is not remediable by the
+/// pragma alone.
+const CLASS_MIN_VERSION: PerlVersion = PerlVersion::new(5, 38);
+const DEFER_MIN_VERSION: PerlVersion = PerlVersion::new(5, 36);
+const TRY_MIN_VERSION: PerlVersion = PerlVersion::new(5, 34);
 
 const GIVEN_WHEN_DEPRECATION_VERSION: PerlVersion = PerlVersion::new(5, 38);
 /// Perl 5.42: given/when/default became feature-gated (not removed).
@@ -173,11 +185,24 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start);
 
         match &n.kind {
-            // `class Foo { }` — requires v5.38
+            // `class Foo { }` — the `class` feature shipped in v5.38 and is still
+            // experimental, so it is in NO version bundle (`BUNDLE_5_40_FEATURES`
+            // and `BUNDLE_5_42_FEATURES` both omit it). See
+            // [`make_experimental_feature_diagnostic`] for why both halves are
+            // required and why the version bump is never an alternative.
             NodeKind::Class { .. } => {
-                if !pragma_state.has_feature("class") {
-                    let min = feature_min_version("class");
-                    diagnostics.push(make_diagnostic(n, "class", declared_version, min));
+                let min_version = CLASS_MIN_VERSION;
+                let version_ok = declared_version >= min_version;
+                let feature_ok = pragma_state.has_feature("class");
+                if !version_ok || !feature_ok {
+                    diagnostics.push(make_experimental_feature_diagnostic(
+                        n,
+                        "class",
+                        "class",
+                        declared_version,
+                        min_version,
+                        feature_ok,
+                    ));
                 }
             }
 
@@ -259,15 +284,37 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                     diagnostics.push(make_given_when_default_diagnostic(n, declared_version));
                 } else if !pragma_state.has_feature("switch") {
                     let min = feature_min_version("switch");
-                    diagnostics.push(make_diagnostic(n, construct, declared_version, min));
+                    // The pragma is `switch`, not the construct name: perl
+                    // rejects `use feature "given";`.
+                    diagnostics.push(make_diagnostic(
+                        n,
+                        construct,
+                        Some("switch"),
+                        declared_version,
+                        min,
+                    ));
                 }
             }
 
-            // `try { } catch { }` — requires v5.34
+            // `try { } catch { }` — the `try` feature shipped in v5.34. It is the
+            // one construct here that a bundle does enable (`BUNDLE_5_40_FEATURES`
+            // lists `try`), so `has_feature` already goes quiet at v5.40+; below
+            // that the pragma is required. The pragma is spelled `try`, not the
+            // construct's display name `try/catch` — perl rejects
+            // `use feature 'try/catch';` outright.
             NodeKind::Try { .. } => {
-                if !pragma_state.has_feature("try") {
-                    let min = feature_min_version("try");
-                    diagnostics.push(make_diagnostic(n, "try/catch", declared_version, min));
+                let min_version = TRY_MIN_VERSION;
+                let version_ok = declared_version >= min_version;
+                let feature_ok = pragma_state.has_feature("try");
+                if !version_ok || !feature_ok {
+                    diagnostics.push(make_experimental_feature_diagnostic(
+                        n,
+                        "try/catch",
+                        "try",
+                        declared_version,
+                        min_version,
+                        feature_ok,
+                    ));
                 }
             }
 
@@ -275,15 +322,27 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::FunctionCall { name, .. } if name == "say" => {
                 if !pragma_state.has_feature("say") {
                     let min = feature_min_version("say");
-                    diagnostics.push(make_diagnostic(n, "say", declared_version, min));
+                    diagnostics.push(make_diagnostic(n, "say", Some("say"), declared_version, min));
                 }
             }
 
-            // `defer { }` block — requires v5.36 (`use feature 'defer'`).
+            // `defer { }` block — the `defer` feature shipped in v5.36 and is
+            // still experimental, so like `class` it is in no version bundle.
+            // Detected only when the AST matches the parser's `defer { ... }`
+            // shape, not for arbitrary helpers/imports named `defer`.
             NodeKind::Defer { .. } => {
-                if !pragma_state.has_feature("defer") {
-                    let min = feature_min_version("defer");
-                    diagnostics.push(make_diagnostic(n, "defer", declared_version, min));
+                let min_version = DEFER_MIN_VERSION;
+                let version_ok = declared_version >= min_version;
+                let feature_ok = pragma_state.has_feature("defer");
+                if !version_ok || !feature_ok {
+                    diagnostics.push(make_experimental_feature_diagnostic(
+                        n,
+                        "defer",
+                        "defer",
+                        declared_version,
+                        min_version,
+                        feature_ok,
+                    ));
                 }
             }
 
@@ -293,9 +352,13 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 let imported = builtin_imports.iter().any(|import| import == builtin_name);
 
                 if declared_version < min && !builtin_bundle_declared && !imported {
+                    // No `use feature` pragma enables a `builtin::` function:
+                    // on v5.38 `use builtin 'inf';` fails with
+                    // `'inf' is not recognised as a builtin function`.
                     diagnostics.push(make_diagnostic(
                         n,
                         name,
+                        None,
                         declared_version,
                         (min.major, min.minor),
                     ));
@@ -308,6 +371,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                         diagnostics.push(make_diagnostic(
                             n,
                             "use builtin",
+                            None,
                             declared_version,
                             (BUILTIN_BUNDLE_MIN_VERSION.major, BUILTIN_BUNDLE_MIN_VERSION.minor),
                         ));
@@ -323,6 +387,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                             diagnostics.push(make_diagnostic(
                                 n,
                                 &display,
+                                None,
                                 declared_version,
                                 (min.major, min.minor),
                             ));
@@ -335,7 +400,13 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::VariableDeclaration { declarator, .. } if declarator == "state" => {
                 if !pragma_state.has_feature("state") {
                     let min = feature_min_version("state");
-                    diagnostics.push(make_diagnostic(n, "state", declared_version, min));
+                    diagnostics.push(make_diagnostic(
+                        n,
+                        "state",
+                        Some("state"),
+                        declared_version,
+                        min,
+                    ));
                 }
             }
 
@@ -343,9 +414,41 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::Unary { op, .. }
                 if op == "->@*" || op == "->%*" || op == "->$*" || op == "->@[" || op == "->@{" =>
             {
-                if !pragma_state.has_feature("postfix_deref") {
+                // Two distinct features, and only one governs this construct:
+                //
+                //   postderef     the `$r->@*` syntax itself, outside strings —
+                //                 what this arm matches (a `Unary` op node);
+                //   postderef_qq  extends it to double-quotish interpolation.
+                //
+                // Verified on perl v5.38.2:
+                //
+                //   no feature 'postderef_qq'; print "$r->@*"  -> ARRAY(0x..)->@*
+                //   no feature 'postderef';    my @a = $r->@*  -> still works
+                //
+                // so `postderef_qq` is the *interpolation* switch and naming it
+                // here would be advice about a different feature. It is also not
+                // supported on the versions this arm fires for: perl's own
+                // bundles gain `postderef_qq` only at `:5.24`, and neither
+                // bundle ever lists `postderef` (it became unconditional in
+                // v5.24). An author targeting v5.20–v5.23 needs `postderef`.
+                //
+                // `has_feature("postfix_deref")` canonicalizes to `postderef_qq`
+                // in `perl-pragma`, which is what makes v5.24+ correctly quiet
+                // via the bundle. But it also means an explicit
+                // `use feature 'postderef';` would not be seen, so following the
+                // remediation would leave the warning up. Querying both keeps
+                // the advice actionable without touching the bundle model.
+                let enabled = pragma_state.has_feature("postfix_deref")
+                    || pragma_state.has_feature("postderef");
+                if !enabled {
                     let min = feature_min_version("postfix_deref");
-                    diagnostics.push(make_diagnostic(n, "postfix deref", declared_version, min));
+                    diagnostics.push(make_diagnostic(
+                        n,
+                        "postfix deref",
+                        Some("postderef"),
+                        declared_version,
+                        min,
+                    ));
                 }
             }
 
@@ -356,6 +459,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                     diagnostics.push(make_diagnostic(
                         n,
                         "subroutine signatures",
+                        Some("signatures"),
                         declared_version,
                         min,
                     ));
@@ -366,7 +470,7 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             NodeKind::Binary { op, .. } if op == "isa" => {
                 if !pragma_state.has_feature("isa") {
                     let min = feature_min_version("isa");
-                    diagnostics.push(make_diagnostic(n, "isa", declared_version, min));
+                    diagnostics.push(make_diagnostic(n, "isa", Some("isa"), declared_version, min));
                 }
             }
 
@@ -433,24 +537,189 @@ fn builtin_import_names(arg: &str) -> Vec<String> {
     vec![trimmed.trim_matches(|c| c == '\'' || c == '"').to_string()]
 }
 
-/// Build a PL900 diagnostic for a version-incompatible feature use.
+/// Build a PL900 diagnostic for a version-incompatible use of a *bundled*
+/// feature — one a `use vX.Y` bundle really does turn on, so unlike the
+/// pragma-gated constructs the version bump is a genuine remediation.
+///
+/// `feature` is the pragma name perl accepts, which is **not** the construct's
+/// display name. This helper used to interpolate `display` into the
+/// `use feature "..."` slot, so it emitted pragmas perl rejects outright and an
+/// author who followed the advice traded the original diagnostic for a failed
+/// `BEGIN` block. Verified on perl v5.38.2:
+///
+/// ```text
+/// use feature "subroutine signatures";  Feature "..." is not supported
+/// use feature "given";                  Feature "..." is not supported
+/// use feature "postfix deref";          Feature "..." is not supported
+/// use feature "builtin::inf";           Feature "..." is not supported
+/// ```
+///
+/// Pass `None` when no `use feature` pragma can enable the construct at all.
+/// That is the `builtin` namespace: on v5.38 even the correct-looking
+/// `use builtin 'inf';` fails with `'inf' is not recognised as a builtin
+/// function`, because `inf` arrived in v5.40 — the version bump is the only
+/// remediation, so the pragma clause is dropped entirely.
+///
+/// The version clause is likewise dropped when the declared version already
+/// meets the minimum. That is reachable through `no feature`, and it used to
+/// produce the self-referential `Update 'use v5.36' to 'use v5.36'` and, for
+/// `say`, the outright downgrade `Update 'use v5.36' to 'use v5.10'`.
 fn make_diagnostic(
     node: &Node,
     display: &str,
+    feature: Option<&str>,
     declared_version: PerlVersion,
     min_version: (u32, u32),
 ) -> Diagnostic {
-    make_diagnostic_with_details(
-        node,
-        display,
-        declared_version,
-        min_version,
-        DiagnosticSeverity::Warning,
-        Some(format!(
-            "Update 'use v{}.{}' to 'use v{}.{}' or add 'use feature \"{}\";'",
-            declared_version.major, declared_version.minor, min_version.0, min_version.1, display,
-        )),
+    let declared = format!("v{}.{}", declared_version.major, declared_version.minor);
+    let target = format!("v{}.{}", min_version.0, min_version.1);
+    let version_ok = declared_version >= PerlVersion::new(min_version.0, min_version.1);
+
+    // Message and suggestion are built from the same `(feature, version_ok)`
+    // match so they cannot contradict each other: a message cites a minimum
+    // version only when the declared version actually falls short of it.
+    let (message, suggestion) = match (feature, version_ok) {
+        // Bundle bump and pragma both work; either is a real fix.
+        (Some(feature), false) => (
+            default_version_message(display, declared_version, min_version),
+            format!(
+                "Update 'use {declared}' to 'use {target}' or add 'use feature \"{feature}\";'"
+            ),
+        ),
+        // Version already satisfies the minimum, so only the pragma is left.
+        // Citing the minimum here would state a satisfied condition as the
+        // reason for the warning.
+        (Some(feature), true) => (
+            format!(
+                "'{display}' requires the '{feature}' feature, which 'use {declared}' does not \
+                 enable"
+            ),
+            format!(
+                "Add 'use feature \"{feature}\";' — 'use {declared}' does not enable the \
+                 '{feature}' feature"
+            ),
+        ),
+        // No pragma can enable it; the version bump is the only remediation.
+        (None, _) => (
+            default_version_message(display, declared_version, min_version),
+            format!("Update 'use {declared}' to 'use {target}'"),
+        ),
+    };
+
+    Diagnostic {
+        range: (node.location.start, node.location.end),
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message,
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(suggestion),
+    }
+}
+
+/// The standard `'X' requires Perl vN.M+; declared version is vA.B` message,
+/// used when the declared version genuinely falls short of the minimum.
+fn default_version_message(
+    display: &str,
+    declared_version: PerlVersion,
+    min_version: (u32, u32),
+) -> String {
+    format!(
+        "'{}' requires Perl v{}.{}+; declared version is v{}.{}",
+        display, min_version.0, min_version.1, declared_version.major, declared_version.minor,
     )
+}
+
+/// Build a PL900 for a construct that a `use feature` pragma gates.
+///
+/// `class`, `defer` and `try` all need TWO independent things, so the
+/// remediation names whichever half is missing rather than offering them as
+/// alternatives:
+///
+///   1. a declared version at or above `min_version` — perl rejects
+///      `use feature 'NAME';` on an older interpreter, so the pragma cannot
+///      backport the construct onto an older target;
+///   2. the feature lexically enabled — `class` and `defer` are experimental
+///      and appear in no version bundle (`BUNDLE_5_40_FEATURES` and
+///      `BUNDLE_5_42_FEATURES` list neither), so no `use vX.Y` turns them on.
+///
+/// Consequently a version bump is never an *alternative* to the pragma, and at
+/// or above `min_version` it is a no-op. The previous shared wording collapsed
+/// into advice like `Update 'use v5.38' to 'use v5.38' or add 'use feature
+/// "class";'` — telling the author to change a version to itself — and above
+/// the minimum it advised an outright downgrade.
+///
+/// `display` names the construct as the author wrote it (`try/catch`);
+/// `feature` is the pragma name perl actually accepts (`try`). They differ, and
+/// conflating them produced `use feature "try/catch";`, which perl rejects with
+/// `Feature "try/catch" is not supported`.
+///
+/// Message and suggestion are derived from the same `(version_ok, feature_ok)`
+/// pair here so they cannot contradict each other. The shared
+/// `'X' requires Perl vN.M+` wording is deliberately *not* used when the
+/// declared version already meets the minimum: for `use v5.40; class Foo {}`
+/// that read `'class' requires Perl v5.38+; declared version is v5.40`, which
+/// states a satisfied condition as the reason for the warning and reads as a
+/// false positive even though the code genuinely does not compile.
+fn make_experimental_feature_diagnostic(
+    node: &Node,
+    display: &str,
+    feature: &str,
+    declared_version: PerlVersion,
+    min_version: PerlVersion,
+    feature_ok: bool,
+) -> Diagnostic {
+    let declared = format!("v{}.{}", declared_version.major, declared_version.minor);
+    let target = format!("v{}.{}", min_version.major, min_version.minor);
+    let version_ok = declared_version >= min_version;
+
+    let (message, suggestion) = match (version_ok, feature_ok) {
+        // Declared version already supports the pragma; only the pragma is
+        // missing. The version is not the problem, so the message must not
+        // cite one.
+        (true, false) => (
+            format!(
+                "'{display}' requires the '{feature}' feature, which 'use {declared}' does not \
+                 enable"
+            ),
+            format!(
+                "Add 'use feature \"{feature}\";' — 'use {declared}' does not enable the \
+                 '{feature}' feature"
+            ),
+        ),
+        // Pragma is present but perl would reject it on the declared version.
+        (false, true) => (
+            format!(
+                "'{display}' requires Perl {target}+; declared version is {declared}, which does \
+                 not support 'use feature \"{feature}\";'"
+            ),
+            format!(
+                "Update 'use {declared}' to 'use {target}' — 'use feature \"{feature}\";' is not \
+                 supported before {target}"
+            ),
+        ),
+        // Both halves missing; neither alone compiles.
+        _ => (
+            format!(
+                "'{display}' requires Perl {target}+ and the '{feature}' feature; declared \
+                 version is {declared}"
+            ),
+            format!(
+                "Update 'use {declared}' to 'use {target}' and add 'use feature \"{feature}\";' \
+                 — '{display}' requires both"
+            ),
+        ),
+    };
+
+    Diagnostic {
+        range: (node.location.start, node.location.end),
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message,
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(suggestion),
+    }
 }
 
 /// Build a PL900 deprecation Warning for given/when/default (v5.38–v5.41).
@@ -557,17 +826,10 @@ fn make_smartmatch_feature_gate_diagnostic(
 }
 
 fn make_smartmatch_feature_diagnostic(node: &Node, declared_version: PerlVersion) -> Diagnostic {
-    make_diagnostic_with_details(
-        node,
-        "smartmatch operator `~~`",
-        declared_version,
-        (5, 10),
-        DiagnosticSeverity::Warning,
-        Some(format!(
-            "Update 'use v{}.{}' to 'use v5.10' or add 'use feature \"switch\";'",
-            declared_version.major, declared_version.minor
-        )),
-    )
+    // Routed through the shared helper so a declared version that already meets
+    // v5.10 (reachable via `no feature 'switch'`) drops the version clause
+    // instead of advising the downgrade `Update 'use v5.36' to 'use v5.10'`.
+    make_diagnostic(node, "smartmatch operator `~~`", Some("switch"), declared_version, (5, 10))
 }
 
 fn make_diagnostic_with_details(
@@ -1039,5 +1301,496 @@ mod tests {
                 .all(|d| !(d.code.as_deref() == Some("PL900") && d.message.contains("__CLASS__"))),
             "no declared version should suppress all PL900 checks including __CLASS__"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // PL900 remediation for never-bundled experimental features (issue #5279)
+    //
+    // `class` (v5.38), `defer` (v5.36) and `try` (v5.34) are experimental, so no
+    // `use vX.Y` bundle turns them on — `:5.40` and `:5.42` included (see
+    // `BUNDLE_5_40_FEATURES` / `BUNDLE_5_42_FEATURES` in `perl-pragma`, neither of
+    // which lists `class` or `defer`). Compiling any of them needs BOTH a declared
+    // version at or above the release that introduced the feature AND the pragma
+    // lexically enabled, so a version bump is never an *alternative* to the pragma
+    // and at or above the minimum it is a no-op.
+    //
+    // Verified against perl v5.38.2 (`perl -c`):
+    //
+    //   use v5.38; class Foo {}                             syntax error
+    //   use v5.38; use feature 'class'; class Foo {}         syntax OK
+    //   use v5.36; defer { 1 }                               syntax error
+    //   use v5.36; use feature 'defer'; defer { 1 }          syntax OK
+    //   use v5.34; try { 1 } catch ($e) { 2 }                syntax error
+    //   use v5.34; use feature 'try'; try {1} catch($e){2}   syntax OK
+    //   use feature 'try/catch'                              Feature "try/catch"
+    //                                                        is not supported
+    //   use feature 'field'                                  Feature "field"
+    //                                                        is not supported
+    //
+    // The last two are why the remediation must name a *real* feature name, and
+    // why the declared version gates the pragma as well: perl rejects
+    // `use feature 'NAME'` outright when NAME postdates the running perl, so
+    // `use feature 'class'` cannot backport `class` onto a v5.36 target any more
+    // than `use feature 'field'` works on v5.38.2.
+    //
+    // These tests assert on `suggestion` — the field the author acts on. A test
+    // that only checked "PL900 emitted" would pass with `Update 'use v5.38' to
+    // 'use v5.38'` intact.
+    // ---------------------------------------------------------------------------
+
+    /// The `suggestion` of the first PL900 whose message names `construct`, or
+    /// `""` when no such diagnostic was emitted.
+    fn pl900_suggestion(source: &str, construct: &str) -> String {
+        version_compat_diags(source)
+            .iter()
+            .find(|d| d.code.as_deref() == Some("PL900") && d.message.contains(construct))
+            .and_then(|d| d.suggestion.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether any PL900 naming `construct` was emitted for `source`.
+    fn pl900_emitted(source: &str, construct: &str) -> bool {
+        version_compat_diags(source)
+            .iter()
+            .any(|d| d.code.as_deref() == Some("PL900") && d.message.contains(construct))
+    }
+
+    #[test]
+    fn class_on_v5_38_remediation_does_not_advise_updating_a_version_to_itself() {
+        // The reported defect: `use v5.38;` already meets the `class` minimum, so
+        // the version half of the old "Update X to Y or add pragma" remediation
+        // collapsed into `Update 'use v5.38' to 'use v5.38'`.
+        let suggestion = pl900_suggestion("use v5.38;\nclass Foo { }\n", "'class'");
+        assert!(
+            !suggestion.is_empty(),
+            "`use v5.38;` + `class Foo {{}}` is a syntax error on perl v5.38.2 and must emit PL900"
+        );
+        assert!(
+            !suggestion.contains("'use v5.38' to 'use v5.38'"),
+            "remediation must not tell the author to update v5.38 to itself: {suggestion}"
+        );
+        assert!(
+            suggestion.contains("use feature \"class\""),
+            "remediation must name the pragma, the only change that makes it compile: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains(" or "),
+            "a version bump must not be offered as an alternative to the pragma: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn class_above_v5_38_remediation_does_not_advise_a_version_downgrade() {
+        // At v5.40 the old remediation read `Update 'use v5.40' to 'use v5.38'` —
+        // a downgrade that still would not enable the feature.
+        let suggestion = pl900_suggestion("use v5.40;\nclass Foo { }\n", "'class'");
+        assert!(!suggestion.is_empty(), "`use v5.40;` alone does not enable `class`; expect PL900");
+        assert!(
+            !suggestion.contains("to 'use v5.38'"),
+            "remediation must not advise downgrading v5.40 to v5.38: {suggestion}"
+        );
+        assert!(
+            suggestion.contains("use feature \"class\""),
+            "remediation must name the pragma: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn class_below_v5_38_remediation_asks_for_both_halves() {
+        let suggestion = pl900_suggestion("use v5.36;\nclass Foo { }\n", "'class'");
+        assert!(!suggestion.is_empty(), "`use v5.36;` + `class` must emit PL900");
+        assert!(suggestion.contains("v5.38"), "remediation must name the v5.38 bump: {suggestion}");
+        assert!(
+            suggestion.contains("use feature \"class\""),
+            "remediation must name the pragma too: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains(" or "),
+            "neither half alone compiles, so they must not be offered as alternatives: \
+             {suggestion}"
+        );
+    }
+
+    #[test]
+    fn class_below_v5_38_with_pragma_still_emits_pl900() {
+        // perl rejects `use feature 'NAME'` when NAME postdates the running perl
+        // (v5.38.2: `Feature "field" is not supported by Perl 5.38.2`), so the
+        // pragma cannot backport `class` onto a v5.36 target. Staying silent here
+        // would approve code that cannot compile on the declared perl.
+        let source = "use v5.36;\nuse feature 'class';\nclass Foo { }\n";
+        assert!(
+            pl900_emitted(source, "'class'"),
+            "`use feature 'class'` must not suppress PL900 below v5.38"
+        );
+        let suggestion = pl900_suggestion(source, "'class'");
+        assert!(
+            suggestion.contains("v5.38"),
+            "the pragma is already present, so the remediation must name the version bump: \
+             {suggestion}"
+        );
+    }
+
+    #[test]
+    fn class_on_v5_38_with_pragma_suppresses_pl900() {
+        // The only shape that compiles — verified `syntax OK` on perl v5.38.2.
+        assert!(
+            !pl900_emitted("use v5.38;\nuse feature 'class';\nclass Foo { }\n", "'class'"),
+            "v5.38 + `use feature 'class'` compiles and must be silent"
+        );
+    }
+
+    #[test]
+    fn defer_on_v5_36_remediation_does_not_advise_updating_a_version_to_itself() {
+        let suggestion = pl900_suggestion("use v5.36;\ndefer { 1 }\n", "'defer'");
+        assert!(
+            !suggestion.is_empty(),
+            "`use v5.36;` + `defer {{ }}` is a syntax error on perl v5.38.2 and must emit PL900"
+        );
+        assert!(
+            !suggestion.contains("'use v5.36' to 'use v5.36'"),
+            "remediation must not tell the author to update v5.36 to itself: {suggestion}"
+        );
+        assert!(
+            suggestion.contains("use feature \"defer\""),
+            "remediation must name the pragma: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains(" or "),
+            "a version bump must not be offered as an alternative to the pragma: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn defer_above_v5_36_remediation_does_not_advise_a_version_downgrade() {
+        // `defer` is in no bundle, so `use v5.40;` alone still leaves it a syntax
+        // error — verified on perl v5.38.2 for `use v5.38; defer { 1 }`.
+        let suggestion = pl900_suggestion("use v5.40;\ndefer { 1 }\n", "'defer'");
+        assert!(!suggestion.is_empty(), "`use v5.40;` alone does not enable `defer`; expect PL900");
+        assert!(
+            !suggestion.contains("to 'use v5.36'"),
+            "remediation must not advise downgrading v5.40 to v5.36: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn defer_on_v5_36_with_pragma_suppresses_pl900() {
+        // Verified `syntax OK` on perl v5.38.2.
+        assert!(
+            !pl900_emitted("use v5.36;\nuse feature 'defer';\ndefer { 1 }\n", "'defer'"),
+            "v5.36 + `use feature 'defer'` compiles and must be silent"
+        );
+    }
+
+    #[test]
+    fn try_catch_remediation_names_the_real_try_feature() {
+        // The old remediation reused the *display* name `try/catch` as the pragma
+        // name. `use feature 'try/catch';` is a hard error on perl v5.38.2
+        // (`Feature "try/catch" is not supported`), so following the advice
+        // replaced a syntax error with a failed BEGIN block. The real feature name
+        // is `try` (see `ALL_KNOWN_FEATURES` in `perl-pragma`).
+        let suggestion =
+            pl900_suggestion("use v5.34;\ntry { 1 } catch ($e) { 2 }\n", "'try/catch'");
+        assert!(!suggestion.is_empty(), "`use v5.34;` + try/catch must emit PL900");
+        assert!(
+            !suggestion.contains("use feature \"try/catch\""),
+            "remediation must not name a feature perl rejects: {suggestion}"
+        );
+        assert!(
+            suggestion.contains("use feature \"try\""),
+            "remediation must name the real `try` feature: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains("'use v5.34' to 'use v5.34'"),
+            "remediation must not tell the author to update v5.34 to itself: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn try_catch_above_v5_34_remediation_does_not_advise_a_version_downgrade() {
+        let suggestion =
+            pl900_suggestion("use v5.38;\ntry { 1 } catch ($e) { 2 }\n", "'try/catch'");
+        assert!(!suggestion.is_empty(), "`use v5.38;` alone does not enable `try`; expect PL900");
+        assert!(
+            !suggestion.contains("to 'use v5.34'"),
+            "remediation must not advise downgrading v5.38 to v5.34: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn try_catch_with_pragma_suppresses_pl900() {
+        // Verified `syntax OK` on perl v5.38.2.
+        assert!(
+            !pl900_emitted(
+                "use v5.34;\nuse feature 'try';\ntry { 1 } catch ($e) { 2 }\n",
+                "'try/catch'"
+            ),
+            "v5.34 + `use feature 'try'` compiles and must be silent"
+        );
+    }
+
+    #[test]
+    fn try_catch_on_v5_40_bundle_suppresses_pl900() {
+        // `try` is the one of the three that a version bundle does enable:
+        // `BUNDLE_5_40_FEATURES` in `perl-pragma` lists it. Guards against the
+        // version gate being tightened into a false positive at v5.40+.
+        assert!(
+            !pl900_emitted("use v5.40;\ntry { 1 } catch ($e) { 2 }\n", "'try/catch'"),
+            "the v5.40 bundle enables `try`, so v5.40 alone must be silent"
+        );
+    }
+
+    #[test]
+    fn experimental_feature_remediation_never_advises_a_useless_version_change() {
+        // One invariant over the whole never-bundled family and the full declared
+        // version range: whenever a remediation says `Update 'use vA.B' to
+        // 'use vC.D'`, the target must be strictly newer than the declared
+        // version. Anything else is a no-op or a downgrade.
+        //
+        // Covers the pragma-gated arms and the bundled arms reachable through
+        // `no feature`, which produce the same shape via the shared
+        // `make_diagnostic` helper.
+        for source in PL900_REMEDIATION_SOURCES {
+            for d in version_compat_diags(source) {
+                if d.code.as_deref() != Some("PL900") {
+                    continue;
+                }
+                let Some(suggestion) = d.suggestion.as_deref() else {
+                    continue;
+                };
+                if let Some((declared, target)) = parse_version_bump(suggestion) {
+                    assert!(
+                        target > declared,
+                        "remediation advises a no-op or downgrading version change \
+                         (source: {source:?}, suggestion: {suggestion})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Extract `(declared, target)` from a `Update 'use vA.B' to 'use vC.D'`
+    /// clause, or `None` when the suggestion carries no version bump.
+    fn parse_version_bump(suggestion: &str) -> Option<(PerlVersion, PerlVersion)> {
+        let rest = suggestion.split_once("Update 'use ")?.1;
+        let (declared, rest) = rest.split_once("' to 'use ")?;
+        let (target, _) = rest.split_once('\'')?;
+        Some((parse_perl_version(declared)?, parse_perl_version(target)?))
+    }
+
+    /// Sources driving the three pragma-gated arms this claim owns, across the
+    /// declared-version range.
+    ///
+    /// Covers every PL900 arm that carries a remediation, through both the
+    /// pragma-gated helper ([`make_experimental_feature_diagnostic`]) and the
+    /// shared bundled-feature helper ([`make_diagnostic`]).
+    ///
+    /// The `no feature` rows are load-bearing: they are how a *bundled* feature
+    /// reaches the shared helper with a declared version that already meets the
+    /// minimum, which is what produced `Update 'use v5.36' to 'use v5.36'`
+    /// there, and `Update 'use v5.36' to 'use v5.10'` — an outright downgrade —
+    /// for `say`.
+    const PL900_REMEDIATION_SOURCES: &[&str] = &[
+        // Pragma-gated: never bundled (`class`, `defer`), or bundled only later
+        // (`try`, at v5.40).
+        "use v5.10;\nclass Foo { }\n",
+        "use v5.36;\nclass Foo { }\n",
+        "use v5.38;\nclass Foo { }\n",
+        "use v5.40;\nclass Foo { }\n",
+        "use v5.42;\nclass Foo { }\n",
+        "use v5.36;\nuse feature 'class';\nclass Foo { }\n",
+        "use v5.10;\ndefer { 1 }\n",
+        "use v5.36;\ndefer { 1 }\n",
+        "use v5.40;\ndefer { 1 }\n",
+        "use v5.36;\nuse feature 'defer';\ndefer { 1 }\n",
+        "use v5.10;\ntry { 1 } catch ($e) { 2 }\n",
+        "use v5.34;\ntry { 1 } catch ($e) { 2 }\n",
+        "use v5.38;\ntry { 1 } catch ($e) { 2 }\n",
+        // Bundled features below their minimum: the version bump is a genuine
+        // remediation here, so both halves of the advice must be usable.
+        "use v5.8;\nsub f ($x) { $x }\n",
+        "use v5.20;\nsub f ($x) { $x }\n",
+        "use v5.8;\nsay 'hi';\n",
+        "use v5.8;\nstate $x = 1;\n",
+        "use v5.8;\nmy $r = [];\nmy @a = $r->@*;\n",
+        "use v5.8;\nmy $o = bless {}, 'X';\nmy $b = $o isa 'X';\n",
+        "use v5.8;\ngiven ($x) { when (1) { 1 } }\n",
+        "use v5.8;\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+        // Bundled features switched off by `no feature` at or above the
+        // minimum — the shared helper's self-referential / downgrading path.
+        "use v5.36;\nno feature 'signatures';\nsub f ($x) { $x }\n",
+        "use v5.36;\nno feature 'say';\nsay 'hi';\n",
+        "use v5.36;\nno feature 'state';\nstate $x = 1;\n",
+        "use v5.36;\nno feature 'isa';\nmy $o = bless {}, 'X';\nmy $b = $o isa 'X';\n",
+        "use v5.36;\nno feature 'postderef_qq';\nmy $r = [];\nmy @a = $r->@*;\n",
+        // smartmatch's own downgrade path: below v5.38 with `switch` off, the
+        // arm routes through `make_smartmatch_feature_diagnostic`. Without this
+        // row only its below-minimum path was covered, so the
+        // `Update 'use v5.36' to 'use v5.10'` downgrade went unpinned.
+        "use v5.36;\nno feature 'switch';\nmy $x = 1;\nmy $y = 2;\n$x ~~ $y;\n",
+        // `builtin`: no `use feature` pragma enables these at all.
+        "use v5.36;\nmy $x = builtin::inf();\n",
+        "use v5.36;\nuse builtin;\n",
+        "use v5.36;\nuse builtin 'inf';\n",
+        "use v5.10;\nuse feature 'try';\ntry { 1 } catch ($e) { 2 }\n",
+    ];
+
+    /// Every feature name perl itself accepts in `use feature '...'`.
+    ///
+    /// Mirrors `ALL_KNOWN_FEATURES` in `perl-pragma`. Spot-checked against perl
+    /// v5.38.2, which rejects anything outside this set with
+    /// `Feature "NAME" is not supported by Perl 5.38.2` — including the three
+    /// names this lint used to emit: `try/catch`, `subroutine signatures`, and
+    /// `postfix_deref`.
+    const REAL_PERL_FEATURE_NAMES: &[&str] = &[
+        "say",
+        "state",
+        "smartmatch",
+        "switch",
+        "unicode_strings",
+        "unicode_eval",
+        "evalbytes",
+        "current_sub",
+        "fc",
+        "lexical_subs",
+        "postderef",
+        "postderef_qq",
+        "signatures",
+        "refaliasing",
+        "bitwise",
+        "declared_refs",
+        "isa",
+        "indirect",
+        "multidimensional",
+        "bareword_filehandles",
+        "try",
+        "defer",
+        "extra_paired_delimiters",
+        "module_true",
+        "class",
+        "field",
+        "method",
+        "apostrophe_as_package_separator",
+        "keyword_any",
+        "keyword_all",
+    ];
+
+    #[test]
+    fn pragma_gated_message_and_suggestion_never_contradict_each_other() {
+        // Review finding (#5544, factory-droid P1): for `use v5.40; class Foo {}`
+        // the message read `'class' requires Perl v5.38+; declared version is
+        // v5.40` while the suggestion correctly asked only for the pragma. The
+        // diagnostic simultaneously asserted a version problem and denied the
+        // version half mattered, which reads as a false positive on code that
+        // genuinely does not compile.
+        //
+        // The rule: a message may cite a minimum version only when the declared
+        // version actually falls short of it. Message and suggestion are built
+        // from one `(version_ok, feature_ok)` match so they cannot drift.
+        for source in PL900_REMEDIATION_SOURCES {
+            for d in version_compat_diags(source) {
+                if d.code.as_deref() != Some("PL900") {
+                    continue;
+                }
+                let Some(suggestion) = d.suggestion.as_deref() else {
+                    continue;
+                };
+                let suggestion_asks_for_a_bump = suggestion.contains("Update 'use ");
+                let message_cites_a_minimum = d.message.contains("requires Perl v");
+
+                assert_eq!(
+                    message_cites_a_minimum, suggestion_asks_for_a_bump,
+                    "message and suggestion disagree about whether the declared version is the \
+                     problem (source: {source:?}, message: {}, suggestion: {suggestion})",
+                    d.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn postfix_deref_remediation_names_postderef_and_actually_silences_the_lint() {
+        // Review finding (codex P2 on #5559). `postderef` governs the `$r->@*`
+        // syntax this arm matches; `postderef_qq` only extends it to
+        // double-quotish interpolation. Verified on perl v5.38.2:
+        //
+        //   no feature 'postderef_qq'; print "$r->@*"  -> ARRAY(0x..)->@*
+        //   no feature 'postderef';    my @a = $r->@*  -> still works
+        //
+        // and perl's own bundles gain `postderef_qq` only at `:5.24`, so naming
+        // it to an author targeting v5.20 is advice about the wrong feature on a
+        // version that does not have it.
+        let source = "use v5.20;\nmy $r = [];\nmy @a = $r->@*;\n";
+        let suggestion = pl900_suggestion(source, "postfix deref");
+        assert!(!suggestion.is_empty(), "v5.20 postfix deref should emit PL900");
+        assert!(
+            suggestion.contains("use feature \"postderef\""),
+            "remediation must name the feature that governs the operator: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains("postderef_qq"),
+            "postderef_qq is the interpolation switch, not this construct: {suggestion}"
+        );
+
+        // Advice that is correct but leaves the warning up is still a defect:
+        // the author follows it and nothing changes. Guards the `has_feature`
+        // query, which canonicalizes `postfix_deref` to `postderef_qq` and so
+        // would not otherwise see an explicit `use feature 'postderef';`.
+        assert!(
+            !pl900_emitted(
+                "use v5.20;\nuse feature 'postderef';\nmy $r = [];\nmy @a = $r->@*;\n",
+                "postfix deref"
+            ),
+            "following the remediation must silence the diagnostic"
+        );
+
+        // The bundle path must keep working: perl's `:5.24`+ bundles carry
+        // `postderef_qq`, and the operator is unconditional from v5.24.
+        assert!(
+            !pl900_emitted("use v5.24;\nmy $r = [];\nmy @a = $r->@*;\n", "postfix deref"),
+            "the v5.24 bundle enables postfix deref, so v5.24 alone must be silent"
+        );
+    }
+
+    #[test]
+    fn every_pl900_remediation_names_a_feature_perl_accepts() {
+        // The second half of the defect: the shared helper interpolated the
+        // construct's *display* name into the `use feature "..."` slot, so
+        // following the advice replaced the original error with
+        // `Feature "subroutine signatures" is not supported by Perl 5.38.2`.
+        // Any pragma this lint tells an author to add must be a name perl will
+        // actually accept.
+        for source in PL900_REMEDIATION_SOURCES {
+            for d in version_compat_diags(source) {
+                if d.code.as_deref() != Some("PL900") {
+                    continue;
+                }
+                let Some(suggestion) = d.suggestion.as_deref() else {
+                    continue;
+                };
+                for named in named_features(suggestion) {
+                    assert!(
+                        REAL_PERL_FEATURE_NAMES.contains(&named.as_str()),
+                        "remediation names '{named}', which perl rejects \
+                         (source: {source:?}, suggestion: {suggestion})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every `NAME` appearing in a `use feature "NAME"` clause of `suggestion`.
+    fn named_features(suggestion: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = suggestion;
+        while let Some((_, after)) = rest.split_once("use feature \"") {
+            match after.split_once('"') {
+                Some((name, tail)) => {
+                    out.push(name.to_string());
+                    rest = tail;
+                }
+                None => break,
+            }
+        }
+        out
     }
 }

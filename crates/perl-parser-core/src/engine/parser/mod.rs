@@ -109,6 +109,9 @@ pub struct Parser<'a> {
     src_bytes: &'a [u8],
     /// Byte cursor tracking position for heredoc content collection
     byte_cursor: usize,
+    /// Delimiter from an unrecognised heredoc introducer whose body leaked into
+    /// the ordinary token stream.  Only the matching bareword may be exempted.
+    heredoc_recovery_tag: Option<String>,
     /// Start time of parsing for timeout enforcement (specifically heredocs)
     heredoc_start_time: Option<Instant>,
     /// Collection of parse errors encountered during parsing (for error recovery)
@@ -161,6 +164,7 @@ impl<'a> Parser<'a> {
             attribute_handlers_enabled: false,
             src_bytes: input.as_bytes(),
             byte_cursor: 0,
+            heredoc_recovery_tag: None,
             heredoc_start_time: None,
             errors: Vec::new(),
             cancellation_flag: None,
@@ -296,6 +300,7 @@ impl<'a> Parser<'a> {
             attribute_handlers_enabled: false,
             src_bytes: source.as_bytes(),
             byte_cursor: 0,
+            heredoc_recovery_tag: None,
             heredoc_start_time: None,
             errors: Vec::new(),
             cancellation_flag: None,
@@ -510,6 +515,8 @@ mod regex_delimiter_tests;
 mod slash_ambiguity_tests;
 #[cfg(test)]
 mod statement_modifier_tests;
+#[cfg(test)]
+mod statement_terminator_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -1,6 +1,12 @@
 //! Execution control: continue, next, step in, step out, pause, goto, cancel.
 
-use super::*;
+use super::{
+    AstBreakpointValidator, BreakpointValidator, ContinueArguments, ContinueResponseBody,
+    DapMessage, DebugAdapter, DebugState, GotoArguments, GotoTarget, GotoTargetsArguments,
+    GotoTargetsResponseBody, NextArguments, Ordering, PauseArguments, ResumeMode, StepInArguments,
+    StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, StepOutArguments, Value,
+    Write, json, lock_or_recover,
+};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -320,7 +326,7 @@ impl DebugAdapter {
                         let _ = pid;
                         (false, "Pause is unsupported for PID-attached sessions on Windows")
                     }
-                    #[cfg(not(windows))]
+                    #[cfg(unix)]
                     {
                         (self.send_interrupt_signal(pid), "Failed to pause debugger")
                     }
@@ -573,19 +579,19 @@ impl DebugAdapter {
 
         if let Some((source_path, frame_line)) = frame_info {
             // Defense-in-depth: validate even internal session paths
-            if let Ok(validated_path) = self.validate_source_path(&source_path) {
-                if let Ok(content) = std::fs::read_to_string(&validated_path) {
-                    let line_idx = frame_line.max(0) as usize;
-                    if let Some(source_line) = content.lines().nth(line_idx.saturating_sub(1)) {
-                        // Find function call patterns
-                        if let Some(call_re) = STEP_IN_TARGET_CALL_RE.as_ref() {
-                            for (idx, cap) in call_re.captures_iter(source_line).enumerate() {
-                                if let Some(name) = cap.get(1) {
-                                    targets.push(StepInTarget {
-                                        id: idx as i64,
-                                        label: name.as_str().to_string(),
-                                    });
-                                }
+            if let Ok(validated_path) = self.validate_source_path(&source_path)
+                && let Ok(content) = std::fs::read_to_string(&validated_path)
+            {
+                let line_idx = frame_line.max(0) as usize;
+                if let Some(source_line) = content.lines().nth(line_idx.saturating_sub(1)) {
+                    // Find function call patterns
+                    if let Some(call_re) = STEP_IN_TARGET_CALL_RE.as_ref() {
+                        for (idx, cap) in call_re.captures_iter(source_line).enumerate() {
+                            if let Some(name) = cap.get(1) {
+                                targets.push(StepInTarget {
+                                    id: idx as i64,
+                                    label: name.as_str().to_string(),
+                                });
                             }
                         }
                     }

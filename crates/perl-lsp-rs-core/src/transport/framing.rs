@@ -60,6 +60,22 @@ impl fmt::Display for FramingError {
 
 impl std::error::Error for FramingError {}
 
+impl perl_parser_core::ErrorClass for FramingError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Protocol violations: the client sent a malformed frame that does
+            // not conform to the LSP base protocol (Content-Length) spec.
+            Self::InvalidHeader
+            | Self::InvalidHeaderUtf8
+            | Self::MissingContentLength
+            | Self::InvalidContentLength => perl_parser_core::ErrorCategory::Protocol,
+            // A configured safety limit was exceeded — the frame is larger than
+            // MAX_FRAME_SIZE, which is a resource-protection guard.
+            Self::FrameTooLarge { .. } => perl_parser_core::ErrorCategory::ResourceLimit,
+        }
+    }
+}
+
 /// Stateful extractor for `Content-Length` framed payloads.
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct ContentLengthFramer {
@@ -204,9 +220,11 @@ impl ContentLengthFramer {
 pub fn frame(body: &[u8]) -> Vec<u8> {
     let mut out =
         Vec::with_capacity(HEADER_SENTINEL.len() + 32 + HEADER_END_CRLF.len() + body.len());
-    out.extend_from_slice(b"Content-Length: ");
-    out.extend_from_slice(body.len().to_string().as_bytes());
-    out.extend_from_slice(HEADER_END_CRLF);
+    // Use write! to format the Content-Length header directly into the output
+    // buffer, avoiding the temporary String allocation from body.len().to_string()
+    // (#5053 item 8).
+    use std::io::Write;
+    write!(&mut out, "Content-Length: {}\r\n\r\n", body.len()).ok();
     out.extend_from_slice(body);
     out
 }
@@ -504,7 +522,25 @@ mod tests {
         MAX_HEADER_BYTES, log_response, read_message, write_message, write_notification,
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
+    use perl_parser_core::{ErrorCategory, ErrorClass};
     use std::io::{self, BufReader, Cursor};
+
+    #[test]
+    fn framing_errors_have_stable_operational_categories() {
+        for error in [
+            FramingError::InvalidHeader,
+            FramingError::InvalidHeaderUtf8,
+            FramingError::MissingContentLength,
+            FramingError::InvalidContentLength,
+        ] {
+            assert_eq!(error.error_class(), ErrorCategory::Protocol);
+        }
+
+        assert_eq!(
+            FramingError::FrameTooLarge { len: MAX_FRAME_SIZE + 1 }.error_class(),
+            ErrorCategory::ResourceLimit
+        );
+    }
 
     fn framed_request(id: u64, method: &str) -> Vec<u8> {
         let body = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{}}}}"#);

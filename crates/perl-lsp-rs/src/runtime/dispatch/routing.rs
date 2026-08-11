@@ -3,8 +3,14 @@
 //! This module owns the method-to-handler table. Preflight checks and response
 //! rendering live in sibling modules so routing remains focused on dispatch.
 
+#[cfg(test)]
 use super::super::*;
+use super::super::{
+    JsonRpcError, JsonRpcId, JsonRpcRequest, LspServer, METHOD_NOT_FOUND, Ordering, Value,
+    cancelled_response_with_method, enhanced_error,
+};
 use super::response::RoutedResponse;
+use crate::cancellation::GLOBAL_CANCELLATION_REGISTRY;
 
 impl LspServer {
     pub(super) fn route_request(
@@ -15,6 +21,25 @@ impl LspServer {
     ) -> RoutedResponse {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
+
+        // LSP spec: after shutdown, the server must reject all requests except
+        // `exit` with -32600 InvalidRequest (#6103).
+        if method != "exit"
+            && method != "shutdown"
+            && self.shutdown_received.load(Ordering::Acquire)
+        {
+            return RoutedResponse::Handler {
+                id,
+                method: method.clone(),
+                should_respond,
+                result: Err(JsonRpcError {
+                    code: -32600, // InvalidRequest per JSON-RPC 2.0 spec
+                    message: "Server has been shutdown".to_string(),
+                    data: None,
+                }),
+            };
+        }
+
         let result = match method.as_str() {
             "initialize" => self.handle_initialize_dispatch(request.params),
             "initialized" => self.handle_initialized_dispatch(),
@@ -220,6 +245,9 @@ impl LspServer {
             // consume a worker thread for ~1 second per call (issue #4632).
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             "$/test/slowOperation" => self.handle_slow_operation_dispatch(&id, request.params),
+            // Keep the VS Code liveness probe on a constant-time server path.
+            // It must not enter provider or open-document fallback work.
+            "$/perl-lsp/watchdog" => Ok(Some(Value::Null)),
             // Tolerate unknown `$/`-prefixed methods per LSP spec:
             // Method names starting with "$/" are protocol-specific and should be
             // silently ignored (notifications) or return MethodNotFound (requests)
@@ -268,6 +296,7 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
@@ -307,6 +336,10 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
+            // Remove the token registered by check_cancellation_before_dispatch
+            // so it is not orphaned when the Immediate path bypasses the
+            // RequestCleanupGuard below (#5944).
+            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
@@ -363,6 +396,41 @@ mod tests {
         };
         assert_eq!(response.error.map(|error| error.code), Some(REQUEST_CANCELLED));
         Ok(())
+    }
+
+    #[test]
+    fn cancelled_marker_cap_evicts_stale_entries() {
+        let server = LspServer::new();
+        let oldest = JsonRpcId::Integer(0);
+        let live_pending = JsonRpcId::Integer(10_000);
+
+        server.mark_request_pending(&live_pending);
+        server.cancel_mark(&live_pending);
+
+        for id in 0..255 {
+            server.cancel_mark(&JsonRpcId::Integer(id));
+        }
+        assert!(
+            server.is_cancelled(&oldest),
+            "the cap must not trim before the marker set reaches its bound"
+        );
+
+        let newest = JsonRpcId::Integer(256);
+        server.cancel_mark(&JsonRpcId::Integer(255));
+        server.cancel_mark(&newest);
+
+        assert!(!server.is_cancelled(&oldest), "reaching the cap must evict stale markers");
+        assert!(
+            server.is_cancelled(&newest),
+            "the marker that triggered trimming must be retained"
+        );
+        assert!(
+            server.is_cancelled(&live_pending),
+            "trimming stale markers must preserve a queued request cancellation"
+        );
+
+        server.clear_request_pending(&live_pending);
+        server.cancel_clear(&live_pending);
     }
 
     #[test]

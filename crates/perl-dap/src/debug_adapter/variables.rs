@@ -1,6 +1,10 @@
 //! Variable inspection: variable display, scope variables, set variable.
 
-use super::*;
+use super::{
+    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, HashMap, SetVariableArguments,
+    SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments, Write,
+    is_valid_set_variable_name, json, lock_or_recover, slice_variables,
+};
 
 impl DebugAdapter {
     /// Handle variables request
@@ -79,19 +83,62 @@ impl DebugAdapter {
         // protocol-safe honest empty immediately.
         {
             let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
-            if let Some(ref session) = *session_guard {
-                if session.state != DebugState::Stopped {
-                    // Not stopped: variable refs are stale. Omit totalVariables —
-                    // we have no meaningful count when not paused.
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: true,
-                        command: "variables".to_string(),
-                        body: Some(json!({ "variables": [] })),
-                        message: None,
-                    };
-                }
+            if let Some(ref session) = *session_guard
+                && session.state != DebugState::Stopped
+            {
+                // Not stopped: variable refs are stale. Omit totalVariables —
+                // we have no meaningful count when not paused.
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "variables".to_string(),
+                    body: Some(json!({ "variables": [] })),
+                    message: None,
+                };
+            }
+        }
+
+        // Arguments are captured from the verbose stack trace, not queried from the
+        // debugger.  Keep this path before the generic scope routing so a client cannot
+        // accidentally turn an Arguments reference into a package/global query.
+        {
+            use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+            if let Some(VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }) =
+                VariableReference::decode(variables_ref)
+            {
+                let arguments = lock_or_recover(&self.session, "debug_adapter.session")
+                    .as_ref()
+                    .and_then(|session| session.stack_frame_arguments.get(&frame_id))
+                    .cloned()
+                    .unwrap_or_default();
+                let total = arguments.len();
+                let variables = arguments
+                    .into_iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(count)
+                    .map(|(index, value)| crate::types::Variable {
+                        name: format!("arg{index}"),
+                        value,
+                        type_: None,
+                        variables_reference: 0,
+                        named_variables: None,
+                        indexed_variables: None,
+                        evaluate_name: None,
+                    })
+                    .collect::<Vec<_>>();
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "variables".to_string(),
+                    body: Some(json!({
+                        "variables": variables,
+                        "totalVariables": total as i64,
+                    })),
+                    message: None,
+                };
             }
         }
 
@@ -261,6 +308,11 @@ impl DebugAdapter {
                                 }
                             }
                         }
+                    }
+                    Some(ScopeKind::Arguments) => {
+                        // Handled by the early return above. Keep this arm explicit so
+                        // adding a scope kind cannot silently route arguments to the
+                        // debugger fallback path.
                     }
                     None => {
                         // Non-Scope variablesReference — no framed output to fetch.
@@ -904,6 +956,7 @@ mod hazard_invariant_tests {
             variables_reference: 0,
             named_variables: None,
             indexed_variables: None,
+            evaluate_name: None,
         };
         a.seed_eval_result_cache_for_test(eval_ref_wire, vec![cached_var]);
 

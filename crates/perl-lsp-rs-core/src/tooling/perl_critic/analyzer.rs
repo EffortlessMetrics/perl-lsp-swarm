@@ -68,7 +68,7 @@ impl CriticAnalyzer {
             return Ok(entry.violations.clone());
         }
 
-        let violations = self.run_perlcritic(file_path, &path_str)?;
+        let violations = self.run_perlcritic(file_path, &path_str, None)?;
         self.insert_entry(path_str, 0, violations.clone());
         Ok(violations)
     }
@@ -83,29 +83,47 @@ impl CriticAnalyzer {
         &mut self,
         file_path: &Path,
         content_hash: u64,
+        doc_text: Option<&str>,
     ) -> Result<Vec<Violation>, String> {
         let path_str = file_path.to_string_lossy().to_string();
 
-        if let Some(entry) = self.cache.get_mut(&path_str) {
-            if entry.content_hash == content_hash {
-                self.access_counter += 1;
-                entry.access_seq = self.access_counter;
-                return Ok(entry.violations.clone());
-            }
-            // Hash mismatch: entry is stale; fall through to re-run perlcritic.
+        if let Some(entry) = self.cache.get_mut(&path_str)
+            && entry.content_hash == content_hash
+        {
+            self.access_counter += 1;
+            entry.access_seq = self.access_counter;
+            return Ok(entry.violations.clone());
         }
+        // Hash mismatch: entry is stale; fall through to re-run perlcritic.
 
-        let violations = self.run_perlcritic(file_path, &path_str)?;
+        let violations = self.run_perlcritic(file_path, &path_str, doc_text)?;
         self.insert_entry(path_str, content_hash, violations.clone());
         Ok(violations)
     }
 
     /// Execute `perlcritic` and parse its output.
-    fn run_perlcritic(&self, _file_path: &Path, path_str: &str) -> Result<Vec<Violation>, String> {
-        let args = build_perlcritic_args(&self.config, path_str);
+    ///
+    /// When `doc_text` is provided, the content is piped via stdin and `-` is
+    /// passed as the file path so perlcritic reads from stdin rather than
+    /// disk. This ensures diagnostics reflect the in-memory buffer, not stale
+    /// on-disk content for unsaved edits (#5051).
+    fn run_perlcritic(
+        &self,
+        _file_path: &Path,
+        path_str: &str,
+        doc_text: Option<&str>,
+    ) -> Result<Vec<Violation>, String> {
+        let (args, stdin) = if let Some(text) = doc_text {
+            // Pipe via stdin with `-` as the file path.
+            let args = build_perlcritic_args(&self.config, "-");
+            (args, Some(text.as_bytes()))
+        } else {
+            let args = build_perlcritic_args(&self.config, path_str);
+            (args, None)
+        };
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output =
-            self.runtime.run_command("perlcritic", &args_refs, None).map_err(|e| e.message)?;
+            self.runtime.run_command("perlcritic", &args_refs, stdin).map_err(|e| e.message)?;
         self.parse_output(&output.stdout, path_str)
     }
 
@@ -340,13 +358,13 @@ mod tests {
         let hash = hash_content("use strict;\n");
 
         // First call populates cache.
-        let _ = analyzer.analyze_file_with_hash(path, hash);
+        let _ = analyzer.analyze_file_with_hash(path, hash, None);
         assert_eq!(analyzer.cache_len(), 1);
 
         // Second call with same hash must hit cache (runtime would be called again
         // on a miss, but MockSubprocessRuntime always succeeds, so we verify by
         // checking access_counter advanced only once more).
-        let _ = analyzer.analyze_file_with_hash(path, hash);
+        let _ = analyzer.analyze_file_with_hash(path, hash, None);
         assert_eq!(analyzer.cache_len(), 1);
     }
 
@@ -355,9 +373,9 @@ mod tests {
         let mut analyzer = make_analyzer_with_output(b"");
         let path = std::path::Path::new("/tmp/test.pl");
 
-        let _ = analyzer.analyze_file_with_hash(path, hash_content("version 1"));
+        let _ = analyzer.analyze_file_with_hash(path, hash_content("version 1"), None);
         // Different hash → stale entry replaced.
-        let _ = analyzer.analyze_file_with_hash(path, hash_content("version 2"));
+        let _ = analyzer.analyze_file_with_hash(path, hash_content("version 2"), None);
         // Cache still holds exactly one entry for the path.
         assert_eq!(analyzer.cache_len(), 1);
     }
@@ -397,7 +415,7 @@ mod tests {
         assert_eq!(analyzer.cache_len(), 2);
 
         // Re-insert existing key with a new hash — should update in-place, no eviction.
-        let _ = analyzer.analyze_file_with_hash(std::path::Path::new("/tmp/a.pl"), 999);
+        let _ = analyzer.analyze_file_with_hash(std::path::Path::new("/tmp/a.pl"), 999, None);
         assert_eq!(analyzer.cache_len(), 2, "Updating an existing key must not trigger eviction");
         assert!(analyzer.cache_contains("/tmp/a.pl"), "a.pl should still be cached after update");
         assert!(analyzer.cache_contains("/tmp/b.pl"), "b.pl should not have been evicted");

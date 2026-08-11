@@ -529,10 +529,10 @@ impl TypeHierarchyProvider {
                 None => {
                     // Inconsistent hierarchy — fall back: take heads left-to-right
                     for list in &parent_mros.clone() {
-                        if let Some(head) = list.first() {
-                            if !result.contains(head) {
-                                result.push(head.clone());
-                            }
+                        if let Some(head) = list.first()
+                            && !result.contains(head)
+                        {
+                            result.push(head.clone());
                         }
                     }
                     break;

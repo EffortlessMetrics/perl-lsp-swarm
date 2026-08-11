@@ -919,8 +919,14 @@ pub fn collect_semantic_tokens(
                     _ => 0,      // "&" (code ref), "*" (glob), others
                 };
                 let mods = match decl_info {
-                    Some((_, _, true)) => 1 | 4 | special_mod | sigil_mod, // declaration | readonly (our)
-                    Some((_, _, false)) => 1 | special_mod | sigil_mod, // declaration (my/local/state)
+                    // `Const::Fast` / `Readonly` produce true read-only variables,
+                    // so emit `declaration | readonly` (bits 0 | 2) (#4968).
+                    Some((_, _, true)) => 1 | 4 | special_mod | sigil_mod,
+                    // `my`, `state`, `local`, and `our` create ordinary mutable
+                    // lexical/package variables — `our` is an alias, not immutable
+                    // — so the `readonly` modifier (bit 2) must not be applied
+                    // (#4968). Use `declaration` only.
+                    Some((_, _, false)) => 1 | special_mod | sigil_mod,
                     None => {
                         // Apply "modification" modifier (bit 7 = 128) when the variable is
                         // the direct LHS of an assignment expression ($x = ...).
@@ -1040,14 +1046,19 @@ fn declaration_readonly_flags(ast: &Node) -> FxHashMap<(usize, usize), bool> {
     walk_ast_full(ast, &mut |node| {
         match &node.kind {
             NodeKind::VariableDeclaration { declarator, variable, .. } => {
-                let is_readonly = declarator == "our";
+                // `our` creates a package-variable alias in lexical scope; it
+                // does not make the variable immutable. Only `Const::Fast` /
+                // `Readonly` produce true readonly semantics (#4968).
+                let is_readonly = false;
+                let _ = declarator;
                 flags
                     .entry((variable.location.start, variable.location.end))
                     .and_modify(|flag| *flag |= is_readonly)
                     .or_insert(is_readonly);
             }
             NodeKind::VariableListDeclaration { declarator, variables, .. } => {
-                let is_readonly = declarator == "our";
+                let is_readonly = false;
+                let _ = declarator;
                 for variable in variables {
                     flags
                         .entry((variable.location.start, variable.location.end))
@@ -1719,5 +1730,98 @@ print "ok" foreach @ys;
         );
 
         Ok(())
+    }
+
+    /// Helper: collect the modifier bits for the first `$name` variable token.
+    fn first_var_mods(source: &str, name: &str) -> u32 {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("parse");
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let variable_idx = *legend().map.get("variable").expect("variable in legend");
+        let target = format!("${name}");
+        for [delta_line, delta_start, length, token_type, mods] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == variable_idx {
+                let src_line = lines.get(line as usize).expect("line in range");
+                let painted: String =
+                    src_line.chars().skip(col as usize).take(length as usize).collect();
+                if painted == target {
+                    return mods;
+                }
+            }
+        }
+        panic!("no `${name}` variable token found in source: {source:?}");
+    }
+
+    const DECLARATION_BIT: u32 = 1; // bit 0
+    const READONLY_BIT: u32 = 4; // bit 2
+
+    /// #4968 Slice 1: `my`, `state`, `local`, `our` carry `declaration` but NOT
+    /// `readonly` — they are mutable lexical/package variables.
+    #[test]
+    fn mutable_declarations_carry_declaration_but_not_readonly() {
+        for (declarator, source) in [
+            ("my", "my $x = 1;\n"),
+            ("state", "use feature 'state'; state $x = 1;\n"),
+            ("local", "local $x;\n"),
+            ("our", "our $x;\n"),
+        ] {
+            let mods = first_var_mods(source, "x");
+            assert_eq!(
+                mods & DECLARATION_BIT,
+                DECLARATION_BIT,
+                "`{declarator} $x` must carry the declaration modifier (bit 0), got mods={mods}"
+            );
+            assert_eq!(
+                mods & READONLY_BIT,
+                0,
+                "`{declarator} $x` must NOT carry the readonly modifier (it is mutable), got mods={mods}"
+            );
+        }
+    }
+
+    /// #4968 Slice 1: `Const::Fast` declarations carry both `declaration` and
+    /// `readonly` modifiers.
+    #[test]
+    fn const_fast_declaration_carries_readonly_modifier() {
+        let source = "use Const::Fast;\nconst my $x => 42;\n";
+        let mods = first_var_mods(source, "x");
+        assert_eq!(
+            mods & DECLARATION_BIT,
+            DECLARATION_BIT,
+            "Const::Fast `const my $x` must carry declaration (bit 0), got mods={mods}"
+        );
+        assert_eq!(
+            mods & READONLY_BIT,
+            READONLY_BIT,
+            "Const::Fast `const my $x` must carry readonly (bit 2), got mods={mods}"
+        );
+    }
+
+    /// #4968 Slice 1: `Readonly` declarations carry both `declaration` and
+    /// `readonly` modifiers. Uses the `Readonly my $x => ...` form that
+    /// `mark_readonly_decl_flags` detects (FunctionCall name == "Readonly").
+    #[test]
+    fn readonly_declaration_carries_readonly_modifier() {
+        let source = "use Readonly;\nReadonly my $x => 42;\n";
+        let mods = first_var_mods(source, "x");
+        assert_eq!(
+            mods & DECLARATION_BIT,
+            DECLARATION_BIT,
+            "Readonly declaration must carry declaration (bit 0), got mods={mods}"
+        );
+        assert_eq!(
+            mods & READONLY_BIT,
+            READONLY_BIT,
+            "Readonly declaration must carry readonly (bit 2), got mods={mods}"
+        );
     }
 }

@@ -31,6 +31,56 @@ pub struct Diagnostic {
     pub suggestion: Option<String>,
 }
 
+/// Conversion from the internal working type to the canonical
+/// `perl_diagnostics::Diagnostic` (#4946).
+///
+/// This bridges the two coexisting Diagnostic domain models with a
+/// documented ownership contract: the internal type is the working type
+/// for linting machinery (string codes, always-present related_info/tags
+/// vectors, suggestion field); the canonical type is the public API type
+/// (typed DiagnosticCode enum, optional related_info/tags, no suggestion).
+///
+/// String codes that don't match a known `DiagnosticCode` variant map to
+/// `DiagnosticCode::ParseError` (the default), preserving the "fail safe"
+/// principle.
+impl From<Diagnostic> for perl_diagnostics::Diagnostic {
+    fn from(inner: Diagnostic) -> Self {
+        let code = inner.code.as_deref().and_then(parse_diagnostic_code).unwrap_or_default();
+        let mut diag =
+            perl_diagnostics::Diagnostic::new(code, inner.severity, inner.range, inner.message);
+        if !inner.related_information.is_empty() {
+            diag.related_information = Some(
+                inner
+                    .related_information
+                    .into_iter()
+                    .map(|ri| perl_diagnostics::RelatedInformation::new(ri.message, ri.location))
+                    .collect(),
+            );
+        }
+        if !inner.tags.is_empty() {
+            diag.tags = Some(inner.tags);
+        }
+        diag
+    }
+}
+
+/// Parse a diagnostic code string into the canonical `DiagnosticCode` enum.
+fn parse_diagnostic_code(s: &str) -> Option<perl_diagnostics::codes::DiagnosticCode> {
+    use perl_diagnostics::codes::DiagnosticCode;
+    match s {
+        "PL001" | "parse_error" => Some(DiagnosticCode::ParseError),
+        "PL002" | "syntax_error" => Some(DiagnosticCode::SyntaxError),
+        "PL003" | "unexpected_eof" => Some(DiagnosticCode::UnexpectedEof),
+        "PL100" | "missing_strict" => Some(DiagnosticCode::MissingStrict),
+        "PL101" | "missing_warnings" => Some(DiagnosticCode::MissingWarnings),
+        "PL102" | "unused_variable" => Some(DiagnosticCode::UnusedVariable),
+        "PL103" | "undefined_variable" => Some(DiagnosticCode::UndefinedVariable),
+        "PL104" | "variable_shadowing" => Some(DiagnosticCode::VariableShadowing),
+        "PL105" | "variable_redeclared" => Some(DiagnosticCode::VariableRedeclaration),
+        _ => None,
+    }
+}
+
 impl Diagnostic {
     /// Creates a diagnostic with required fields and sensible defaults.
     pub fn new(

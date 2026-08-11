@@ -32,9 +32,9 @@
 //! the LSP from emitting false "unknown subroutine" diagnostics for tools we do
 //! not enumerate. Exclusions and renames are applied on top of the default set.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // Per-tool export constants (traceable to individual Test2::Tools::* modules).
@@ -168,7 +168,7 @@ const SUBTEST_BUNDLE: &[&str] = &["subtest"];
 /// modules the bundle pulls in. This is the single source of truth for
 /// "what does `use Test2::V0;` put in scope". `Test2::V1` reuses this set only
 /// under an explicit `-import`/`-i` option.
-static V0_DEFAULT: Lazy<Vec<&'static str>> = Lazy::new(|| {
+static V0_DEFAULT: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut v: Vec<&'static str> = Vec::new();
     for group in [
         BASIC,
@@ -282,13 +282,13 @@ pub struct ResolvedImport {
 }
 
 /// Match `name => { ... -as => 'alias' ... }` renames in an import list.
-static RENAME_AS: Lazy<Regex> = Lazy::new(|| {
+static RENAME_AS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-as\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#)
         .unwrap_or_else(|_| unreachable!("static Test2 -as rename pattern is valid"))
 });
 
 /// Match `name => { ... -prefix => 'p' ... }` / `-postfix` renames.
-static RENAME_FIX: Lazy<Regex> = Lazy::new(|| {
+static RENAME_FIX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-(prefix|postfix)\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#)
         .unwrap_or_else(|_| unreachable!("static Test2 -prefix/-postfix pattern is valid"))
 });
@@ -422,11 +422,9 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     // `:ALL` is handled via `use_default` above: we do not enumerate EXPORT_OK,
     // so the default set is our best-effort superset for known bundles.
     let mut symbols: BTreeSet<String> = BTreeSet::new();
-    if use_default {
-        if let Some(defaults) = default_set {
-            for &sym in defaults {
-                symbols.insert(sym.to_string());
-            }
+    if use_default && let Some(defaults) = default_set {
+        for &sym in defaults {
+            symbols.insert(sym.to_string());
         }
     }
     for name in &positives {

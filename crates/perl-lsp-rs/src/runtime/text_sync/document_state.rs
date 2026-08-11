@@ -3,7 +3,7 @@
 //! Keeps raw state assembly separate from LSP notification handlers so the
 //! handlers can focus on protocol flow and parse/index decisions.
 
-use super::*;
+use super::{Arc, AtomicU32, DocumentState};
 
 pub(super) fn minimal_state(text: &str, version: i32) -> DocumentState {
     // No parse ever runs for this document (large-file/binary/template

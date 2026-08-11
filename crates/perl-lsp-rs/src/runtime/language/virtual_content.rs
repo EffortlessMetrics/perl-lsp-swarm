@@ -3,7 +3,7 @@
 //! Provides support for workspace/textDocumentContent to serve virtual documents
 //! like perldoc:// URIs for Perl documentation.
 
-use super::super::*;
+use super::super::{JsonRpcError, LspServer, Value, io, json};
 use crate::documentation_targets::PerlDocumentationTarget;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
@@ -19,20 +19,21 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         let params = params.ok_or_else(|| JsonRpcError {
             code: crate::protocol::INVALID_PARAMS,
-            message: "Missing params".to_string(),
+            message: "workspace/textDocumentContent: missing required parameter 'params'"
+                .to_string(),
             data: None,
         })?;
 
         let uri = params.get("uri").and_then(|u| u.as_str()).ok_or_else(|| JsonRpcError {
             code: crate::protocol::INVALID_PARAMS,
-            message: "Missing or invalid URI".to_string(),
+            message: "workspace/textDocumentContent: parameter 'uri' must be a string".to_string(),
             data: None,
         })?;
 
         if !is_valid_virtual_content_uri(uri) {
             return Err(JsonRpcError {
                 code: crate::protocol::INVALID_PARAMS,
-                message: "Missing or invalid URI".to_string(),
+                message: "workspace/textDocumentContent: parameter 'uri' is not a valid virtual document URI".to_string(),
                 data: None,
             });
         }
@@ -215,10 +216,9 @@ fn collect_simple_pod_module_links(line: &str, current_module: &str, uris: &mut 
         let target = after_open[..end].trim();
         if let Some(link_target) =
             PerlDocumentationTarget::from_workspace_pod_link_target(target, current_module)
+            && (link_target.name() != current_module || link_target.section().is_some())
         {
-            if link_target.name() != current_module || link_target.section().is_some() {
-                uris.insert(link_target.perldoc_uri());
-            }
+            uris.insert(link_target.perldoc_uri());
         }
         rest = &after_open[end + 1..];
     }
@@ -298,6 +298,19 @@ mod tests {
         if let Some(content) = content {
             assert!(!content.is_empty());
         }
+    }
+
+    #[test]
+    fn text_document_content_invalid_params_name_method_and_field() {
+        let err = LspServer::new()
+            .handle_text_document_content(None)
+            .expect_err("missing virtual document params must be rejected");
+
+        assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(
+            err.message,
+            "workspace/textDocumentContent: missing required parameter 'params'"
+        );
     }
 
     #[test]

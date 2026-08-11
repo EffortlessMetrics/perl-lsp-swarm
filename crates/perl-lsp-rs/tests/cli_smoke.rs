@@ -296,6 +296,52 @@ fn check_mixed_files_fails_and_counts_recovered_errors() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// Regression: `--check` answered `ok` with exit 0 for a file real `perl`
+/// rejects with `syntax error … near "print"` — a missing statement-terminating
+/// semicolon, the most common Perl syntax error and so the likeliest
+/// first-contact failure. A false pass from the binary that exists to validate
+/// files is worse than no check at all (#5474).
+#[test]
+fn check_reports_a_missing_statement_semicolon() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("missing_semi.pl");
+    std::fs::write(&file, "my $x = 1\nprint \"hi\";\n")?;
+    let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(file_str)
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("FAIL"))
+        .stdout(predicates::str::contains("Missing `;`"))
+        // the caret points at the token that proves the terminator was skipped
+        .stdout(predicates::str::contains("line 2, column 1"));
+
+    Ok(())
+}
+
+/// The control: the two places Perl permits omitting the terminator must stay
+/// `ok`, or the check would reject valid Perl to catch invalid Perl.
+#[test]
+fn check_accepts_the_terminator_omissions_perl_permits() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    // Last statement in the file, and last statement in a block.
+    let file = dir.path().join("permitted.pl");
+    std::fs::write(&file, "sub f {\n    my $y = 2\n}\nmy $last = f()\n")?;
+    let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.arg("--check")
+        .arg(file_str)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("ok"))
+        .stdout(predicates::str::contains("Missing `;`").not());
+
+    Ok(())
+}
+
 #[test]
 fn check_nonexistent_file() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
@@ -303,7 +349,24 @@ fn check_nonexistent_file() {
         .arg("/nonexistent/path/to/file.pl")
         .assert()
         .failure()
-        .stderr(predicates::str::contains("error reading file"));
+        .stderr(predicates::str::contains("error reading file"))
+        .stderr(predicates::str::contains("does not exist"));
+}
+
+#[test]
+fn check_path_with_file_parent_reports_missing_path() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let file_parent = dir.path().join("not-a-directory");
+    std::fs::write(&file_parent, "not a directory")?;
+    let child = file_parent.join("file.pl");
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check", child.to_str().ok_or("non-UTF-8 temp path")?])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("intermediate component"));
+
+    Ok(())
 }
 
 #[test]

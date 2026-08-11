@@ -1,350 +1,178 @@
-# Missing Documentation Guide - SPEC-149 Implementation
+# Public API Documentation and Examples
 
-*Diataxis: How-to Guide* - Systematic documentation resolution strategy for perl-parser crate comprehensive API documentation compliance.
+*Diátaxis: reference and how-to guidance*
 
-## Overview
+This guide defines how to improve Rust API documentation in the current
+workspace. It is deliberately narrower than a generic documentation style
+guide: the important contract is that a contributor can find the public crate
+surface, understand its limits, and tell whether a code example is intended to
+compile.
 
-This guide documents the **successfully implemented** missing documentation warnings infrastructure from **Draft PR 159 (SPEC-149)**, providing a systematic 4-phase approach to resolve the **605+ documentation violations** baseline established for the perl-parser crate.
+## Scope
 
-## Implementation Status ✅ **COMPLETED**
+This guide applies to published and user-facing library crates, especially:
 
-### Infrastructure Successfully Deployed
+- `perl-parser` and `perl-parser-core`;
+- `perl-lexer`, `perl-ast`, and `perl-uri`;
+- `perl-semantic-analyzer` and `perl-semantic-facts`;
+- `perl-lsp-rs` and `perl-lsp-rs-core`;
+- `perl-dap`;
+- `tree-sitter-perl-rs` and `tree-sitter-perl-c`.
 
-1. **`#![warn(missing_docs)]` Enforcement**: Successfully enabled in `/crates/perl-parser/src/lib.rs` at line 38
-2. **25 Acceptance Criteria Tests**: Comprehensive validation framework in `/crates/perl-parser/tests/missing_docs_ac_tests.rs`
-3. **605+ Warning Baseline**: Established systematic tracking of documentation violations
-4. **CI Integration**: Documentation quality gates operational with automated enforcement
-5. **Performance Validation**: <1% overhead confirmed, revolutionary LSP improvements preserved
+The workspace has been consolidated over time. Do not copy crate names,
+module paths, constructors, or examples from historical issues, old branches,
+or pre-collapse documentation without checking the current public manifest and
+implementation.
 
-### Current Test Results Status
+## What good public documentation must establish
 
-✅ **Infrastructure Tests (17/25 passing)**:
-- Documentation warning compilation ✅
-- CI enforcement mechanisms ✅
-- Edge case detection (malformed doctests, empty docs, invalid cross-references) ✅
-- Property-based testing framework ✅
-- Doctest generation and execution ✅
+A public item needs enough information for a downstream user to answer:
 
-❌ **Content Implementation Tests (8/25 failing - Expected)**:
-- Public functions documentation presence ❌ (Phase 1 target)
-- Public structs documentation presence ❌ (Phase 1 target)
-- Module-level documentation presence ❌ (Phase 1 target)
-- Performance documentation presence ❌ (Phase 1 target)
-- Error types documentation ❌ (Phase 1 target)
-- LSP provider documentation ❌ (Phase 2 target)
-- Usage examples in complex APIs ❌ (Phase 2 target)
-- Table-driven documentation patterns ❌ (Phase 3 target)
+1. What does this item represent or do?
+2. What inputs does it accept, and what invariants must callers provide?
+3. What does success return?
+4. How are errors, unsupported syntax, stale state, cancellation, or
+   fallback represented?
+5. Is the item intended for downstream use, an internal implementation seam,
+   or a compatibility surface?
+6. Which neighbouring public types or commands should the user use next?
 
-## 4-Phase Systematic Resolution Strategy
+Add `# Errors`, `# Panics`, `# Safety`, or `# Examples` sections when they
+carry real contract information. Do not add boilerplate sections that merely
+repeat the signature.
 
-### Phase 1: Critical Parser Infrastructure (Weeks 1-2)
-**Target**: ~150 violations from core parsing modules
-**Priority**: Highest - Enterprise-critical functionality
+For editor-facing APIs, document the claim boundary explicitly. For example,
+distinguish:
 
-#### Modules to Address
-```bash
-# Core parser infrastructure requiring immediate documentation
-src/parser.rs                    # Main parsing engine - ~45 violations
-src/ast.rs                      # AST node definitions - ~35 violations
-src/error.rs                    # Error handling framework - ~25 violations
-src/token_stream.rs             # Token processing - ~20 violations
-src/semantic.rs                 # Semantic analysis - ~25 violations
-```
+- parse success from semantic correctness;
+- a returned fallback from an exact answer;
+- a static fact from runtime execution;
+- a diagnostic report from a merge or release gate;
+- a supported configuration from a best-effort compatibility path.
 
-#### Documentation Requirements
-- **All public functions**: Brief summary, detailed description, parameters, returns, examples
-- **Performance-critical APIs**: Time/space complexity, memory usage patterns, large workspace scaling characteristics
-- **Error types**: LSP workflow context, recovery strategies, diagnostic information
-- **Cross-references**: Proper Rust documentation linking with `[`function_name`]` syntax
+Avoid performance numbers unless the repository has a current, reproducible
+receipt or benchmark that supports them.
 
-#### Validation Commands
-```bash
-# Validate Phase 1 implementation
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_public_functions_documentation_presence
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_public_structs_documentation_presence
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_performance_documentation_presence
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_error_types_documentation
-```
+## Examples are contracts
 
-### Phase 2: LSP Provider Interfaces (Weeks 3-4)
-**Target**: ~200 violations from LSP functionality
-**Priority**: High - Editor integration and developer experience
+Classify every Rust example in public documentation as one of these:
 
-#### Modules to Address
-```bash
-# LSP provider interfaces requiring comprehensive documentation
-src/completion.rs               # Autocompletion engine - ~50 violations
-src/workspace_index.rs          # Workspace symbol indexing - ~45 violations
-src/diagnostics.rs              # Error and warning reporting - ~40 violations
-src/semantic_tokens.rs          # Syntax highlighting - ~35 violations
-src/hover.rs                    # Hover information - ~30 violations
-```
+| Class | Use when | Required treatment |
+|---|---|---|
+| Runnable doctest | The example is self-contained and should execute | Keep it compilable and run `cargo test --doc` |
+| Compile-checked example | Compilation matters but execution would need an external editor, Perl installation, process, or fixture | Use `no_run` or represent it in a package-consumer fixture |
+| Compile-fail contract | The example documents an intentional type or API rejection | Use `compile_fail` and make the failure narrow and stable |
+| Schematic example | The text is intentionally pseudocode or depends on unavailable external state | Mark it `ignore` only with prose explaining why |
+| Non-Rust example | The snippet is configuration, JSON, Perl, shell, or protocol text | Validate it with the relevant fixture or command when one exists |
 
-#### Documentation Requirements
-- **LSP Protocol Compliance**: Document protocol adherence and capability surface
-- **Dual Indexing Strategy**: Document qualified/unqualified function indexing patterns
-- **Thread Safety**: Document concurrency patterns and adaptive threading configuration
-- **Editor Integration**: Document VSCode, Neovim, Emacs integration patterns
+A copy-paste Rust example that imports an absorbed crate, calls a removed
+constructor, or names an internal-only module is not a schematic example. Fix
+it, remove it, or replace it with a truthful conceptual example. Do not hide a
+broken example behind `ignore`.
 
-#### Validation Commands
-```bash
-# Validate Phase 2 implementation
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_lsp_provider_documentation_critical_paths
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_comprehensive_workflow_documentation
-```
+Examples for published crates should use the crate and type paths that a
+downstream consumer receives. Workspace-only paths are acceptable only when
+the surrounding text clearly labels the example as internal contributor
+material.
 
-### Phase 3: Advanced Features (Weeks 5-6)
-**Target**: ~150 violations from specialized functionality
-**Priority**: Medium - Advanced workflow support
+## Documentation workflow
 
-#### Modules to Address
-```bash
-# Advanced feature modules requiring documentation
-src/import_optimizer.rs         # Import analysis and optimization - ~35 violations
-src/test_generator.rs           # TDD support framework - ~30 violations
-src/scope_analyzer.rs           # Variable resolution - ~25 violations
-src/type_inference.rs           # Type analysis - ~30 violations
-src/refactoring.rs             # Code transformation - ~30 violations
-```
+Use the smallest proof that can falsify the change.
 
-#### Documentation Requirements
-- **TDD Workflow Integration**: Document test generation patterns and AST-based expectation inference
-- **Code Analysis Features**: Document scope analysis, type inference, and refactoring capabilities
-- **Performance Characteristics**: Document memory usage and scaling for large codebases
-- **Enterprise Security**: Document path traversal prevention and file completion safeguards
+### 1. Establish the current surface
 
-#### Validation Commands
-```bash
-# Validate Phase 3 implementation
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_usage_examples_in_complex_apis
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_table_driven_documentation_patterns
-```
-
-### Phase 4: Supporting Infrastructure (Weeks 7-8)
-**Target**: ~105 violations from utilities and generated code
-**Priority**: Low - Infrastructure cleanup
-
-#### Modules to Address
-```bash
-# Supporting infrastructure requiring documentation
-src/utils.rs                   # Utility functions - ~25 violations
-src/rope.rs                    # Document management - ~20 violations
-src/formatting.rs              # Code formatting - ~15 violations
-target/debug/build/*/out/feature_catalog.rs  # Generated code - ~45 violations
-```
-
-#### Documentation Requirements
-- **Utility Functions**: Document helper functions and common patterns
-- **Generated Code**: Add appropriate documentation to build-generated modules
-- **Infrastructure Components**: Document supporting systems and utilities
-
-## Implementation Methodology
-
-### Test-Driven Documentation (TDD)
-
-The missing documentation infrastructure follows Test-Driven Development principles:
-
-1. **Red Phase**: Tests fail because documentation is missing
-2. **Green Phase**: Add minimal documentation to make tests pass
-3. **Refactor Phase**: Improve documentation quality while maintaining test success
-
-### Quality Assurance Framework
-
-#### 25 Acceptance Criteria Tests
-```bash
-# Core infrastructure validation (✅ Implemented)
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_missing_docs_warning_compilation
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_ci_missing_docs_enforcement
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_cargo_doc_generation_success
-
-# Content validation (📝 Implementation targets)
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_module_level_documentation_presence
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_doctests_presence_and_execution
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_rust_documentation_best_practices
-
-# Edge case detection (✅ Operational)
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_edge_case_malformed_doctests
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_edge_case_empty_documentation
-cargo test -p perl-parser --test missing_docs_ac_tests -- test_edge_case_invalid_cross_references
-```
-
-#### Property-Based Testing
-```bash
-# Advanced validation with arbitrary inputs
-cargo test -p perl-parser --test missing_docs_ac_tests -- property_test_documentation_format_consistency
-cargo test -p perl-parser --test missing_docs_ac_tests -- property_test_cross_reference_validation
-cargo test -p perl-parser --test missing_docs_ac_tests -- property_test_doctest_structure_validation
-```
-
-### Progress Tracking
-
-#### Real-Time Violation Monitoring
-```bash
-# Check current violation count (baseline: 605+)
-cargo build -p perl-parser 2>&1 | grep "warning: missing documentation" | wc -l
-
-# Detailed violation analysis by module
-cargo build -p perl-parser 2>&1 | grep "warning: missing documentation" | sort | uniq -c | sort -nr
-```
-
-#### Documentation Coverage Reports
-```bash
-# Generate comprehensive documentation coverage report
-cargo doc --no-deps --package perl-parser
-
-# Validate documentation builds without warnings
-cargo doc --no-deps --package perl-parser 2>&1 | grep -c "warning"
-```
-
-## Workflow Integration Requirements
-
-### LSP Workflow Documentation
-
-All major components must document integration with the **LSP workflow** (Parse → Index → Navigate → Complete → Analyze):
-
-- **Parse Stage**: Document parser entry points and AST generation
-- **Index Stage**: Document symbol extraction and workspace indexing
-- **Navigate Stage**: Document definition/reference resolution and cross-file lookup
-- **Complete Stage**: Document completion, hover, and signature help inputs
-- **Analyze Stage**: Document semantic analysis, diagnostics, and refactoring support
-
-### Large Workspace Performance Documentation
-
-Performance-critical modules must document:
-- **Memory usage patterns** for large workspaces
-- **Scaling characteristics** and optimization strategies
-- **Resource management** for editor and CI environments
-- **Benchmark data** with real-world performance metrics
-
-### Unicode Safety and Security
-
-All text processing functions must document:
-- **UTF-16/UTF-8 position mapping** security enhancements (PR #153)
-- **Boundary validation** and overflow prevention
-- **Enterprise security patterns** and vulnerability mitigation
-- **Path traversal prevention** and file completion safeguards
-
-## Quality Standards
-
-### Documentation Format Requirements
-
-1. **Brief Summary**: One-sentence functionality description
-2. **Detailed Description**: 2-3 sentences with LSP workflow context
-3. **Arguments Section**: Complete parameter documentation with types
-4. **Returns Section**: Return value explanation including error conditions
-5. **Examples Section**: Working Rust code with realistic scenarios
-6. **Cross-References**: Links to related functions using proper syntax
-7. **Performance Notes**: Time/space complexity for critical functions
-
-### Example Documentation Pattern
-
-```rust
-/// Parses Perl source code into an Abstract Syntax Tree with comprehensive error recovery.
-///
-/// This function serves as the primary entry point for parsing, generating structured
-/// AST representations. Supports incremental parsing with <1ms updates and comprehensive
-/// Unicode handling for international content.
-///
-/// # Arguments
-/// * `source` - Perl source code string with UTF-8 encoding
-/// * `options` - Parser configuration including error recovery preferences
-///
-/// # Returns
-/// * `Ok(AST)` - Successfully parsed Abstract Syntax Tree
-/// * `Err(ParseError)` - Parsing failure with recovery suggestions and diagnostic context
-///
-/// # Examples
-/// ```rust
-/// use perl_parser::{Parser, ParseOptions};
-/// let mut parser = Parser::new(r#"sub hello { print "world\n"; }"#);
-/// let ast = parser.parse().expect("Valid Perl syntax");
-/// assert_eq!(ast.statements.len(), 1);
-/// ```
-///
-/// # Performance Characteristics
-/// * **Time Complexity**: O(n) where n is source length
-/// * **Memory Usage**: O(n) with 70-99% node reuse in incremental mode
-/// * **Large Workspace Scaling**: Maintains sub-microsecond per-token performance
-///
-/// # LSP Workflow Integration
-/// * **Parse Stage**: Primary AST generation for subsequent analysis
-/// * **Index Stage**: AST nodes feed workspace symbol indexing
-/// * **Navigate Stage**: AST structure enables go-to-definition resolution
-///
-/// # Error Recovery
-/// * **Syntax Errors**: Continues parsing with error node insertion
-/// * **Recovery Strategies**: Attempts statement-level synchronization
-/// * **Diagnostic Context**: Provides detailed error location and suggestions
-///
-/// # See Also
-/// * [`incremental_parse`] - For efficient document updates
-/// * [`parse_with_recovery`] - For error-tolerant parsing modes
-/// * [`WorkspaceIndex::update_file`] - For LSP integration patterns
-pub fn parse(&mut self) -> Result<AST, ParseError> {
-    // Implementation...
-}
-```
-
-## CI Integration and Automation
-
-### Automated Quality Gates
-
-The CI system enforces documentation quality through:
-
-1. **Missing Documentation Detection**: Fails builds with new undocumented public APIs
-2. **Format Validation**: Ensures documentation follows enterprise standards
-3. **Example Testing**: Validates that all code examples compile and execute
-4. **Cross-Reference Checking**: Verifies internal documentation links
-5. **Regression Prevention**: Prevents documentation quality degradation
-
-### Integration Commands
+Before writing an example or documenting a public item:
 
 ```bash
-# CI documentation validation pipeline
-cargo test -p perl-parser --test missing_docs_ac_tests  # Full acceptance criteria
-cargo doc --no-deps --package perl-parser              # Documentation generation
-cargo test --doc -p perl-parser                        # Doctest execution
-cargo clippy -p perl-parser -- -W missing_docs         # Lint-level enforcement
+cargo metadata --format-version=1 --no-deps
+cargo tree -p <crate>
+rg 'pub(\\s+(async|unsafe|const|extern\\s+"[^"]+"))*\\s+(fn|struct|enum|trait|type|const|static)|pub\\s+use' crates/<crate>/src
 ```
 
-## Troubleshooting and Common Issues
+Read the owning crate's `lib.rs`, its public re-exports, and the nearest
+tests. The inventory expression includes qualified declarations such as
+`pub async fn`; confirm matches against the syntax and re-export surface rather
+than treating a text search as proof of completeness. If the item is part of a
+generated or compatibility surface, identify the source of truth before editing
+prose.
 
-### Warning Resolution Workflow
+### 2. Write the smallest useful contract
 
-1. **Identify Module**: Determine which module contains undocumented items
-2. **Check Phase Priority**: Refer to 4-phase strategy for implementation order
-3. **Apply Documentation Pattern**: Use enterprise documentation template
-4. **Validate Implementation**: Run relevant acceptance criteria tests
-5. **Verify Integration**: Ensure LSP workflow context is documented
+Prefer a short summary plus the one or two details that change how a caller
+uses the item. Include a minimal example only when it teaches the actual
+entry path. Document limitations at the point where a user would otherwise
+infer a stronger claim.
 
-### Common Documentation Anti-Patterns
+For parser and semantic APIs, examples should normally show:
 
-❌ **Avoid**:
-- Empty documentation comments (`/// `)
-- Generic descriptions ("This function does X")
-- Missing parameter documentation
-- No error condition documentation
-- Missing performance characteristics for critical paths
+- the authoritative crate import;
+- the current constructor or entry function;
+- the result/error handling shape;
+- whether recovery nodes, dynamic boundaries, or unresolved state are
+  expected.
 
-✅ **Follow**:
-- Specific functionality descriptions with context
-- Complete parameter and return value documentation
-- LSP workflow integration details
-- Performance characteristics for enterprise-scale usage
-- Proper cross-referencing with Rust documentation syntax
+For LSP and DAP APIs, examples should normally show:
 
-## Next Steps
+- the protocol or server entry point;
+- the lifecycle/configuration preconditions;
+- cancellation or cleanup expectations where relevant;
+- the difference between a library facade and the executable server.
 
-1. **Phase 1 Implementation**: Begin with critical parser infrastructure modules
-2. **Test-Driven Approach**: Use failing acceptance criteria tests as implementation guides
-3. **Quality Validation**: Continuously monitor progress with automated test suite
-4. **Performance Preservation**: Ensure documentation additions maintain <1% overhead
-5. **Enterprise Integration**: Document all LSP workflow integration points
+### 3. Run documentation proof
 
-## Related Documentation
+For a focused crate:
 
-- **[API Documentation Standards](API_DOCUMENTATION_STANDARDS.md)** - Comprehensive documentation requirements
-- **[ADR-0002: API Documentation Infrastructure](../adr/0002-api-documentation-infrastructure.md)** - Implementation architecture decisions
-- **[Comprehensive Testing Guide](../tutorials/COMPREHENSIVE_TESTING_GUIDE.md)** - Test framework and validation procedures
-- **[LSP Implementation Guide](LSP_IMPLEMENTATION_GUIDE.md)** - LSP provider documentation requirements
-- **[Performance Preservation Guide](../how-to/PERFORMANCE_PRESERVATION_GUIDE.md)** - Maintaining revolutionary performance improvements
+```bash
+cargo fmt -p <crate> -- --check
+cargo test -p <crate> --doc --locked
+cargo doc -p <crate> --no-deps --locked
+```
+
+For a public-surface or dependency change, also run the affected package tests
+and the repository's applicable documentation or package gate. A successful
+`cargo doc` proves that documentation can be rendered; it does not prove
+that every fenced example is a valid downstream example.
+
+### 4. Check packaged-consumer examples
+
+A crate may disable ordinary doctests because of dependency cycles, generated
+configuration, platform requirements, or compile cost. That setting does not
+make public examples self-validating.
+
+When `doctest = false` remains necessary:
+
+1. record the crate, reason, owner, and review/exit condition;
+2. inventory the public Rust examples;
+3. map each example to a doctest, `no_run` check, or compiled package-consumer
+   fixture;
+4. compile the fixture against the packaged public surface where practical;
+5. keep external-process and editor-dependent steps out of the compile claim.
+
+The fixture must prove the package a user receives, not only an unusually
+permissive workspace dependency graph.
+
+## Review checklist
+
+A documentation change is ready when:
+
+- public imports and constructors match the current crate surface;
+- no historical absorbed-crate name appears in a current copy-paste example;
+- examples are classified and have an appropriate proof path;
+- errors, unsupported behavior, and fallback boundaries are not implied away;
+- links point to current files and anchors;
+- claims are current-head or explicitly versioned;
+- generated/status documents were regenerated when their source contract changed;
+- `git diff --check` passes;
+- the focused documentation proof is recorded in the PR.
+
+## What this guide does not establish
+
+This guide does not claim that all public items are documented, that all doctests
+are enabled, or that every published crate currently has a complete
+consumer-fixture ledger. Those are measurable follow-up claims owned by the
+documentation-quality work, including issue #2318 and the compiled-example
+contract in issue #4947.
+
+It also does not turn documentation into a release gate by itself. Release
+readiness, publication, and support claims remain governed by their own
+current evidence and repository policy.

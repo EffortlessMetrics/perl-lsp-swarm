@@ -1,191 +1,94 @@
 # Project Orientation
 
-> For the documentation hub, see [README.md](../README.md). This page provides project orientation for active contributors.
+> For the documentation hub, see [README.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/README.md). This page is a stable orientation for active contributors, not a live status report.
 
-> **SNAPSHOT DISCLAIMER**: Orientation-only. For live status and metrics, see `docs/project/CURRENT_STATUS.md` and GitHub milestones/issues.
+> **Current-state rule**: Use [CURRENT_STATUS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md), the [roadmap](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md), and the [release status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/release.md) for current claims. This page intentionally avoids duplicating release metrics and issue counts.
 
-Welcome to the perl-lsp project! This guide will get you up to speed quickly.
+## You Are Here
 
-## 📍 You Are Here
+perl-lsp is a Rust workspace for Perl parsing, semantic analysis, LSP, and native DAP support.
 
-**Project Status**: public beta; current shipped train is `v0.17.0` (2026-06-28). For the live version, crate surface, and metrics, `docs/project/CURRENT_STATUS.md` is canonical — this line is a snapshot only.
-**Open Issues**: See GitHub milestones/issues for live counts
+The current shipped line and evidence-backed subsystem status live in [CURRENT_STATUS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md). Capability truth lives in [features.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/features.toml), and exact workspace membership lives in the root [Cargo.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml).
 
-## 🎯 5-Minute Orientation
+## Read These First
 
-### What Is This Project?
+1. [Current Status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md) — shipped line and evidence routes
+2. [Roadmap](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md) — plans, exit criteria, and deferrals
+3. [Documentation Index](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md) — routes by task and document type
+4. [Contributing Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md) — contribution workflow
+5. [Commands Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md) — build, test, and CI commands
+6. [Architecture Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md) — current ownership seams
+7. [LSP Development Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md) — contributor workflow, with current claims verified against code and tests
 
-perl-lsp is a comprehensive Perl parsing + LSP/DAP ecosystem:
-- Fast native Rust parser with near-complete Perl 5 coverage
-- LSP server with broad feature support (tracked in `features.toml`)
-- DAP support with native preview adapter + BridgeAdapter compatibility path
-- Quality gates: tests, fuzzing/mutation hardening, missing_docs enforcement (see `CURRENT_STATUS.md`)
+## Current Focus
 
-### Current Focus
+Do not infer priorities from this page. Start with the active milestone and release blockers:
 
-The current milestone, its "Now / Next / Later" breakdown, and exit criteria
-are tracked in canonical sources rather than duplicated here (this page drifts
-between releases). See:
+- [ROADMAP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md)
+- [status/index.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/index.md)
+- [status/release.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/release.md)
+- GitHub milestones and issues
 
-- [ROADMAP.md](ROADMAP.md) — milestones and exit criteria
-- [CURRENT_STATUS.md](CURRENT_STATUS.md) — live version, crate surface, and metrics
-- [status/index.md](status/index.md) — the current "What's Next" narrative
-- [status/release.md](status/release.md) — release readiness and active blockers
+Recurring work may include parser corpus coverage, LSP conformance, DAP preview hardening, distribution packaging, and merge-gate health; the linked sources determine which of those is active.
 
-Recurring, release-independent themes: keeping the merge gate green
-(`just ci-gate`), parser corpus lanes current, DAP preview hardening, LSP 3.18
-compliance, and broader distribution packaging.
+## Workspace Shape
 
-## 📚 Essential Documents (Read These First)
+The maintained workspace includes, among other packages:
 
-### Status & Planning
-1. **[Current Status](CURRENT_STATUS.md)** ⭐ **START HERE** - Computed metrics + receipts
-2. **[Roadmap](ROADMAP.md)** - Plans, exit criteria, and deferrals
-3. **[Milestones](MILESTONES.md)** - GitHub milestone mapping
-4. **[Docs Index](../INDEX.md)** - Routes to the right doc fast
-5. **[TODO Backlog](../TODO.md)** - Actionable tasks + missing features
-6. **[LSP Missing Features](../reference/LSP_MISSING_FEATURES_REPORT.md)** - Non-advertised capabilities (derived from `features.toml`)
+- `perl-ast` — AST types and methods
+- `perl-parser-core` — parsing, position/trivia infrastructure, and recovery
+- `perl-parser` — public parser facade
+- `perl-semantic-analyzer` and `perl-workspace` — semantic and workspace analysis
+- `perl-lsp-rs-core` — consolidated LSP protocol, transport, runtime, governance, and providers
+- `perl-lsp-rs` and `perllsp` — server and public binary surfaces
+- `perl-dap` — native Debug Adapter Protocol surface
+- `perl-corpus` — corpus fixtures and parser-accuracy evidence
+- `xtask` — repository automation
 
-### Development
-5. **[CLAUDE.md](../../CLAUDE.md)** - Project guidance for AI assistants
-6. **[CONTRIBUTING.md](../../CONTRIBUTING.md)** - How to contribute
-7. **[COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md)** - Build/test commands
+The root manifest also records absorbed crates and excludes the legacy `tree-sitter-perl`, `fuzz`, and `archive` trees. Do not treat historical crate inventories as current workspace topology.
 
-## 🚨 What Needs Attention RIGHT NOW
+## Quick Commands
 
-This section is intentionally not a live task list — it drifts between releases.
-For what actually needs attention right now:
-
-1. 📌 **Active milestone & priorities** — [ROADMAP.md](ROADMAP.md) and GitHub milestones/issues
-2. 📌 **Release readiness & blockers** — [status/release.md](status/release.md)
-3. 📌 **Backlog** — `docs/TODO.md` + `docs/reference/LSP_MISSING_FEATURES_REPORT.md`
-4. 📌 **Live status & metrics** — [CURRENT_STATUS.md](CURRENT_STATUS.md)
-
-## 🏗️ Project Structure
-
-```
-perl-lsp/
-├── crates/
-│   ├── perl-parser/      ⭐ Main crate - Parser
-│   ├── perl-lsp/          LSP server binary + LSP logic
-│   ├── perl-dap/          Debug Adapter Protocol (native preview + bridge fallback)
-│   ├── perl-lexer/        Context-aware tokenizer
-│   ├── perl-corpus/       Test corpus (see CURRENT_STATUS for counts)
-│   └── perl-parser-pest/  Legacy Pest parser
-├── docs/                  📚 Comprehensive documentation
-│   ├── CURRENT_STATUS.md  ⭐ Read this first!
-│   ├── ISSUE_STATUS_*.md  Issue tracking
-│   └── *.md               Technical guides
-├── CLAUDE.md              Project guidance
-└── CONTRIBUTING.md        How to help
-```
-
-## 🎬 Quick Commands
+Use the narrowest command that matches the question:
 
 ```bash
-# Build everything
-cargo build --workspace
+# Workspace validation
+cargo check --workspace
+cargo test --workspace
 
-# Run tests
-cargo test
+# Parser-focused validation
+cargo test -p perl-parser
+cargo test -p perl-parser-core
 
-# Run LSP server
+# LSP and DAP validation
+cargo test -p perl-lsp-rs
+cargo test -p perl-dap
+
+# Run the server locally
 cargo run -p perl-lsp-rs -- --stdio
 
-# Check for issues
-cargo clippy --workspace
-
-# Format code
-cargo fmt --all
-
-# Build docs
-cargo doc --no-deps --package perl-parser
-
-# Run specific tests
-cargo test -p perl-parser               # Parser tests
-cargo test -p perl-lsp-rs                  # LSP tests
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs  # With adaptive threading
+# Repository formatting and governed checks
+cargo fmt --all -- --check
+cargo xtask fmt --check
 ```
 
-## 💡 Where to Start Contributing
+Check the [Commands Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md) and repository contribution instructions before using broader or release-specific gates.
 
-- Check the active milestone and the `good first issue` / `help wanted` labels
-- Near-term and larger efforts: see the current milestone in [ROADMAP.md](ROADMAP.md) and the `phase:*` labels
-- See [CONTRIBUTING.md](../../CONTRIBUTING.md) for workflow details
+## Where to Start a Change
 
-## 📊 Quality Metrics
+- AST structure or methods: `crates/perl-ast`
+- Syntax, parsing, or recovery: `crates/perl-parser-core`
+- Public parser behavior: `crates/perl-parser`
+- Semantic or workspace behavior: `crates/perl-semantic-analyzer` and `crates/perl-workspace`
+- LSP providers, protocol, transport, or runtime: `crates/perl-lsp-rs-core`
+- Server startup or binary packaging: `crates/perl-lsp-rs` and `crates/perllsp`
+- DAP behavior: `crates/perl-dap`
+- Corpus fixtures and accuracy manifests: `crates/perl-corpus`
 
-All metrics are computed and published in [CURRENT_STATUS.md](CURRENT_STATUS.md).
-Run `just status-check` for live numbers.
+Use the package README and the relevant issue/spec as the local contract before editing.
 
-## 🔍 Understanding the Codebase
+## Help and Verification
 
-### Parser Architecture
-- **v3 Native Parser** ⭐ RECOMMENDED: near-complete Perl 5 coverage with strong performance (see CURRENT_STATUS)
-- **v2 Pest Parser**: Legacy but stable; maintained for compatibility
-- **Incremental Parsing**: Sub-millisecond updates with high node reuse (see CURRENT_STATUS)
+For user setup, use the installation and troubleshooting guides in [docs/INDEX.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md). For contributor changes, follow [CONTRIBUTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md), preserve claim boundaries, and record proof in the PR.
 
-### LSP Components
-- **Providers**: completion, hover, diagnostics, references, etc.
-- **Workspace Index**: Dual indexing for qualified + bare symbol forms
-- **Threading**: Adaptive threading to stabilize CI environments
-- **Cancellation**: Enhanced system (PR #165)
-
-### Key Innovations
-- **Dual Indexing** (PR #122): Functions indexed as both `Package::function` and `function`
-- **Adaptive Threading** (PR #140): Thread-aware timeout scaling for CI
-- **API Documentation** (PR #160/SPEC-149): `#![warn(missing_docs)]` enforcement
-- **Mutation Testing** (PR #153): Comprehensive mutation hardening suite
-
-## 🎓 Learning Path
-
-### Day 1: Orientation
-1. Read this document
-2. Read [CURRENT_STATUS.md](CURRENT_STATUS.md)
-3. Read [ROADMAP.md](ROADMAP.md)
-4. Clone repo and run tests
-
-### Day 2: Deep Dive
-1. Read [CLAUDE.md](../../CLAUDE.md)
-2. Read [ARCHITECTURE_OVERVIEW.md](../reference/ARCHITECTURE_OVERVIEW.md)
-3. Read [LSP_IMPLEMENTATION_GUIDE.md](../reference/LSP_IMPLEMENTATION_GUIDE.md)
-4. Explore codebase structure + docs index
-
-### Day 3: First Contribution
-1. Pick an issue from the active milestone or `good first issue`
-2. Read the issue’s research comment (if present)
-3. Ask questions in issue comments
-4. Submit your first PR!
-
-## 🤝 Getting Help
-
-### Documentation
-- **Technical questions**: Check [docs/](.) directory
-- **Issue-specific**: Read the research comment on the issue
-- **LSP features**: [LSP_IMPLEMENTATION_GUIDE.md](../reference/LSP_IMPLEMENTATION_GUIDE.md)
-- **Testing**: [COMPREHENSIVE_TESTING_GUIDE.md](../tutorials/COMPREHENSIVE_TESTING_GUIDE.md)
-
-### Communication
-- **GitHub Issues**: For bugs, features, questions
-- **Pull Requests**: For code contributions
-- **Issue Comments**: For collaboration and clarification
-
-## 🎯 Success Criteria
-
-See [ROADMAP.md](ROADMAP.md) for current exit criteria and release gates.
-
-## 📈 Project Health Indicators
-
-See [CURRENT_STATUS.md](CURRENT_STATUS.md) for computed health signals and receipts.
-
-## 🚀 Let's Build Together!
-
-The perl-lsp project has clear paths forward. Your contributions will help make Perl development smoother across editors.
-
-**Pick an issue, dive in, and let's ship this! 🎉**
-
----
-
-*This guide is kept up-to-date as the project evolves. Last updated: 2026-07-17*
-
-*For detailed status, see: [CURRENT_STATUS.md](CURRENT_STATUS.md)*
+This page is intentionally an orientation map. It does not establish parser coverage, latency, stability, release readiness, or “production-ready” claims.

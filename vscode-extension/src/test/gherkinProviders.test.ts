@@ -138,6 +138,61 @@ describe('gherkin outline providers', () => {
     expect(links).toHaveLength(0);
   });
 
+  test('skips quantified alternation regex step definitions', () => {
+    const featureText = [
+      'Feature: Login',
+      '  Scenario: Successful login',
+      '    Given aaaaaaaaaaaaaaaaaaaa!',
+    ].join('\n');
+
+    const links = provideGherkinStepDefinitionLinks(
+      featureText,
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/features/step_definitions/user_steps.pm'),
+          text: [
+            'use Test::BDD::Cucumber::StepFile;',
+            '',
+            'Given qr/^(a|aa)+!$/, sub {',
+            '};',
+          ].join('\n'),
+        },
+      ],
+    );
+
+    expect(links).toHaveLength(0);
+  });
+
+  test.each([
+    ['an escaped pipe', '^(foo\\|bar)+$'],
+    ['a character-class pipe', '^(foo[|]bar)+$'],
+  ])('does not skip quantified literal pipes (%s)', (_description, pattern) => {
+    const featureText = [
+      'Feature: Login',
+      '  Scenario: Literal pipe',
+      '    Given foo|barfoo|bar',
+    ].join('\n');
+
+    const links = provideGherkinStepDefinitionLinks(
+      featureText,
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/features/step_definitions/user_steps.pm'),
+          text: [
+            'use Test::BDD::Cucumber::StepFile;',
+            '',
+            'Given qr/' + pattern + '/, sub {',
+            '};',
+          ].join('\n'),
+        },
+      ],
+    );
+
+    expect(links).toHaveLength(1);
+  });
+
   test('skips step definitions with bounded inner quantifiers in quantified groups (#953)', () => {
     // `([a-z]{2,5})+` — bounded inner quantifier, outer group quantifier
     const featureA = [
