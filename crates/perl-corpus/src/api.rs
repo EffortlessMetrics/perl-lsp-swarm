@@ -35,5 +35,5 @@ pub use crate::tie_interface::{
 };
 pub use topology::{
     AssetRequirement, CorpusAsset, CorpusAssetKind, CorpusAssetLayer, CorpusTopology,
-    CORPUS_TOPOLOGY_SCHEMA_VERSION,
+    CorpusTopologyError, CORPUS_TOPOLOGY_SCHEMA_VERSION,
 };
