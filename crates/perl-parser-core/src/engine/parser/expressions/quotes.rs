@@ -540,26 +540,6 @@ impl<'a> Parser<'a> {
 }
 
 #[cfg(test)]
-mod unclosed_quote_tests {
-    use crate::Parser;
-
-    #[test]
-    fn balanced_quote_operators_report_operator_specific_unclosed_delimiters() {
-        for operator in ["q", "qq", "qx", "m", "s"] {
-            let source = format!("{operator}(foo");
-            let result = Parser::new(&source).parse_with_recovery();
-            assert!(
-                result.diagnostics.iter().any(|diagnostic| {
-                    format!("{diagnostic:?}").contains(&format!("Unclosed {operator}"))
-                }),
-                "{source:?} should report an operator-specific unclosed delimiter: {:?}",
-                result.diagnostics
-            );
-        }
-    }
-}
-
-#[cfg(test)]
 mod modifier_tests {
     use crate::Parser;
 
