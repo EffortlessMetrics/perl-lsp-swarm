@@ -28,11 +28,7 @@ mod tests {
         match stmt.kind {
             NodeKind::IndirectCall { method, object, args } => {
                 assert_eq!(method, "move");
-                assert!(matches!(
-                    object.kind,
-                    NodeKind::Variable { ref sigil, ref name }
-                        if sigil == "$" && name == "player"
-                ));
+                assert!(matches!(object.kind, NodeKind::Variable { ref sigil, ref name } if sigil == "$" && name == "player"));
                 assert_eq!(args.len(), 2);
             }
             other => panic!("Expected IndirectCall node, got {other:?}"),
@@ -45,11 +41,7 @@ mod tests {
         match stmt.kind {
             NodeKind::IndirectCall { method, object, args } => {
                 assert_eq!(method, "print");
-                assert!(matches!(
-                    object.kind,
-                    NodeKind::Variable { ref sigil, ref name }
-                        if sigil == "$" && name == "fh"
-                ));
+                assert!(matches!(object.kind, NodeKind::Variable { ref sigil, ref name } if sigil == "$" && name == "fh"));
                 assert_eq!(args.len(), 1);
             }
             other => panic!("Expected IndirectCall node, got {other:?}"),
@@ -62,10 +54,7 @@ mod tests {
         match stmt.kind {
             NodeKind::IndirectCall { method, object, args } => {
                 assert_eq!(method, "new");
-                assert!(matches!(
-                    object.kind,
-                    NodeKind::Identifier { ref name } if name == "Player"
-                ));
+                assert!(matches!(object.kind, NodeKind::Identifier { ref name } if name == "Player"));
                 assert_eq!(args.len(), 1);
             }
             other => panic!("Expected IndirectCall node, got {other:?}"),
@@ -80,16 +69,13 @@ mod tests {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
             }
-            other => {
-                panic!("Unknown lowercase names must remain FunctionCall nodes, got {other:?}")
-            }
+            other => panic!("Unknown lowercase names must remain FunctionCall nodes, got {other:?}"),
         }
     }
 
     #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
-        let stmt =
-            first_statement("my_custom_method($obj, ($title // 'Untitled'), $options->{limit});");
+        let stmt = first_statement("my_custom_method($obj, ($title // 'Untitled'), $options->{limit});");
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
@@ -112,10 +98,7 @@ mod tests {
             other => panic!("Expected Block node, got {other:?}"),
         };
         let call = match &body[0] {
-            Node {
-                kind: NodeKind::ExpressionStatement { expression },
-                ..
-            } => expression.as_ref(),
+            Node { kind: NodeKind::ExpressionStatement { expression }, .. } => expression.as_ref(),
             node => node,
         };
         match &call.kind {
@@ -128,22 +111,27 @@ mod tests {
     }
 
     #[test]
+    fn test_bare_unknown_lowercase_call_is_not_reclassified() {
+        let stmt = first_statement("my_custom_method $obj, 10, 20;");
+        match stmt.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "my_custom_method");
+                assert_eq!(args.len(), 3);
+            }
+            other => panic!("Bare unknown lowercase calls must remain FunctionCall nodes, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_comma_separated_user_call_is_not_indirect() {
         let stmt = first_statement("render $renderer, @parts;");
-        assert!(
-            !matches!(&stmt.kind, NodeKind::IndirectCall { .. }),
-            "comma-separated user call must not be classified as indirect: {:?}",
-            stmt.kind
-        );
+        assert!(!matches!(&stmt.kind, NodeKind::IndirectCall { .. }), "comma-separated user call must not be classified as indirect: {:?}", stmt.kind);
     }
 
     #[test]
     fn test_common_list_builtins_remain_regular_calls() {
         for source in ["push @items, $item;", "defined $object->method;", "sort @items;"] {
-            assert!(
-                !matches!(first_statement(source).kind, NodeKind::IndirectCall { .. }),
-                "{source:?} must not be classified as indirect"
-            );
+            assert!(!matches!(first_statement(source).kind, NodeKind::IndirectCall { .. }), "{source:?} must not be classified as indirect");
         }
     }
 }
