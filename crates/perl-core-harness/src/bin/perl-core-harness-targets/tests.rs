@@ -29,6 +29,10 @@ fn physical_contract() -> TargetSelectionContract {
             kind: TargetAuthorityKind::Test,
             entrypoint: "t/TEST".to_string(),
         },
+        selection_authority: Some(TargetAuthority {
+            kind: TargetAuthorityKind::Test,
+            entrypoint: "t/TEST".to_string(),
+        }),
         selectors: vec![TargetSelector::RecursiveRoot { path: "base".to_string() }],
         script_forms: vec![TargetScriptForm::DotT],
         preparation: TargetPreparation {
@@ -81,6 +85,7 @@ fn composite_contract(target_id: &str, members: &[&str]) -> TargetSelectionContr
     contract.upstream_name = target_id.to_string();
     contract.display_name = target_id.to_string();
     contract.target_kind = TargetKind::GeneratedComposite;
+    contract.selection_authority = None;
     contract.selectors.clear();
     contract.script_forms.clear();
     contract.preparation.make_target = None;
@@ -106,7 +111,7 @@ fn checked_in_target_matrix_is_valid_and_stable() -> Result<()> {
     assert_eq!(first, second);
     assert_eq!(
         first,
-        "e693f7263add284195e96f55af9e5bae3231fc50b09c38dbcf782273a3022c0c"
+        "ab82e039399866251f6831913ce7869f7d553b9a08c6dbe7395997f25e429c83"
     );
     Ok(())
 }
@@ -127,6 +132,9 @@ fn checked_in_blead_drift_is_bound_to_source_identity() -> Result<()> {
     drift
         .validate_against(&matrix, &fingerprint)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let mut incomplete = drift.clone();
+    incomplete.observed_topology_sources.remove("t/harness");
+    assert!(incomplete.validate_against(&matrix, &fingerprint).is_err());
     Ok(())
 }
 
@@ -167,6 +175,29 @@ fn upstream_core_uses_the_filtered_manifest_population() -> Result<()> {
 }
 
 #[test]
+fn upstream_default_test_is_a_physical_invocation() -> Result<()> {
+    let matrix = read_matrix(&repo_file(
+        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
+    ))?;
+    let contract = matrix
+        .targets
+        .iter()
+        .find(|entry| entry.contract.target_id == "make_test_choose")
+        .map(|entry| &entry.contract)
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing upstream default test target"))?;
+    assert_eq!(contract.target_kind, TargetKind::PhysicalSeries);
+    assert_eq!(
+        contract.selection_authority.as_ref().map(|authority| authority.kind),
+        Some(TargetAuthorityKind::Test)
+    );
+    assert!(contract.composite_members.is_empty());
+    assert!(contract.selectors.contains(&TargetSelector::ManifestPopulation {
+        component: ManifestPopulation::Cpan,
+    }));
+    Ok(())
+}
+
+#[test]
 fn physical_contract_requires_a_denominator() {
     let mut contract = physical_contract();
     contract.selectors.clear();
@@ -191,6 +222,7 @@ fn matrix_rejects_missing_variant_parent() {
     let mut contract = physical_contract();
     contract.target_id = "variant_utf8".to_string();
     contract.target_kind = TargetKind::EnvironmentVariant;
+    contract.selection_authority = None;
     contract.variant_of = Some("missing_target".to_string());
     contract.selectors.clear();
     contract.runner_switches = vec!["--utf8".to_string()];
