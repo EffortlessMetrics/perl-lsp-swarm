@@ -2,6 +2,8 @@
 //!
 //! The parser-accuracy manifest proves fixture-level coverage. These tests also
 //! pin native AST payloads and forbid paired quote delimiters from becoming blocks.
+//! `String.value` intentionally remains the complete quote-operator lexeme here;
+//! decoded interpolation fragments are outside this opaque parser boundary.
 
 use perl_parser_core::{Node, NodeKind, Parser};
 
@@ -159,13 +161,13 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
         (
             "declaration".to_string(),
             Some("q{hello}".to_string()),
-            "hello".to_string(),
+            "q{hello}".to_string(),
             false,
         ),
         (
             "return".to_string(),
             Some("qq{$message}".to_string()),
-            "$message".to_string(),
+            "qq{$message}".to_string(),
             true,
         ),
     ];
