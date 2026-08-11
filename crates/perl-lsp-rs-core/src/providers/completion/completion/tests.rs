@@ -8419,6 +8419,13 @@ sub greet {
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
+    let child_model = must_some(
+        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, code)
+            .class_models
+            .into_iter()
+            .find(|model| model.name == "Child"),
+    );
+    assert_eq!(child_model.parents, vec!["Parent"], "open Child model must retain use parent");
     let index = must(inherited_moo_parent_index());
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
