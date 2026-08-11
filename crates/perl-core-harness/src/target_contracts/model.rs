@@ -188,16 +188,26 @@ pub struct UpstreamTargetMatrix {
     pub claim_boundary: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetTopologyDriftStatus {
+    Compared,
+    NotProven,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetTopologyDrift {
     pub schema_version: String,
+    pub status: TargetTopologyDriftStatus,
     pub pinned_matrix_fingerprint: String,
+    pub observed_matrix_fingerprint: Option<String>,
     pub observed_perl_ref: String,
     pub observed_perl_resolved_ref: String,
     pub observed_topology_sources: BTreeMap<String, String>,
     pub added_target_ids: Vec<String>,
     pub removed_target_ids: Vec<String>,
     pub changed_target_ids: Vec<String>,
+    pub not_proven_reason: Option<String>,
     pub claim_boundary: String,
 }
