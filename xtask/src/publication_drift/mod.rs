@@ -50,6 +50,7 @@ pub fn run_with_paths(input: PathBuf, repo_root: PathBuf, out: PathBuf) -> Resul
         .manifest
         .as_ref()
         .map(|manifest| repo_root.join(&manifest.path));
+    prepare_output_parent(&out)?;
     ensure_safe_output(&out, &input, authority_path.as_deref())?;
 
     let authority = load_authority(&repo_root, observation.manifest.as_ref());
@@ -78,6 +79,15 @@ fn load_observation(path: &Path) -> Result<Observation> {
         .wrap_err_with(|| format!("reading publication drift observation {}", path.display()))?;
     serde_json::from_str(&raw)
         .wrap_err_with(|| format!("parsing publication drift observation {}", path.display()))
+}
+
+fn prepare_output_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)
+        .wrap_err_with(|| format!("creating publication drift output {}", parent.display()))
 }
 
 fn ensure_safe_output(out: &Path, input: &Path, authority: Option<&Path>) -> Result<()> {
@@ -134,7 +144,10 @@ fn resolved_candidate_path(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()
         .ok_or_else(|| eyre!("publication drift path has no file name: {}", path.display()))?;
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let canonical_parent = fs::canonicalize(parent)
         .wrap_err_with(|| format!("canonicalizing publication drift parent {}", parent.display()))?;
     normalize_lexically(&canonical_parent.join(file_name))
@@ -181,10 +194,10 @@ fn same_file_identity(_output: &fs::Metadata, _source: &Path) -> Result<bool> {
 }
 
 fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)
-        .wrap_err_with(|| format!("creating publication drift output {}", parent.display()))?;
-
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let raw = serde_json::to_string_pretty(receipt).wrap_err("serializing drift receipt")?;
     let mut temporary = NamedTempFile::new_in(parent)
         .wrap_err_with(|| format!("creating atomic publication drift receipt in {}", parent.display()))?;
@@ -246,7 +259,12 @@ mod output_tests {
         expect_rejection(&out, &input, Some(&authority), "hard-link alias")
     }
 
-    fn expect_rejection(out: &std::path::Path, input: &std::path::Path, authority: Option<&std::path::Path>, expected: &str) -> Result<()> {
+    fn expect_rejection(
+        out: &std::path::Path,
+        input: &std::path::Path,
+        authority: Option<&std::path::Path>,
+        expected: &str,
+    ) -> Result<()> {
         let error = match ensure_safe_output(out, input, authority) {
             Ok(()) => bail!("unsafe output alias should be rejected"),
             Err(error) => error,
