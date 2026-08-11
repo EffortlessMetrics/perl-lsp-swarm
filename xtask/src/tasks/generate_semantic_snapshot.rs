@@ -24,7 +24,8 @@
 
 use color_eyre::eyre::{Context, Result, bail};
 use perl_corpus::snapshot::{
-    HIR_SCHEMA_VERSION, HirSummary, SnapshotEntry, SnapshotManifest, source_hash,
+    HIR_SCHEMA_VERSION, SOURCE_HASH_ALGORITHM, HirSummary, SnapshotEntry, SnapshotManifest,
+    source_hash,
 };
 use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
 use std::fs;
@@ -54,7 +55,7 @@ pub fn run(args: GenerateSemanticSnapshotArgs) -> Result<()> {
         bail!("No .pl fixture files found in {}", args.fixture_dir.display());
     }
 
-    let fresh_entries = compute_snapshot_entries(&fixtures)?;
+    let fresh_entries = compute_snapshot_entries(&args.fixture_dir, &fixtures)?;
 
     if args.check {
         run_check(&args.output, &fresh_entries)
@@ -67,33 +68,55 @@ pub fn run(args: GenerateSemanticSnapshotArgs) -> Result<()> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Collect `.pl` fixture files from `dir`, sorted by name for determinism.
-fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {
-    if !dir.exists() {
-        bail!("Fixture directory not found: {}", dir.display());
+/// Collect `.pl` fixture files recursively, sorted by relative path for determinism.
+fn collect_fixtures(root: &Path) -> Result<Vec<PathBuf>> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("Snapshot fixture root symlink is unsupported: {}", root.display());
+        }
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => bail!("Snapshot fixture root is not a directory: {}", root.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!("Fixture directory not found: {}", root.display());
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading fixture root metadata {}", root.display()));
+        }
     }
 
-    let entries =
-        fs::read_dir(dir).with_context(|| format!("reading fixture dir {}", dir.display()))?;
     let mut paths = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let entries = fs::read_dir(&directory)
+            .with_context(|| format!("reading fixture dir {}", directory.display()))?;
 
-    for entry in entries {
-        let entry = entry.with_context(|| format!("reading fixture entry in {}", dir.display()))?;
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("reading fixture type for {}", entry.path().display()))?;
-        let path = entry.path();
-        let is_perl_fixture = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"));
+        for entry in entries {
+            let entry = entry
+                .with_context(|| format!("reading fixture entry in {}", directory.display()))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("reading fixture type for {}", path.display()))?;
+            let is_perl_fixture = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"));
 
-        if file_type.is_symlink() && is_perl_fixture {
-            bail!("Snapshot fixture symlink is unsupported: {}", path.display());
-        }
-
-        if file_type.is_file() && is_perl_fixture {
-            paths.push(path);
+            if file_type.is_symlink() {
+                bail!("Snapshot fixture symlink is unsupported: {}", path.display());
+            }
+            if file_type.is_dir() {
+                if is_perl_fixture {
+                    bail!("Snapshot .pl entry is not a regular file: {}", path.display());
+                }
+                stack.push(path);
+            } else if is_perl_fixture {
+                if !file_type.is_file() {
+                    bail!("Snapshot .pl entry is not a regular file: {}", path.display());
+                }
+                paths.push(path);
+            }
         }
     }
 
@@ -102,18 +125,14 @@ fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Run `lower_ast()` over each fixture and compute one `SnapshotEntry` per file.
-fn compute_snapshot_entries(fixtures: &[PathBuf]) -> Result<Vec<SnapshotEntry>> {
-    fixtures.iter().map(|path| compute_one_entry(path)).collect()
+fn compute_snapshot_entries(root: &Path, fixtures: &[PathBuf]) -> Result<Vec<SnapshotEntry>> {
+    fixtures.iter().map(|path| compute_one_entry(root, path)).collect()
 }
 
-fn compute_one_entry(path: &Path) -> Result<SnapshotEntry> {
+fn compute_one_entry(root: &Path, path: &Path) -> Result<SnapshotEntry> {
     let source =
         fs::read_to_string(path).with_context(|| format!("reading fixture {}", path.display()))?;
-
-    let fixture_id = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unknown".to_string());
+    let fixture_id = fixture_id(root, path)?;
 
     let hash = source_hash(&source);
     let hir = lower_source(&source);
@@ -125,6 +144,26 @@ fn compute_one_entry(path: &Path) -> Result<SnapshotEntry> {
         hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
         hir_summary: summary,
     })
+}
+
+fn fixture_id(root: &Path, path: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(root)
+        .with_context(|| format!("fixture {} is outside {}", path.display(), root.display()))?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let value = component.as_os_str().to_str().ok_or_else(|| {
+            color_eyre::eyre::eyre!("fixture path is not UTF-8: {}", path.display())
+        })?;
+        if value.is_empty() || value == "." || value == ".." {
+            bail!("fixture path is not canonical: {}", path.display());
+        }
+        parts.push(value);
+    }
+    if parts.is_empty() {
+        bail!("fixture path has no relative identity: {}", path.display());
+    }
+    Ok(parts.join("/"))
 }
 
 /// Parse source and lower AST to HIR.
@@ -219,8 +258,11 @@ fn run_generate(output: &Path, entries: Vec<SnapshotEntry>) -> Result<()> {
         output.display()
     );
     println!(
-        "  kpi={} schema={} hir_schema_version={}",
-        manifest.kpi, manifest.schema, manifest.hir_schema_version
+        "  kpi={} schema={} hir_schema_version={} source_hash_algorithm={}",
+        manifest.kpi,
+        manifest.schema,
+        manifest.hir_schema_version,
+        manifest.source_hash_algorithm,
     );
     println!("  claim_boundary: {}", manifest.claim_boundary);
 
@@ -249,6 +291,13 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
     }
     if recorded.kpi != SNAPSHOT_KPI {
         bail!("Snapshot KPI mismatch: recorded={} current={}", recorded.kpi, SNAPSHOT_KPI);
+    }
+    if recorded.source_hash_algorithm != SOURCE_HASH_ALGORITHM {
+        bail!(
+            "Source hash algorithm mismatch: recorded={} current={}; regenerate snapshot",
+            recorded.source_hash_algorithm,
+            SOURCE_HASH_ALGORITHM,
+        );
     }
     if recorded.hir_schema_version != HIR_SCHEMA_VERSION {
         bail!(
@@ -326,6 +375,9 @@ mod tests {
 
     fn write_fixture(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixture parent");
+        }
         let mut file = fs::File::create(&path).expect("create fixture");
         file.write_all(content.as_bytes()).expect("write fixture");
         path
@@ -363,10 +415,11 @@ mod tests {
         assert_eq!(manifest.schema, SNAPSHOT_SCHEMA);
         assert_eq!(manifest.kpi, SNAPSHOT_KPI);
         assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
+        assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);
         assert_eq!(manifest.entries.len(), 1);
 
         let entry = &manifest.entries[0];
-        assert_eq!(entry.fixture_id, "minimal");
+        assert_eq!(entry.fixture_id, "minimal.pl");
         assert_eq!(entry.source_hash, source_hash(source));
         assert!(entry.hir_summary.item_count > 0, "expected HIR items from non-trivial source");
     }
@@ -489,6 +542,55 @@ mod tests {
     }
 
     #[test]
+    fn recursive_fixture_ids_preserve_relative_paths() {
+        let temporary = TempDir::new().expect("tempdir");
+        write_fixture(temporary.path(), "first/same.pl", "1;");
+        write_fixture(temporary.path(), "second/same.pl", "2;");
+
+        let fixtures = collect_fixtures(temporary.path()).expect("collect recursive fixtures");
+        let entries = compute_snapshot_entries(temporary.path(), &fixtures).expect("compute entries");
+        let ids = entries.iter().map(|entry| entry.fixture_id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["first/same.pl", "second/same.pl"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fixture_collection_rejects_non_regular_perl_entries() {
+        use std::process::Command;
+
+        let temporary = TempDir::new().expect("tempdir");
+        let fifo = temporary.path().join("blocked.pl");
+        let status = Command::new("mkfifo").arg(&fifo).status().expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the negative-control fixture");
+
+        let error = collect_fixtures(temporary.path())
+            .expect_err("non-regular Perl fixtures must fail closed");
+        assert!(error.to_string().contains("not a regular file"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn check_mode_rejects_hash_algorithm_mismatch() {
+        let temporary = TempDir::new().expect("tempdir");
+        write_fixture(temporary.path(), "fixture.pl", "1;");
+        let output = temporary.path().join("snapshot.json");
+        generate_snapshot(temporary.path(), &output);
+
+        let json = fs::read_to_string(&output).expect("read snapshot");
+        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
+        manifest.source_hash_algorithm = "legacy-unstable.v0".to_string();
+        fs::write(
+            &output,
+            serde_json::to_string_pretty(&manifest).expect("serialize mismatched snapshot"),
+        )
+        .expect("write mismatched snapshot");
+
+        assert!(
+            check_snapshot(temporary.path(), &output).is_err(),
+            "check must reject a manifest recorded with a different digest algorithm"
+        );
+    }
+
+    #[test]
     fn snapshot_covers_slice_fixtures() {
         let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../crates/perl-corpus/fixtures/snapshot-slice");
@@ -500,7 +602,7 @@ mod tests {
         let fixtures = collect_fixtures(&fixture_dir).expect("collect fixtures");
         assert!(fixtures.len() >= 3, "expected at least 3 slice fixtures, got {}", fixtures.len());
 
-        let entries = compute_snapshot_entries(&fixtures).expect("compute entries");
+        let entries = compute_snapshot_entries(&fixture_dir, &fixtures).expect("compute entries");
         for entry in &entries {
             assert!(
                 entry.hir_summary.item_count > 0,
