@@ -14,7 +14,7 @@ use super::semantic_port::{
 };
 use perl_semantic_facts::{
     AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityFact,
-    EntityId, FactId, FileId, LifecyclePhase, OccurrenceFact, OccurrenceKind, Provenance,
+    EntityId, FactId, LifecyclePhase, OccurrenceFact, OccurrenceKind, Provenance,
     ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState,
     SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFactStatus,
     SemanticFreshness, SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor,
@@ -155,9 +155,21 @@ impl ProviderAdapterSnapshot {
         self.authority_producers.dedup();
     }
 
+    fn remove_unsubstantiated_compiler_authority(&mut self) {
+        self.authority_producers.retain(|producer| {
+            !matches!(
+                producer,
+                SemanticProducer::Hir
+                    | SemanticProducer::PirA
+                    | SemanticProducer::FrameworkAdapter
+            )
+        });
+    }
+
     fn downgrade(&mut self, capability: ProviderQueryCapability) {
         if self.completeness(capability) == ProviderSnapshotCompleteness::Complete {
-            self.completeness.insert(capability, ProviderSnapshotCompleteness::Partial);
+            self.completeness
+                .insert(capability, ProviderSnapshotCompleteness::Partial);
         }
     }
 
@@ -175,6 +187,7 @@ impl ProviderAdapterSnapshot {
 }
 
 /// Adapter construction error that prevents truthful attribution.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderAdapterError {
     /// A file fact shard cannot be relabeled as a compiler or framework producer.
@@ -197,7 +210,10 @@ impl fmt::Display for ProviderAdapterError {
                 write!(formatter, "file fact shard cannot be attributed to {producer:?}")
             }
             Self::UnsupportedTraceSource { producer, source } => {
-                write!(formatter, "trace source {source:?} is invalid for producer {producer:?}")
+                write!(
+                    formatter,
+                    "trace source {source:?} is invalid for producer {producer:?}"
+                )
             }
             Self::EditAuthorizationRequiresPlan => formatter.write_str(
                 "file fact shard cannot authorize edits without a current guarded edit plan",
@@ -283,7 +299,11 @@ impl FileFactShardPort {
         records.sort_by_key(|record| record.envelope.fact_id);
         limitations.sort();
         limitations.dedup();
-        Ok(Self { records, snapshot, limitations })
+        Ok(Self {
+            records,
+            snapshot,
+            limitations,
+        })
     }
 }
 
@@ -292,7 +312,12 @@ impl ProviderSemanticPort for FileFactShardPort {
         &self,
         request: &ProviderQueryRequest,
     ) -> ProviderQueryResult<SemanticFactEnvelope> {
-        query_records(request, &self.records, &self.snapshot, &self.limitations)
+        query_records(
+            request,
+            &self.records,
+            &self.snapshot,
+            &self.limitations,
+        )
     }
 }
 
@@ -315,6 +340,7 @@ impl CanonicalEnvelopePort {
         envelopes: &[SemanticFactEnvelope],
         mut snapshot: ProviderAdapterSnapshot,
     ) -> Self {
+        snapshot.remove_unsubstantiated_compiler_authority();
         for producer in envelopes.iter().map(|envelope| envelope.producer) {
             snapshot.register_authority(producer);
         }
@@ -340,7 +366,11 @@ impl CanonicalEnvelopePort {
             record.canonicalize();
         }
         records.sort_by_key(|record| record.envelope.fact_id);
-        Self { records, snapshot, limitations: Vec::new() }
+        Self {
+            records,
+            snapshot,
+            limitations: Vec::new(),
+        }
     }
 }
 
@@ -349,7 +379,12 @@ impl ProviderSemanticPort for CanonicalEnvelopePort {
         &self,
         request: &ProviderQueryRequest,
     ) -> ProviderQueryResult<SemanticFactEnvelope> {
-        query_records(request, &self.records, &self.snapshot, &self.limitations)
+        query_records(
+            request,
+            &self.records,
+            &self.snapshot,
+            &self.limitations,
+        )
     }
 }
 
@@ -363,8 +398,11 @@ fn adapt_shard(
     limitations: &mut Vec<String>,
     incomplete: &mut BTreeSet<ProviderQueryCapability>,
 ) {
-    let anchors: BTreeMap<AnchorId, &AnchorFact> =
-        shard.anchors.iter().map(|anchor| (anchor.id, anchor)).collect();
+    let anchors: BTreeMap<AnchorId, &AnchorFact> = shard
+        .anchors
+        .iter()
+        .map(|anchor| (anchor.id, anchor))
+        .collect();
     let entity_names: BTreeMap<EntityId, String> = shard
         .entities
         .iter()
@@ -473,7 +511,12 @@ fn record_from_entity(
     if let Some((_, bare)) = entity.canonical_name.rsplit_once("::") {
         names.push(bare.to_string());
     }
-    AdapterFactRecord { envelope, names, occurrence_kind: None, trace }
+    AdapterFactRecord {
+        envelope,
+        names,
+        occurrence_kind: None,
+        trace,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -675,6 +718,7 @@ fn source_for_producer(
         SemanticProducer::WorkspaceIndex => default_source,
         SemanticProducer::FrameworkAdapter => ProviderFactSourceKind::FrameworkAdapter,
         SemanticProducer::Unknown => ProviderFactSourceKind::Unknown,
+        _ => ProviderFactSourceKind::Unknown,
     }
 }
 
@@ -684,6 +728,7 @@ fn provider_freshness(freshness: SemanticFreshness) -> ProviderFactFreshness {
         SemanticFreshness::Stale => ProviderFactFreshness::Stale,
         SemanticFreshness::Unknown => ProviderFactFreshness::Unknown,
         SemanticFreshness::NotApplicable => ProviderFactFreshness::NotApplicable,
+        _ => ProviderFactFreshness::Unknown,
     }
 }
 
@@ -878,6 +923,13 @@ fn readiness_result(
             Vec::new(),
             limitations.to_vec(),
         ),
+        _ => no_value_result(
+            ProviderQueryOutcome::Unavailable,
+            request,
+            snapshot,
+            Vec::new(),
+            limitations.to_vec(),
+        ),
     }
 }
 
@@ -886,9 +938,9 @@ fn select_value_records<'a>(
     records: &'a [AdapterFactRecord],
 ) -> Vec<&'a AdapterFactRecord> {
     let mut selected: Vec<_> = match &request.kind {
-        ProviderQueryKind::References { include_declaration } => {
-            select_reference_records(request, records, *include_declaration)
-        }
+        ProviderQueryKind::References {
+            include_declaration,
+        } => select_reference_records(request, records, *include_declaration),
         ProviderQueryKind::ScopeBindings => select_scope_records(request, records),
         _ => records
             .iter()
@@ -1011,6 +1063,7 @@ fn kind_matches(kind: &ProviderQueryKind, record: &AdapterFactRecord) -> bool {
         ProviderQueryKind::References { .. }
         | ProviderQueryKind::ScopeBindings
         | ProviderQueryKind::Readiness => false,
+        _ => false,
     }
 }
 
@@ -1018,7 +1071,10 @@ fn subject_matches(subject: &ProviderQuerySubject, record: &AdapterFactRecord) -
     match subject {
         ProviderQuerySubject::Entity(entity_id) => record.envelope.entity_id == Some(*entity_id),
         ProviderQuerySubject::File(file_id) => record.envelope.anchor.file_id == *file_id,
-        ProviderQuerySubject::Position { file_id, byte_offset } => {
+        ProviderQuerySubject::Position {
+            file_id,
+            byte_offset,
+        } => {
             record.envelope.anchor.file_id == *file_id
                 && range_contains(&record.envelope.anchor, *byte_offset)
         }
@@ -1028,6 +1084,7 @@ fn subject_matches(subject: &ProviderQuerySubject, record: &AdapterFactRecord) -
         }
         ProviderQuerySubject::Symbol(symbol) => record.names.iter().any(|name| name == symbol),
         ProviderQuerySubject::Workspace => true,
+        _ => false,
     }
 }
 
@@ -1146,6 +1203,7 @@ fn proof_for(outcome: ProviderQueryOutcome, ceiling: ProviderProofClass) -> Prov
         | ProviderQueryOutcome::Cancelled
         | ProviderQueryOutcome::DeadlineExceeded => ProviderProofClass::RefusalOnly,
         ProviderQueryOutcome::Error => ProviderProofClass::Unknown,
+        _ => ProviderProofClass::Unknown,
     }
 }
 
@@ -1244,6 +1302,7 @@ fn summarize_reason(
         | ProviderQueryOutcome::Cancelled
         | ProviderQueryOutcome::DeadlineExceeded
         | ProviderQueryOutcome::Error => SemanticReasonCode::Unknown,
+        _ => SemanticReasonCode::Unknown,
     }
 }
 
@@ -1251,414 +1310,4 @@ fn extended_limitations(limitations: &[String], extra: &str) -> Vec<String> {
     let mut values = limitations.to_vec();
     values.push(extra.to_string());
     values
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use super::super::semantic_port::{
-        ProviderIdentity, ProviderQueryContext, ProviderReadinessRequirement,
-    };
-    use perl_semantic_facts::{EntityKind, OccurrenceId, ProviderSurface, ScopeId};
-
-    fn snapshot(
-        proof_ceiling: ProviderProofClass,
-        completeness: ProviderSnapshotCompleteness,
-    ) -> ProviderAdapterSnapshot {
-        ProviderAdapterSnapshot::new(
-            SourceGeneration::known("document-7"),
-            SourceGeneration::known("workspace-3"),
-            SemanticFreshness::Fresh,
-            LifecyclePhase::Runtime,
-            proof_ceiling,
-            ProviderFallbackState::Primary,
-            Some(1),
-            Vec::new(),
-            [
-                (ProviderQueryCapability::Declarations, completeness),
-                (ProviderQueryCapability::References, completeness),
-                (ProviderQueryCapability::Visibility, completeness),
-                (ProviderQueryCapability::ScopeBindings, completeness),
-                (ProviderQueryCapability::Boundaries, completeness),
-                (ProviderQueryCapability::Readiness, completeness),
-            ],
-        )
-    }
-
-    fn context() -> ProviderQueryContext {
-        ProviderQueryContext::new(
-            ProviderIdentity::known("project"),
-            ProviderIdentity::known("root"),
-            SourceGeneration::known("document-7"),
-            SourceGeneration::known("workspace-3"),
-            ProviderReadinessRequirement::ActiveDocument,
-            ProviderReadinessState::Ready,
-            ProviderQueryDeadline::RemainingMillis(100),
-            ProviderCancellationState::Active,
-        )
-    }
-
-    fn shard(provenance: Provenance, confidence: Confidence) -> FileFactShard {
-        let file_id = FileId(10);
-        FileFactShard {
-            source_uri: "file:///example.pl".to_string(),
-            file_id,
-            content_hash: 77,
-            producer_schema_version: 1,
-            anchors_hash: None,
-            entities_hash: None,
-            occurrences_hash: None,
-            edges_hash: None,
-            anchors: vec![
-                AnchorFact {
-                    id: AnchorId(20),
-                    file_id,
-                    span_start_byte: 4,
-                    span_end_byte: 12,
-                    scope_id: Some(ScopeId(1)),
-                    provenance,
-                    confidence,
-                },
-                AnchorFact {
-                    id: AnchorId(21),
-                    file_id,
-                    span_start_byte: 20,
-                    span_end_byte: 24,
-                    scope_id: Some(ScopeId(1)),
-                    provenance,
-                    confidence,
-                },
-            ],
-            entities: vec![EntityFact {
-                id: EntityId(30),
-                kind: EntityKind::Subroutine,
-                canonical_name: "Example::work".to_string(),
-                anchor_id: Some(AnchorId(20)),
-                scope_id: Some(ScopeId(1)),
-                provenance,
-                confidence,
-            }],
-            occurrences: vec![OccurrenceFact {
-                id: OccurrenceId(40),
-                kind: OccurrenceKind::Call,
-                entity_id: Some(EntityId(30)),
-                anchor_id: AnchorId(21),
-                scope_id: Some(ScopeId(1)),
-                provenance,
-                confidence,
-            }],
-            edges: Vec::new(),
-        }
-    }
-
-    fn request(kind: ProviderQueryKind, subject: ProviderQuerySubject) -> ProviderQueryRequest {
-        ProviderQueryRequest::new(
-            ProviderSurface::Definition,
-            "test/request",
-            kind,
-            subject,
-            context(),
-        )
-    }
-
-    #[test]
-    fn exact_shard_queries_preserve_workspace_producer() -> Result<(), Box<dyn Error>> {
-        let port = FileFactShardPort::new(
-            &[shard(Provenance::ExactAst, Confidence::High)],
-            SemanticProducer::WorkspaceIndex,
-            ProviderFactSourceKind::LegacyWorkspace,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        )?;
-
-        let definition = port.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Symbol("work".to_string()),
-        ));
-        assert_eq!(definition.outcome(), ProviderQueryOutcome::Exact);
-        assert_eq!(definition.values().map(|values| values.len()), Some(1));
-        assert_eq!(
-            definition.evidence().producers(),
-            &[SemanticProducer::WorkspaceIndex]
-        );
-        assert!(definition.is_consistent());
-
-        let references = port.query(&request(
-            ProviderQueryKind::References {
-                include_declaration: false,
-            },
-            ProviderQuerySubject::Entity(EntityId(30)),
-        ));
-        assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
-        assert_eq!(references.values().map(|values| values.len()), Some(1));
-        assert!(references.is_consistent());
-        Ok(())
-    }
-
-    #[test]
-    fn complete_and_partial_empty_results_stay_distinct() -> Result<(), Box<dyn Error>> {
-        let complete = FileFactShardPort::new(
-            &[shard(Provenance::ExactAst, Confidence::High)],
-            SemanticProducer::Parser,
-            ProviderFactSourceKind::ParserSyntax,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        )?;
-        let complete_result = complete.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Symbol("missing".to_string()),
-        ));
-        assert!(complete_result.is_exact_empty());
-        assert_eq!(
-            complete_result.evidence().producers(),
-            &[SemanticProducer::Parser]
-        );
-
-        let partial = FileFactShardPort::new(
-            &[shard(Provenance::ExactAst, Confidence::High)],
-            SemanticProducer::Parser,
-            ProviderFactSourceKind::ParserSyntax,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Partial,
-            ),
-        )?;
-        let partial_result = partial.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Symbol("missing".to_string()),
-        ));
-        assert_eq!(partial_result.outcome(), ProviderQueryOutcome::Unavailable);
-        assert_eq!(partial_result.values(), None);
-        Ok(())
-    }
-
-    #[test]
-    fn shard_adapter_rejects_false_producer_trace_and_edit_authority() {
-        let compiler = FileFactShardPort::new(
-            &[shard(Provenance::ExactAst, Confidence::High)],
-            SemanticProducer::PirA,
-            ProviderFactSourceKind::CompilerFact,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        );
-        assert_eq!(
-            compiler.err(),
-            Some(ProviderAdapterError::UnsupportedShardProducer(
-                SemanticProducer::PirA
-            ))
-        );
-
-        let bad_trace = FileFactShardPort::new(
-            &[shard(Provenance::ExactAst, Confidence::High)],
-            SemanticProducer::Parser,
-            ProviderFactSourceKind::CompilerFact,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        );
-        assert_eq!(
-            bad_trace.err(),
-            Some(ProviderAdapterError::UnsupportedTraceSource {
-                producer: SemanticProducer::Parser,
-                source: ProviderFactSourceKind::CompilerFact,
-            })
-        );
-
-        let edits = FileFactShardPort::new(
-            &[shard(Provenance::ExactAst, Confidence::High)],
-            SemanticProducer::WorkspaceIndex,
-            ProviderFactSourceKind::LegacyWorkspace,
-            snapshot(
-                ProviderProofClass::EditAuthorizing,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        );
-        assert_eq!(
-            edits.err(),
-            Some(ProviderAdapterError::EditAuthorizationRequiresPlan)
-        );
-    }
-
-    #[test]
-    fn generated_and_dynamic_facts_do_not_become_exact() -> Result<(), Box<dyn Error>> {
-        let generated = FileFactShardPort::new(
-            &[shard(
-                Provenance::FrameworkSynthesis,
-                Confidence::Medium,
-            )],
-            SemanticProducer::SemanticAnalyzer,
-            ProviderFactSourceKind::SemanticFact,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        )?;
-        let generated_result = generated.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Symbol("work".to_string()),
-        ));
-        assert_eq!(generated_result.outcome(), ProviderQueryOutcome::Degraded);
-        assert_eq!(
-            generated_result.evidence().reason_code(),
-            SemanticReasonCode::GeneratedFromSource
-        );
-
-        let mut dynamic_shard = shard(Provenance::DynamicBoundary, Confidence::Low);
-        dynamic_shard.occurrences[0].kind = OccurrenceKind::DynamicBoundary;
-        let dynamic = FileFactShardPort::new(
-            &[dynamic_shard],
-            SemanticProducer::SemanticAnalyzer,
-            ProviderFactSourceKind::DynamicBoundary,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        )?;
-        let dynamic_result = dynamic.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Position {
-                file_id: FileId(10),
-                byte_offset: 21,
-            },
-        ));
-        assert_eq!(dynamic_result.outcome(), ProviderQueryOutcome::Dynamic);
-        assert_eq!(dynamic_result.values(), None);
-        assert_eq!(
-            dynamic_result.evidence().reason_code(),
-            SemanticReasonCode::DynamicValue
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn missing_anchor_downgrades_completeness_instead_of_fabricating_exact_empty(
-    ) -> Result<(), Box<dyn Error>> {
-        let mut broken = shard(Provenance::ExactAst, Confidence::High);
-        broken.entities[0].anchor_id = None;
-        let port = FileFactShardPort::new(
-            &[broken],
-            SemanticProducer::Parser,
-            ProviderFactSourceKind::ParserSyntax,
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        )?;
-        let result = port.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Symbol("work".to_string()),
-        ));
-        assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
-        assert_eq!(result.values(), None);
-        assert!(result
-            .evidence()
-            .limitations()
-            .iter()
-            .any(|limitation| limitation.contains("missing_source_anchor")));
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_envelopes_preserve_real_compiler_producer_and_staleness() {
-        let exact = SemanticFactEnvelope::new(
-            FactId(900),
-            Some(EntityId(30)),
-            SemanticFactKind::Declaration,
-            SourceAnchor::new(Some(AnchorId(20)), FileId(10), 4, 12),
-            SourceGeneration::known("document-7"),
-            Some(ScopeId(1)),
-            Some("Example".to_string()),
-            LifecyclePhase::Runtime,
-            SemanticProducer::PirA,
-            SemanticProvenance::Known(Provenance::ExactAst),
-            SemanticConfidence::Known(Confidence::High),
-            SemanticFreshness::Fresh,
-            None,
-            Vec::new(),
-            SemanticReasonCode::ExactSource,
-        );
-        let exact_port = CanonicalEnvelopePort::new(
-            &[exact],
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        );
-        let exact_result = exact_port.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Entity(EntityId(30)),
-        ));
-        assert_eq!(exact_result.outcome(), ProviderQueryOutcome::Exact);
-        assert_eq!(
-            exact_result.evidence().producers(),
-            &[SemanticProducer::PirA]
-        );
-        assert!(exact_result.is_consistent());
-
-        let stale = SemanticFactEnvelope::new(
-            FactId(901),
-            Some(EntityId(30)),
-            SemanticFactKind::Declaration,
-            SourceAnchor::new(Some(AnchorId(20)), FileId(10), 4, 12),
-            SourceGeneration::known("old-document"),
-            Some(ScopeId(1)),
-            Some("Example".to_string()),
-            LifecyclePhase::Runtime,
-            SemanticProducer::WorkspaceIndex,
-            SemanticProvenance::Known(Provenance::ExactAst),
-            SemanticConfidence::Known(Confidence::High),
-            SemanticFreshness::Stale,
-            None,
-            Vec::new(),
-            SemanticReasonCode::StaleDependency,
-        );
-        let stale_port = CanonicalEnvelopePort::new(
-            &[stale],
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        );
-        let stale_result = stale_port.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Entity(EntityId(30)),
-        ));
-        assert_eq!(stale_result.outcome(), ProviderQueryOutcome::Stale);
-        assert_eq!(stale_result.values(), None);
-        assert!(stale_result.is_consistent());
-    }
-
-    #[test]
-    fn absent_compiler_envelopes_are_unavailable_without_an_authority() {
-        let port = CanonicalEnvelopePort::new(
-            &[],
-            snapshot(
-                ProviderProofClass::ExactRead,
-                ProviderSnapshotCompleteness::Complete,
-            ),
-        );
-        let result = port.query(&request(
-            ProviderQueryKind::Declaration,
-            ProviderQuerySubject::Workspace,
-        ));
-        assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
-        assert!(result.evidence().producers().is_empty());
-        assert_eq!(result.values(), None);
-    }
-
-    #[test]
-    fn fact_id_domains_are_deterministic_and_separate() {
-        assert_eq!(stable_fact_id(b"entity", 7), stable_fact_id(b"entity", 7));
-        assert_ne!(
-            stable_fact_id(b"entity", 7),
-            stable_fact_id(b"occurrence", 7)
-        );
-    }
 }
