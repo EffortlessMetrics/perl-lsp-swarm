@@ -185,6 +185,22 @@ a distinct code path.
 
 ---
 
+### Indirect-call heuristic limitation
+
+The parser builds syntax trees without complete symbol-table context. Lowercase barewords
+that are not recognized indirect-call builtins are therefore parsed as ordinary
+`FunctionCall` nodes, even when Perl runtime semantics could later establish an
+indirect-object interpretation. Known builtin filehandle forms and the `new`
+constructor pattern remain `IndirectCall` cases.
+
+**Proof.** `crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs`
+covers unknown lowercase names with scalar, nested, comma-separated, and
+control-flow arguments, alongside positive `print` and `new` cases. This
+contract is intentionally conservative and context-free; semantic analysis may
+add symbol information later without changing the parser AST.
+
+---
+
 ## 3. Embedded-Code Metadata (`s///e`)
 
 ### Contract
