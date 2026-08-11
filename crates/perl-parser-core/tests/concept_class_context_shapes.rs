@@ -40,7 +40,7 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
         "}\n",
     );
     let ast = parse_clean(source)?;
-    let mut class_span = None;
+    let mut class_spans = Vec::new();
     let mut field_span = None;
     let mut method_span = None;
     let mut adjust_span = None;
@@ -59,7 +59,9 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
             "class name span must identify only the declared name"
         );
         assert_eq!(parents, &["Base".to_string()]);
-        class_span = source_text(source, node);
+        if let Some(text) = source_text(source, node) {
+            class_spans.push(text);
+        }
 
         let class_bodies: Vec<&Node> = node
             .children()
@@ -93,9 +95,17 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
         });
     });
 
-    let class_span = class_span.ok_or_else(|| "class declaration was not preserved".to_string())?;
-    assert!(class_span.starts_with("class Example 1.23 :isa(Base) {"));
-    assert!(class_span.ends_with("}\n") || class_span.ends_with('}'));
+    assert_eq!(
+        class_spans,
+        vec![concat!(
+            "class Example 1.23 :isa(Base) {\n",
+            "    field $value :param :reader = 1;\n",
+            "    method get($fallback = 0) :lvalue { return $value // $fallback; }\n",
+            "    ADJUST { $value = 2; }\n",
+            "}",
+        )],
+        "class declaration had an incorrect source range"
+    );
 
     let field_span = field_span.ok_or_else(|| "class field was not preserved in its body".to_string())?;
     assert_eq!(field_span.trim_end_matches(';'), "field $value :param :reader = 1");
