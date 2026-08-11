@@ -2,7 +2,8 @@ use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapsh
 use crate::incremental::lex::create_lex_checkpoints;
 use perl_lexer::{PerlLexer, Token, TokenType};
 use perl_line_index::LineIndex;
-use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
+use perl_parser_core::ast::{Node, NodeKind};
+use perl_parser_core::error::ParseOutput;
 use perl_parser_core::parser::Parser;
 use ropey::Rope;
 
@@ -12,39 +13,32 @@ pub struct IncrementalState {
     pub line_index: LineIndex,
     pub lex_checkpoints: Vec<LexCheckpoint>,
     pub parse_checkpoints: Vec<ParseCheckpoint>,
-    /// Parsed AST.
+    /// Authoritative native parser output for the current source.
     ///
-    /// **Staleness invariant (#5036):** This field is only guaranteed current
-    /// after `new()` or `full_reparse()`. After `apply_single_edit()` it may be
-    /// stale relative to `tokens`/`source`. It is kept solely for
-    /// `create_parse_checkpoints` in `full_reparse`. Production providers
-    /// always use a fresh full reparse via `ParsedSnapshot`, never this field.
-    #[deprecated(
-        note = "Only valid after new()/full_reparse(); may be stale after apply_single_edit(). Use a fresh parse instead."
-    )]
+    /// This is produced by `Parser::parse_with_recovery` and carries the AST,
+    /// ordered parser diagnostics, recovery count, budget usage, and early
+    /// termination state. Incremental consumers should use this field rather
+    /// than reconstructing parser state from an AST alone.
+    pub parse_output: ParseOutput,
+    /// Parsed AST compatibility field.
+    ///
+    /// This field mirrors [`Self::parse_output`]'s AST after every supported
+    /// state transition. It remains temporarily for compatibility with existing
+    /// callers and parse-checkpoint code.
+    #[deprecated(note = "Use parse_output.ast; this compatibility mirror will be removed.")]
     pub ast: Node,
     pub tokens: Vec<Token>,
     pub source: String,
 }
 
 impl IncrementalState {
-    #[expect(deprecated, reason = "the legacy AST field seeds parse checkpoints for compatibility")]
+    #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
     pub fn new(source: String) -> Self {
         let rope = Rope::from_str(&source);
         let line_index = LineIndex::new(&source);
         let mut parser = Parser::new(&source);
-        let ast = match parser.parse() {
-            Ok(ast) => ast,
-            Err(e) => Node::new(
-                NodeKind::Error {
-                    message: e.to_string(),
-                    expected: vec![],
-                    found: None,
-                    partial: None,
-                },
-                SourceLocation { start: 0, end: source.len() },
-            ),
-        };
+        let parse_output = parser.parse_with_recovery();
+        let ast = parse_output.ast.clone();
         let mut lexer = PerlLexer::new(&source);
         let mut tokens = Vec::new();
         while let Some(token) = lexer.next_token() {
@@ -54,14 +48,38 @@ impl IncrementalState {
             tokens.push(token);
         }
         let lex_checkpoints = create_lex_checkpoints(&tokens, &line_index);
-        let parse_checkpoints = Self::create_parse_checkpoints(&ast);
-        Self { rope, line_index, lex_checkpoints, parse_checkpoints, ast, tokens, source }
+        let parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
+        Self {
+            rope,
+            line_index,
+            lex_checkpoints,
+            parse_checkpoints,
+            parse_output,
+            ast,
+            tokens,
+            source,
+        }
     }
+
     pub fn find_lex_checkpoint(&self, byte: usize) -> Option<&LexCheckpoint> {
         self.lex_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
     }
+
     pub fn find_parse_checkpoint(&self, byte: usize) -> Option<&ParseCheckpoint> {
         self.parse_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
+    }
+
+    /// Refresh the authoritative parser output from the current source.
+    ///
+    /// The compatibility AST and parse checkpoints are updated from the same
+    /// recovered parse so the state cannot expose mixed parse generations.
+    #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
+    pub(crate) fn refresh_parse_output(&mut self) {
+        let mut parser = Parser::new(&self.source);
+        let parse_output = parser.parse_with_recovery();
+        self.parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
+        self.ast = parse_output.ast.clone();
+        self.parse_output = parse_output;
     }
 
     pub(crate) fn create_parse_checkpoints(ast: &Node) -> Vec<ParseCheckpoint> {
