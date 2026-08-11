@@ -185,15 +185,13 @@ pub fn validate_sidecar(
 
     match expected_fixture_path(sidecar_path) {
         Ok(fixture_path) => match fs::symlink_metadata(&fixture_path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => validation.errors.push(format!(
-                "fixture file symlink is unsupported: {}",
-                fixture_path.display()
-            )),
+            Ok(metadata) if metadata.file_type().is_symlink() => validation
+                .errors
+                .push(format!("fixture file symlink is unsupported: {}", fixture_path.display())),
             Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => validation.errors.push(format!(
-                "fixture file is not a regular file: {}",
-                fixture_path.display()
-            )),
+            Ok(_) => validation
+                .errors
+                .push(format!("fixture file is not a regular file: {}", fixture_path.display())),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => validation
                 .errors
                 .push(format!("fixture file does not exist: {}", fixture_path.display())),
@@ -437,10 +435,7 @@ mode = "parse_clean"
         let fixture_link = corpus.path().join("case.pl");
         symlink(&target, &fixture_link)?;
         let sidecar_path = corpus.path().join("case.meta.toml");
-        fs::write(
-            &sidecar_path,
-            minimal_sidecar_toml("parser.example", "parse_clean"),
-        )?;
+        fs::write(&sidecar_path, minimal_sidecar_toml("parser.example", "parse_clean"))?;
         let parsed = parse_sidecar(&sidecar_path)?;
 
         let validation = validate_sidecar(&sidecar_path, &parsed, None);
