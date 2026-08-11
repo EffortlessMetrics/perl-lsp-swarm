@@ -66,7 +66,7 @@ The authority ledger classifies it as a **lower-tier kernel**:
 - it is not production-eligible independently of the canonical contract;
 - #6707 must either route it behind the canonical surface with shared differential proof or retire it after its useful proof is migrated.
 
-The tree-sitter facade remains an explicitly allowed consumer during that transition. Adding another consumer requires an authority-ledger change in the same PR.
+The tree-sitter facade remains an explicitly allowed consumer during that transition. Each allowed consumer records both its public symbol and its production Rust source path. The contract scans `crates/*/src/**/*.rs`, excluding the owner crate, and requires the discovered source set to equal the ledger exactly. Tests, examples, benches, and `archive/` are intentionally outside this production-consumer boundary. Adding another production consumer therefore requires an authority-ledger change in the same PR.
 
 ## Compatibility crate
 
@@ -87,12 +87,14 @@ Unique behavioral cases currently housed in the compatibility crate should move 
 
 - there is one canonical surface;
 - every publicly exported `perl-parser` incremental generation is classified exactly once;
-- the active `perl-parser-core` token-replay kernel and its tree-sitter consumer remain explicitly classified;
+- the active `perl-parser-core` token-replay kernel remains explicitly classified;
+- every production Rust source that imports the lower-tier kernel is discovered and allowlisted by exact path;
+- each allowed source still contains the declared consumer symbol and lower-tier call;
 - no non-canonical surface is marked production-eligible;
 - the compatibility crate forwards the canonical implementation instead of defining another one;
 - retired, experimental, and lower-tier surfaces cannot disappear from the authority ledger silently.
 
-The parser-integration shard executes this contract. Adding another `pub mod incremental_*`, lower-tier implementation, facade re-export, or consumer requires an explicit authority disposition in the same change.
+The parser-integration shard executes this contract. Adding another `pub mod incremental_*`, lower-tier implementation, facade re-export, or production consumer requires an explicit authority disposition in the same change.
 
 ## Claims this does not establish
 
