@@ -4490,6 +4490,63 @@ impl WorkspaceIndex {
         members
     }
 
+    /// Return framework-generated members for one package from semantic fact shards.
+    ///
+    /// Legacy package members remain available through get_package_members.
+    /// This companion query exposes generated accessors and similar framework
+    /// members using the same source anchor range used by workspace-symbol
+    /// responses, so completion can traverse indexed generated members without
+    /// treating them as source-defined methods.
+    pub fn get_generated_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        let shards = self.fact_shards.read();
+        let mut members = Vec::new();
+
+        for shard in shards.values() {
+            for entity in &shard.entities {
+                if entity.kind != EntityKind::GeneratedMember
+                    || !is_framework_generated_member_entity(entity)
+                {
+                    continue;
+                }
+
+                let Some((container_name, bare_name)) =
+                    split_qualified_symbol_name(&entity.canonical_name)
+                else {
+                    continue;
+                };
+                if container_name != package_name {
+                    continue;
+                }
+
+                let Some(anchor_id) = entity.anchor_id else {
+                    continue;
+                };
+                let Some(range) = self.generated_member_anchor_range(shard, anchor_id) else {
+                    continue;
+                };
+
+                members.push(WorkspaceSymbol {
+                    name: bare_name.to_string(),
+                    kind: SymbolKind::Method,
+                    uri: shard.source_uri.clone(),
+                    range,
+                    qualified_name: Some(entity.canonical_name.clone()),
+                    documentation: Some(
+                        "Generated/framework member; virtual symbol anchored to source declaration"
+                            .to_string(),
+                    ),
+                    container_name: Some(container_name.to_string()),
+                    has_body: false,
+                    workspace_folder_uri: self.determine_folder_uri(&shard.source_uri),
+                    is_lexical: false,
+                });
+            }
+        }
+
+        sort_workspace_symbols(&mut members);
+        members
+    }
+
     /// Names of all packages explicitly declared in a file.
     ///
     /// Returns the bare declared name for each `package` statement or block in
