@@ -46,7 +46,6 @@ jobs:
       - name: Normalize candidate lints
         run: |
           set -euo pipefail
-          grep -n -A4 -B2 "validate_evidence" xtask/src/bin/compiler-concepts.rs || true
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -68,13 +67,8 @@ jobs:
           updated, count = re.subn(pattern, replacement, text, count=1)
           if count == 1:
               path.write_text(updated)
-              print("elided validate_evidence lifetime")
-          elif "fn validate_evidence(" in text:
-              print("validate_evidence lifetime already elided")
-          elif "validate_evidence" in text:
+          elif "fn validate_evidence(" not in text and "validate_evidence" in text:
               raise SystemExit("validate_evidence has an unexpected signature")
-          else:
-              print("validate_evidence not present in this candidate")
           PY
 
       - name: Validate schema syntax
@@ -89,14 +83,108 @@ jobs:
       - name: Verify formatting
         run: rustfmt --edition 2024 --check xtask/src/bin/compiler-concepts.rs
 
-      - name: Verify unit tests
-        run: cargo test -p xtask --bin compiler-concepts
+      - id: test_committed
+        name: Test committed ledger and status
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts committed_ledger_validates_and_status_is_current -- --nocapture
 
-      - name: Verify Clippy
+      - id: test_duplicate
+        name: Test duplicate concept IDs
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts duplicate_concept_ids_fail_closed -- --nocapture
+
+      - id: test_issue
+        name: Test invalid owner issue
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts invalid_owner_issue_fails_closed -- --nocapture
+
+      - id: test_opaque
+        name: Test opaque exact-provider rejection
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts opaque_body_hir_cannot_authorize_exact_provider_output -- --nocapture
+
+      - id: test_complete
+        name: Test inventory completeness closeout
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts inventory_complete_rejects_unresolved_work_after_authority -- --nocapture
+
+      - id: test_exact
+        name: Test exact-provider canonical pipeline
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts exact_provider_requires_canonical_executable_pipeline_regardless_of_owner -- --nocapture
+
+      - id: test_eir
+        name: Test executable EIR PIR admission
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts executable_eir_requires_modeled_pir_a -- --nocapture
+
+      - id: test_ast_kinds
+        name: Test required AST kinds field
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts ast_kinds_is_required_by_typed_parser -- --nocapture
+
+      - id: test_id_grammar
+        name: Test concept ID grammar
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts concept_id_grammar_matches_segment_contract -- --nocapture
+
+      - id: test_rendering
+        name: Test deterministic rendering
+        continue-on-error: true
+        run: cargo test -p xtask --bin compiler-concepts rendering_is_independent_of_input_order -- --nocapture
+
+      - id: clippy
+        name: Verify Clippy
+        continue-on-error: true
         run: cargo clippy -p xtask --bin compiler-concepts -- -D warnings
 
-      - name: Verify generated status
+      - id: status
+        name: Verify generated status
+        continue-on-error: true
         run: cargo run -p xtask --bin compiler-concepts -- --check
+
+      - name: Require all targeted verification
+        if: ${{ always() }}
+        env:
+          TEST_COMMITTED: ${{ steps.test_committed.outcome }}
+          TEST_DUPLICATE: ${{ steps.test_duplicate.outcome }}
+          TEST_ISSUE: ${{ steps.test_issue.outcome }}
+          TEST_OPAQUE: ${{ steps.test_opaque.outcome }}
+          TEST_COMPLETE: ${{ steps.test_complete.outcome }}
+          TEST_EXACT: ${{ steps.test_exact.outcome }}
+          TEST_EIR: ${{ steps.test_eir.outcome }}
+          TEST_AST_KINDS: ${{ steps.test_ast_kinds.outcome }}
+          TEST_ID_GRAMMAR: ${{ steps.test_id_grammar.outcome }}
+          TEST_RENDERING: ${{ steps.test_rendering.outcome }}
+          CLIPPY: ${{ steps.clippy.outcome }}
+          STATUS: ${{ steps.status.outcome }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            "committed=$TEST_COMMITTED" \
+            "duplicate=$TEST_DUPLICATE" \
+            "issue=$TEST_ISSUE" \
+            "opaque=$TEST_OPAQUE" \
+            "complete=$TEST_COMPLETE" \
+            "exact=$TEST_EXACT" \
+            "eir=$TEST_EIR" \
+            "ast_kinds=$TEST_AST_KINDS" \
+            "id_grammar=$TEST_ID_GRAMMAR" \
+            "rendering=$TEST_RENDERING" \
+            "clippy=$CLIPPY" \
+            "status=$STATUS"
+          test "$TEST_COMMITTED" = success
+          test "$TEST_DUPLICATE" = success
+          test "$TEST_ISSUE" = success
+          test "$TEST_OPAQUE" = success
+          test "$TEST_COMPLETE" = success
+          test "$TEST_EXACT" = success
+          test "$TEST_EIR" = success
+          test "$TEST_AST_KINDS" = success
+          test "$TEST_ID_GRAMMAR" = success
+          test "$TEST_RENDERING" = success
+          test "$CLIPPY" = success
+          test "$STATUS" = success
 
       - name: Commit improvement pass
         run: |
