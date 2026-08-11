@@ -12,15 +12,12 @@
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
-//! use perl_lsp_rs_core::providers::diagnostics::PullDiagnosticsContext;
+//! The public LSP runtime invokes the diagnostics provider with the current
+//! document and workspace context. The context shape is an implementation
+//! boundary, so this module intentionally does not publish a copy-paste
+//! struct-literal example with omitted fields. Use the LSP server entry point
+//! or the focused provider tests when integrating this layer.
 //!
-//! // Diagnostics are computed via the pull-based provider, which takes an
-//! // AST, source text, and optional workspace context. See
-//! // `PullDiagnosticsContext` for the full API surface.
-//! let ctx = PullDiagnosticsContext { /* ... */ };
-//! ```
-
 /// Dead code detection
 #[cfg(not(target_arch = "wasm32"))]
 mod dead_code;
