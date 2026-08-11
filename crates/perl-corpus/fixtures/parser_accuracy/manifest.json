@@ -1715,6 +1715,48 @@
             "sub_decl"
           ]
         }
+      ],
+      "ast_expectations": [
+        {
+          "id": "heredoc_basic_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Heredoc",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_variable",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $text",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_subroutine",
+          "kind": "Subroutine",
+          "line": 8,
+          "span_text": "sub after",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_return",
+          "kind": "Return",
+          "line": 9,
+          "span_text": "return $text",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -1800,6 +1842,48 @@
           "expected_tags": [
             "regex"
           ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "regex_match_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Regex",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub matches",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_variable",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $value",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return $value",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -3056,6 +3140,48 @@
             "variable_decl"
           ]
         }
+      ],
+      "ast_expectations": [
+        {
+          "id": "quote_like_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::QuoteLike",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_subroutine",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub quote",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_variable",
+          "kind": "VariableDeclaration",
+          "line": 4,
+          "span_text": "my $message",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return qq{$message}",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -3350,6 +3476,38 @@
               ]
             }
           ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "post_error_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::PostErrorPackageRecovery",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_package",
+          "kind": "Package",
+          "line": 4,
+          "span_text": "package Accuracy::Recovered",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_subroutine",
+          "kind": "Subroutine",
+          "line": 5,
+          "span_text": "sub next_sub",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
