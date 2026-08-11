@@ -143,10 +143,22 @@ pub struct AstInvariantReport {
 }
 
 impl AstInvariantReport {
+    /// Return `true` when at least one structural finding was retained.
+    #[must_use]
+    pub fn has_findings(&self) -> bool {
+        !self.findings.is_empty()
+    }
+
+    /// Return `true` when traversal and finding retention completed within bounds.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.truncated
+    }
+
     /// Return `true` when no structural finding was observed and traversal completed.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.findings.is_empty() && !self.truncated
+        !self.has_findings() && self.is_complete()
     }
 }
 
