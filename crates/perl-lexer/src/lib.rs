@@ -3588,16 +3588,16 @@ impl<'a> PerlLexer<'a> {
                 return true;
             }
         }
-        if let Some(symbol_table) = &self.config.symbol_table {
-            if remaining.split_whitespace().next().is_some_and(|keyword| {
+        if let Some(symbol_table) = &self.config.symbol_table
+            && remaining.split_whitespace().next().is_some_and(|keyword| {
                 symbol_table.is_known_sub(keyword)
                     && remaining
                         .strip_prefix(keyword)
                         .is_some_and(|after| after.starts_with(char::is_whitespace))
-            }) && self.qw_statement_terminates(position)
-            {
-                return true;
-            }
+            })
+            && self.qw_statement_terminates(position)
+        {
+            return true;
         }
         self.qw_block_statement_boundary_at(position)
     }
