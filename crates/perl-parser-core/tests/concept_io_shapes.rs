@@ -39,7 +39,7 @@ fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
     );
     let ast = parse_clean(source)?;
     let mut stdin_readlines = Vec::new();
-    let mut diamonds = 0usize;
+    let mut diamonds = Vec::new();
     let mut globs = Vec::new();
     let mut shifts = Vec::new();
 
@@ -49,7 +49,11 @@ fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
                 stdin_readlines.push(text);
             }
         }
-        NodeKind::Diamond => diamonds += 1,
+        NodeKind::Diamond => {
+            if let Some(text) = source_text(source, node) {
+                diamonds.push(text);
+            }
+        }
         NodeKind::Glob { .. } => {
             if let Some(text) = source_text(source, node) {
                 globs.push(text);
@@ -62,9 +66,10 @@ fn angle_forms_do_not_collapse_into_shift_or_heredoc() -> Result<(), String> {
         }
         _ => {}
     });
+    diamonds.sort();
 
     assert_eq!(stdin_readlines, vec!["<STDIN>"]);
-    assert_eq!(diamonds, 2, "<> and <<>> must remain Diamond nodes");
+    assert_eq!(diamonds, vec!["<<>>", "<>"]);
     assert_eq!(globs, vec!["<*.pl>"]);
     assert_eq!(shifts, vec!["$value << 2"]);
     Ok(())
