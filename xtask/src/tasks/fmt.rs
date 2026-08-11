@@ -89,10 +89,18 @@ fn git_lines(args: &[&str]) -> Result<Vec<String>> {
 ///
 /// Longest-prefix wins so a crate nested inside another crate's directory is
 /// attributed to the inner one.
+///
+/// A package whose directory is the workspace root has an empty relative
+/// directory, for which `"{dir}/"` would be `"/"` and match nothing. It is
+/// treated as matching every path; longest-prefix then still prefers a more
+/// specific subdirectory package when one exists. This workspace is a virtual
+/// manifest today, so that case is latent rather than live — but a helper that
+/// silently attributed root-package files to no package would skip formatting
+/// them, which is the failure this whole task exists to prevent.
 pub(crate) fn owning_package<'a>(path: &str, packages: &'a [(String, String)]) -> Option<&'a str> {
     packages
         .iter()
-        .filter(|(_, dir)| path.starts_with(&format!("{dir}/")))
+        .filter(|(_, dir)| dir.is_empty() || path.starts_with(&format!("{dir}/")))
         .max_by_key(|(_, dir)| dir.len())
         .map(|(name, _)| name.as_str())
 }
@@ -163,11 +171,11 @@ pub fn run_staged() -> Result<()> {
         } else {
             // Apply mode, scoped to the owning packages.
             run(false, Some(packages))?;
-            for path in &to_format {
-                cmd("git", &["add", "--", path])
-                    .run()
-                    .with_context(|| format!("re-staging {path}"))?;
-            }
+            // One `git add` for the whole set: this runs on every commit, and a
+            // process per file is a noticeable cost on Windows in particular.
+            let mut add_args = vec!["add", "--"];
+            add_args.extend(to_format.iter().map(|path| path.as_str()));
+            cmd("git", &add_args).run().context("failed to re-stage formatted files")?;
             println!("Formatted and re-staged {} staged Rust file(s).", to_format.len());
         }
     }
@@ -510,6 +518,19 @@ mod tests {
             super::owning_package("crates/perl-parser/src/lib.rs", &package_dirs()),
             Some("perl-parser"),
         );
+    }
+
+    #[test]
+    fn a_workspace_root_package_owns_paths_no_subpackage_claims() {
+        // A root package's relative directory is "", for which "{dir}/" would
+        // be "/" and match nothing. It must still own its own files.
+        let dirs = vec![
+            ("root-crate".to_string(), String::new()),
+            ("xtask".to_string(), "xtask".to_string()),
+        ];
+        assert_eq!(super::owning_package("src/lib.rs", &dirs), Some("root-crate"));
+        // ...and must not shadow a more specific package.
+        assert_eq!(super::owning_package("xtask/src/main.rs", &dirs), Some("xtask"));
     }
 
     #[test]
