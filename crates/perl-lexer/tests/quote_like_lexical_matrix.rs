@@ -1,9 +1,11 @@
 //! Lexer-owned matrix for supported Perl quote-like operators.
 //!
 //! This suite owns recognition, whole-token geometry, context suppression, and
-//! malformed terminal behavior. Parser AST structure and regex semantics remain
+//! malformed delimited forms. Parser AST structure and regex semantics remain
 //! separate contracts under #6692 and #2075. Whitespace-separated `s` forms are
 //! deliberately excluded until the production lexer admits them under #6723.
+//! Bare operator words without delimiters are also excluded: production still
+//! falls back to identifiers where Perl commits to a malformed quote-like form.
 
 use perl_lexer::{PerlLexer, Token, TokenType};
 
@@ -54,6 +56,20 @@ fn collect(input: &str) -> Vec<Token> {
     PerlLexer::new(input).collect_tokens()
 }
 
+fn is_quote_like_family(token_type: &TokenType) -> bool {
+    matches!(
+        token_type,
+        TokenType::QuoteSingle
+            | TokenType::QuoteDouble
+            | TokenType::QuoteWords
+            | TokenType::QuoteCommand
+            | TokenType::QuoteRegex
+            | TokenType::RegexMatch
+            | TokenType::Substitution
+            | TokenType::Transliteration
+    )
+}
+
 fn assert_suppressed_token(
     source: &str,
     tokens: &[Token],
@@ -81,12 +97,19 @@ fn assert_suppressed_token(
         ),
     }
     assert_eq!(source.get(token.start..token.end), Some(text));
-    assert!(!token.token_type.is_recovery_token());
+    assert!(
+        tokens.iter().all(|candidate| {
+            !is_quote_like_family(&candidate.token_type)
+                && !candidate.token_type.is_recovery_token()
+        }),
+        "suppressed context emitted a quote-like or recovery token for {source:?}: {tokens:?}"
+    );
+    assert!(matches!(tokens.last().map(|token| &token.token_type), Some(TokenType::EOF)));
     Ok(())
 }
 
 #[test]
-fn every_operator_family_owns_exact_whole_token_geometry() -> R {
+fn every_operator_family_owns_exact_whole_token_geometry_and_resumes() -> R {
     let cases = [
         ("q{literal}", ExpectedKind::QuoteSingle),
         (r"q|literal\|tail|", ExpectedKind::QuoteSingle),
@@ -125,26 +148,22 @@ fn every_operator_family_owns_exact_whole_token_geometry() -> R {
         let separator = next(&mut lexer, "missing token after quote-like operator")?;
         assert!(matches!(&separator.token_type, TokenType::Semicolon));
         assert_eq!((separator.start, separator.end), (lexeme.len(), lexeme.len() + 1));
-    }
-    Ok(())
-}
 
-#[test]
-fn bare_reserved_operator_names_without_delimiters_remain_identifiers() -> R {
-    for name in ["q", "qq", "qw", "qx", "qr", "m", "s", "tr", "y"] {
-        let mut lexer = PerlLexer::new(name);
-        let token = next(&mut lexer, "missing bare quote-operator identifier")?;
+        let resumed = next(&mut lexer, "missing identifier after quote-like operator")?;
         assert!(
-            matches!(&token.token_type, TokenType::Identifier(identifier) if identifier.as_ref() == name),
-            "bare {name:?} must remain an identifier, got {:?}",
-            token.token_type
+            matches!(&resumed.token_type, TokenType::Identifier(name) if name.as_ref() == "after"),
+            "{lexeme:?} left stale state before the following identifier: {:?}",
+            resumed.token_type
         );
-        assert_eq!(token.text.as_ref(), name);
-        assert_eq!((token.start, token.end), (0, name.len()));
+        assert_eq!(
+            (resumed.start, resumed.end),
+            (lexeme.len() + 2, lexeme.len() + 2 + "after".len())
+        );
+        assert_eq!(source.get(resumed.start..resumed.end), Some("after"));
 
-        let eof = next(&mut lexer, "missing EOF after bare quote-operator identifier")?;
+        let eof = next(&mut lexer, "missing EOF after resumed identifier")?;
         assert!(matches!(&eof.token_type, TokenType::EOF));
-        assert_eq!((eof.start, eof.end), (name.len(), name.len()));
+        assert_eq!((eof.start, eof.end), (source.len(), source.len()));
         assert!(lexer.next_token().is_none());
     }
     Ok(())
@@ -209,7 +228,7 @@ fn quote_words_remains_enabled_inside_a_hash_slice() -> R {
 }
 
 #[test]
-fn malformed_forms_emit_one_source_anchored_error_then_eof() -> R {
+fn malformed_delimited_forms_emit_one_source_anchored_error_then_eof() -> R {
     for source in [
         "q{unterminated",
         "qq[unterminated",
