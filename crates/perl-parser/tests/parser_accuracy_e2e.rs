@@ -86,7 +86,10 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
         }
     }
 
-    assert!(exercised > 0, "selected parser accuracy e2e fixtures should include AST expectations");
+    assert!(
+        exercised > 0,
+        "selected parser accuracy e2e fixtures should include AST expectations"
+    );
     Ok(())
 }
 
