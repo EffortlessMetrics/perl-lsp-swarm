@@ -2777,7 +2777,7 @@ al"#;
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index.clone()));
     let completions =
         provider.get_completions_with_path(code, code.len(), Some(importer_uri.as_str()));
 
