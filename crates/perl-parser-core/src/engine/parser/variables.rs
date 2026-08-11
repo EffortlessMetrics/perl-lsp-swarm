@@ -71,9 +71,10 @@ impl<'a> Parser<'a> {
 
             // Don't consume semicolon here - let parse_statement handle it uniformly
 
-            let end = initializer
-                .as_ref()
-                .map_or_else(|| self.previous_position(), |node| node.location.end);
+            let end = initializer.as_ref().map_or_else(
+                || self.previous_position(),
+                |node| node.location.end.max(self.previous_position()),
+            );
             let node = Node::new(
                 NodeKind::VariableListDeclaration {
                     declarator,
@@ -202,9 +203,10 @@ impl<'a> Parser<'a> {
 
             // Don't consume semicolon here - let parse_statement handle it uniformly
 
-            let end = initializer
-                .as_ref()
-                .map_or_else(|| self.previous_position(), |node| node.location.end);
+            let end = initializer.as_ref().map_or_else(
+                || self.previous_position(),
+                |node| node.location.end.max(self.previous_position()),
+            );
             let node = Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
