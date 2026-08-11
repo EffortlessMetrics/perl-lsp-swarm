@@ -1715,6 +1715,58 @@
             "sub_decl"
           ]
         }
+      ],
+      "ast_expectations": [
+        {
+          "id": "heredoc_basic_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Heredoc",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_declaration",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $text",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_heredoc",
+          "kind": "Heredoc",
+          "line": 3,
+          "span_text": "<<'END_TEXT'",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_sub_after_body",
+          "kind": "Subroutine",
+          "line": 7,
+          "span_text": "sub after {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_return",
+          "kind": "Return",
+          "line": 8,
+          "span_text": "return $text",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -1800,6 +1852,58 @@
           "expected_tags": [
             "regex"
           ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "regex_match_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Regex",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_sub",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub matches {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_shift_call",
+          "kind": "FunctionCall",
+          "line": 4,
+          "span_text": "shift",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_bound_match",
+          "kind": "Match",
+          "line": 5,
+          "span_text": "$value =~ /foo\\d+/",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return $value =~ /foo\\d+/",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -2912,6 +3016,58 @@
             "variable_decl"
           ]
         }
+      ],
+      "ast_expectations": [
+        {
+          "id": "quote_like_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::QuoteLike",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_sub",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub quote {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_q_string",
+          "kind": "String",
+          "line": 4,
+          "span_text": "q{hello}",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_qq_string",
+          "kind": "String",
+          "line": 5,
+          "span_text": "qq{$message}",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return qq{$message}",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -3206,6 +3362,58 @@
               ]
             }
           ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "post_error_first_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::PostErrorPackageRecovery",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_malformed_binary",
+          "kind": "Binary",
+          "line": 3,
+          "span_text": "1 + 2",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": "+",
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_package",
+          "kind": "Package",
+          "line": 4,
+          "span_text": "package Accuracy::Recovered",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_sub",
+          "kind": "Subroutine",
+          "line": 5,
+          "span_text": "sub next_sub {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return 1",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
