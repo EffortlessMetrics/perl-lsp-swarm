@@ -30,20 +30,42 @@ fn source_text(source: &str, node: &Node) -> Option<String> {
 
 #[test]
 fn multiplication_binds_inside_addition() -> Result<(), String> {
-    let ast = parse_clean("my $value = 1 + 2 * 3;")?;
-    let mut proven = false;
+    let source = "my $value = 1 + 2 * 3;";
+    let ast = parse_clean(source)?;
+    let mut shapes = Vec::new();
 
     walk(&ast, &mut |node| {
         if let NodeKind::VariableDeclaration { initializer: Some(initializer), .. } = &node.kind
-            && let NodeKind::Binary { op, right, .. } = &initializer.kind
+            && let NodeKind::Binary { op, left, right } = &initializer.kind
             && op == "+"
-            && matches!(&right.kind, NodeKind::Binary { op, .. } if op == "*")
+            && let NodeKind::Binary {
+                op: nested_op,
+                left: nested_left,
+                right: nested_right,
+            } = &right.kind
+            && nested_op == "*"
         {
-            proven = true;
+            shapes.push((
+                source_text(source, initializer),
+                source_text(source, left),
+                source_text(source, nested_left),
+                source_text(source, nested_right),
+                matches!(&left.kind, NodeKind::Binary { op, .. } if op == "*"),
+            ));
         }
     });
 
-    assert!(proven, "1 + 2 * 3 must parse as addition whose right child is multiplication");
+    assert_eq!(
+        shapes,
+        vec![(
+            Some("1 + 2 * 3".to_string()),
+            Some("1".to_string()),
+            Some("2".to_string()),
+            Some("3".to_string()),
+            false,
+        )],
+        "1 + 2 * 3 must parse as the exact 1 + (2 * 3) tree"
+    );
     Ok(())
 }
 
