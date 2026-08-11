@@ -97,10 +97,11 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
 
 #[test]
 fn class_keywords_remain_ordinary_calls_outside_class_context() -> Result<(), String> {
-    let source = "field($outside); method($outside);";
+    let source = "field($outside); method($outside); ADJUST($outside);";
     let ast = parse_clean(source)?;
     let mut field_calls = Vec::new();
     let mut method_calls = Vec::new();
+    let mut adjust_calls = Vec::new();
 
     walk(&ast, &mut |node| {
         if let NodeKind::FunctionCall { name, .. } = &node.kind {
@@ -115,6 +116,11 @@ fn class_keywords_remain_ordinary_calls_outside_class_context() -> Result<(), St
                         method_calls.push(text);
                     }
                 }
+                "ADJUST" => {
+                    if let Some(text) = source_text(source, node) {
+                        adjust_calls.push(text);
+                    }
+                }
                 _ => {}
             }
         }
@@ -122,5 +128,6 @@ fn class_keywords_remain_ordinary_calls_outside_class_context() -> Result<(), St
 
     assert_eq!(field_calls, vec!["field($outside)"]);
     assert_eq!(method_calls, vec!["method($outside)"]);
+    assert_eq!(adjust_calls, vec!["ADJUST($outside)"]);
     Ok(())
 }
