@@ -25,6 +25,23 @@ while let Some(token) = lexer.next_token() {
 }
 ```
 
+## Configuration contract
+
+`LexerConfig` remains a public struct, but its fields do not all represent
+independent implementation modes:
+
+| Field / feature | Current behavior |
+| --- | --- |
+| `parse_interpolation` | Enables structured `StringPart` segmentation for supported interpolating strings. Disabling it keeps interpolation-looking text inside the literal token. |
+| `track_positions` | Compatibility field. Token byte spans are always produced because parser and editor consumers require them. |
+| `max_lookahead` | `0` disables package-qualified `::segment` continuation; any non-zero value enables the current one-boundary lookahead path. It is not a general scan budget. |
+| `symbol_table` | Optionally supplies file-local subroutine names for bareword/regex disambiguation. |
+| Cargo feature `simd` | Compatibility no-op. It currently selects no distinct implementation; issue #6715 owns implementation or removal. |
+
+Use `LexerConfig::DEFAULT_MAX_LOOKAHEAD` and
+`LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED` instead of inferring these contracts
+from historical field names.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0)
