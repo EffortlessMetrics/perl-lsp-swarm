@@ -41,7 +41,7 @@ Keep provider behavior, capability advertising, user-facing documentation, and g
 
 - [Current status](../project/CURRENT_STATUS.md)
 - [LSP feature policy](../reference/LSP_FEATURES.md)
-- [LSP missing-features report](../reference/LSP_MISSING_FEATURES_REPORT.md)
+- [Feature policy](../../features.toml) — canonical capability maturity and advertisement state
 - [Architecture reference](../reference/ARCHITECTURE.md)
 - [Verification protocol](../project/protocols/verification.md)
 - [Commands reference](../reference/COMMANDS_REFERENCE.md)
