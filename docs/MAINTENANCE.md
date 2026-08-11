@@ -14,8 +14,8 @@
 ## Table of Contents
 
 1. [Maintenance Schedule](#maintenance-schedule)
-2. [Support Policy](#support-policy)
-3. [Monitoring and Metrics](#monitoring-and-metrics)
+2. [Support Policy](#historical-support-policy-snapshot)
+3. [Monitoring and Metrics](#monitoring-and-metrics-process-guidance-targets-below-may-be-historical)
 4. [Team Responsibilities](#team-responsibilities)
 5. [Long-term Roadmap](#long-term-roadmap)
 6. [Runbooks](#runbooks)
