@@ -22,6 +22,8 @@ struct ParserAccuracyFixture {
     ast_expectations: Vec<AstExpectation>,
     #[serde(default)]
     forbidden_nodes: Vec<ForbiddenNode>,
+    #[serde(default)]
+    recovery_expectations: Vec<RecoveryExpectation>,
 }
 
 /// A node shape that must NOT appear at a given position.
@@ -46,6 +48,20 @@ struct ForbiddenNode {
     parent_kind: Option<String>,
     #[serde(default)]
     depth: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoveryExpectation {
+    id: String,
+    first_error_line: usize,
+    error_region: LineRange,
+    recovery_line: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct LineRange {
+    start: usize,
+    end: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +194,55 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
 
     assert!(exercised > 0, "selected parser accuracy e2e fixtures should include AST expectations");
     Ok(())
+}
+
+#[test]
+fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
+    let workspace_root = workspace_root();
+    let manifest_json = fs::read_to_string(
+        workspace_root
+            .join("crates").join("perl-corpus").join("fixtures").join("parser_accuracy").join("manifest.json"),
+    )?;
+    let manifest: ParserAccuracyManifest = serde_json::from_str(&manifest_json)?;
+    const RECOVERY_FIXTURES: &[&str] = &[
+        "unterminated_heredoc", "bad_heredoc_terminator", "unclosed_quote_like_operator",
+        "unclosed_regex", "unbalanced_bracket", "partial_sub_body", "orphan_close_delimiters",
+        "missing_comma_list", "nested_malformed_delimiters", "malformed_heredoc_recovery",
+    ];
+    for fixture_id in RECOVERY_FIXTURES {
+        let fixture = find_fixture(&manifest, fixture_id)?;
+        let expectation = fixture.recovery_expectations.first().ok_or_else(|| {
+            format!("recovery fixture '{fixture_id}' must declare an expected diagnostic boundary")
+        })?;
+        let source_path = workspace_root.join(&fixture.source_path);
+        let source = fs::read_to_string(&source_path)?;
+        let mut parser = Parser::new(&source);
+        let output = parser.parse_with_recovery();
+        let mut error_lines = std::collections::BTreeSet::new();
+        for diagnostic in &output.diagnostics {
+            if let Some(offset) = diagnostic.location() {
+                error_lines.insert(byte_offset_to_line(&source, offset));
+            }
+        }
+        collect_error_node_lines(&output.ast, &source, &mut error_lines);
+        assert_eq!(error_lines.first().copied(), Some(expectation.first_error_line),
+            "recovery fixture '{fixture_id}' first error boundary drifted ({})", expectation.id);
+        let expected_region = expectation.error_region.start..=expectation.error_region.end;
+        assert!(error_lines.iter().any(|line| expected_region.contains(line)),
+            "recovery fixture '{fixture_id}' has no error in declared region {}..={} ({})",
+            expectation.error_region.start, expectation.error_region.end, expectation.id);
+        assert!(error_lines.contains(&expectation.recovery_line),
+            "recovery fixture '{fixture_id}' missing recovery error node/diagnostic on line {} ({})",
+            expectation.recovery_line, expectation.id);
+    }
+    Ok(())
+}
+
+fn collect_error_node_lines(node: &Node, source: &str, lines: &mut std::collections::BTreeSet<usize>) {
+    if matches!(node.kind, NodeKind::Error { .. }) {
+        lines.insert(byte_offset_to_line(source, node.location.start));
+    }
+    node.for_each_child(|child| collect_error_node_lines(child, source, lines));
 }
 
 /// Every fixture with expectations must declare its own coverage honestly:
