@@ -56,7 +56,7 @@ fn array_hash_and_key_value_slices_remain_distinct() -> Result<(), String> {
     let mut hash_slices = 0usize;
     let mut key_value_slices = 0usize;
 
-    walk(&ast, &mut |node| match node.kind {
+    walk(&ast, &mut |node| match &node.kind {
         NodeKind::ArraySlice { .. } => array_slices += 1,
         NodeKind::HashSlice { .. } => hash_slices += 1,
         NodeKind::KeyValueSlice { .. } => key_value_slices += 1,
