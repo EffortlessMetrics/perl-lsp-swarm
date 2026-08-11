@@ -30,13 +30,8 @@ old_contract = '''    assert_eq!(sync.get("openClose"), Some(&Value::Bool(true))
     assert!(!save.contains_key("include_text"));
 '''
 new_contract = '''    let observed_keys: BTreeSet<_> = sync.keys().map(String::as_str).collect();
-    let expected_keys = BTreeSet::from([
-        "change",
-        "openClose",
-        "save",
-        "willSave",
-        "willSaveWaitUntil",
-    ]);
+    let expected_keys =
+        BTreeSet::from(["change", "openClose", "save", "willSave", "willSaveWaitUntil"]);
     assert_eq!(
         observed_keys, expected_keys,
         "textDocumentSync must change only through an intentional wire-contract update"
