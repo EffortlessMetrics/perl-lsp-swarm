@@ -53,9 +53,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p target/agent-6808-artifact/.ci
-          cp .ci/gate-policy.yaml target/agent-6808-artifact/.ci/gate-policy.yaml
-          sha256sum target/agent-6808-artifact/.ci/gate-policy.yaml \
+          mkdir -p target/agent-6808-artifact
+          cp .ci/gate-policy.yaml target/agent-6808-artifact/gate-policy.yaml
+          sha256sum target/agent-6808-artifact/gate-policy.yaml \
             > target/agent-6808-artifact/SHA256SUMS
           printf '%s\n' "$GITHUB_SHA" > target/agent-6808-artifact/source-sha.txt
 
