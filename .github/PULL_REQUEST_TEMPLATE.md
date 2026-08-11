@@ -16,6 +16,15 @@ update, empty commit, CI replay, or review refresh. "Behind by N" and "targets
 <sha> while live main is <sha>" are not findings. Only a real conflict or an
 actual combined-tree failure changes that.
 
+At final merge handoff, the lane owner may choose one late rebase when the
+candidate is many commits behind and refreshing once is cheaper or safer. That
+is an optional one-time decision, not a rule to keep every PR at zero distance.
+
+Do not describe hosted CI as an "exact-head proof authority." Name the affected
+hosted checks and the commit they actually evaluated. A status attaches to the
+commit it ran on; that fact does not create a branch-refresh, empty-commit, or
+full-CI replay rule for unaffected proof.
+
 Attribute a failing check before treating it as a candidate defect, and note that
 this cuts both ways. A cancelled run reached no verdict; a run that genuinely
 failed stays a finding until the seam it names actually changed, so a later
@@ -102,7 +111,7 @@ See docs/agents/REVIEW_CURRENTNESS.md.
 - [ ] Lane and applicable risk surfaces are declared above.
 - [ ] Trust-lane PRs name promotion, fallback, blocker, and receipt boundaries.
 - [ ] I ran the cheapest discriminating proof first.
-- [ ] Focused and affected proof is current for this candidate.
+- [ ] Focused and affected proof covers the candidate's changed semantic subjects; unaffected completed proof remains usable.
 - [ ] `cargo fmt --all -- --check` — clean or N/A.
 - [ ] Affected Clippy/test commands are listed under **Proof**.
 - [ ] UX-visible errors are actionable and the applicable UX/native proof is listed.

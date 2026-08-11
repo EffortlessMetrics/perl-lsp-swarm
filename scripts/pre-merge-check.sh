@@ -54,9 +54,8 @@ if ! printf '%s' "$TITLE" | grep -qE '\(#[0-9]+\)'; then
     FAILED=1
 fi
 
-# Reuse the existing paginated GitHub reader for native thread/review facts, but
-# deliberately select only semantic blockers. Its stale-head and legacy receipt
-# fields are compatibility observations and do not participate in this verdict.
+# Use the public semantic convergence command. The sibling -core script is only a
+# compatibility fact collector; its exact-head fields and exit status are not policy.
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
@@ -67,7 +66,7 @@ if [[ -z "$REVIEW_REPO" ]]; then
 fi
 
 set +e
-bash scripts/ci/check-pr-review-convergence-core "$PR" "$REVIEW_REPO" \
+bash scripts/ci/check-pr-review-convergence "$PR" "$REVIEW_REPO" \
     >"$TMP_DIR/review.out" 2>"$TMP_DIR/review.err"
 REVIEW_RC=$?
 set -e
@@ -78,26 +77,34 @@ if [[ "$REVIEW_RC" -ge 2 || -z "$REVIEW_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<
     cat "$TMP_DIR/review.err" >&2
     FAILED=1
 else
-    PENDING_REVIEWERS="$(jq -r '.pending_reviewers | length' <<<"$REVIEW_JSON")"
-    CHANGE_REQUESTS="$(jq -r '.current_change_requests | length' <<<"$REVIEW_JSON")"
-    UNRESOLVED_THREADS="$(jq -r '.unresolved_total // 0' <<<"$REVIEW_JSON")"
-    SILENT_RESOLUTIONS="$(jq -r '.resolved_without_disposition // 0' <<<"$REVIEW_JSON")"
+    REVIEW_CURRENTNESS="$(jq -r '.review_currentness // empty' <<<"$REVIEW_JSON")"
+    EXACT_HEAD_REQUIRED="$(jq -r '.exact_head_review_required // empty' <<<"$REVIEW_JSON")"
 
-    if [[ "$PENDING_REVIEWERS" -gt 0 ]]; then
-        echo "FAIL PR #$PR: $PENDING_REVIEWERS requested reviewer(s) still pending" >&2
+    if [[ "$REVIEW_CURRENTNESS" != "semantic_changed_seam" || "$EXACT_HEAD_REQUIRED" != "false" ]]; then
+        echo "FAIL PR #$PR: review facts did not come from the semantic convergence authority" >&2
         FAILED=1
-    fi
-    if [[ "$CHANGE_REQUESTS" -gt 0 ]]; then
-        echo "FAIL PR #$PR: $CHANGE_REQUESTS current change-request review(s) remain" >&2
-        FAILED=1
-    fi
-    if [[ "$UNRESOLVED_THREADS" -gt 0 ]]; then
-        echo "FAIL PR #$PR: $UNRESOLVED_THREADS review thread(s) remain unresolved" >&2
-        FAILED=1
-    fi
-    if [[ "$SILENT_RESOLUTIONS" -gt 0 ]]; then
-        echo "FAIL PR #$PR: $SILENT_RESOLUTIONS resolved thread(s) lack a disposition reply" >&2
-        FAILED=1
+    else
+        PENDING_REVIEWERS="$(jq -r '.pending_reviewers | length' <<<"$REVIEW_JSON")"
+        CHANGE_REQUESTS="$(jq -r '.current_change_requests | length' <<<"$REVIEW_JSON")"
+        UNRESOLVED_THREADS="$(jq -r '.unresolved_total // 0' <<<"$REVIEW_JSON")"
+        SILENT_RESOLUTIONS="$(jq -r '.resolved_without_disposition // 0' <<<"$REVIEW_JSON")"
+
+        if [[ "$PENDING_REVIEWERS" -gt 0 ]]; then
+            echo "FAIL PR #$PR: $PENDING_REVIEWERS requested reviewer(s) still pending" >&2
+            FAILED=1
+        fi
+        if [[ "$CHANGE_REQUESTS" -gt 0 ]]; then
+            echo "FAIL PR #$PR: $CHANGE_REQUESTS current change-request review(s) remain" >&2
+            FAILED=1
+        fi
+        if [[ "$UNRESOLVED_THREADS" -gt 0 ]]; then
+            echo "FAIL PR #$PR: $UNRESOLVED_THREADS review thread(s) remain unresolved" >&2
+            FAILED=1
+        fi
+        if [[ "$SILENT_RESOLUTIONS" -gt 0 ]]; then
+            echo "FAIL PR #$PR: $SILENT_RESOLUTIONS resolved thread(s) lack a disposition reply" >&2
+            FAILED=1
+        fi
     fi
 fi
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # check-pr-review-convergence — semantic GitHub review convergence.
 #
-# The existing core remains the paginated GitHub fact collector for review
-# requests, submitted reviews, review threads, and dispositions. This public
-# command deliberately does not compose claim-digest or exact-head receipt
-# state into the verdict. A candidate push does not erase every useful review
-# conclusion; changed semantic seams are re-reviewed by the provider-native
-# flow.
+# This is the only policy-bearing review-convergence entrypoint. The sibling
+# check-pr-review-convergence-core script is a legacy paginated fact collector;
+# its exact-head review fields, stale-review observations, and exit status are
+# compatibility data, not policy. Callers must use this public command.
+#
+# A candidate push does not erase every useful review conclusion. This command
+# composes native requests, submitted reviews, review threads, and dispositions
+# into semantic convergence; changed seams are re-reviewed by the provider-native
+# flow without claim-digest or exact-head receipt requirements.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then

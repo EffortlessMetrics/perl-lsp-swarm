@@ -27,6 +27,21 @@ Keep three questions distinct:
 
 Movement in one does not automatically invalidate the others.
 
+## Three identities
+
+Do not collapse three different identities into one freshness rule.
+
+| Subject | Identity | What can invalidate it |
+| --- | --- | --- |
+| semantic candidate and proof | the cumulative PR change and the named claim/proof subjects | a later PR commit that can change the claim, implementation, production route, or tested seam |
+| base integration | the candidate combined with the current base | an actual conflict or demonstrated combined-tree interaction |
+| merge race | the current PR head SHA | any branch push; this identity is used only for compare-and-swap protection at merge |
+
+`main` advancing without a conflict or concrete combined-tree interaction changes none
+of the candidate's semantic evidence. A new PR head does not erase completed proof for
+subjects the new commit cannot affect. The merge-race SHA is not a review or CI
+freshness policy.
+
 ## Review is semantic, not exact-head
 
 A review is a judgment about a claim, implementation, proof, production path, risk,
@@ -131,6 +146,19 @@ If Git reports a real conflict, the later lane resolves it and refreshes only th
 affected proof/review. If an explicit stack or combined-tree check exposes a real
 interaction, repair that interaction rather than predicting overlap in advance.
 
+### Optional late rebase
+
+Commit distance is a cost signal, not an acceptance condition. Once a candidate is
+otherwise merge-ready, the lane owner may choose one rebase immediately before merge
+when the branch is many commits behind and evaluating the refreshed integration is
+cheaper or safer than carrying the old base. This is an optional, one-time late action,
+not a duty to maintain zero distance from `main`.
+
+Do not rebase repeatedly as `main` continues to move. After the optional late rebase,
+refresh only the proof and review subjects that the rebase actually changed. A real
+conflict, a demonstrated combined-tree failure, or an explicit lane-owner decision is
+the trigger; the commit count alone is not.
+
 ## Check attribution
 
 A failing check is evidence about a candidate only if it ran on that candidate and
@@ -194,7 +222,7 @@ gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
 
 This is merge race protection. It is not review currentness and does not justify
-exact-head review comments.
+exact-head review comments, branch refreshes, or CI replay.
 
 ## Landed reconciliation
 

@@ -50,7 +50,7 @@ and recommended route. They do not mutate the candidate or decide merge readines
 Join one current snapshot only after:
 
 - substantive review is `REVIEW_CURRENT`;
-- required/advisory status and evaluated candidate identity are known;
+- required/advisory status and each check's actual evaluated subject are known;
 - every current relevant check/review/thread/queue fact has an honest classification;
 - candidate-owned, base-owned, integration, oracle, instrument, environment, pending,
   and not-proven outcomes remain distinct;
@@ -107,9 +107,19 @@ Pending checks leave substantive review current while integration is `PR_IN_FLIG
 
 ## Live evidence classification
 
-Preserve success, failure, pending, not-applicable, cancelled, stale-check-result,
-missing, instrument-failure, and not-proven distinctly. Success on an older candidate is
-stale evidence, not current green.
+Preserve success, failure, pending, not-applicable, cancelled, missing,
+instrument-failure, and not-proven distinctly. Do not use head age as a blanket
+evidence rule:
+
+- a cancelled or incomplete run reached no verdict;
+- a completed result on an earlier PR head remains usable semantic evidence when later
+  commits cannot affect the tested subject. It is not a status attached to the live
+  SHA, but the SHA mismatch does not erase what the run established;
+- when a later PR commit can affect the tested subject, rerun only the affected proof;
+- a required status that is missing or pending on the live PR head is a GitHub
+  integration fact. Request a job rerun where appropriate without mutating the branch.
+  Never rebase, push an empty commit, or replay unrelated CI merely to manufacture a
+  current status.
 
 Classify failures as candidate-owned, base-owned, integration interaction,
 test/oracle defect, instrument failure, environment/capacity, pending, or
@@ -150,10 +160,14 @@ owned failure, changed prerequisite/route, corrected instrument classification,
   change → `$review-pr` for affected dimensions;
 - formatting, editorial cleanup, generated receipt refresh, or stronger tests → no
   automatic full-review restart;
-- conflict/combined-tree repair → focused proof/review of affected seam.
+- conflict/combined-tree repair → focused proof/review of affected seam;
+- `main` advances while the candidate remains conflict-free → no candidate, proof, or
+  review action;
+- an otherwise merge-ready branch is many commits behind → the lane root may choose one
+  optional late rebase, once, then refresh only subjects actually changed by it.
 
 Do not update/rebase/merge `main` or replay all proof merely because a conflict-free
-branch is behind.
+branch is behind. Commit distance is advisory, not a recurring freshness gate.
 
 ## Routes
 
