@@ -66,7 +66,7 @@ The authority ledger classifies it as a **lower-tier kernel**:
 - it is not production-eligible independently of the canonical contract;
 - #6707 must either route it behind the canonical surface with shared differential proof or retire it after its useful proof is migrated.
 
-The tree-sitter facade remains an explicitly allowed consumer during that transition. Each allowed consumer records both its public symbol and its production Rust source path. The contract scans `crates/*/src/**/*.rs`, excluding the owner crate, and requires the discovered source set to equal the ledger exactly. Tests, examples, benches, and `archive/` are intentionally outside this production-consumer boundary. Adding another production consumer therefore requires an authority-ledger change in the same PR.
+The tree-sitter facade remains an explicitly allowed consumer during that transition. Each allowed consumer records both its public symbol and its production Rust source path. The contract scans `crates/*/src/**/*.rs`, excluding the owner crate, and requires the discovered source set to equal the ledger exactly. Within each allowed file, the number of lower-tier `reparse` call sites must equal the number of declared public consumer symbols, and every symbol must retain one exact public-function anchor. Tests, examples, benches, and `archive/` are intentionally outside this production-consumer boundary. Adding another production consumer therefore requires an authority-ledger change in the same PR even when it is added inside an already-allowlisted file.
 
 ## Compatibility crate
 
@@ -89,7 +89,8 @@ Unique behavioral cases currently housed in the compatibility crate should move 
 - every publicly exported `perl-parser` incremental generation is classified exactly once;
 - the active `perl-parser-core` token-replay kernel remains explicitly classified;
 - every production Rust source that imports the lower-tier kernel is discovered and allowlisted by exact path;
-- each allowed source still contains the declared consumer symbol and lower-tier call;
+- every declared lower-tier public symbol remains present exactly once;
+- lower-tier `reparse` call-site cardinality cannot broaden inside an already-allowlisted source file;
 - no non-canonical surface is marked production-eligible;
 - the compatibility crate forwards the canonical implementation instead of defining another one;
 - retired, experimental, and lower-tier surfaces cannot disappear from the authority ledger silently.

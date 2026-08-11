@@ -171,7 +171,8 @@ fn uses_lower_tier_incremental(source: &str) -> bool {
         || (compact.contains("perl_parser_core::{")
             && (compact.contains("incremental::{")
                 || compact.contains("incremental,")
-                || compact.contains("incremental}")))
+                || compact.contains("incremental}")
+                || compact.contains("incrementalas")))
 }
 
 fn normalized_workspace_path(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -188,6 +189,25 @@ fn discovered_lower_tier_consumers() -> Result<BTreeSet<String>, Box<dyn std::er
         }
     }
     Ok(consumers)
+}
+
+fn declared_consumers_by_source<'a>(
+    consumers: &'a [AllowedConsumer],
+) -> BTreeMap<String, Vec<&'a AllowedConsumer>> {
+    let mut by_source = BTreeMap::<String, Vec<&AllowedConsumer>>::new();
+    for consumer in consumers {
+        by_source.entry(consumer.source_path.clone()).or_default().push(consumer);
+    }
+    by_source
+}
+
+fn public_function_anchor(symbol: &str) -> String {
+    let function = symbol.rsplit("::").next().unwrap_or(symbol);
+    format!("pubfn{function}(")
+}
+
+fn lower_tier_reparse_call_count(source: &str) -> usize {
+    compact_whitespace(source).match_indices(".reparse(").count()
 }
 
 #[test]
@@ -281,16 +301,26 @@ fn every_public_incremental_generation_has_one_non_production_disposition() -> T
 }
 
 #[test]
-fn lower_tier_consumer_detector_covers_direct_and_nested_imports() {
+fn lower_tier_consumer_detector_covers_direct_nested_and_aliased_imports() {
     assert!(uses_lower_tier_incremental(
         "use perl_parser_core::incremental::IncrementalState;"
     ));
     assert!(uses_lower_tier_incremental(
         "use perl_parser_core::{ParseOutput, incremental::{IncrementalEdit, IncrementalState}};"
     ));
+    assert!(uses_lower_tier_incremental(
+        "use perl_parser_core::{incremental as core_incremental, ParseOutput};"
+    ));
     assert!(!uses_lower_tier_incremental(
         "use perl_parser_core::{ParseOutput, Parser};"
     ));
+}
+
+#[test]
+fn lower_tier_callsite_counter_detects_multiple_consumers_in_one_file() {
+    let source = "pub fn first() { state.reparse(source, edit); }\n\
+                  pub fn second() { other.reparse(source, edit); }";
+    assert_eq!(lower_tier_reparse_call_count(source), 2);
 }
 
 #[test]
@@ -321,21 +351,44 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
     assert_eq!(kernel.owner_issue, 6707);
     assert!(!kernel.decision.trim().is_empty());
 
-    let allowed_sources = kernel
-        .allowed_consumers
-        .iter()
-        .map(|consumer| consumer.source_path.clone())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        allowed_sources.len(),
-        kernel.allowed_consumers.len(),
-        "lower-tier consumer source paths must be unique"
-    );
+    let declared_by_source = declared_consumers_by_source(&kernel.allowed_consumers);
+    let allowed_sources = declared_by_source.keys().cloned().collect::<BTreeSet<_>>();
     assert_eq!(
         discovered_lower_tier_consumers()?,
         allowed_sources,
-        "every production source consumer of perl_parser_core::incremental must be allowlisted exactly once"
+        "every production source consumer of perl_parser_core::incremental must be allowlisted"
     );
+
+    let mut declared_symbols = BTreeSet::new();
+    for consumer in &kernel.allowed_consumers {
+        assert!(
+            declared_symbols.insert(consumer.symbol.clone()),
+            "duplicate lower-tier consumer symbol: {}",
+            consumer.symbol
+        );
+        assert!(!consumer.symbol.trim().is_empty());
+        assert!(!consumer.source_path.trim().is_empty());
+    }
+
+    for (source_path, consumers) in &declared_by_source {
+        let source = read(workspace_root().join(source_path))?;
+        let compact = compact_whitespace(&source);
+        assert_eq!(
+            lower_tier_reparse_call_count(&source),
+            consumers.len(),
+            "lower-tier reparse call sites in {source_path} must match declared consumer symbols"
+        );
+        for consumer in consumers {
+            let anchor = public_function_anchor(&consumer.symbol);
+            assert_eq!(
+                compact.match_indices(&anchor).count(),
+                1,
+                "declared lower-tier consumer {} must have exactly one public function anchor in {}",
+                consumer.symbol,
+                consumer.source_path
+            );
+        }
+    }
 
     let consumer = kernel
         .allowed_consumers
@@ -350,8 +403,6 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
     let kernel_source = compact_whitespace(&read(
         crate_root().join("../perl-parser-core/src/incremental.rs"),
     )?);
-    let tree_sitter_facade =
-        compact_whitespace(&read(workspace_root().join(&consumer.source_path))?);
 
     assert!(
         core_facade.contains("pubmodincremental;"),
@@ -362,15 +413,6 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
     assert!(
         kernel_source.contains("pubfnreparse(&mutself,new_source:&str,edit:&IncrementalEdit)"),
         "the classified lower-tier reparse entry point changed"
-    );
-    assert!(
-        tree_sitter_facade
-            .contains("pubfnparse_with_old_tree(&mutself,source:&str,old_tree:&Tree)->Option<Tree>"),
-        "the classified tree-sitter consumer changed or disappeared"
-    );
-    assert!(
-        tree_sitter_facade.contains("state.reparse(source,&incremental_edit)"),
-        "the classified consumer no longer calls the lower-tier kernel"
     );
 
     Ok(())
