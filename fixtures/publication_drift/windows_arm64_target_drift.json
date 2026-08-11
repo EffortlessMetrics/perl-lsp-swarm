@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "swarm": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "version": "0.17.0"
+  },
+  "public": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "version": "0.17.0"
+  },
+  "manifest_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "differences": [
+    {
+      "path": "vscode-extension/src/downloader.ts",
+      "classification": "product_drift",
+      "behavior_changed": true,
+      "evidence": [
+        "The public v0.17 VSIX requested aarch64-pc-windows-msvc while the release produced only x86_64-pc-windows-msvc."
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "id": "targets_requested_are_built",
+      "status": "fail",
+      "evidence": [
+        "The managed downloader requested a Windows target absent from the release matrix."
+      ]
+    }
+  ]
+}
