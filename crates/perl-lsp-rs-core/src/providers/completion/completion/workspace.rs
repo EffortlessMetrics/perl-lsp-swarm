@@ -1977,11 +1977,17 @@ fn method_symbol_defining_packages(
 }
 
 fn is_confident_method_candidate(candidate: &DefinitionCandidate) -> bool {
-    candidate.confidence == Confidence::High
-        && matches!(
-            candidate.kind,
-            EntityKind::GeneratedMember | EntityKind::Method | EntityKind::Subroutine
-        )
+    match candidate.kind {
+        // Generated accessors are emitted with medium confidence because they
+        // are inferred from framework declarations rather than explicit Perl
+        // subroutines.  The workspace-index path is still authoritative enough
+        // for inherited completion when the entity kind is preserved.
+        EntityKind::GeneratedMember => {
+            matches!(candidate.confidence, Confidence::Medium | Confidence::High)
+        }
+        EntityKind::Method | EntityKind::Subroutine => candidate.confidence == Confidence::High,
+        _ => false,
+    }
 }
 
 fn semantic_method_candidate_sort_key(
