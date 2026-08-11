@@ -46,12 +46,8 @@ pub struct Diagnostic {
 impl From<Diagnostic> for perl_diagnostics::Diagnostic {
     fn from(inner: Diagnostic) -> Self {
         let code = inner.code.as_deref().and_then(parse_diagnostic_code).unwrap_or_default();
-        let mut diag = perl_diagnostics::Diagnostic::new(
-            code,
-            inner.severity,
-            inner.range,
-            inner.message,
-        );
+        let mut diag =
+            perl_diagnostics::Diagnostic::new(code, inner.severity, inner.range, inner.message);
         if !inner.related_information.is_empty() {
             diag.related_information = Some(
                 inner
