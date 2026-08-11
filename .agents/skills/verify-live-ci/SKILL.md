@@ -160,14 +160,19 @@ owned failure, changed prerequisite/route, corrected instrument classification,
   change → `$review-pr` for affected dimensions;
 - formatting, editorial cleanup, generated receipt refresh, or stronger tests → no
   automatic full-review restart;
-- conflict/combined-tree repair → focused proof/review of affected seam;
-- `main` advances while the candidate remains conflict-free → no candidate, proof, or
-  review action;
-- an otherwise merge-ready branch is many commits behind → the lane root may choose one
-  optional late rebase, once, then refresh only subjects actually changed by it.
+- conflict/combined-tree repair → rebase or otherwise integrate as useful, then refresh
+  only the affected proof and review;
+- `main` advances while the candidate remains conflict-free → no required candidate,
+  proof, or review action;
+- rebase is acceptable when resolving an actual conflict or when the lane owner judges
+  that a base refresh materially simplifies active work or reduces a concrete
+  integration risk;
+- repeated rebases solely to chase `main` or replay CI are churn; distinct integration
+  work may justify more than one.
 
-Do not update/rebase/merge `main` or replay all proof merely because a conflict-free
-branch is behind. Commit distance is advisory, not a recurring freshness gate.
+Do not update the candidate, rebase it, or replay all proof merely because a
+conflict-free branch is behind. Commit distance is advisory; a concrete integration
+purpose governs the rebase.
 
 ## Routes
 

@@ -16,9 +16,13 @@ update, empty commit, CI replay, or review refresh. "Behind by N" and "targets
 <sha> while live main is <sha>" are not findings. Only a real conflict or an
 actual combined-tree failure changes that.
 
-At final merge handoff, the lane owner may choose one late rebase when the
-candidate is many commits behind and refreshing once is cheaper or safer. That
-is an optional one-time decision, not a rule to keep every PR at zero distance.
+Rebasing is ordinary integration work when it solves a concrete problem. Its
+main accepted use is resolving an actual merge conflict in the candidate lane;
+refresh only conflict-affected proof and review afterward. The lane owner may
+also rebase when a base refresh materially simplifies active work or reduces a
+concrete integration risk. There is no one-rebase limit, but do not keep a PR at
+exact head or rebase after every unrelated merge merely to retrigger CI; commit
+distance alone is not a finding.
 
 Do not describe hosted CI as an "exact-head proof authority." Name the affected
 hosted checks and the commit they actually evaluated. A status attaches to the

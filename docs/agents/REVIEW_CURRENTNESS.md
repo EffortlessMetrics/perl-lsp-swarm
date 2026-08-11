@@ -146,18 +146,22 @@ If Git reports a real conflict, the later lane resolves it and refreshes only th
 affected proof/review. If an explicit stack or combined-tree check exposes a real
 interaction, repair that interaction rather than predicting overlap in advance.
 
-### Optional late rebase
+### Rebase as integration work
 
-Commit distance is a cost signal, not an acceptance condition. Once a candidate is
-otherwise merge-ready, the lane owner may choose one rebase immediately before merge
-when the branch is many commits behind and evaluating the refreshed integration is
-cheaper or safer than carrying the old base. This is an optional, one-time late action,
-not a duty to maintain zero distance from `main`.
+Rebase is an ordinary integration tool, not a freshness ceremony. Its main accepted
+use is while resolving an actual merge conflict. The candidate lane rebases, resolves
+the conflict, and refreshes the proof and review subjects affected by the new combined
+tree and the resolution.
 
-Do not rebase repeatedly as `main` continues to move. After the optional late rebase,
-refresh only the proof and review subjects that the rebase actually changed. A real
-conflict, a demonstrated combined-tree failure, or an explicit lane-owner decision is
-the trigger; the commit count alone is not.
+The lane owner may also rebase when refreshing the base materially simplifies active
+work or reduces a concrete integration risk. It does not need to be the final action,
+and there is no mechanical one-rebase limit. Commit distance can inform that judgment,
+but it is not an acceptance condition.
+
+Behind-only movement still requires no action. Do not rebase after every unrelated
+`main` commit, push empty commits, or keep a PR at exact head merely to retrigger CI.
+Repeated rebases are churn when they have no conflict, interaction, or active-work
+reason; distinct integration work may justify more than one.
 
 ## Check attribution
 

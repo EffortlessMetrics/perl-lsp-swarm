@@ -34,14 +34,14 @@ make_mock_gh() {
     local tmpdir json
     tmpdir="$(mktemp -d)"
     json="$1"
-    cat > "$tmpdir/gh" <<EOF
+    cat > "$tmpdir/gh" <<EOF_MOCK
 #!/usr/bin/env bash
 if [[ "\$*" == *"repo view"* ]]; then
     printf '%s' 'test-owner/test-repo'
 else
     printf '%s' '$json'
 fi
-EOF
+EOF_MOCK
     chmod +x "$tmpdir/gh"
     echo "$tmpdir"
 }
@@ -153,7 +153,13 @@ test_public_semantic_wrapper_is_authority() {
 test_currentness_policy_surfaces() {
     local ok=true
 
-    grep -Fq 'Commit distance is a cost signal, not an acceptance condition.' "$CURRENTNESS_DOC" || ok=false
+    grep -Fq 'Rebase is an ordinary integration tool, not a freshness ceremony.' "$CURRENTNESS_DOC" || ok=false
+    grep -Fq 'Its main accepted use is while resolving an actual merge conflict.' "$CURRENTNESS_DOC" || ok=false
+    grep -Fq 'there is no mechanical one-rebase limit.' "$CURRENTNESS_DOC" || ok=false
+    grep -Fq 'rebase is acceptable when resolving an actual conflict' "$AGENT_VERIFY" || ok=false
+    grep -Fq 'rebase is acceptable when resolving an actual conflict' "$CLAUDE_VERIFY" || ok=false
+    grep -Fq 'Rebasing is ordinary integration work when it solves a concrete problem.' "$PR_TEMPLATE" || ok=false
+    grep -Fq 'There is no one-rebase limit' "$PR_TEMPLATE" || ok=false
     grep -Fq 'a completed result on an earlier PR head remains usable semantic evidence' "$AGENT_VERIFY" || ok=false
     grep -Fq 'a completed result on an earlier PR head remains usable semantic evidence' "$CLAUDE_VERIFY" || ok=false
     grep -Fq 'Do not describe hosted CI as an "exact-head proof authority."' "$PR_TEMPLATE" || ok=false
@@ -162,11 +168,20 @@ test_currentness_policy_surfaces() {
     if grep -Fq 'Success on an older candidate is stale evidence, not current green.' "$AGENT_VERIFY" "$CLAUDE_VERIFY"; then
         ok=false
     fi
+    if grep -Fq 'one rebase immediately before merge' "$CURRENTNESS_DOC"; then
+        ok=false
+    fi
+    if grep -Fq 'one optional late rebase, once' "$AGENT_VERIFY" "$CLAUDE_VERIFY"; then
+        ok=false
+    fi
+    if grep -Fq 'optional one-time decision' "$PR_TEMPLATE"; then
+        ok=false
+    fi
 
     if [[ "$ok" == "true" ]]; then
-        pass "active policy surfaces reject exact-head churn and preserve one optional late rebase"
+        pass "active policy surfaces reject exact-head churn and treat rebase as integration work"
     else
-        fail "currentness policy surfaces drifted back toward exact-head churn"
+        fail "currentness policy surfaces drifted toward exact-head churn or a one-rebase rule"
     fi
 }
 
