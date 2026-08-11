@@ -2238,7 +2238,7 @@ pub(super) fn collect_all_package_members(
 /// when the receiver package has not been indexed yet. This keeps completion
 /// useful during editing while retaining the workspace index as the authority
 /// for persisted members and inherited packages.
-pub(super) fn collect_all_package_members_with_source(
+fn collect_all_package_members_with_source(
     index: &WorkspaceIndex,
     package_name: &str,
     source: &str,
