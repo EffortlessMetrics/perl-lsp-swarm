@@ -4,6 +4,7 @@ on:
   # Deliberately omit a branches filter: stacked PRs need an explicit
   # non-success signal when the expensive main-targeted gate is absent.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   merge_group:
 
 permissions:
