@@ -504,7 +504,7 @@ export async function activate(context: vscode.ExtensionContext) {
     registerMcpSupport(outputChannel),
   );
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.command = 'perl-lsp.showStatusMenu';
+  statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
     label: 'Perl Language Server',
     role: 'button',
@@ -608,11 +608,31 @@ export async function activate(context: vscode.ExtensionContext) {
           const widget = healthWidget;
           const mode = widget?.mode ?? 'starting';
           const hasLiveServer = mode === 'running' || mode === 'indexing';
+          const activeEditor = vscode.window.activeTextEditor;
+          const activePerlDocument = activeEditor?.document.languageId === 'perl';
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
             ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
+            ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
+            ...(widget?.experienceDetail ? { lifecycleDetail: widget.experienceDetail } : {}),
+            ...(hasLiveServer
+              ? {
+                  readinessState: widget?.enhancedReadinessAvailable
+                    ? widget.readinessState
+                    : ('legacy' as const),
+                }
+              : {}),
+            ...(widget?.readinessReason ? { readinessReason: widget.readinessReason } : {}),
+            ...(widget?.experienceAction ? { nextAction: widget.experienceAction } : {}),
+            ...(activePerlDocument && activeEditor
+              ? {
+                  activeDocumentReady: activeDocumentReadiness.isReady(
+                    activeEditor.document.uri.toString(),
+                  ),
+                }
+              : {}),
           };
         },
       }),
