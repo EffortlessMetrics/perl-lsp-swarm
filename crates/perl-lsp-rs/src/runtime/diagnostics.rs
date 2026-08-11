@@ -4163,4 +4163,43 @@ print \"unreachable\\n\";\n";
 
         Ok(())
     }
+    
+    /// Regression: workspace-wide dead-code analysis must not publish from a
+    /// fresh target URI while another edited open document is stale.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn publish_diagnostic_skips_dead_code_when_other_open_document_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let target_uri = "file:///workspace/fresh_target_dead_code_publish.pl";
+        let contributor_uri = "file:///workspace/stale_contributor_dead_code_publish.pl";
+        let target_source = stale_dead_code_indexed_source();
+
+        server.test_apply_did_open(target_uri, target_source, 1)?;
+        server
+            .test_index_file_in_building_state(target_uri, target_source)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        make_document_index_stale_for_diagnostics(
+            &server,
+            contributor_uri,
+            stale_dead_code_indexed_source(),
+            stale_dead_code_used_source(),
+        )?;
+
+        buf.lock().clear();
+        server.publish_diagnostics(target_uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let text = String::from_utf8(buf.lock().clone())?;
+        assert!(
+            !text.contains("dead-code-subroutine"),
+            "stale contributor must suppress workspace dead-code publication: {text:?}"
+        );
+
+        Ok(())
+    }
+
 }
