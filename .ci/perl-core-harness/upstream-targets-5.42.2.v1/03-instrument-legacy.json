@@ -37,7 +37,7 @@
         "target_id": "legacy_custom_core",
         "upstream_name": "HarnessProfile::Core",
         "aliases": [],
-        "display_name": "repository custom eight-root core",
+        "display_name": "repository custom disjoint-root core",
         "perl_version_row": "5.42.2",
         "target_kind": "generated_composite",
         "authority": {"kind": "explicit", "entrypoint": "HarnessProfile::Core"},
@@ -47,7 +47,7 @@
         "preparation": {"make_target": null, "perl_runtime": "inherited", "required_products": []},
         "variant_of": null,
         "composite_members": ["component_base", "component_cmd", "component_comp", "component_io", "component_op", "component_op_hook", "component_opbasic", "component_re", "component_run"],
-        "composite_overlap_policy": "deduplicate_by_logical_source",
+        "composite_overlap_policy": "reject_overlap",
         "runner_switches": [],
         "variant_parameters": {},
         "environment": {},
@@ -55,11 +55,11 @@
         "capability_predicates": [],
         "exclusions": [],
         "replaces_target_id": null,
-        "change_reason": "Preserve the existing repository denominator without calling it upstream --core."
+        "change_reason": "Preserve the existing repository denominator with direct op/*.t and nested op/hook partitioned as disjoint members."
       },
       "disposition": "generated_composite",
       "owner_issue": 4757,
-      "claim_boundary": "Repository-defined composite only; it is not upstream t/TEST --core."
+      "claim_boundary": "Repository-defined disjoint composite only; it is not upstream t/TEST --core."
     },
     {
       "contract": {
@@ -77,7 +77,7 @@
         "preparation": {"make_target": null, "perl_runtime": "inherited", "required_products": []},
         "variant_of": null,
         "composite_members": ["component_uni", "legacy_custom_core"],
-        "composite_overlap_policy": "deduplicate_by_logical_source",
+        "composite_overlap_policy": "reject_overlap",
         "runner_switches": [],
         "variant_parameters": {},
         "environment": {},
@@ -85,11 +85,11 @@
         "capability_predicates": [],
         "exclusions": [],
         "replaces_target_id": null,
-        "change_reason": "Preserve historical identity while broad/full composition is corrected."
+        "change_reason": "Preserve historical identity with Unicode kept outside the disjoint legacy core composite."
       },
       "disposition": "generated_composite",
       "owner_issue": 4830,
-      "claim_boundary": "Historical repository composite only; it is not Perl's default full test target."
+      "claim_boundary": "Historical disjoint repository composite only; it is not Perl's default full test target."
     }
   ]
 }
