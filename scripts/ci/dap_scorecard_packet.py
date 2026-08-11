@@ -28,6 +28,7 @@ REQUIRED_BINARY_STATUSES = {
     "deep_pagination": "PASS",
     "memory": "MEASURED",
 }
+REQUIRED_LAUNCH_FIXTURE_NAMES = ("hello", "loops", "eval", "args", "begin_end")
 REQUIRED_FIXTURES = (
     "crates/perl-dap/tests/fixtures/hello.pl",
     "crates/perl-dap/tests/fixtures/loops.pl",
@@ -107,7 +108,12 @@ def _as_int(value: Any, context: str) -> int:
     return value
 
 
-def _validate_rate(scorecard: Mapping[str, Any], name: str) -> None:
+def _validate_rate(
+    scorecard: Mapping[str, Any],
+    name: str,
+    *,
+    expected_names: Sequence[str] | None = None,
+) -> None:
     metric = _as_object(scorecard.get(name), f"scorecard.{name}")
     passed = _as_int(metric.get("passed"), f"scorecard.{name}.passed")
     total = _as_int(metric.get("total"), f"scorecard.{name}.total")
@@ -118,6 +124,45 @@ def _validate_rate(scorecard: Mapping[str, Any], name: str) -> None:
         raise PacketError(f"scorecard.{name} has impossible passed/total values: {passed}/{total}")
     if not 0 <= threshold <= 100:
         raise PacketError(f"scorecard.{name}.threshold_pct is outside 0..100: {threshold}")
+
+    details = metric.get("details")
+    if not isinstance(details, list):
+        raise PacketError(f"scorecard.{name}.details must be an array")
+    if len(details) != total:
+        raise PacketError(
+            f"scorecard.{name} row count does not match total: {len(details)} != {total}"
+        )
+
+    observed_names: list[str] = []
+    observed_passed = 0
+    for index, raw_detail in enumerate(details):
+        detail = _as_object(raw_detail, f"scorecard.{name}.details[{index}]")
+        detail_name = detail.get("name")
+        if not isinstance(detail_name, str) or not detail_name:
+            raise PacketError(f"scorecard.{name}.details[{index}].name is missing")
+        observed_names.append(detail_name)
+
+        error = detail.get("error")
+        elapsed = detail.get("elapsed_ms")
+        if error is None:
+            observed_passed += 1
+            if name == "launch" and (isinstance(elapsed, bool) or not isinstance(elapsed, int)):
+                raise PacketError(
+                    f"scorecard.launch.details[{index}] passed without an elapsed_ms measurement"
+                )
+        elif not isinstance(error, str) or not error:
+            raise PacketError(f"scorecard.{name}.details[{index}].error is invalid")
+
+    if observed_passed != passed:
+        raise PacketError(
+            f"scorecard.{name} pass count contradicts its rows: {passed} != {observed_passed}"
+        )
+    if expected_names is not None and observed_names != list(expected_names):
+        raise PacketError(
+            f"scorecard.{name} fixture rows differ from the required ordered set: "
+            f"{observed_names!r}"
+        )
+
     required = math.ceil(total * threshold / 100)
     if passed < required:
         raise PacketError(
@@ -129,7 +174,7 @@ def validate_scorecard(raw: Any) -> Mapping[str, Any]:
     scorecard = _as_object(raw, "scorecard receipt")
     if scorecard.get("perl_available") is not True:
         raise PacketError("scorecard receipt does not prove a usable Perl runtime")
-    _validate_rate(scorecard, "launch")
+    _validate_rate(scorecard, "launch", expected_names=REQUIRED_LAUNCH_FIXTURE_NAMES)
     _validate_rate(scorecard, "attach")
 
     for name, expected in REQUIRED_BINARY_STATUSES.items():
@@ -173,9 +218,13 @@ def validate_generated_status(status_path: Path) -> None:
         if "receipt missing" in block:
             raise PacketError("generated DAP status still reports a missing receipt")
         if "| SKIP |" in block:
-            raise PacketError("generated DAP status contains a SKIP verdict in a required scorecard block")
+            raise PacketError(
+                "generated DAP status contains a SKIP verdict in a required scorecard block"
+            )
         if "| FAIL |" in block:
-            raise PacketError("generated DAP status contains a FAIL verdict in a required scorecard block")
+            raise PacketError(
+                "generated DAP status contains a FAIL verdict in a required scorecard block"
+            )
 
 
 def _fixture_records(root: Path, fixture_paths: Iterable[str]) -> list[dict[str, str]]:
@@ -271,7 +320,10 @@ def _validate_subject_hash(root: Path, subject: Mapping[str, Any], context: str)
 
 def validate_packet(args: argparse.Namespace) -> Mapping[str, Any]:
     root = Path(args.repository_root).resolve()
-    packet = _as_object(_read_json(Path(args.packet)), "scorecard packet")
+    packet_path = Path(args.packet)
+    if not packet_path.is_absolute():
+        packet_path = root / packet_path
+    packet = _as_object(_read_json(packet_path), "scorecard packet")
     _expect_equal(packet.get("schema_version"), SCHEMA_VERSION, "packet schema")
 
     repository = _as_object(packet.get("repository"), "packet.repository")
@@ -292,9 +344,27 @@ def validate_packet(args: argparse.Namespace) -> Mapping[str, Any]:
     binary = _as_object(packet.get("binary"), "packet.binary")
     _validate_subject_hash(root, binary, "candidate binary")
     _expect_equal(binary.get("sha256"), args.expected_binary_sha256, "candidate binary SHA-256")
+    binary_path = root / str(binary.get("path"))
+    _expect_equal(
+        binary.get("version_output"),
+        _run_text([str(binary_path), "--version"]),
+        "candidate binary version output",
+    )
+
+    perl = _as_object(packet.get("perl"), "packet.perl")
+    perl_path = perl.get("path")
+    if not isinstance(perl_path, str) or not perl_path:
+        raise PacketError("packet.perl.path is missing")
+    _expect_equal(
+        perl.get("version"),
+        _run_text([perl_path, "-e", "print $^V"]),
+        "Perl runtime version",
+    )
 
     raw_receipt = _as_object(packet.get("raw_receipt"), "packet.raw_receipt")
     _validate_subject_hash(root, raw_receipt, "raw scorecard receipt")
+    raw_receipt_path = root / str(raw_receipt.get("path"))
+    raw_scorecard = validate_scorecard(_read_json(raw_receipt_path))
 
     generated_status = _as_object(packet.get("generated_status"), "packet.generated_status")
     _validate_subject_hash(root, generated_status, "generated DAP status")
@@ -318,7 +388,8 @@ def validate_packet(args: argparse.Namespace) -> Mapping[str, Any]:
         _validate_subject_hash(root, record, f"fixture {path_value}")
     _expect_equal(fixture_paths, set(REQUIRED_FIXTURES), "fixture identity set")
 
-    validate_scorecard(packet.get("scorecard"))
+    embedded_scorecard = validate_scorecard(packet.get("scorecard"))
+    _expect_equal(embedded_scorecard, raw_scorecard, "embedded scorecard")
     return packet
 
 
