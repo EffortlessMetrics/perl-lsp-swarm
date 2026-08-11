@@ -59,8 +59,11 @@ fn package_statement_and_block_forms_keep_name_geometry() -> Result<(), String> 
         }
     });
 
-    assert_eq!(statement_package.len(), 1, "semicolon package form was not preserved");
-    assert!(statement_package[0].starts_with("package Alpha::One 1.23"));
+    assert_eq!(
+        statement_package,
+        vec!["package Alpha::One 1.23".to_string()],
+        "semicolon package form had an incorrect source range"
+    );
     assert_eq!(block_package, vec!["package Beta::Two { sub inside { 1 } }"]);
     Ok(())
 }
@@ -72,26 +75,33 @@ fn use_and_no_keep_module_and_argument_boundaries() -> Result<(), String> {
         "no warnings 'experimental::signatures';\n",
     );
     let ast = parse_clean(source)?;
-    let mut use_payload = None;
-    let mut no_payload = None;
+    let mut use_payloads = Vec::new();
+    let mut no_payloads = Vec::new();
 
     walk(&ast, &mut |node| match &node.kind {
         NodeKind::Use { module, args, .. } if module == "Feature::Bundle" => {
-            use_payload = Some((args.clone(), source_text(source, node)));
+            use_payloads.push((args.clone(), source_text(source, node)));
         }
         NodeKind::No { module, args, .. } if module == "warnings" => {
-            no_payload = Some((args.clone(), source_text(source, node)));
+            no_payloads.push((args.clone(), source_text(source, node)));
         }
         _ => {}
     });
 
-    let (use_args, use_span) = use_payload.ok_or_else(|| "use Module was not preserved".to_string())?;
-    assert_eq!(use_args, vec!["qw(alpha beta)".to_string()]);
-    assert_eq!(use_span.as_deref(), Some("use Feature::Bundle qw(alpha beta)"));
-
-    let (no_args, no_span) = no_payload.ok_or_else(|| "no Module was not preserved".to_string())?;
-    assert_eq!(no_args, vec!["'experimental::signatures'".to_string()]);
-    assert_eq!(no_span.as_deref(), Some("no warnings 'experimental::signatures'"));
+    assert_eq!(
+        use_payloads,
+        vec![(
+            vec!["qw(alpha beta)".to_string()],
+            Some("use Feature::Bundle qw(alpha beta)".to_string()),
+        )]
+    );
+    assert_eq!(
+        no_payloads,
+        vec![(
+            vec!["'experimental::signatures'".to_string()],
+            Some("no warnings 'experimental::signatures'".to_string()),
+        )]
+    );
     Ok(())
 }
 
