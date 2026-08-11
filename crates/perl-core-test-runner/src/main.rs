@@ -273,7 +273,10 @@ fn run_parse(invocation: &Invocation) -> Result<ModeRunResult> {
     let blocking_diagnostic =
         output.diagnostics.iter().find(|diagnostic| diagnostic.blocks_clean_parse());
 
-    if blocking_diagnostic.is_none() && profile.class == RecoverySalvageClass::Clean {
+    if blocking_diagnostic.is_none()
+        && profile.class != RecoverySalvageClass::ErrorNodesPresent
+        && profile.class != RecoverySalvageClass::CatastrophicFailure
+    {
         return Ok(ModeRunResult::pass());
     }
 
@@ -301,7 +304,12 @@ fn run_compile(invocation: &Invocation) -> Result<ModeRunResult> {
     let blocking_diagnostic =
         output.diagnostics.iter().find(|diagnostic| diagnostic.blocks_clean_parse());
 
-    if blocking_diagnostic.is_some() || profile.class != RecoverySalvageClass::Clean {
+    if blocking_diagnostic.is_some()
+        || matches!(
+            profile.class,
+            RecoverySalvageClass::ErrorNodesPresent | RecoverySalvageClass::CatastrophicFailure
+        )
+    {
         let first_diagnostic = blocking_diagnostic
             .map(ToString::to_string)
             .or(profile.first_unrecovered_error_node)
@@ -5276,6 +5284,23 @@ mod tests {
         let invocation = Invocation {
             source: SourceInput::Inline("map { BEGIN { $x = 1 } $_ } 'bar';\n".to_string()),
             display_path: "base/lex.t".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert!(result.bucket.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn compile_regex_backtracking_advisory_does_not_fail_valid_source() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(
+                r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/;
+"#.to_string(),
+            ),
+            display_path: "run/todo.t".to_string(),
         };
 
         let result = run_compile(&invocation)?;
