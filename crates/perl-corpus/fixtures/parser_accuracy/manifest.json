@@ -2240,7 +2240,29 @@
           }
         ],
         "edges": []
-      }
+      },
+      "ast_expectations": [
+        {
+          "id": "medium_method_call_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::MediumMethodCall",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "medium_method_call_receiver",
+          "kind": "MethodCall",
+          "line": 3,
+          "span_text": "$object->run",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
     },
     {
       "id": "autoload_boundary",
