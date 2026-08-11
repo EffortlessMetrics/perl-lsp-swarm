@@ -96,7 +96,7 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         "literal edit should exercise incremental reuse rather than a full fallback"
     );
     assert!(
-        incremental.last_reuse_analysis.is_some(),
+        incremental.get_last_reuse_analysis().is_some(),
         "literal edit must take the advanced incremental-reuse path"
     );
 
