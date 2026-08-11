@@ -111,6 +111,26 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
     if plan.source_items.is_empty() {
         return Err("runner plan contains no source items".to_string());
     }
+    if plan.scheduling.jobs == Some(0) {
+        return Err("runner plan jobs must be positive when present".to_string());
+    }
+
+    let mut seen = BTreeSet::new();
+    for item in &plan.source_items {
+        let normalized = normalize_source_item(&item.raw_path)?;
+        if normalized != *item {
+            return Err(format!(
+                "runner source item {} disagrees with normalized raw path",
+                item.canonical_path
+            ));
+        }
+        if !seen.insert(item.canonical_path.clone()) {
+            return Err(format!(
+                "runner plan contains duplicate source item {}",
+                item.canonical_path
+            ));
+        }
+    }
     let expected_order =
         plan.source_items.iter().map(|item| item.canonical_path.clone()).collect::<Vec<_>>();
     if expected_order != plan.normalized_order {
@@ -118,12 +138,29 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
     }
     let mut expected_membership = expected_order.clone();
     expected_membership.sort();
-    expected_membership.dedup();
     if expected_membership != plan.normalized_membership {
         return Err("runner plan normalized membership is not sorted unique order projection".to_string());
     }
+    if plan.normalized_membership.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("runner plan normalized membership must be strictly sorted and unique".to_string());
+    }
     if plan.limitations.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err("runner plan limitations must be strictly sorted and unique".to_string());
+    }
+    if !plan
+        .limitations
+        .iter()
+        .any(|value| value == "per_file_upstream_scan_and_effective_invocation_not_captured")
+    {
+        return Err("runner plan must retain its per-file invocation limitation".to_string());
+    }
+    if plan.runner == RunnerKind::DirectFallback
+        && !plan
+            .limitations
+            .iter()
+            .any(|value| value == "direct_fallback_missing_upstream_selection_context")
+    {
+        return Err("direct fallback plan is missing its upstream-context limitation".to_string());
     }
     Ok(())
 }
