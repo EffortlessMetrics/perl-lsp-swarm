@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "swarm": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "version": "0.17.0"
+  },
+  "public": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "version": "0.17.0"
+  },
+  "manifest_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "differences": [
+    {
+      "path": "vscode-extension/src/downloader.ts",
+      "classification": "expected_publication_translation",
+      "behavior_changed": true,
+      "evidence": [
+        "The declared translation changes managed target selection."
+      ]
+    }
+  ],
+  "invariants": []
+}
