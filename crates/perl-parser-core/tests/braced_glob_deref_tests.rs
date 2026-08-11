@@ -148,6 +148,9 @@ fn fused_postfix_dynamic_glob_assignment_is_not_typeglob() -> Result<(), Box<dyn
     let source = "*{$glob}{CODE} = \\&target;";
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
+    if !parser.errors().is_empty() {
+        return Err(format!("expected clean parse, got {:?}", parser.errors()).into());
+    }
     let assignment = find_assignment(&ast).ok_or("expected fused postfix dynamic glob assignment")?;
     let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
         return Err("find_assignment returned a non-assignment node".into());
