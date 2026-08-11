@@ -1,5 +1,7 @@
 # How to Add a New LSP Feature End-to-End
 
+> **Current layout note:** This guide follows the current split between the `perl-lsp-rs` feature/handler/dispatch crates and the shared `perl-lsp-rs-core` feature flags and capability protocol. Verify nearby code before copying an example because provider APIs evolve with the workspace.
+
 This guide walks through every step required to ship a new LSP feature in
 perl-lsp, from the provider implementation to the capability advertisement, tests,
 and catalog entry. It uses a concrete example throughout: adding a new code-action
@@ -237,14 +239,14 @@ The server tells the client what it supports during the `initialize` handshake.
 This is driven by a chain of three files:
 
 ```
-crates/perl-lsp-feature-flags/src/lib.rs    ← BuildFlags struct (one bool per feature)
-crates/perl-lsp-protocol/src/capabilities.rs ← capabilities_for(BuildFlags) → ServerCapabilities
+crates/perl-lsp-rs-core/src/features/flags.rs ← BuildFlags and AdvertisedFeatures
+crates/perl-lsp-rs-core/src/protocol/capabilities.rs ← capabilities_for(BuildFlags) → ServerCapabilities
 crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs ← calls capabilities_for(), sends response
 ```
 
 ### 4a. Add a field to `BuildFlags`
 
-`BuildFlags` is in `crates/perl-lsp-feature-flags/src/lib.rs`:
+`BuildFlags` is in `crates/perl-lsp-rs-core/src/features/flags.rs`:
 
 ```rust
 pub struct BuildFlags {
@@ -260,7 +262,7 @@ exist.
 
 ### 4b. Advertise the capability in `capabilities_for()`
 
-In `crates/perl-lsp-protocol/src/capabilities.rs`, add a block:
+In `crates/perl-lsp-rs-core/src/protocol/capabilities.rs`, add or extend the relevant feature section:
 
 ```rust
 if build.your_new_feature {
@@ -290,7 +292,7 @@ add a case to `apply_disabled_feature_id()` in
 ```toml
 [[feature]]
 id          = "lsp.your_new_feature"
-spec        = "LSP 3.17"
+spec        = "LSP 3.18"
 area        = "text_document"   # or "workspace"
 maturity    = "experimental"    # "experimental" | "beta" | "ga"
 advertised  = true
@@ -404,8 +406,8 @@ Item-by-item checklist:
 - [ ] Language handler is in `crates/perl-lsp-rs/src/runtime/language/`
 - [ ] Dispatch shim added to `crates/perl-lsp-rs/src/runtime/dispatch/text_document.rs` (or `workspace.rs`)
 - [ ] Method string wired in `crates/perl-lsp-rs/src/runtime/dispatch/mod.rs`
-- [ ] `BuildFlags` field added in `crates/perl-lsp-feature-flags/src/lib.rs`
-- [ ] Capability advertised in `crates/perl-lsp-protocol/src/capabilities.rs`
+- [ ] `BuildFlags` field added in `crates/perl-lsp-rs-core/src/features/flags.rs`
+- [ ] Capability advertised in `crates/perl-lsp-rs-core/src/protocol/capabilities.rs`
 - [ ] `features.toml` entry added
 - [ ] Unit test covers provider logic
 - [ ] Integration test uses `LspHarness` and sends real JSON-RPC
