@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "swarm": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "version": "0.17.0"
+  },
+  "public": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "version": "0.17.0"
+  },
+  "manifest_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "differences": [
+    {
+      "path": "README.md",
+      "classification": "expected_publication_translation",
+      "behavior_changed": false,
+      "evidence": [
+        "Repository and branch links were translated for the public context."
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "id": "targets_requested_are_built",
+      "status": "pass",
+      "evidence": [
+        "Every installer and VSIX target is present in the compared release topology."
+      ]
+    }
+  ]
+}
