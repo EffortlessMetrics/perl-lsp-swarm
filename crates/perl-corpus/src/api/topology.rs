@@ -121,7 +121,12 @@ impl fmt::Display for CorpusTopologyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::PathOutsideRoot { path, root } => {
-                write!(formatter, "corpus asset {} is outside root {}", path.display(), root.display())
+                write!(
+                    formatter,
+                    "corpus asset {} is outside root {}",
+                    path.display(),
+                    root.display()
+                )
             }
             Self::NonUtf8Path { path } => {
                 write!(formatter, "corpus path is not valid UTF-8: {}", path.display())
@@ -138,9 +143,7 @@ impl fmt::Display for CorpusTopologyError {
             Self::DuplicateAssetId { id } => {
                 write!(formatter, "duplicate corpus asset ID: {id}")
             }
-            Self::RootNotBound => {
-                formatter.write_str("corpus topology has no bound runtime root")
-            }
+            Self::RootNotBound => formatter.write_str("corpus topology has no bound runtime root"),
             Self::Io { path, message } => {
                 write!(formatter, "failed to inspect corpus path {}: {message}", path.display())
             }
@@ -183,9 +186,7 @@ impl CorpusTopology {
 
         assets.sort_by(|left, right| left.id.cmp(&right.id));
         if let Some(duplicate) = assets.windows(2).find(|pair| pair[0].id == pair[1].id) {
-            return Err(CorpusTopologyError::DuplicateAssetId {
-                id: duplicate[0].id.clone(),
-            });
+            return Err(CorpusTopologyError::DuplicateAssetId { id: duplicate[0].id.clone() });
         }
 
         Ok(Self {
@@ -222,10 +223,7 @@ fn asset_from_path(
     layer: CorpusAssetLayer,
 ) -> Result<CorpusAsset, CorpusTopologyError> {
     let relative = path.strip_prefix(&paths.root).map_err(|_| {
-        CorpusTopologyError::PathOutsideRoot {
-            path: path.to_path_buf(),
-            root: paths.root.clone(),
-        }
+        CorpusTopologyError::PathOutsideRoot { path: path.to_path_buf(), root: paths.root.clone() }
     })?;
     let relative_path = canonical_relative_path(relative)?;
 
@@ -263,9 +261,9 @@ fn canonical_relative_path(path: &Path) -> Result<String, CorpusTopologyError> {
     for component in path.components() {
         match component {
             Component::Normal(value) => {
-                let value = value.to_str().ok_or_else(|| CorpusTopologyError::NonUtf8Path {
-                    path: path.to_path_buf(),
-                })?;
+                let value = value
+                    .to_str()
+                    .ok_or_else(|| CorpusTopologyError::NonUtf8Path { path: path.to_path_buf() })?;
                 parts.push(value);
             }
             Component::CurDir => {

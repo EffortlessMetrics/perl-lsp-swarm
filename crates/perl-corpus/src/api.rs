@@ -34,6 +34,6 @@ pub use crate::tie_interface::{
     tie_cases_by_tags_any, tie_interface_cases,
 };
 pub use topology::{
-    AssetRequirement, CorpusAsset, CorpusAssetKind, CorpusAssetLayer, CorpusTopology,
-    CorpusTopologyError, CORPUS_TOPOLOGY_SCHEMA_VERSION,
+    AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
+    CorpusAssetLayer, CorpusTopology, CorpusTopologyError,
 };
