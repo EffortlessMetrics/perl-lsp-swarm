@@ -3685,6 +3685,11 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::Transliteration { .. }
             | NodeKind::Heredoc { .. }
             | NodeKind::String { .. }
+            | NodeKind::Signature { .. }
+            | NodeKind::MandatoryParameter { .. }
+            | NodeKind::Do { .. }
+            | NodeKind::StatementModifier { .. }
+            | NodeKind::Eval { .. }
             | NodeKind::Format { .. }
             | NodeKind::Binary { .. }
             | NodeKind::Error { .. }

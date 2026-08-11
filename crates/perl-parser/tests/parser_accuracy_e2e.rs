@@ -90,6 +90,38 @@ const E2E_FIXTURES: &[&str] = &[
     "typeglob_alias",
     "heredoc_basic",
     "post_error_package_sub_recovery",
+    "signatures_basic",
+    "format_decl",
+    "postderef_boundary",
+    "control_do_until",
+    "eval_string_boundary",
+    "autoload_boundary",
+    "export_tags",
+    "span_coordinates",
+    "span_utf8_multibyte",
+    "span_emoji",
+    "span_crlf",
+    "span_tabs",
+    "span_bom",
+    "span_cross_line",
+    "span_mixed_newlines",
+    "span_empty_at_eof",
+    "heredoc_utf8_delimiter",
+    "unterminated_heredoc",
+    "bad_heredoc_terminator",
+    "unclosed_quote_like_operator",
+    "unclosed_regex",
+    "unbalanced_bracket",
+    "partial_sub_body",
+    "orphan_close_delimiters",
+    "missing_comma_list",
+    "nested_malformed_delimiters",
+    "malformed_heredoc_recovery",
+    "method_completion_provider",
+    "navigation_provider",
+    "diagnostic_provider",
+    "negative_symbol_regions",
+    "incremental_small_edit",
 ];
 
 #[test]
@@ -139,6 +171,48 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
     }
 
     assert!(exercised > 0, "selected parser accuracy e2e fixtures should include AST expectations");
+    Ok(())
+}
+
+/// Every fixture with expectations must declare its own coverage honestly:
+/// `E2E_FIXTURES` must not name a fixture the manifest does not carry, and no
+/// fixture may claim an expectation id twice.
+///
+/// Duplicate ids are the quiet failure — two rows with one id read as two
+/// assertions in review while a disposition against "that id" is ambiguous.
+#[test]
+fn parser_accuracy_manifest_ids_are_unique_and_selected_fixtures_exist() -> TestResult {
+    let workspace_root = workspace_root();
+    let manifest_json = fs::read_to_string(
+        workspace_root
+            .join("crates")
+            .join("perl-corpus")
+            .join("fixtures")
+            .join("parser_accuracy")
+            .join("manifest.json"),
+    )?;
+    let manifest: ParserAccuracyManifest = serde_json::from_str(&manifest_json)?;
+
+    for fixture_id in E2E_FIXTURES {
+        find_fixture(&manifest, fixture_id)?;
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    for fixture in &manifest.fixtures {
+        for id in fixture
+            .ast_expectations
+            .iter()
+            .map(|expectation| &expectation.id)
+            .chain(fixture.forbidden_nodes.iter().map(|forbidden| &forbidden.id))
+        {
+            assert!(
+                seen.insert(id.clone()),
+                "duplicate parser-accuracy expectation id `{id}` in fixture `{}`",
+                fixture.id
+            );
+        }
+    }
+
     Ok(())
 }
 
