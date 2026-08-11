@@ -148,6 +148,42 @@ function indexingLabel(telemetry: WorkspaceExperienceTelemetry): string {
 }
 
 /**
+ * Convert the readiness transport's internal reason into bounded UI text.
+ *
+ * The current server serializes its Rust enum with Debug formatting for
+ * diagnostics. That representation is intentionally not part of the VS Code
+ * presentation contract: it is unstable, implementation-shaped, and can
+ * contain raw I/O text. Keep this mapper provider-neutral and fail closed for
+ * unknown/future reasons.
+ */
+export function presentIndexReadinessReason(reason?: string): string {
+  if (!reason) {
+    return 'Limited workspace coverage';
+  }
+
+  const normalized = reason.toLowerCase();
+  if (normalized.includes('parsestorm') || normalized.includes('parse_storm')) {
+    return 'Frequent changes limited workspace coverage';
+  }
+  if (normalized.includes('ioerror') || normalized.includes('io_error')) {
+    return 'Some workspace files could not be read';
+  }
+  if (normalized.includes('scantimeout') || normalized.includes('scan_timeout')) {
+    return 'Workspace indexing reached its time budget';
+  }
+  if (normalized.includes('maxfiles') || normalized.includes('max_files')) {
+    return 'Workspace file limit reached';
+  }
+  if (normalized.includes('maxsymbols') || normalized.includes('max_symbols')) {
+    return 'Workspace symbol limit reached';
+  }
+  if (normalized.includes('maxcachebytes') || normalized.includes('max_cache_bytes')) {
+    return 'Workspace cache limit reached';
+  }
+  return 'Limited workspace coverage';
+}
+
+/**
  * Render one canonical experience snapshot for a compact status surface.
  *
  * Normal exact/current and legitimate-empty outcomes remain quiet. Limited,
