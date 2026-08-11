@@ -69,13 +69,41 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
     if edit.old_text.contains(['\n', '\r']) || edit.new_text.contains(['\n', '\r']) {
         return Err("the first incremental slice expects a single-line edit".into());
     }
-    let start = statement_start;
-    let old_end = start + edit.old_text.len();
+    let old_chars: Vec<char> = edit.old_text.chars().collect();
+    let new_chars: Vec<char> = edit.new_text.chars().collect();
+    let common_prefix = old_chars
+        .iter()
+        .zip(&new_chars)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let common_suffix = old_chars[common_prefix..]
+        .iter()
+        .rev()
+        .zip(new_chars[common_prefix..].iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count();
+    if common_prefix + common_suffix >= old_chars.len()
+        || common_prefix + common_suffix >= new_chars.len()
+    {
+        return Err("incremental edit has no changed character range".into());
+    }
+
+    let old_prefix_bytes: usize = old_chars[..common_prefix].iter().map(|character| character.len_utf8()).sum();
+    let old_changed_bytes: usize = old_chars[common_prefix..old_chars.len() - common_suffix]
+        .iter()
+        .map(|character| character.len_utf8())
+        .sum();
+    let new_changed_bytes: usize = new_chars[common_prefix..new_chars.len() - common_suffix]
+        .iter()
+        .map(|character| character.len_utf8())
+        .sum();
+    let start = statement_start + old_prefix_bytes;
+    let old_end = start + old_changed_bytes;
     let new_source = source.replacen(&edit.old_text, &edit.new_text, 1);
     if new_source == source {
         return Err("incremental edit did not change the fixture source".into());
     }
-    let new_end = start + edit.new_text.len();
+    let new_end = start + new_changed_bytes;
 
     let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
     let line = (source[..start].bytes().filter(|byte| *byte == b'\n').count() + 1) as u32;
@@ -88,8 +116,8 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         old_end,
         new_end,
         Position::new(start, line, character),
-        Position::new(old_end, line, character + edit.old_text.chars().count() as u32),
-        Position::new(new_end, line, character + edit.new_text.chars().count() as u32),
+        Position::new(old_end, line, character + old_changed_bytes as u32),
+        Position::new(new_end, line, character + new_changed_bytes as u32),
     ));
     let incremental_ast = incremental.parse(&new_source)?;
 
