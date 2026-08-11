@@ -133,15 +133,15 @@ fn test_classify_unclosed_brace() {
 #[test]
 fn test_classify_unexpected_eof() {
     let classifier = ErrorClassifier::new();
-    let error_node = Node {
-        kind: NodeKind::Error {
+    let error_node = Node::new(
+        NodeKind::Error {
             message: String::new(),
             expected: vec![],
             found: None,
             partial: None,
         },
-        location: SourceLocation { start: 5, end: 5 }, // At EOF
-    };
+        SourceLocation { start: 5, end: 5 },
+    );
 
     let source = "print";
     let result = classifier.classify(&error_node, source);
