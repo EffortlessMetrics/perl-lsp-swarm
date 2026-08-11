@@ -3,12 +3,9 @@ name: Agent rustfmt helper
 on:
   push:
     branches: [agent/rustfmt-helper-20260811]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   format:
@@ -21,11 +18,13 @@ jobs:
         include:
           - name: topology
             ref: agent/corpus-topology-6699-current
+            issue: 6699
             files: >-
               crates/perl-corpus/src/api.rs
               crates/perl-corpus/src/api/topology.rs
           - name: snapshot
             ref: agent/hir-snapshot-exact-set-6725
+            issue: 6725
             files: >-
               crates/perl-corpus/src/snapshot.rs
               xtask/src/tasks/generate_semantic_snapshot.rs
@@ -35,6 +34,7 @@ jobs:
         with:
           ref: ${{ matrix.ref }}
           fetch-depth: 1
+          persist-credentials: true
 
       - name: Install Rust 1.95 rustfmt
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
@@ -53,10 +53,29 @@ jobs:
           cp --parents $FILES formatted/
           git diff -- $FILES > formatted/rustfmt.patch
 
+      - name: Commit bounded formatting repair
+        shell: bash
+        env:
+          FILES: ${{ matrix.files }}
+          TARGET_REF: ${{ matrix.ref }}
+          ISSUE: ${{ matrix.issue }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- $FILES; then
+            echo "Candidate-owned files are already formatted."
+            exit 0
+          fi
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -- $FILES
+          git commit -m "style(corpus): apply Rust 1.95 formatting (#${ISSUE})"
+          git push origin "HEAD:refs/heads/${TARGET_REF}"
+
       - name: Upload formatted files
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rustfmt-${{ matrix.name }}-${{ github.sha }}
           path: formatted
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 1
