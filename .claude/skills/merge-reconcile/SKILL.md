@@ -149,6 +149,7 @@ findings, dispositions, and corrections. Carry them forward before closing:
   body stated inaccurately and later fixed;
 - accepted findings not yet repaired, and the evidence behind each disposition;
 - limitations and `NOT_PROVEN` boundaries that still apply to the replacement.
+- revalidate every carried finding against the replacement head before preserving a `fixed`, `accepted`, or `NOT_PROVEN` disposition.
 
 A correction that dies with a superseded PR is worse than one never made. The inaccurate
 claim reaches `main` through the replacement, and the record now shows a reviewed
