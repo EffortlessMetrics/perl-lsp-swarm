@@ -823,8 +823,7 @@ mod tests {
         let bytes = serde_json::to_vec(&topology)?;
         fs::write(&topology_path, &bytes)?;
         receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
-        verify_topology_binding(&receipt, &topology_path)
-            .expect("topology with candidate target in managed_targets must pass");
+        verify_topology_binding(&receipt, &topology_path)?;
 
         // Negative: empty managed_targets array — must be rejected identifying the invariant.
         let mut topology_empty = topology.clone();
@@ -836,10 +835,11 @@ mod tests {
             Ok(()) => bail!("empty managed_targets must not pass"),
             Err(error) => {
                 let rendered = format!("{error:#}");
-                assert!(
-                    rendered.contains("does not publish candidate target"),
-                    "rejection must identify the target-membership invariant; got: {rendered}"
-                );
+                if !rendered.contains("does not publish candidate target") {
+                    bail!(
+                        "rejection must identify the target-membership invariant; got: {rendered}"
+                    );
+                }
             }
         }
 
@@ -854,10 +854,11 @@ mod tests {
             Ok(()) => bail!("foreign-only managed_targets must not pass"),
             Err(error) => {
                 let rendered = format!("{error:#}");
-                assert!(
-                    rendered.contains("does not publish candidate target"),
-                    "rejection must identify the target-membership invariant; got: {rendered}"
-                );
+                if !rendered.contains("does not publish candidate target") {
+                    bail!(
+                        "rejection must identify the target-membership invariant; got: {rendered}"
+                    );
+                }
             }
         }
 
