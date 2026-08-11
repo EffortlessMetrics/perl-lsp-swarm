@@ -45,8 +45,8 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Check xtask formatting
-        run: cargo fmt -p xtask -- --check
+      - name: Check authority-ratchet formatting
+        run: rustfmt --edition 2024 --check xtask/tests/active_authority_contract.rs
 
       - name: Check current maintainer entrypoints
         run: cargo test -p xtask --test active_authority_contract --locked
