@@ -255,15 +255,14 @@ export class HealthWidget {
       case 'building':
         this.setWorkspaceLifecycleState('indexing_workspace');
         break;
-      case 'ready_limited':
-        this.setWorkspaceLifecycleState(
-          'ready_limited',
-          {
-            detail: presentIndexReadinessReason(this._readinessReason),
-            reasonCode: 'index_ready_limited',
-          },
-        );
+      case 'ready_limited': {
+        const detail = presentIndexReadinessReason(this._readinessReason);
+        this.setWorkspaceLifecycleState('ready_limited', {
+          detail,
+          reasonCode: 'index_ready_limited',
+        });
         break;
+      }
       case 'ready':
         this.setWorkspaceLifecycleState('ready');
         break;
