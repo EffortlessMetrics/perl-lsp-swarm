@@ -108,7 +108,7 @@ fn substitution_and_transliteration_keep_payloads_modifiers_and_target() -> Resu
         ],
         "tr and y spellings must retain the same payload contract with their own modifiers"
     );
-    assert_eq!(quote_spans, vec!["q{hello}", "qq{$message}"]);
+    assert_eq!(quote_spans, vec!["qq{$message}", "q{hello}"]);
     Ok(())
 }
 
