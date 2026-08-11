@@ -294,7 +294,7 @@ def _evaluate_fixture(args: argparse.Namespace) -> int:
     ]
 
     result = {
-        "result": "historical_match" if matching and invalid_trusted_receipts == 0 else "not_proven",
+        "result": "current" if matching and invalid_trusted_receipts == 0 else "not_proven",
         "authority": "historical_fixture_only",
         "head": head,
         "claim_digest": digest,
