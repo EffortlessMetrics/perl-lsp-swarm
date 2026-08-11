@@ -36,6 +36,20 @@ copy_doc() {
     fi
 }
 
+copy_testing_doc() {
+    local source="$1"
+    local dest="$2"
+
+    copy_doc "$source" "$dest"
+    if [ -f "$dest" ]; then
+        sed -i \
+            -e 's#../../crates/perl-corpus/#https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/main/crates/perl-corpus/#g' \
+            -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
+            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
+            "$dest"
+    fi
+}
+
 # The canonical configuration reference is authored in the repository docs tree,
 # but its links must resolve inside the published book tree after copying.
 copy_config_doc() {
@@ -92,7 +106,7 @@ copy_doc "$DOCS_DIR/reference/CRATE_ARCHITECTURE_DAP.md" "$BOOK_SRC/architecture
 echo "Setting up Developer Guides..."
 copy_doc "$REPO_ROOT/CONTRIBUTING.md" "$BOOK_SRC/developer/contributing.md"
 copy_doc "$DOCS_DIR/reference/COMMANDS_REFERENCE.md" "$BOOK_SRC/developer/commands-reference.md"
-copy_doc "$DOCS_DIR/tutorials/COMPREHENSIVE_TESTING_GUIDE.md" "$BOOK_SRC/developer/testing-guide.md"
+copy_testing_doc "$DOCS_DIR/tutorials/COMPREHENSIVE_TESTING_GUIDE.md" "$BOOK_SRC/developer/testing-guide.md"
 copy_doc "$DOCS_DIR/reference/TEST_INFRASTRUCTURE_GUIDE.md" "$BOOK_SRC/developer/test-infrastructure.md"
 copy_doc "$DOCS_DIR/reference/API_DOCUMENTATION_STANDARDS.md" "$BOOK_SRC/developer/api-documentation-standards.md"
 copy_doc "$DOCS_DIR/project/DEVELOPMENT.md" "$BOOK_SRC/developer/development-workflow.md"
