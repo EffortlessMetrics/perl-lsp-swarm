@@ -54,11 +54,16 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
             );
         }
 <<<<<<< HEAD
+<<<<<<< HEAD
         if !source.is_char_boundary(edit.start_byte) || !source.is_char_boundary(edit.old_end_byte)
 =======
         if !source.is_char_boundary(edit.start_byte)
             || !source.is_char_boundary(edit.old_end_byte)
 >>>>>>> c1d3a334f (fix(parser): keep stacked edit batches atomic)
+=======
+        if !source.is_char_boundary(edit.start_byte)
+            || !source.is_char_boundary(edit.old_end_byte)
+>>>>>>> 72e3af30e (fix(parser): apply incremental batches atomically)
         {
             anyhow::bail!(
                 "incremental edit range {}..{} is not on UTF-8 boundaries",
