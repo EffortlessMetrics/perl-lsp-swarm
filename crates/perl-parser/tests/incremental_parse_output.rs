@@ -1,6 +1,7 @@
 #![cfg(feature = "incremental")]
 //! Differential tests for the incremental native parse-output contract.
 
+use perl_parser::incremental::MAX_EDIT_SIZE;
 use perl_parser::{Edit, IncrementalState, ParseOutput, Parser, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -28,17 +29,31 @@ fn assert_output_equivalent(actual: &ParseOutput, expected: &ParseOutput) {
     );
 }
 
-fn apply_reference_edit(source: &str, edit: &Edit) -> Result<String, &'static str> {
-    if edit.start_byte > edit.old_end_byte || edit.old_end_byte > source.len() {
-        return Err("reference edit range is out of bounds");
-    }
-    if !source.is_char_boundary(edit.start_byte) || !source.is_char_boundary(edit.old_end_byte) {
-        return Err("reference edit range is not on UTF-8 boundaries");
-    }
+fn apply_reference_edits(source: &str, edits: &[Edit]) -> Result<String, &'static str> {
+    let mut sorted = edits.to_vec();
+    sorted.sort_by_key(|edit| edit.start_byte);
+    sorted.reverse();
 
     let mut result = source.to_string();
-    result.replace_range(edit.start_byte..edit.old_end_byte, &edit.new_text);
+    for edit in sorted {
+        if edit.start_byte > edit.old_end_byte || edit.old_end_byte > result.len() {
+            return Err("reference edit range is out of bounds");
+        }
+        if !result.is_char_boundary(edit.start_byte)
+            || !result.is_char_boundary(edit.old_end_byte)
+        {
+            return Err("reference edit range is not on UTF-8 boundaries");
+        }
+        if edit.new_end_byte != edit.start_byte + edit.new_text.len() {
+            return Err("reference edit new_end_byte is inconsistent");
+        }
+        result.replace_range(edit.start_byte..edit.old_end_byte, &edit.new_text);
+    }
     Ok(result)
+}
+
+fn apply_reference_edit(source: &str, edit: &Edit) -> Result<String, &'static str> {
+    apply_reference_edits(source, std::slice::from_ref(edit))
 }
 
 #[test]
@@ -71,6 +86,7 @@ fn clean_to_malformed_edit_returns_the_current_native_parse_output() -> TestResu
     let result = apply_edits(&mut state, &[edit])?;
 
     assert_eq!(state.source, final_source);
+    assert_eq!(result.reparsed_bytes, final_source.len());
     assert_output_equivalent(&state.parse_output, &fresh);
     assert_output_equivalent(&result.parse_output, &fresh);
 
@@ -96,8 +112,73 @@ fn malformed_to_clean_edit_removes_recovery_diagnostics_atomically() -> TestResu
     let result = apply_edits(&mut state, &[edit])?;
 
     assert_eq!(state.source, final_source);
+    assert_eq!(result.reparsed_bytes, final_source.len());
     assert_output_equivalent(&state.parse_output, &fresh);
     assert_output_equivalent(&result.parse_output, &fresh);
+
+    Ok(())
+}
+
+#[test]
+fn oversized_batch_applies_every_edit_before_full_fallback() -> TestResult {
+    let source = "my $left = 1;\nmy $right = 2;\n";
+    let second_start = source.find("my $right").ok_or("second statement is missing")?;
+    let padding = " ".repeat(MAX_EDIT_SIZE / 2 + 1);
+    let edits = vec![
+        Edit {
+            start_byte: 0,
+            old_end_byte: 0,
+            new_end_byte: padding.len(),
+            new_text: padding.clone(),
+        },
+        Edit {
+            start_byte: second_start,
+            old_end_byte: second_start,
+            new_end_byte: second_start + padding.len(),
+            new_text: padding,
+        },
+    ];
+    let final_source = apply_reference_edits(source, &edits)?;
+    let fresh = fresh_output(&final_source);
+
+    let mut state = IncrementalState::new(source.to_string());
+    let result = apply_edits(&mut state, &edits)?;
+
+    assert_eq!(state.source, final_source);
+    assert_eq!(result.changed_ranges, vec![0..final_source.len()]);
+    assert_eq!(result.reparsed_bytes, final_source.len());
+    assert_output_equivalent(&state.parse_output, &fresh);
+    assert_output_equivalent(&result.parse_output, &fresh);
+
+    Ok(())
+}
+
+#[test]
+fn invalid_overlapping_batch_leaves_the_previous_generation_untouched() -> TestResult {
+    let source = "my $value = 12;";
+    let literal = source.find("12").ok_or("literal is missing")?;
+    let edits = [
+        Edit {
+            start_byte: literal,
+            old_end_byte: literal + 2,
+            new_end_byte: literal + 1,
+            new_text: "3".to_string(),
+        },
+        Edit {
+            start_byte: literal + 1,
+            old_end_byte: literal + 2,
+            new_end_byte: literal + 2,
+            new_text: "4".to_string(),
+        },
+    ];
+    let before = fresh_output(source);
+    let mut state = IncrementalState::new(source.to_string());
+
+    let error = apply_edits(&mut state, &edits).expect_err("overlapping edits must be rejected");
+
+    assert!(error.to_string().contains("overlapping"));
+    assert_eq!(state.source, source);
+    assert_output_equivalent(&state.parse_output, &before);
 
     Ok(())
 }
