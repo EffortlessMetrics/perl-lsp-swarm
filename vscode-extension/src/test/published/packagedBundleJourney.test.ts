@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -43,6 +44,38 @@ function receiptsDir(): string {
 
 function sha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+interface BundledServerVersion {
+  status: 'ok' | 'error';
+  version?: string;
+  output?: string;
+  message?: string;
+}
+
+function bundledServerVersion(binaryPath: string): BundledServerVersion {
+  try {
+    const output = execFileSync(binaryPath, ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15_000,
+      windowsHide: true,
+    }).trim();
+    const match = /(?:^|\s)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/m.exec(output);
+    if (!match) {
+      return {
+        status: 'error',
+        output,
+        message: 'bundled server --version did not contain a semantic version',
+      };
+    }
+    return { status: 'ok', version: match[1], output };
+  } catch (error: unknown) {
+    return {
+      status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
@@ -205,6 +238,8 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(extension, 'packaged journey requires the installed extension');
 
     const bundledServerPath = bundledBinaryPath(extension.extensionPath);
+    const bundledVersion = bundledServerVersion(bundledServerPath);
+    const expectedVersion = extension.packageJSON?.version ?? null;
     const workspaceFile = path.join(workspacePath, 'packaged_daily_driver.pl');
     fs.writeFileSync(
       workspaceFile,
@@ -376,7 +411,13 @@ suite('Packaged VSIX bundled-server journey', function () {
         server_identity: {
           path: bundledServerPath,
           source: 'packaged_vsix_bundle',
-          version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
+          version: bundledVersion.version ?? null,
+          expected_version: expectedVersion,
+          version_output: bundledVersion.output ?? null,
+          version_match:
+            bundledVersion.status === 'ok' && expectedVersion !== null
+              ? bundledVersion.version === expectedVersion
+              : false,
           startup_source: metrics.binary_resolution_source ?? null,
         },
         startup: metrics,
@@ -458,6 +499,29 @@ suite('Packaged VSIX bundled-server journey', function () {
           },
         }));
       const productBlockers = [
+        ...(bundledVersion.status === 'ok' && expectedVersion !== null
+          ? bundledVersion.version === expectedVersion
+            ? []
+            : [
+                {
+                  label: 'bundled_server_version',
+                  result: {
+                    expected: expectedVersion,
+                    actual: bundledVersion.version,
+                    output: bundledVersion.output,
+                  },
+                },
+              ]
+          : [
+              {
+                label: 'bundled_server_version',
+                result: {
+                  expected: expectedVersion,
+                  actual: bundledVersion.version ?? null,
+                  message: bundledVersion.message ?? 'bundled server version unavailable',
+                },
+              },
+            ]),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
       ];
