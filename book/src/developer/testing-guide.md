@@ -4,7 +4,7 @@ This guide routes contributors to the current testing surfaces without turning o
 
 ## Choose the evidence surface
 
-- Parser behavior: package tests and [parser-accuracy fixtures](../../crates/perl-corpus/).
+- Parser behavior: package tests and [parser-accuracy fixtures](https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/main/crates/perl-corpus/).
 - LSP behavior: `perl-lsp-rs-core` tests, protocol fixtures, and feature-policy evidence.
 - DAP behavior: `perl-dap` tests and the current DAP status/scorecard.
 - Repository policy: `cargo xtask` checks and the required PR gate.
@@ -21,7 +21,7 @@ cargo fmt --all -- --check
 cargo xtask fmt --check
 ```
 
-Use the repository [commands reference](../reference/COMMANDS_REFERENCE.md) and [contributing guide](../../CONTRIBUTING.md) for the current required gate and any lane-specific commands.
+Use the repository [commands reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md) and [contributing guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md) for the current required gate and any lane-specific commands.
 
 ## Claim discipline
 
