@@ -43,6 +43,7 @@ Choose the path that matches what you are trying to do:
 | Run builds, tests, and CI commands | [Commands Reference](reference/COMMANDS_REFERENCE.md) |
 | Add or audit public API documentation | [Missing Documentation Guide](reference/MISSING_DOCUMENTATION_GUIDE.md) |
 | Understand stability and compatibility | [Stability Policy](reference/STABILITY.md) |
+| Compare distribution channels and support tiers | [Distribution Matrix](project/DISTRIBUTION_MATRIX.md) |
 | Understand the native stack product policy | [Native Stack Product Policy](reference/NATIVE_STACK_POLICY.md) |
 | Read the historical analyses and launch material | [Articles and Research Notes](articles/README.md) |
 | Decide where a doc belongs in Diataxis | [Diataxis Authoring Guide](reference/DIATAXIS_GUIDE.md) |
@@ -107,6 +108,7 @@ Decision records, project status, and planning documents.
 - [ADR Index](adr/README.md) — chronological index plus a topic guide for parser, runtime, DAP, security, and swarm decisions
 - [0.14.0 Readiness Queue](releases/0.14.0-readiness.md) — current-release meta-roadmap: drain queue + implementation phase + release lock
 - [Project Roadmap](project/ROADMAP.md)
+- [Distribution Matrix](project/DISTRIBUTION_MATRIX.md)
 - [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md)
 - [Preview Before Edit ADR](adr/PLSP-ADR-0003-preview-before-edit.md)
 - [PR Queue Disposition Spec](specs/PLSP-SPEC-0006-pr-queue-disposition.md)
