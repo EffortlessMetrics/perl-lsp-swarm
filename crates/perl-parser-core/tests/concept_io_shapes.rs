@@ -137,10 +137,13 @@ fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<
             command,
             body_span,
         } => {
-            let body_text = body_span
-                .as_ref()
-                .and_then(|span| source.get(span.start..span.end))
-                .map(str::to_owned);
+            let body_geometry = body_span.as_ref().map(|span| {
+                (
+                    span.start,
+                    span.end,
+                    source.get(span.start..span.end).map(str::to_owned),
+                )
+            });
             heredocs.push((
                 delimiter.clone(),
                 content.clone(),
@@ -148,7 +151,7 @@ fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<
                 *indented,
                 *command,
                 source_text(source, node),
-                body_text,
+                body_geometry,
             ));
         }
         NodeKind::Diamond => diamonds += 1,
@@ -167,9 +170,9 @@ fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<
         "heredoc declaration span must begin at its opener"
     );
     assert_eq!(
-        body.as_deref().map(str::trim_end),
-        Some("hello"),
-        "body_span must cover the same body represented by content"
+        body,
+        &Some((22, 28, Some("hello\n".to_string()))),
+        "body_span must retain the exact body bytes and trailing line boundary represented separately from content"
     );
     assert_eq!(diamonds, 0, "heredoc syntax must not fabricate a Diamond node");
     Ok(())
