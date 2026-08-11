@@ -6,6 +6,8 @@ use std::ops::Range;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LexRestartStrategy {
+    /// Reuse the current token stream without performing lexer work.
+    Unchanged,
     /// Lex the complete current source from byte zero.
     FullRelex,
     /// Restore one complete live lexer checkpoint and re-lex from there to EOF.
@@ -19,6 +21,9 @@ pub struct LexRestartReport {
     /// Strategy that produced the current token stream.
     pub strategy: LexRestartStrategy,
     /// Byte boundary where fresh lexing began.
+    ///
+    /// For [`LexRestartStrategy::Unchanged`], this is the current source length:
+    /// the complete old token stream is retained and no byte is freshly lexed.
     pub restart_byte: usize,
     /// Number of source bytes lexed from the restart boundary to EOF.
     pub relexed_bytes: usize,
