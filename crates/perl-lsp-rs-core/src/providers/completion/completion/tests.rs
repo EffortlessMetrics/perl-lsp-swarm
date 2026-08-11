@@ -8447,6 +8447,16 @@ sub inspect {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let index = must(inherited_moo_parent_index());
+    let child_model = ClassModelBuilder::new()
+        .build(&ast)
+        .into_iter()
+        .find(|model| model.name == "Child");
+    assert_eq!(
+        child_model.as_ref().map(|model| model.parents.as_slice()),
+        Some(["Parent".to_string()].as_slice()),
+        "open Child source must retain the Parent edge"
+    );
+
     let generated = index.get_generated_package_members("Parent");
     assert!(
         generated.iter().any(|symbol| symbol.name == "name"),
