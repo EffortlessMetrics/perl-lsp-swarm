@@ -1,5 +1,9 @@
 import * as vscode from 'vscode';
 
+export const PRODUCT_NAME = 'perl-lsp';
+export const SERVER_EXECUTABLE = 'perllsp';
+export const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
+
 export interface SupportCommandDependencies {
   readonly getServerVersion: () => Promise<string>;
   readonly extensionVersion: string;
@@ -7,6 +11,12 @@ export interface SupportCommandDependencies {
   readonly platform: string;
   readonly arch: string;
   readonly editorName?: string | undefined;
+}
+
+function normalizeServerVersion(serverVersion: string): string {
+  const trimmed = serverVersion.trim();
+  const match = /^(?:perllsp|perl-lsp)\s+(.+)$/.exec(trimmed);
+  return match?.[1]?.trim() || trimmed || 'unavailable';
 }
 
 export function formatIssueDiagnosticInfo(params: {
@@ -18,9 +28,11 @@ export function formatIssueDiagnosticInfo(params: {
   editorName?: string | undefined;
 }): string {
   const editorName = (params.editorName ?? 'VS Code').trim() || 'VS Code';
+  const serverVersion = normalizeServerVersion(params.serverVersion);
   return [
-    `perl-lsp server: ${params.serverVersion}`,
-    `Extension: ${params.extensionVersion}`,
+    `Product: ${PRODUCT_NAME}`,
+    `Server: ${SERVER_EXECUTABLE} ${serverVersion}`,
+    `Extension: ${EXTENSION_ID} ${params.extensionVersion}`,
     `${editorName}: ${params.editorVersion}`,
     `Platform: ${params.platform}/${params.arch}`,
   ].join('\n');

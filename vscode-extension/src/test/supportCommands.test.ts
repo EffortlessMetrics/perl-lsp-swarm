@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { reportIssueCommand } from '../supportCommands';
+import { formatIssueDiagnosticInfo, reportIssueCommand } from '../supportCommands';
 
 function dependencies() {
   return {
@@ -15,6 +15,37 @@ function dependencies() {
 describe('support command implementations', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  test('formats product, executable, and extension identity as distinct fields', () => {
+    expect(
+      formatIssueDiagnosticInfo({
+        serverVersion: 'perllsp 0.17.0',
+        extensionVersion: '0.17.0',
+        editorVersion: '1.128.1',
+        platform: 'win32',
+        arch: 'x64',
+        editorName: 'Visual Studio Code',
+      }),
+    ).toBe(
+      'Product: perl-lsp\n' +
+        'Server: perllsp 0.17.0\n' +
+        'Extension: EffortlessMetrics.perl-lsp-rs 0.17.0\n' +
+        'Visual Studio Code: 1.128.1\n' +
+        'Platform: win32/x64',
+    );
+  });
+
+  test('keeps an unavailable server attached to the expected executable identity', () => {
+    expect(
+      formatIssueDiagnosticInfo({
+        serverVersion: 'unavailable',
+        extensionVersion: '0.17.0',
+        editorVersion: '1.128.1',
+        platform: 'linux',
+        arch: 'arm64',
+      }),
+    ).toContain('Server: perllsp unavailable');
   });
 
   test('opens the issue form with current diagnostic context', async () => {
@@ -34,7 +65,7 @@ describe('support command implementations', () => {
     );
   });
 
-  test('copies diagnostic context and then opens the issue form', async () => {
+  test('copies canonical diagnostic context and then opens the issue form', async () => {
     const deps = dependencies();
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
       'Copy Diagnostic Info',
@@ -43,8 +74,9 @@ describe('support command implementations', () => {
     await reportIssueCommand(deps);
 
     expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith(
-      'perl-lsp server: perllsp 0.17.0\n' +
-        'Extension: 0.17.0\n' +
+      'Product: perl-lsp\n' +
+        'Server: perllsp 0.17.0\n' +
+        'Extension: EffortlessMetrics.perl-lsp-rs 0.17.0\n' +
         'Visual Studio Code: 1.128.1\n' +
         'Platform: win32/x64',
     );
