@@ -4,7 +4,7 @@ This page previously presented a frozen numeric tier model and a 116-member inve
 
 Use these authorities instead:
 
-- [Cargo.toml](../Cargo.toml) for exact workspace membership, exclusions, workspace dependencies, and the publish allowlist;
+- [Cargo.toml](../../Cargo.toml) for exact workspace membership, exclusions, workspace dependencies, and the publish allowlist;
 - [Architecture Overview](../reference/ARCHITECTURE.md) for current crate families and contributor seam selection;
 - package-local READMEs and manifests for the dependency contract of a specific crate;
 - [the publishing guide](PUBLISHING_AFTER_COLLAPSE.md) for the current release and publish topology.
