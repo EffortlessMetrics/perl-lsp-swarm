@@ -35,6 +35,7 @@ pub use tag::DiagnosticTag;
 /// Each code has a fixed string representation and associated metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DiagnosticCode {
     // Parser diagnostics (PL001-PL099)
     /// General parse error

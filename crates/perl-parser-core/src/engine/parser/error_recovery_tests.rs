@@ -730,6 +730,53 @@ fn test_unclosed_qw_ignores_close_in_following_quote_operator() -> Result<(), St
     Ok(())
 }
 
+/// CR-only source is a valid Perl line ending and must take the same lexer
+/// recovery boundary as LF source. Without CR-aware line-prefix detection,
+/// this named subroutine is swallowed into the unclosed qw list.
+#[test]
+fn test_unclosed_qw_recovers_named_subroutine_after_cr_only_line_break() -> Result<(), String> {
+    let code = "my @items = qw(word\rsub run { print 1; }";
+    let mut parser = Parser::new(code);
+    let ast =
+        parser.parse().map_err(|error| format!("CR-only named-sub recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !matches!(
+            statements.get(1).map(|statement| &statement.kind),
+            Some(NodeKind::Subroutine { .. })
+        )
+        || !sexp.contains("(sub run")
+        || parser.errors().is_empty()
+    {
+        return Err(format!("CR-only named subroutine was swallowed: {sexp}"));
+    }
+    Ok(())
+}
+
+/// A closer inside a following print string is still content, while the
+/// CR-only boundary before the statement must remain recoverable.
+#[test]
+fn test_unclosed_qw_preserves_print_closer_before_cr_only_statement() -> Result<(), String> {
+    let code = "my @items = qw(word\rprint \"x)\";";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse().map_err(|error| format!("CR-only print recovery failed: {error}"))?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected program root, got {}", ast.to_sexp()));
+    };
+    let sexp = ast.to_sexp();
+    if statements.len() != 2
+        || !sexp.contains("x)")
+        || !sexp.contains("print")
+        || parser.errors().is_empty()
+    {
+        return Err(format!("CR-only quote closer changed recovery boundaries: {sexp}"));
+    }
+    Ok(())
+}
+
 #[test]
 fn test_unclosed_qw_suffix_scan_disables_nested_qw_recovery() -> Result<(), String> {
     let code = "my @items = qw(word\nmy @nested = qw(inner\nprint 1;";

@@ -51,6 +51,16 @@
       "type": "string",
       "pattern": "^[0-9a-fA-F]{64}$"
     },
+    "optional_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "optional_string": {
       "oneOf": [
         {
@@ -154,6 +164,7 @@
         "outcome",
         "observed_release_identity",
         "artifact_verified",
+        "artifact_sha256",
         "known_good_preserved",
         "partial_artifact_promoted",
         "mixed_version_reported_ready",
@@ -227,6 +238,9 @@
         "artifact_verified": {
           "type": "boolean"
         },
+        "artifact_sha256": {
+          "$ref": "#/$defs/optional_sha256"
+        },
         "known_good_preserved": {
           "type": "boolean"
         },
@@ -255,7 +269,25 @@
         "limitations": {
           "$ref": "#/$defs/non_empty_strings"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "artifact_verified": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "artifact_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
 
 type OutlineKind = 'feature' | 'rule' | 'background' | 'scenario' | 'examples' | 'step';
 type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But' | '*';
@@ -62,13 +63,11 @@ const STEP_DEFINITION_FILE_LIMIT = 1000;
 const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
-// contains a quantifier* (e.g. `(a+)+` or `([a-z]{2,5})+`), a backreference,
-// or a lookaround. A single character class followed by one quantifier
+// contains a quantifier, a backreference, a lookaround, or alternation. A
+// single character class followed by one quantifier
 // (`[^"]+`, `[0-9]+`) is linear-time and safe — flagging it produced false
 // negatives that suppressed step-definition links for ordinary `"([^"]+)"`
-// patterns (see #859). Keep this in sync with gherkinStepDefinitions.ts.
-const POTENTIALLY_EXPENSIVE_REGEX_RE =
-  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
+// patterns (see #859). The parser and denylist live in gherkinRedosGuard.ts.
 const DELIMITER_PAIRS: Record<string, string> = {
   '{': '}',
   '[': ']',
@@ -572,7 +571,7 @@ function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
     return false;
   }
 
-  return !POTENTIALLY_EXPENSIVE_REGEX_RE.test(source);
+  return !isPotentiallyExpensiveRegex(source);
 }
 
 function normalizeRegexFlags(flags: string): string {

@@ -5,6 +5,7 @@ use super::DiagnosticCode;
 /// Category of diagnostic codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DiagnosticCategory {
     /// Parser-related diagnostics (PL001-PL099)
     Parser,

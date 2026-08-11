@@ -114,6 +114,8 @@ struct FixtureMetadata {
     #[serde(default)]
     ast_expectations: Vec<AstExpectation>,
     #[serde(default)]
+    forbidden_nodes: Vec<ForbiddenNode>,
+    #[serde(default)]
     symbol_expectations: SymbolExpectations,
     #[serde(default)]
     symbol_safety_regions: Vec<SymbolSafetyRegion>,
@@ -152,6 +154,21 @@ struct AstExpectation {
     depth: Option<u64>,
     operator: Option<String>,
     parent_operator: Option<String>,
+}
+
+/// A node shape asserted absent by `parser_accuracy_e2e`.
+///
+/// The metric does not score these — a forbidden node contributes no prediction
+/// and no expectation. It is modelled here so the gold-drift audit can see its
+/// id: without that, deleting a negative assertion is invisible, because the
+/// fixture keeps its positive expectations and stays non-hollow.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ForbiddenNode {
+    id: String,
+    #[allow(dead_code)]
+    kind: String,
+    #[allow(dead_code)]
+    line: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3305,6 +3322,9 @@ fn collect_fixture_gold_signatures(fixture: &FixtureMetadata, signatures: &mut B
     for expectation in &fixture.ast_expectations {
         signatures.insert(format!("{fixture_id}::ast::{}", expectation.id));
     }
+    for forbidden in &fixture.forbidden_nodes {
+        signatures.insert(format!("{fixture_id}::forbidden::{}", forbidden.id));
+    }
     for expectation in &fixture.symbol_expectations.entities {
         signatures.insert(format!("{fixture_id}::symbol_entity::{}", expectation.id));
     }
@@ -3668,17 +3688,33 @@ fn is_ast_scored_node(node: &Node) -> bool {
     matches!(
         node.kind,
         NodeKind::Package { .. }
+            | NodeKind::Class { .. }
             | NodeKind::Subroutine { .. }
             | NodeKind::Method { .. }
             | NodeKind::VariableDeclaration { .. }
             | NodeKind::VariableListDeclaration { .. }
+            | NodeKind::Assignment { .. }
+            | NodeKind::Typeglob { .. }
+            | NodeKind::AmperCall { .. }
             | NodeKind::FunctionCall { .. }
+            | NodeKind::Return { .. }
             | NodeKind::MethodCall { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Match { .. }
             | NodeKind::Substitution { .. }
             | NodeKind::Transliteration { .. }
             | NodeKind::Heredoc { .. }
+            | NodeKind::String { .. }
+            | NodeKind::Use { .. }
+            | NodeKind::HashLiteral { .. }
+            | NodeKind::If { .. }
+            | NodeKind::While { .. }
+            | NodeKind::LoopControl { .. }
+            | NodeKind::Signature { .. }
+            | NodeKind::MandatoryParameter { .. }
+            | NodeKind::Do { .. }
+            | NodeKind::StatementModifier { .. }
+            | NodeKind::Eval { .. }
             | NodeKind::Format { .. }
             | NodeKind::Binary { .. }
             | NodeKind::Error { .. }
@@ -3688,7 +3724,8 @@ fn is_ast_scored_node(node: &Node) -> bool {
 
 fn node_operator(node: &Node) -> Option<&str> {
     match &node.kind {
-        NodeKind::Binary { op, .. } => Some(op.as_str()),
+        NodeKind::Binary { op, .. } | NodeKind::Assignment { op, .. } => Some(op.as_str()),
+        NodeKind::Match { negated, .. } => Some(if *negated { "!~" } else { "=~" }),
         _ => None,
     }
 }
@@ -3754,11 +3791,17 @@ fn score_ast_expectations(
                 score.tree_depth_correct_count += 1;
             }
         }
-        if let Some(operator) = &expectation.operator {
+        if expectation.operator.is_some() || expectation.parent_operator.is_some() {
             score.operator_precedence_expected_count += 1;
-            if prediction.operator.as_ref() == Some(operator)
-                && prediction.parent_operator.as_ref() == expectation.parent_operator.as_ref()
-            {
+            let operator_matches = expectation
+                .operator
+                .as_ref()
+                .is_none_or(|operator| prediction.operator.as_ref() == Some(operator));
+            let parent_operator_matches =
+                expectation.parent_operator.as_ref().is_none_or(|parent_operator| {
+                    prediction.parent_operator.as_ref() == Some(parent_operator)
+                });
+            if operator_matches && parent_operator_matches {
                 score.operator_precedence_correct_count += 1;
             }
         }
@@ -6830,6 +6873,7 @@ sub dynamic_boundary_case {
                             parent_operator: None,
                         },
                     ],
+                    forbidden_nodes: Vec::new(),
                     symbol_expectations: SymbolExpectations {
                         entities: vec![
                             SymbolEntityExpectation {
@@ -6924,6 +6968,7 @@ sub dynamic_boundary_case {
                             parent_operator: None,
                         },
                     ],
+                    forbidden_nodes: Vec::new(),
                     symbol_expectations: SymbolExpectations::default(),
                     symbol_safety_regions: vec![],
                     recovery_expectations: vec![],
@@ -6955,6 +7000,7 @@ sub dynamic_boundary_case {
                 generated: false,
                 line_expectations: vec![],
                 ast_expectations: vec![],
+                forbidden_nodes: Vec::new(),
                 symbol_expectations: SymbolExpectations::default(),
                 symbol_safety_regions: vec![],
                 recovery_expectations: vec![],
@@ -7026,6 +7072,7 @@ sub dynamic_boundary_case {
                 generated: false,
                 line_expectations: vec![],
                 ast_expectations: vec![],
+                forbidden_nodes: Vec::new(),
                 symbol_expectations: SymbolExpectations::default(),
                 symbol_safety_regions: vec![],
                 recovery_expectations: vec![],
@@ -7117,6 +7164,7 @@ sub dynamic_boundary_case {
                 generated: false,
                 line_expectations: vec![],
                 ast_expectations: vec![],
+                forbidden_nodes: Vec::new(),
                 symbol_expectations: SymbolExpectations::default(),
                 symbol_safety_regions: vec![],
                 recovery_expectations: vec![],

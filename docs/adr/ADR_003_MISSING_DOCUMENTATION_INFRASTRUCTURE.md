@@ -1,5 +1,7 @@
 # ADR-003: Missing Documentation Infrastructure (SPEC-149)
 
+> Historical record: the implementation and baseline claims in this ADR describe the original documentation-infrastructure decision. For current public examples and contributor workflow, use [the current public API documentation guide](../reference/MISSING_DOCUMENTATION_GUIDE.md). Do not read the historical 605+ baseline or four-phase plan below as current status.
+
 ## Status
 **Accepted - Successfully Implemented in Draft PR 159** with comprehensive documentation enforcement infrastructure and 25 acceptance criteria validation framework
 
@@ -106,7 +108,7 @@ We will implement comprehensive missing documentation infrastructure through sys
 // /crates/perl-parser/src/lib.rs
 #![warn(missing_docs)]
 
-// This lint-level warning generates 605+ violations providing:
+// This lint-level warning generates historical 605+ violations providing:
 // - Comprehensive coverage of all public APIs
 // - Systematic tracking of undocumented items
 // - CI integration for regression prevention
@@ -157,7 +159,7 @@ cargo doc --no-deps --package perl-parser
 ### Positive Outcomes
 
 1. **Systematic Documentation Coverage**:
-   - 605+ violations tracked for comprehensive resolution
+   - historical 605+ violations tracked for comprehensive resolution
    - Test-driven implementation ensuring quality and completeness
    - Automated validation preventing regression
 
@@ -184,7 +186,7 @@ cargo doc --no-deps --package perl-parser
 ### Implementation Challenges
 
 1. **Scale of Implementation**:
-   - 605+ violations require systematic 8-week implementation effort
+   - historical 605+ violations require systematic 8-week implementation effort
    - Coordination across multiple development phases and priorities
    - Consistent quality standards across diverse module types
 
@@ -283,7 +285,7 @@ cargo doc --no-deps --package perl-parser
 
 ### Quantitative Metrics
 
-1. **Documentation Coverage**: Reduce violations from 605+ to 0
+1. **Historical Documentation Coverage Goal**: Reduce violations from 605+ to 0
 2. **Test Success Rate**: Achieve 25/25 passing acceptance criteria tests
 3. **Performance Preservation**: Maintain <1% documentation infrastructure overhead
 4. **CI Reliability**: Zero documentation regression incidents post-implementation
@@ -300,7 +302,7 @@ cargo doc --no-deps --package perl-parser
 - **[ADR-001: Agent Architecture](ADR_001_AGENT_ARCHITECTURE.md)** - historical `.claude/agents2/` specialization phase referenced for context only
 - **[ADR-002: API Documentation Infrastructure](ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md)** - Original infrastructure design and rationale
 - **[API Documentation Standards](../reference/API_DOCUMENTATION_STANDARDS.md)** - Comprehensive quality requirements and templates
-- **[Missing Documentation Guide](../reference/MISSING_DOCUMENTATION_GUIDE.md)** - Systematic 4-phase implementation strategy
+- **[Missing Documentation Guide](../reference/MISSING_DOCUMENTATION_GUIDE.md)** - Current-surface documentation workflow; the historical enforcement design is described by this ADR
 
 ## Monitoring and Review
 

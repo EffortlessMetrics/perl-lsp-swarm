@@ -1065,15 +1065,22 @@ pub(super) fn detail_with_evidence(base: String, evidence: &ReceiverEvidence) ->
 
 /// Classify the receiver of a `->` method-completion call site.
 ///
-/// Tries exact source-backed receiver facts first, then falls back to the
-/// historical type-engine and text-pattern receiver inference paths. Returns
-/// [`ReceiverEvidence::Unknown`] when no evidence is found.
+/// Uses exact source-backed receiver facts first, except that `$self`/`$this`
+/// retains an established type-engine package when one is available for
+/// inherited workspace resolution. Finally falls back to text-pattern
+/// inference. This keeps literal bless and hash-slot evidence authoritative
+/// while preserving the inherited receiver path.
 pub(super) fn classify_receiver(
     context: &CompletionContext,
     source: &str,
     type_engine: Option<&TypeInferenceEngine>,
 ) -> ReceiverEvidence {
     if let Some(evidence) = source_backed_receiver_fact_evidence(context, source, type_engine) {
+        if matches!(evidence, ReceiverEvidence::SelfOrThis(_))
+            && let Some(pkg) = type_engine_receiver(context, type_engine)
+        {
+            return ReceiverEvidence::TypeEngine(pkg);
+        }
         return evidence;
     }
     if let Some(pkg) = type_engine_receiver(context, type_engine) {
@@ -1648,7 +1655,7 @@ pub fn add_workspace_method_completions(
 
     // Collect all methods from the receiver package AND its ancestor chain
     // (parents + roles). Child methods take priority.
-    let members = collect_all_package_members(index, &package_name);
+    let members = collect_all_package_members_with_source(index, &package_name, source);
 
     // Build an auto-import edit once for all methods from this package.
     let auto_import_edit = auto_import::build_auto_import_edit(source, &package_name);
@@ -1977,8 +1984,17 @@ fn method_symbol_defining_packages(
 }
 
 fn is_confident_method_candidate(candidate: &DefinitionCandidate) -> bool {
-    candidate.confidence == Confidence::High
-        && matches!(candidate.kind, EntityKind::Method | EntityKind::Subroutine)
+    match candidate.kind {
+        // Generated accessors are emitted with medium confidence because they
+        // are inferred from framework declarations rather than explicit Perl
+        // subroutines.  The workspace-index path is still authoritative enough
+        // for inherited completion when the entity kind is preserved.
+        EntityKind::GeneratedMember => {
+            matches!(candidate.confidence, Confidence::Medium | Confidence::High)
+        }
+        EntityKind::Method | EntityKind::Subroutine => candidate.confidence == Confidence::High,
+        _ => false,
+    }
 }
 
 fn semantic_method_candidate_sort_key(
@@ -2119,10 +2135,6 @@ fn semantic_file_id(uri: &str) -> FileId {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "policy:#2064: visible-symbol completion tests stay beside their filter seam"
-)]
 mod visible_symbol_completion_tests {
     use super::{VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate};
     use perl_semantic_facts::{Confidence, EntityId};
@@ -2195,6 +2207,18 @@ pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
 ) -> Vec<WorkspaceSymbol> {
+    collect_all_package_members_with_source(index, package_name, "")
+}
+
+/// Collect package members and use the current open document as a model source
+/// when the receiver package has not been indexed yet. This keeps completion
+/// useful during editing while retaining the workspace index as the authority
+/// for persisted members and inherited packages.
+fn collect_all_package_members_with_source(
+    index: &WorkspaceIndex,
+    package_name: &str,
+    source: &str,
+) -> Vec<WorkspaceSymbol> {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
@@ -2222,46 +2246,46 @@ pub(super) fn collect_all_package_members(
         cache
             .entry(pkg.to_string())
             .or_insert_with(|| {
-                let Some(pkg_location) = index.find_definition(pkg) else {
-                    return (
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
-                };
-
-                let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                    perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                        .and_then(|path| std::fs::read_to_string(path).ok())
+                let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
+                    index.document_store().get_text(&pkg_location.uri).or_else(|| {
+                        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+                            .and_then(|path| std::fs::read_to_string(path).ok())
+                    })
                 });
 
-                let Some(text) = text else {
-                    return (
+                let fallback = || {
+                    (
                         Vec::new(),
                         Vec::new(),
                         perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
+                    )
                 };
 
-                let mut parser = perl_semantic_analyzer::Parser::new(&text);
-                let Ok(ast) = parser.parse() else {
-                    return (
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    );
-                };
-
-                perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
-                    .class_models
+                // A bare-symbol lookup can resolve an unrelated indexed symbol.
+                // Only suppress the open-document fallback when the indexed text
+                // actually contains the requested package model.
+                for text in indexed_text
                     .into_iter()
-                    .find(|model| model.name == pkg)
-                    .map(|model| (model.parents.clone(), model.roles.clone(), model.mro))
-                    .unwrap_or((
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    ))
+                    .chain((!source.is_empty()).then_some(source.to_string()))
+                {
+                    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+                    let Ok(ast) = parser.parse() else {
+                        continue;
+                    };
+
+                    if let Some(model) =
+                        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(
+                            &ast, &text,
+                        )
+                        .class_models
+                        .into_iter()
+                        .find(|model| model.name == pkg)
+                    {
+                        return (model.parents.clone(), model.roles.clone(), model.mro);
+                    }
+                }
+
+                fallback()
             })
             .clone()
     };
@@ -2305,7 +2329,10 @@ pub(super) fn collect_all_package_members(
         }
 
         // Collect direct members for this package
-        let members = index.get_package_members(pkg);
+        let members = index
+            .get_package_members(pkg)
+            .into_iter()
+            .chain(index.get_generated_package_members(pkg));
         for symbol in members {
             match symbol.kind {
                 WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
@@ -2399,4 +2426,59 @@ fn find_assignment_eq(line: &str) -> Option<usize> {
         return Some(i);
     }
     None
+}
+
+#[cfg(test)]
+mod collect_all_tests {
+    use super::*;
+    use perl_tdd_support::must;
+    use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    use std::sync::Arc;
+    use url::Url;
+
+    fn inherited_moo_parent_index() -> Arc<WorkspaceIndex> {
+        let index = Arc::new(WorkspaceIndex::new());
+        let parent_uri = must(Url::parse("file:///workspace/Parent.pm"));
+        must(
+            index.index_file(
+                parent_uri,
+                r#"package Parent;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
+1;
+"#
+                .to_string(),
+            ),
+        );
+        index
+    }
+
+    #[test]
+    fn collect_all_follows_parent_generated_members() {
+        let index = inherited_moo_parent_index();
+        assert!(index.has_symbols(), "parent-only Moo index should be populated");
+        let child_source = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", child_source);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"name"),
+            "expected inherited generated reader from Parent, got {names:?}"
+        );
+    }
 }

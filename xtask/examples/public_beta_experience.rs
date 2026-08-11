@@ -184,6 +184,10 @@ struct ZeroBudgetCounts {
 }
 
 impl ZeroBudgetCounts {
+    #[expect(
+        dead_code,
+        reason = "policy:pending-zero-budget-consumer: reserved for receipt validation"
+    )]
     fn has_violations(&self) -> bool {
         self.false_exact > 0
             || self.stale_exact > 0
@@ -359,14 +363,14 @@ fn validate_journey_cells(receipt: &Receipt) -> Result<()> {
         }
         for evidence in &cell.evidence_refs {
             non_empty(evidence, "journey_cells[].evidence_refs[]")?;
-            if let Some((_, candidate_ref)) = evidence.rsplit_once('/') {
-                if candidate_ref.starts_with('v') && candidate_ref != receipt.candidate.candidate_id
-                {
-                    bail!(
-                        "journey_cells[].evidence_refs[] must bind to candidate {}",
-                        receipt.candidate.candidate_id
-                    );
-                }
+            if let Some((_, candidate_ref)) = evidence.rsplit_once('/')
+                && candidate_ref.starts_with('v')
+                && candidate_ref != receipt.candidate.candidate_id
+            {
+                bail!(
+                    "journey_cells[].evidence_refs[] must bind to candidate {}",
+                    receipt.candidate.candidate_id
+                );
             }
         }
         match cell.disposition {
@@ -578,6 +582,7 @@ fn validate_installed_acceptance_source(
         .unwrap_or(0);
     let derived_status = match outcome {
         "failed" => InputStatus::Blocked,
+        "not_proven" => InputStatus::NotProven,
         "completed" if known_limitations > 0 => InputStatus::Limited,
         "completed" => InputStatus::Pass,
         _ => bail!("child_receipts.{name} installed-acceptance source has unknown outcome"),
@@ -897,6 +902,33 @@ mod tests {
             &receipt,
             &source,
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_not_proven_source_cannot_be_declared_pass() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.installed_acceptance.status = super::InputStatus::NotProven;
+        let source: serde_json::Value = serde_json::from_slice(
+            br#"{"schema_version":1,"outcome":"not_proven","repository_sha":"0123456789abcdef0123456789abcdef01234567","known_limitations":["DAP preview is not exercised"]}"#,
+        )?;
+        super::validate_installed_acceptance_source(
+            "installed_acceptance",
+            &receipt.child_receipts.installed_acceptance,
+            &receipt,
+            &source,
+        )?;
+        receipt.child_receipts.installed_acceptance.status = super::InputStatus::Pass;
+        assert!(
+            super::validate_installed_acceptance_source(
+                "installed_acceptance",
+                &receipt.child_receipts.installed_acceptance,
+                &receipt,
+                &source,
+            )
+            .is_err()
+        );
         Ok(())
     }
 

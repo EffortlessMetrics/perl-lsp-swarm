@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {"package": "perl-ast", "target": "ast_behavior_spec_tests"},
+    {"package": "perl-parser-core", "target": "error_recovery_regression"},
+    {"package": "perl-parser-core", "target": "fix_incomplete_brace_recovery_marker_1911"},
+    {"package": "perl-parser-core", "target": "pir_a_branch_body_test"},
+    {"package": "perl-parser-core", "target": "pir_a_loop_body_test"},
+    {"package": "perl-parser", "target": "incremental_integration_test"},
+    {"package": "perl-parser", "target": "incremental_parser_accuracy"},
+    {"package": "perl-parser", "target": "semantic_smoke_tests"}
+  ]
+}

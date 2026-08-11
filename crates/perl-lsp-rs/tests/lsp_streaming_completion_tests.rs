@@ -141,8 +141,13 @@ fn streaming_completion_returns_null_and_emits_progress() -> TestResult {
         Some("perlInlineCompletionStream"),
         "progress kind must be 'perlInlineCompletionStream'"
     );
-    assert!(value.get("sessionId").is_some(), "progress must contain a sessionId");
-    assert!(value.get("sequence").is_some(), "progress must contain a sequence number");
+    let session_id = value["sessionId"].as_str().ok_or("progress sessionId must be a string")?;
+    assert!(!session_id.is_empty(), "progress sessionId must not be empty");
+    assert_eq!(
+        value["sequence"].as_u64(),
+        Some(0),
+        "the first progress frame must start at sequence zero"
+    );
     assert_eq!(
         value["isFinal"].as_bool(),
         Some(true),

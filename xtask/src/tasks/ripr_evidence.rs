@@ -3497,6 +3497,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         pr_evidence_packet_with_count(
             &options,

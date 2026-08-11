@@ -876,6 +876,8 @@ impl PullDiagnosticsProvider {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                 InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
@@ -952,6 +954,8 @@ impl PullDiagnosticsProvider {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                 InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
@@ -1040,6 +1044,8 @@ impl PullDiagnosticsProvider {
                 perl_lsp_rs_core::providers::diagnostics::DiagnosticTag::Deprecated => {
                     "Deprecated".to_string()
                 }
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
 
@@ -1200,6 +1206,8 @@ fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverit
         InternalDiagnosticSeverity::Warning => LspDiagnosticSeverity::WARNING,
         InternalDiagnosticSeverity::Information => LspDiagnosticSeverity::INFORMATION,
         InternalDiagnosticSeverity::Hint => LspDiagnosticSeverity::HINT,
+        // Forward-compatible fallback for future variants (#2898)
+        _ => LspDiagnosticSeverity::ERROR,
     }
 }
 
@@ -1217,6 +1225,8 @@ fn to_lsp_tags(tags: &[InternalDiagnosticTag]) -> Option<Vec<LspDiagnosticTag>> 
             .map(|tag| match tag {
                 InternalDiagnosticTag::Unnecessary => LspDiagnosticTag::UNNECESSARY,
                 InternalDiagnosticTag::Deprecated => LspDiagnosticTag::DEPRECATED,
+                // Forward-compatible fallback for future variants (#2898)
+                _ => LspDiagnosticTag::UNNECESSARY,
             })
             .collect(),
     )

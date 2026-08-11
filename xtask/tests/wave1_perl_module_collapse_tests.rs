@@ -457,7 +457,7 @@ fn test_all_test_files_migrated_to_perl_module_tests_dir() -> Result<(), Box<dyn
         .collect();
 
     assert!(
-        test_files.len() > 0,
+        !test_files.is_empty(),
         "crates/perl-module/tests/ must contain .rs test files.\n\
          Expected approximately 62 files from the 13 collapsed crates.\n\
          See .spec/4420-wave1-perl-module/acceptance.md line 14"

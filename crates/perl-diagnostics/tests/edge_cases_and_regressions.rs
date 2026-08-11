@@ -37,16 +37,16 @@ fn edge_case_related_information_default_is_valid() {
 // Edge case: Diagnostic with all fields populated
 #[test]
 fn edge_case_diagnostic_with_all_fields_populated() {
-    let info = RelatedInformation { message: "related info".to_string(), location: (10, 20) };
+    let info = RelatedInformation::new("related info", (10, 20));
 
-    let diag = Diagnostic {
-        code: DiagnosticCode::SyntaxError,
-        severity: DiagnosticSeverity::Warning,
-        range: (1, 50),
-        message: "Test diagnostic".to_string(),
-        related_information: Some(vec![info]),
-        tags: Some(vec![DiagnosticTag::Deprecated]),
-    };
+    let mut diag = Diagnostic::new(
+        DiagnosticCode::SyntaxError,
+        DiagnosticSeverity::Warning,
+        (1, 50),
+        "Test diagnostic",
+    );
+    diag.related_information = Some(vec![info]);
+    diag.tags = Some(vec![DiagnosticTag::Deprecated]);
 
     assert_eq!(diag.message, "Test diagnostic");
     assert_eq!(diag.code, DiagnosticCode::SyntaxError);
@@ -188,29 +188,32 @@ fn edge_case_severity_ordering_complete() {
 #[test]
 fn edge_case_diagnostic_message_various_lengths() {
     // Empty message
-    let diag1 = Diagnostic { message: String::new(), ..Default::default() };
+    let mut diag1 = Diagnostic::default();
+    diag1.message = String::new();
     assert_eq!(diag1.message, "");
 
     // Long message (10k chars)
     let long_msg = "a".repeat(10000);
-    let diag2 = Diagnostic { message: long_msg.clone(), ..Default::default() };
+    let mut diag2 = Diagnostic::default();
+    diag2.message = long_msg.clone();
     assert_eq!(diag2.message, long_msg);
 
     // Unicode message
     let unicode_msg = "Error in ñoño → 🚀 ⚠️".to_string();
-    let diag3 = Diagnostic { message: unicode_msg.clone(), ..Default::default() };
+    let mut diag3 = Diagnostic::default();
+    diag3.message = unicode_msg.clone();
     assert_eq!(diag3.message, unicode_msg);
 }
 
 // Edge case: Multiple related_information entries
 #[test]
 fn edge_case_diagnostic_multiple_related_information() {
-    let info1 = RelatedInformation { message: "First related".to_string(), location: (0, 10) };
-    let info2 = RelatedInformation { message: "Second related".to_string(), location: (20, 30) };
-    let info3 = RelatedInformation { message: "Third related".to_string(), location: (40, 50) };
+    let info1 = RelatedInformation::new("First related", (0, 10));
+    let info2 = RelatedInformation::new("Second related", (20, 30));
+    let info3 = RelatedInformation::new("Third related", (40, 50));
 
-    let diag =
-        Diagnostic { related_information: Some(vec![info1, info2, info3]), ..Default::default() };
+    let mut diag = Diagnostic::default();
+    diag.related_information = Some(vec![info1, info2, info3]);
 
     let infos = must_some(diag.related_information);
     assert_eq!(infos.len(), 3);
@@ -222,14 +225,12 @@ fn edge_case_diagnostic_multiple_related_information() {
 // Edge case: Multiple tags on a single diagnostic
 #[test]
 fn edge_case_diagnostic_multiple_tags() {
-    let diag = Diagnostic {
-        tags: Some(vec![
-            DiagnosticTag::Unnecessary,
-            DiagnosticTag::Deprecated,
-            DiagnosticTag::Unnecessary, // Can repeat
-        ]),
-        ..Default::default()
-    };
+    let mut diag = Diagnostic::default();
+    diag.tags = Some(vec![
+        DiagnosticTag::Unnecessary,
+        DiagnosticTag::Deprecated,
+        DiagnosticTag::Unnecessary, // Can repeat
+    ]);
 
     let tags = must_some(diag.tags);
     assert_eq!(tags.len(), 3);
@@ -319,7 +320,8 @@ fn regression_diagnostic_category_copy() {
 // Edge case: Diagnostic struct Debug representation is valid
 #[test]
 fn edge_case_diagnostic_debug_representation() {
-    let diag = Diagnostic { message: "Debug test".to_string(), ..Default::default() };
+    let mut diag = Diagnostic::default();
+    diag.message = "Debug test".to_string();
 
     let debug_str = format!("{:?}", diag);
     assert!(debug_str.contains("Debug test") || !debug_str.is_empty());
@@ -384,14 +386,8 @@ fn edge_case_diagnostic_code_tags_consistent() {
 // Edge case: Diagnostic struct Clone and PartialEq work correctly
 #[test]
 fn edge_case_diagnostic_clone_and_equality() {
-    let diag1 = Diagnostic {
-        code: DiagnosticCode::SyntaxError,
-        severity: DiagnosticSeverity::Warning,
-        range: (10, 20),
-        message: "Test".to_string(),
-        related_information: None,
-        tags: None,
-    };
+    let diag1 =
+        Diagnostic::new(DiagnosticCode::SyntaxError, DiagnosticSeverity::Warning, (10, 20), "Test");
 
     let diag2 = diag1.clone();
 
@@ -402,7 +398,8 @@ fn edge_case_diagnostic_clone_and_equality() {
 // Edge case: Large range values work correctly
 #[test]
 fn edge_case_diagnostic_large_range_values() {
-    let diag = Diagnostic { range: (1_000_000, 2_000_000), ..Default::default() };
+    let mut diag = Diagnostic::default();
+    diag.range = (1_000_000, 2_000_000);
 
     assert_eq!(diag.range.0, 1_000_000);
     assert_eq!(diag.range.1, 2_000_000);
@@ -411,8 +408,10 @@ fn edge_case_diagnostic_large_range_values() {
 // Regression: Diagnostic can be used in collections
 #[test]
 fn regression_diagnostic_in_collections() {
-    let diag1 = Diagnostic { message: "First".to_string(), ..Default::default() };
-    let diag2 = Diagnostic { message: "Second".to_string(), ..Default::default() };
+    let mut diag1 = Diagnostic::default();
+    diag1.message = "First".to_string();
+    let mut diag2 = Diagnostic::default();
+    diag2.message = "Second".to_string();
 
     let diagnostics: Vec<Diagnostic> = vec![diag1, diag2];
     assert_eq!(diagnostics.len(), 2);

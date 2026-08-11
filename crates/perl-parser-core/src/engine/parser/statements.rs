@@ -480,7 +480,10 @@ impl<'a> Parser<'a> {
                     // We need the text for the indirect call check
                     // We must clone it because is_indirect_call_pattern borrows self mutably to peek ahead
                     let text = self.tokens.peek()?.text.clone();
-                    if self.is_indirect_call_pattern(&text) {
+                    if self.is_unknown_lowercase_bareword_call_pattern(&text) {
+                        let call = self.parse_unknown_lowercase_bareword_call()?;
+                        Ok(self.parse_named_unary_statement_tail(call)?)
+                    } else if self.is_indirect_call_pattern(&text) {
                         // Parse indirect call but DON'T return early - let it go through
                         // the same modifier/semicolon handling as other statements.
                         // Short-circuit operators may follow: `print $fh "msg" or die`,

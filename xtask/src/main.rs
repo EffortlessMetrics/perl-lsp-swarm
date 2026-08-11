@@ -1461,7 +1461,7 @@ enum Commands {
         report: PathBuf,
 
         /// Output path for generated matrix documentation.
-        #[arg(long, default_value = "docs/reference/PARSER_FEATURE_MATRIX.md")]
+        #[arg(long, default_value = "docs/project/status/parser_feature_matrix.generated.md")]
         output: PathBuf,
     },
 

@@ -221,6 +221,49 @@ fn parser_stack_gate_stays_required_merge_gate() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// Contract guard for issue #6107: the bounded parser integration proof stays
+/// required, manifest-driven, and above its initial denominator.
+#[test]
+fn parser_integration_gate_is_required_and_manifest_driven()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    let gate = parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "parser_integration")
+        .ok_or("missing parser_integration gate — #6107 proof is not wired")?;
+
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "parser integration proof must be required");
+    assert!(!gate.quarantine, "parser integration proof must not be quarantined");
+    assert!(
+        gate.command.contains("scripts/ci/run_parser_integration.py"),
+        "parser integration gate must use the manifest-driven runner; current command: {}",
+        gate.command
+    );
+    assert!(
+        gate.timeout_seconds.unwrap_or_default() >= 900,
+        "parser integration gate needs cold-build headroom"
+    );
+
+    let manifest = root.join(".ci/parser-integration-targets.json");
+    let manifest_content = fs::read_to_string(manifest)?;
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest_content)?;
+    let targets = manifest_json
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("parser integration manifest must contain targets")?;
+    assert!(
+        targets.len() >= 7,
+        "parser integration manifest must not shrink below its initial proof set"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn inline_completion_contract_scope_stays_on_lsp_crates() -> Result<(), Box<dyn std::error::Error>>
 {

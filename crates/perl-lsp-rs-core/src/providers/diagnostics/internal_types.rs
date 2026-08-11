@@ -46,27 +46,21 @@ pub struct Diagnostic {
 impl From<Diagnostic> for perl_diagnostics::Diagnostic {
     fn from(inner: Diagnostic) -> Self {
         let code = inner.code.as_deref().and_then(parse_diagnostic_code).unwrap_or_default();
-        perl_diagnostics::Diagnostic {
-            code,
-            severity: inner.severity,
-            range: inner.range,
-            message: inner.message,
-            related_information: if inner.related_information.is_empty() {
-                None
-            } else {
-                Some(
-                    inner
-                        .related_information
-                        .into_iter()
-                        .map(|ri| perl_diagnostics::RelatedInformation {
-                            message: ri.message,
-                            location: ri.location,
-                        })
-                        .collect(),
-                )
-            },
-            tags: if inner.tags.is_empty() { None } else { Some(inner.tags) },
+        let mut diag =
+            perl_diagnostics::Diagnostic::new(code, inner.severity, inner.range, inner.message);
+        if !inner.related_information.is_empty() {
+            diag.related_information = Some(
+                inner
+                    .related_information
+                    .into_iter()
+                    .map(|ri| perl_diagnostics::RelatedInformation::new(ri.message, ri.location))
+                    .collect(),
+            );
         }
+        if !inner.tags.is_empty() {
+            diag.tags = Some(inner.tags);
+        }
+        diag
     }
 }
 

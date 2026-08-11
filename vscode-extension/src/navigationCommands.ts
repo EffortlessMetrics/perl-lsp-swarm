@@ -10,12 +10,19 @@ export interface NavigationCommandDependencies {
 }
 
 export type WorkspaceStatusMode = 'starting' | 'indexing' | 'running' | 'stopped';
+export type WorkspaceStatusReadiness = 'building' | 'ready' | 'ready_limited' | 'legacy';
 
 export interface WorkspaceStatusSnapshot {
   readonly mode: WorkspaceStatusMode;
   readonly version?: string;
   readonly fileCount?: number;
   readonly errorCount?: number;
+  readonly lifecycle?: string;
+  readonly lifecycleDetail?: string;
+  readonly readinessState?: WorkspaceStatusReadiness;
+  readonly readinessReason?: string;
+  readonly activeDocumentReady?: boolean;
+  readonly nextAction?: string;
 }
 
 /** Invoke VS Code's organize-imports command. */
@@ -66,7 +73,6 @@ export async function showVersionCommand(
   }
 }
 
-/** Show the current workspace state and offer only relevant recovery actions. */
 export async function showWorkspaceStatusCommand(dependencies: {
   readonly getWorkspaceStatus: () => WorkspaceStatusSnapshot;
 }): Promise<void> {
@@ -88,11 +94,33 @@ export async function showWorkspaceStatusCommand(dependencies: {
   if (status.errorCount !== undefined) {
     lines.push(`Diagnostics: ${status.errorCount} error${status.errorCount === 1 ? '' : 's'}`);
   }
+  if (status.lifecycle) {
+    lines.push(`Lifecycle: ${status.lifecycle}`);
+  }
+  if (status.lifecycleDetail) {
+    lines.push(`Detail: ${status.lifecycleDetail}`);
+  }
+  if (status.readinessState === 'legacy') {
+    lines.push('Workspace index: legacy server (enhanced readiness unavailable)');
+  } else if (status.readinessState) {
+    lines.push(`Workspace index: ${status.readinessState}`);
+  } else if (hasLiveServer) {
+    lines.push('Workspace index: legacy server (enhanced readiness unavailable)');
+  }
+  if (status.activeDocumentReady !== undefined) {
+    lines.push(`Active document: ${status.activeDocumentReady ? 'ready' : 'not ready'}`);
+  }
+  if (status.readinessReason) {
+    lines.push(`Coverage: ${status.readinessReason}`);
+  }
+  if (status.nextAction) {
+    lines.push(`Next: ${status.nextAction}`);
+  }
 
   const actions =
     status.mode === 'stopped'
-      ? (['Restart Server', 'Run Health Check', 'Show Output'] as const)
-      : (['Run Health Check', 'Show Output'] as const);
+      ? (['Restart Server', 'Run Health Check', 'Show Output', 'Open Actions'] as const)
+      : (['Run Health Check', 'Show Output', 'Open Actions'] as const);
   const selection =
     status.mode === 'stopped'
       ? await vscode.window.showWarningMessage(lines.join('\n'), ...actions)
@@ -104,6 +132,8 @@ export async function showWorkspaceStatusCommand(dependencies: {
     void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
   } else if (selection === 'Show Output') {
     void vscode.commands.executeCommand('perl-lsp.showOutput');
+  } else if (selection === 'Open Actions') {
+    void vscode.commands.executeCommand('perl-lsp.showStatusMenu');
   }
 }
 
@@ -174,8 +204,13 @@ export async function showStatusMenuCommand(): Promise<void> {
     { label: 'Information', kind: vscode.QuickPickItemKind.Separator },
     {
       label: '$(pulse) Show Workspace Status',
-      detail: 'View the current server, workspace, and diagnostic state',
+      detail: 'Explain workspace lifecycle, index readiness, and active-document state',
       command: 'perl-lsp.showWorkspaceStatus',
+    },
+    {
+      label: '$(question) Explain Provider Result',
+      detail: 'Explain an exact answer, fallback, empty result, or refusal',
+      command: 'perl-lsp.explainProviderDecision',
     },
     {
       label: '$(output) Show Output',

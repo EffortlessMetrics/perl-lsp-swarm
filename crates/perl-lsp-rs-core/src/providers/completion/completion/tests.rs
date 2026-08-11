@@ -1,6 +1,7 @@
 use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
+use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
 use perl_tdd_support::{must, must_some};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
@@ -8366,4 +8367,150 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
         "indirect method edit range must match the uniform (prefix_start, position) insert semantics"
     );
     Ok(())
+}
+
+/// Index the parent package separately so these tests prove the workspace
+/// inheritance edge rather than merely finding declarations in one AST.
+fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Parent.pm")?,
+        r#"package Parent;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
+1;
+"#
+        .to_string(),
+    )?;
+    Ok(index)
+}
+
+#[test]
+fn block_form_package_after_close_stays_main() {
+    let code = r#"package Child {
+    sub greet {
+        my $self = shift;
+        $self->bark;
+    }
+}
+$self->
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.rfind("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "main",
+        "after a block-form package closes, receiver package context must return to main; got {:?}",
+        context.current_package
+    );
+}
+
+#[test]
+fn block_form_package_at_scope_end_is_main() {
+    let code = "package Foo {\n    my $x;\n}\n";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let table = SymbolExtractor::new().extract(&ast);
+    let scope_end = table
+        .scopes
+        .values()
+        .filter(|scope| scope.kind == ScopeKind::Package)
+        .map(|scope| scope.location.end)
+        .max()
+        .expect("block-form package scope");
+    assert_eq!(
+        CompletionContext::detect_current_package(&table, scope_end),
+        "main",
+        "cursor at scope end (half-open) must not inherit the closed block package"
+    );
+}
+
+#[test]
+fn inherited_moo_current_package_is_child() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "Child",
+        "receiver package context must be Child, got {:?}",
+        context.current_package
+    );
+}
+
+#[test]
+fn test_inherited_moo_accessor_completion_from_parent_class() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        completions.iter().any(|item| item.label == "name"),
+        "expected inherited Moo accessor name in Child completion, got {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_inherited_moo_generated_accessor_methods_are_completed() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub inspect {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let labels: Vec<_> =
+        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+
+    for expected in ["status", "has_status", "_build_status", "clear_status"] {
+        assert!(
+            labels.iter().any(|label| label == expected),
+            "expected inherited generated accessor {} in Child completion, got {:?}",
+            expected,
+            labels
+        );
+    }
 }

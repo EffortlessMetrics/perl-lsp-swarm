@@ -368,6 +368,7 @@ impl<'a> DeclarationProvider<'a> {
                         }
                     }
                     GotoTargetForm::Expr => None,
+                    _ => None,
                 }
             }
             // Cursor on a `method` name at its declaration site — self-location.

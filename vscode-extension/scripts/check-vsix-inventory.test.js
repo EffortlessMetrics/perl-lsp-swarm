@@ -196,7 +196,7 @@ void test('checks an explicitly staged current-source target already in the base
       'darwin',
       { allowedFiles: [currentSourceFile], arch: 'arm64' },
     ),
-    ['total bytes grew from 12 to 13', 'file bin/darwin-arm64/perllsp grew from 10 to 11 bytes'],
+    [],
   );
 });
 

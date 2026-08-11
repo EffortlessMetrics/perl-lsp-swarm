@@ -26,6 +26,7 @@ fn severity_name(severity: DiagnosticSeverity) -> &'static str {
         DiagnosticSeverity::Warning => "Warning",
         DiagnosticSeverity::Information => "Information",
         DiagnosticSeverity::Hint => "Hint",
+        _ => "Other",
     }
 }
 

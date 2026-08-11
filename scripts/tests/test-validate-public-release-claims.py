@@ -71,6 +71,12 @@ class PublicReleaseClaimsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, message):
             MODULE.validate_claims(value)
 
+    def test_limitation_field_is_required_even_for_proven_claims(self) -> None:
+        def remove_limitation(value: dict) -> None:
+            value["claims"][0].pop("limitation")
+
+        self.assert_invalid(remove_limitation, "limitation is required")
+
     def test_bounded_claim_requires_limitation(self) -> None:
         self.assert_invalid(lambda value: value["claims"][0].update({"limitation": None}), "requires a limitation")
 
