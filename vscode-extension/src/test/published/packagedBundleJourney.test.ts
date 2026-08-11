@@ -68,7 +68,10 @@ async function bundledServerVersion(binaryPath: string): Promise<BundledServerVe
       if (forceKillTimer) {
         clearTimeout(forceKillTimer);
       }
-      resolve({ output: `${stdout}${stderr}`.trim(), error });
+      resolve({
+        output: `${stdout}${stderr}`.trim(),
+        ...(error === undefined ? {} : { error }),
+      });
     };
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
