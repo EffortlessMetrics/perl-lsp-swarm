@@ -114,16 +114,36 @@ fn typeglob_alias_keeps_both_storage_and_coderef_identity() -> Result<(), String
 }
 
 #[test]
-fn lexical_declaration_cannot_silently_accept_direct_element_syntax() -> Result<(), String> {
-    let mut parser = Parser::new("my $items[0] = 1;");
-    match parser.parse() {
-        Err(_) => Ok(()),
-        Ok(_) => {
-            assert!(
-                !parser.errors().is_empty(),
-                "direct element declaration must be rejected or recovered with a diagnostic"
-            );
-            Ok(())
+fn lexical_declaration_recovery_preserves_following_code_without_normalizing_element_syntax() {
+    let source = "my $items[0] = 1; my $after = 2;";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let mut items_declaration_spans = Vec::new();
+    let mut after_declaration_spans = Vec::new();
+
+    walk(&output.ast, &mut |node| {
+        if let NodeKind::VariableDeclaration { variable, .. } = &node.kind
+            && let NodeKind::Variable { sigil, name } = &variable.kind
+            && sigil == "$"
+            && let Some(text) = source_text(source, node)
+        {
+            match name.as_str() {
+                "items" => items_declaration_spans.push(text),
+                "after" => after_declaration_spans.push(text),
+                _ => {}
+            }
         }
-    }
+    });
+
+    assert!(
+        !output.diagnostics.is_empty(),
+        "direct element declaration must not be represented as a clean parse"
+    );
+    assert!(
+        items_declaration_spans.iter().all(|span| !span.contains("[0]")),
+        "recovery normalized direct-element syntax into an ordinary declaration: {items_declaration_spans:?}"
+    );
+    assert_eq!(after_declaration_spans.len(), 1);
+    assert!(after_declaration_spans[0].starts_with("my $after = 2"));
+    assert!(!output.terminated_early, "local declaration recovery must preserve following code");
 }
