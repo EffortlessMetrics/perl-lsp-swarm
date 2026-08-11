@@ -82,6 +82,9 @@ pub fn classify_transition(
         accepted_boundaries.as_ref().is_none_or(|boundaries| boundaries != &current_boundaries);
     let failure_inventory_change =
         sorted_failures(accepted.failures()) != sorted_failures(&current.failures);
+    // Increases are regressions (handled above). Any remaining bucket-map delta is a
+    // ratchet-view change that must not fall through to exact v2 no-change acceptance.
+    let bucket_inventory_change = accepted.buckets() != &current.buckets;
 
     if !regressions.is_empty() {
         return Ok(Classification {
@@ -152,11 +155,18 @@ pub fn classify_transition(
         });
     }
 
-    if semantic_boundary_change || other_result_change || failure_inventory_change {
+    if semantic_boundary_change
+        || other_result_change
+        || failure_inventory_change
+        || bucket_inventory_change
+    {
         return Ok(Classification {
             transition: CompatibilityTransition::ContractCorrectionCandidate,
             reason: if failure_inventory_change {
                 "compile score did not regress, but typed failure inventory changed relative to the accepted v2 ratchet"
+                    .into()
+            } else if bucket_inventory_change {
+                "compile score did not regress, but bucket inventory changed relative to the accepted v2 ratchet"
                     .into()
             } else {
                 "compile score did not regress, but file-result or semantic-boundary evidence changed relative to the accepted v2 ratchet"

@@ -97,6 +97,33 @@ fn bucket_count_increase_is_regression() -> TestResult {
 }
 
 #[test]
+fn accepted_bucket_disappearing_is_not_no_change() -> TestResult {
+    let mut accepted_v2 = sample_v2_baseline(2, 2);
+    accepted_v2.buckets.insert("parse_recovery".into(), 1);
+    let current = sample_report(2, 2);
+    let classification =
+        classify_transition(&AcceptedBaseline::V2(Box::new(accepted_v2)), &current)?;
+    if classification.transition != CompatibilityTransition::ContractCorrectionCandidate {
+        bail!("accepted bucket disappearing was silently treated as no-change acceptance");
+    }
+    Ok(())
+}
+
+#[test]
+fn accepted_bucket_decrease_is_not_no_change() -> TestResult {
+    let mut accepted_v2 = sample_v2_baseline(2, 2);
+    accepted_v2.buckets.insert("parse_recovery".into(), 2);
+    let mut current = sample_report(2, 2);
+    current.buckets.insert("parse_recovery".into(), 1);
+    let classification =
+        classify_transition(&AcceptedBaseline::V2(Box::new(accepted_v2)), &current)?;
+    if classification.transition != CompatibilityTransition::ContractCorrectionCandidate {
+        bail!("accepted bucket decrease was silently treated as no-change acceptance");
+    }
+    Ok(())
+}
+
+#[test]
 fn typed_failure_inventory_change_is_not_no_change() -> TestResult {
     let mut accepted_v2 = sample_v2_baseline(1, 0);
     accepted_v2.expected_failures.push(perl_core_harness_types::RunFailure {
