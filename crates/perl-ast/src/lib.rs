@@ -11,6 +11,7 @@
 //! # Modules
 //!
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
+//! - [`invariants`] -- Bounded structural validation shared by parser paths.
 //! - [`v2`] -- Experimental second-generation AST re-exported from `perl-ast-v2`
 //!   for incremental parsing.
 //!
@@ -42,12 +43,15 @@
 //! # Traversal
 //!
 //! [`Node`] exposes `to_sexp()` for a tree-sitter-compatible S-expression and
-//! `count_nodes()` for a quick size metric. For deeper inspection, match on
-//! [`NodeKind`] variants and recurse into child nodes.
+//! `count_nodes()` for a quick size metric. [`validate_ast`] uses the canonical
+//! exhaustive child iterator to check source and tree invariants without a
+//! recursive call stack.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
+/// Bounded structural validation for parser-produced ASTs.
+pub mod invariants;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
 pub use perl_ast_v2 as v2;
@@ -56,5 +60,9 @@ pub use perl_ast_v2 as v2;
 pub use ast::GotoTargetForm;
 /// Primary AST node -- the building block of every syntax tree.
 pub use ast::{FieldId, Node, NodeKind};
+/// AST structural validation types and entry point.
+pub use invariants::{
+    AstInvariantCode, AstInvariantFinding, AstInvariantOptions, AstInvariantReport, validate_ast,
+};
 /// Byte-offset span indicating where a node appears in source text.
 pub use perl_position_tracking::SourceLocation;
