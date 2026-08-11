@@ -321,12 +321,66 @@
         ]
       },
       "ast_expectations": [
-        { "id": "typeglob_alias_package", "kind": "Package", "line": 1, "span_text": "package Accuracy::TypeglobAlias", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_original", "kind": "Subroutine", "line": 3, "span_text": "sub original", "parent_kind": "Program", "depth": 1, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_assignment", "kind": "Assignment", "line": 7, "span_text": "*alias = \\&original", "parent_kind": null, "depth": null, "operator": "=", "parent_operator": null },
-        { "id": "typeglob_alias_typeglob", "kind": "Typeglob", "line": 7, "span_text": "*alias", "parent_kind": "Assignment", "depth": null, "operator": null, "parent_operator": "=" },
-        { "id": "typeglob_alias_coderef", "kind": "AmperCall", "line": 7, "span_text": "&original", "parent_kind": "Unary", "depth": 4, "operator": null, "parent_operator": null },
-        { "id": "typeglob_alias_call", "kind": "FunctionCall", "line": 8, "span_text": "alias()", "parent_kind": null, "depth": null, "operator": null, "parent_operator": null }
+        {
+          "id": "typeglob_alias_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::TypeglobAlias",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_original",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub original",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_assignment",
+          "kind": "Assignment",
+          "line": 7,
+          "span_text": "*alias = \\&original",
+          "parent_kind": null,
+          "depth": null,
+          "operator": "=",
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_typeglob",
+          "kind": "Typeglob",
+          "line": 7,
+          "span_text": "*alias",
+          "parent_kind": "Assignment",
+          "depth": null,
+          "operator": null,
+          "parent_operator": "="
+        },
+        {
+          "id": "typeglob_alias_coderef",
+          "kind": "AmperCall",
+          "line": 7,
+          "span_text": "&original",
+          "parent_kind": "Unary",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "typeglob_alias_call",
+          "kind": "FunctionCall",
+          "line": 8,
+          "span_text": "alias()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -417,7 +471,8 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": []
     },
     {
       "id": "heuristic_generated_member",
@@ -490,7 +545,8 @@
           }
         ],
         "edges": []
-      }
+      },
+      "ast_expectations": []
     },
     {
       "id": "negative_symbol_regions",
@@ -528,7 +584,8 @@
           "line": 10,
           "span_text": "dynamic_name"
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_coordinates",
@@ -642,7 +699,8 @@
             "character": 0
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_utf8_multibyte",
@@ -676,7 +734,8 @@
             "character": 18
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_emoji",
@@ -710,7 +769,8 @@
             "character": 16
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_crlf",
@@ -744,7 +804,8 @@
             "character": 20
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_tabs",
@@ -778,7 +839,8 @@
             "character": 23
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_bom",
@@ -812,7 +874,8 @@
             "character": 26
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_cross_line",
@@ -846,7 +909,8 @@
             "character": 1
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_mixed_newlines",
@@ -880,7 +944,8 @@
             "character": 13
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "span_empty_at_eof",
@@ -914,7 +979,8 @@
             "character": 9
           }
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "incremental_small_edit",
@@ -941,7 +1007,8 @@
             }
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "malformed_heredoc_recovery",
@@ -1002,7 +1069,8 @@
             "after_recovery"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "imports_exports",
@@ -1715,6 +1783,58 @@
             "sub_decl"
           ]
         }
+      ],
+      "ast_expectations": [
+        {
+          "id": "heredoc_basic_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Heredoc",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_declaration",
+          "kind": "VariableDeclaration",
+          "line": 3,
+          "span_text": "my $text",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_heredoc",
+          "kind": "Heredoc",
+          "line": 3,
+          "span_text": "<<'END_TEXT'",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_sub_after_body",
+          "kind": "Subroutine",
+          "line": 7,
+          "span_text": "sub after {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heredoc_basic_return",
+          "kind": "Return",
+          "line": 8,
+          "span_text": "return $text",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -1758,7 +1878,8 @@
             "sub_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "regex_match",
@@ -1800,6 +1921,58 @@
           "expected_tags": [
             "regex"
           ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "regex_match_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::Regex",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_sub",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub matches {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_shift_call",
+          "kind": "FunctionCall",
+          "line": 4,
+          "span_text": "shift",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_bound_match",
+          "kind": "Match",
+          "line": 5,
+          "span_text": "$value =~ /foo\\d+/",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return $value =~ /foo\\d+/",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -2332,7 +2505,8 @@
             "method_call"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "eval_string_boundary",
@@ -2374,7 +2548,8 @@
             "sub_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "control_do_until",
@@ -2416,7 +2591,8 @@
             "do_while"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "format_decl",
@@ -2452,7 +2628,8 @@
             "sub_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "postderef_boundary",
@@ -2488,7 +2665,8 @@
             "variable_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "signatures_basic",
@@ -2530,7 +2708,8 @@
             "sub_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "role_method",
@@ -3064,7 +3243,8 @@
             "confidence": "High"
           }
         ]
-      }
+      },
+      "ast_expectations": []
     },
     {
       "id": "quote_like",
@@ -3100,6 +3280,58 @@
             "variable_decl"
           ]
         }
+      ],
+      "ast_expectations": [
+        {
+          "id": "quote_like_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::QuoteLike",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_sub",
+          "kind": "Subroutine",
+          "line": 3,
+          "span_text": "sub quote {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_q_string",
+          "kind": "String",
+          "line": 4,
+          "span_text": "q{hello}",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_qq_string",
+          "kind": "String",
+          "line": 5,
+          "span_text": "qq{$message}",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "quote_like_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return qq{$message}",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        }
       ]
     },
     {
@@ -3130,7 +3362,8 @@
             "unsupported_construct"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "bad_heredoc_terminator",
@@ -3160,7 +3393,8 @@
             "unsupported_construct"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "unclosed_quote_like_operator",
@@ -3190,7 +3424,8 @@
             "parse_error"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "unclosed_regex",
@@ -3220,7 +3455,8 @@
             "parse_error"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "unbalanced_bracket",
@@ -3244,7 +3480,8 @@
             "package_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "partial_sub_body",
@@ -3268,7 +3505,8 @@
             "package_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "orphan_close_delimiters",
@@ -3292,7 +3530,8 @@
             "package_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "missing_comma_list",
@@ -3322,7 +3561,8 @@
             "parse_error"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "nested_malformed_delimiters",
@@ -3346,7 +3586,8 @@
             "package_decl"
           ]
         }
-      ]
+      ],
+      "ast_expectations": []
     },
     {
       "id": "post_error_package_sub_recovery",
@@ -3394,6 +3635,58 @@
               ]
             }
           ]
+        }
+      ],
+      "ast_expectations": [
+        {
+          "id": "post_error_first_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::PostErrorPackageRecovery",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_malformed_binary",
+          "kind": "Binary",
+          "line": 3,
+          "span_text": "1 + 2",
+          "parent_kind": "VariableDeclaration",
+          "depth": 2,
+          "operator": "+",
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_package",
+          "kind": "Package",
+          "line": 4,
+          "span_text": "package Accuracy::Recovered",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_sub",
+          "kind": "Subroutine",
+          "line": 5,
+          "span_text": "sub next_sub {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "post_error_recovered_return",
+          "kind": "Return",
+          "line": 5,
+          "span_text": "return 1",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
         }
       ]
     },
@@ -3539,7 +3832,8 @@
             "import_visibility": true
           }
         ]
-      }
+      },
+      "ast_expectations": []
     },
     {
       "id": "navigation_provider",
@@ -3624,7 +3918,8 @@
             "expected_safe_delete_blocker_count": 1
           }
         ]
-      }
+      },
+      "ast_expectations": []
     },
     {
       "id": "diagnostic_provider",
@@ -3700,7 +3995,8 @@
             "dynamic_boundary": false
           }
         ]
-      }
+      },
+      "ast_expectations": []
     },
     {
       "id": "control_flow_core",
