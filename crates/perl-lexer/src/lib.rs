@@ -3539,17 +3539,23 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn qw_has_top_level_closer_after(&self, position: usize, close: char) -> bool {
-        if close != ')' {
-            return false;
-        }
+        let open = match close {
+            ')' => '(',
+            ']' => '[',
+            '}' => '{',
+            '>' => '<',
+            _ => return false,
+        };
         let mut lexer = Self::without_qw_recovery(&self.input[position..], self.config.clone());
         let mut depth = 0usize;
         while let Some(token) = lexer.next_token() {
-            match token.token_type {
-                TokenType::LeftParen => depth = depth.saturating_add(1),
-                TokenType::RightParen if depth == 0 => return true,
-                TokenType::RightParen => depth = depth.saturating_sub(1),
-                _ => {}
+            if token.text.as_ref() == open.to_string() {
+                depth = depth.saturating_add(1);
+            } else if token.text.as_ref() == close.to_string() {
+                if depth == 0 {
+                    return true;
+                }
+                depth = depth.saturating_sub(1);
             }
         }
         false
