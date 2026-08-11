@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> Currentness note: this page retains historical documentation-infrastructure material. Use the [current public API documentation guide](../../docs/reference/MISSING_DOCUMENTATION_GUIDE.md) for present-day examples and workflow; the historical 605+ baseline below is not a current metric.
+> Currentness note: this page retains historical documentation-infrastructure material. Use the [current public API documentation guide](../reference/MISSING_DOCUMENTATION_GUIDE.md) for present-day examples and workflow; the historical 605+ baseline below is not a current metric.
 
 ## Crate Structure
 
