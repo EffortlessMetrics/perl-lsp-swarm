@@ -30,13 +30,13 @@ The LSP scheduler may not promote the incremental path under #1374 until the sup
 
 ## Why this surface
 
-This is the only incremental API already shared by all three relevant boundaries:
+This is the only incremental API already shared by all three intended boundaries:
 
 1. the `perl-parser` facade exports it directly;
 2. `perl-incremental-parsing` forwards it as a compatibility adapter;
 3. the LSP adoption issue #1374 names `IncrementalState`, `Edit`, and `apply_edits` as the intended integration seam.
 
-The repository also exports several generations and experiments. Some are useful sources of tests or algorithms, but none is a second production authority.
+The repository also exports several generations, experiments, and one active lower-tier token-replay kernel. They may supply tests or implementation techniques, but none is a second behavioral authority.
 
 ## Current module disposition
 
@@ -54,6 +54,19 @@ The machine-readable source of truth is `crates/perl-parser/incremental_authorit
 | `incremental_v2` | experimental | Comparison-only until unique proof is migrated; it cannot establish production readiness. |
 
 A module may remain public temporarily for compatibility. Public visibility does not make it canonical or production-eligible.
+
+## Lower-tier token-replay kernel
+
+`perl_parser_core::incremental` is an active public implementation, not an omitted detail. It exports `IncrementalEdit`, `IncrementalState`, and `IncrementalState::reparse`; `tree_sitter_perl_rs::Parser::parse_with_old_tree` currently consumes that kernel.
+
+The authority ledger classifies it as a **lower-tier kernel**:
+
+- it may provide checkpointed token replay behind a facade;
+- it is not the native parser-incremental behavioral authority;
+- it is not production-eligible independently of the canonical contract;
+- #6707 must either route it behind the canonical surface with shared differential proof or retire it after its useful proof is migrated.
+
+The tree-sitter facade remains an explicitly allowed consumer during that transition. Adding another consumer requires an authority-ledger change in the same PR.
 
 ## Compatibility crate
 
@@ -73,12 +86,13 @@ Unique behavioral cases currently housed in the compatibility crate should move 
 `incremental_authority_contract` checks that:
 
 - there is one canonical surface;
-- every publicly exported incremental generation is classified exactly once;
-- no non-canonical generation is marked production-eligible;
+- every publicly exported `perl-parser` incremental generation is classified exactly once;
+- the active `perl-parser-core` token-replay kernel and its tree-sitter consumer remain explicitly classified;
+- no non-canonical surface is marked production-eligible;
 - the compatibility crate forwards the canonical implementation instead of defining another one;
-- retired and experimental surfaces cannot disappear from the authority ledger silently.
+- retired, experimental, and lower-tier surfaces cannot disappear from the authority ledger silently.
 
-The parser-integration shard executes this contract. Adding another `pub mod incremental_*` or facade re-export requires an explicit authority disposition in the same change.
+The parser-integration shard executes this contract. Adding another `pub mod incremental_*`, lower-tier implementation, facade re-export, or consumer requires an explicit authority disposition in the same change.
 
 ## Claims this does not establish
 
