@@ -58,7 +58,10 @@ class DapScorecardPacketTests(unittest.TestCase):
                 "threshold_pct": 80,
                 "p50_ms": 1,
                 "p95_ms": 2,
-                "details": [],
+                "details": [
+                    {"name": name, "elapsed_ms": 1, "error": None}
+                    for name in MODULE.REQUIRED_LAUNCH_FIXTURE_NAMES
+                ],
             },
             "attach": {
                 "passed": 5,
@@ -66,7 +69,10 @@ class DapScorecardPacketTests(unittest.TestCase):
                 "threshold_pct": 80,
                 "p50_ms": None,
                 "p95_ms": None,
-                "details": [],
+                "details": [
+                    {"name": "tcp_loopback", "elapsed_ms": None, "error": None}
+                    for _ in range(5)
+                ],
             },
             "variables": {"status": "PASS", "detail": "variables proven"},
             "evaluate": {"status": "PASS", "detail": "evaluate proven"},
@@ -174,6 +180,18 @@ class DapScorecardPacketTests(unittest.TestCase):
         self.packet.write_text(json.dumps(packet), encoding="utf-8")
         self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
 
+    def test_duplicate_launch_row_fails(self) -> None:
+        scorecard = self._scorecard()
+        scorecard["launch"]["details"][4]["name"] = "hello"
+        self._write_scorecard(scorecard)
+        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
+    def test_contradictory_rate_verdict_fails(self) -> None:
+        scorecard = self._scorecard()
+        scorecard["attach"]["details"][0]["error"] = "connection failed"
+        self._write_scorecard(scorecard)
+        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
     def test_skip_cannot_be_represented_as_pass(self) -> None:
         scorecard = self._scorecard()
         scorecard["deep_pagination"] = {"status": "SKIP", "detail": "not measured"}
@@ -185,6 +203,18 @@ class DapScorecardPacketTests(unittest.TestCase):
         scorecard["perl_available"] = False
         self._write_scorecard(scorecard)
         self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
+    def test_embedded_scorecard_cannot_diverge_from_raw_receipt(self) -> None:
+        packet = self._build()
+        packet["scorecard"]["variables"]["detail"] = "forged green detail"
+        self.packet.write_text(json.dumps(packet), encoding="utf-8")
+        self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
+
+    def test_binary_version_output_cannot_be_forged(self) -> None:
+        packet = self._build()
+        packet["binary"]["version_output"] = "perl-dap 999.0.0"
+        self.packet.write_text(json.dumps(packet), encoding="utf-8")
+        self.assertPacketError(lambda: MODULE.validate_packet(self._validate_args()))
 
     def test_status_mutation_after_packet_fails(self) -> None:
         self._build()
