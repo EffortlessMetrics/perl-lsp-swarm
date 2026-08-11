@@ -163,8 +163,7 @@ fn unexpected_current_file_is_not_no_change() -> TestResult {
         assertions_passed: 1,
         assertions_total: 1,
     });
-    let classification =
-        classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)?;
     if classification.transition != CompatibilityTransition::ContractCorrectionCandidate
         || !classification.requires_candidate
     {
