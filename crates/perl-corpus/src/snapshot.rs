@@ -64,6 +64,7 @@ pub const SOURCE_HASH_ALGORITHM: &str = "fnv1a-128.v1";
 /// NOTE: proves stability, not correctness. Curated-gold assertions belong in
 /// a separate schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HirSummary {
     /// Total number of HIR items lowered from the file.
     pub item_count: usize,
@@ -91,6 +92,7 @@ pub struct HirSummary {
 /// uniquely. A check-mode comparison fails when the recorded summary differs
 /// from the freshly computed one, indicating HIR drift.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotEntry {
     /// Stable fixture identifier: normalized path relative to the fixture root.
     pub fixture_id: String,
@@ -170,6 +172,7 @@ impl std::error::Error for SnapshotSetError {}
 /// Written by the `generate-semantic-snapshot` xtask subcommand in generate
 /// mode, and read in check mode to detect HIR drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotManifest {
     /// Schema discriminator — always [`SNAPSHOT_SCHEMA`].
     pub schema: String,
@@ -353,6 +356,25 @@ mod tests {
         assert_eq!(manifest.claim_boundary, SNAPSHOT_CLAIM_BOUNDARY);
         assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
         assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);
+    }
+
+    #[test]
+    fn versioned_snapshot_types_reject_unknown_fields() {
+        let entry = sample_entry("foo");
+        let manifest = manifest_with(vec![entry.clone()]);
+
+        let mut manifest_value = serde_json::to_value(&manifest).expect("serialize manifest");
+        manifest_value["semantic_correctness"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SnapshotManifest>(manifest_value).is_err());
+
+        let mut entry_value = serde_json::to_value(&entry).expect("serialize entry");
+        entry_value["source_path"] = serde_json::json!("/tmp/foo.pl");
+        assert!(serde_json::from_value::<SnapshotEntry>(entry_value).is_err());
+
+        let mut summary_value =
+            serde_json::to_value(&entry.hir_summary).expect("serialize HIR summary");
+        summary_value["semantic_pass"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<HirSummary>(summary_value).is_err());
     }
 
     #[test]
