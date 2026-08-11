@@ -23,213 +23,61 @@ jobs:
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Enforce strict JSON-RPC framing envelopes
+      - name: Execute reviewed transformer with syntax-bound header edit
         shell: python
         run: |
-          import re
+          import ast
+          import subprocess
+          import textwrap
           from pathlib import Path
 
-          def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
-              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE | re.DOTALL)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected one match, found {count}")
-              return updated
+          carrier = subprocess.run(
+              ["git", "show", "HEAD^:.github/workflows/workflow-trigger-lint.yml"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          marker = '''      - name: Enforce strict JSON-RPC framing envelopes
+                  shell: python
+                  run: |
+          '''
+          if marker not in carrier:
+              raise SystemExit("reviewed exact-process transformer was not found in parent carrier")
+          section = carrier.split(marker, 1)[1].split("\n      - name:", 1)[0]
+          source = textwrap.dedent(section).lstrip("\n")
+          tree = ast.parse(source)
+          target = None
+          for node in ast.walk(tree):
+              if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+                  continue
+              labels = [
+                  argument.value
+                  for argument in node.value.args
+                  if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+              ]
+              if "header terminator" in labels:
+                  target = node
+                  break
+          if target is None or target.end_lineno is None:
+              raise SystemExit("header transformation node was not found")
 
-          harness = Path("crates/perl-lsp-rs/tests/support/real_process.rs")
-          text = harness.read_text()
-
-          if "is_valid_server_request_for_test" not in text:
-              text = replace_once(
-                  text,
-                  r"(    pub fn is_valid_server_notification_for_test\(message: &Value\) -> bool \{\n        is_server_notification\(message\)\n    \}\n)",
-                  r'''\1
-              pub fn is_valid_server_request_for_test(message: &Value, method: &str) -> bool {
-                  is_server_request_for(message, method)
-              }
-          ''',
-                  "notification helper",
-              )
-
-          if "fn has_valid_params" not in text:
-              text = replace_once(
-                  text,
-                  r"(fn is_response_like\(message: &Value\) -> bool \{.*?\n\}\n)",
-                  r'''\1
-          fn has_valid_params(message: &Value) -> bool {
-              match message.get("params") {
-                  None => true,
-                  Some(params) => params.is_object() || params.is_array(),
-              }
-          }
-
-          fn has_no_response_members(message: &Value) -> bool {
-              message.get("result").is_none() && message.get("error").is_none()
-          }
-          ''',
-                  "response helpers",
-              )
-
-          text = replace_once(
-              text,
-              r"fn is_response\(message: &Value\) -> bool \{.*?\n\}",
-              '''fn is_response(message: &Value) -> bool {
-              is_jsonrpc_2(message)
-                  && is_response_like(message)
-                  && message.get("params").is_none()
-                  && message
-                      .get("id")
-                      .is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
-                  && (message.get("result").is_some() ^ message.get("error").is_some())
-          }''',
-              "response predicate",
-          )
-
-          text = replace_once(
-              text,
-              r"fn is_server_request_for\(message: &Value, method: &str\) -> bool \{.*?\n\}",
-              '''fn is_server_request_for(message: &Value, method: &str) -> bool {
-              is_jsonrpc_2(message)
-                  && message.get("method").and_then(Value::as_str) == Some(method)
-                  && message
-                      .get("id")
-                      .is_some_and(|id| id.is_number() || id.is_string())
-                  && has_no_response_members(message)
-                  && has_valid_params(message)
-          }''',
-              "server request predicate",
-          )
-
-          text = replace_once(
-              text,
-              r"fn is_server_notification\(message: &Value\) -> bool \{.*?\n\}",
-              '''fn is_server_notification(message: &Value) -> bool {
-              is_jsonrpc_2(message)
-                  && message.get("method").and_then(Value::as_str).is_some()
-                  && message.get("id").is_none()
-                  && has_no_response_members(message)
-                  && has_valid_params(message)
-          }''',
-              "server notification predicate",
-          )
-
-          text = replace_once(
-              text,
-              r'''        let line = std::str::from_utf8\(&line\)\.context\("stdout header was not valid UTF-8"\)\?;
-              let line = line\.trim_end_matches\(\['\\r', '\\n'\]\);''',
-              '''        ensure!(
-                  line.ends_with(b"\\r\\n"),
-                  "stdout header line did not end with CRLF"
-              );
-              let line = std::str::from_utf8(&line[..line.len() - 2])
-                  .context("stdout header was not valid UTF-8")?;''',
-              "header terminator",
-          )
-          harness.write_text(text)
-
-          contract = Path("crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs")
-          text = contract.read_text()
-          text = text.replace(
-              "fn strict_parser_rejects_truncated_and_oversized_headers() -> Result<()> {",
-              "fn strict_parser_rejects_truncated_oversized_and_lf_only_headers() -> Result<()> {",
-              1,
-          )
-
-          if "LF-only framing must fail" not in text:
-              text = replace_once(
-                  text,
-                  r'''(    let oversized = vec!\[b'x'; 5 \* 1024\];
-              let error = RealProcessClient::parse_stdout_frame_for_test\(&oversized\)
-                  \.expect_err\("oversized header must fail"\);
-              ensure!\(error\.to_string\(\)\.contains\("exceeded"\)\);)
-              (    Ok\(\(\)\))''',
-                  r'''\1
-
-              let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
-              let mut frame = format!("Content-Length: {}\n\n", body.len()).into_bytes();
-              frame.extend_from_slice(body);
-              let error = RealProcessClient::parse_stdout_frame_for_test(&frame)
-                  .expect_err("LF-only framing must fail");
-              ensure!(
-                  error.to_string().contains("CRLF"),
-                  "LF-only framing failed for the wrong reason: {error:#}"
-              );
-          \2''',
-                  "LF-only falsifier",
-              )
-
-          if "notification with scalar params was accepted" not in text:
-              text = replace_once(
-                  text,
-                  r'''(    ensure!\(
-                  !RealProcessClient::is_valid_server_notification_for_test\(&wrong_version\),
-                  "wrong JSON-RPC version was accepted"
-              \);)''',
-                  r'''\1
-
-              let scalar_params = json!({
-                  "jsonrpc": "2.0",
-                  "method": "window/logMessage",
-                  "params": "not-an-object-or-array"
-              });
-              ensure!(
-                  !RealProcessClient::is_valid_server_notification_for_test(&scalar_params),
-                  "notification with scalar params was accepted"
-              );''',
-                  "notification scalar-params falsifier",
-              )
-
-          if "server_request_requires_request_only_members_and_structured_params" not in text:
-              text = replace_once(
-                  text,
-                  r"(#\[test\]\nfn event_queue_overflow_does_not_deadlock_drop\(\) -> Result<\(\)> \{)",
-                  '''#[test]
-          fn server_request_requires_request_only_members_and_structured_params() -> Result<()> {
-              let method = "client/registerCapability";
-              let valid = json!({
-                  "jsonrpc": "2.0",
-                  "id": 1,
-                  "method": method,
-                  "params": { "registrations": [] }
-              });
-              ensure!(
-                  RealProcessClient::is_valid_server_request_for_test(&valid, method),
-                  "valid server request was rejected"
-              );
-
-              for invalid in [
-                  json!({
-                      "jsonrpc": "2.0",
-                      "id": 2,
-                      "method": method,
-                      "params": true
-                  }),
-                  json!({
-                      "jsonrpc": "2.0",
-                      "id": 3,
-                      "method": method,
-                      "result": null
-                  }),
-                  json!({
-                      "jsonrpc": "2.0",
-                      "id": 4,
-                      "method": method,
-                      "error": { "code": -32603, "message": "hybrid" }
-                  }),
-              ] {
-                  ensure!(
-                      !RealProcessClient::is_valid_server_request_for_test(&invalid, method),
-                      "invalid server request was accepted: {invalid}"
-                  );
-              }
-              Ok(())
-          }
-
-          #[test]
-          fn event_queue_overflow_does_not_deadlock_drop() -> Result<()> {''',
-                  "server-request falsifiers",
-              )
-
-          contract.write_text(text)
+          robust = '''start = text.index('        let line = std::str::from_utf8(&line)')
+          end = text.index('        if line.is_empty()', start)
+          strict_header = ''' + "'''" + '''        ensure!(
+              line.ends_with(b"\\r\\n"),
+              "stdout header line did not end with CRLF"
+          );
+          let line = std::str::from_utf8(&line[..line.len() - 2])
+              .context("stdout header was not valid UTF-8")?;
+          ''' + "'''" + '''
+          text = text[:start] + strict_header + text[end:]'''
+          lines = source.splitlines()
+          lines[target.lineno - 1 : target.end_lineno] = robust.splitlines()
+          patched = ("\n".join(lines) + "\n").encode()
+          path = Path("/tmp/finish_pr6811.py")
+          path.write_bytes(patched)
+          compile(patched, str(path), "exec")
+          exec(patched, {"__name__": "__main__"})
 
       - name: Format and verify focused contracts
         shell: bash
