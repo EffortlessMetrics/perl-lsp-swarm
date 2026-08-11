@@ -795,6 +795,45 @@ mod tests {
     }
 
     #[test]
+    fn staged_formatting_never_delegates_to_the_package_wide_formatter() -> Result<()> {
+        // The safety property, guarded at the source because the hazard is in
+        // *which process gets spawned*, not in any value this module returns.
+        //
+        // `cargo fmt -p <package>` formats every file in the package against
+        // the live worktree. With a staged file and a separately modified
+        // sibling in the same package, it rewrites the sibling's uncommitted
+        // work; re-staging only the staged paths keeps the commit narrow but
+        // cannot undo that. So `run_staged` must format the staged paths
+        // themselves, at their package's edition.
+        //
+        // End-to-end verification of both halves of that claim (sibling bytes
+        // preserved, staged file formatted in the index) is recorded on the PR;
+        // this test keeps the implementation from quietly reverting to the
+        // package-wide call.
+        let fmt_source = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("tasks").join("fmt.rs"),
+        )?;
+        let body = fmt_source
+            .split_once("pub fn run_staged()")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("\npub fn run("))
+            .map(|(body, _)| body)
+            .ok_or_else(|| color_eyre::eyre::eyre!("could not isolate run_staged body"))?;
+
+        assert!(
+            !body.contains("run(false"),
+            "run_staged must not call the package-wide formatter: it would rewrite unstaged \
+             siblings in the same package"
+        );
+        assert!(
+            body.contains("\"--edition\""),
+            "run_staged must pass each file's package edition to rustfmt; bare rustfmt defaults \
+             to edition 2015 and reformats gate-clean edition-2024 files"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn xtask_tasks_do_not_shell_out_to_workspace_wide_cargo_fmt_all() -> Result<()> {
         let xtask_tasks = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("tasks");
         let mut offenders = Vec::new();
