@@ -112,12 +112,17 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            if op == "qw" && depth > 0 {
+            if depth > 0 {
+                let message = if op == "qw" {
+                    "Unclosed qw() delimiter: missing closing delimiter before end of file".to_string()
+                } else {
+                    format!(
+                        "Unclosed {}{}{} delimiter: missing closing delimiter before end of file",
+                        op, opening_delim, closing_delim
+                    )
+                };
                 let position = self.current_position();
-                self.errors.push(ParseError::syntax(
-                    "Unclosed qw() delimiter: missing closing delimiter before end of file",
-                    position,
-                ));
+                self.errors.push(ParseError::syntax(message, position));
             }
         } else {
             // For non-balanced delimiters, just scan for the closing char.
