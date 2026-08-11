@@ -13,6 +13,12 @@
 
 mod common;
 
+// `semantic_definition` is the integration target executed by the required
+// `lsp_smoke` merge gate. Include the client-support authority here so path
+// safety, evidence schemas, and generated-status drift are merge-blocking.
+#[path = "lsp_client_support_registry.rs"]
+mod client_support_registry;
+
 #[cfg(test)]
 mod semantic_definition_tests {
     use crate::common::test_utils::TestServerBuilder;

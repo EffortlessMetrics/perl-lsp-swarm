@@ -134,6 +134,7 @@ parking_lot.workspace = true
 criterion.workspace = true
 perl-corpus = { workspace = true }
 static_assertions.workspace = true
+toml = "1.1.2"
 
 # Deliberately no [package.metadata.binstall].
 #

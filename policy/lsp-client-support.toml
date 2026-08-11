@@ -1,0 +1,267 @@
+# Machine-readable client-support claim authority.
+#
+# A setup document is not a real-client receipt. A synthetic capability profile
+# is not an editor launch. Rows remain at their earned tier until the exact
+# evidence required by issue #6739 exists and is current.
+
+[meta]
+schema = "lsp-client-support.v1"
+source_document = "docs/how-to/EDITOR_SETUP.md"
+owner_issue = 6739
+allowed_tiers = [
+  "packaged_product_proven",
+  "real_generic_client_proven",
+  "protocol_profile_proven",
+  "configuration_documented",
+  "bridge_or_plugin_dependency",
+  "not_proven_unsupported",
+]
+allowed_evidence_kinds = [
+  "documentation",
+  "protocol_profile",
+  "actual_client",
+  "packaged_product",
+]
+
+[[client]]
+id = "vscode"
+display_name = "VS Code"
+integration_mode = "managed_extension_or_stdio"
+tier = "configuration_documented"
+owner_issue = 6056
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/VS_CODE_SETUP.md", kind = "documentation" },
+  { path = "vscode-extension/README.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = ""
+claim_boundary = "The extension and stdio setup are documented. Packaged product proof remains owned by #6056."
+
+[[client]]
+id = "cursor"
+display_name = "Cursor"
+integration_mode = "vscode_compatible_host"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/CURSOR_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "VS Code-compatible extension host"
+claim_boundary = "Shared extension protocol facts do not prove Cursor-specific installation, activation, or update behavior."
+
+[[client]]
+id = "trae"
+display_name = "Trae (ByteDance)"
+integration_mode = "vscode_compatible_host"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/TRAE_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "VS Code-compatible extension host"
+claim_boundary = "Shared extension protocol facts do not prove Trae-specific installation or activation."
+
+[[client]]
+id = "intellij_lsp4ij"
+display_name = "IntelliJ IDEA / JetBrains IDEs"
+integration_mode = "lsp4ij_plugin"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = true
+evidence = [
+  { path = "docs/EDITORS/INTELLIJ_IDEA_SETUP.md", kind = "documentation" },
+  { path = "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs", kind = "protocol_profile" },
+]
+known_overrides = ["dynamic file-watcher registration suppressed for LSP4IJ-shaped clients"]
+external_dependency = "LSP4IJ"
+claim_boundary = "The repository proves an LSP4IJ-shaped inline-completion profile, not an actual IntelliJ/LSP4IJ launch or the complete client journey."
+
+[[client]]
+id = "neovim"
+display_name = "Neovim"
+integration_mode = "generic_stdio_client"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = true
+evidence = [
+  { path = "docs/EDITORS/NEOVIM_SETUP.md", kind = "documentation" },
+  { path = "crates/perl-lsp-ux-tests/tests/ux_neovim_lean_startup_trace.rs", kind = "protocol_profile" },
+]
+known_overrides = ["lean profile disables eager indexing and file watchers"]
+external_dependency = ""
+claim_boundary = "The current UX trace is a hand-authored Neovim-shaped capability profile; it does not launch Neovim."
+
+[[client]]
+id = "vim"
+display_name = "Vim"
+integration_mode = "vim_lsp_plugin"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/VIM_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "vim-lsp"
+claim_boundary = "Configuration is documented; no current actual Vim/vim-lsp receipt is registered."
+
+[[client]]
+id = "coc_nvim"
+display_name = "coc.nvim"
+integration_mode = "coc_language_server"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/COC_NEOVIM_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "coc.nvim"
+claim_boundary = "Configuration is documented; no current actual coc.nvim receipt is registered."
+
+[[client]]
+id = "emacs"
+display_name = "Emacs"
+integration_mode = "eglot_or_lsp_mode"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/EMACS_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "eglot or lsp-mode"
+claim_boundary = "Configuration is documented; no current actual Emacs client receipt is registered."
+
+[[client]]
+id = "helix"
+display_name = "Helix"
+integration_mode = "generic_stdio_client"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/HELIX_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = ""
+claim_boundary = "Configuration is documented; no current actual Helix receipt is registered."
+
+[[client]]
+id = "zed"
+display_name = "Zed"
+integration_mode = "extension_registered_language_server"
+tier = "bridge_or_plugin_dependency"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/ZED_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "A Zed extension that registers perllsp"
+claim_boundary = "Zed settings cannot register an arbitrary server alone; direct support is unproven until a perllsp-capable extension and journey exist."
+
+[[client]]
+id = "sublime_text"
+display_name = "Sublime Text"
+integration_mode = "sublime_lsp_plugin"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/SUBLIME_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "Sublime LSP package"
+claim_boundary = "Configuration is documented; no current actual Sublime LSP receipt is registered."
+
+[[client]]
+id = "amazon_kiro"
+display_name = "Amazon Kiro"
+integration_mode = "vscode_compatible_or_custom_lsp_host"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/KIRO_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "Kiro IDE or Kiro CLI custom-LSP path"
+claim_boundary = "Configuration is documented; host-specific activation and provider behavior remain unproven."
+
+[[client]]
+id = "claude_code"
+display_name = "Claude Code"
+integration_mode = "plugin_lsp_bridge"
+tier = "bridge_or_plugin_dependency"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/CLAUDE_CODE_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "Claude Code plugin .lsp.json support"
+claim_boundary = "Support depends on an external plugin registration surface; perllsp remains an LSP server, not an agent tool protocol."
+
+[[client]]
+id = "codex_cli"
+display_name = "Codex CLI"
+integration_mode = "lsp_to_mcp_bridge"
+tier = "bridge_or_plugin_dependency"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/CODEX_CLI_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = "An LSP-to-MCP bridge such as lsp-mcp"
+claim_boundary = "Codex CLI consumes MCP tools; registering perllsp --stdio directly as MCP is unsupported."
+
+[[client]]
+id = "codex_desktop"
+display_name = "Codex Desktop"
+integration_mode = "custom_stdio_server"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/CODEX_DESKTOP_SETUP.md", kind = "documentation" },
+]
+known_overrides = []
+external_dependency = ""
+claim_boundary = "Configuration is documented; no current actual Codex Desktop receipt is registered."
+
+[[client]]
+id = "opencode"
+display_name = "OpenCode"
+integration_mode = "custom_stdio_server"
+tier = "configuration_documented"
+owner_issue = 6739
+requires_actual_client_receipt = true
+synthetic_profile = false
+evidence = [
+  { path = "docs/EDITORS/OPENCODE_SETUP.md", kind = "documentation" },
+]
+known_overrides = ["push diagnostics forced for OpenCode-shaped clients"]
+external_dependency = ""
+claim_boundary = "The workaround is documented and implemented, but no protocol-profile or actual OpenCode journey is registered."
