@@ -24,7 +24,7 @@
 
 use color_eyre::eyre::{Context, Result, bail};
 use perl_corpus::snapshot::{
-    HIR_SCHEMA_VERSION, SOURCE_HASH_ALGORITHM, HirSummary, SnapshotEntry, SnapshotManifest,
+    HIR_SCHEMA_VERSION, HirSummary, SOURCE_HASH_ALGORITHM, SnapshotEntry, SnapshotManifest,
     source_hash,
 };
 use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
@@ -259,10 +259,7 @@ fn run_generate(output: &Path, entries: Vec<SnapshotEntry>) -> Result<()> {
     );
     println!(
         "  kpi={} schema={} hir_schema_version={} source_hash_algorithm={}",
-        manifest.kpi,
-        manifest.schema,
-        manifest.hir_schema_version,
-        manifest.source_hash_algorithm,
+        manifest.kpi, manifest.schema, manifest.hir_schema_version, manifest.source_hash_algorithm,
     );
     println!("  claim_boundary: {}", manifest.claim_boundary);
 
@@ -548,7 +545,8 @@ mod tests {
         write_fixture(temporary.path(), "second/same.pl", "2;");
 
         let fixtures = collect_fixtures(temporary.path()).expect("collect recursive fixtures");
-        let entries = compute_snapshot_entries(temporary.path(), &fixtures).expect("compute entries");
+        let entries =
+            compute_snapshot_entries(temporary.path(), &fixtures).expect("compute entries");
         let ids = entries.iter().map(|entry| entry.fixture_id.as_str()).collect::<Vec<_>>();
         assert_eq!(ids, vec!["first/same.pl", "second/same.pl"]);
     }
