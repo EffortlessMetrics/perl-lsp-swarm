@@ -1,5 +1,7 @@
 # ADR-003: Missing Documentation Infrastructure (SPEC-149)
 
+> Historical record: the implementation and baseline claims in this ADR describe the original documentation-infrastructure decision. For current public examples and contributor workflow, use [the current public API documentation guide](../reference/MISSING_DOCUMENTATION_GUIDE.md). Do not read the historical 605+ baseline or four-phase plan below as current status.
+
 ## Status
 **Accepted - Successfully Implemented in Draft PR 159** with comprehensive documentation enforcement infrastructure and 25 acceptance criteria validation framework
 
@@ -106,7 +108,7 @@ We will implement comprehensive missing documentation infrastructure through sys
 // /crates/perl-parser/src/lib.rs
 #![warn(missing_docs)]
 
-// This lint-level warning generates 605+ violations providing:
+// This lint-level warning generates historical 605+ violations providing:
 // - Comprehensive coverage of all public APIs
 // - Systematic tracking of undocumented items
 // - CI integration for regression prevention
@@ -157,7 +159,7 @@ cargo doc --no-deps --package perl-parser
 ### Positive Outcomes
 
 1. **Systematic Documentation Coverage**:
-   - 605+ violations tracked for comprehensive resolution
+   - historical 605+ violations tracked for comprehensive resolution
    - Test-driven implementation ensuring quality and completeness
    - Automated validation preventing regression
 
@@ -184,7 +186,7 @@ cargo doc --no-deps --package perl-parser
 ### Implementation Challenges
 
 1. **Scale of Implementation**:
-   - 605+ violations require systematic 8-week implementation effort
+   - historical 605+ violations require systematic 8-week implementation effort
    - Coordination across multiple development phases and priorities
    - Consistent quality standards across diverse module types
 
