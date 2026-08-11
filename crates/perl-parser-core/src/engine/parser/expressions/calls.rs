@@ -357,46 +357,44 @@ impl<'a> Parser<'a> {
 
     /// Parse a statement-start user function call with space-separated arguments.
     fn parse_unknown_lowercase_bareword_call(&mut self) -> ParseResult<Node> {
-        self.check_recursion()?;
+        self.with_recursion_guard(|s| {
+            let start = s.current_position();
+            let name_token = s.consume_token()?;
+            let name = name_token.text.to_string();
+            s.mark_not_stmt_start();
 
-        let start = self.current_position();
-        let name_token = self.consume_token()?;
-        let name = name_token.text.to_string();
-        self.mark_not_stmt_start();
-
-        let mut args = vec![];
-        while !Self::is_statement_terminator(self.peek_kind())
-            && !self.is_statement_modifier_keyword()
-            && !Self::is_symbolic_short_circuit_operator(self.peek_kind())
-            && !matches!(
-                self.peek_kind(),
-                Some(
-                    TokenKind::WordOr
-                        | TokenKind::WordAnd
-                        | TokenKind::WordXor
-                        | TokenKind::WordNot
-                        | TokenKind::Question
-                        | TokenKind::RightBrace
-                        | TokenKind::RightParen
-                        | TokenKind::RightBracket
+            let mut args = vec![];
+            while !Self::is_statement_terminator(s.peek_kind())
+                && !s.is_statement_modifier_keyword()
+                && !Self::is_symbolic_short_circuit_operator(s.peek_kind())
+                && !matches!(
+                    s.peek_kind(),
+                    Some(
+                        TokenKind::WordOr
+                            | TokenKind::WordAnd
+                            | TokenKind::WordXor
+                            | TokenKind::WordNot
+                            | TokenKind::Question
+                            | TokenKind::RightBrace
+                            | TokenKind::RightParen
+                            | TokenKind::RightBracket
+                    )
                 )
-            )
-        {
-            args.push(self.parse_assignment_or_declaration()?);
-
-            if matches!(self.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
-                self.tokens.next()?;
-            } else if Self::is_statement_terminator(self.peek_kind())
-                || self.is_statement_modifier_keyword()
             {
-                break;
+                args.push(s.parse_assignment_or_declaration()?);
+
+                if matches!(s.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
+                    s.tokens.next()?;
+                } else if Self::is_statement_terminator(s.peek_kind())
+                    || s.is_statement_modifier_keyword()
+                {
+                    break;
+                }
             }
-        }
 
-        let end = self.previous_position();
-        self.exit_recursion();
-
-        Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
+            let end = s.previous_position();
+            Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
+        })
     }
 
     /// Parse indirect object/method call
