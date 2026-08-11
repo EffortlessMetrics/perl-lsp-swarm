@@ -29,6 +29,7 @@ path = "src/main.rs"
 
 [dependencies]
 perl-lsp-rs = { workspace = true }
+perl-lsp-rs-core = { workspace = true }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
