@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn not_proven_linux_cannot_be_ready() {
+    fn not_proven_linux_cannot_be_ready() -> Result<()> {
         let mut packet = ready_packet();
         packet.platforms.linux.status = EvidenceStatus::NotProven;
         packet.freeze_recommendation = FreezeRecommendation::NotProven;
