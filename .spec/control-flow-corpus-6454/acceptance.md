@@ -1,0 +1,1 @@
+# Acceptance — control-flow parser corpus\n\n- The fixture is registered in the parser-accuracy manifest.\n- The public parser E2E test exercises the fixture.\n- The fixture anchors Package, Subroutine, VariableDeclaration, If, Return, While, and LoopControl nodes.\n- This slice measures existing AST output; it does not change parser behavior.\n
