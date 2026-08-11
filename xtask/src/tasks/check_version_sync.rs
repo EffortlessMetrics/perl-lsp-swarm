@@ -6,7 +6,9 @@
 //!
 //! Product/package identity is checked in the same gate because a coherent
 //! semantic version is not sufficient when the product, executable, Cargo
-//! package, extension, or debug-adapter identities drift.
+//! package, extension, or debug-adapter identities drift. The workspace-binding
+//! check separately proves the selected Cargo manifests are the active members
+//! Cargo resolves, rather than matching decoy files elsewhere in the tree.
 
 use crate::utils::project_root;
 use color_eyre::eyre::Result;
@@ -14,5 +16,6 @@ use color_eyre::eyre::Result;
 pub fn run() -> Result<()> {
     let root = project_root()?;
     perl_ci_hygiene::version_sync::check(&root)?;
-    super::product_identity::check(&root)
+    super::product_identity::check(&root)?;
+    super::product_identity_workspace::check(&root)
 }

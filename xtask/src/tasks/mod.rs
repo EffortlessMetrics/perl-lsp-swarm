@@ -119,6 +119,7 @@ pub mod pr_ledger;
 pub mod pre_push_plan;
 pub mod prep_crates_io_launch;
 pub mod product_identity;
+pub mod product_identity_workspace;
 pub mod provider_confidence_matrix;
 pub mod provider_promotion_ledger;
 pub mod publication_facts;
