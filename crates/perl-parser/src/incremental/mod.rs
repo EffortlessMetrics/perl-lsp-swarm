@@ -53,7 +53,12 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
                 source.len()
             );
         }
+<<<<<<< HEAD
         if !source.is_char_boundary(edit.start_byte) || !source.is_char_boundary(edit.old_end_byte)
+=======
+        if !source.is_char_boundary(edit.start_byte)
+            || !source.is_char_boundary(edit.old_end_byte)
+>>>>>>> c1d3a334f (fix(parser): keep stacked edit batches atomic)
         {
             anyhow::bail!(
                 "incremental edit range {}..{} is not on UTF-8 boundaries",
@@ -167,7 +172,7 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
             parse_output: candidate.parse_output().clone(),
             diagnostics: vec![],
             lex_restart: reparse.lex_restart,
-            reparsed_bytes: state.source.len(),
+            reparsed_bytes: candidate.source.len(),
             reused_tokens,
             token_count: reparse.token_count,
         };
