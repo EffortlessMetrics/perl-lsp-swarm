@@ -10,9 +10,9 @@ use super::{
     items::{CompletionItem, CompletionItemKind, InsertTextFormat},
 };
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
+use perl_lexer::{PerlLexer, TokenType};
 use perl_module::path::module_name_to_path;
 use perl_parser_core::SourceLocation;
-use perl_lexer::{PerlLexer, TokenType};
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
     receiver_facts::{
@@ -20,7 +20,7 @@ use perl_semantic_analyzer::{
         ReceiverKind, receiver_fact_for_method_call,
     },
     semantic::SemanticModel,
-    symbol::{ScopeKind, SymbolKind, SymbolTable},
+    symbol::SymbolTable,
     type_facts::TypeEvidence,
     type_inference::{PerlType, TypeInferenceEngine},
 };
@@ -1249,7 +1249,11 @@ pub(super) fn receiver_package_from_context_or_source(
     if let Ok(ast) = parser.parse() {
         let analyzer =
             perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
-        return receiver_package_from_symbol_table_or_source(context, source, analyzer.symbol_table());
+        return receiver_package_from_symbol_table_or_source(
+            context,
+            source,
+            analyzer.symbol_table(),
+        );
     }
 
     source_package_fallback(source, position)
