@@ -264,9 +264,14 @@ fn parser_integration_gate_is_required_and_manifest_driven()
     Ok(())
 }
 
+/// (issue #6845) The former `inline_completion_contract` gate chained four
+/// Cargo commands with `&&`, masking which contract failed and preventing
+/// later contracts from running.  It was replaced with four independent gates.
+/// This test verifies that the split was applied correctly against the live
+/// policy file.
 #[test]
-fn inline_completion_contract_scope_stays_on_lsp_crates() -> Result<(), Box<dyn std::error::Error>>
-{
+fn inline_completion_gates_are_split_and_correctly_scoped()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let policy_path = root.join(".ci/gate-policy.yaml");
     let content = fs::read_to_string(policy_path)?;
@@ -275,25 +280,48 @@ fn inline_completion_contract_scope_stays_on_lsp_crates() -> Result<(), Box<dyn 
     let gates: HashMap<_, _> =
         parsed.gates.into_iter().map(|gate| (gate.name.clone(), gate)).collect();
 
-    let contract =
-        gates.get("inline_completion_contract").ok_or("missing inline_completion_contract gate")?;
-    let contract_planning =
-        contract.planning.as_ref().ok_or("inline_completion_contract missing planning")?;
-
-    assert_eq!(contract.tier, "pr_fast");
-    assert!(contract.required, "inline_completion_contract must stay PR-blocking");
+    // The composite gate must be gone.
     assert!(
-        contract.timeout_seconds.unwrap_or_default() >= 600,
-        "inline_completion_contract timeout must include cold CI compile headroom"
+        !gates.contains_key("inline_completion_contract"),
+        "inline_completion_contract must be removed — the &&-composite gate masks \
+         individual contract failures (issue #6845)"
     );
-    assert!(
-        contract.budgets.as_ref().and_then(|budget| budget.max_duration_ms).unwrap_or_default()
-            >= 540_000,
-        "inline_completion_contract duration budget must reflect observed cold PR-fast runtime"
-    );
-    assert_eq!(contract_planning.role, "rust_package_scoped");
-    assert_eq!(contract_planning.packages, vec!["perl-lsp-rs", "perl-lsp-rs-core"]);
 
+    // (gate_name, expected_package)
+    let expected: &[(&str, &str)] = &[
+        ("inline_completion_registration", "perl-lsp-rs"),
+        ("lsp_registration_contract", "perl-lsp-rs"),
+        ("lsp_capability_snapshots", "perl-lsp-rs"),
+        ("inline_completion_core", "perl-lsp-rs-core"),
+    ];
+
+    for &(gate_name, expected_pkg) in expected {
+        let gate = gates.get(gate_name).ok_or_else(|| {
+            format!("gate '{gate_name}' not found in gate-policy.yaml (issue #6845 split)")
+        })?;
+        let planning = gate.planning.as_ref().ok_or_else(|| {
+            format!("gate '{gate_name}' missing planning field")
+        })?;
+
+        assert_eq!(gate.tier, "pr_fast", "gate '{gate_name}' must be in pr_fast tier");
+        assert!(gate.required, "gate '{gate_name}' must be required=true");
+        assert_eq!(
+            planning.role, "rust_package_scoped",
+            "gate '{gate_name}' must use rust_package_scoped role"
+        );
+        assert!(
+            planning.packages.iter().any(|p| p == expected_pkg),
+            "gate '{gate_name}' planning.packages must include '{expected_pkg}', got: {:?}",
+            planning.packages
+        );
+        assert!(
+            !gate.command.contains("&&"),
+            "gate '{gate_name}' command must not contain '&&' (masking operator): {}",
+            gate.command
+        );
+    }
+
+    // The quality receipt gate must remain unaffected.
     let quality = gates
         .get("inline_completion_quality_receipt")
         .ok_or("missing inline_completion_quality_receipt gate")?;

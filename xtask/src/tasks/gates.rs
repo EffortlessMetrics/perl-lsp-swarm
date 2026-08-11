@@ -5507,4 +5507,216 @@ error: aborting due to previous error
         assert_eq!(result.command, VERSION_SYNC_GATE_COMMAND);
         Ok(())
     }
+
+    // =========================================================================
+    // inline_completion_contract gate-split tests (issue #6845)
+    //
+    // The former `inline_completion_contract` gate chained four Cargo commands
+    // with `&&`, so one failure masked the other three contracts.  It was
+    // replaced with four independent gates.  The tests below prove the split
+    // is structurally correct against the live gate-policy.yaml.
+    // =========================================================================
+
+    /// The four expected gate names and their canonical package scope.
+    const INLINE_COMPLETION_GATE_NAMES: &[&str] = &[
+        "inline_completion_registration",
+        "lsp_registration_contract",
+        "lsp_capability_snapshots",
+        "inline_completion_core",
+    ];
+
+    #[test]
+    fn inline_completion_contract_replaced_by_four_independent_gates()
+    -> color_eyre::eyre::Result<()> {
+        // Load the live policy so any drift in gate-policy.yaml causes a
+        // compile-time-equivalent failure here rather than silently passing.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        // The old composite gate must not exist.
+        let old_gate = policy.gates.iter().find(|g| g.name == "inline_completion_contract");
+        assert!(
+            old_gate.is_none(),
+            "inline_completion_contract must be removed — it chains commands \
+             with && which masks individual contract failures (issue #6845)"
+        );
+
+        // All four replacement gates must exist.
+        for &expected_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy.gates.iter().find(|g| g.name == expected_name);
+            assert!(
+                gate.is_some(),
+                "Expected independent gate '{expected_name}' not found in gate-policy.yaml \
+                 (issue #6845 requires four separate gate entries)"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_have_no_command_chaining() -> color_eyre::eyre::Result<()> {
+        // Each new gate must have exactly one command.  Shell operators (`&&`,
+        // `||`, `;`) inside a single command string re-introduce the masking
+        // that the split was designed to eliminate: the runner cannot observe
+        // individual sub-command results and cannot continue past the first
+        // failure within the shell chain.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|g| g.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+
+            assert!(
+                !gate.command.contains("&&"),
+                "Gate '{gate_name}' command must not contain '&&': {}",
+                gate.command,
+            );
+            assert!(
+                !gate.command.contains("||"),
+                "Gate '{gate_name}' command must not contain '||': {}",
+                gate.command,
+            );
+            // Semicolons used as statement separators are the same failure
+            // mode; a single trailing ';' from YAML folded-block is fine but a
+            // second Cargo invocation after ';' defeats the isolation.
+            let cmd = gate.command.trim_end_matches(';');
+            assert!(
+                !cmd.contains(';'),
+                "Gate '{gate_name}' command must not contain ';' separators: {}",
+                gate.command,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_are_required_and_package_scoped() -> color_eyre::eyre::Result<()> {
+        // Each gate must be required (non-advisory) and scoped to its owning
+        // package(s).  Advisory enforcement or an absent scope degrades the
+        // split to a cosmetic change without real coverage guarantees.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        // Expected (gate_name, packages) pairs.
+        let expected: &[(&str, &[&str])] = &[
+            ("inline_completion_registration", &["perl-lsp-rs"]),
+            ("lsp_registration_contract", &["perl-lsp-rs"]),
+            ("lsp_capability_snapshots", &["perl-lsp-rs"]),
+            ("inline_completion_core", &["perl-lsp-rs-core"]),
+        ];
+
+        for &(gate_name, expected_packages) in expected {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|g| g.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+
+            assert!(
+                gate.required,
+                "Gate '{gate_name}' must be required=true; advisory gates do not \
+                 block PRs and defeat the contract enforcement purpose"
+            );
+
+            let planning = gate.planning.as_ref().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Gate '{gate_name}' must have a planning field \
+                     (rust_package_scoped with correct packages)"
+                )
+            })?;
+
+            assert_eq!(
+                planning.role,
+                GatePlanningRole::RustPackageScoped,
+                "Gate '{gate_name}' must use rust_package_scoped role"
+            );
+
+            for &pkg in expected_packages {
+                assert!(
+                    planning.packages.iter().any(|p| p == pkg),
+                    "Gate '{gate_name}' planning.packages must include '{pkg}', got: {:?}",
+                    planning.packages
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_cover_the_same_packages_as_former_composite()
+    -> color_eyre::eyre::Result<()> {
+        // The original `inline_completion_contract` was scoped to
+        // [perl-lsp-rs, perl-lsp-rs-core].  The four replacement gates must
+        // collectively cover at least these packages so the package-scoped
+        // trigger logic selects them on the same set of code changes.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let covered_packages: HashSet<&str> = INLINE_COMPLETION_GATE_NAMES
+            .iter()
+            .filter_map(|&gate_name| policy.gates.iter().find(|g| g.name == gate_name))
+            .flat_map(|gate| {
+                gate.planning
+                    .as_ref()
+                    .map(|p| p.packages.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        let required_packages = ["perl-lsp-rs", "perl-lsp-rs-core"];
+        for &pkg in &required_packages {
+            assert!(
+                covered_packages.contains(pkg),
+                "The inline-completion gate family must cover package '{pkg}' \
+                 (it was covered by the former composite gate). \
+                 Current coverage: {covered_packages:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn gate_runner_reports_independent_results_when_a_peer_fails()
+    -> color_eyre::eyre::Result<()> {
+        // Proves the runner behaviour that the policy split relies on: when
+        // gate A fails, gate B (sharing only a log directory) still produces
+        // its own result.  This is the runtime counterpart to the structural
+        // tests above — the split is only useful if each gate is executed
+        // independently.
+        //
+        // Uses `true`/`false` shell builtins so the test never builds Cargo
+        // artefacts.  Platform note: both builtins are available on every
+        // target the project CI runs on (Linux/macOS).
+        let tmp = tempdir()?;
+
+        let policy = policy_with_gates(vec![]);
+        let config = GateRunnerConfig::default();
+
+        let failing_gate = tier_gate("gate_a_fails", "pr_fast", "false");
+        let passing_gate = tier_gate("gate_b_still_runs", "pr_fast", "true");
+
+        let result_a = run_single_gate(&failing_gate, &policy, tmp.path(), &config, None)?;
+        let result_b = run_single_gate(&passing_gate, &policy, tmp.path(), &config, None)?;
+
+        assert_eq!(
+            result_a.status, "fail",
+            "gate_a_fails must report fail when the command exits non-zero"
+        );
+        assert_eq!(
+            result_b.status, "pass",
+            "gate_b_still_runs must report pass independently of gate_a's failure; \
+             if this is 'fail' the runner is propagating failure state across gate \
+             boundaries (the bug this split fixes)"
+        );
+
+        Ok(())
+    }
 }
