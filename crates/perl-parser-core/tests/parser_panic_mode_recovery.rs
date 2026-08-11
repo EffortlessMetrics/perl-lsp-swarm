@@ -232,7 +232,7 @@ fn parser_ac8_preserve_source_location() -> ParseResult<()> {
 }
 
 #[test]
-fn parser_ac8_error_location_accuracy() {
+fn parser_ac8_error_location_accuracy() -> ParseResult<()> {
     // AC:AC8
     let code = "my $x = 42;\nmy $y = ;\nmy $z = 99;";
     let mut parser = Parser::new(code);
@@ -265,7 +265,7 @@ fn parser_ac8_error_location_accuracy() {
             statements[2].kind
         );
     } else {
-        panic!("panic-mode recovery must return a Program node");
+        return Err("panic-mode recovery must return a Program node".into());
     }
 
     let errors = parser.errors();
@@ -277,6 +277,7 @@ fn parser_ac8_error_location_accuracy() {
             assert!(loc < code.len(), "Error location should be within source");
         }
     }
+    Ok(())
 }
 
 // AC9: Parser performance overhead for recovery is < 5% on valid code
