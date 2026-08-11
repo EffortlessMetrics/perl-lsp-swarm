@@ -149,11 +149,15 @@ mod tests {
         };
         let statement = statements.first().expect("expected one statement");
 
-        let consequence = match &statement.kind {
-            NodeKind::If { consequence, .. } => consequence,
+        let then_branch = match &statement.kind {
+            NodeKind::If { then_branch, .. } => then_branch,
             other => panic!("Expected If node, got {other:?}"),
         };
-        let body_statement = consequence
+        let body_statements = match &then_branch.kind {
+            NodeKind::Block { statements } => statements,
+            other => panic!("Expected Block node, got {other:?}"),
+        };
+        let body_statement = body_statements
             .first()
             .expect("expected one statement in the if body");
 
