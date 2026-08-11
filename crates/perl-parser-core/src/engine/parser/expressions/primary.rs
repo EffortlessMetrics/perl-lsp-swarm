@@ -344,7 +344,10 @@ impl<'a> Parser<'a> {
 
                     // Split into words, stripping # line comments first (perlop).
                     let cleaned = strip_qw_comments(content_str);
-                    let mut search_offset = 0usize;
+                    // Anchor matching at the original content slice so an
+                    // operator/comment prefix cannot steal a matching word.
+                    let content_offset = text.find(content_str).unwrap_or(0);
+                    let mut search_offset = content_offset;
                     let words: Vec<Node> = cleaned
                         .split_whitespace()
                         .map(|word| {
