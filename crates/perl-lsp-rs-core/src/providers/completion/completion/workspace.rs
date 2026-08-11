@@ -1978,7 +1978,10 @@ fn method_symbol_defining_packages(
 
 fn is_confident_method_candidate(candidate: &DefinitionCandidate) -> bool {
     candidate.confidence == Confidence::High
-        && matches!(candidate.kind, EntityKind::Method | EntityKind::Subroutine)
+        && matches!(
+            candidate.kind,
+            EntityKind::GeneratedMember | EntityKind::Method | EntityKind::Subroutine
+        )
 }
 
 fn semantic_method_candidate_sort_key(
