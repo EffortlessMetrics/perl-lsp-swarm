@@ -113,9 +113,10 @@ impl<'a> Parser<'a> {
                 }
             }
             if op == "qw" && depth > 0 {
+                let position = self.current_position();
                 self.errors.push(ParseError::syntax(
                     "Unclosed qw() delimiter: missing closing delimiter before end of file",
-                    self.current_position(),
+                    position,
                 ));
             }
         } else {
