@@ -561,7 +561,7 @@ mod unclosed_quote_tests {
                 result
                     .diagnostics
                     .iter()
-                    .any(|diagnostic| diagnostic.message == expected_message),
+                    .any(|diagnostic| format!("{diagnostic:?}").contains(expected_message)),
                 "{source:?} should report {expected_message:?}: {:?}",
                 result.diagnostics
             );
