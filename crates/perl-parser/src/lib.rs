@@ -38,7 +38,7 @@
 //! Current examples should use current crate paths and constructors. Historical
 //! microcrate names are retained only in migration or archive material.
 //! See docs/reference/MISSING_DOCUMENTATION_GUIDE.md for the example contract.
-//#![deny(unsafe_code)]
+#![deny(unsafe_code)]
 #![deny(unreachable_pub)] // prevent stray pub items from escaping
 #![warn(rust_2018_idioms)]
 // NOTE: missing_docs enabled with baseline enforcement (Issue #197)
