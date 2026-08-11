@@ -219,16 +219,24 @@ request_class = "textDocument/rename"
 query = "current lexical declaration edits and guarded package or workspace rename plans"
 producer = "runtime_mixed"
 proof_class = "edit_authorizing"
-readiness_input = "current document generation, workspace readiness, and source guard"
-fallback = "no edit or legacy fallback when exact complete proof is absent"
-duplicate_interpretation = "rename combines lexical AST proof, workspace facts, and edit guards locally"
+readiness_input = "current document generation, workspace readiness, cancellation, and source guard"
+fallback = "no edit or bounded local fallback when exact complete workspace proof is absent"
+duplicate_interpretation = "rename owns cancellation admission, lifecycle routing, lexical edits, semantic package planning, source guards, and workspace edit shaping"
 migration_disposition = "port_candidate"
 replacement_owner = "#6816/#6819"
 [[read.source]]
 path = "crates/perl-lsp-rs/src/runtime/language/rename.rs"
 [[read.source.anchor]]
 kind = "rust_fn"
-value = "handle_rename"
+value = "handle_rename_workspace_cancellable"
+count = 1
+[[read.source.anchor]]
+kind = "rust_fn"
+value = "handle_rename_workspace"
+count = 1
+[[read.source.anchor]]
+kind = "rust_fn"
+value = "handle_rename_workspace_inner"
 count = 1
 
 [[read]]
