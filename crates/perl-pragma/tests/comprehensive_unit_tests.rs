@@ -3,11 +3,11 @@
 //! Tests cover PragmaState, PragmaTracker::build, and PragmaTracker::state_for_offset
 //! across all public API surface including edge cases.
 
-use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};
+use perl_ast::SourceLocation;
 use perl_pragma::{
-    CompileTimePragmaEnvironment, PerlVersion, PragmaState, PragmaTracker,
-    features_enabled_by_version,
+    features_enabled_by_version, CompileTimePragmaEnvironment, PerlVersion, PragmaState,
+    PragmaTracker,
 };
 
 // ---------------------------------------------------------------------------
@@ -19,60 +19,58 @@ fn loc(start: usize, end: usize) -> SourceLocation {
 }
 
 fn use_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Use {
+    Node::new(
+        NodeKind::Use {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn no_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::No {
+    Node::new(
+        NodeKind::No {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn function_call(name: &str, args: Vec<Node>, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::FunctionCall { name: name.to_string(), args },
-        location: loc(start, end),
-    }
+    Node::new(NodeKind::FunctionCall { name: name.to_string(), args }, loc(start, end))
 }
 
 fn number_node(value: &str, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Number { value: value.to_string() }, location: loc(start, end) }
+    Node::new(NodeKind::Number { value: value.to_string() }, loc(start, end))
 }
 
 fn string_node(value: &str, interpolated: bool, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::String { value: value.to_string(), interpolated },
-        location: loc(start, end),
-    }
+    Node::new(NodeKind::String { value: value.to_string(), interpolated }, loc(start, end))
 }
 
 fn program(stmts: Vec<Node>) -> Node {
     let end = stmts.last().map_or(0, |n| n.location.end);
-    Node { kind: NodeKind::Program { statements: stmts }, location: loc(0, end) }
+    Node::new(NodeKind::Program { statements: stmts }, loc(0, end))
 }
 
 fn block(stmts: Vec<Node>, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Block { statements: stmts }, location: loc(start, end) }
+    Node::new(NodeKind::Block { statements: stmts }, loc(start, end))
 }
 
 fn dummy_node(start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::MissingExpression, location: loc(start, end) }
+    Node::new(NodeKind::MissingExpression, loc(start, end))
 }
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if condition { Ok(()) } else { Err(std::io::Error::other(message).into()) }
+    if condition {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(message).into())
+    }
 }
 
 // ===========================================================================
@@ -283,8 +281,8 @@ fn use_strict_empty_qw_is_noop() -> Result<(), Box<dyn std::error::Error>> {
 /// Perl allows `use strict 'refs vars'` (a single quoted string with
 /// space-separated categories), and the tracker should split and honor both.
 #[test]
-fn use_strict_space_separated_in_single_string_enables_requested_categories()
--> Result<(), Box<dyn std::error::Error>> {
+fn use_strict_space_separated_in_single_string_enables_requested_categories(
+) -> Result<(), Box<dyn std::error::Error>> {
     // Single quoted string should be split into both categories.
     let ast = program(vec![use_node("strict", &["'refs vars'"], 0, 25)]);
     let map = PragmaTracker::build(&ast);
@@ -344,8 +342,8 @@ fn use_unless_version_target_applies_version_semantics() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn use_if_version_condition_does_not_apply_version_semantics()
--> Result<(), Box<dyn std::error::Error>> {
+fn use_if_version_condition_does_not_apply_version_semantics(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("if", &["$]", ">=", "5.036", "Some::Module"], 0, 38)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 20);
@@ -465,8 +463,8 @@ fn use_feature_signatures_enables_all_strict_categories() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn use_feature_qw_signatures_enables_all_strict_categories()
--> Result<(), Box<dyn std::error::Error>> {
+fn use_feature_qw_signatures_enables_all_strict_categories(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("feature", &["qw(signatures say)"], 0, 34)]);
     let map = PragmaTracker::build(&ast);
     assert_eq!(map.len(), 1);
@@ -524,8 +522,8 @@ fn use_v5_40_1_enables_builtin_and_warnings() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn use_numeric_version_enables_effective_strict_and_warnings()
--> Result<(), Box<dyn std::error::Error>> {
+fn use_numeric_version_enables_effective_strict_and_warnings(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("5.040", &[], 0, 12)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
@@ -856,8 +854,8 @@ fn nested_blocks_restore_correctly() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn subroutine_body_inherits_pragma_state() -> Result<(), Box<dyn std::error::Error>> {
     let sub_body = block(vec![use_node("warnings", &[], 30, 45)], 25, 50);
-    let sub_node = Node {
-        kind: NodeKind::Subroutine {
+    let sub_node = Node::new(
+        NodeKind::Subroutine {
             name: Some("foo".to_string()),
             name_span: None,
             declarator: None,
@@ -866,8 +864,8 @@ fn subroutine_body_inherits_pragma_state() -> Result<(), Box<dyn std::error::Err
             attributes: vec![],
             body: Box::new(sub_body),
         },
-        location: loc(20, 55),
-    };
+        loc(20, 55),
+    );
     let ast = program(vec![use_node("strict", &[], 0, 12), sub_node]);
     let map = PragmaTracker::build(&ast);
 
@@ -886,16 +884,16 @@ fn subroutine_body_inherits_pragma_state() -> Result<(), Box<dyn std::error::Err
 fn if_branches_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let then_branch = block(vec![use_node("warnings", &[], 20, 35)], 18, 40);
     let else_branch = block(vec![no_node("strict", &["refs"], 45, 60)], 42, 65);
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             then_branch: Box::new(then_branch),
             elsif_branches: vec![],
             else_branch: Some(Box::new(else_branch)),
         },
-        location: loc(10, 65),
-    };
+        loc(10, 65),
+    );
     let ast = program(vec![use_node("strict", &[], 0, 9), if_node]);
     let map = PragmaTracker::build(&ast);
 
@@ -914,16 +912,16 @@ fn if_elsif_else_branches_restore_state() -> Result<(), Box<dyn std::error::Erro
     let then_branch = block(vec![no_node("strict", &["refs"], 20, 35)], 18, 40);
     let elsif_branch = block(vec![use_node("warnings", &[], 45, 60)], 43, 65);
     let else_branch = block(vec![no_node("strict", &["subs"], 70, 85)], 68, 90);
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             then_branch: Box::new(then_branch),
             elsif_branches: vec![(Box::new(dummy_node(41, 42)), Box::new(elsif_branch))],
             else_branch: Some(Box::new(else_branch)),
         },
-        location: loc(10, 90),
-    };
+        loc(10, 90),
+    );
     let ast =
         program(vec![use_node("strict", &[], 0, 12), if_node, use_node("warnings", &[], 91, 106)]);
     let map = PragmaTracker::build(&ast);
@@ -946,15 +944,15 @@ fn if_elsif_else_branches_restore_state() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn while_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let body = block(vec![use_node("warnings", &[], 20, 35)], 18, 40);
-    let while_node = Node {
-        kind: NodeKind::While {
+    let while_node = Node::new(
+        NodeKind::While {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             body: Box::new(body),
             continue_block: None,
         },
-        location: loc(10, 40),
-    };
+        loc(10, 40),
+    );
     let ast = program(vec![while_node]);
     let map = PragmaTracker::build(&ast);
     assert!(!map.is_empty());
@@ -965,16 +963,16 @@ fn while_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn for_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let body = block(vec![use_node("strict", &["vars"], 30, 50)], 28, 55);
-    let for_node = Node {
-        kind: NodeKind::For {
+    let for_node = Node::new(
+        NodeKind::For {
             init: None,
             condition: None,
             update: None,
             body: Box::new(body),
             continue_block: None,
         },
-        location: loc(10, 55),
-    };
+        loc(10, 55),
+    );
     let ast = program(vec![for_node]);
     let map = PragmaTracker::build(&ast);
     assert!(map[0].1.strict_vars);
@@ -984,15 +982,15 @@ fn for_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn foreach_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let body = block(vec![use_node("strict", &[], 30, 42)], 28, 45);
-    let foreach_node = Node {
-        kind: NodeKind::Foreach {
+    let foreach_node = Node::new(
+        NodeKind::Foreach {
             variable: Box::new(dummy_node(10, 12)),
             list: Box::new(dummy_node(13, 20)),
             body: Box::new(body),
             continue_block: None,
         },
-        location: loc(10, 45),
-    };
+        loc(10, 45),
+    );
     let ast = program(vec![foreach_node]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
@@ -1081,13 +1079,13 @@ fn modern_container_bodies_are_traversed_and_scoped() -> Result<(), Box<dyn std:
 fn eval_string_call_is_handled_conservatively() -> Result<(), Box<dyn std::error::Error>> {
     let eval_string_call = function_call(
         "eval",
-        vec![Node {
-            kind: NodeKind::String {
+        vec![Node::new(
+            NodeKind::String {
                 value: "use warnings; no strict 'refs';".to_string(),
                 interpolated: true,
             },
-            location: loc(20, 58),
-        }],
+            loc(20, 58),
+        )],
         15,
         59,
     );
@@ -1315,8 +1313,8 @@ fn no_warnings_with_category_disables_only_that_category() -> Result<(), Box<dyn
 }
 
 #[test]
-fn duplicate_no_warnings_category_does_not_create_extra_entry()
--> Result<(), Box<dyn std::error::Error>> {
+fn duplicate_no_warnings_category_does_not_create_extra_entry(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("warnings", &[], 0, 12),
         no_node("warnings", &["'deprecated'"], 13, 36),
@@ -1370,8 +1368,8 @@ fn no_builtin_unknown_name_preserves_prior_import() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn no_builtin_preserves_lexical_imports_without_extra_entry()
--> Result<(), Box<dyn std::error::Error>> {
+fn no_builtin_preserves_lexical_imports_without_extra_entry(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["'true'", "'floor'"], 0, 30),
         use_node("builtin", &["'true'"], 31, 50),
@@ -1424,8 +1422,8 @@ fn conditional_builtin_use_and_no_follow_directive_rules() -> Result<(), Box<dyn
 }
 
 #[test]
-fn block_without_pragma_changes_does_not_create_restore_entry()
--> Result<(), Box<dyn std::error::Error>> {
+fn block_without_pragma_changes_does_not_create_restore_entry(
+) -> Result<(), Box<dyn std::error::Error>> {
     // A block with no pragma changes inside should not emit a restore entry.
     let ast = program(vec![
         use_node("strict", &[], 0, 12),
@@ -1493,18 +1491,18 @@ fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn scoped_body_without_pragma_changes_does_not_create_restore_entry()
--> Result<(), Box<dyn std::error::Error>> {
-    let if_node = Node {
-        kind: NodeKind::If {
+fn scoped_body_without_pragma_changes_does_not_create_restore_entry(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 12)),
             then_branch: Box::new(dummy_node(15, 20)),
             elsif_branches: vec![],
             else_branch: None,
         },
-        location: loc(10, 20),
-    };
+        loc(10, 20),
+    );
     let ast = program(vec![use_node("builtin", &["'true'"], 0, 8), if_node, dummy_node(25, 30)]);
 
     let map = PragmaTracker::build(&ast);
@@ -1524,16 +1522,16 @@ fn scoped_body_without_pragma_changes_does_not_create_restore_entry()
 #[test]
 fn changed_scoped_body_restores_state_after_direct_pragma() -> Result<(), Box<dyn std::error::Error>>
 {
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 12)),
             then_branch: Box::new(use_node("builtin", &["'floor'"], 15, 25)),
             elsif_branches: vec![],
             else_branch: None,
         },
-        location: loc(10, 25),
-    };
+        loc(10, 25),
+    );
     let ast = program(vec![use_node("builtin", &["'true'"], 0, 8), if_node, dummy_node(30, 35)]);
 
     let map = PragmaTracker::build(&ast);
@@ -1705,8 +1703,8 @@ fn use_warnings_resets_fully_capped_disabled_list() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn use_warnings_after_no_warnings_category_resets_disabled_list()
--> Result<(), Box<dyn std::error::Error>> {
+fn use_warnings_after_no_warnings_category_resets_disabled_list(
+) -> Result<(), Box<dyn std::error::Error>> {
     // use warnings; no warnings 'X'; use warnings;
     // The second `use warnings` should clear the disabled categories list.
     let ast = program(vec![
@@ -1753,8 +1751,8 @@ fn is_warning_active_false_when_global_warnings_off() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn is_warning_active_true_when_warnings_on_and_no_disabled()
--> Result<(), Box<dyn std::error::Error>> {
+fn is_warning_active_true_when_warnings_on_and_no_disabled(
+) -> Result<(), Box<dyn std::error::Error>> {
     let state = PragmaState { warnings: true, ..PragmaState::default() };
     assert!(state.is_warning_active("uninitialized"));
     assert!(state.is_warning_active("deprecated"));
@@ -1807,16 +1805,16 @@ fn pragma_map_records_correct_ranges() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn if_without_else_does_not_panic() -> Result<(), Box<dyn std::error::Error>> {
     let then_branch = block(vec![use_node("warnings", &[], 20, 35)], 18, 40);
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             then_branch: Box::new(then_branch),
             elsif_branches: vec![],
             else_branch: None,
         },
-        location: loc(10, 40),
-    };
+        loc(10, 40),
+    );
     let ast = program(vec![if_node]);
     let map = PragmaTracker::build(&ast);
     assert!(!map.is_empty());
@@ -2025,8 +2023,8 @@ fn no_builtin_preserves_selected_lexical_imports() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn builtin_qw_alternate_delimiters_preserve_imports_across_no_directive()
--> Result<(), Box<dyn std::error::Error>> {
+fn builtin_qw_alternate_delimiters_preserve_imports_across_no_directive(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw<true floor ceil>"], 0, 30),
         no_node("builtin", &["qw[floor]"], 31, 50),
@@ -2085,8 +2083,8 @@ fn no_if_builtin_conditionally_preserves_lexical_imports() -> Result<(), Box<dyn
 }
 
 #[test]
-fn use_if_strict_with_single_quoted_whitespace_list_enables_selected_flags()
--> Result<(), Box<dyn std::error::Error>> {
+fn use_if_strict_with_single_quoted_whitespace_list_enables_selected_flags(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("if", &["$cond", "strict", "'vars subs'"], 0, 36)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
@@ -2098,8 +2096,8 @@ fn use_if_strict_with_single_quoted_whitespace_list_enables_selected_flags()
 }
 
 #[test]
-fn no_if_strict_with_single_quoted_whitespace_list_disables_selected_flags()
--> Result<(), Box<dyn std::error::Error>> {
+fn no_if_strict_with_single_quoted_whitespace_list_disables_selected_flags(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("strict", &[], 0, 11),
         no_node("if", &["$cond", "strict", "'vars subs'"], 12, 48),
@@ -2149,56 +2147,56 @@ fn state_default_carries_the_default_feature_bundle() -> Result<(), Box<dyn std:
 // ===========================================================================
 
 fn package_node(name: &str, block_node: Option<Node>, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Package {
+    Node::new(
+        NodeKind::Package {
             name: name.to_string(),
             name_span: loc(start, end),
             block: block_node.map(Box::new),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn method_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Method {
+    Node::new(
+        NodeKind::Method {
             name: "foo".to_string(),
             name_span: None,
             signature: None,
             attributes: vec![],
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn class_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Class {
+    Node::new(
+        NodeKind::Class {
             name: "Foo".to_string(),
             name_span: None,
             parents: vec![],
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn eval_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Eval { block: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Eval { block: Box::new(body_node) }, loc(start, end))
 }
 
 fn do_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Do { block: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Do { block: Box::new(body_node) }, loc(start, end))
 }
 
 fn defer_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Defer { block: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Defer { block: Box::new(body_node) }, loc(start, end))
 }
 
 #[test]
-fn eval_string_is_conservative_and_does_not_enable_pragmas()
--> Result<(), Box<dyn std::error::Error>> {
+fn eval_string_is_conservative_and_does_not_enable_pragmas(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         eval_node(string_node("use strict; use warnings;", false, 5, 33), 0, 33),
         dummy_node(34, 40),
@@ -2220,50 +2218,50 @@ fn try_node(
     start: usize,
     end: usize,
 ) -> Node {
-    Node {
-        kind: NodeKind::Try {
+    Node::new(
+        NodeKind::Try {
             body: Box::new(body_node),
             catch_blocks: catch_bodies.into_iter().map(|body| (None, Box::new(body))).collect(),
             finally_block: finally_node.map(Box::new),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn given_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Given {
+    Node::new(
+        NodeKind::Given {
             expr: Box::new(dummy_node(start + 1, start + 2)),
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn when_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::When {
+    Node::new(
+        NodeKind::When {
             condition: Box::new(dummy_node(start + 1, start + 2)),
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn default_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Default { body: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Default { body: Box::new(body_node) }, loc(start, end))
 }
 
 fn while_node(body_node: Node, continue_node: Option<Node>, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::While {
+    Node::new(
+        NodeKind::While {
             keyword: None,
             condition: Box::new(dummy_node(start + 1, start + 2)),
             body: Box::new(body_node),
             continue_block: continue_node.map(Box::new),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 /// `use strict; package Foo;` -- subsequent top-level statements after the bare
@@ -2308,14 +2306,14 @@ fn package_block_form_inherits_outer_pragma_state() -> Result<(), Box<dyn std::e
 /// pre-block value (package blocks are lexically scoped like regular blocks).
 #[test]
 fn package_block_form_restores_state_after_block() -> Result<(), Box<dyn std::error::Error>> {
-    let no_refs = Node {
-        kind: NodeKind::No {
+    let no_refs = Node::new(
+        NodeKind::No {
             module: "strict".to_string(),
             args: vec!["refs".to_string()],
             has_filter_risk: false,
         },
-        location: loc(20, 40),
-    };
+        loc(20, 40),
+    );
     let pkg_block = block(vec![no_refs], 14, 59);
     let pkg = package_node("Foo", Some(pkg_block), 13, 60);
     let ast = program(vec![use_node("strict", &[], 0, 12), pkg, use_node("warnings", &[], 61, 76)]);
@@ -2347,8 +2345,8 @@ fn package_block_pragma_inside_is_visible_at_inner_offset() -> Result<(), Box<dy
 }
 
 #[test]
-fn v5_42_removes_smartmatch_and_apostrophe_package_separator()
--> Result<(), Box<dyn std::error::Error>> {
+fn v5_42_removes_smartmatch_and_apostrophe_package_separator(
+) -> Result<(), Box<dyn std::error::Error>> {
     let features = features_enabled_by_version(PerlVersion::new(5, 42));
     assert!(!features.contains(&"smartmatch"));
     assert!(!features.contains(&"apostrophe_as_package_separator"));
@@ -2358,8 +2356,8 @@ fn v5_42_removes_smartmatch_and_apostrophe_package_separator()
 }
 
 #[test]
-fn no_feature_without_args_restores_default_feature_set_after_all()
--> Result<(), Box<dyn std::error::Error>> {
+fn no_feature_without_args_restores_default_feature_set_after_all(
+) -> Result<(), Box<dyn std::error::Error>> {
     let ast =
         program(vec![use_node("feature", &["':all'"], 0, 20), no_node("feature", &[], 21, 32)]);
     let map = PragmaTracker::build(&ast);
