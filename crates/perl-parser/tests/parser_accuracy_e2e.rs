@@ -56,10 +56,14 @@ const E2E_FIXTURES: &[&str] = &[
     "imports_exports",
     "qualified_refs",
     "same_bare_subs",
+    "role_method",
+    "inherited_method",
     "operator_precedence",
     "quote_like",
     "regex_match",
     "method_call",
+    "medium_method_call",
+    "method_decl",
     "slash_ambiguity",
     "control_flow_core",
     "dynamic_require_boundary",
@@ -174,10 +178,6 @@ fn assert_observed_expectation(
                 .as_deref()
                 .is_none_or(|parent| node.parent_kind == Some(parent))
             && expectation.depth.is_none_or(|depth| node.depth == depth)
-            && expectation
-                .operator
-                .as_deref()
-                .is_none_or(|operator| node.operator.as_deref() == Some(operator))
             && expectation
                 .operator
                 .as_deref()
