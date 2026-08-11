@@ -62,8 +62,16 @@ fn strings_preserve_kind_value_and_span() {
         }
     });
 
-    assert!(single, "single-quoted literal was not represented as a String node:\\n{}", ast.to_sexp());
-    assert!(double, "double-quoted literal was not represented as an interpolated String node:\\n{}", ast.to_sexp());
+    assert!(
+        single,
+        "single-quoted literal was not represented as a String node:\\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        double,
+        "double-quoted literal was not represented as an interpolated String node:\\n{}",
+        ast.to_sexp()
+    );
     assert!(single_span, "single-quoted literal lost its source span:\\n{}", ast.to_sexp());
     assert!(double_span, "double-quoted literal lost its source span:\\n{}", ast.to_sexp());
 }
