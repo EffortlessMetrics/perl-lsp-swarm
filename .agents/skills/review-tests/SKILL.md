@@ -29,11 +29,13 @@ the reported false positive no longer fires
 a known true positive still fires against the narrowed detector
 ```
 
-The second is load-bearing and is the one usually skipped. Supply it as a negative
+The second is load-bearing and is the one usually skipped. Supply it as a retention
 control the narrowed detector must still catch — a real prior finding where one exists,
 otherwise a constructed case matching the shape the detector owns. Where the narrowing
 folds, joins, strips, or normalizes input before matching, construct the case that
 survives that transformation, because that is where a narrowed detector goes silent.
+
+The retained case must traverse the specific predicate or transformation being narrowed, not merely trigger an unaffected rule in the same scanner.
 
 A detector that stops firing is not evidence that it works. Turning a noisy control into
 a quiet one is worse than the false positives, since nothing downstream can tell the
