@@ -1,28 +1,32 @@
 name: Agent 6777 bound status cache
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/6777-bound-status-cache
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: write
 
 concurrency:
-  group: agent-6777-bound-status-cache
+  group: agent-6777-bound-status-cache-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   patch-and-prove:
     name: Apply bounded status cache repair
-    if: github.ref == 'refs/heads/agent/6777-bound-status-cache'
+    if: github.event.pull_request.head.ref == 'agent/6777-bound-status-cache'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out exact branch head
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: true
 
@@ -30,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
           python3 - <<'PY'
           from __future__ import annotations
 
@@ -83,4 +87,4 @@ jobs:
           git config user.name "EffortlessSteven"
           git config user.email "git@effortlesssteven.com"
           git commit -m "fix(ci): stop caching status-generation targets (#6777)"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
