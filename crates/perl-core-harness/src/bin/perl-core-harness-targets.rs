@@ -4,6 +4,10 @@
 
 #[path = "perl-core-harness-targets/model.rs"]
 mod model;
+#[path = "perl-core-harness-targets/contract.rs"]
+mod contract;
+#[path = "perl-core-harness-targets/matrix.rs"]
+mod matrix;
 
 use color_eyre::eyre::{Context, Result, bail};
 use model::{TargetTopologyDrift, UpstreamTargetMatrix};
@@ -60,61 +64,5 @@ fn read_drift(path: &Path) -> Result<TargetTopologyDrift> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use model::TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION;
-
-    fn repo_file(relative: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(relative)
-    }
-
-    #[test]
-    fn checked_in_target_matrix_is_valid_and_stable() -> Result<()> {
-        let matrix = read_matrix(&repo_file(
-            ".ci/perl-core-harness/upstream-targets-5.42.2.v1.json",
-        ))?;
-        let first = matrix
-            .fingerprint()
-            .map_err(|error| color_eyre::eyre::eyre!(error))?;
-        let second = matrix
-            .fingerprint()
-            .map_err(|error| color_eyre::eyre::eyre!(error))?;
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 64);
-        Ok(())
-    }
-
-    #[test]
-    fn checked_in_blead_drift_is_bound_to_the_pinned_matrix() -> Result<()> {
-        let matrix = read_matrix(&repo_file(
-            ".ci/perl-core-harness/upstream-targets-5.42.2.v1.json",
-        ))?;
-        let drift = read_drift(&repo_file(
-            ".ci/perl-core-harness/upstream-targets-blead-drift.v1.json",
-        ))?;
-        assert_eq!(drift.schema_version, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION);
-        let fingerprint = matrix
-            .fingerprint()
-            .map_err(|error| color_eyre::eyre::eyre!(error))?;
-        drift
-            .validate_against(&matrix, &fingerprint)
-            .map_err(|error| color_eyre::eyre::eyre!(error))?;
-        Ok(())
-    }
-
-    #[test]
-    fn drift_fails_when_the_pinned_fingerprint_changes() -> Result<()> {
-        let matrix = read_matrix(&repo_file(
-            ".ci/perl-core-harness/upstream-targets-5.42.2.v1.json",
-        ))?;
-        let mut drift = read_drift(&repo_file(
-            ".ci/perl-core-harness/upstream-targets-blead-drift.v1.json",
-        ))?;
-        drift.pinned_matrix_fingerprint = "0".repeat(64);
-        let fingerprint = matrix
-            .fingerprint()
-            .map_err(|error| color_eyre::eyre::eyre!(error))?;
-        assert!(drift.validate_against(&matrix, &fingerprint).is_err());
-        Ok(())
-    }
-}
+#[path = "perl-core-harness-targets/tests.rs"]
+mod tests;
