@@ -5298,7 +5298,8 @@ mod tests {
         let invocation = Invocation {
             source: SourceInput::Inline(
                 r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/;
-"#.to_string(),
+"#
+                .to_string(),
             ),
             display_path: "run/todo.t".to_string(),
         };
