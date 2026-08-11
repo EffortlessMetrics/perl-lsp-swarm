@@ -2,6 +2,40 @@ use lsp_types::Diagnostic;
 use perl_parser_core::error::ParseOutput;
 use std::ops::Range;
 
+/// Lexer work strategy selected for one incremental parse result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LexRestartStrategy {
+    /// Lex the complete current source from byte zero.
+    FullRelex,
+    /// Restore one complete live lexer checkpoint and re-lex from there to EOF.
+    LiveCheckpointToEof,
+}
+
+/// Truthful lexer restart and token-retention receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LexRestartReport {
+    /// Strategy that produced the current token stream.
+    pub strategy: LexRestartStrategy,
+    /// Byte boundary where fresh lexing began.
+    pub restart_byte: usize,
+    /// Number of source bytes lexed from the restart boundary to EOF.
+    pub relexed_bytes: usize,
+    /// Tokens before the restart boundary retained without re-lexing.
+    pub reused_prefix_tokens: usize,
+    /// Tokens after a synchronization boundary retained from the old suffix.
+    pub reused_suffix_tokens: usize,
+}
+
+impl LexRestartReport {
+    /// Total old tokens retained by the selected strategy.
+    #[must_use]
+    pub fn reused_tokens(self) -> usize {
+        self.reused_prefix_tokens.saturating_add(self.reused_suffix_tokens)
+    }
+}
+
 /// Result of incremental reparse.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -20,9 +54,14 @@ pub struct ReparseResult {
     /// transport concern and remains intentionally separate from the native
     /// parser output contract.
     pub diagnostics: Vec<Diagnostic>,
-    /// Number of source bytes covered by reparsing work.
+    /// Lexer restart, fresh-work, and token-retention receipt.
+    pub lex_restart: LexRestartReport,
+    /// Number of source bytes covered by parser reparsing work.
     pub reparsed_bytes: usize,
-    /// Number of lexer tokens retained from the previous state.
+    /// Compatibility total of old lexer tokens retained from prefix and suffix.
+    ///
+    /// New consumers should use [`Self::lex_restart`] to distinguish prefix
+    /// retention from state-proven suffix reuse.
     pub reused_tokens: usize,
     /// Total token count in the resulting incremental state.
     pub token_count: usize,
