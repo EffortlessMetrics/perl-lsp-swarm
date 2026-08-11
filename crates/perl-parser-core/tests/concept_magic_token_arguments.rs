@@ -176,12 +176,7 @@ fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(
     assert_eq!(
         hash_pairs,
         Some(vec![
-            (
-                "FunctionCall",
-                "__FILE__".to_owned(),
-                "Identifier",
-                "line".to_owned()
-            ),
+            ("FunctionCall", "__FILE__".to_owned(), "Identifier", "line".to_owned()),
             ("String", "file".to_owned(), "FunctionCall", "__FILE__".to_owned()),
             ("String", "line".to_owned(), "FunctionCall", "__LINE__".to_owned()),
         ])
