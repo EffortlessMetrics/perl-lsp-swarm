@@ -146,6 +146,10 @@ fn assert_incremental_edit_matches_fresh(
         apply_incremental_edit(&mut incremental, source, old_text, new_text, expectation_id)?;
     let incremental_ast = incremental.parse(&new_source)?;
 
+    if !incremental.incremental_path_attempted() {
+        return Err(format!("{expectation_id}: edit did not enter the incremental path").into());
+    }
+
     if require_reuse {
         if incremental.reused_nodes == 0 {
             return Err(format!(
@@ -153,7 +157,7 @@ fn assert_incremental_edit_matches_fresh(
             )
             .into());
         }
-        if incremental.get_last_reuse_analysis().is_none() {
+        if !incremental.used_advanced_reuse() {
             return Err(format!(
                 "{expectation_id}: edit must take the advanced incremental-reuse path"
             )
@@ -288,6 +292,16 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
         "$left =~ / 2 / $right",
         "insert_match_operator_before_existing_slash",
     )?;
+    let intermediate_incremental_ast = incremental.parse(&with_match_operator)?;
+    let intermediate_fresh_ast = Parser::new(&with_match_operator).parse()?;
+    assert_ast_equivalent(
+        &intermediate_incremental_ast,
+        &intermediate_fresh_ast,
+        "intermediate division-to-regex edit",
+    )?;
+    if !contains_match(&intermediate_fresh_ast) {
+        return Err("the intermediate source must be classified as a regex Match expression".into());
+    }
     let final_source = apply_incremental_edit(
         &mut incremental,
         &with_match_operator,

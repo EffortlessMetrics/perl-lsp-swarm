@@ -229,6 +229,8 @@ pub struct IncrementalParserV2 {
     reuse_config: ReuseConfig,
     /// Performance tracking for reuse analysis
     pub last_reuse_analysis: Option<ReuseAnalysisResult>,
+    incremental_path_attempted: bool,
+    advanced_reuse_selected: bool,
 }
 
 impl IncrementalParserV2 {
@@ -243,6 +245,8 @@ impl IncrementalParserV2 {
             reuse_analyzer: AdvancedReuseAnalyzer::new(),
             reuse_config: ReuseConfig::default(),
             last_reuse_analysis: None,
+            incremental_path_attempted: false,
+            advanced_reuse_selected: false,
         }
     }
 
@@ -257,6 +261,8 @@ impl IncrementalParserV2 {
             reuse_analyzer: AdvancedReuseAnalyzer::with_config(config.clone()),
             reuse_config: config,
             last_reuse_analysis: None,
+            incremental_path_attempted: false,
+            advanced_reuse_selected: false,
         }
     }
 
@@ -272,11 +278,14 @@ impl IncrementalParserV2 {
         // Reset statistics
         self.reused_nodes = 0;
         self.reparsed_nodes = 0;
+        self.incremental_path_attempted = false;
+        self.advanced_reuse_selected = false;
 
         // Try incremental parsing if we have a previous tree and edits
         if let Some(ref last_tree) = self.last_tree {
             if !self.pending_edits.is_empty() {
                 let last_tree_clone = last_tree.clone();
+                self.incremental_path_attempted = true;
                 // Check if we can do incremental parsing
                 if let Some(new_tree) = self.try_incremental_parse(source, &last_tree_clone) {
                     self.last_tree =
@@ -383,6 +392,7 @@ impl IncrementalParserV2 {
                 self.reused_nodes = analysis.reused_nodes;
                 self.reparsed_nodes =
                     analysis.total_new_nodes.saturating_sub(analysis.reused_nodes);
+                self.advanced_reuse_selected = true;
 
                 // Return the new tree with reuse benefits counted
                 return Some(new_tree);
@@ -934,7 +944,12 @@ impl IncrementalParserV2 {
 
     /// Check if the last parse used advanced reuse analysis
     pub fn used_advanced_reuse(&self) -> bool {
-        self.last_reuse_analysis.as_ref().is_some_and(|analysis| analysis.reuse_percentage > 0.0)
+        self.advanced_reuse_selected
+    }
+
+    /// Check if the last parse entered the incremental edit path.
+    pub fn incremental_path_attempted(&self) -> bool {
+        self.incremental_path_attempted
     }
 
     /// Get detailed reuse efficiency report
