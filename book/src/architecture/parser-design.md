@@ -1,5 +1,7 @@
 # Architecture Overview
 
+> Currentness note: this page retains historical documentation-infrastructure material. Use the [current public API documentation guide](../../docs/reference/MISSING_DOCUMENTATION_GUIDE.md) for present-day examples and workflow; the historical 605+ baseline below is not a current metric.
+
 ## Crate Structure
 
 ### Production Crates
@@ -216,7 +218,7 @@ As of **Draft PR 159 (SPEC-149)**, the perl-parser crate includes comprehensive 
 # Run all 25 acceptance criteria tests
 cargo test -p perl-parser --test missing_docs_ac_tests
 
-# Track violation count (baseline: 605+)
+# Track violation count (historical baseline: 605+)
 cargo build -p perl-parser 2>&1 | grep "warning: missing documentation" | wc -l
 
 # Generate documentation without warnings
