@@ -10,7 +10,6 @@ const {
   TSCONFIG_FILES,
   evaluateTypeScriptAuthority,
   checkTypeScriptAuthority,
-  stripJsonComments,
 } = require('./check-typescript-authority');
 
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
@@ -268,53 +267,6 @@ void test('every drifted fact is reported, not just the first', () => {
   }
 });
 
-void test('stripJsonComments tolerates the trailing commas tsc itself accepts', () => {
-  // `tsc` accepts trailing commas, so a tsconfig carrying one is valid to the
-  // compiler. Failing to parse it would be a false red on a legal config.
-  const source = `{
-    "compilerOptions": {
-      "strict": true,
-      "target": "ES2022",
-    },
-    "include": [
-      "src/**/*",
-    ],
-  }`;
-  assert.deepEqual(JSON.parse(stripJsonComments(source)), {
-    compilerOptions: { strict: true, target: 'ES2022' },
-    include: ['src/**/*'],
-  });
-});
-
-void test('stripJsonComments handles a trailing comma followed only by a comment', () => {
-  const source = `{
-    "a": 1,
-    // dangling explanation
-  }`;
-  assert.deepEqual(JSON.parse(stripJsonComments(source)), { a: 1 });
-});
-
-void test('stripJsonComments does not eat a comma inside a string value', () => {
-  const source = '{ "list": "a,]", "b": 2 }';
-  assert.deepEqual(JSON.parse(stripJsonComments(source)), { list: 'a,]', b: 2 });
-});
-
-void test('stripJsonComments keeps string contents while removing real comments', () => {
-  const source = `{
-    // leading comment
-    /* block
-       comment */
-    "url": "https://example.invalid/a//b",
-    "escaped": "a \\" // not a comment",
-    "value": 1
-  }`;
-  assert.deepEqual(JSON.parse(stripJsonComments(source)), {
-    url: 'https://example.invalid/a//b',
-    escaped: 'a " // not a comment',
-    value: 1,
-  });
-});
-
 void test('the real extension tree satisfies the compiler-authority invariants', () => {
   const result = checkTypeScriptAuthority(EXTENSION_ROOT);
   assert.equal(result.ok, true, JSON.stringify(result.failures, null, 2));
@@ -343,30 +295,72 @@ void test('a drifted tree on disk goes red through the real file-reading path', 
         },
       }),
     );
-    for (const [index, file] of TSCONFIG_FILES.entries()) {
-      fs.writeFileSync(
-        path.join(drifted, file),
-        `{\n  // a commented tsconfig, as this repository actually writes them\n  "compilerOptions": {${index === 0 ? ' "ignoreDeprecations": "6.0" ' : ''}}\n}\n`,
-      );
-    }
-
     const result = checkTypeScriptAuthority(drifted);
     assertFailedWith(result, /floors at major 6/);
     assertFailedWith(result, /aliases node_modules\/typescript to "typescript6"/);
-    assertFailedWith(result, /tsconfig\.json sets "ignoreDeprecations"/);
     // No node_modules under the scratch root: an absent compiler is red, and
-    // is never mistaken for a clean one.
+    // is never mistaken for a clean one. Because effective tsconfig options are
+    // read by running `tsc`, an absent compiler also means every config's
+    // state is unknown — which must be reported, not assumed clean.
     assertFailedWith(result, /is it installed/);
     assertFailedWith(result, /node_modules\/\.bin\/tsc is missing/);
+    assertFailedWith(result, /could not be read as a TypeScript configuration/);
+    assert.ok(
+      !result.facts.some((fact) => /tsconfig authority files carry no/.test(fact)),
+      `no config was readable, so none may be reported clean: ${JSON.stringify(result.facts)}`,
+    );
   } finally {
     fs.rmSync(drifted, { recursive: true, force: true });
   }
 });
 
-void test('every declared tsconfig authority file exists and is readable as JSONC', () => {
-  for (const file of TSCONFIG_FILES) {
-    const source = fs.readFileSync(path.join(EXTENSION_ROOT, file), 'utf8');
-    assert.ok(JSON.parse(stripJsonComments(source)), `${file} did not parse`);
+void test('an ignoreDeprecations inherited through extends is caught', () => {
+  // The hole this closes: four of the five authority configs `extends` another,
+  // so a base config carrying the escape hatch would be applied by `tsc` while
+  // every individual file's own `compilerOptions` still looked clean. Reading
+  // effective options via `tsc --showConfig` is what makes this red.
+  //
+  // Run against a copy of the real extension root so the installed compiler and
+  // node_modules are present; only the config graph is drifted.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ts-extends-'));
+  const root = path.join(scratch, 'ext');
+  fs.mkdirSync(root);
+  try {
+    for (const entry of ['package.json', 'package-lock.json', ...TSCONFIG_FILES]) {
+      fs.copyFileSync(path.join(EXTENSION_ROOT, entry), path.join(root, entry));
+    }
+    fs.symlinkSync(path.join(EXTENSION_ROOT, 'node_modules'), path.join(root, 'node_modules'));
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'index.ts'), 'export const ok = 1;\n');
+
+    // Sanity: the copied tree is clean before the drift, so the assertion below
+    // cannot pass for an unrelated reason.
+    assert.equal(
+      checkTypeScriptAuthority(root).ok,
+      true,
+      'the copied tree should be clean before the extends drift is introduced',
+    );
+
+    // Push the escape hatch into a NEW base that tsconfig.json extends. No
+    // authority file's own compilerOptions mentions it.
+    fs.writeFileSync(
+      path.join(root, 'tsconfig.base.json'),
+      JSON.stringify({ compilerOptions: { ignoreDeprecations: '6.0' } }),
+    );
+    const rootConfig = JSON.parse(
+      fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8').replace(/^\s*\/\/.*$/gm, ''),
+    );
+    rootConfig.extends = './tsconfig.base.json';
+    fs.writeFileSync(path.join(root, 'tsconfig.json'), JSON.stringify(rootConfig));
+
+    const result = checkTypeScriptAuthority(root);
+    assertFailedWith(result, /sets "ignoreDeprecations"/);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+void test('the declared authority major is the one this gate enforces', () => {
   assert.equal(TYPESCRIPT_AUTHORITY_MAJOR, 7);
+  assert.equal(TSCONFIG_FILES.length, 5);
 });

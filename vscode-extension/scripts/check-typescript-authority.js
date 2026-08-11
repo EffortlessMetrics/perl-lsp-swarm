@@ -29,9 +29,12 @@
  *   4. the installed compiler binary itself reports the same version the
  *      package claims (a package.json version field is metadata; running it
  *      is evidence), and the `.bin/tsc` shim the npm scripts invoke exists;
- *   5. no tsconfig carries `ignoreDeprecations`, the TS6-era deprecation
- *      escape hatch the swap deliberately removed. TS7 tolerates it rather
- *      than rejecting it, so its return would otherwise be silent.
+ *   5. no tsconfig's EFFECTIVE options carry `ignoreDeprecations`, the TS6-era
+ *      deprecation escape hatch the swap deliberately removed. TS7 tolerates
+ *      it rather than rejecting it, so its return would otherwise be silent.
+ *      Effective, not declared: four of the five authority configs `extends`
+ *      another, so reading each file's own `compilerOptions` would miss one
+ *      introduced in a shared base while `tsc` still applied it.
  *
  * Adopting a new compiler major is a deliberate act: bump
  * `TYPESCRIPT_AUTHORITY_MAJOR` in the same change that bumps the dependency.
@@ -262,119 +265,6 @@ function evaluateTypeScriptAuthority(input) {
 }
 
 /**
- * Strips `//` and block comments from JSONC, and the trailing commas TypeScript
- * also accepts, so the commented tsconfigs in this directory can be read
- * without adding a parser dependency. String literals are preserved, so a `//`
- * inside a path value is not eaten.
- *
- * Trailing commas matter: `tsc` accepts them, so a tsconfig carrying one is
- * valid to the compiler. Without this, such a file would fail `JSON.parse` and
- * this gate would report an unreadable authority file for a configuration that
- * is perfectly legal — a false red on someone else's valid edit.
- *
- * @param {string} source
- * @returns {string}
- */
-function stripJsonComments(source) {
-  let out = '';
-  let index = 0;
-  let inString = false;
-  while (index < source.length) {
-    const char = source[index];
-    if (inString) {
-      out += char;
-      if (char === '\\') {
-        out += source[index + 1] ?? '';
-        index += 2;
-        continue;
-      }
-      if (char === '"') {
-        inString = false;
-      }
-      index += 1;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      out += char;
-      index += 1;
-      continue;
-    }
-    if (char === '/' && source[index + 1] === '/') {
-      while (index < source.length && source[index] !== '\n') {
-        index += 1;
-      }
-      continue;
-    }
-    if (char === '/' && source[index + 1] === '*') {
-      index += 2;
-      while (index < source.length && !(source[index] === '*' && source[index + 1] === '/')) {
-        index += 1;
-      }
-      index += 2;
-      continue;
-    }
-    out += char;
-    index += 1;
-  }
-  // Trailing commas, once comments are gone. Run over the comment-free text so
-  // that a comma followed only by a comment before the closing brace is also
-  // caught, but string-aware: a plain regex here would eat the comma inside a
-  // value like "a,]".
-  return stripTrailingCommas(out);
-}
-
-/**
- * Removes commas that immediately precede a `}` or `]`, ignoring any that occur
- * inside string literals.
- *
- * @param {string} source JSON text with comments already removed.
- * @returns {string}
- */
-function stripTrailingCommas(source) {
-  let out = '';
-  let index = 0;
-  let inString = false;
-  while (index < source.length) {
-    const char = source[index];
-    if (inString) {
-      out += char;
-      if (char === '\\') {
-        out += source[index + 1] ?? '';
-        index += 2;
-        continue;
-      }
-      if (char === '"') {
-        inString = false;
-      }
-      index += 1;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      out += char;
-      index += 1;
-      continue;
-    }
-    if (char === ',') {
-      let lookahead = index + 1;
-      while (lookahead < source.length && /\s/.test(source[lookahead] ?? '')) {
-        lookahead += 1;
-      }
-      const next = source[lookahead];
-      if (next === '}' || next === ']') {
-        // Drop the comma, keep the whitespace so line numbers survive.
-        index += 1;
-        continue;
-      }
-    }
-    out += char;
-    index += 1;
-  }
-  return out;
-}
-
-/**
  * Gathers the real facts from the extension tree and evaluates them.
  *
  * @param {string} extensionRoot
@@ -414,14 +304,28 @@ function checkTypeScriptAuthority(extensionRoot) {
     binaryVersionOutput = undefined;
   }
 
-  // A tsconfig that is missing, unreadable, or unparseable is reported as its
-  // own named failure rather than thrown: an uncaught stack trace here would
+  // Read each config's EFFECTIVE options via `tsc --showConfig`, not its own
+  // `compilerOptions` block. Four of the five authority configs `extends`
+  // another, so an `ignoreDeprecations` introduced in a shared base would be
+  // applied by `tsc` while every individual file still looked clean — the gate
+  // would report green on exactly the regression it exists to block.
+  //
+  // The compiler's own resolver is the oracle rather than a hand-rolled
+  // `extends` walk: it already handles relative paths, package references, and
+  // arrays of bases, and it is by definition what `tsc` will actually apply.
+  //
+  // A config that is missing, unparseable, or otherwise rejected is reported as
+  // its own named failure rather than thrown: an uncaught stack trace would
   // still exit nonzero, but it would bury the actionable fact under a crash and
   // make a routine editing mistake look like a broken gate.
   const tsconfigs = TSCONFIG_FILES.map((file) => {
     try {
-      const source = fs.readFileSync(path.join(extensionRoot, file), 'utf8');
-      const parsed = JSON.parse(stripJsonComments(source));
+      const shown = execFileSync(
+        process.execPath,
+        [path.join(typescriptDir, 'bin', 'tsc'), '--showConfig', '-p', file],
+        { cwd: extensionRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      const parsed = JSON.parse(shown);
       return { file, ignoreDeprecations: parsed?.compilerOptions?.ignoreDeprecations };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -481,5 +385,4 @@ module.exports = {
   TSCONFIG_FILES,
   evaluateTypeScriptAuthority,
   checkTypeScriptAuthority,
-  stripJsonComments,
 };
