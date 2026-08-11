@@ -964,7 +964,9 @@ impl SemanticAnalyzer {
             }
 
             _ => {
-                // Preserve forward compatibility with future public AST variants.
+                // Preserve child semantics for future public AST variants while
+                // omitting only semantics specific to an unknown wrapper.
+                node.for_each_child(|child| self.analyze_node(child, scope_id));
             }
         }
     }
