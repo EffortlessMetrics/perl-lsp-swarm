@@ -1,6 +1,6 @@
 # API Documentation Standards - perl-parser crate
 
-> Currentness note: this page retains historical documentation-infrastructure material. Use the [current public API documentation guide](../../docs/reference/MISSING_DOCUMENTATION_GUIDE.md) for present-day examples and workflow; the historical 605+ baseline below is not a current metric.
+> Currentness note: this page retains historical documentation-infrastructure material. Use the [current public API documentation guide](../reference/MISSING_DOCUMENTATION_GUIDE.md) for present-day examples and workflow; the historical 605+ baseline below is not a current metric.
 
 *Diataxis: How-to Guide* - Comprehensive API documentation requirements for production-quality perl-parser crate.
 
