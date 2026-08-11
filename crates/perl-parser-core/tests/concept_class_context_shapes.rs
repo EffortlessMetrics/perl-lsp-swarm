@@ -22,6 +22,12 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
     }
 }
 
+fn source_text(source: &str, node: &Node) -> Option<String> {
+    source
+        .get(node.location.start..node.location.end)
+        .map(str::to_owned)
+}
+
 #[test]
 fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), String> {
     let source = concat!(
@@ -34,20 +40,20 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
         "}\n",
     );
     let ast = parse_clean(source)?;
-    let mut class_seen = false;
-    let mut field_seen = false;
-    let mut method_seen = false;
-    let mut adjust_seen = false;
+    let mut class_span = None;
+    let mut field_span = None;
+    let mut method_span = None;
+    let mut adjust_span = None;
 
     walk(&ast, &mut |node| match &node.kind {
         NodeKind::Class { name, name_span, parents, .. } if name == "Example" => {
-            if let Some(name_span) = name_span {
-                assert_eq!(source.get(name_span.start..name_span.end), Some("Example"));
-            } else {
-                panic!("class name span is missing");
-            }
-            assert!(parents.iter().any(|parent| parent == "Base"));
-            class_seen = true;
+            assert_eq!(
+                name_span.and_then(|span| source.get(span.start..span.end)),
+                Some("Example"),
+                "class name span must identify only the declared name"
+            );
+            assert_eq!(parents, &["Base".to_string()]);
+            class_span = source_text(source, node);
         }
         NodeKind::VariableDeclaration { declarator, variable, attributes, .. }
             if declarator == "field"
@@ -55,7 +61,7 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
         {
             assert!(attributes.iter().any(|attribute| attribute == "param"));
             assert!(attributes.iter().any(|attribute| attribute == "reader"));
-            field_seen = true;
+            field_span = source_text(source, node);
         }
         NodeKind::Method { name, name_span: Some(name_span), signature, attributes, .. }
             if name == "get" =>
@@ -63,38 +69,58 @@ fn class_field_method_and_adjust_keep_current_ast_identity() -> Result<(), Strin
             assert_eq!(source.get(name_span.start..name_span.end), Some("get"));
             assert!(signature.is_some(), "method signature must remain attached");
             assert!(attributes.iter().any(|attribute| attribute == "lvalue"));
-            method_seen = true;
+            method_span = source_text(source, node);
         }
         NodeKind::Method { name, name_span: None, .. } if name == "ADJUST" => {
-            adjust_seen = true;
+            adjust_span = source_text(source, node);
         }
         _ => {}
     });
 
-    assert!(class_seen, "class declaration was not preserved");
-    assert!(field_seen, "class field was not preserved as a field declaration");
-    assert!(method_seen, "method declaration was not preserved");
-    assert!(adjust_seen, "ADJUST block was not preserved in its current method-like form");
+    let class_span = class_span.ok_or_else(|| "class declaration was not preserved".to_string())?;
+    assert!(class_span.starts_with("class Example 1.23 :isa(Base) {"));
+    assert!(class_span.ends_with("}\n") || class_span.ends_with('}'));
+
+    let field_span = field_span.ok_or_else(|| "class field was not preserved".to_string())?;
+    assert_eq!(field_span.trim_end_matches(';'), "field $value :param :reader = 1");
+
+    let method_span = method_span.ok_or_else(|| "method declaration was not preserved".to_string())?;
+    assert_eq!(
+        method_span,
+        "method get($fallback = 0) :lvalue { return $value // $fallback; }"
+    );
+
+    let adjust_span = adjust_span.ok_or_else(|| "ADJUST block was not preserved".to_string())?;
+    assert_eq!(adjust_span, "ADJUST { $value = 2; }");
     Ok(())
 }
 
 #[test]
 fn class_keywords_remain_ordinary_calls_outside_class_context() -> Result<(), String> {
-    let ast = parse_clean("field($outside); method($outside);")?;
-    let mut field_call = 0usize;
-    let mut method_call = 0usize;
+    let source = "field($outside); method($outside);";
+    let ast = parse_clean(source)?;
+    let mut field_calls = Vec::new();
+    let mut method_calls = Vec::new();
 
     walk(&ast, &mut |node| {
         if let NodeKind::FunctionCall { name, .. } = &node.kind {
             match name.as_str() {
-                "field" => field_call += 1,
-                "method" => method_call += 1,
+                "field" => {
+                    if let Some(text) = source_text(source, node) {
+                        field_calls.push(text);
+                    }
+                }
+                "method" => {
+                    if let Some(text) = source_text(source, node) {
+                        method_calls.push(text);
+                    }
+                }
                 _ => {}
             }
         }
     });
 
-    assert_eq!(field_call, 1, "field(...) outside a class must remain an ordinary call");
-    assert_eq!(method_call, 1, "method(...) outside a class must remain an ordinary call");
+    assert_eq!(field_calls, vec!["field($outside)"]);
+    assert_eq!(method_calls, vec!["method($outside)"]);
     Ok(())
 }
