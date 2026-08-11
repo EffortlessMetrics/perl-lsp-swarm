@@ -8427,7 +8427,7 @@ sub greet {
         super::workspace::classify_receiver(&context, code, provider.type_engine.as_ref());
     assert_eq!(evidence.package(), Some("Child"));
     let members = super::workspace::collect_all_package_members_with_source(
-        provider.workspace_index.as_ref().expect("test index"),
+        must_some(provider.workspace_index.as_ref()),
         "Child",
         code,
     );
