@@ -21,11 +21,7 @@ fn error_code(response: &Value, context: &str) -> Result<i64, String> {
 
 fn assert_error_code(response: &Value, expected: i64, context: &str) {
     let actual = error_code(response, context);
-    assert_eq!(
-        actual,
-        Ok(expected),
-        "{context}: unexpected error response {response:?}"
-    );
+    assert_eq!(actual, Ok(expected), "{context}: unexpected error response {response:?}");
 }
 
 #[test]
@@ -45,11 +41,7 @@ fn hover_before_initialize_returns_server_not_initialized() {
         }),
     );
 
-    assert_error_code(
-        &response,
-        -32002,
-        "textDocument/hover before initialize",
-    );
+    assert_error_code(&response, -32002, "textDocument/hover before initialize");
 }
 
 #[test]
@@ -133,10 +125,7 @@ fn requests_after_shutdown_return_invalid_request() {
             "params": null
         }),
     );
-    assert!(
-        shutdown.get("error").is_none(),
-        "initial shutdown should succeed: {shutdown:?}"
-    );
+    assert!(shutdown.get("error").is_none(), "initial shutdown should succeed: {shutdown:?}");
     assert_eq!(shutdown.get("result"), Some(&Value::Null));
 
     let after_shutdown = send_request(
