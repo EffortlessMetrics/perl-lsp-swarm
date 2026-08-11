@@ -85,11 +85,12 @@ describe('workspace experience presentation', () => {
 
     expect(presentation.mode).toBe('stopped');
     expect(presentation.background).toBe('error');
-    // The pre-experience-state widget ended this tooltip with "(click to
-    // restart)". A failed server is the one state where the click target is
-    // not a menu of options but the single repair, so the affordance must
-    // survive the projection through presentWorkspaceExperience.
-    expect(presentation.tooltip).toBe('Perl Language Server has stopped (click to restart)');
+    // The status-bar item opens the status menu, where Restart Server is one
+    // explicit action. The tooltip must not claim that the click invokes a
+    // direct restart.
+    expect(presentation.tooltip).toBe(
+      'Perl Language Server has stopped; choose Restart Server from the status menu (click for restart options)',
+    );
   });
 
   test('keeps the restart affordance when a failure carries diagnostic detail', () => {
