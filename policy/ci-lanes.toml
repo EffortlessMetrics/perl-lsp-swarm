@@ -286,7 +286,7 @@ duplicate_of = []
 [lane.droid_auto_review]
 description = "Paused historical Droid PR review lane; automatic execution is disabled."
 intent = "paused historical record"
-runner = "self_hosted_droid_review"
+runner = "ubuntu_24_04"
 base_lem = 0
 default_pr = false
 blocking = false
