@@ -56,6 +56,63 @@ fn classify_cli_rejects_non_v2_baseline() {
 }
 
 #[test]
+fn classify_cli_rejects_inconsistent_accepted_counts() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let out = dir.path().join("out.json");
+    let mut baseline = sample_v2_baseline(2, 2);
+    baseline.files_passed = 0;
+    write_json(&accepted, &baseline);
+    write_json(&compile, &sample_report(2, 2));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8 path"),
+            "--compile",
+            compile.to_str().expect("utf8 path"),
+            "--output",
+            out.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("internally inconsistent"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn classify_cli_creates_missing_output_directories() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let out = dir.path().join("artifacts").join("transitions").join("out.json");
+    write_json(&accepted, &sample_v2_baseline(1, 1));
+    write_json(&compile, &sample_report(1, 1));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8 path"),
+            "--compile",
+            compile.to_str().expect("utf8 path"),
+            "--output",
+            out.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        output.status.success(),
+        "classify failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out.is_file());
+}
+
+#[test]
 fn classify_cli_writes_regression_for_pass_to_fail() {
     let dir = tempdir().expect("tempdir");
     let accepted = dir.path().join("accepted.json");

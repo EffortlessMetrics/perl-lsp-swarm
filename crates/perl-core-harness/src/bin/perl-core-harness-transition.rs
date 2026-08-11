@@ -12,7 +12,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness::transition::{AcceptedBaseline, Classification, classify_transition};
 use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2,
-    RUN_REPORT_SCHEMA_VERSION, RunReport,
+    RUN_REPORT_SCHEMA_VERSION, RunReport, RunnerStatus,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;

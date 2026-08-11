@@ -14,13 +14,17 @@ struct ClassificationOutput {
 }
 
 fn classify_command(config: ClassifyConfig) -> Result<()> {
-    reject_output_aliases(&[config.accepted_baseline.clone(), config.compile.clone()], &config.output)?;
+    reject_output_aliases(
+        &[config.accepted_baseline.clone(), config.compile.clone()],
+        &config.output,
+    )?;
     let classification = classify_paths(&config.accepted_baseline, &config.compile)?;
     write_json(&config.output, &classification)
 }
 
 fn classify_paths(accepted_path: &Path, compile_path: &Path) -> Result<ClassificationOutput> {
     let accepted = read_accepted_baseline_v2(accepted_path)?;
+    validate_accepted_baseline_shape(&accepted)?;
     let compile: RunReport = read_json(compile_path, "compile observation")?;
     if compile.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!(
@@ -63,6 +67,23 @@ fn read_accepted_baseline_v2(path: &Path) -> Result<CompileBaselineV2> {
     serde_json::from_value(value).context("decoding accepted compile baseline v2")
 }
 
+fn validate_accepted_baseline_shape(accepted: &CompileBaselineV2) -> Result<()> {
+    let passed = accepted
+        .file_results
+        .iter()
+        .filter(|result| result.status == RunnerStatus::Pass)
+        .count();
+    let failed = accepted.file_results.len().saturating_sub(passed);
+    if accepted.files_total != accepted.file_results.len()
+        || accepted.files_passed != passed
+        || accepted.files_failed != failed
+        || accepted.files_passed.saturating_add(accepted.files_failed) != accepted.files_total
+    {
+        bail!("accepted ratchet file counts are internally inconsistent with file_results");
+    }
+    Ok(())
+}
+
 fn read_json<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading {label} {}", path.display()))?;
@@ -89,8 +110,33 @@ fn reject_output_aliases(inputs: &[PathBuf], output: &Path) -> Result<()> {
         if input == output {
             bail!("classification output aliases an input evidence file");
         }
+        // Unix hard links keep distinct pathnames after canonicalize; compare
+        // device/inode identity so classify cannot truncate evidence through an
+        // alias. Windows hard-link identity needs unstable `windows_by_handle`
+        // and remains a follow-up for this lean slice.
+        if same_unix_file(&input, &output)? {
+            bail!("classification output aliases an input evidence file");
+        }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn same_unix_file(left: &Path, right: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    if !left.exists() || !right.exists() {
+        return Ok(false);
+    }
+    let left_meta =
+        fs::metadata(left).with_context(|| format!("reading metadata for {}", left.display()))?;
+    let right_meta =
+        fs::metadata(right).with_context(|| format!("reading metadata for {}", right.display()))?;
+    Ok(left_meta.dev() == right_meta.dev() && left_meta.ino() == right_meta.ino())
+}
+
+#[cfg(not(unix))]
+fn same_unix_file(_left: &Path, _right: &Path) -> Result<bool> {
+    Ok(false)
 }
 
 fn resolve_destination(path: &Path) -> Result<PathBuf> {
@@ -112,6 +158,8 @@ fn resolve_destination(path: &Path) -> Result<PathBuf> {
     let file_name = absolute
         .file_name()
         .ok_or_else(|| color_eyre::eyre::eyre!("classification output path has no file name"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating output directory {}", parent.display()))?;
     let parent = fs::canonicalize(parent)
         .with_context(|| format!("canonicalizing output parent {}", parent.display()))?;
     Ok(parent.join(file_name))
