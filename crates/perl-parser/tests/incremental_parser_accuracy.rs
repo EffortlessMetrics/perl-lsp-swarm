@@ -119,21 +119,24 @@ fn collect_span_fingerprint(node: &Node, fingerprint: &mut Vec<(String, usize, u
     }
 }
 
-fn assert_ast_equivalent(incremental: &Node, fresh: &Node, context: &str) {
-    assert_eq!(
-        incremental.to_sexp(),
-        fresh.to_sexp(),
-        "incremental node shape diverged from fresh parse for {context}"
-    );
-
+fn assert_ast_equivalent(incremental: &Node, fresh: &Node, context: &str) -> TestResult {
+    if incremental.to_sexp() != fresh.to_sexp() {
+        return Err(format!(
+            "incremental node shape diverged from fresh parse for {context}"
+        )
+        .into());
+    }
     let mut incremental_spans = Vec::new();
     let mut fresh_spans = Vec::new();
     collect_span_fingerprint(incremental, &mut incremental_spans);
     collect_span_fingerprint(fresh, &mut fresh_spans);
-    assert_eq!(
-        incremental_spans, fresh_spans,
-        "incremental source geometry diverged from fresh parse for {context}"
-    );
+    if incremental_spans != fresh_spans {
+        return Err(format!(
+            "incremental source geometry diverged from fresh parse for {context}"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn assert_incremental_edit_matches_fresh(
@@ -150,18 +153,22 @@ fn assert_incremental_edit_matches_fresh(
     let incremental_ast = incremental.parse(&new_source)?;
 
     if require_reuse {
-        assert!(
-            incremental.reused_nodes > 0,
-            "{expectation_id}: edit should exercise incremental reuse rather than a full fallback"
-        );
-        assert!(
-            incremental.get_last_reuse_analysis().is_some(),
-            "{expectation_id}: edit must take the advanced incremental-reuse path"
-        );
+        if incremental.reused_nodes == 0 {
+            return Err(format!(
+                "{expectation_id}: edit should exercise incremental reuse rather than a full fallback"
+            )
+            .into());
+        }
+        if incremental.get_last_reuse_analysis().is_none() {
+            return Err(format!(
+                "{expectation_id}: edit must take the advanced incremental-reuse path"
+            )
+            .into());
+        }
     }
 
     let fresh_ast = Parser::new(&new_source).parse()?;
-    assert_ast_equivalent(&incremental_ast, &fresh_ast, expectation_id);
+    assert_ast_equivalent(&incremental_ast, &fresh_ast, expectation_id)?;
     Ok(fresh_ast)
 }
 
@@ -233,9 +240,11 @@ fn pure_insertion_edit_matches_fresh_parse() -> TestResult {
         false,
     )?;
 
-    assert!(contains_variable_declaration(&fresh_ast, "before"));
-    assert!(contains_variable_declaration(&fresh_ast, "value"));
-    assert!(contains_variable_declaration(&fresh_ast, "after"));
+    for name in ["before", "value", "after"] {
+        if !contains_variable_declaration(&fresh_ast, name) {
+            return Err(format!("fresh parse lost variable declaration {name}").into());
+        }
+    }
     Ok(())
 }
 
@@ -264,10 +273,18 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
         "my $after = 3;\n",
     );
     let before_ast = Parser::new(source).parse()?;
-    assert!(contains_division(&before_ast), "the pre-edit source must contain division");
-    assert!(!contains_match(&before_ast), "the pre-edit source must not contain a regex Match");
-    assert_eq!(source.matches('/').count(), 2);
-    assert!(source.contains("/ 2 /"));
+    if !contains_division(&before_ast) {
+        return Err("the pre-edit source must contain division".into());
+    }
+    if contains_match(&before_ast) {
+        return Err("the pre-edit source must not contain a regex Match".into());
+    }
+    if source.matches('/').count() != 2 {
+        return Err("the pre-edit source must contain exactly two slash tokens".into());
+    }
+    if !source.contains("/ 2 /") {
+        return Err("the pre-edit source must retain the original slash sequence".into());
+    }
 
     let mut incremental = IncrementalParserV2::new();
     incremental.parse(source)?;
@@ -286,11 +303,12 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
         "delete_obsolete_division_rhs_after_existing_slash",
     )?;
 
-    assert_eq!(final_source.matches('/').count(), 2);
-    assert!(
-        final_source.contains("$left =~ / 2 /"),
-        "both original slash tokens must survive the edit sequence"
-    );
+    if final_source.matches('/').count() != 2 {
+        return Err("the edited source must contain exactly two slash tokens".into());
+    }
+    if !final_source.contains("$left =~ / 2 /") {
+        return Err("both original slash tokens must survive the edit sequence".into());
+    }
 
     let incremental_ast = incremental.parse(&final_source)?;
     let fresh_ast = Parser::new(&final_source).parse()?;
@@ -298,16 +316,17 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
         &incremental_ast,
         &fresh_ast,
         "slash-preserving division-to-regex edit sequence",
-    );
-    assert!(
-        contains_match(&fresh_ast),
-        "the edited source must be reclassified as a regex Match expression"
-    );
-    assert!(
-        !contains_division(&fresh_ast),
-        "the edited source must not retain obsolete division nodes"
-    );
-    assert!(contains_variable_declaration(&fresh_ast, "before"));
-    assert!(contains_variable_declaration(&fresh_ast, "after"));
+    )?;
+    if !contains_match(&fresh_ast) {
+        return Err("the edited source must be reclassified as a regex Match expression".into());
+    }
+    if contains_division(&fresh_ast) {
+        return Err("the edited source must not retain obsolete division nodes".into());
+    }
+    for name in ["before", "after"] {
+        if !contains_variable_declaration(&fresh_ast, name) {
+            return Err(format!("edited parse lost variable declaration {name}").into());
+        }
+    }
     Ok(())
 }
