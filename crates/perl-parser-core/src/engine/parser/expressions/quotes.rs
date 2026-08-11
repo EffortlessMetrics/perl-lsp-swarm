@@ -539,6 +539,36 @@ impl<'a> Parser<'a> {
 }
 
 #[cfg(test)]
+mod unclosed_quote_tests {
+    use crate::Parser;
+
+    #[test]
+    fn all_balanced_quote_operators_report_operator_specific_unclosed_delimiters() {
+        let expectations = [
+            ("q(foo", "Unclosed q() delimiter: missing closing delimiter before end of file"),
+            ("qq(foo", "Unclosed qq() delimiter: missing closing delimiter before end of file"),
+            ("qw(foo", "Unclosed qw() delimiter: missing closing delimiter before end of file"),
+            ("qr(foo", "Unclosed qr() delimiter: missing closing delimiter before end of file"),
+            ("qx(foo", "Unclosed qx() delimiter: missing closing delimiter before end of file"),
+            ("m(foo", "Unclosed m() delimiter: missing closing delimiter before end of file"),
+            ("s(foo", "Unclosed s() delimiter: missing closing delimiter before end of file"),
+        ];
+
+        for (source, expected_message) in expectations {
+            let result = Parser::new(source).parse_with_recovery();
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == expected_message),
+                "{source:?} should report {expected_message:?}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod modifier_tests {
     use crate::Parser;
 
