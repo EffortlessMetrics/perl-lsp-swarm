@@ -89,6 +89,12 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
             format!("fixture `{}` should parse through the public parser API: {err}", fixture.id)
         })?;
         let observed = collect_observed_nodes(&ast, &source);
+        if *fixture_id == "quote_like" {
+            assert!(
+                !observed.iter().any(|node| node.kind == "Block"),
+                "fixture `quote_like` must not produce a spurious Block node"
+            );
+        }
 
         for expectation in &fixture.ast_expectations {
             assert_observed_expectation(&fixture.id, expectation, &observed);
