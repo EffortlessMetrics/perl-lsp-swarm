@@ -19,11 +19,23 @@ function errorText(error: unknown): string {
 }
 
 export function classifyHostResolutionError(error: unknown): HostResolutionDisposition {
-  const message = errorText(error).toLowerCase();
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+  const message = `${errorText(error)} ${code}`.toLowerCase();
   if (message.includes('cache')) {
     return 'cache';
   }
-  if (message.includes('network') || message.includes('econn') || message.includes('http')) {
+  if (
+    message.includes('network') ||
+    message.includes('econn') ||
+    message.includes('enotfound') ||
+    message.includes('http') ||
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('failed to download')
+  ) {
     return 'network';
   }
   if (message.includes('runner') || message.includes('spawn')) {
