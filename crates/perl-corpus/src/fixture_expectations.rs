@@ -248,8 +248,8 @@ pub fn validate_sidecar(
 ) -> SidecarValidation {
     let fixture_path =
         sidecar::expected_fixture_path(path).unwrap_or_else(|_| path.with_extension("pl"));
-    let registry = concept_registry
-        .map(|values| sidecar::ConceptRegistry::from_ids(values.iter().cloned()));
+    let registry =
+        concept_registry.map(|values| sidecar::ConceptRegistry::from_ids(values.iter().cloned()));
 
     let (errors, warnings) = match sidecar::parse_sidecar(path) {
         Ok(parsed) => {
@@ -259,12 +259,7 @@ pub fn validate_sidecar(
         Err(error) => (vec![error.to_string()], Vec::new()),
     };
 
-    SidecarValidation {
-        sidecar_path: path.to_path_buf(),
-        fixture_path,
-        errors,
-        warnings,
-    }
+    SidecarValidation { sidecar_path: path.to_path_buf(), fixture_path, errors, warnings }
 }
 
 /// Validate every discovered sidecar through the canonical authority.
@@ -336,8 +331,8 @@ spans = true
     }
 
     #[test]
-    fn direct_deserialization_and_file_parsing_share_canonical_authority(
-    ) -> Result<(), Box<dyn Error>> {
+    fn direct_deserialization_and_file_parsing_share_canonical_authority()
+    -> Result<(), Box<dyn Error>> {
         let canonical: sidecar::FixtureExpectationSidecar = toml::from_str(valid_toml())?;
         let adapter: FixtureExpectation = toml::from_str(valid_toml())?;
         assert_eq!(adapter, canonical.clone().into());
@@ -395,39 +390,23 @@ mode = "parse_clean"
     fn adapter_to_canonical_rejects_unrepresentable_legacy_states() {
         let without_concept = FixtureExpectation {
             concept: None,
-            expect: ExpectBlock {
-                panic: false,
-                timeout: false,
-                mode: ExpectationMode::ParseClean,
-            },
+            expect: ExpectBlock { panic: false, timeout: false, mode: ExpectationMode::ParseClean },
             metrics: None,
             snapshots: None,
         };
         assert!(sidecar::FixtureExpectationSidecar::try_from(without_concept).is_err());
 
         let partial_snapshots = FixtureExpectation {
-            concept: Some(ConceptInfo {
-                id: "parser.example".to_string(),
-                tier: "pr".to_string(),
-            }),
-            expect: ExpectBlock {
-                panic: false,
-                timeout: false,
-                mode: ExpectationMode::ParseClean,
-            },
+            concept: Some(ConceptInfo { id: "parser.example".to_string(), tier: "pr".to_string() }),
+            expect: ExpectBlock { panic: false, timeout: false, mode: ExpectationMode::ParseClean },
             metrics: None,
-            snapshots: Some(SnapshotBlock {
-                tokens: None,
-                ast: Some(true),
-                spans: Some(true),
-            }),
+            snapshots: Some(SnapshotBlock { tokens: None, ast: Some(true), spans: Some(true) }),
         };
         assert!(sidecar::FixtureExpectationSidecar::try_from(partial_snapshots).is_err());
     }
 
     #[test]
-    fn validation_uses_registry_semantics_from_canonical_authority(
-    ) -> Result<(), Box<dyn Error>> {
+    fn validation_uses_registry_semantics_from_canonical_authority() -> Result<(), Box<dyn Error>> {
         let temporary = tempfile::tempdir()?;
         let path = write_fixture_pair(temporary.path(), "case", valid_toml())?;
 

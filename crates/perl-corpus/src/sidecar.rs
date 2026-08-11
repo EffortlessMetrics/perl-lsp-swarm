@@ -339,10 +339,8 @@ mode = "{mode}"
         let unknown_mode = minimal_sidecar_toml("parser.example", "unknown");
         assert!(parse_sidecar_str(&unknown_mode).is_err());
 
-        let unknown_field = format!(
-            "{}\nextra = true\n",
-            minimal_sidecar_toml("parser.example", "parse_clean")
-        );
+        let unknown_field =
+            format!("{}\nextra = true\n", minimal_sidecar_toml("parser.example", "parse_clean"));
         assert!(parse_sidecar_str(&unknown_field).is_err());
     }
 
