@@ -28,6 +28,7 @@ use perl_corpus::snapshot::{
     SOURCE_HASH_ALGORITHM, SnapshotEntry, SnapshotManifest, source_hash,
 };
 use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -52,6 +53,7 @@ pub fn run(args: GenerateSemanticSnapshotArgs) -> Result<()> {
         bail!("No .pl fixture files found in {}", args.fixture_dir.display());
     }
 
+    validate_output_separation(&args.fixture_dir, &fixtures, &args.output)?;
     let fresh_entries = compute_snapshot_entries(&args.fixture_dir, &fixtures)?;
 
     if args.check {
@@ -95,10 +97,7 @@ fn collect_fixtures(root: &Path) -> Result<Vec<PathBuf>> {
             let file_type = entry
                 .file_type()
                 .with_context(|| format!("reading fixture type for {}", path.display()))?;
-            let is_perl_fixture = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"));
+            let is_perl_fixture = is_perl_fixture_path(&path);
 
             if file_type.is_symlink() {
                 bail!("Snapshot fixture symlink is unsupported: {}", path.display());
@@ -119,6 +118,134 @@ fn collect_fixtures(root: &Path) -> Result<Vec<PathBuf>> {
 
     paths.sort();
     Ok(paths)
+}
+
+fn is_perl_fixture_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"))
+}
+
+/// Reject output paths that could overwrite or become part of the fixture authority.
+fn validate_output_separation(root: &Path, fixtures: &[PathBuf], output: &Path) -> Result<()> {
+    let output_metadata = match fs::symlink_metadata(output) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading snapshot output metadata {}", output.display()));
+        }
+    };
+
+    if output_metadata.as_ref().is_some_and(|metadata| metadata.file_type().is_symlink()) {
+        bail!("Snapshot output symlink is unsupported: {}", output.display());
+    }
+    if output_metadata.as_ref().is_some_and(|metadata| !metadata.is_file()) {
+        bail!("Snapshot output is not a regular file: {}", output.display());
+    }
+
+    let canonical_root = fs::canonicalize(root)
+        .with_context(|| format!("canonicalizing fixture root {}", root.display()))?;
+    let normalized_output = normalize_output_path(output, output_metadata.is_some())?;
+
+    if normalized_output.starts_with(&canonical_root) && is_perl_fixture_path(&normalized_output) {
+        bail!(
+            "Snapshot output would enter the .pl fixture population: {}",
+            output.display()
+        );
+    }
+
+    for fixture in fixtures {
+        let canonical_fixture = fs::canonicalize(fixture)
+            .with_context(|| format!("canonicalizing fixture {}", fixture.display()))?;
+        if normalized_output == canonical_fixture {
+            bail!("Snapshot output aliases fixture: {}", fixture.display());
+        }
+
+        if let Some(output_metadata) = output_metadata.as_ref() {
+            let fixture_metadata = fs::metadata(fixture)
+                .with_context(|| format!("reading fixture metadata {}", fixture.display()))?;
+            if same_file_identity(output_metadata, &fixture_metadata) {
+                bail!("Snapshot output hard-links fixture: {}", fixture.display());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
+    if exists {
+        return fs::canonicalize(path)
+            .with_context(|| format!("canonicalizing snapshot output {}", path.display()));
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("reading current directory for snapshot output")?
+            .join(path)
+    };
+    let mut cursor = absolute.as_path();
+    let mut missing_tail = Vec::<OsString>::new();
+
+    loop {
+        match fs::canonicalize(cursor) {
+            Ok(mut canonical) => {
+                for component in missing_tail.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = cursor.file_name().ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "cannot normalize snapshot output path {}",
+                        path.display()
+                    )
+                })?;
+                missing_tail.push(component.to_os_string());
+                cursor = cursor.parent().ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "snapshot output has no existing ancestor: {}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("canonicalizing snapshot output {}", path.display()));
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    match (
+        (left.volume_serial_number(), left.file_index()),
+        (right.volume_serial_number(), right.file_index()),
+    ) {
+        ((Some(left_volume), Some(left_index)), (Some(right_volume), Some(right_index))) => {
+            left_volume == right_volume && left_index == right_index
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    false
 }
 
 /// Run `lower_ast()` over each fixture and compute one `SnapshotEntry` per file.
@@ -175,15 +302,22 @@ fn lower_source(source: &str) -> HirFile {
 /// Excludes raw source offsets (which change on whitespace edits) so that
 /// semantics-preserving formatting changes do not cause snapshot drift.
 fn summarize_hir(file: &HirFile) -> HirSummary {
-    let item_kind_sequence: Vec<String> =
-        file.items.iter().map(|item| item_kind_name(&item.kind).to_string()).collect();
+    let item_kind_sequence: Vec<String> = file
+        .items
+        .iter()
+        .map(|item| item_kind_name(&item.kind).to_string())
+        .collect();
 
     let item_count = item_kind_sequence.len();
     let scope_count = file.scope_graph.scopes.len();
     let binding_count = file.scope_graph.bindings.len();
     let package_count = file.stash_graph.packages.len();
-    let slot_count: usize =
-        file.stash_graph.packages.iter().map(|package| package.slots.len()).sum();
+    let slot_count: usize = file
+        .stash_graph
+        .packages
+        .iter()
+        .map(|package| package.slots.len())
+        .sum();
     let directive_count = file.compile_environment.directives.len();
     let module_request_count = file.compile_environment.module_requests.len();
     let dynamic_boundary_count = file.compile_environment.dynamic_boundaries.len();
@@ -279,9 +413,7 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
         .with_context(|| format!("reading snapshot manifest {}", snapshot_path.display()))?;
     let header: serde_json::Value =
         serde_json::from_str(&json).context("parsing snapshot schema header")?;
-    let Some(recorded_schema) =
-        header.get("schema").and_then(serde_json::Value::as_str)
-    else {
+    let Some(recorded_schema) = header.get("schema").and_then(serde_json::Value::as_str) else {
         bail!("Snapshot manifest is missing a string schema discriminator");
     };
     if recorded_schema != SNAPSHOT_SCHEMA {
@@ -399,13 +531,16 @@ mod tests {
         path
     }
 
-    fn generate_snapshot(fixture_dir: &Path, output: &Path) {
+    fn generate_snapshot_result(fixture_dir: &Path, output: &Path) -> Result<()> {
         run(GenerateSemanticSnapshotArgs {
             fixture_dir: fixture_dir.to_path_buf(),
             output: output.to_path_buf(),
             check: false,
         })
-        .expect("generate snapshot");
+    }
+
+    fn generate_snapshot(fixture_dir: &Path, output: &Path) {
+        generate_snapshot_result(fixture_dir, output).expect("generate snapshot");
     }
 
     fn check_snapshot(fixture_dir: &Path, output: &Path) -> Result<()> {
@@ -439,6 +574,69 @@ mod tests {
         assert_eq!(entry.fixture_id, "minimal.pl");
         assert_eq!(entry.source_hash, source_hash(source));
         assert!(entry.hir_summary.item_count > 0, "expected HIR items from non-trivial source");
+    }
+
+    #[test]
+    fn output_cannot_overwrite_a_fixture_directly() {
+        let temporary = TempDir::new().expect("tempdir");
+        let fixture_dir = temporary.path().join("fixtures");
+        let fixture = write_fixture(&fixture_dir, "source.pl", "my $value = 1;\n");
+        let original = fs::read(&fixture).expect("read fixture before generate");
+
+        let error = generate_snapshot_result(&fixture_dir, &fixture)
+            .expect_err("fixture path must not be accepted as output");
+        assert!(
+            error.to_string().contains("fixture population")
+                || error.to_string().contains("aliases fixture"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
+    }
+
+    #[test]
+    fn output_cannot_create_a_new_perl_fixture() {
+        let temporary = TempDir::new().expect("tempdir");
+        let fixture_dir = temporary.path().join("fixtures");
+        write_fixture(&fixture_dir, "source.pl", "1;\n");
+        let output = fixture_dir.join("snapshot.pl");
+
+        let error = generate_snapshot_result(&fixture_dir, &output)
+            .expect_err("new .pl output must not enter the measured population");
+        assert!(error.to_string().contains("fixture population"), "unexpected error: {error}");
+        assert!(!output.exists(), "rejected output must not be created");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_symlink_cannot_target_a_fixture() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TempDir::new().expect("tempdir");
+        let fixture_dir = temporary.path().join("fixtures");
+        let fixture = write_fixture(&fixture_dir, "source.pl", "1;\n");
+        let original = fs::read(&fixture).expect("read fixture before generate");
+        let output = temporary.path().join("snapshot.json");
+        symlink(&fixture, &output).expect("create output symlink");
+
+        let error = generate_snapshot_result(&fixture_dir, &output)
+            .expect_err("symlinked output must fail closed");
+        assert!(error.to_string().contains("symlink is unsupported"), "unexpected error: {error}");
+        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
+    }
+
+    #[test]
+    fn output_hard_link_cannot_alias_a_fixture() {
+        let temporary = TempDir::new().expect("tempdir");
+        let fixture_dir = temporary.path().join("fixtures");
+        let fixture = write_fixture(&fixture_dir, "source.pl", "1;\n");
+        let original = fs::read(&fixture).expect("read fixture before generate");
+        let output = temporary.path().join("snapshot.json");
+        fs::hard_link(&fixture, &output).expect("create output hard link");
+
+        let error = generate_snapshot_result(&fixture_dir, &output)
+            .expect_err("hard-linked output must fail closed");
+        assert!(error.to_string().contains("hard-links fixture"), "unexpected error: {error}");
+        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
     }
 
     #[test]
