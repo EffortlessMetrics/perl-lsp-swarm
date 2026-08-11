@@ -166,13 +166,24 @@ fn test_arrow_hash_subscript_key_qw() {
     assert_clean_parse("$ref->{qw};");
 }
 
-// Regression for #2724: at EOF there is no second token, so a quote-operator
-// name in a hash subscript must remain a bareword instead of being re-read as
-// the start of a quote expression.
+// Regression for #2724: with the hash subscript truncated at EOF,
+// peek_second() has no token and the quote-operator name must still be
+// consumed as a bareword before recovery inserts the missing close.
 #[test]
 fn test_hash_subscript_quote_operator_names_at_eof() {
     for name in ["m", "s", "q", "qq", "qw", "qr", "qx", "tr", "y"] {
-        assert_clean_parse(&format!("$h{{{name}}}"));
+        let source = format!("$h{{{name}");
+        let mut parser = perl_parser_core::Parser::new(&source);
+        let ast = parser.parse().expect("recovery parse should return an AST");
+        assert!(
+            !parser.get_errors().is_empty(),
+            "truncated hash subscript must retain a recovery diagnostic: {source}"
+        );
+        assert!(
+            contains_string_node(&ast, name),
+            "quote-op hash key should remain a string node at EOF: {source}\n{}",
+            ast.to_sexp()
+        );
     }
 }
 
@@ -181,4 +192,9 @@ fn test_hash_subscript_quote_operator_names_at_eof() {
 #[test]
 fn test_hash_subscript_qw_expression_at_eof() {
     assert_clean_parse("$h{qw(foo)}");
+}
+
+fn contains_string_node(node: &perl_parser_core::Node, value: &str) -> bool {
+    matches!(&node.kind, perl_parser_core::NodeKind::String { value: found, .. } if found == value)
+        || node.children().iter().any(|child| contains_string_node(child, value))
 }
