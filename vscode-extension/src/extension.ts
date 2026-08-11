@@ -2182,9 +2182,7 @@ function startWatchdog(): void {
     let watchdogTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        languageClientLifecycle.client?.sendRequest('workspace/symbol', {
-          query: '__perl_lsp_watchdog__',
-        }),
+        languageClientLifecycle.client?.sendRequest('$/perl-lsp/watchdog'),
         new Promise((_, reject) => {
           watchdogTimeout = setTimeout(
             () => reject(new Error('watchdog timeout')),
