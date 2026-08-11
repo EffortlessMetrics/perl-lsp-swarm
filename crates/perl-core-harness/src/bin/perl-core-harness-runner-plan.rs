@@ -19,14 +19,11 @@ mod build;
 #[path = "../runner_plan/compare.rs"]
 mod compare;
 
-use build::{build_runner_plan, validate_runner_plan};
+use build::{build_runner_plan, validate_runner_plan, validate_runner_plan_against};
 use color_eyre::eyre::{Context, Result, bail};
-use compare::{compare_runner_plans, validate_runner_parity};
+use compare::{compare_runner_plans_against, validate_runner_parity_against};
 use io::read_matrix;
-use runner_model::{
-    RUNNER_PARITY_SCHEMA_VERSION, RUNNER_PLAN_SCHEMA_VERSION, RunnerKind,
-    RunnerParityReport, RunnerPlan, RunnerScheduling,
-};
+use runner_model::{RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling};
 use serde::Serialize;
 use std::env;
 use std::ffi::OsString;
@@ -42,7 +39,8 @@ fn main() -> Result<()> {
     match command.to_string_lossy().as_ref() {
         "build" => build_command(args.collect()),
         "compare" => compare_command(args.collect()),
-        "check" => check_command(args.collect()),
+        "check-plan" => check_plan_command(args.collect()),
+        "check-parity" => check_parity_command(args.collect()),
         other => bail!("unsupported command {other}; {}", usage()),
     }
 }
@@ -59,8 +57,7 @@ fn build_command(args: Vec<OsString>) -> Result<()> {
     let output_path = PathBuf::from(&args[4]);
     let scheduling = parse_scheduling(&args[5..])?;
     let matrix = read_matrix(&matrix_path)?;
-    let raw = fs::read(&discovery_path)
-        .with_context(|| format!("reading {}", discovery_path.display()))?;
+    let raw = read_bytes(&discovery_path)?;
     let plan = build_runner_plan(&matrix, &target_id, runner, &raw, scheduling)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     write_json(&output_path, &plan)?;
@@ -74,14 +71,23 @@ fn build_command(args: Vec<OsString>) -> Result<()> {
 }
 
 fn compare_command(args: Vec<OsString>) -> Result<()> {
-    if args.len() != 3 {
+    if args.len() != 6 {
         bail!(usage());
     }
-    let left = read_plan(Path::new(&args[0]))?;
-    let right = read_plan(Path::new(&args[1]))?;
-    let output = PathBuf::from(&args[2]);
-    let report = compare_runner_plans(&left, &right)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let matrix = read_matrix(Path::new(&args[0]))?;
+    let left = read_plan(Path::new(&args[1]))?;
+    let left_raw = read_bytes(Path::new(&args[2]))?;
+    let right = read_plan(Path::new(&args[3]))?;
+    let right_raw = read_bytes(Path::new(&args[4]))?;
+    let output = PathBuf::from(&args[5]);
+    let report = compare_runner_plans_against(
+        &matrix,
+        &left,
+        &left_raw,
+        &right,
+        &right_raw,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     write_json(&output, &report)?;
     println!(
         "runner parity valid: target={} status={:?}",
@@ -90,34 +96,39 @@ fn compare_command(args: Vec<OsString>) -> Result<()> {
     Ok(())
 }
 
-fn check_command(args: Vec<OsString>) -> Result<()> {
-    if args.len() != 1 {
+fn check_plan_command(args: Vec<OsString>) -> Result<()> {
+    if args.len() != 3 {
         bail!(usage());
     }
-    let path = PathBuf::from(&args[0]);
-    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decoding {}", path.display()))?;
-    let schema = value
-        .get("schema_version")
-        .and_then(serde_json::Value::as_str)
-        .context("receipt has no string schema_version")?
-        .to_string();
-    match schema.as_str() {
-        RUNNER_PLAN_SCHEMA_VERSION => {
-            let plan: RunnerPlan = serde_json::from_value(value)
-                .with_context(|| format!("decoding runner plan {}", path.display()))?;
-            validate_runner_plan(&plan).map_err(|error| color_eyre::eyre::eyre!(error))?;
-        }
-        RUNNER_PARITY_SCHEMA_VERSION => {
-            let report: RunnerParityReport = serde_json::from_value(value)
-                .with_context(|| format!("decoding runner parity {}", path.display()))?;
-            validate_runner_parity(&report)
-                .map_err(|error| color_eyre::eyre::eyre!(error))?;
-        }
-        other => bail!("unsupported runner receipt schema {other}"),
+    let matrix = read_matrix(Path::new(&args[0]))?;
+    let raw = read_bytes(Path::new(&args[1]))?;
+    let plan = read_plan(Path::new(&args[2]))?;
+    validate_runner_plan_against(&matrix, &raw, &plan)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    println!("runner plan authority valid: {}", Path::new(&args[2]).display());
+    Ok(())
+}
+
+fn check_parity_command(args: Vec<OsString>) -> Result<()> {
+    if args.len() != 6 {
+        bail!(usage());
     }
-    println!("runner receipt valid: {}", path.display());
+    let matrix = read_matrix(Path::new(&args[0]))?;
+    let left = read_plan(Path::new(&args[1]))?;
+    let left_raw = read_bytes(Path::new(&args[2]))?;
+    let right = read_plan(Path::new(&args[3]))?;
+    let right_raw = read_bytes(Path::new(&args[4]))?;
+    validate_runner_plan_against(&matrix, &left_raw, &left)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    validate_runner_plan_against(&matrix, &right_raw, &right)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let report = read_parity(Path::new(&args[5]))?;
+    validate_runner_parity_against(&report, &left, &right)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    println!(
+        "runner parity authority valid: {}",
+        Path::new(&args[5]).display()
+    );
     Ok(())
 }
 
@@ -166,12 +177,22 @@ fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
     Ok(scheduling)
 }
 
+fn read_bytes(path: &Path) -> Result<Vec<u8>> {
+    fs::read(path).with_context(|| format!("reading {}", path.display()))
+}
+
 fn read_plan(path: &Path) -> Result<RunnerPlan> {
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let bytes = read_bytes(path)?;
     let plan: RunnerPlan = serde_json::from_slice(&bytes)
         .with_context(|| format!("decoding runner plan {}", path.display()))?;
     validate_runner_plan(&plan).map_err(|error| color_eyre::eyre::eyre!(error))?;
     Ok(plan)
+}
+
+fn read_parity(path: &Path) -> Result<RunnerParityReport> {
+    let bytes = read_bytes(path)?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding runner parity {}", path.display()))
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -185,7 +206,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <left-plan> <right-plan> <output> | check <receipt>"
+    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <output> | check-plan <matrix> <raw-discovery> <plan> | check-parity <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <parity-report>"
 }
 
 #[cfg(test)]
