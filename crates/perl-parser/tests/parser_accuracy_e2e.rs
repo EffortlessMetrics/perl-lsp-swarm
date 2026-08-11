@@ -48,6 +48,7 @@ const E2E_FIXTURES: &[&str] = &[
     "regex_match",
     "slash_ambiguity",
     "control_flow_core",
+    "method_call",
     "dynamic_require_boundary",
     "heredoc_basic",
     "post_error_package_sub_recovery",
