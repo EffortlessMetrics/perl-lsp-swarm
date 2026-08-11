@@ -14,7 +14,8 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -40,6 +41,7 @@ pub struct RealProcessClient {
     stdin: Option<BufWriter<ChildStdin>>,
     events: Receiver<ProcessEvent>,
     pending: VecDeque<Value>,
+    event_overflow: Arc<AtomicBool>,
     stderr_lines: Arc<Mutex<VecDeque<String>>>,
     stdout_thread: Option<JoinHandle<()>>,
     stderr_thread: Option<JoinHandle<()>>,
@@ -74,28 +76,62 @@ impl RealProcessClient {
             .spawn()
             .with_context(|| format!("spawn exact candidate {}", candidate_path.display()))?;
 
-        let stdin = child.stdin.take().ok_or_else(|| anyhow!("candidate stdin was not piped"))?;
-        let stdout = child.stdout.take().ok_or_else(|| anyhow!("candidate stdout was not piped"))?;
-        let stderr = child.stderr.take().ok_or_else(|| anyhow!("candidate stderr was not piped"))?;
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                terminate_child(&mut child);
+                bail!("candidate stdin was not piped")
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                terminate_child(&mut child);
+                bail!("candidate stdout was not piped")
+            }
+        };
+        let stderr = match child.stderr.take() {
+            Some(stderr) => stderr,
+            None => {
+                terminate_child(&mut child);
+                bail!("candidate stderr was not piped")
+            }
+        };
 
         let (event_tx, events) = mpsc::sync_channel(EVENT_CAPACITY);
-        let stdout_thread = std::thread::Builder::new()
+        let event_overflow = Arc::new(AtomicBool::new(false));
+        let stdout_overflow = Arc::clone(&event_overflow);
+        let stdout_thread = match std::thread::Builder::new()
             .name("lsp-exact-stdout".to_string())
-            .spawn(move || read_stdout(stdout, event_tx))
-            .context("spawn strict stdout reader")?;
+            .spawn(move || read_stdout(stdout, event_tx, &stdout_overflow))
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                terminate_child(&mut child);
+                return Err(error).context("spawn strict stdout reader");
+            }
+        };
 
         let stderr_lines = Arc::new(Mutex::new(VecDeque::new()));
         let stderr_sink = Arc::clone(&stderr_lines);
-        let stderr_thread = std::thread::Builder::new()
+        let stderr_thread = match std::thread::Builder::new()
             .name("lsp-exact-stderr".to_string())
             .spawn(move || drain_stderr(stderr, &stderr_sink))
-            .context("spawn stderr reader")?;
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                terminate_child(&mut child);
+                let _ = stdout_thread.join();
+                return Err(error).context("spawn stderr reader");
+            }
+        };
 
         Ok(Self {
             child,
             stdin: Some(BufWriter::new(stdin)),
             events,
             pending: VecDeque::new(),
+            event_overflow,
             stderr_lines,
             stdout_thread: Some(stdout_thread),
             stderr_thread: Some(stderr_thread),
@@ -121,7 +157,10 @@ impl RealProcessClient {
     /// Send an already encoded byte sequence to the candidate stdin.
     pub fn send_raw_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         ensure!(!self.finished, "cannot write after candidate exit");
-        let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("candidate stdin is closed"))?;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("candidate stdin is closed"))?;
         stdin.write_all(bytes).context("write candidate stdin")?;
         stdin.flush().context("flush candidate stdin")
     }
@@ -169,7 +208,12 @@ impl RealProcessClient {
 
     /// Wait for a response to a request that was sent through a raw frame.
     pub fn receive_response(&mut self, id: &Value, timeout: Duration) -> Result<Value> {
-        if let Some(index) = self.pending.iter().position(|message| is_response_for(message, id)) {
+        self.ensure_event_queue_intact()?;
+        if let Some(index) = self
+            .pending
+            .iter()
+            .position(|message| is_response_for(message, id))
+        {
             return self
                 .pending
                 .remove(index)
@@ -178,6 +222,7 @@ impl RealProcessClient {
 
         let deadline = Instant::now() + timeout;
         loop {
+            self.ensure_event_queue_intact()?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 bail!(
@@ -193,7 +238,10 @@ impl RealProcessClient {
                 }
                 Ok(ProcessEvent::Message(message)) => self.push_pending(message)?,
                 Ok(ProcessEvent::ProtocolError(error)) => {
-                    bail!("candidate stdout protocol error: {error}; stderr={}", self.stderr_tail())
+                    bail!(
+                        "candidate stdout protocol error: {error}; stderr={}",
+                        self.stderr_tail()
+                    )
                 }
                 Ok(ProcessEvent::Eof) => {
                     bail!(
@@ -209,7 +257,10 @@ impl RealProcessClient {
                     )
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    bail!("candidate stdout reader disconnected; stderr={}", self.stderr_tail())
+                    bail!(
+                        "candidate stdout reader disconnected; stderr={}",
+                        self.stderr_tail()
+                    )
                 }
             }
         }
@@ -234,6 +285,7 @@ impl RealProcessClient {
     pub fn wait_for_exit(&mut self, timeout: Duration) -> Result<ExitStatus> {
         let deadline = Instant::now() + timeout;
         loop {
+            self.ensure_event_queue_intact()?;
             if let Some(status) = self.child.try_wait().context("poll candidate exit")? {
                 self.finished = true;
                 self.stdin.take();
@@ -253,17 +305,21 @@ impl RealProcessClient {
 
     /// Drain terminal reader events and fail if stdout ever stopped being a strict frame stream.
     pub fn assert_transport_clean(&mut self) -> Result<()> {
+        self.ensure_event_queue_intact()?;
         loop {
             match self.events.try_recv() {
                 Ok(ProcessEvent::Message(message)) => self.push_pending(message)?,
                 Ok(ProcessEvent::ProtocolError(error)) => {
-                    bail!("candidate stdout protocol error: {error}; stderr={}", self.stderr_tail())
+                    bail!(
+                        "candidate stdout protocol error: {error}; stderr={}",
+                        self.stderr_tail()
+                    )
                 }
                 Ok(ProcessEvent::Eof) => {}
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             }
         }
-        Ok(())
+        self.ensure_event_queue_intact()
     }
 
     /// Bounded stderr tail for failure receipts.
@@ -281,6 +337,15 @@ impl RealProcessClient {
         Ok(())
     }
 
+    fn ensure_event_queue_intact(&self) -> Result<()> {
+        ensure!(
+            !self.event_overflow.load(Ordering::Acquire),
+            "bounded candidate stdout event queue overflowed; stderr={}",
+            self.stderr_tail()
+        );
+        Ok(())
+    }
+
     fn finish_reader_threads(&mut self) {
         if let Some(thread) = self.stdout_thread.take() {
             let _ = thread.join();
@@ -292,13 +357,7 @@ impl RealProcessClient {
 
     fn force_cleanup(&mut self) {
         self.stdin.take();
-        match self.child.try_wait() {
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-            }
-        }
+        terminate_child(&mut self.child);
         self.finished = true;
         self.finish_reader_threads();
     }
@@ -323,24 +382,37 @@ fn is_response_for(message: &Value, id: &Value) -> bool {
     is_response(message) && message.get("id") == Some(id)
 }
 
-fn read_stdout(stdout: ChildStdout, sender: SyncSender<ProcessEvent>) {
+fn read_stdout(
+    stdout: ChildStdout,
+    sender: SyncSender<ProcessEvent>,
+    overflow: &AtomicBool,
+) {
     let mut reader = BufReader::new(stdout);
     loop {
-        match read_frame(&mut reader) {
-            Ok(Some(message)) => {
-                if sender.send(ProcessEvent::Message(message)).is_err() {
-                    return;
-                }
-            }
-            Ok(None) => {
-                let _ = sender.send(ProcessEvent::Eof);
-                return;
-            }
-            Err(error) => {
-                let _ = sender.send(ProcessEvent::ProtocolError(error.to_string()));
-                return;
-            }
+        let event = match read_frame(&mut reader) {
+            Ok(Some(message)) => ProcessEvent::Message(message),
+            Ok(None) => ProcessEvent::Eof,
+            Err(error) => ProcessEvent::ProtocolError(error.to_string()),
+        };
+        let terminal = matches!(event, ProcessEvent::ProtocolError(_) | ProcessEvent::Eof);
+        if !try_publish_event(&sender, overflow, event) || terminal {
+            return;
         }
+    }
+}
+
+fn try_publish_event(
+    sender: &SyncSender<ProcessEvent>,
+    overflow: &AtomicBool,
+    event: ProcessEvent,
+) -> bool {
+    match sender.try_send(event) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            overflow.store(true, Ordering::Release);
+            false
+        }
+        Err(TrySendError::Disconnected(_)) => false,
     }
 }
 
@@ -350,7 +422,9 @@ fn read_frame(reader: &mut dyn BufRead) -> Result<Option<Value>> {
 
     loop {
         let mut line = String::new();
-        let read = reader.read_line(&mut line).context("read candidate stdout header")?;
+        let read = reader
+            .read_line(&mut line)
+            .context("read candidate stdout header")?;
         if read == 0 {
             return Ok(None);
         }
@@ -371,24 +445,40 @@ fn read_frame(reader: &mut dyn BufRead) -> Result<Option<Value>> {
         let name = name.trim();
         let value = value.trim();
         if name.eq_ignore_ascii_case("Content-Length") {
-            ensure!(content_length.is_none(), "duplicate Content-Length header from candidate");
+            ensure!(
+                content_length.is_none(),
+                "duplicate Content-Length header from candidate"
+            );
             let parsed = value
                 .parse::<usize>()
                 .with_context(|| format!("invalid Content-Length value {value:?}"))?;
-            ensure!(parsed <= MAX_FRAME_BYTES, "candidate frame exceeded {MAX_FRAME_BYTES} bytes");
+            ensure!(
+                parsed <= MAX_FRAME_BYTES,
+                "candidate frame exceeded {MAX_FRAME_BYTES} bytes"
+            );
             content_length = Some(parsed);
         } else if !name.eq_ignore_ascii_case("Content-Type") {
-            bail!("unexpected candidate stdout header {name:?}; stdout must contain LSP frames only");
+            bail!(
+                "unexpected candidate stdout header {name:?}; stdout must contain LSP frames only"
+            );
         }
     }
 
     let length = content_length.ok_or_else(|| anyhow!("candidate frame omitted Content-Length"))?;
     let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).context("read candidate stdout frame body")?;
+    reader
+        .read_exact(&mut body)
+        .context("read candidate stdout frame body")?;
     let message: Value = serde_json::from_slice(&body).with_context(|| {
-        format!("candidate emitted non-JSON frame body: {:?}", String::from_utf8_lossy(&body))
+        format!(
+            "candidate emitted non-JSON frame body: {:?}",
+            String::from_utf8_lossy(&body)
+        )
     })?;
-    ensure!(message.is_object(), "candidate emitted non-object JSON-RPC message: {message}");
+    ensure!(
+        message.is_object(),
+        "candidate emitted non-object JSON-RPC message: {message}"
+    );
     Ok(Some(message))
 }
 
@@ -399,13 +489,25 @@ fn drain_stderr(stderr: std::process::ChildStderr, sink: &Arc<Mutex<VecDeque<Str
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => return,
             Ok(_) => {
-                let line = line.trim_end_matches(|ch| ch == '\r' || ch == '\n').to_string();
+                let line = line
+                    .trim_end_matches(|ch| ch == '\r' || ch == '\n')
+                    .to_string();
                 let mut lines = lock_lines(sink);
                 if lines.len() == STDERR_CAPACITY {
                     lines.pop_front();
                 }
                 lines.push_back(line);
             }
+        }
+    }
+}
+
+fn terminate_child(child: &mut Child) {
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
