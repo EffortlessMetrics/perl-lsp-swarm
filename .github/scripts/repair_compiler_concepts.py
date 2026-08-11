@@ -180,12 +180,11 @@ replace_once(
 }
 
 fn valid_concept_segment(value: &str) -> bool {
-    let Some(first) = value.bytes().next() else {
+    let bytes = value.as_bytes();
+    let Some(&first) = bytes.first() else {
         return false;
     };
-    let Some(last) = value.bytes().next_back() else {
-        return false;
-    };
+    let last = bytes.last().copied().unwrap_or(first);
     let is_boundary = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
     is_boundary(first)
         && is_boundary(last)
