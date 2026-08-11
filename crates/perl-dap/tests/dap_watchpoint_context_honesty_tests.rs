@@ -136,7 +136,10 @@ fn context_free_compatibility_path_is_preserved() -> TestResult {
 
     assert_eq!(body.get("dataId").and_then(Value::as_str), Some("$value"));
     assert_eq!(
-        body.get("accessTypes").and_then(Value::as_array).and_then(|items| items.first()).and_then(Value::as_str),
+        body.get("accessTypes")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(Value::as_str),
         Some("write")
     );
     Ok(())

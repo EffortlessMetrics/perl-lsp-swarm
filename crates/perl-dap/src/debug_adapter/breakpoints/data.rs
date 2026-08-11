@@ -243,11 +243,7 @@ mod tests {
         variables_reference: Option<i64>,
         frame_id: Option<i64>,
     ) -> DataBreakpointInfoArguments {
-        DataBreakpointInfoArguments {
-            name: "$value".to_string(),
-            variables_reference,
-            frame_id,
-        }
+        DataBreakpointInfoArguments { name: "$value".to_string(), variables_reference, frame_id }
     }
 
     #[test]
