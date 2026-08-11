@@ -520,7 +520,6 @@ mod tests {
         assert!(error.to_string().contains("escapes the profile roots"));
     }
 
-
     const PINNED_MANIFEST_JSON: &str = r#"{
   "schema_version": "perl_core_harness.comparison_series.v1",
   "series_id": "series-fixture-1",
