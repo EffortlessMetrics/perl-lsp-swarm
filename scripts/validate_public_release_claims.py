@@ -83,7 +83,8 @@ def validate_claims(catalog: dict[str, Any]) -> None:
         status = claim.get("status")
         _require(status in {"proven", "bounded", "blocked", "not_proven"}, f"{name}.status is invalid")
         _require(claim.get("public_context") in {"swarm", "publication", "both"}, f"{name}.public_context is invalid")
-        limitation = claim.get("limitation")
+        _require("limitation" in claim, f"{name}.limitation is required")
+        limitation = claim["limitation"]
         if status in STATUS_REQUIRING_LIMITATION:
             _require(isinstance(limitation, str) and limitation.strip(), f"{name}.{status} requires a limitation")
         elif limitation is not None:
