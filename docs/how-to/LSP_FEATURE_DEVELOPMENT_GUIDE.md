@@ -14,7 +14,7 @@ Current evidence and policy surfaces:
 
 - [features.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/features.toml)
 - [LSP status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/lsp.md)
-- [LSP development route](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md)
+- [architecture reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md)
 - [verification protocol](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/protocols/verification.md)
 
 This compatibility page does not establish coverage, latency, readiness, or package ownership.
