@@ -836,8 +836,20 @@ fn test_unclosed_non_parenthesized_qw_keeps_existing_behavior() -> Result<(), St
     let NodeKind::Program { statements } = &ast.kind else {
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
-    if statements.len() != 1 {
-        return Err(format!("non-parenthesized qw recovery behavior changed: {}", ast.to_sexp()));
+    if statements.len() != 2
+        || !matches!(
+            statements.first().map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+        || !matches!(
+            statements.get(1).map(|node| &node.kind),
+            Some(NodeKind::VariableDeclaration { .. })
+        )
+    {
+        return Err(format!(
+            "non-parenthesized qw recovery lost trailing declaration: {}",
+            ast.to_sexp()
+        ));
     }
     let errors = format!("{:?}", parser.errors());
     if !errors.contains("Unclosed qw() delimiter: missing closing delimiter before end of file")
