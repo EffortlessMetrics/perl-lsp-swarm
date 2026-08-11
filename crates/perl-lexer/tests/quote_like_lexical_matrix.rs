@@ -1,9 +1,8 @@
-//! Lexer-owned matrix for currently supported Perl quote-like operators.
+//! Lexer-owned matrix for supported Perl quote-like operators.
 //!
 //! This suite owns recognition, whole-token geometry, context suppression, and
 //! malformed terminal behavior. Parser AST structure and regex semantics remain
-//! separate contracts under #6692 and #2075. Forms without a reviewed Perl
-//! version oracle are deliberately not promoted into this matrix.
+//! separate contracts under #6692 and #2075.
 
 use perl_lexer::{PerlLexer, Token, TokenType};
 
@@ -36,8 +35,14 @@ impl ExpectedKind {
     }
 }
 
-fn missing(message: &'static str) -> Box<dyn std::error::Error> {
-    std::io::Error::other(message).into()
+#[derive(Debug, Clone, Copy)]
+enum SuppressedKind {
+    Identifier,
+    Keyword,
+}
+
+fn missing(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    std::io::Error::other(message.into()).into()
 }
 
 fn next(lexer: &mut PerlLexer<'_>, message: &'static str) -> R<Token> {
@@ -48,18 +53,38 @@ fn collect(input: &str) -> Vec<Token> {
     PerlLexer::new(input).collect_tokens()
 }
 
-fn is_quote_like(token_type: &TokenType) -> bool {
-    matches!(
-        token_type,
-        TokenType::QuoteSingle
-            | TokenType::QuoteDouble
-            | TokenType::QuoteWords
-            | TokenType::QuoteCommand
-            | TokenType::QuoteRegex
-            | TokenType::RegexMatch
-            | TokenType::Substitution
-            | TokenType::Transliteration
-    )
+fn assert_suppressed_token(
+    source: &str,
+    tokens: &[Token],
+    text: &str,
+    expected: SuppressedKind,
+) -> R {
+    let matches = tokens
+        .iter()
+        .filter(|token| token.text.as_ref() == text)
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(missing(format!(
+            "expected one suppressed {text:?} token in {source:?}, got {}",
+            matches.len()
+        )));
+    }
+    let token = matches[0];
+    match expected {
+        SuppressedKind::Identifier => assert!(
+            matches!(&token.token_type, TokenType::Identifier(name) if name.as_ref() == text),
+            "suppressed {text:?} had type {:?}",
+            token.token_type
+        ),
+        SuppressedKind::Keyword => assert!(
+            matches!(&token.token_type, TokenType::Keyword(name) if name.as_ref() == text),
+            "suppressed {text:?} had type {:?}",
+            token.token_type
+        ),
+    }
+    assert_eq!(source.get(token.start..token.end), Some(text));
+    assert!(!token.token_type.is_recovery_token());
+    Ok(())
 }
 
 #[test]
@@ -74,6 +99,7 @@ fn every_operator_family_owns_exact_whole_token_geometry() -> R {
         ("qr/pat+/imsx", ExpectedKind::QuoteRegex),
         ("m|pat|", ExpectedKind::RegexMatch),
         ("s/a/b/g", ExpectedKind::Substitution),
+        ("s /old/new/", ExpectedKind::Substitution),
         ("s'foo'bar'", ExpectedKind::Substitution),
         ("s[old][new]", ExpectedKind::Substitution),
         ("tr/a-z/A-Z/cd", ExpectedKind::Transliteration),
@@ -97,67 +123,92 @@ fn every_operator_family_owns_exact_whole_token_geometry() -> R {
             token.token_type
         );
         assert_eq!(token.text.as_ref(), lexeme, "whole-token text for {lexeme:?}");
-        assert_eq!(token.start, 0, "whole-token start for {lexeme:?}");
-        assert_eq!(token.end, lexeme.len(), "whole-token end for {lexeme:?}");
+        assert_eq!((token.start, token.end), (0, lexeme.len()));
         assert!(source.is_char_boundary(token.end));
 
         let separator = next(&mut lexer, "missing token after quote-like operator")?;
         assert!(matches!(&separator.token_type, TokenType::Semicolon));
-        assert_eq!(separator.start, lexeme.len());
-        assert_eq!(separator.end, lexeme.len() + 1);
+        assert_eq!((separator.start, separator.end), (lexeme.len(), lexeme.len() + 1));
     }
     Ok(())
 }
 
 #[test]
-fn bare_operator_names_remain_identifiers_without_a_delimiter() -> R {
+fn bare_reserved_operator_names_without_delimiters_are_source_anchored_errors() -> R {
     for name in ["q", "qq", "qw", "qx", "qr", "m", "s", "tr", "y"] {
         let mut lexer = PerlLexer::new(name);
-        let token = next(&mut lexer, "missing bare operator-name token")?;
+        let token = next(&mut lexer, "missing bare quote-operator error")?;
         assert!(
-            matches!(&token.token_type, TokenType::Identifier(identifier) if identifier.as_ref() == name),
-            "bare {name:?} must remain an identifier, got {:?}",
+            matches!(&token.token_type, TokenType::Error(message) if message.contains("delimiter")),
+            "bare {name:?} must be a missing-delimiter error, got {:?}",
             token.token_type
         );
-        assert_eq!(token.start, 0);
-        assert_eq!(token.end, name.len());
+        assert_eq!(token.text.as_ref(), name);
+        assert_eq!((token.start, token.end), (0, name.len()));
+
+        let eof = next(&mut lexer, "missing EOF after bare quote-operator error")?;
+        assert!(matches!(&eof.token_type, TokenType::EOF));
+        assert_eq!((eof.start, eof.end), (name.len(), name.len()));
+        assert!(lexer.next_token().is_none());
     }
     Ok(())
 }
 
 #[test]
-fn hash_keys_methods_fat_arrows_and_file_tests_suppress_quote_operators() {
-    let contexts = [
-        "$h{q} + $h{qq} + $h{m} + $h{s} + $h{tr} + $h{y};",
-        "$obj->q(); $obj->m(); $obj->s(); $obj->tr(); $obj->y();",
-        "q => 1; s => 2; tr => 3; y => 4;",
-        "-s 'path';",
-    ];
-
-    for source in contexts {
-        let tokens = collect(source);
-        assert!(
-            !tokens.iter().any(|token| is_quote_like(&token.token_type)),
-            "context must suppress quote-like promotion for {source:?}: {tokens:?}"
-        );
+fn hash_keys_methods_fat_arrows_and_file_tests_have_exact_suppressed_identity() -> R {
+    let hash_source = "$h{q} + $h{qq} + $h{m} + $h{s} + $h{tr} + $h{y};";
+    let hash_tokens = collect(hash_source);
+    for name in ["q", "qq"] {
+        assert_suppressed_token(hash_source, &hash_tokens, name, SuppressedKind::Identifier)?;
     }
+    for name in ["m", "s", "tr", "y"] {
+        assert_suppressed_token(hash_source, &hash_tokens, name, SuppressedKind::Keyword)?;
+    }
+
+    for (source, name) in [
+        ("$obj->q();", "q"),
+        ("$obj->qq();", "qq"),
+        ("$obj->qw();", "qw"),
+        ("$obj->qx();", "qx"),
+        ("$obj->qr();", "qr"),
+        ("$obj->m();", "m"),
+        ("$obj->s();", "s"),
+        ("$obj->tr();", "tr"),
+        ("$obj->y();", "y"),
+    ] {
+        assert_suppressed_token(source, &collect(source), name, SuppressedKind::Keyword)?;
+    }
+
+    for (source, name) in [
+        ("q => 1;", "q"),
+        ("qq => 1;", "qq"),
+        ("qw => 1;", "qw"),
+        ("qx => 1;", "qx"),
+        ("qr => 1;", "qr"),
+        ("m => 1;", "m"),
+        ("s => 1;", "s"),
+        ("tr => 1;", "tr"),
+        ("y => 1;", "y"),
+    ] {
+        assert_suppressed_token(source, &collect(source), name, SuppressedKind::Identifier)?;
+    }
+
+    let file_test = "-s 'path';";
+    assert_suppressed_token(file_test, &collect(file_test), "s", SuppressedKind::Identifier)?;
+    Ok(())
 }
 
 #[test]
-fn quote_words_remains_enabled_inside_a_hash_slice() {
-    let tokens = collect("@h{qw/a b c/};");
-    assert!(tokens.iter().any(|token| matches!(&token.token_type, TokenType::QuoteWords)));
+fn quote_words_remains_enabled_inside_a_hash_slice() -> R {
+    let source = "@h{qw/a b c/};";
+    let tokens = collect(source);
+    let quote = tokens
+        .iter()
+        .find(|token| token.text.as_ref() == "qw/a b c/")
+        .ok_or_else(|| missing("missing quote-words token inside hash slice"))?;
+    assert!(matches!(&quote.token_type, TokenType::QuoteWords));
+    assert_eq!(source.get(quote.start..quote.end), Some("qw/a b c/"));
     assert!(!tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)));
-}
-
-#[test]
-fn spaced_slash_is_not_a_substitution_delimiter() -> R {
-    let mut lexer = PerlLexer::new("s /old/new/");
-    let first = next(&mut lexer, "missing spaced-s token")?;
-    assert!(
-        matches!(&first.token_type, TokenType::Identifier(identifier) if identifier.as_ref() == "s")
-    );
-    assert!(!matches!(&first.token_type, TokenType::Substitution));
     Ok(())
 }
 
@@ -180,13 +231,11 @@ fn malformed_forms_emit_one_source_anchored_error_then_eof() -> R {
             token.token_type
         );
         assert_eq!(token.text.as_ref(), source);
-        assert_eq!(token.start, 0);
-        assert_eq!(token.end, source.len());
+        assert_eq!((token.start, token.end), (0, source.len()));
 
         let eof = next(&mut lexer, "missing EOF after malformed quote-like token")?;
         assert!(matches!(&eof.token_type, TokenType::EOF));
-        assert_eq!(eof.start, source.len());
-        assert_eq!(eof.end, source.len());
+        assert_eq!((eof.start, eof.end), (source.len(), source.len()));
         assert!(lexer.next_token().is_none());
     }
     Ok(())
@@ -203,8 +252,7 @@ fn multiline_unicode_and_all_line_endings_preserve_byte_extent() -> R {
         let token = next(&mut lexer, "missing multiline quote token")?;
         assert!(matches!(&token.token_type, TokenType::QuoteDouble));
         assert_eq!(token.text.as_ref(), lexeme);
-        assert_eq!(token.start, 0);
-        assert_eq!(token.end, lexeme.len());
+        assert_eq!((token.start, token.end), (0, lexeme.len()));
         assert!(lexeme.is_char_boundary(token.end));
     }
     Ok(())
