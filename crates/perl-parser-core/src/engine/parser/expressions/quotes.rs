@@ -538,6 +538,39 @@ impl<'a> Parser<'a> {
 }
 
 #[cfg(test)]
+mod unclosed_quote_tests {
+    use crate::Parser;
+
+    #[test]
+    fn all_balanced_quote_operators_report_unclosed_delimiters() {
+        for source in ["q(foo", "qq(foo", "qw(foo", "qr(foo", "qx(foo", "m(foo", "s(foo"] {
+            let result = Parser::new(source).parse_with_recovery();
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("Unclosed")),
+                "{source:?} should report an unclosed delimiter: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn qw_keeps_its_compatibility_diagnostic() {
+        let result = Parser::new("qw(foo").parse_with_recovery();
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message
+                    == "Unclosed qw() delimiter: missing closing delimiter before end of file"
+            }),
+            "expected the established qw diagnostic: {:?}",
+            result.diagnostics
+        );
+    }
+}
+
+#[cfg(test)]
 mod modifier_tests {
     use crate::Parser;
 
