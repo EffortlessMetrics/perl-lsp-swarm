@@ -12,7 +12,11 @@ mod tests {
         let ast = parse_code(input).expect("source should parse");
         match ast.kind {
             NodeKind::Program { mut statements } => {
-                statements.drain(..).next().expect("expected one statement")
+                let statement = statements.drain(..).next().expect("expected one statement");
+                match statement.kind {
+                    NodeKind::ExpressionStatement { expression } => *expression,
+                    _ => statement,
+                }
             }
             other => panic!("Expected Program node, got {other:?}"),
         }
