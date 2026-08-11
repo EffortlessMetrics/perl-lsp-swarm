@@ -1,32 +1,32 @@
 # Project Orientation
 
-> For the documentation hub, see [README.md](../README.md). This page is a stable orientation for active contributors, not a live status report.
+> For the documentation hub, see [README.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/README.md). This page is a stable orientation for active contributors, not a live status report.
 
-> **Current-state rule**: Use [CURRENT_STATUS.md](CURRENT_STATUS.md), the [roadmap](ROADMAP.md), and the [release status](status/release.md) for current claims. This page intentionally avoids duplicating release metrics and issue counts.
+> **Current-state rule**: Use [CURRENT_STATUS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md), the [roadmap](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md), and the [release status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/release.md) for current claims. This page intentionally avoids duplicating release metrics and issue counts.
 
 ## You Are Here
 
 perl-lsp is a Rust workspace for Perl parsing, semantic analysis, LSP, and native DAP support.
 
-The current shipped line and evidence-backed subsystem status live in [CURRENT_STATUS.md](CURRENT_STATUS.md). Capability truth lives in [features.toml](../../features.toml), and exact workspace membership lives in the root [Cargo.toml](../../Cargo.toml).
+The current shipped line and evidence-backed subsystem status live in [CURRENT_STATUS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md). Capability truth lives in [features.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/features.toml), and exact workspace membership lives in the root [Cargo.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml).
 
 ## Read These First
 
-1. [Current Status](CURRENT_STATUS.md) — shipped line and evidence routes
-2. [Roadmap](ROADMAP.md) — plans, exit criteria, and deferrals
-3. [Documentation Index](../INDEX.md) — routes by task and document type
-4. [Contributing Guide](../../CONTRIBUTING.md) — contribution workflow
-5. [Commands Reference](../reference/COMMANDS_REFERENCE.md) — build, test, and CI commands
-6. [Architecture Reference](../reference/ARCHITECTURE.md) — current ownership seams
-7. [LSP Development Guide](../tutorials/LSP_DEVELOPMENT_GUIDE.md) — contributor workflow, with current claims verified against code and tests
+1. [Current Status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md) — shipped line and evidence routes
+2. [Roadmap](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md) — plans, exit criteria, and deferrals
+3. [Documentation Index](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md) — routes by task and document type
+4. [Contributing Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md) — contribution workflow
+5. [Commands Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md) — build, test, and CI commands
+6. [Architecture Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md) — current ownership seams
+7. [LSP Development Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md) — contributor workflow, with current claims verified against code and tests
 
 ## Current Focus
 
 Do not infer priorities from this page. Start with the active milestone and release blockers:
 
-- [ROADMAP.md](ROADMAP.md)
-- [status/index.md](status/index.md)
-- [status/release.md](status/release.md)
+- [ROADMAP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md)
+- [status/index.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/index.md)
+- [status/release.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/release.md)
 - GitHub milestones and issues
 
 Recurring work may include parser corpus coverage, LSP conformance, DAP preview hardening, distribution packaging, and merge-gate health; the linked sources determine which of those is active.
@@ -72,7 +72,7 @@ cargo fmt --all -- --check
 cargo xtask fmt --check
 ```
 
-Check the [Commands Reference](../reference/COMMANDS_REFERENCE.md) and repository contribution instructions before using broader or release-specific gates.
+Check the [Commands Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md) and repository contribution instructions before using broader or release-specific gates.
 
 ## Where to Start a Change
 
@@ -89,6 +89,6 @@ Use the package README and the relevant issue/spec as the local contract before 
 
 ## Help and Verification
 
-For user setup, use the installation and troubleshooting guides in [docs/INDEX.md](../INDEX.md). For contributor changes, follow [CONTRIBUTING.md](../../CONTRIBUTING.md), preserve claim boundaries, and record proof in the PR.
+For user setup, use the installation and troubleshooting guides in [docs/INDEX.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md). For contributor changes, follow [CONTRIBUTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md), preserve claim boundaries, and record proof in the PR.
 
 This page is intentionally an orientation map. It does not establish parser coverage, latency, stability, release readiness, or “production-ready” claims.
