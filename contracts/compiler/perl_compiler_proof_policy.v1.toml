@@ -1,0 +1,364 @@
+schema_version = "perl_compiler_proof_policy.v1"
+policy_id = "perl_compiler_proof_policy_seed_v1"
+controller_issue = "#6689"
+concept_ledger_schema = "perl_compiler_concepts.v1"
+coverage_scope = "Closed proof-class, composition-dimension, and campaign vocabulary for the current compiler concept programme."
+claim_boundary = "This policy defines admissible proof shapes. It does not satisfy any concept obligation or authorize provider promotion."
+complete = false
+
+[[proof_classes]]
+class_id = "positive_gold"
+purpose = "Independently authored expected facts for supported positive behavior."
+authority = "independent_gold"
+claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim"
+owner_issue = "#4760"
+
+[[proof_classes]]
+class_id = "negative_gold"
+purpose = "Changed-shape and near-miss expectations that reject false semantic matches."
+authority = "independent_gold"
+claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim"
+owner_issue = "#4760"
+
+[[proof_classes]]
+class_id = "boundary_gold"
+purpose = "Expected typed dynamic, unsupported, capability, or source-lock boundaries."
+authority = "independent_gold"
+claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim"
+owner_issue = "#4770"
+
+[[proof_classes]]
+class_id = "recovery_gold"
+purpose = "Retained-tree, range, confidence, and fail-closed expectations for malformed or incomplete source."
+authority = "independent_gold"
+claim_stages = ["parser", "body_hir", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim"
+owner_issue = "#5238"
+
+[[proof_classes]]
+class_id = "hir_snapshot"
+purpose = "Deterministic flat/body HIR node, child, source-map, and authority evidence."
+authority = "compiler_snapshot"
+claim_stages = ["flat_hir", "body_hir"]
+circular_output_allowed = true
+missing_effect = "blocks_stage"
+owner_issue = "#5214"
+
+[[proof_classes]]
+class_id = "pir_snapshot"
+purpose = "Deterministic PIR-A operation, place, context, edge, anchor, and boundary evidence."
+authority = "compiler_snapshot"
+claim_stages = ["pir_a"]
+circular_output_allowed = true
+missing_effect = "blocks_stage"
+owner_issue = "#2277"
+
+[[proof_classes]]
+class_id = "verifier_mutation"
+purpose = "One-defect mutations proving PIR-A and EIR invariants fail closed."
+authority = "mutation_fixture"
+claim_stages = ["pir_a", "eir", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim"
+owner_issue = "#2277"
+
+[[proof_classes]]
+class_id = "effects_world_fixture"
+purpose = "Source-order, cross-file identity, generation, and invalidation proof for compiler effects and world state."
+authority = "independent_fixture"
+claim_stages = ["effects_world", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim"
+owner_issue = "#4810"
+
+[[proof_classes]]
+class_id = "eir_differential"
+purpose = "Profile-stamped deterministic execution compared with the declared reference behavior."
+authority = "eir_differential"
+claim_stages = ["eir"]
+circular_output_allowed = false
+missing_effect = "blocks_execution_claim"
+owner_issue = "#4779"
+
+[[proof_classes]]
+class_id = "real_perl_oracle"
+purpose = "Hermetic real-Perl comparison for safely observable semantic behavior."
+authority = "real_perl_oracle"
+claim_stages = ["effects_world", "eir", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim_when_observable"
+owner_issue = "#4767"
+
+[[proof_classes]]
+class_id = "composition_coverage"
+purpose = "Bounded pairwise and named higher-order interaction proof across concept dimensions."
+authority = "composition_harness"
+claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
+circular_output_allowed = false
+missing_effect = "blocks_claim"
+owner_issue = "#6689"
+
+[[dimensions]]
+dimension_id = "value_context"
+values = ["scalar", "list", "void", "unknown"]
+owner_issue = "#2275"
+claim_boundary = "Boolean is scalar context plus truth demand, not a fifth value context."
+
+[[dimensions]]
+dimension_id = "evaluation_demand"
+values = ["value", "truth", "definedness"]
+owner_issue = "#2275"
+claim_boundary = "Truth and definedness demand remain distinct."
+
+[[dimensions]]
+dimension_id = "access_mode"
+values = ["read", "write", "read_modify_write", "alias", "localize"]
+owner_issue = "#2275"
+claim_boundary = "Access mode is independent from value context."
+
+[[dimensions]]
+dimension_id = "storage_class"
+values = ["lexical", "package", "state", "localized", "element", "slice", "glob", "tied", "magical"]
+owner_issue = "#6659"
+claim_boundary = "Storage identity and lifetime must not collapse into spelling."
+
+[[dimensions]]
+dimension_id = "evaluation_order"
+values = ["left_to_right", "short_circuit", "condition_then_arm", "register_then_unwind", "unknown"]
+owner_issue = "#2017"
+claim_boundary = "HIR preorder is not execution order."
+
+[[dimensions]]
+dimension_id = "evaluate_once"
+values = ["required", "not_applicable", "unknown"]
+owner_issue = "#4847"
+claim_boundary = "Selectors, receivers, and computed places cannot be duplicated by lowering."
+
+[[dimensions]]
+dimension_id = "control_flow"
+values = ["straight", "branch", "loop", "postfix_modifier", "return", "loop_transfer", "goto", "exception", "dynamic_exit"]
+owner_issue = "#2347"
+claim_boundary = "Ordinary, terminal, and dynamic exits remain distinct."
+
+[[dimensions]]
+dimension_id = "exception_flow"
+values = ["none", "caught", "uncaught", "rethrow", "cleanup", "dynamic"]
+owner_issue = "#6661"
+claim_boundary = "Exceptional successors cannot be represented as ordinary fallthrough."
+
+[[dimensions]]
+dimension_id = "phase"
+values = ["runtime", "begin", "unitcheck", "check", "init", "end"]
+owner_issue = "#6664"
+claim_boundary = "Encounter order, compile schedule, and lifecycle execution are separate."
+
+[[dimensions]]
+dimension_id = "compile_state"
+values = ["strict", "warnings", "feature", "version", "include_roots", "imports", "constants", "prototypes", "dynamic"]
+owner_issue = "#4810"
+claim_boundary = "Recording an effect does not prove source-ordered application."
+
+[[dimensions]]
+dimension_id = "module_order"
+values = ["same_file", "static_use", "static_require", "runtime_require", "scc", "stale_dependency"]
+owner_issue = "#2425"
+claim_boundary = "Compile-time and runtime dependency edges must not collapse."
+
+[[dimensions]]
+dimension_id = "call_syntax"
+values = ["parenthesized", "bare", "ampersand", "arrow", "indirect", "core_qualified"]
+owner_issue = "#5242"
+claim_boundary = "Surface syntax is independent from dispatch semantics."
+
+[[dimensions]]
+dimension_id = "dispatch_kind"
+values = ["named_sub", "coderef", "method", "builtin", "list_operator", "dynamic"]
+owner_issue = "#5242"
+claim_boundary = "Dispatch identity and syntax remain orthogonal."
+
+[[dimensions]]
+dimension_id = "argument_context"
+values = ["scalar", "list", "void", "alias", "block", "implicit", "unknown"]
+owner_issue = "#5242"
+claim_boundary = "Each argument position may carry a distinct context/access contract."
+
+[[dimensions]]
+dimension_id = "prototype_contract"
+values = ["ordinary", "visible_prototype", "ampersand_bypass", "builtin", "unknown"]
+owner_issue = "#4819"
+claim_boundary = "Prototype visibility and bypass behavior are source/phase ordered."
+
+[[dimensions]]
+dimension_id = "operator_family"
+values = ["arithmetic", "string", "comparison", "bitwise", "logical", "defined_or", "range", "sequence", "smartmatch", "overloaded"]
+owner_issue = "#6658"
+claim_boundary = "Operator spelling alone does not prove primitive semantics."
+
+[[dimensions]]
+dimension_id = "implicit_topic"
+values = ["explicit_operand", "implicit_topic", "localized_topic", "aliased_topic", "unknown"]
+owner_issue = "#6666"
+claim_boundary = "Omitted, implicit, and unknown operands are separate states."
+
+[[dimensions]]
+dimension_id = "match_state"
+values = ["none", "captures", "named_captures", "position", "clobbered", "dynamic"]
+owner_issue = "#6666"
+claim_boundary = "Regex operations can read and overwrite hidden interpreter state."
+
+[[dimensions]]
+dimension_id = "feature_state"
+values = ["enabled", "disabled", "version_mismatch", "deprecated", "recovered"]
+owner_issue = "#6674"
+claim_boundary = "Parse success does not prove semantic enablement."
+
+[[dimensions]]
+dimension_id = "package_scope"
+values = ["current_package", "qualified_package", "nested_package", "dynamic_package", "stale_package"]
+owner_issue = "#6668"
+claim_boundary = "Package identity and runtime stash mutation remain distinct."
+
+[[dimensions]]
+dimension_id = "aliasing"
+values = ["none", "binding_alias", "element_alias", "slice_alias", "glob_slot_alias", "dynamic"]
+owner_issue = "#6659"
+claim_boundary = "Aliasing must be explicit rather than inferred from writes."
+
+[[dimensions]]
+dimension_id = "localization"
+values = ["none", "lexical_scope", "package_value", "glob", "topic", "exception_state", "unknown"]
+owner_issue = "#6659"
+claim_boundary = "Localization carries save/restore obligations, not ordinary assignment."
+
+[[dimensions]]
+dimension_id = "dynamic_boundary"
+values = ["none", "operation", "place", "container", "package", "module_world", "host"]
+owner_issue = "#4770"
+claim_boundary = "Boundary impact must be narrowed to the strongest supported scope."
+
+[[dimensions]]
+dimension_id = "source_region"
+values = ["perl_code", "format_body", "data_payload", "end_payload", "recovery_region"]
+owner_issue = "#6675"
+claim_boundary = "Non-code source regions must not leak into ordinary Perl traversal."
+
+[[dimensions]]
+dimension_id = "io_capability"
+values = ["none", "declared_fixture", "filesystem", "stream", "process", "network", "host_unknown"]
+owner_issue = "#6679"
+claim_boundary = "Static analysis cannot silently acquire host IO authority."
+
+[[dimensions]]
+dimension_id = "lifecycle"
+values = ["none", "registration", "active", "teardown", "destruction", "unknown"]
+owner_issue = "#6683"
+claim_boundary = "Registration, active state, teardown, and destruction are separate obligations."
+
+[[dimensions]]
+dimension_id = "hidden_effect"
+values = ["none", "bounded_call", "place_mutation", "container_mutation", "package_mutation", "host", "unknown"]
+owner_issue = "#6683"
+claim_boundary = "Ordinary-looking operations may invoke hidden calls or mutations."
+
+[[dimensions]]
+dimension_id = "cleanup"
+values = ["none", "finally", "defer", "localization_restore", "destructor", "unknown"]
+owner_issue = "#6661"
+claim_boundary = "Cleanup obligations must be attached to every relevant exit path."
+
+[[dimensions]]
+dimension_id = "recovery_state"
+values = ["clean", "recovered", "missing", "malformed", "ambiguous"]
+owner_issue = "#5238"
+claim_boundary = "Recovered syntax and exact semantic eligibility remain distinct."
+
+[[dimensions]]
+dimension_id = "object_dispatch"
+values = ["direct", "inherited", "qualified", "super", "autoload", "dynamic", "missing"]
+owner_issue = "#6672"
+claim_boundary = "Static lookup, bounded candidates, missing results, and dynamic dispatch remain distinct."
+
+[[dimensions]]
+dimension_id = "inheritance"
+values = ["none", "single", "multiple", "role_composition", "dynamic", "cycle"]
+owner_issue = "#4818"
+claim_boundary = "Inheritance order, composition, cycles, and dynamic mutation require separate proof."
+
+[[dimensions]]
+dimension_id = "result_shape"
+values = ["scalar", "list", "key_value_list", "lvalue_list", "void", "unknown"]
+owner_issue = "#5244"
+claim_boundary = "Value-list, key/value-list, and lvalue-list results cannot collapse."
+
+[[dimensions]]
+dimension_id = "incremental_edit"
+values = ["unchanged", "body_only", "interface_change", "source_boundary_change", "rename", "delete", "stale"]
+owner_issue = "#5241"
+claim_boundary = "Edit class determines invalidation scope and stale-evidence rejection."
+
+[[dimensions]]
+dimension_id = "perl_version"
+values = ["declared_current", "compatible", "older", "newer", "experimental", "unknown"]
+owner_issue = "#4826"
+claim_boundary = "Version-specific syntax and behavior require exact version identity."
+
+[[dimensions]]
+dimension_id = "value_shape"
+values = ["undef", "number", "string", "version", "list", "array", "hash", "reference", "code", "unknown"]
+owner_issue = "#6658"
+claim_boundary = "Static value shape must not imply runtime coercion or execution."
+
+[[campaigns]]
+campaign_id = "core_values_context_order"
+concept_families = ["operators", "values", "places"]
+dimensions = ["value_context", "evaluation_demand", "access_mode", "evaluation_order", "evaluate_once", "operator_family", "dynamic_boundary"]
+proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "hir_snapshot", "pir_snapshot", "verifier_mutation", "real_perl_oracle", "composition_coverage"]
+owner_issue = "#6689"
+claim_boundary = "Covers value/place behavior without implying EIR execution."
+
+[[campaigns]]
+campaign_id = "declarations_control_exceptions"
+concept_families = ["declarations", "control", "exceptions"]
+dimensions = ["storage_class", "access_mode", "aliasing", "localization", "control_flow", "exception_flow", "evaluation_order", "cleanup", "lifecycle"]
+proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "recovery_gold", "hir_snapshot", "pir_snapshot", "verifier_mutation", "real_perl_oracle", "composition_coverage"]
+owner_issue = "#6689"
+claim_boundary = "Stage advances remain distinct from executed cleanup/runtime behavior."
+
+[[campaigns]]
+campaign_id = "calls_context_prototypes"
+concept_families = ["calls", "context"]
+dimensions = ["call_syntax", "dispatch_kind", "argument_context", "prototype_contract", "value_context", "evaluation_order", "dynamic_boundary"]
+proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "hir_snapshot", "pir_snapshot", "verifier_mutation", "real_perl_oracle", "composition_coverage"]
+owner_issue = "#6689"
+claim_boundary = "Structural call normalization and runtime dispatch proof remain separate."
+
+[[campaigns]]
+campaign_id = "regex_topic_hidden_state"
+concept_families = ["regex", "control"]
+dimensions = ["implicit_topic", "match_state", "value_context", "evaluation_demand", "access_mode", "dynamic_boundary"]
+proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "hir_snapshot", "pir_snapshot", "verifier_mutation", "real_perl_oracle", "composition_coverage"]
+owner_issue = "#6689"
+claim_boundary = "Capture and topic state cannot be inferred from regex syntax alone."
+
+[[campaigns]]
+campaign_id = "phases_modules_effects"
+concept_families = ["phases", "namespaces", "objects"]
+dimensions = ["phase", "compile_state", "module_order", "package_scope", "feature_state", "dynamic_boundary", "inheritance", "object_dispatch"]
+proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "effects_world_fixture", "real_perl_oracle", "composition_coverage"]
+owner_issue = "#6689"
+claim_boundary = "Recorded facts, applied state, and runtime phase execution remain separate."
+
+[[campaigns]]
+campaign_id = "source_regions_incremental"
+concept_families = ["source", "formats"]
+dimensions = ["source_region", "package_scope", "io_capability", "feature_state", "dynamic_boundary", "incremental_edit", "recovery_state"]
+proof_classes = ["positive_gold", "negative_gold", "boundary_gold", "recovery_gold", "hir_snapshot", "effects_world_fixture", "real_perl_oracle", "composition_coverage"]
+owner_issue = "#6689"
+claim_boundary = "Source preservation and runtime access capability are independent claims."

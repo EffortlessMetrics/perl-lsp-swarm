@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.com/schemas/perl_compiler_proof_policy.v1.schema.json",
+  "title": "Perl compiler proof policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "controller_issue",
+    "concept_ledger_schema",
+    "coverage_scope",
+    "claim_boundary",
+    "complete",
+    "proof_classes",
+    "dimensions",
+    "campaigns"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "perl_compiler_proof_policy.v1"
+    },
+    "policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "controller_issue": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "concept_ledger_schema": {
+      "const": "perl_compiler_concepts.v1"
+    },
+    "coverage_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "proof_classes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/proof_class"
+      }
+    },
+    "dimensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/dimension"
+      }
+    },
+    "campaigns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/campaign"
+      }
+    }
+  },
+  "$defs": {
+    "issue": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "claim_stage": {
+      "enum": [
+        "parser",
+        "flat_hir",
+        "body_hir",
+        "pir_a",
+        "effects_world",
+        "eir",
+        "provider"
+      ]
+    },
+    "authority": {
+      "enum": [
+        "independent_gold",
+        "compiler_snapshot",
+        "mutation_fixture",
+        "independent_fixture",
+        "eir_differential",
+        "real_perl_oracle",
+        "composition_harness"
+      ]
+    },
+    "missing_effect": {
+      "enum": [
+        "blocks_claim",
+        "blocks_stage",
+        "blocks_execution_claim",
+        "blocks_claim_when_observable"
+      ]
+    },
+    "proof_class": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class_id",
+        "purpose",
+        "authority",
+        "claim_stages",
+        "circular_output_allowed",
+        "missing_effect",
+        "owner_issue"
+      ],
+      "properties": {
+        "class_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "claim_stages": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/claim_stage"
+          }
+        },
+        "circular_output_allowed": {
+          "type": "boolean"
+        },
+        "missing_effect": {
+          "$ref": "#/$defs/missing_effect"
+        },
+        "owner_issue": {
+          "$ref": "#/$defs/issue"
+        }
+      }
+    },
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dimension_id",
+        "values",
+        "owner_issue",
+        "claim_boundary"
+      ],
+      "properties": {
+        "dimension_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "values": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "owner_issue": {
+          "$ref": "#/$defs/issue"
+        },
+        "claim_boundary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_id",
+        "concept_families",
+        "dimensions",
+        "proof_classes",
+        "owner_issue",
+        "claim_boundary"
+      ],
+      "properties": {
+        "campaign_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "concept_families": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "dimensions": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "proof_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "owner_issue": {
+          "$ref": "#/$defs/issue"
+        },
+        "claim_boundary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
