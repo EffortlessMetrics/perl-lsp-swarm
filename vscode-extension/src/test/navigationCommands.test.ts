@@ -134,7 +134,7 @@ describe('navigation command implementations', () => {
   });
 
   test('shows lifecycle detail when the server has a known failure cause', async () => {
-    (vscode.window.showErrorMessage as jest.Mock).mockResolvedValueOnce(undefined);
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce(undefined);
 
     await showWorkspaceStatusCommand({
       getWorkspaceStatus: () => ({
