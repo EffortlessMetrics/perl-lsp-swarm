@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Pin registry vocabularies and simplify executable path proof
+      - name: Pin registry vocabularies
         shell: python
         run: |
           from pathlib import Path
@@ -51,69 +51,50 @@ jobs:
                   raise SystemExit("receipt-root marker not found")
               text = text.replace(marker, marker + constants, 1)
 
-          current_vocab = '''    let allowed_tiers = registry
-              .meta
-              .allowed_tiers
-              .iter()
-              .map(String::as_str)
-              .collect::<BTreeSet<_>>();
-              let allowed_evidence = registry
-              .meta
-              .allowed_evidence_kinds
-              .iter()
-              .map(String::as_str)
-              .collect::<BTreeSet<_>>();
-          '''
-          pinned_vocab = '''    let declared_tiers = registry
-              .meta
-              .allowed_tiers
-              .iter()
-              .map(String::as_str)
-              .collect::<BTreeSet<_>>();
+          lines = text.splitlines()
+          start = next(
+              (index for index, line in enumerate(lines)
+               if line.strip() == "let allowed_tiers = registry"),
+              None,
+          )
+          end = next(
+              (index for index, line in enumerate(lines)
+               if line.strip() == "let mut ids = BTreeSet::new();"),
+              None,
+          )
+          if start is not None:
+              if end is None or end <= start:
+                  raise SystemExit("registry vocabulary block end not found")
+              replacement = '''    let declared_tiers = registry
+                  .meta
+                  .allowed_tiers
+                  .iter()
+                  .map(String::as_str)
+                  .collect::<BTreeSet<_>>();
               let expected_tiers = ALLOWED_TIERS.into_iter().collect::<BTreeSet<_>>();
               ensure!(
-              declared_tiers == expected_tiers,
-              "registry tier vocabulary drifted: declared={declared_tiers:?} expected={expected_tiers:?}"
+                  declared_tiers == expected_tiers,
+                  "registry tier vocabulary drifted: declared={declared_tiers:?} expected={expected_tiers:?}"
               );
               let declared_evidence_kinds = registry
-              .meta
-              .allowed_evidence_kinds
-              .iter()
-              .map(String::as_str)
-              .collect::<BTreeSet<_>>();
+                  .meta
+                  .allowed_evidence_kinds
+                  .iter()
+                  .map(String::as_str)
+                  .collect::<BTreeSet<_>>();
               let expected_evidence_kinds =
-              ALLOWED_EVIDENCE_KINDS.into_iter().collect::<BTreeSet<_>>();
+                  ALLOWED_EVIDENCE_KINDS.into_iter().collect::<BTreeSet<_>>();
               ensure!(
-              declared_evidence_kinds == expected_evidence_kinds,
-              "registry evidence vocabulary drifted: declared={declared_evidence_kinds:?} expected={expected_evidence_kinds:?}"
+                  declared_evidence_kinds == expected_evidence_kinds,
+                  "registry evidence vocabulary drifted: declared={declared_evidence_kinds:?} expected={expected_evidence_kinds:?}"
               );
               let allowed_tiers = declared_tiers;
               let allowed_evidence = declared_evidence_kinds;
-          '''
-          if pinned_vocab.strip() not in text:
-              if current_vocab not in text:
-                  raise SystemExit("registry vocabulary block not found")
-              text = text.replace(current_vocab, pinned_vocab, 1)
-
-          tautology = '''                let expected_relative =
-                          validate_execution_receipt_path(&evidence.path, &evidence.kind)?;
-                      let receipt_path =
-                          validate_repository_file(&root, &evidence.path, &tracked_files)?;
-                      ensure!(
-                          repository_path_string(&expected_relative)
-                              == repository_path_string(&validate_relative_path(&evidence.path)?),
-                          "executable receipt path normalization drifted"
-                      );
-          '''
-          simplified = '''                let _ =
-                          validate_execution_receipt_path(&evidence.path, &evidence.kind)?;
-                      let receipt_path =
-                          validate_repository_file(&root, &evidence.path, &tracked_files)?;
-          '''
-          if simplified.strip() not in text:
-              if tautology not in text:
-                  raise SystemExit("executable path proof block not found")
-              text = text.replace(tautology, simplified, 1)
+          '''.splitlines()
+              lines[start:end] = replacement
+              text = "\n".join(lines) + "\n"
+          elif "let declared_tiers = registry" not in text:
+              raise SystemExit("registry vocabulary block not found")
 
           path.write_text(text)
 
