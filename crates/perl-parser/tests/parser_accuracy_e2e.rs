@@ -246,9 +246,21 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
             spillover,
             expectation.id
         );
-        assert!(error_lines.contains(&expectation.recovery_line),
-            "recovery fixture '{fixture_id}' missing recovery error node/diagnostic on line {} ({})",
-            expectation.recovery_line, expectation.id);
+        if expectation.recovery_line <= expectation.error_region.end {
+            assert!(
+                error_lines.contains(&expectation.recovery_line),
+                "recovery fixture '{fixture_id}' missing recovery error node/diagnostic on line {} ({})",
+                expectation.recovery_line,
+                expectation.id
+            );
+        } else {
+            assert!(
+                !error_lines.contains(&expectation.recovery_line),
+                "recovery fixture '{fixture_id}' emitted an error on post-error recovery line {} ({})",
+                expectation.recovery_line,
+                expectation.id
+            );
+        }
     }
     Ok(())
 }
