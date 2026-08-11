@@ -4,7 +4,7 @@
 //! artifact, platform, journey, and mechanism evidence without claiming that
 //! the packet itself proves the underlying runtime observations.
 
-#![allow(clippy::print_stdout)]
+#![expect(clippy::print_stdout, reason = "packet validator emits one concise machine-readable result")]
 
 use clap::Parser;
 use color_eyre::eyre::{bail, Result};
@@ -299,7 +299,8 @@ fn validate_mechanisms(dispositions: &[MechanismDisposition], packet: &Packet) -
 }
 
 fn computed_recommendation(packet: &Packet) -> FreezeRecommendation {
-    let blocked = packet.zero_budget_counts.total() > 0
+    let blocked = !packet.product_blockers.is_empty()
+        || packet.zero_budget_counts.total() > 0
         || packet.platforms.linux.status == EvidenceStatus::Blocked
         || packet.platforms.macos.status == EvidenceStatus::Blocked
         || packet.platforms.windows.status == EvidenceStatus::Blocked
@@ -484,6 +485,15 @@ mod tests {
         packet.artifacts.perllsp.repository_sha =
             "fedcba9876543210fedcba9876543210fedcba98".to_string();
         assert!(validate(&packet).is_err());
+    }
+
+    #[test]
+    fn unresolved_product_blocker_cannot_claim_ready() {
+        let mut packet = ready_packet();
+        packet.product_blockers = vec!["exact installed binary is missing".to_string()];
+        packet.freeze_recommendation = FreezeRecommendation::Blocked;
+        assert_eq!(validate(&packet)?, FreezeRecommendation::Blocked);
+        Ok(())
     }
 
     #[test]
