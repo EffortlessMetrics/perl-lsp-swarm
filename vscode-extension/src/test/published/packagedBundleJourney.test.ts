@@ -66,7 +66,8 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
   const mandatoryEvidenceIsMissing = knownLimitations.some(
     (limitation) =>
       limitation === 'DAP preview is not exercised by this slice.' ||
-      limitation === 'The public VS Code API does not expose index generation or semantic exactness.',
+      limitation ===
+        'The public VS Code API does not expose server index generation or semantic exactness.',
   );
   const status: VerifiedChildArtifact['status'] =
     outcome === 'failed'
@@ -247,7 +248,16 @@ suite('Packaged VSIX bundled-server journey', function () {
         extension.activate(),
         90_000,
       )) as
-        | { getLanguageClientStartupMetrics?: () => ReceiptValue; stop?: () => Promise<void> }
+        | {
+            getLanguageClientStartupMetrics?: () => ReceiptValue;
+            getActiveDocumentReadiness?: () => {
+              generation: number;
+              indexState: string;
+              indexReason?: string;
+              fullyReady: boolean;
+            };
+            stop?: () => Promise<void>;
+          }
         | undefined;
       const activationCompleted = performance.now();
       const document = await vscode.workspace.openTextDocument(workspaceFile);
@@ -354,6 +364,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       const metrics = activation?.getLanguageClientStartupMetrics
         ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
         : {};
+      const readiness = activation?.getActiveDocumentReadiness?.() ?? null;
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
@@ -380,6 +391,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         ],
         requests: { immediate, after_edit: afterEdit, formatting, rename },
         index_generation: 'not_observable_from_public_extension_api',
+        index_readiness: readiness ?? 'not_observable_from_public_extension_api',
         answering_tier: 'bundled_server_provider',
         fallback_or_refusal_reason:
           rename.status === 'safe_refusal' ? 'rename provider returned no edit' : null,
@@ -390,7 +402,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         unexplained_empty: 'not_scored',
         known_limitations: [
           'DAP preview is not exercised by this slice.',
-          'The public VS Code API does not expose index generation or semantic exactness.',
+          'The public VS Code API does not expose server index generation or semantic exactness.',
           'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
           ...(criticSettingRegistered
             ? []
