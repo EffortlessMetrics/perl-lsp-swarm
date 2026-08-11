@@ -18,9 +18,9 @@ Use the PR body as a review index covering claim, issue, contract, production pa
 
 ## Enforcement status is part of the claim
 
-When a candidate adds or changes a gate, check, lint, ratchet, or policy, state in the body whether it is **required** or **advisory**, and resolve that against live protection rather than intent. A body implying a gate blocks merge when it runs advisory overstates the claim, and the overstatement survives the merge as documentation.
+When a candidate adds or changes a gate, check, linting check, ratchet, or policy, state in the body whether it is **required** or **advisory**, and resolve that against live protection rather than intent. A body implying a gate blocks merge when it runs advisory overstates the claim, and the overstatement survives the merge as documentation.
 
-Read both enforcement systems. Classic branch protection and repository rulesets are independent and additive, so either one alone gives a confidently wrong answer, and a check may be required by one, the other, both, or neither. A gate that runs inside a composite or conditional job is required only to the extent the reported context is.
+Read both enforcement systems. Classic branch protection and repository rulesets are independent and additive, so either one alone gives a confidently wrong answer, and a check may be required by one, the other, both, or neither. Inspect ruleset enforcement status, target refs, and bypass actors as well as classic branch protection. A gate that runs inside a composite or conditional job is required only to the extent its calling job reports it; a skipped job reports Success, while a workflow-level skip leaves a required check Pending.
 
 Where a change is deliberately advisory first — a new ratchet needing a baseline, or a gate that cannot pass until something merges past it — say so and name the condition for promotion. Unenforced-by-design is an honest claim; unenforced-and-described-as-blocking is not.
 
