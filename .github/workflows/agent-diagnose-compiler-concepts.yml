@@ -1,0 +1,57 @@
+name: Agent diagnose compiler concepts
+
+on:
+  push:
+    branches:
+      - agent/compiler-concepts-ledger-6657
+    paths:
+      - .github/workflows/agent-diagnose-compiler-concepts.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-diagnose-compiler-concepts
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Apply candidate repairs
+        run: |
+          python3 .github/scripts/repair_compiler_concepts.py
+          python3 .github/scripts/repair_compiler_concepts_closeout.py
+          rustfmt --edition 2024 xtask/src/bin/compiler-concepts.rs
+          cargo run -p xtask --bin compiler-concepts -- --write-status
+      - name: Test committed ledger and status
+        run: cargo test -p xtask --bin compiler-concepts committed_ledger_validates_and_status_is_current -- --nocapture
+      - name: Test duplicate concept IDs
+        run: cargo test -p xtask --bin compiler-concepts duplicate_concept_ids_fail_closed -- --nocapture
+      - name: Test invalid owner issue
+        run: cargo test -p xtask --bin compiler-concepts invalid_owner_issue_fails_closed -- --nocapture
+      - name: Test opaque exact-provider rejection
+        run: cargo test -p xtask --bin compiler-concepts opaque_body_hir_cannot_authorize_exact_provider_output -- --nocapture
+      - name: Test inventory completeness closeout
+        run: cargo test -p xtask --bin compiler-concepts inventory_complete_rejects_unresolved_work_after_authority -- --nocapture
+      - name: Test exact-provider canonical pipeline
+        run: cargo test -p xtask --bin compiler-concepts exact_provider_requires_canonical_executable_pipeline_regardless_of_owner -- --nocapture
+      - name: Test executable EIR PIR admission
+        run: cargo test -p xtask --bin compiler-concepts executable_eir_requires_modeled_pir_a -- --nocapture
+      - name: Test required AST kinds field
+        run: cargo test -p xtask --bin compiler-concepts ast_kinds_is_required_by_typed_parser -- --nocapture
+      - name: Test concept ID grammar
+        run: cargo test -p xtask --bin compiler-concepts concept_id_grammar_matches_segment_contract -- --nocapture
+      - name: Test deterministic rendering
+        run: cargo test -p xtask --bin compiler-concepts rendering_is_independent_of_input_order -- --nocapture
+      - name: Verify Clippy
+        run: cargo clippy -p xtask --bin compiler-concepts -- -D warnings
+      - name: Verify generated status
+        run: cargo run -p xtask --bin compiler-concepts -- --check
