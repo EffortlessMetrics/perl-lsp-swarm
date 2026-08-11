@@ -627,7 +627,7 @@ impl LspServer {
                 let _ = self.check_index_readiness(
                     crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
                 );
-                !self.workspace_index_stale_for_document(uri)
+                !self.workspace_index_stale_for_any_open_document()
             };
 
             // Wire semantic queries when workspace data is available for this URI.
@@ -714,16 +714,28 @@ impl LspServer {
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
 
-            // Add dead code diagnostics from workspace-wide symbol analysis
+            // Add dead code diagnostics from workspace-wide symbol analysis.
+            // Re-check freshness immediately before reading the index: readiness
+            // work and semantic queries above may have crossed an index-generation
+            // boundary since the first tier decision. Never let a stale snapshot
+            // reach publish even if the earlier readiness sample was current.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+            if workspace_index_tier_enabled
+                && !self.workspace_index_stale_for_any_open_document()
+                && let Some(workspace_index) = self.workspace_index()
+            {
                 let dead_code_diags = perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
                     &workspace_index,
                     uri,
                     &text,
                     &line_starts,
                 );
-                diagnostics.extend(dead_code_diags);
+                // The workspace snapshot can become stale while the
+                // workspace-wide query runs. Recheck after the query and
+                // discard its result unless the complete computation is fresh.
+                if !self.workspace_index_stale_for_any_open_document() {
+                    diagnostics.extend(dead_code_diags);
+                }
             }
 
             // Deduplicate diagnostics appended after the provider's own dedup pass
@@ -4045,6 +4057,9 @@ print \"unreachable\\n\";\n";
         updated_text: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         server.test_apply_did_open(uri, indexed_text, 1)?;
+        // Drain didOpen's asynchronous push before the fixture clears the
+        // capture after making the workspace index stale.
+        std::thread::sleep(Duration::from_millis(50));
         server
             .test_index_file_in_building_state(uri, indexed_text)
             .map_err(std::io::Error::other)?;
@@ -4057,8 +4072,24 @@ print \"unreachable\\n\";\n";
             server.workspace_index_stale_for_document(uri),
             "test setup must leave the open document newer than the workspace index"
         );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave at least one edited open document stale"
+        );
 
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn latest_published_diagnostics<'a>(text: &'a str, uri: &str) -> Option<&'a str> {
+        let marker = "\"method\":\"textDocument/publishDiagnostics\"";
+        text.match_indices(marker)
+            .filter_map(|(start, _)| {
+                let message = &text[start..];
+                let uri_key = format!("\"uri\":\"{uri}\"");
+                message.contains(&uri_key).then_some(message)
+            })
+            .last()
     }
 
     #[cfg(feature = "workspace")]
@@ -4149,9 +4180,54 @@ print \"unreachable\\n\";\n";
         std::thread::sleep(Duration::from_millis(50));
 
         let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, uri)
+            .ok_or("stale publish regression must emit a target diagnostic frame")?;
         assert!(
-            !text.contains("dead-code-subroutine"),
-            "stale workspace index must not publish dead-code diagnostics from outdated symbols: {text:?}"
+            !latest.contains("dead-code-subroutine"),
+            "latest stale-target publish must not contain dead-code diagnostics: {latest:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: workspace-wide dead-code analysis must not publish from a
+    /// fresh target URI while another edited open document is stale.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn publish_diagnostic_skips_dead_code_when_other_open_document_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let target_uri = "file:///workspace/fresh_target_dead_code_publish.pl";
+        let contributor_uri = "file:///workspace/stale_contributor_dead_code_publish.pl";
+        let target_source = stale_dead_code_indexed_source();
+
+        server.test_apply_did_open(target_uri, target_source, 1)?;
+        // Drain the fresh target's initial push before the stale-contributor
+        // setup clears the capture for the assertion.
+        std::thread::sleep(Duration::from_millis(50));
+        server
+            .test_index_file_in_building_state(target_uri, target_source)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        make_document_index_stale_for_diagnostics(
+            &server,
+            contributor_uri,
+            stale_dead_code_indexed_source(),
+            stale_dead_code_used_source(),
+        )?;
+
+        buf.lock().clear();
+        server.publish_diagnostics(target_uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, target_uri)
+            .ok_or("stale contributor regression must emit a target diagnostic frame")?;
+        assert!(
+            !latest.contains("dead-code-subroutine"),
+            "latest target publish must suppress stale-contributor dead-code diagnostics: {latest:?}"
         );
 
         Ok(())
