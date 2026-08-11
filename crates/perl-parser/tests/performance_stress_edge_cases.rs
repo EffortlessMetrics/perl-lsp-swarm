@@ -391,10 +391,7 @@ fn test_concurrent_parsing_stress() {
             .filter(|(_, _, observed_case, _, _)| *observed_case == case_index)
             .map(|(_, _, _, _, success)| *success)
             .collect();
-        assert!(
-            !outcomes.is_empty(),
-            "stress case {case_index} must be exercised"
-        );
+        assert!(!outcomes.is_empty(), "stress case {case_index} must be exercised");
         assert!(
             outcomes.iter().all(|outcome| *outcome == outcomes[0]),
             "stress case {case_index} produced nondeterministic parse outcomes: {outcomes:?}"
