@@ -9,34 +9,34 @@ fn loc(start: usize, end: usize) -> SourceLocation {
 }
 
 fn use_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Use {
+    Node::new(
+        NodeKind::Use {
             module: module.to_string(),
             args: args.iter().map(|arg| (*arg).to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn no_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::No {
+    Node::new(
+        NodeKind::No {
             module: module.to_string(),
             args: args.iter().map(|arg| (*arg).to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn block(statements: Vec<Node>, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Block { statements }, location: loc(start, end) }
+    Node::new(NodeKind::Block { statements }, loc(start, end))
 }
 
 fn program(statements: Vec<Node>) -> Node {
     let end = statements.last().map_or(0, |node| node.location.end);
-    Node { kind: NodeKind::Program { statements }, location: loc(0, end) }
+    Node::new(NodeKind::Program { statements }, loc(0, end))
 }
 
 fn synthetic_small_ast() -> Node {

@@ -131,7 +131,11 @@ impl<'a> Parser<'a> {
             let end = close_brace.end;
 
             // Destructure first_expr to consume its kind by move, avoiding clones
-            let Node { kind: first_kind, location: first_loc } = first_expr;
+            let Node {
+                kind: first_kind,
+                location: first_loc,
+                ..
+            } = first_expr;
 
             match first_kind {
                 // Array literal that should be a hash: convert pairs via move

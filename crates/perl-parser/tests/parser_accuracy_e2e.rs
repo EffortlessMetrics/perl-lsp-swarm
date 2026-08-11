@@ -218,7 +218,39 @@ fn parser_accuracy_manifest_ids_are_unique_and_selected_fixtures_exist() -> Test
             );
         }
     }
+    Ok(())
+}
 
+#[test]
+fn span_fixtures_preserve_the_bytes_they_measure() -> TestResult {
+    let workspace_root = workspace_root();
+    let fixture_root = workspace_root
+        .join("crates")
+        .join("perl-corpus")
+        .join("fixtures")
+        .join("parser_accuracy");
+
+    let crlf = fs::read(fixture_root.join("span_crlf.pl"))?;
+    assert!(
+        crlf.windows(2).any(|window| window == b"\r\n"),
+        "span_crlf must contain at least one CRLF sequence"
+    );
+
+    let bom = fs::read(fixture_root.join("span_bom.pl"))?;
+    assert!(
+        bom.starts_with(b"\xef\xbb\xbf"),
+        "span_bom must begin with a UTF-8 BOM"
+    );
+
+    let mixed = fs::read(fixture_root.join("span_mixed_newlines.pl"))?;
+    let has_crlf = mixed.windows(2).any(|window| window == b"\r\n");
+    let has_lone_lf = mixed.iter().enumerate().any(|(index, byte)| {
+        *byte == b'\n' && (index == 0 || mixed[index - 1] != b'\r')
+    });
+    assert!(
+        has_crlf && has_lone_lf,
+        "span_mixed_newlines must contain both LF and CRLF line endings"
+    );
     Ok(())
 }
 
