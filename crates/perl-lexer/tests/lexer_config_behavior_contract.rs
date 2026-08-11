@@ -80,7 +80,9 @@ fn interpolation_switch_has_an_exact_legacy_segmentation_contract() -> R {
             LexerConfig { parse_interpolation: false, ..LexerConfig::default() },
         )?;
         let TokenType::InterpolatedString(disabled_parts) = &disabled.token_type else {
-            return Err(missing(format!("disabled interpolation changed token shape for {input:?}")));
+            return Err(missing(format!(
+                "disabled interpolation changed token shape for {input:?}"
+            )));
         };
         let inner = input
             .get(1..input.len().saturating_sub(1))
@@ -100,10 +102,8 @@ fn interpolation_switch_has_an_exact_legacy_segmentation_contract() -> R {
 fn interpolation_switch_does_not_claim_opaque_quote_like_bodies() {
     let input = "qq{hello $name}";
     let enabled = signatures(input, LexerConfig::default());
-    let disabled = signatures(
-        input,
-        LexerConfig { parse_interpolation: false, ..LexerConfig::default() },
-    );
+    let disabled =
+        signatures(input, LexerConfig { parse_interpolation: false, ..LexerConfig::default() });
 
     assert_eq!(enabled, disabled);
     assert!(matches!(enabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble)));
@@ -113,10 +113,8 @@ fn interpolation_switch_does_not_claim_opaque_quote_like_bodies() {
 fn malformed_double_quote_recovery_is_configuration_invariant() {
     let input = "\"unterminated $name";
     let enabled = signatures(input, LexerConfig::default());
-    let disabled = signatures(
-        input,
-        LexerConfig { parse_interpolation: false, ..LexerConfig::default() },
-    );
+    let disabled =
+        signatures(input, LexerConfig { parse_interpolation: false, ..LexerConfig::default() });
 
     assert_eq!(enabled, disabled);
     assert!(matches!(enabled.first().map(|token| &token.0), Some(TokenType::Error(_))));
@@ -127,16 +125,13 @@ fn malformed_double_quote_recovery_is_configuration_invariant() {
 fn position_compatibility_field_does_not_change_authoritative_tokens() {
     let input = "my $café = 1;\r\nprint $café;";
     let enabled = signatures(input, LexerConfig::default());
-    let disabled = signatures(
-        input,
-        LexerConfig { track_positions: false, ..LexerConfig::default() },
-    );
+    let disabled =
+        signatures(input, LexerConfig { track_positions: false, ..LexerConfig::default() });
 
     assert!(LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED);
     assert_eq!(enabled, disabled);
-    for (token_type, text, start, end) in disabled
-        .iter()
-        .filter(|token| !matches!(&token.0, TokenType::EOF))
+    for (token_type, text, start, end) in
+        disabled.iter().filter(|token| !matches!(&token.0, TokenType::EOF))
     {
         assert!(start <= end, "reversed token span for {token_type:?}");
         assert_eq!(input.get(*start..*end), Some(text.as_ref()));
@@ -163,7 +158,9 @@ fn shared_lookahead_limit_has_distinct_zero_one_and_two_boundaries() -> R {
         matches!(&decimal_zero.token_type, TokenType::Operator(operator) if operator.as_ref() == ".")
     );
     let decimal_one = first_token(".5", one.clone())?;
-    assert!(matches!(&decimal_one.token_type, TokenType::Number(number) if number.as_ref() == ".5"));
+    assert!(
+        matches!(&decimal_one.token_type, TokenType::Number(number) if number.as_ref() == ".5")
+    );
 
     let bom_source = "\u{feff}my $x = 1;";
     let bom_blocked = first_token(bom_source, one)?;
@@ -203,10 +200,8 @@ fn symbol_table_changes_only_the_declared_bareword_slash_case() {
     assert!(!heuristic.iter().any(|token| matches!(&token.0, TokenType::RegexMatch)));
 
     let table = LocalSymbolTable::scan_subs(ambiguous);
-    let configured = signatures(
-        ambiguous,
-        LexerConfig { symbol_table: Some(table), ..LexerConfig::default() },
-    );
+    let configured =
+        signatures(ambiguous, LexerConfig { symbol_table: Some(table), ..LexerConfig::default() });
     assert!(configured.iter().any(|token| matches!(&token.0, TokenType::RegexMatch)));
     assert!(!configured.iter().any(|token| matches!(&token.0, TokenType::Division)));
 
