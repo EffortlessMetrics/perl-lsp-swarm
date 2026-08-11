@@ -627,7 +627,7 @@ impl LspServer {
                 let _ = self.check_index_readiness(
                     crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
                 );
-                !self.workspace_index_stale_for_document(uri)
+                !self.workspace_index_stale_for_any_open_document()
             };
 
             // Wire semantic queries when workspace data is available for this URI.
@@ -730,7 +730,12 @@ impl LspServer {
                     &text,
                     &line_starts,
                 );
-                diagnostics.extend(dead_code_diags);
+                // The workspace snapshot can become stale while the
+                // workspace-wide query runs. Recheck after the query and
+                // discard its result unless the complete computation is fresh.
+                if !self.workspace_index_stale_for_any_open_document() {
+                    diagnostics.extend(dead_code_diags);
+                }
             }
 
             // Deduplicate diagnostics appended after the provider's own dedup pass
