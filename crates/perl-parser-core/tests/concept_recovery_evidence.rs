@@ -13,6 +13,18 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
     }
 }
 
+fn is_recovery_node(node: &Node) -> bool {
+    matches!(
+        &node.kind,
+        NodeKind::Error { .. }
+            | NodeKind::MissingExpression
+            | NodeKind::MissingStatement
+            | NodeKind::MissingIdentifier
+            | NodeKind::MissingBlock
+            | NodeKind::UnknownRest
+    )
+}
+
 #[test]
 fn clean_source_has_no_recovery_evidence() {
     let mut parser = Parser::new("my $value = 1 + 2; my $after = 2;");
@@ -20,15 +32,7 @@ fn clean_source_has_no_recovery_evidence() {
     let mut recovery_nodes = 0usize;
 
     walk(&output.ast, &mut |node| {
-        if matches!(
-            &node.kind,
-            NodeKind::Error { .. }
-                | NodeKind::MissingExpression
-                | NodeKind::MissingStatement
-                | NodeKind::MissingIdentifier
-                | NodeKind::MissingBlock
-                | NodeKind::UnknownRest
-        ) {
+        if is_recovery_node(node) {
             recovery_nodes += 1;
         }
     });
@@ -39,22 +43,27 @@ fn clean_source_has_no_recovery_evidence() {
 }
 
 #[test]
-fn missing_infix_rhs_emits_evidence_and_preserves_following_declaration() {
+fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration()
+-> Result<(), String> {
     let source = "my $value = 1 +; my $after = 2;";
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
-    let mut missing_expression_count = 0usize;
-    let mut after_declaration_count = 0usize;
+    let mut missing_expression_spans = Vec::new();
+    let mut after_declaration_spans = Vec::new();
 
     walk(&output.ast, &mut |node| match &node.kind {
-        NodeKind::MissingExpression => missing_expression_count += 1,
+        NodeKind::MissingExpression => {
+            missing_expression_spans.push((node.location.start, node.location.end));
+        }
         NodeKind::VariableDeclaration { variable, .. }
             if matches!(
                 &variable.kind,
                 NodeKind::Variable { sigil, name } if sigil == "$" && name == "after"
             ) =>
         {
-            after_declaration_count += 1;
+            if let Some(text) = source.get(node.location.start..node.location.end) {
+                after_declaration_spans.push(text.to_owned());
+            }
         }
         _ => {}
     });
@@ -64,12 +73,23 @@ fn missing_infix_rhs_emits_evidence_and_preserves_following_declaration() {
         "malformed source must not be represented as a clean parse"
     );
     assert_eq!(
-        missing_expression_count, 1,
-        "the missing right-hand side must remain a typed MissingExpression node"
+        missing_expression_spans.len(),
+        1,
+        "the missing right-hand side must remain one typed MissingExpression node"
     );
-    assert_eq!(
-        after_declaration_count, 1,
-        "recovery must preserve the valid declaration after the malformed expression"
+
+    let gap_start = source
+        .find("+;")
+        .ok_or_else(|| "test source lost the malformed infix boundary".to_string())?;
+    let gap_end = gap_start + "+;".len();
+    let (missing_start, missing_end) = missing_expression_spans[0];
+    assert!(
+        missing_start >= gap_start && missing_end <= gap_end,
+        "recovery evidence escaped the malformed infix boundary: {missing_start}..{missing_end}"
     );
+
+    assert_eq!(after_declaration_spans.len(), 1);
+    assert!(after_declaration_spans[0].starts_with("my $after = 2"));
     assert!(!output.terminated_early, "this local syntax error should remain recoverable");
+    Ok(())
 }
