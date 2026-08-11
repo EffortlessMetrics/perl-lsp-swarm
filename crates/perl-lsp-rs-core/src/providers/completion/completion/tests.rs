@@ -1,6 +1,7 @@
 use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
+use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
 use perl_tdd_support::{must, must_some};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
@@ -8388,6 +8389,48 @@ has 'status' => (
         .to_string(),
     )?;
     Ok(index)
+}
+
+#[test]
+fn block_form_package_after_close_stays_main() {
+    let code = r#"package Child {
+    sub greet {
+        my $self = shift;
+        $self->bark;
+    }
+}
+$self->
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.rfind("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "main",
+        "after a block-form package closes, receiver package context must return to main; got {:?}",
+        context.current_package
+    );
+}
+
+#[test]
+fn block_form_package_at_scope_end_is_main() {
+    let code = "package Foo {\n    my $x;\n}\n";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let table = SymbolExtractor::new().extract(&ast);
+    let scope_end = table
+        .scopes
+        .values()
+        .filter(|scope| scope.kind == ScopeKind::Package)
+        .map(|scope| scope.location.end)
+        .max()
+        .expect("block-form package scope");
+    assert_eq!(
+        CompletionContext::detect_current_package(&table, scope_end),
+        "main",
+        "cursor at scope end (half-open) must not inherit the closed block package"
+    );
 }
 
 #[test]
