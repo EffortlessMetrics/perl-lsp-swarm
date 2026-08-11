@@ -28,6 +28,22 @@ function branchesOverlap(branchFirsts: BranchFirst[]): boolean {
   return false;
 }
 
+function hasUnboundedQuantifier(source: string, index: number): boolean {
+  const character = source[index];
+  if (character === '+' || character === '*') {
+    return true;
+  }
+  if (character !== '{') {
+    return false;
+  }
+
+  const closingBrace = source.indexOf('}', index + 1);
+  return (
+    closingBrace > index &&
+    /^\\{\\d+,\\}$/.test(source.slice(index, closingBrace + 1))
+  );
+}
+
 function hasOverlappingQuantifiedAlternation(source: string): boolean {
   const groups: GroupFrame[] = [];
 
@@ -114,8 +130,7 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
         continue;
       }
 
-      const quantified =
-        source[index + 1] === '+' || source[index + 1] === '*' || source[index + 1] === '{';
+      const quantified = hasUnboundedQuantifier(source, index + 1);
       if (group.hasAlternation) {
         group.branchFirsts.push(group.branchFirst);
         const overlap = branchesOverlap(group.branchFirsts);
