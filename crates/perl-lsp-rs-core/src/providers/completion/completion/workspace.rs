@@ -2279,12 +2279,10 @@ fn collect_all_package_members_with_source(
                     };
 
                     if let Some(model) =
-                        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(
-                            &ast, text,
-                        )
-                        .class_models
-                        .into_iter()
-                        .find(|model| model.name == pkg)
+                        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+                            .build(&ast)
+                            .into_iter()
+                            .find(|model| model.name == pkg)
                     {
                         return (model.parents.clone(), model.roles.clone(), model.mro);
                     }
