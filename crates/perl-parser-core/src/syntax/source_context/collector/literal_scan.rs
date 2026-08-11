@@ -147,7 +147,7 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
                 return None;
             }
             let end = after
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
                 .unwrap_or(after.len());
             after[..end].to_string()
         }
@@ -168,7 +168,7 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
 
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
 fn starts_heredoc_label(rest: &str) -> bool {
-    rest.starts_with(|character: char| character.is_ascii_alphabetic() || character == '_')
+    rest.starts_with(|character: char| character.is_alphabetic() || character == '_')
 }
 
 /// Whether `prefix` (the text before a candidate `<<` heredoc opener) contains
@@ -1028,8 +1028,8 @@ mod tests {
         );
         assert_eq!(
             heredoc_opener_on_line("my $x = <<é;"),
-            None,
-            "a non-ASCII character cannot start an unquoted label"
+            Some(("é".to_string(), false)),
+            "a Unicode identifier can start an unquoted label"
         );
     }
 
