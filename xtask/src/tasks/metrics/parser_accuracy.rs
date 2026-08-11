@@ -3706,6 +3706,14 @@ fn is_ast_scored_node(node: &Node) -> bool {
             | NodeKind::Method { .. }
             | NodeKind::VariableDeclaration { .. }
             | NodeKind::VariableListDeclaration { .. }
+            | NodeKind::Assignment { .. }
+            | NodeKind::Unary { .. }
+            | NodeKind::ArrayLiteral { .. }
+            | NodeKind::HashLiteral { .. }
+            | NodeKind::ArraySlice { .. }
+            | NodeKind::HashSlice { .. }
+            | NodeKind::KeyValueSlice { .. }
+            | NodeKind::Ternary { .. }
             | NodeKind::FunctionCall { .. }
             | NodeKind::IndirectCall { .. }
             | NodeKind::MethodCall { .. }
