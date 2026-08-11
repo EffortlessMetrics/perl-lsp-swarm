@@ -1,14 +1,18 @@
 //! Versioned, deterministic identity for corpus assets.
 //!
-//! This is the first topology authority for the populations already discovered by
-//! [`crate::files`] plus the checked-in extensionless and text fuzz regressions.
-//! Additional corpus layers remain explicit follow-up work under issue #6699.
+//! This is the first topology authority for the checked-in `test_corpus/` and
+//! crate-local fuzz populations. Discovery is deliberately strict: selected
+//! assets cannot disappear behind lossy names, filesystem errors, symlinks, or
+//! non-regular file types.
 
-use crate::files::{CorpusLayer, CorpusPaths, get_corpus_files_from};
+use crate::files::{CorpusLayer, CorpusPaths};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+
+const TEST_EXTENSIONS: &[&str] = &["pl", "pm", "plx", "t", "psgi", "cgi"];
 
 /// Version of the serialized corpus topology contract.
 pub const CORPUS_TOPOLOGY_SCHEMA_VERSION: u32 = 1;
@@ -101,14 +105,50 @@ pub enum CorpusTopologyError {
         /// Asset relative path.
         relative_path: String,
     },
-    /// Two discovered assets resolve to the same stable identity.
+    /// The serialized topology schema is not supported by this implementation.
+    UnsupportedSchemaVersion {
+        /// Schema version found in the topology.
+        found: u32,
+        /// Schema version supported by this implementation.
+        supported: u32,
+    },
+    /// Two discovered or deserialized assets resolve to the same stable identity.
     DuplicateAssetId {
         /// Duplicated asset ID.
         id: String,
     },
+    /// Serialized assets are not in strictly ascending stable-ID order.
+    AssetOrder {
+        /// ID immediately preceding the out-of-order asset.
+        previous: String,
+        /// Out-of-order asset ID.
+        current: String,
+    },
+    /// The requested asset is not an exact member of the topology.
+    AssetNotInTopology {
+        /// Requested asset ID.
+        id: String,
+    },
     /// A deserialized topology has not been bound to a runtime checkout root.
     RootNotBound,
-    /// Filesystem discovery failed.
+    /// A required asset is absent from the bound checkout root.
+    RequiredAssetMissing {
+        /// Missing asset ID.
+        id: String,
+        /// Resolved checkout path.
+        path: PathBuf,
+    },
+    /// A selected corpus entry is a symlink and cannot receive checkout-stable identity.
+    SymlinkUnsupported {
+        /// Rejected symlink path.
+        path: PathBuf,
+    },
+    /// A selected corpus entry exists but is not a regular file.
+    UnsupportedFileType {
+        /// Rejected path.
+        path: PathBuf,
+    },
+    /// Filesystem discovery or resolution failed.
     Io {
         /// Path being inspected.
         path: PathBuf,
@@ -140,10 +180,34 @@ impl fmt::Display for CorpusTopologyError {
                     "corpus asset ID {id:?} does not match relative path {relative_path:?}"
                 )
             }
+            Self::UnsupportedSchemaVersion { found, supported } => {
+                write!(
+                    formatter,
+                    "unsupported corpus topology schema version {found}; supported version is {supported}"
+                )
+            }
             Self::DuplicateAssetId { id } => {
                 write!(formatter, "duplicate corpus asset ID: {id}")
             }
+            Self::AssetOrder { previous, current } => {
+                write!(
+                    formatter,
+                    "corpus asset IDs are not strictly ordered: {previous:?} before {current:?}"
+                )
+            }
+            Self::AssetNotInTopology { id } => {
+                write!(formatter, "corpus asset is not a member of this topology: {id}")
+            }
             Self::RootNotBound => formatter.write_str("corpus topology has no bound runtime root"),
+            Self::RequiredAssetMissing { id, path } => {
+                write!(formatter, "required corpus asset {id} is missing at {}", path.display())
+            }
+            Self::SymlinkUnsupported { path } => {
+                write!(formatter, "corpus asset symlink is unsupported: {}", path.display())
+            }
+            Self::UnsupportedFileType { path } => {
+                write!(formatter, "corpus asset is not a regular file: {}", path.display())
+            }
             Self::Io { path, message } => {
                 write!(formatter, "failed to inspect corpus path {}: {message}", path.display())
             }
@@ -174,33 +238,63 @@ impl CorpusTopology {
 
     /// Build a topology from an explicit corpus root.
     pub fn from_paths(paths: &CorpusPaths) -> Result<Self, CorpusTopologyError> {
-        let mut assets = Vec::new();
-
-        for file in get_corpus_files_from(paths) {
-            assets.push(asset_from_path(paths, &file.path, file.layer.into())?);
-        }
-
-        for path in collect_additional_fuzz_assets(&paths.fuzz)? {
-            assets.push(asset_from_path(paths, &path, CorpusAssetLayer::Fuzz)?);
-        }
-
+        let mut assets = collect_layer_assets(
+            paths,
+            &paths.test_corpus,
+            CorpusAssetLayer::TestCorpus,
+            classify_test_asset,
+        )?;
+        assets.extend(collect_layer_assets(
+            paths,
+            &paths.fuzz,
+            CorpusAssetLayer::Fuzz,
+            classify_fuzz_asset,
+        )?);
         assets.sort_by(|left, right| left.id.cmp(&right.id));
-        if let Some(duplicate) = assets.windows(2).find(|pair| pair[0].id == pair[1].id) {
-            return Err(CorpusTopologyError::DuplicateAssetId { id: duplicate[0].id.clone() });
-        }
 
-        Ok(Self {
+        let topology = Self {
             schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION,
             assets,
             root: Some(paths.root.clone()),
-        })
+        };
+        topology.validate()?;
+        Ok(topology)
     }
 
-    /// Bind a runtime checkout root after loading a serialized topology.
-    #[must_use]
-    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
+    /// Validate the serialized, checkout-independent topology contract.
+    pub fn validate(&self) -> Result<(), CorpusTopologyError> {
+        if self.schema_version != CORPUS_TOPOLOGY_SCHEMA_VERSION {
+            return Err(CorpusTopologyError::UnsupportedSchemaVersion {
+                found: self.schema_version,
+                supported: CORPUS_TOPOLOGY_SCHEMA_VERSION,
+            });
+        }
+
+        let mut previous: Option<&CorpusAsset> = None;
+        for asset in &self.assets {
+            validate_asset_identity(asset)?;
+            if let Some(previous) = previous {
+                if previous.id == asset.id {
+                    return Err(CorpusTopologyError::DuplicateAssetId { id: asset.id.clone() });
+                }
+                if previous.id > asset.id {
+                    return Err(CorpusTopologyError::AssetOrder {
+                        previous: previous.id.clone(),
+                        current: asset.id.clone(),
+                    });
+                }
+            }
+            previous = Some(asset);
+        }
+
+        Ok(())
+    }
+
+    /// Bind a runtime checkout root after loading and validating a serialized topology.
+    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Result<Self, CorpusTopologyError> {
+        self.validate()?;
         self.root = Some(root.into());
-        self
+        Ok(self)
     }
 
     /// Return the runtime checkout root used to resolve assets.
@@ -209,11 +303,24 @@ impl CorpusTopology {
         self.root.as_deref()
     }
 
-    /// Resolve an asset's checked-in path from its stable identity.
+    /// Resolve an exact topology member's checked-in path from its stable identity.
     pub fn asset_path(&self, asset: &CorpusAsset) -> Result<PathBuf, CorpusTopologyError> {
-        let root = self.root.as_deref().ok_or(CorpusTopologyError::RootNotBound)?;
+        self.validate()?;
         validate_asset_identity(asset)?;
-        Ok(root.join(Path::new(&asset.relative_path)))
+
+        let member = self
+            .assets
+            .binary_search_by(|candidate| candidate.id.cmp(&asset.id))
+            .ok()
+            .and_then(|index| self.assets.get(index));
+        if member != Some(asset) {
+            return Err(CorpusTopologyError::AssetNotInTopology { id: asset.id.clone() });
+        }
+
+        let root = self.root.as_deref().ok_or(CorpusTopologyError::RootNotBound)?;
+        let resolved = root.join(Path::new(&asset.relative_path));
+        validate_resolved_asset(root, asset, &resolved)?;
+        Ok(resolved)
     }
 }
 
@@ -221,6 +328,7 @@ fn asset_from_path(
     paths: &CorpusPaths,
     path: &Path,
     layer: CorpusAssetLayer,
+    kind: CorpusAssetKind,
 ) -> Result<CorpusAsset, CorpusTopologyError> {
     let relative = path.strip_prefix(&paths.root).map_err(|_| {
         CorpusTopologyError::PathOutsideRoot { path: path.to_path_buf(), root: paths.root.clone() }
@@ -230,7 +338,7 @@ fn asset_from_path(
     Ok(CorpusAsset {
         id: relative_path.clone(),
         layer,
-        kind: asset_kind(path),
+        kind,
         relative_path,
         requirement: AssetRequirement::Required,
     })
@@ -253,6 +361,91 @@ fn validate_asset_identity(asset: &CorpusAsset) -> Result<(), CorpusTopologyErro
     }
 
     Ok(())
+}
+
+fn validate_resolved_asset(
+    root: &Path,
+    asset: &CorpusAsset,
+    resolved: &Path,
+) -> Result<(), CorpusTopologyError> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(CorpusTopologyError::SymlinkUnsupported {
+                path: root.to_path_buf(),
+            });
+        }
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(CorpusTopologyError::UnsupportedFileType {
+                path: root.to_path_buf(),
+            });
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && asset.requirement == AssetRequirement::Optional =>
+        {
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CorpusTopologyError::RequiredAssetMissing {
+                id: asset.id.clone(),
+                path: resolved.to_path_buf(),
+            });
+        }
+        Err(error) => {
+            return Err(CorpusTopologyError::Io {
+                path: root.to_path_buf(),
+                message: error.to_string(),
+            });
+        }
+    }
+
+    let mut current = root.to_path_buf();
+    let mut components = Path::new(&asset.relative_path).components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(value) = component else {
+            return Err(CorpusTopologyError::InvalidRelativePath {
+                path: asset.relative_path.clone(),
+                reason: "non_canonical",
+            });
+        };
+        current.push(value);
+        let is_final = components.peek().is_none();
+
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(CorpusTopologyError::SymlinkUnsupported { path: current });
+            }
+            Ok(metadata) if is_final && metadata.is_file() => return Ok(()),
+            Ok(metadata) if !is_final && metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(CorpusTopologyError::UnsupportedFileType { path: current });
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && asset.requirement == AssetRequirement::Optional =>
+            {
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CorpusTopologyError::RequiredAssetMissing {
+                    id: asset.id.clone(),
+                    path: resolved.to_path_buf(),
+                });
+            }
+            Err(error) => {
+                return Err(CorpusTopologyError::Io {
+                    path: current,
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
+
+    Err(CorpusTopologyError::InvalidRelativePath {
+        path: asset.relative_path.clone(),
+        reason: "empty_path",
+    })
 }
 
 fn canonical_relative_path(path: &Path) -> Result<String, CorpusTopologyError> {
@@ -303,19 +496,34 @@ fn canonical_relative_path(path: &Path) -> Result<String, CorpusTopologyError> {
     Ok(parts.join("/"))
 }
 
-fn asset_kind(path: &Path) -> CorpusAssetKind {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("txt") => CorpusAssetKind::TextFixture,
-        _ => CorpusAssetKind::PerlSource,
+fn collect_layer_assets(
+    paths: &CorpusPaths,
+    root: &Path,
+    layer: CorpusAssetLayer,
+    classify: fn(&Path) -> Option<CorpusAssetKind>,
+) -> Result<Vec<CorpusAsset>, CorpusTopologyError> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(CorpusTopologyError::SymlinkUnsupported {
+                path: root.to_path_buf(),
+            });
+        }
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(CorpusTopologyError::UnsupportedFileType {
+                path: root.to_path_buf(),
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(CorpusTopologyError::Io {
+                path: root.to_path_buf(),
+                message: error.to_string(),
+            });
+        }
     }
-}
 
-fn collect_additional_fuzz_assets(root: &Path) -> Result<Vec<PathBuf>, CorpusTopologyError> {
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut files = Vec::new();
+    let mut assets = Vec::new();
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(directory) = stack.pop() {
@@ -330,40 +538,73 @@ fn collect_additional_fuzz_assets(root: &Path) -> Result<Vec<PathBuf>, CorpusTop
                 message: error.to_string(),
             })?;
             let path = entry.path();
-            let file_name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| CorpusTopologyError::NonUtf8Path { path: path.clone() })?;
+            let file_name = entry.file_name();
+            if is_ignored_name(&file_name) {
+                continue;
+            }
+
             let file_type = entry.file_type().map_err(|error| CorpusTopologyError::Io {
                 path: path.clone(),
                 message: error.to_string(),
             })?;
+            let kind = classify(&path);
 
-            if file_name.starts_with('.') || file_name.starts_with('_') {
-                continue;
+            if file_type.is_symlink() {
+                return Err(CorpusTopologyError::SymlinkUnsupported { path });
             }
-
             if file_type.is_dir() {
+                if kind.is_some() {
+                    return Err(CorpusTopologyError::UnsupportedFileType { path });
+                }
                 stack.push(path);
-            } else if file_type.is_file() && is_additional_fuzz_asset(&path) {
-                files.push(path);
+            } else if file_type.is_file() {
+                if let Some(kind) = kind {
+                    assets.push(asset_from_path(paths, &path, layer, kind)?);
+                }
+            } else if kind.is_some() {
+                return Err(CorpusTopologyError::UnsupportedFileType { path });
             }
         }
     }
 
-    files.sort();
-    files.dedup();
-    Ok(files)
+    assets.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(assets)
 }
 
-fn is_additional_fuzz_asset(path: &Path) -> bool {
+fn is_ignored_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes()
+        .first()
+        .is_some_and(|byte| *byte == b'.' || *byte == b'_')
+}
+
+fn classify_test_asset(path: &Path) -> Option<CorpusAssetKind> {
+    has_allowed_extension(path, TEST_EXTENSIONS).then_some(CorpusAssetKind::PerlSource)
+}
+
+fn classify_fuzz_asset(path: &Path) -> Option<CorpusAssetKind> {
     match path.extension().and_then(|extension| extension.to_str()) {
-        None => path
+        Some(extension) if extension.eq_ignore_ascii_case("pl") => {
+            Some(CorpusAssetKind::PerlSource)
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("txt") => {
+            Some(CorpusAssetKind::TextFixture)
+        }
+        None if path
             .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("crash-")),
-        Some(extension) => extension.eq_ignore_ascii_case("txt"),
+            .is_some_and(|name| name.as_encoded_bytes().starts_with(b"crash-")) =>
+        {
+            Some(CorpusAssetKind::PerlSource)
+        }
+        _ => None,
     }
+}
+
+fn has_allowed_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extensions.iter().any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        })
 }
 
 #[cfg(test)]
@@ -375,10 +616,29 @@ mod tests {
         fs::write(path, source).expect("write fixture");
     }
 
+    fn asset(relative_path: &str) -> CorpusAsset {
+        CorpusAsset {
+            id: relative_path.to_string(),
+            layer: CorpusAssetLayer::TestCorpus,
+            kind: CorpusAssetKind::PerlSource,
+            relative_path: relative_path.to_string(),
+            requirement: AssetRequirement::Required,
+        }
+    }
+
+    fn topology_with(assets: Vec<CorpusAsset>) -> CorpusTopology {
+        CorpusTopology {
+            schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION,
+            assets,
+            root: None,
+        }
+    }
+
     #[test]
     fn topology_includes_supported_test_and_fuzz_assets() {
         let root = tempfile::tempdir().expect("temporary directory");
         let test_file = root.path().join("test_corpus/nested/case.pl");
+        let test_module = root.path().join("test_corpus/nested/Case.pm");
         let fuzz_perl = root.path().join("crates/perl-corpus/fuzz/seed.pl");
         let fuzz_text = root.path().join("crates/perl-corpus/fuzz/heredoc_validation.txt");
         let fuzz_crash = root.path().join("crates/perl-corpus/fuzz/crash-deadbeef");
@@ -386,6 +646,7 @@ mod tests {
         let fuzz_readme = root.path().join("crates/perl-corpus/fuzz/README.md");
 
         write_fixture(&test_file, "my $x = 1;");
+        write_fixture(&test_module, "package Case; 1;");
         write_fixture(&fuzz_perl, "my $y = 2;");
         write_fixture(&fuzz_text, "xqN<<\"");
         write_fixture(&fuzz_crash, "xqN<<\"");
@@ -403,6 +664,7 @@ mod tests {
                 "crates/perl-corpus/fuzz/crash-deadbeef",
                 "crates/perl-corpus/fuzz/heredoc_validation.txt",
                 "crates/perl-corpus/fuzz/seed.pl",
+                "test_corpus/nested/Case.pm",
                 "test_corpus/nested/case.pl",
             ]
         );
@@ -457,7 +719,7 @@ mod tests {
         let asset = loaded.assets.first().expect("loaded asset");
         assert_eq!(loaded.asset_path(asset), Err(CorpusTopologyError::RootNotBound));
 
-        let rebound = loaded.with_root(first_root.path());
+        let rebound = loaded.with_root(first_root.path()).expect("bind topology root");
         assert!(
             rebound
                 .assets
@@ -469,23 +731,17 @@ mod tests {
     #[test]
     fn loaded_asset_paths_fail_closed() {
         let root = tempfile::tempdir().expect("temporary directory");
-        let topology = CorpusTopology {
-            schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION,
-            assets: Vec::new(),
-            root: Some(root.path().to_path_buf()),
-        };
 
         for relative_path in ["../outside.pl", "/tmp/outside.pl", "test_corpus/./case.pl"] {
-            let asset = CorpusAsset {
-                id: relative_path.to_string(),
-                layer: CorpusAssetLayer::TestCorpus,
-                kind: CorpusAssetKind::PerlSource,
-                relative_path: relative_path.to_string(),
-                requirement: AssetRequirement::Required,
+            let rejected = asset(relative_path);
+            let topology = CorpusTopology {
+                schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION,
+                assets: vec![rejected.clone()],
+                root: Some(root.path().to_path_buf()),
             };
             assert!(
                 matches!(
-                    topology.asset_path(&asset),
+                    topology.asset_path(&rejected),
                     Err(CorpusTopologyError::InvalidRelativePath { .. })
                 ),
                 "path must fail closed: {relative_path}"
@@ -499,10 +755,105 @@ mod tests {
             relative_path: "test_corpus/case.pl".to_string(),
             requirement: AssetRequirement::Required,
         };
+        let topology = CorpusTopology {
+            schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION,
+            assets: vec![mismatch.clone()],
+            root: Some(root.path().to_path_buf()),
+        };
         assert!(matches!(
             topology.asset_path(&mismatch),
             Err(CorpusTopologyError::AssetIdentityMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn binding_rejects_unsupported_schema_versions() {
+        for found in [0, CORPUS_TOPOLOGY_SCHEMA_VERSION + 1] {
+            let mut topology = topology_with(Vec::new());
+            topology.schema_version = found;
+            assert_eq!(
+                topology.with_root("."),
+                Err(CorpusTopologyError::UnsupportedSchemaVersion {
+                    found,
+                    supported: CORPUS_TOPOLOGY_SCHEMA_VERSION,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_and_unsorted_asset_ids() {
+        let duplicate = asset("test_corpus/a.pl");
+        assert_eq!(
+            topology_with(vec![duplicate.clone(), duplicate]).validate(),
+            Err(CorpusTopologyError::DuplicateAssetId {
+                id: "test_corpus/a.pl".to_string(),
+            })
+        );
+
+        assert_eq!(
+            topology_with(vec![asset("test_corpus/z.pl"), asset("test_corpus/a.pl")]).validate(),
+            Err(CorpusTopologyError::AssetOrder {
+                previous: "test_corpus/z.pl".to_string(),
+                current: "test_corpus/a.pl".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolution_requires_exact_topology_membership() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let included = asset("test_corpus/included.pl");
+        write_fixture(&root.path().join(&included.relative_path), "1;");
+        let topology = topology_with(vec![included])
+            .with_root(root.path())
+            .expect("bind topology root");
+        let outsider = asset("test_corpus/outsider.pl");
+
+        assert_eq!(
+            topology.asset_path(&outsider),
+            Err(CorpusTopologyError::AssetNotInTopology { id: outsider.id })
+        );
+    }
+
+    #[test]
+    fn required_assets_must_exist_after_rebinding() {
+        let source_root = tempfile::tempdir().expect("source temporary directory");
+        let empty_root = tempfile::tempdir().expect("empty temporary directory");
+        write_fixture(&source_root.path().join("test_corpus/case.pl"), "1;");
+        let discovered =
+            CorpusTopology::from_paths(&CorpusPaths::from_root(source_root.path().to_path_buf()))
+                .expect("discover topology");
+        let payload = serde_json::to_string(&discovered).expect("serialize topology");
+        let rebound = serde_json::from_str::<CorpusTopology>(&payload)
+            .expect("deserialize topology")
+            .with_root(empty_root.path())
+            .expect("bind topology root");
+        let required = rebound.assets.first().expect("required asset");
+        let expected_path = empty_root.path().join(&required.relative_path);
+
+        assert_eq!(
+            rebound.asset_path(required),
+            Err(CorpusTopologyError::RequiredAssetMissing {
+                id: required.id.clone(),
+                path: expected_path,
+            })
+        );
+    }
+
+    #[test]
+    fn optional_assets_may_be_absent_after_rebinding() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut optional = asset("test_corpus/optional.pl");
+        optional.requirement = AssetRequirement::Optional;
+        let topology = topology_with(vec![optional.clone()])
+            .with_root(root.path())
+            .expect("bind topology root");
+
+        assert_eq!(
+            topology.asset_path(&optional),
+            Ok(root.path().join("test_corpus/optional.pl"))
+        );
     }
 
     #[cfg(unix)]
@@ -535,7 +886,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn non_utf8_asset_path_fails_closed() {
+    fn non_utf8_selected_asset_path_fails_closed() {
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
 
@@ -549,6 +900,59 @@ mod tests {
             CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf())),
             Err(CorpusTopologyError::NonUtf8Path { .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_fuzz_metadata_does_not_enter_identity_validation() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut path = root.path().join("crates/perl-corpus/fuzz");
+        fs::create_dir_all(&path).expect("create fuzz directory");
+        path.push(OsString::from_vec(vec![b'n', 0xff, b'.', b'm', b'd']));
+        fs::write(&path, "metadata").expect("write non-UTF-8 metadata");
+
+        let topology =
+            CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf()))
+                .expect("ignore non-asset metadata");
+        assert!(topology.assets.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_entries_fail_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let target = root.path().join("target.pl");
+        let link = root.path().join("test_corpus/linked.pl");
+        write_fixture(&target, "1;");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(&target, &link).expect("create source symlink");
+
+        assert_eq!(
+            CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf())),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_non_regular_entries_fail_closed() {
+        use std::os::unix::net::UnixListener;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let socket = root.path().join("test_corpus/socket.pl");
+        fs::create_dir_all(socket.parent().expect("socket parent"))
+            .expect("create socket parent");
+        let _listener = UnixListener::bind(&socket).expect("bind Unix socket");
+
+        assert_eq!(
+            CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf())),
+            Err(CorpusTopologyError::UnsupportedFileType { path: socket })
+        );
     }
 
     #[test]
