@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "owner_issue": 6701,
   "canonical": {
     "module": "incremental",
@@ -39,7 +39,10 @@
       "behavior_authority": false,
       "production_eligible": false,
       "allowed_consumers": [
-        "tree_sitter_perl_rs::Parser::parse_with_old_tree"
+        {
+          "symbol": "tree_sitter_perl_rs::Parser::parse_with_old_tree",
+          "source_path": "crates/tree-sitter-perl-rs/src/lib.rs"
+        }
       ],
       "next_action": "route_behind_canonical_or_retire_after_differential_proof",
       "owner_issue": 6707,
