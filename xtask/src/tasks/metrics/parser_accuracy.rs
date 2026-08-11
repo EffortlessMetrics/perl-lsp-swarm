@@ -3668,6 +3668,7 @@ fn is_ast_scored_node(node: &Node) -> bool {
     matches!(
         node.kind,
         NodeKind::Package { .. }
+            | NodeKind::Class { .. }
             | NodeKind::Subroutine { .. }
             | NodeKind::Method { .. }
             | NodeKind::VariableDeclaration { .. }
