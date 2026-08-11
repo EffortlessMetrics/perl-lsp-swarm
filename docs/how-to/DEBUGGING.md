@@ -136,8 +136,8 @@ The old v0.8.8 workspace report is historical. The current workspace excludes le
 # ✅ This should work (workspace tests only production crates)
 cargo test
 
-# ⚠️ Legacy excluded components are not part of the default workspace
-cargo build -p tree-sitter-perl
+# ⚠️ The legacy top-level tree-sitter-perl component is excluded; the maintained C compatibility crate is tree-sitter-perl-c
+cargo build -p tree-sitter-perl-c
 ```
 
 **Solution**: The workspace is configured to exclude problematic crates. Use the standard workspace commands:
