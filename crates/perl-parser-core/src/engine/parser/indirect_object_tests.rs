@@ -91,17 +91,20 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_lowercase_name_inside_control_flow_is_function_call() {
+    fn test_unknown_lowercase_name_inside_control_flow_is_function_call() -> Result<(), String> {
         let stmt = first_statement("if ($enabled) { my_custom_method($obj, 10, 20); }");
         let then_branch = match stmt.kind {
             NodeKind::If { then_branch, .. } => then_branch,
-            other => panic!("Expected If node, got {other:?}"),
+            other => return Err(format!("expected If node, got {other:?}")),
         };
         let body = match then_branch.kind {
             NodeKind::Block { statements } => statements,
-            other => panic!("Expected Block node, got {other:?}"),
+            other => return Err(format!("expected Block node, got {other:?}")),
         };
-        let call = match &body[0] {
+        let statement = body
+            .first()
+            .ok_or_else(|| "expected a call statement in the block".to_string())?;
+        let call = match statement {
             Node {
                 kind: NodeKind::ExpressionStatement { expression },
                 ..
@@ -109,11 +112,10 @@ mod tests {
             node => node,
         };
         match &call.kind {
-            NodeKind::FunctionCall { name, args } => {
-                assert_eq!(name, "my_custom_method");
-                assert_eq!(args.len(), 3);
+            NodeKind::FunctionCall { name, args } if name == "my_custom_method" && args.len() == 3 => {
+                Ok(())
             }
-            other => panic!("Expected FunctionCall node in block, got {other:?}"),
+            other => Err(format!("expected three-argument FunctionCall in block, got {other:?}")),
         }
     }
 
