@@ -1,0 +1,156 @@
+schema_version = 1
+owner = "perl-lsp maintainers"
+current_method = "docs/agents/DEVELOPMENT_METHOD.md"
+review_currentness = "docs/agents/REVIEW_CURRENTNESS.md"
+github_surfaces = "docs/agents/GITHUB_SURFACES.md"
+tracking_issue = 4555
+
+[[documents]]
+path = "AGENTS.md"
+status = "current"
+successor = ""
+notes = "Codex provider route map."
+
+[[documents]]
+path = "CLAUDE.md"
+status = "current"
+successor = ""
+notes = "Claude provider route map."
+
+[[documents]]
+path = "docs/agents/DEVELOPMENT_METHOD.md"
+status = "current"
+successor = ""
+notes = "Shared provider-native development and orchestration method."
+
+[[documents]]
+path = "docs/agents/REVIEW_CURRENTNESS.md"
+status = "current"
+successor = ""
+notes = "Semantic review and proof currentness contract."
+
+[[documents]]
+path = "docs/agents/GITHUB_SURFACES.md"
+status = "current"
+successor = ""
+notes = "Durable GitHub surface and label-authority boundary."
+
+[[documents]]
+path = "docs/agents/SKILL_CONTRACT.md"
+status = "current"
+successor = ""
+notes = "Public-flow and skill composition contract."
+
+[[documents]]
+path = "docs/how-to/SESSION_OPERATIONS.md"
+status = "current"
+successor = ""
+notes = "Provider-native session resume and closeout runbook."
+
+[[documents]]
+path = "docs/how-to/AGENT_CONTRIBUTING.md"
+status = "current"
+successor = ""
+notes = "Short agent contribution route."
+
+[[documents]]
+path = "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
+status = "transitional"
+successor = "issue #4560 / PR #6863"
+notes = "Current main still contains the accepted mandatory-rebase text; PR #6863 replaces it with semantic incorporation."
+
+[[documents]]
+path = "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"
+status = "transitional"
+successor = "issue #4555 / PR #6868"
+notes = "Current main still exposes the legacy conveyor-era maintainer contract; PR #6868 replaces the active entrypoint."
+
+[[documents]]
+path = "docs/reference/WORKTREE_PROTOCOL.md"
+status = "transitional"
+successor = "issue #4555 / PR #6868"
+notes = "Useful worktree safety mixed with stale branch and mutation doctrine; PR #6868 separates the surviving controls."
+
+[[documents]]
+path = "CONTRIBUTING.md"
+status = "transitional"
+successor = "issue #4555 / PR #6868"
+notes = "Current main still describes the retired model/label review conveyor; PR #6868 replaces it while retaining useful contributor routes."
+
+[[documents]]
+path = ".github/copilot-instructions.md"
+status = "transitional"
+successor = "issue #4555 / PR #6868"
+notes = "Current main duplicates a stale architecture and fixed workflow; PR #6868 reduces it to the current route map."
+
+[[documents]]
+path = "scripts/ci/check-pr-claim-currentness"
+status = "transitional"
+successor = "issue #5778 / PR #6871"
+notes = "Legacy exact-head and claim-digest verdict command; PR #6871 retires live use while preserving fixtures."
+
+[[documents]]
+path = "scripts/reviews/claim-digest"
+status = "transitional"
+successor = "issue #5778 / PR #6871"
+notes = "Legacy command-line digest authority; PR #6871 retires the CLI while preserving the compatibility module."
+
+[[documents]]
+path = "scripts/ci/check-pr-review-convergence-core"
+status = "transitional"
+successor = "scripts/ci/check-pr-review-convergence and issue #5778"
+notes = "Compatibility collector with historical exact-head terminology; consume only through the public semantic wrapper until containment lands."
+
+[[documents]]
+path = "docs/reference/ORCHESTRATION_DOCTRINE.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical conveyor/reconciler design. Its internal north-star wording is part of the record, not current authority."
+
+[[documents]]
+path = "docs/reference/PIPELINE_GATES.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical fixed seven-gate and named-agent model. Current flows are provider-native and state-driven."
+
+[[documents]]
+path = "docs/reference/OCTOPUS_CLUSTER.md"
+status = "historical"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical architecture and operating observations. Retained concepts do not restore receipt/reconciler authority."
+
+[[documents]]
+path = "docs/reference/GLOSSARY.md"
+status = "superseded"
+successor = "docs/agents/AUTHORITY_STATUS.md"
+notes = "Historical conveyor vocabulary and reading order; do not use it to select current routes."
+
+[[documents]]
+path = "docs/reference/LIVE_SIGNALS_VS_LABELS.md"
+status = "historical"
+successor = "docs/agents/GITHUB_SURFACES.md"
+notes = "The live-signal principle survives; the fixed label taxonomy and reconciler model do not."
+
+[[documents]]
+path = "docs/adr/0044-octopus-cluster-orchestration.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Accepted historical architecture decision superseded by the provider-native method and #4191 lineage."
+
+[[documents]]
+path = "docs/articles/PIPELINE_STATE_MACHINE.md"
+status = "historical"
+successor = "docs/agents/GITHUB_SURFACES.md"
+notes = "Historical design article; labels are not current lifecycle authority."
+
+[[documents]]
+path = "docs/handoff/SWARM_DESIGN.md"
+status = "historical"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical design handoff; file non-overlap, permanent coordinators, and rebase-open are not current operating rules."
+
+[[documents]]
+path = ".spec/3988-merge-readiness/spec.md"
+status = "historical"
+successor = "docs/agents/REVIEW_CURRENTNESS.md"
+notes = "Completed mechanism snapshot. Exact-subject machine evidence survives; exact-head human-review ceremony does not."
