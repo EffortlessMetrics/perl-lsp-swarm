@@ -12,10 +12,7 @@ pub(crate) struct LexedSource {
     pub(crate) live_checkpoints: Vec<LiveLexerCheckpoint>,
 }
 
-fn summarize_checkpoint(
-    checkpoint: &LiveLexerCheckpoint,
-    line_index: &LineIndex,
-) -> LexCheckpoint {
+fn summarize_checkpoint(checkpoint: &LiveLexerCheckpoint, line_index: &LineIndex) -> LexCheckpoint {
     let (line, column) = line_index.byte_to_position(checkpoint.position);
     LexCheckpoint { byte: checkpoint.position, mode: checkpoint.mode, line, column }
 }
@@ -83,6 +80,9 @@ pub(crate) fn capture_live_checkpoint(
     loop {
         let checkpoint = lexer.checkpoint();
         if checkpoint.position == boundary {
+            if checkpoint.is_timeout_sensitive() {
+                return None;
+            }
             return Some(checkpoint);
         }
         if checkpoint.position > boundary {
@@ -194,7 +194,9 @@ mod tests {
         let replayed = capture_live_checkpoint(source, expected.position)
             .ok_or_else(|| anyhow::anyhow!("live checkpoint replay failed"))?;
 
-        assert_eq!(&replayed, expected);
+        let mut expected_without_operation_time = expected.clone();
+        expected_without_operation_time.start_time = replayed.start_time;
+        assert_eq!(replayed, expected_without_operation_time);
         Ok(())
     }
 
@@ -219,9 +221,10 @@ mod tests {
             lexed.checkpoints.iter().any(|summary| summary.byte == queued.position),
             "queued-heredoc state must remain a replayable boundary"
         );
-        let replayed = capture_live_checkpoint(source, queued.position)
-            .ok_or_else(|| anyhow::anyhow!("queued-heredoc checkpoint replay failed"))?;
-        assert_eq!(replayed, *queued);
+        assert!(
+            capture_live_checkpoint(source, queued.position).is_none(),
+            "timeout-sensitive queued-heredoc checkpoints must fall back"
+        );
 
         let resumed = lexed
             .live_checkpoints

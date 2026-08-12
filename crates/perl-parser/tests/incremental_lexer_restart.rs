@@ -102,12 +102,7 @@ fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
         ("prototype", "sub f($$) { return 1; } my $after = 1;", "return 1", "return 2"),
         ("unicode", "my $x = \"café\"; my $after = 1;", "é", "ø"),
         ("crlf", "my $x = 1;\r\nmy $y = 2;\r\n", "= 2", "= 3"),
-        (
-            "heredoc-body",
-            "my $value = <<EOF;\nbody\nEOF\nprint $value;\n",
-            "body",
-            "changed",
-        ),
+        ("heredoc-body", "my $value = <<EOF;\nbody\nEOF\nprint $value;\n", "body", "changed"),
     ];
 
     for (name, source, needle, replacement) in fixtures {
@@ -164,5 +159,36 @@ fn large_edit_reports_full_relex_instead_of_checkpoint_reuse() -> TestResult {
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_eq!(result.lex_restart.relexed_bytes, state.source().len());
     assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
+    Ok(())
+}
+
+#[test]
+fn timeout_sensitive_checkpoint_falls_back_with_downstream_span_parity() -> TestResult {
+    let source = "my $value = <<EOF;\nbody\nEOF\nmy $after = 1;\n";
+    let edit = replacing_edit(source, "body", "changed")?;
+    let mut state = IncrementalState::new(source.to_string());
+
+    let result = apply_edits(&mut state, &[edit])?;
+
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::FullRelex);
+    assert_eq!(result.lex_restart.restart_byte, 0);
+    assert_eq!(result.lex_restart.relexed_bytes, state.source().len());
+
+    let expected = fresh_tokens(state.source());
+    assert_tokens_equal(state.tokens(), &expected);
+    let downstream_start =
+        state.source().find("my $after").ok_or("downstream fixture is missing")?;
+    let actual_downstream =
+        state.tokens().iter().filter(|token| token.start >= downstream_start).collect::<Vec<_>>();
+    let expected_downstream =
+        expected.iter().filter(|token| token.start >= downstream_start).collect::<Vec<_>>();
+    assert_eq!(actual_downstream.len(), expected_downstream.len());
+    for (index, (actual, expected)) in actual_downstream.iter().zip(expected_downstream).enumerate()
+    {
+        assert_eq!(actual.token_type, expected.token_type, "downstream token kind {index}");
+        assert_eq!(actual.text, expected.text, "downstream token payload {index}");
+        assert_eq!(actual.start, expected.start, "downstream token start {index}");
+        assert_eq!(actual.end, expected.end, "downstream token end {index}");
+    }
     Ok(())
 }
