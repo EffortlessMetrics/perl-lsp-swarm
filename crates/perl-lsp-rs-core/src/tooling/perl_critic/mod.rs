@@ -16,11 +16,10 @@ pub use native::{
     AssignmentInConditionRule, CriticCategory, CriticContext, CriticFinding, CriticFix,
     CriticRelatedInformation, CriticRule, CriticSuppression, CriticSuppressionMap,
     CriticSuppressionScope, CriticTextEdit, DeprecatedDefinedRule, DuplicateLexicalDeclarationRule,
-    DuplicateParameterRule, FixSafety, NativeCriticProfile, NativeCriticProfileParseError,
-    NativeCriticRegistry, ParameterShadowsGlobalRule, PrintfFormatArityRule,
-    RequirePodSectionsRule, RequireUseStrictRule, RequireUseWarningsRule,
-    ShadowedLexicalVariableRule, StaleDollarAtRule, UndefComparisonRule, UnreachableCodeRule,
-    UnusedLexicalVariableRule, UnusedParameterRule,
+    DuplicateParameterRule, FixSafety, NativeCriticProfile, NativeCriticRegistry,
+    ParameterShadowsGlobalRule, PrintfFormatArityRule, RequirePodSectionsRule,
+    RequireUseStrictRule, RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule,
+    UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
 pub use quick_fix::{QuickFix, TextEdit};
 pub use result_identity::{
@@ -29,6 +28,13 @@ pub use result_identity::{
     DiagnosticSourceIdentity,
 };
 pub use types::{CriticConfig, Severity, Violation};
+
+/// Error returned when an external native-critic profile token is not recognized.
+///
+/// The concrete error is owned by the profile implementation; this public alias
+/// keeps the error name stable without requiring every caller to know that
+/// implementation module's path.
+pub type NativeCriticProfileParseError = <NativeCriticProfile as std::str::FromStr>::Err;
 
 #[cfg(not(feature = "lsp-compat"))]
 pub use types::ViolationSummary;
