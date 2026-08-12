@@ -53,6 +53,9 @@ jobs:
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
 
+      - name: Test VSIX inventory transition contract
+        run: node --test scripts/check-vsix-inventory-transition.test.js
+
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
