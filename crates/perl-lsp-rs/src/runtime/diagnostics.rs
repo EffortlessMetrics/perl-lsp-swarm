@@ -81,6 +81,53 @@ fn critic_range_to_byte_range(
     (start <= end).then_some((start, end))
 }
 
+fn parse_error_base_message(error: &crate::error::ParseError) -> String {
+    match error {
+        crate::error::ParseError::UnexpectedToken { expected, found, .. } => {
+            format!("Expected {expected}, found {found}")
+        }
+        crate::error::ParseError::SyntaxError { message, .. }
+        | crate::error::ParseError::Advisory { message, .. } => message.clone(),
+        crate::error::ParseError::Recovered { .. } => error.to_string(),
+        crate::error::ParseError::UnexpectedEof => "Unexpected end of input".to_string(),
+        crate::error::ParseError::LexerError { message } => message.clone(),
+        crate::error::ParseError::RecursionLimit
+        | crate::error::ParseError::InvalidNumber { .. }
+        | crate::error::ParseError::InvalidString
+        | crate::error::ParseError::UnclosedDelimiter { .. }
+        | crate::error::ParseError::InvalidRegex { .. }
+        | crate::error::ParseError::NestingTooDeep { .. }
+        | crate::error::ParseError::Cancelled => error.to_string(),
+    }
+}
+
+fn resolved_parse_diagnostic_offset(error: &crate::error::ParseError, text: &str) -> usize {
+    match error.resolved_diagnostic_anchor(text.len()) {
+        perl_parser::error::ResolvedParseDiagnosticAnchor::Exact(offset)
+            if text.is_char_boundary(offset) =>
+        {
+            offset
+        }
+        perl_parser::error::ResolvedParseDiagnosticAnchor::Exact(offset) => {
+            tracing::error!(offset, "parser returned a UTF-8 interior diagnostic anchor");
+            text.len()
+        }
+        perl_parser::error::ResolvedParseDiagnosticAnchor::EndOfInput(offset) => offset,
+        perl_parser::error::ResolvedParseDiagnosticAnchor::NoSource => 0,
+        perl_parser::error::ResolvedParseDiagnosticAnchor::InvalidOffset {
+            reported,
+            source_len,
+        } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned an out-of-range diagnostic anchor"
+            );
+            source_len
+        }
+    }
+}
+
 /// Orchestrator for pull diagnostics operations.
 ///
 /// Coordinates between LspServer state and the pure-logic PullDiagnosticsProvider.
@@ -684,42 +731,8 @@ impl LspServer {
             parse_errors
                 .iter()
                 .map(|e| {
-                    // Extract location and base message from error enum.
-                    // Use diagnostic_anchor() for variants without an explicit location so
-                    // that future ParseError variants are handled explicitly rather than
-                    // silently falling to byte zero.
-                    let (location, base_message) = match e {
-                        crate::error::ParseError::UnexpectedToken { location, expected, found } => {
-                            (*location, format!("Expected {}, found {}", expected, found))
-                        }
-                        crate::error::ParseError::SyntaxError { location, message } => {
-                            (*location, message.clone())
-                        }
-                        crate::error::ParseError::Advisory { location, message } => {
-                            (*location, message.clone())
-                        }
-                        crate::error::ParseError::Recovered { location, .. } => {
-                            (*location, e.to_string())
-                        }
-                        crate::error::ParseError::UnexpectedEof => {
-                            (text.len(), "Unexpected end of input".to_string())
-                        }
-                        crate::error::ParseError::LexerError { message } => {
-                            // NoSource: no defensible position; display at file start.
-                            (0, message.clone())
-                        }
-                        crate::error::ParseError::RecursionLimit
-                        | crate::error::ParseError::InvalidNumber { .. }
-                        | crate::error::ParseError::InvalidString
-                        | crate::error::ParseError::UnclosedDelimiter { .. }
-                        | crate::error::ParseError::InvalidRegex { .. }
-                        | crate::error::ParseError::NestingTooDeep { .. }
-                        | crate::error::ParseError::Cancelled => {
-                            // NoSource variants: no defensible source position; display at
-                            // file start per ParseDiagnosticAnchor::NoSource policy.
-                            (0, e.to_string())
-                        }
-                    };
+                    let base_message = parse_error_base_message(e);
+                    let location = resolved_parse_diagnostic_offset(e, &text);
 
                     // Append hint so users see actionable guidance in push fallback path too
                     let message =
@@ -801,31 +814,8 @@ impl LspServer {
         parse_errors
             .iter()
             .map(|e| {
-                let (location, base_message) = match e {
-                    crate::error::ParseError::UnexpectedToken { location, expected, found } => {
-                        (*location, format!("Expected {}, found {}", expected, found))
-                    }
-                    crate::error::ParseError::SyntaxError { location, message } => {
-                        (*location, message.clone())
-                    }
-                    crate::error::ParseError::Advisory { location, message } => {
-                        (*location, message.clone())
-                    }
-                    crate::error::ParseError::UnexpectedEof => {
-                        (text.len(), "Unexpected end of input".to_string())
-                    }
-                    crate::error::ParseError::LexerError { message } => (0, message.clone()),
-                    crate::error::ParseError::RecursionLimit => (0, e.to_string()),
-                    crate::error::ParseError::InvalidNumber { .. } => (0, e.to_string()),
-                    crate::error::ParseError::InvalidString => (0, e.to_string()),
-                    crate::error::ParseError::UnclosedDelimiter { .. } => (0, e.to_string()),
-                    crate::error::ParseError::InvalidRegex { .. } => (0, e.to_string()),
-                    crate::error::ParseError::NestingTooDeep { .. } => (0, e.to_string()),
-                    crate::error::ParseError::Cancelled => (0, e.to_string()),
-                    crate::error::ParseError::Recovered { location, .. } => {
-                        (*location, e.to_string())
-                    }
-                };
+                let base_message = parse_error_base_message(e);
+                let location = resolved_parse_diagnostic_offset(e, text);
                 let message =
                     match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
                         e,
@@ -978,41 +968,8 @@ impl LspServer {
             parse_errors
                 .iter()
                 .map(|e| {
-                    // Use explicit arms for every ParseError variant so that future
-                    // variants are handled deliberately rather than silently mapped to
-                    // byte zero. See ParseDiagnosticAnchor for the source-anchor policy.
-                    let (location, base_message) = match e {
-                        crate::error::ParseError::UnexpectedToken { location, expected, found } => {
-                            (*location, format!("Expected {}, found {}", expected, found))
-                        }
-                        crate::error::ParseError::SyntaxError { location, message } => {
-                            (*location, message.clone())
-                        }
-                        crate::error::ParseError::Advisory { location, message } => {
-                            (*location, message.clone())
-                        }
-                        crate::error::ParseError::Recovered { location, .. } => {
-                            (*location, e.to_string())
-                        }
-                        crate::error::ParseError::UnexpectedEof => {
-                            (text.len(), "Unexpected end of input".to_string())
-                        }
-                        crate::error::ParseError::LexerError { message } => {
-                            // NoSource: no defensible position; display at file start.
-                            (0, message.clone())
-                        }
-                        crate::error::ParseError::RecursionLimit
-                        | crate::error::ParseError::InvalidNumber { .. }
-                        | crate::error::ParseError::InvalidString
-                        | crate::error::ParseError::UnclosedDelimiter { .. }
-                        | crate::error::ParseError::InvalidRegex { .. }
-                        | crate::error::ParseError::NestingTooDeep { .. }
-                        | crate::error::ParseError::Cancelled => {
-                            // NoSource variants: no defensible source position; display at
-                            // file start per ParseDiagnosticAnchor::NoSource policy.
-                            (0, e.to_string())
-                        }
-                    };
+                    let base_message = parse_error_base_message(e);
+                    let location = resolved_parse_diagnostic_offset(e, &text);
                     let message =
                         match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
                             e,
@@ -3144,6 +3101,37 @@ mod tests {
             text.contains("publishDiagnostics"),
             "fast path must emit publishDiagnostics when parse errors exist; got: {text:?}"
         );
+    }
+
+    #[test]
+    fn push_diagnostic_preserves_recovered_anchor() {
+        let error = perl_parser::error::ParseError::Recovered {
+            site: perl_parser::error::RecoverySite::InfixRhs,
+            kind: perl_parser::error::RecoveryKind::MissingOperand,
+            location: 2,
+        };
+
+        assert_eq!(resolved_parse_diagnostic_offset(&error, "ab + ;"), 2);
+    }
+
+    #[test]
+    fn push_diagnostic_rejects_out_of_range_anchor() {
+        let error = perl_parser::error::ParseError::SyntaxError {
+            location: 42,
+            message: "bad syntax".to_string(),
+        };
+
+        assert_eq!(resolved_parse_diagnostic_offset(&error, "abc"), 3);
+    }
+
+    #[test]
+    fn push_diagnostic_rejects_utf8_interior_anchor() {
+        let error = perl_parser::error::ParseError::SyntaxError {
+            location: 1,
+            message: "bad syntax".to_string(),
+        };
+
+        assert_eq!(resolved_parse_diagnostic_offset(&error, "💖"), 4);
     }
 
     /// Guard: `publish_parse_errors_fast` with a pull-diagnostic client must NOT

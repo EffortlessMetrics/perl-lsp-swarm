@@ -28,7 +28,9 @@ use perl_module::resolution::use_lib::{
     resolve_use_lib_paths_from_source_at_offset,
 };
 use perl_parser::Parser;
-use perl_parser::error::ParseError;
+use perl_parser::error::{ParseError, ResolvedParseDiagnosticAnchor};
+#[cfg(test)]
+use perl_parser::error::{RecoveryKind, RecoverySite};
 use perl_parser::position::offset_to_utf16_line_col;
 use perl_parser::util::code_slice;
 
@@ -1095,32 +1097,24 @@ impl PullDiagnosticsProvider {
         error: &ParseError,
         context: &PullDiagnosticsContext,
     ) -> LspDiagnostic {
-        // Explicit arm for every ParseError variant — no wildcard. Adding a new variant
-        // will cause a compile error here rather than silently placing the diagnostic at
-        // byte zero. See ParseDiagnosticAnchor for the source-anchor policy.
-        let (offset, base_message) = match error {
-            ParseError::UnexpectedToken { location, expected, found } => {
-                (*location, format!("Expected {expected}, found {found}"))
+        // Keep message formatting local, but let parser-core own source placement.
+        let base_message = match error {
+            ParseError::UnexpectedToken { expected, found, .. } => {
+                format!("Expected {expected}, found {found}")
             }
-            ParseError::SyntaxError { location, message } => (*location, message.clone()),
-            ParseError::Advisory { location, message } => (*location, message.clone()),
-            ParseError::Recovered { location, .. } => (*location, error.to_string()),
-            ParseError::UnexpectedEof => (text.len(), "Unexpected end of input".to_string()),
-            ParseError::LexerError { message } => {
-                // NoSource: no defensible position; display at file start.
-                (0, message.clone())
+            ParseError::SyntaxError { message, .. } | ParseError::Advisory { message, .. } => {
+                message.clone()
             }
+            ParseError::Recovered { .. } => error.to_string(),
+            ParseError::UnexpectedEof => "Unexpected end of input".to_string(),
+            ParseError::LexerError { message } => message.clone(),
             ParseError::RecursionLimit
             | ParseError::InvalidNumber { .. }
             | ParseError::InvalidString
             | ParseError::UnclosedDelimiter { .. }
             | ParseError::InvalidRegex { .. }
             | ParseError::NestingTooDeep { .. }
-            | ParseError::Cancelled => {
-                // NoSource variants: no defensible source position; display at
-                // file start per ParseDiagnosticAnchor::NoSource policy.
-                (0, error.to_string())
-            }
+            | ParseError::Cancelled => error.to_string(),
         };
 
         // Append the suggestion inline so users see actionable hints in the fallback path,
@@ -1132,6 +1126,7 @@ impl PullDiagnosticsProvider {
             None => base_message,
         };
 
+        let offset = resolved_parse_diagnostic_offset(error, text);
         let end_offset = offset.saturating_add(1).min(text.len());
         let range = lsp_range_from_offsets(text, offset, end_offset);
 
@@ -1192,6 +1187,26 @@ fn lsp_range_from_offsets(text: &str, start: usize, end: usize) -> Range {
     let (start_line, start_col) = offset_to_utf16_line_col(text, start);
     let (end_line, end_col) = offset_to_utf16_line_col(text, end);
     Range::new(Position::new(start_line, start_col), Position::new(end_line, end_col))
+}
+
+fn resolved_parse_diagnostic_offset(error: &ParseError, text: &str) -> usize {
+    match error.resolved_diagnostic_anchor(text.len()) {
+        ResolvedParseDiagnosticAnchor::Exact(offset) if text.is_char_boundary(offset) => offset,
+        ResolvedParseDiagnosticAnchor::Exact(offset) => {
+            tracing::error!(offset, "parser returned a UTF-8 interior diagnostic anchor");
+            text.len()
+        }
+        ResolvedParseDiagnosticAnchor::EndOfInput(offset) => offset,
+        ResolvedParseDiagnosticAnchor::NoSource => 0,
+        ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned an out-of-range diagnostic anchor"
+            );
+            source_len
+        }
+    }
 }
 
 fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverity {
@@ -1499,6 +1514,52 @@ mod tests {
         assert_eq!(diagnostic.severity, Some(LspDiagnosticSeverity::WARNING));
         let data = diagnostic.data.as_ref().ok_or("data should be populated")?;
         assert_eq!(data["code"], "PL302");
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_preserves_recovered_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "ab + ;",
+            &ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location: 2,
+            },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 2));
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_rejects_out_of_range_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "abc",
+            &ParseError::SyntaxError { location: 42, message: "bad syntax".to_string() },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 3));
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_rejects_utf8_interior_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "💖",
+            &ParseError::SyntaxError { location: 1, message: "bad syntax".to_string() },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 2));
         Ok(())
     }
 
