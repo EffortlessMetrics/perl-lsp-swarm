@@ -151,22 +151,60 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
 
-      - name: Build binaries
+      - name: Prepare exact release build identity
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
           USE_CROSS: ${{ matrix.use_cross }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+          CANDIDATE_ID: ${{ needs.release-metadata.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           BUILD_CMD="cargo"
           if [ "$USE_CROSS" = "true" ]; then
             BUILD_CMD="cross"
           fi
+          mkdir -p target/release-identity
+          python3 scripts/generate_release_topology.py \
+            --release "$VERSION" \
+            --frozen-product-sha "$SOURCE_SHA" \
+            --output target/release-identity/release-topology.json
+          python3 scripts/release_build_identity.py prepare \
+            --repository "$REPOSITORY" \
+            --release-version "$VERSION" \
+            --source-revision "$SOURCE_SHA" \
+            --target "$TARGET" \
+            --candidate-identity "$CANDIDATE_ID" \
+            --artifact-role archive \
+            --release-topology target/release-identity/release-topology.json \
+            --product-identity policy/product-identity.toml \
+            --runner "$BUILD_CMD" \
+            --output target/release-identity/release-build-identity.json \
+            --github-env "$GITHUB_ENV"
+          printf 'BUILD_CMD=%s\n' "$BUILD_CMD" >> "$GITHUB_ENV"
+
+      - name: Build binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
           # Keep these literal `$BUILD_CMD build` command shapes: the
           # repository-owned dist-shadow contract parses them to prove that the
           # shadow manifest exactly matches the live release binaries.
           $BUILD_CMD build --locked --release --target "$TARGET" -p perllsp --bin perllsp
           $BUILD_CMD build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
+
+      - name: Verify exact release build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_build_identity.py verify \
+            --input target/release-identity/release-build-identity.json \
+            --runner "$BUILD_CMD" \
+            --receipt target/release-identity/release-build-receipt.json
 
       - name: Package binaries
         shell: bash
@@ -226,6 +264,17 @@ jobs:
           path: ${{ env.ASSET }}
           retention-days: 1
 
+      - name: Retain release build identity evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-build-identity-${{ matrix.target }}
+          path: |
+            target/release-identity/release-topology.json
+            target/release-identity/release-build-identity.json
+            target/release-identity/release-build-receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
   release:
     name: Create Release
     needs: [build, release-metadata]
@@ -245,9 +294,10 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Download all artifacts
+      - name: Download release archive artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: perllsp-*
           path: artifacts
 
       - name: Display structure of downloaded files
