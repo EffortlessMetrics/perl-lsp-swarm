@@ -1,0 +1,322 @@
++    assert_eq!(
++        FileFactShardPort::try_new(
++            &[duplicate_occurrence],
++            FileFactShardSource::ParserAst,
++            snapshot()?,
++        )
++        .err(),
++        Some(ProviderAdapterError::DuplicateOccurrence {
++            file_id: FileId(12),
++            occurrence_id: OccurrenceId(40),
++        })
++    );
++    Ok(())
++}
++
++#[test]
++fn canonical_adapter_rejects_conflicting_fact_identity() -> Result<(), Box<dyn Error>> {
++    let first = CanonicalEnvelopeInput::try_new(
++        canonical_envelope(
++            FactId(900),
++            EntityId(30),
++            FileId(10),
++            SemanticFreshness::Fresh,
++        ),
++        ProviderFactGenerationScope::Document,
++        ["work".to_string()],
++    )?;
++    let second = CanonicalEnvelopeInput::try_new(
++        canonical_envelope(
++            FactId(900),
++            EntityId(31),
++            FileId(11),
++            SemanticFreshness::Fresh,
++        ),
++        ProviderFactGenerationScope::Document,
++        ["other".to_string()],
++    )?;
++    assert_eq!(
++        CanonicalEnvelopePort::try_new([first, second], snapshot()?).err(),
++        Some(ProviderAdapterError::DuplicateFactId(FactId(900)))
++    );
++    Ok(())
++}
++
++#[test]
++fn request_generation_and_readiness_bound_exactness() -> Result<(), Box<dyn Error>> {
++    let port = FileFactShardPort::try_new(
++        &[complete_shard(FileId(10), "file:///one.pl")],
++        FileFactShardSource::WorkspaceIndex,
++        snapshot()?,
++    )?;
++    let mismatched = execute_provider_query(
++        &port,
++        &request_with(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Symbol("work".to_string()),
++            context_with(
++                "document-8",
++                "workspace-4",
++                ProviderReadinessRequirement::ActiveDocument,
++                ProviderReadinessState::Ready,
++            ),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(mismatched.outcome(), ProviderQueryOutcome::Unavailable);
++
++    let limited = execute_provider_query(
++        &port,
++        &request_with(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Symbol("work".to_string()),
++            context_with(
++                "document-7",
++                "workspace-3",
++                ProviderReadinessRequirement::ActiveDocument,
++                ProviderReadinessState::ReadyLimited,
++            ),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(limited.outcome(), ProviderQueryOutcome::Degraded);
++
++    let building = execute_provider_query(
++        &port,
++        &request_with(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Symbol("work".to_string()),
++            context_with(
++                "document-7",
++                "workspace-3",
++                ProviderReadinessRequirement::ActiveDocument,
++                ProviderReadinessState::Building,
++            ),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(building.outcome(), ProviderQueryOutcome::Unavailable);
++    Ok(())
++}
++
++#[test]
++fn shadow_unknown_and_edit_authorizing_snapshots_cannot_claim_exact(
++) -> Result<(), Box<dyn Error>> {
++    let shadow = FileFactShardPort::try_new(
++        &[complete_shard(FileId(10), "file:///shadow.pl")],
++        FileFactShardSource::ParserAst,
++        snapshot_with(
++            SemanticFreshness::Fresh,
++            LifecyclePhase::Runtime,
++            ProviderFallbackState::Shadow,
++        )?,
++    )?;
++    let query = request(
++        ProviderQueryKind::Declaration,
++        ProviderQuerySubject::Symbol("work".to_string()),
++    );
++    let shadow_result = execute_provider_query(&shadow, &query, &NoopProviderQueryControl)?;
++    assert_eq!(shadow_result.outcome(), ProviderQueryOutcome::Unavailable);
++
++    let unknown_lifecycle = FileFactShardPort::try_new(
++        &[complete_shard(FileId(11), "file:///unknown.pl")],
++        FileFactShardSource::ParserAst,
++        snapshot_with(
++            SemanticFreshness::Fresh,
++            LifecyclePhase::Unknown,
++            ProviderFallbackState::Primary,
++        )?,
++    )?;
++    let unknown_result = execute_provider_query(
++        &unknown_lifecycle,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Symbol("work".to_string()),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(unknown_result.outcome(), ProviderQueryOutcome::Degraded);
++
++    let edit_result = execute_provider_query(
++        &unknown_lifecycle,
++        &request_with(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Symbol("work".to_string()),
++            context_with(
++                "document-7",
++                "workspace-3",
++                ProviderReadinessRequirement::EditAuthorizing,
++                ProviderReadinessState::Ready,
++            ),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(edit_result.outcome(), ProviderQueryOutcome::Unavailable);
++    Ok(())
++}
++
++#[test]
++fn canonical_producer_and_staleness_remain_fact_owned() -> Result<(), Box<dyn Error>> {
++    let exact = CanonicalEnvelopeInput::try_new(
++        canonical_envelope(
++            FactId(900),
++            EntityId(30),
++            FileId(10),
++            SemanticFreshness::Fresh,
++        ),
++        ProviderFactGenerationScope::Document,
++        ["work".to_string()],
++    )?;
++    let exact_port = CanonicalEnvelopePort::try_new([exact], snapshot()?)?;
++    let exact_result = execute_provider_query(
++        &exact_port,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Entity(EntityId(30)),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(exact_result.outcome(), ProviderQueryOutcome::Exact);
++    assert_eq!(exact_result.evidence().producers(), &[SemanticProducer::PirA]);
++
++    let stale = CanonicalEnvelopeInput::try_new(
++        canonical_envelope(
++            FactId(901),
++            EntityId(31),
++            FileId(11),
++            SemanticFreshness::Stale,
++        ),
++        ProviderFactGenerationScope::Document,
++        ["old".to_string()],
++    )?;
++    let stale_port = CanonicalEnvelopePort::try_new([stale], snapshot()?)?;
++    let stale_result = execute_provider_query(
++        &stale_port,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Entity(EntityId(31)),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(stale_result.outcome(), ProviderQueryOutcome::Stale);
++
++    let missing_result = execute_provider_query(
++        &stale_port,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Symbol("missing".to_string()),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(missing_result.outcome(), ProviderQueryOutcome::Unavailable);
++    Ok(())
++}
++
++#[test]
++fn dynamic_and_missing_anchor_paths_do_not_fabricate_exactness(
++) -> Result<(), Box<dyn Error>> {
++    let mut dynamic_shard = complete_shard(FileId(10), "file:///dynamic.pl");
++    let Some(dynamic_occurrence) = dynamic_shard.occurrences.first_mut() else {
++        return Err(std::io::Error::other("test shard has no occurrence").into());
++    };
++    dynamic_occurrence.kind = OccurrenceKind::DynamicBoundary;
++    dynamic_occurrence.provenance = Provenance::DynamicBoundary;
++    dynamic_occurrence.confidence = Confidence::Low;
++    let dynamic = FileFactShardPort::try_new(
++        &[dynamic_shard],
++        FileFactShardSource::SemanticAnalyzer,
++        snapshot()?,
++    )?;
++    let dynamic_result = execute_provider_query(
++        &dynamic,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Position {
++                file_id: FileId(10),
++                byte_offset: 21,
++            },
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(dynamic_result.outcome(), ProviderQueryOutcome::Dynamic);
++
++    let mut missing_anchor = complete_shard(FileId(11), "file:///missing-anchor.pl");
++    let Some(entity) = missing_anchor.entities.first_mut() else {
++        return Err(std::io::Error::other("test shard has no entity").into());
++    };
++    entity.anchor_id = None;
++    missing_anchor.occurrences.clear();
++    let incomplete = FileFactShardPort::try_new(
++        &[missing_anchor],
++        FileFactShardSource::ParserAst,
++        snapshot()?,
++    )?;
++    let incomplete_result = execute_provider_query(
++        &incomplete,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::File(FileId(11)),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(incomplete_result.outcome(), ProviderQueryOutcome::Unavailable);
++    Ok(())
++}
++
++#[test]
++fn fallback_and_live_terminal_controls_remain_explicit() -> Result<(), Box<dyn Error>> {
++    let fallback = FileFactShardPort::try_new(
++        &[complete_shard(FileId(10), "file:///fallback.pl")],
++        FileFactShardSource::ParserAst,
++        snapshot_with(
++            SemanticFreshness::Fresh,
++            LifecyclePhase::Runtime,
++            ProviderFallbackState::Fallback,
++        )?,
++    )?;
++    let query = request(
++        ProviderQueryKind::Declaration,
++        ProviderQuerySubject::Symbol("work".to_string()),
++    );
++    let fallback_result =
++        execute_provider_query(&fallback, &query, &NoopProviderQueryControl)?;
++    assert_eq!(fallback_result.outcome(), ProviderQueryOutcome::Fallback);
++
++    let cancelled = execute_provider_query(&fallback, &query, &CancelledControl)?;
++    assert_eq!(cancelled.outcome(), ProviderQueryOutcome::Cancelled);
++    assert!(cancelled.evidence().control_observation().cancelled());
++
++    let expired = execute_provider_query(&fallback, &query, &ExpiredControl)?;
++    assert_eq!(expired.outcome(), ProviderQueryOutcome::DeadlineExceeded);
++    assert!(expired
++        .evidence()
++        .control_observation()
++        .deadline_expired());
++    Ok(())
++}
++diff --git a/policy/non-rust-allowlist.toml b/policy/non-rust-allowlist.toml
++index d1c0e29a71fa0ba844ce396669a23a02e40f36df..6e223e493b1b4eb8cb9aca3ab64b9267c48dd2af 100644
++--- a/policy/non-rust-allowlist.toml
+++++ b/policy/non-rust-allowlist.toml
++@@ -1003,6 +1003,21 @@ covered_by = [
++ created = "2026-08-11"
++ review_after = "2026-11-11"
++ 
+++[[allow]]
+++id = "non-rust-changelog-fragment-6846"
+++path = ".changes/unreleased/product-6846-Added-210342.yaml"
+++kind = "release_metadata"
+++language = "yaml"
+++surface = "release"
+++classification = "config"
+++owner = "release/ci"
+++reason = "Changie fragment for PR #6846; merged into generated release notes."
+++covered_by = [
+++  "cargo xtask check-file-policy",
+++]
+++created = "2026-08-11"
+++review_after = "2026-11-11"
+++
++ # =============================================================================
++ # Receipts / status / metrics
++ # =============================================================================
