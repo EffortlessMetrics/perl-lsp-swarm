@@ -10,6 +10,8 @@ pub enum DapMode {
     #[default]
     Native,
     /// Hidden compatibility selector for the default-off legacy bridge.
+    ///
+    /// Migration: legacy Perl::LanguageServer compatibility; use DapMode::Native instead.
     #[doc(hidden)]
     Bridge,
 }
