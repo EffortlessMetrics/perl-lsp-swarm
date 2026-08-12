@@ -1,0 +1,104 @@
+name: PR 6928 transfer receipt
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pr6928-transfer.yml'
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  transfer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fetch, recover, and verify transfer archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.request
+
+          url = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/issues/comments/5261930014'
+          request = urllib.request.Request(
+              url,
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'perl-lsp-swarm-pr6928-transfer',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              body = json.load(response)['body']
+
+          begin = 'BEGIN PR6928 TAR.GZ BASE64\n'
+          end = '\nEND PR6928 TAR.GZ BASE64'
+          if begin not in body or end not in body:
+              raise SystemExit('transfer markers missing')
+          lines = [
+              line.strip()
+              for line in body.split(begin, 1)[1].split(end, 1)[0].splitlines()
+              if line.strip()
+          ]
+          encoded = ''.join(lines)
+          if re.search(r'[^A-Za-z0-9+/=]', encoded):
+              raise SystemExit('transfer contains non-base64 characters')
+
+          expected_size = 8541
+          expected_sha = 'bdbbed495818983384b975021266ee11775c3ecb9eb6bc402bbbf9b0b00a1f77'
+          expected_chars = ((expected_size + 2) // 3) * 4
+
+          def accepted(candidate):
+              try:
+                  archive = base64.b64decode(candidate, validate=True)
+              except ValueError:
+                  return None
+              if len(archive) != expected_size:
+                  return None
+              return archive if hashlib.sha256(archive).hexdigest() == expected_sha else None
+
+          archive = accepted(encoded)
+          if archive is None and len(encoded) + 1 == expected_chars:
+              offsets = []
+              cursor = 0
+              expected_last = expected_chars - 76 * (len(lines) - 1)
+              for index, line in enumerate(lines):
+                  expected_length = expected_last if index == len(lines) - 1 else 76
+                  if len(line) == expected_length - 1:
+                      offsets.extend(range(cursor, cursor + len(line) + 1))
+                  cursor += len(line)
+              if not offsets:
+                  offsets = range(len(encoded) + 1)
+              alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+              for offset in offsets:
+                  for character in alphabet:
+                      archive = accepted(encoded[:offset] + character + encoded[offset:])
+                      if archive is not None:
+                          print(f'recovered_missing_base64_character offset={offset} value={character}')
+                          break
+                  if archive is not None:
+                      break
+
+          if archive is None:
+              raise SystemExit(
+                  f'transfer mismatch: encoded_chars={len(encoded)} expected_chars={expected_chars}'
+              )
+          with open('pr6928.tar.gz', 'wb') as destination:
+              destination.write(archive)
+          PY
+
+      - name: Upload verified transfer archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: pr6928-transfer-${{ github.event.pull_request.head.sha }}
+          path: pr6928.tar.gz
+          if-no-files-found: error
+          retention-days: 1
