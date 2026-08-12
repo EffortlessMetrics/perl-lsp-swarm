@@ -23,17 +23,12 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source
-        .get(node.location.start..node.location.end)
-        .map(str::to_owned)
+    source.get(node.location.start..node.location.end).map(str::to_owned)
 }
 
 fn subtree_contains(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> bool {
     predicate(&node.kind)
-        || node
-            .children()
-            .into_iter()
-            .any(|child| subtree_contains(child, predicate))
+        || node.children().into_iter().any(|child| subtree_contains(child, predicate))
 }
 
 fn is_recovery_node(node: &Node) -> bool {
@@ -72,12 +67,8 @@ fn nested_lexical_declaration_retains_owned_group_shape_and_initializer() -> Res
     );
 
     let declaration = &declarations[0];
-    let NodeKind::VariableListDeclaration {
-        declarator,
-        variables,
-        initializer,
-        ..
-    } = &declaration.kind
+    let NodeKind::VariableListDeclaration { declarator, variables, initializer, .. } =
+        &declaration.kind
     else {
         return Err("collected declaration changed NodeKind".to_string());
     };
@@ -266,24 +257,21 @@ fn typeglob_alias_keeps_both_operands_attached_to_one_assignment() -> Result<(),
             observed.push((
                 source_text(source, lhs),
                 source_text(source, rhs),
-                subtree_contains(lhs, &|kind| {
-                    matches!(kind, NodeKind::Typeglob { name } if name == "alias")
-                }),
-                subtree_contains(rhs, &|kind| {
-                    matches!(kind, NodeKind::AmperCall { name, .. } if name == "original")
-                }),
+                subtree_contains(
+                    lhs,
+                    &|kind| matches!(kind, NodeKind::Typeglob { name } if name == "alias"),
+                ),
+                subtree_contains(
+                    rhs,
+                    &|kind| matches!(kind, NodeKind::AmperCall { name, .. } if name == "original"),
+                ),
             ));
         }
     });
 
     assert_eq!(
         observed,
-        vec![(
-            Some("*alias".to_string()),
-            Some("\\&original".to_string()),
-            true,
-            true,
-        )],
+        vec![(Some("*alias".to_string()), Some("\\&original".to_string()), true, true,)],
         "the alias must be represented by one exact assignment with both operands attached"
     );
     Ok(())
@@ -300,11 +288,7 @@ fn lexical_declaration_recovery_preserves_following_code_without_normalizing_ele
 
     walk(&output.ast, &mut |node| {
         if is_recovery_node(node) {
-            recovery_nodes.push((
-                node.kind.kind_name(),
-                node.location.start,
-                node.location.end,
-            ));
+            recovery_nodes.push((node.kind.kind_name(), node.location.start, node.location.end));
         }
         if let NodeKind::VariableDeclaration { variable, .. } = &node.kind
             && let NodeKind::Variable { sigil, name } = &variable.kind
