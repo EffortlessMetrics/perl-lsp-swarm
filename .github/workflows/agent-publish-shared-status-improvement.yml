@@ -1,0 +1,96 @@
+name: Agent Publish Shared Status Improvement
+
+on:
+  push:
+    branches:
+      - agent/6940-neutral-test-inventory
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-publish-shared-status-improvement
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact construction source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: builder
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout exact reviewed branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: fix/6940-shared-status-inventory
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Materialize and bound the reviewed improvement
+        run: |
+          set -euo pipefail
+          expected_parent=7f5f40db63f08ad56f36158450eba796bdc7fa2e
+          test "$(git -C candidate rev-parse HEAD)" = "$expected_parent"
+
+          cat builder/.ci/agent_build_shared_status_inventory_parts/part-* \
+            > /tmp/agent_build_shared_status_inventory.py
+          (
+            cd builder
+            python3 /tmp/agent_build_shared_status_inventory.py
+            cargo fmt --all
+            cargo fmt --all -- --check
+            git diff --check
+          )
+
+          paths=(
+            xtask/src/tasks/update_status/mod.rs
+            xtask/src/tasks/update_status/mod_tests.rs
+            xtask/src/tasks/update_status/quality.rs
+            xtask/src/tasks/update_status/quality/tests.rs
+            xtask/src/tasks/update_status/test_inventory.rs
+            xtask/src/tasks/update_status/tests.rs
+          )
+          for path in "${paths[@]}"; do
+            mkdir -p "candidate/$(dirname "$path")"
+            cp "builder/$path" "candidate/$path"
+          done
+
+          mapfile -t changed < <(git -C candidate diff --name-only)
+          test "${#changed[@]}" -eq 6
+          printf '%s\n' "${changed[@]}" | sort > /tmp/actual-paths
+          printf '%s\n' "${paths[@]}" | sort > /tmp/expected-paths
+          diff -u /tmp/expected-paths /tmp/actual-paths
+          git -C candidate diff --check
+          (
+            cd candidate
+            cargo fmt --all -- --check
+            sha256sum "${paths[@]}" | tee /tmp/improvement-sha256
+          )
+
+      - name: Commit exact improvement payload
+        run: |
+          set -euo pipefail
+          git -C candidate config user.name EffortlessSteven
+          git -C candidate config user.email git@effortlesssteven.com
+          git -C candidate add \
+            xtask/src/tasks/update_status/mod.rs \
+            xtask/src/tasks/update_status/mod_tests.rs \
+            xtask/src/tasks/update_status/quality.rs \
+            xtask/src/tasks/update_status/quality/tests.rs \
+            xtask/src/tasks/update_status/test_inventory.rs \
+            xtask/src/tasks/update_status/tests.rs
+          git -C candidate commit -m 'refactor(status): give shared test inventory neutral ownership'
+          git -C candidate push origin HEAD:fix/6940-shared-status-inventory
