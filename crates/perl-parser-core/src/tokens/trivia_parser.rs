@@ -71,7 +71,9 @@ pub fn source_with_trivia(output: &TriviaParseOutput) -> &str {
 ///
 /// This compatibility name no longer debug-renders an AST. New code should use
 /// [`source_with_trivia`] to make the source-preserving contract explicit.
-#[deprecated(note = "renamed to source_with_trivia; this returns exact source, not formatted AST debug text")]
+#[deprecated(
+    note = "renamed to source_with_trivia; this returns exact source, not formatted AST debug text"
+)]
 #[must_use]
 pub fn format_with_trivia(output: &TriviaParseOutput) -> String {
     source_with_trivia(output).to_string()
@@ -80,7 +82,7 @@ pub fn format_with_trivia(output: &TriviaParseOutput) -> String {
 struct TriviaScanner<'a> {
     source: &'a str,
     position: usize,
-    positions: PositionTracker,
+    positions: PositionTracker<'a>,
 }
 
 impl<'a> TriviaScanner<'a> {
@@ -90,49 +92,41 @@ impl<'a> TriviaScanner<'a> {
 
     fn collect(mut self) -> Vec<TriviaToken> {
         let mut all = Vec::new();
+        let mut lexer = PerlLexer::with_body_tokens(self.source);
 
-        while self.position < self.source.len() {
-            all.extend(self.collect_trivia_at_current());
-            if self.position >= self.source.len() {
-                break;
+        while let Some(token) = lexer.next_token() {
+            if self.position < self.source.len()
+                && self.at_line_start(self.position)
+                && self.is_pod_start(self.position)
+            {
+                all.extend(self.collect_trivia_at_current(self.source.len()));
             }
-
-            let token_source = &self.source[self.position..];
-            let mut lexer = PerlLexer::new(token_source);
-            let Some(token) = lexer.next_token() else {
-                break;
-            };
+            if token.start > self.position {
+                all.extend(self.collect_trivia_at_current(token.start));
+            }
             if matches!(token.token_type, TokenType::EOF) {
                 break;
             }
-
-            let next = self.position.saturating_add(token.end);
-            if next <= self.position {
-                let Some(ch) = self.source[self.position..].chars().next() else {
-                    break;
-                };
-                self.position = self.position.saturating_add(ch.len_utf8());
-            } else {
-                self.position = next.min(self.source.len());
-            }
+            self.position = self.position.max(token.end.min(self.source.len()));
         }
 
         if self.position < self.source.len() {
-            all.extend(self.collect_trivia_at_current());
+            all.extend(self.collect_trivia_at_current(self.source.len()));
         }
 
         all
     }
 
-    fn collect_trivia_at_current(&mut self) -> Vec<TriviaToken> {
+    fn collect_trivia_at_current(&mut self, limit: usize) -> Vec<TriviaToken> {
         let mut trivia = Vec::new();
         let bytes = self.source.as_bytes();
+        let limit = limit.min(self.source.len());
 
-        while self.position < self.source.len() {
+        while self.position < limit {
             match bytes[self.position] {
                 b' ' | b'\t' | b'\r' => {
                     let start = self.position;
-                    while self.position < self.source.len()
+                    while self.position < limit
                         && matches!(bytes[self.position], b' ' | b'\t' | b'\r')
                     {
                         self.position += 1;
@@ -150,7 +144,7 @@ impl<'a> TriviaScanner<'a> {
                 }
                 b'#' => {
                     let start = self.position;
-                    while self.position < self.source.len() && bytes[self.position] != b'\n' {
+                    while self.position < limit && bytes[self.position] != b'\n' {
                         self.position += 1;
                     }
                     trivia.push(self.token(
@@ -161,7 +155,7 @@ impl<'a> TriviaScanner<'a> {
                 }
                 b'=' if self.at_line_start(self.position) && self.is_pod_start(self.position) => {
                     let start = self.position;
-                    self.position = self.find_pod_end(self.position);
+                    self.position = self.find_pod_end(self.position).min(limit);
                     trivia.push(self.token(
                         Trivia::PodComment(self.source[start..self.position].to_string()),
                         start,
@@ -206,19 +200,17 @@ impl<'a> TriviaScanner<'a> {
 
     fn is_pod_start(&self, offset: usize) -> bool {
         let remaining = &self.source[offset..];
-        [
-            "=pod",
-            "=head",
-            "=over",
-            "=item",
-            "=back",
-            "=begin",
-            "=end",
-            "=for",
-            "=encoding",
-        ]
-        .iter()
-        .any(|prefix| remaining.starts_with(prefix))
+        !Self::is_pod_end_marker(remaining)
+            && remaining
+                .strip_prefix('=')
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|command| command.is_ascii_alphabetic())
+    }
+
+    fn is_pod_end_marker(remaining: &str) -> bool {
+        remaining
+            .strip_prefix("=cut")
+            .is_some_and(|rest| rest.chars().next().is_none_or(char::is_whitespace))
     }
 
     fn find_pod_end(&self, start: usize) -> usize {
@@ -226,7 +218,7 @@ impl<'a> TriviaScanner<'a> {
         let mut position = start;
 
         while position < self.source.len() {
-            if self.at_line_start(position) && self.source[position..].starts_with("=cut") {
+            if self.at_line_start(position) && Self::is_pod_end_marker(&self.source[position..]) {
                 position += 4;
                 while position < self.source.len() && bytes[position] != b'\n' {
                     position += 1;
@@ -243,27 +235,28 @@ impl<'a> TriviaScanner<'a> {
     }
 }
 
-struct PositionTracker {
+struct PositionTracker<'a> {
+    source: &'a str,
     line_starts: Vec<usize>,
 }
 
-impl PositionTracker {
-    fn new(source: &str) -> Self {
+impl<'a> PositionTracker<'a> {
+    fn new(source: &'a str) -> Self {
         let mut line_starts = vec![0];
         for (offset, ch) in source.char_indices() {
             if ch == '\n' {
                 line_starts.push(offset + 1);
             }
         }
-        Self { line_starts }
+        Self { source, line_starts }
     }
 
     fn offset_to_position(&self, offset: usize) -> Position {
-        let line = self
-            .line_starts
-            .binary_search(&offset)
-            .unwrap_or_else(|index| index.saturating_sub(1));
+        let line =
+            self.line_starts.binary_search(&offset).unwrap_or_else(|index| index.saturating_sub(1));
         let line_start = self.line_starts[line];
-        Position::new(offset, (line + 1) as u32, (offset - line_start + 1) as u32)
+        let line_number = u32::try_from(line.saturating_add(1)).unwrap_or(u32::MAX);
+        let column = self.source[line_start..offset].chars().count().saturating_add(1);
+        Position::new(offset, line_number, u32::try_from(column).unwrap_or(u32::MAX))
     }
 }

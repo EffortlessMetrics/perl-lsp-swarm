@@ -8,9 +8,7 @@ use perl_lexer::tokenizer::token_wrapper::PositionTracker;
 use perl_lexer::tokenizer::util::{code_slice, find_data_marker_byte_lexed};
 use perl_parser_core::tokens::token_stream::TokenStream;
 use perl_parser_core::trivia::{Trivia, TriviaLexer, TriviaToken};
-use perl_parser_core::trivia_parser::{
-    TriviaParserContext, TriviaPreservingParser, format_with_trivia,
-};
+use perl_parser_core::trivia_parser::{TriviaPreservingParser, source_with_trivia};
 use perl_tdd_support::{must, must_some};
 use perl_token::TokenKind;
 
@@ -667,39 +665,35 @@ fn ext_trivia_lexer_no_trivia_for_plain_code() -> Result<(), Box<dyn std::error:
 }
 
 // ===================================================================
-// 10. TriviaParserContext
+// 10. Canonical trivia parser
 // ===================================================================
 
 #[test]
 fn ext_trivia_ctx_multiple_tokens() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new("my $x = 1;".into());
-    assert!(!ctx.is_eof());
+    let result = TriviaPreservingParser::new("my $x = 1;".into()).parse();
+    assert!(matches!(&result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     Ok(())
 }
 
 #[test]
 fn ext_trivia_ctx_advance_through_eof() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new("my $x;".into());
-    assert!(!ctx.is_eof());
+    let result = TriviaPreservingParser::new("my $x;".into()).parse();
+    assert!(result.parse.diagnostics.is_empty());
     Ok(())
 }
 
 #[test]
 fn ext_trivia_ctx_comment_only_source() -> Result<(), Box<dyn std::error::Error>> {
-    // A source with only comments should either have tokens with trivia or be at EOF
-    let ctx = TriviaParserContext::new("# just a comment\n".into());
-    // It's valid to be at EOF since there are no meaningful tokens
-    // But there may be an EOF token with leading trivia
-    // Just verify no panic
-    let _ = ctx.is_eof();
+    let result = TriviaPreservingParser::new("# just a comment\n".into()).parse();
+    assert!(result.trivia.iter().any(|token| matches!(token.trivia, Trivia::LineComment(_))));
     Ok(())
 }
 
 #[test]
 fn ext_trivia_ctx_leading_trivia_captured() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new("  # comment\nmy $x;".into());
-    // Context should have tokens and not be at EOF
-    assert!(!ctx.is_eof());
+    let result = TriviaPreservingParser::new("  # comment\nmy $x;".into()).parse();
+    assert!(result.trivia.iter().any(|token| matches!(token.trivia, Trivia::Whitespace(_))));
+    assert!(result.trivia.iter().any(|token| matches!(token.trivia, Trivia::LineComment(_))));
     Ok(())
 }
 
@@ -714,7 +708,7 @@ fn ext_trivia_parser_preserves_shebang() -> Result<(), Box<dyn std::error::Error
     let result = parser.parse();
     // Shebang should appear in leading trivia
     assert!(
-        result.leading_trivia.iter().any(|t| {
+        result.trivia.iter().any(|t| {
             matches!(&t.trivia, Trivia::LineComment(s) if s.contains("#!/usr/bin/perl"))
         })
     );
@@ -729,7 +723,7 @@ fn ext_trivia_parser_preserves_inline_comment() -> Result<(), Box<dyn std::error
     // Should have at least one comment in the trivia
     assert!(
         result
-            .leading_trivia
+            .trivia
             .iter()
             .any(|t| { matches!(&t.trivia, Trivia::LineComment(s) if s.contains("set x")) })
     );
@@ -741,7 +735,7 @@ fn ext_trivia_parser_empty_produces_program() -> Result<(), Box<dyn std::error::
     let parser = TriviaPreservingParser::new(String::new());
     let result = parser.parse();
     // Node should be a Program
-    assert!(matches!(result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
+    assert!(matches!(result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     Ok(())
 }
 
@@ -749,7 +743,7 @@ fn ext_trivia_parser_empty_produces_program() -> Result<(), Box<dyn std::error::
 fn ext_trivia_parser_whitespace_only_source() -> Result<(), Box<dyn std::error::Error>> {
     let parser = TriviaPreservingParser::new("   \n\n  \t  ".into());
     let result = parser.parse();
-    assert!(matches!(result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
+    assert!(matches!(result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     Ok(())
 }
 
@@ -759,31 +753,30 @@ fn ext_trivia_parser_pod_in_middle() -> Result<(), Box<dyn std::error::Error>> {
     let parser = TriviaPreservingParser::new(src);
     let result = parser.parse();
     // POD should be in the trivia
-    assert!(result.leading_trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
+    assert!(result.trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
     Ok(())
 }
 
 // ===================================================================
-// 12. format_with_trivia
+// 12. source_with_trivia
 // ===================================================================
 
 #[test]
-fn ext_format_with_trivia_includes_leading() -> Result<(), Box<dyn std::error::Error>> {
+fn ext_source_with_trivia_includes_leading() -> Result<(), Box<dyn std::error::Error>> {
     let parser = TriviaPreservingParser::new("# comment\nmy $x;".into());
     let result = parser.parse();
-    let formatted = format_with_trivia(&result);
+    let formatted = source_with_trivia(&result);
     assert!(formatted.contains("# comment"));
     Ok(())
 }
 
 #[test]
-fn ext_format_with_trivia_empty_trivia() -> Result<(), Box<dyn std::error::Error>> {
+fn ext_source_with_trivia_empty_trivia() -> Result<(), Box<dyn std::error::Error>> {
     // Parse an empty source to get a program node with no trivia
     let parser = TriviaPreservingParser::new(String::new());
     let result = parser.parse();
-    let formatted = format_with_trivia(&result);
-    // Should contain the node debug output but no trivia
-    assert!(!formatted.is_empty());
+    let formatted = source_with_trivia(&result);
+    assert!(formatted.is_empty());
     Ok(())
 }
 

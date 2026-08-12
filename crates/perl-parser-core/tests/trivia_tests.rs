@@ -45,10 +45,12 @@ fn trivia_preserving_parser_returns_canonical_ast() {
     assert!(matches!(&result.parse.ast.kind, NodeKind::Program { .. }));
     assert_eq!(result.parse.ast.to_sexp(), canonical_output.ast.to_sexp());
     assert_eq!(result.parse.diagnostics, canonical_output.diagnostics);
-    assert!(result
-        .trivia
-        .iter()
-        .any(|token| matches!(&token.trivia, Trivia::LineComment(text) if text == "# comment")));
+    assert!(
+        result
+            .trivia
+            .iter()
+            .any(|token| matches!(&token.trivia, Trivia::LineComment(text) if text == "# comment"))
+    );
 }
 
 #[test]

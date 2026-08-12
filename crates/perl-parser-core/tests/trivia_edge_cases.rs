@@ -1,7 +1,9 @@
 //! Edge cases for the canonical parser-backed trivia surface.
 
+use perl_parser_core::Parser;
 use perl_parser_core::trivia::{Trivia, TriviaLexer};
 use perl_parser_core::trivia_parser::TriviaPreservingParser;
+use perl_tdd_support::must_some;
 
 #[test]
 fn pod_without_cut_is_retained() {
@@ -48,6 +50,19 @@ fn comment_without_newline_at_eof_is_retained() {
 }
 
 #[test]
+fn comment_after_division_uses_stateful_lexer_context() {
+    let source = "my $x = 10 / 2; # keep".to_string();
+    let output = TriviaPreservingParser::new(source).parse();
+
+    assert!(
+        output
+            .trivia
+            .iter()
+            .any(|token| matches!(&token.trivia, Trivia::LineComment(text) if text == "# keep"))
+    );
+}
+
+#[test]
 fn windows_line_endings_keep_comments_and_exact_source() {
     let source = "# Comment\r\nmy $x = 1;\r\n# Another\r\n".to_string();
     let output = TriviaPreservingParser::new(source.clone()).parse();
@@ -69,6 +84,22 @@ fn unicode_in_comments_is_preserved() {
     assert!(output.trivia.iter().any(|token| {
         matches!(&token.trivia, Trivia::LineComment(text) if text.contains('🦀') && text.contains('日'))
     }));
+}
+
+#[test]
+fn unicode_before_comment_uses_character_columns() {
+    let source = "my $é; # hi".to_string();
+    let output = TriviaPreservingParser::new(source).parse();
+    let comment = must_some(
+        output
+            .trivia
+            .iter()
+            .find(|token| matches!(&token.trivia, Trivia::LineComment(text) if text == "# hi")),
+    );
+
+    assert_eq!(comment.range.start.byte, 8);
+    assert_eq!(comment.range.start.line, 1);
+    assert_eq!(comment.range.start.column, 8);
 }
 
 #[test]
@@ -103,11 +134,8 @@ fn shebang_variations_are_comments_without_ast_fabrication() {
 fn multiple_empty_lines_remain_distinct_trivia() {
     let source = "my $x = 1;\n\n\n\nmy $y = 2;".to_string();
     let output = TriviaPreservingParser::new(source).parse();
-    let newline_count = output
-        .trivia
-        .iter()
-        .filter(|token| matches!(&token.trivia, Trivia::Newline))
-        .count();
+    let newline_count =
+        output.trivia.iter().filter(|token| matches!(&token.trivia, Trivia::Newline)).count();
 
     assert!(newline_count >= 4);
 }
@@ -137,14 +165,31 @@ my $x = 1;
 }
 
 #[test]
+fn custom_pod_commands_follow_canonical_marker_rules() {
+    let source = "=custom metadata\nbody\n=cut\nmy $x = 1;\n".to_string();
+    let output = TriviaPreservingParser::new(source).parse();
+
+    assert!(output.trivia.iter().any(|token| {
+        matches!(&token.trivia, Trivia::PodComment(text) if text.contains("=custom metadata"))
+    }));
+}
+
+#[test]
+fn cut_prefix_does_not_end_pod_without_a_command_boundary() {
+    let source = "=pod\n=cutlery\nstill pod\n=cut\nmy $x = 1;\n".to_string();
+    let output = TriviaPreservingParser::new(source).parse();
+
+    assert!(output.trivia.iter().any(|token| {
+        matches!(&token.trivia, Trivia::PodComment(text) if text.contains("=cutlery\nstill pod") && text.ends_with("=cut\n"))
+    }));
+}
+
+#[test]
 fn hash_in_string_is_not_comment_trivia() {
     let source = "my $x = \"# not a comment\";".to_string();
     let output = TriviaPreservingParser::new(source).parse();
 
-    assert!(output
-        .trivia
-        .iter()
-        .all(|token| !matches!(&token.trivia, Trivia::LineComment(_))));
+    assert!(output.trivia.iter().all(|token| !matches!(&token.trivia, Trivia::LineComment(_))));
 }
 
 #[test]
@@ -160,6 +205,7 @@ my $x = 1;
 
     assert_eq!(output.source(), source);
     assert!(matches!(&output.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
+    assert!(output.trivia.iter().all(|token| !matches!(&token.trivia, Trivia::LineComment(_))));
 }
 
 #[test]
@@ -167,10 +213,7 @@ fn equals_expression_is_not_pod() {
     let source = "my $x = 1;\nmy $result = $x == 42;\n".to_string();
     let output = TriviaPreservingParser::new(source).parse();
 
-    assert!(output
-        .trivia
-        .iter()
-        .all(|token| !matches!(&token.trivia, Trivia::PodComment(_))));
+    assert!(output.trivia.iter().all(|token| !matches!(&token.trivia, Trivia::PodComment(_))));
 }
 
 #[test]
@@ -186,10 +229,13 @@ Hidden documentation
 }
 "#
     .to_string();
-    let output = TriviaPreservingParser::new(source).parse();
+    let output = TriviaPreservingParser::new(source.clone()).parse();
+    let mut canonical = Parser::new(&source);
+    let canonical_output = canonical.parse_with_recovery();
 
     assert!(output.trivia.iter().any(|token| matches!(&token.trivia, Trivia::PodComment(_))));
-    assert!(output.parse.ast.to_sexp().contains("subroutine"));
+    assert_eq!(output.parse.ast.to_sexp(), canonical_output.ast.to_sexp());
+    assert_eq!(output.parse.diagnostics, canonical_output.diagnostics);
 }
 
 #[test]
@@ -233,7 +279,7 @@ my $x = 1;
 fn low_level_legacy_lexer_still_collects_trivia_during_migration() {
     let source = "# comment\nmy $x = 1;".to_string();
     let mut lexer = TriviaLexer::new(source);
-    let (_, trivia) = lexer.next_token_with_trivia().expect("first token");
+    let (_, trivia) = must_some(lexer.next_token_with_trivia());
 
     assert!(trivia.iter().any(|token| matches!(&token.trivia, Trivia::LineComment(_))));
 }
