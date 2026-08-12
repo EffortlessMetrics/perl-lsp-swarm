@@ -69,10 +69,10 @@ independent claims, the parent context is a campaign manager by default.
 The parent owns:
 
 - claim and PR selection;
-- agent briefing and differentiated review questions;
+- compact lane briefing and differentiated evidence questions;
 - evidence joins and contradiction resolution;
-- repair promotion and writer admission;
-- proof scheduling and proof-debt control;
+- mutation and proof admission;
+- proof-debt control;
 - dependency, supersession, merge, close, and park decisions;
 - durable GitHub closeout.
 
@@ -86,28 +86,52 @@ A failed spawn is not by itself permission to absorb the task. First join comple
 returns, close completed agents, reclaim useful capacity, route another decision, or
 continue integration work already supported by evidence.
 
-## Review breadth, not agent occupancy
+## Persistent PR lanes, not stage agents
 
-For a large PR queue, bias toward a broad read-only review surface—often about five or
-six disjoint reviewers when the runtime and queue support it. This is a default fan-out,
-not a topology, quota, role mix, or occupancy target.
+The normal child context for the open-PR campaign is `.codex/agents/pr-lane.toml`.
+Dispatch one persistent lane per PR or coherent claim. The lane invokes `$deliver-pr`
+and keeps its thread, loaded source context, and worktree across review, repair, proof,
+review refresh, live CI, and closeout.
 
-Keep only agents whose next result can change a decision. Do not keep stale handles,
-duplicate waits, low-value reviews, or already-completed agents alive to preserve a
-number.
+Do not create separate review, repair, proof, CI, and finish agents for the same PR. A
+skill result changes what the existing lane does next; it does not require a cold start.
 
-The live agent set must be deduplicated and current:
+A PR lane that finds a bounded candidate-owned defect may fix it itself when its brief
+grants mutation/publication authority and no other writer owns the candidate. Focused
+review workers remain read-only and return evidence to the lane root.
+
+The parent brief should usually contain only:
+
+- PR/claim and accepted non-goals when not obvious from GitHub;
+- mutation/publication authority;
+- merge/close/issue-creation authority;
+- worktree permission and local proof budget;
+- known prerequisite, finding, or hosted wake event.
+
+The repository skills own the procedure and next-step routing. Do not restate every
+review, repair, proof, CI, and cleanup rule in each dispatch.
+
+## Breadth, not agent occupancy
+
+For a large PR queue, roughly five or six disjoint PR lanes may be useful when the
+runtime and queue support them. That is a default review fan-out, not a topology, quota,
+role mix, or occupancy target.
+
+Keep only lanes whose next result can change a decision. Do not keep stale handles,
+duplicate waits, low-value work, or already-completed lanes alive to preserve a number.
+
+The live lane set must be deduplicated and current:
 
 - remove completed, closed, cancelled, or `Not found` handles immediately;
-- a promoted reviewer remains one lane, not a completed reviewer plus a new writer;
+- a lane moving from review to repair remains one lane and one handle;
 - wait only on the current live set;
-- refill capacity only when another independent result is useful;
-- do not terminate a bounded review merely to refresh the pool display.
+- refill capacity only when another independent claim is useful;
+- do not terminate bounded work merely to refresh the pool display.
 
-Consume each return as it arrives. Do not wait for the whole batch before promoting,
-merging, closing, parking, or recording a blocker.
+Consume each return as it arrives. Do not wait for the whole batch before merging,
+closing, parking, recording a blocker, or resuming a lane on its next skill.
 
-## Scope hierarchy
+## Context hierarchy
 
 ### Campaign root
 
@@ -115,32 +139,35 @@ Owns goal meaning, acceptance predicates, claim selection, dependencies,
 contradictions, runtime-local frontier, joined evidence, proof debt, exceptions, and
 goal reconciliation.
 
-The campaign root keeps review broad, mutation bounded, proof moving, and converged
-candidates closing. Leaf implementation, first-pass deep review, broad archaeology, raw
-logs, repetitive proof, and routine cleanup belong in claim-local lanes or focused
-workers.
+The campaign root keeps claim discovery broad, mutation bounded, proof moving, and
+converged candidates closing. Leaf implementation, first-pass deep review, broad
+archaeology, raw logs, repetitive proof, and routine cleanup belong in persistent claim
+lanes or focused workers.
 
-### Lane root
+### Persistent claim lane
 
 Owns one coherent acceptance-and-rollback claim. It runs `$deliver-pr`, invokes
-`$orchestrate-work`, keeps at most one concurrent writer on the candidate, joins
-claim-local evidence, and returns a typed result.
+`$orchestrate-work` for missing evidence, keeps at most one concurrent writer on its
+candidate, joins claim-local evidence, and returns a typed result.
 
-A lane root may directly perform tiny tightly coupled claim-local work when briefing and
-joining cost more than the context saved. That does not make routine lane-root
-implementation the default.
+The lane remains the same context while skills change its activity. Review may lead to
+repair; repair may lead to proof; proof may lead back to review; current review may lead
+to live CI and closeout. Do not discard its cache or worktree at ordinary skill
+boundaries.
 
-### Worker, writer, and reviewer
+A lane returns to the campaign root at a real remote wait, terminal disposition, named
+prerequisite, durable hazard, external-action boundary, or precise `NOT_PROVEN`
+boundary.
 
-- read-only workers answer one bounded question or consume one named `$skill`;
-- reviewers return findings, falsifiers, contradictions, uncertainty, and references—not
-  approval;
-- one writer mutates a selected candidate branch/worktree at a time;
-- a child that creates a worktree or process group owns its cleanup after retained work
-  is safely published or abandoned.
+### Focused worker or review lens
+
+Answers one bounded question or consumes one named `$skill`. It returns findings,
+falsifiers, contradictions, uncertainty, and references—not approval or merge
+authority.
 
 Read-only work normally requires no worktree. Allocate one only when checkout-local
-inspection, local proof, or likely promotion into a writer justifies it.
+inspection, proof, or another environment materially changes the evidence. A child that
+creates a worktree or process group owns its cleanup.
 
 ## Campaign execution
 
@@ -148,44 +175,71 @@ Use `$orchestrate-work` after selecting a public flow or substantive atomic skil
 
 ```text
 multi-PR campaign
-→ dispatch useful disjoint reviews
+→ dispatch useful disjoint PR lanes
+→ each lane follows `$deliver-pr`
 → join each result as it arrives
-→ promote only bounded, evidence-backed repairs
-→ admit focused proof separately from review fan-out
+→ let the same lane follow its next skill
+→ admit mutation and focused proof separately from review breadth
 → merge, close, park, or record a named blocker
-→ refill useful review capacity
+→ refill only when another independent claim is useful
 ```
 
-Keep review breadth wider than mutation breadth. Cheap read-only review and source
-archaeology may run broadly. Writers and heavy proof are admitted by claim independence
-and host capacity, not by a fixed count.
-
-Prefer promoting the reviewer that already understands the claim when its context and
-worktree remain suitable. Do not pay a second cold start merely to rename the role.
+Keep review breadth wider than mutation breadth. PR lanes may begin with review, then
+continue into candidate mutation without being replaced. Writers and heavy proof are
+admitted by claim independence, proof debt, and host capacity—not by a fixed count.
 
 Default to agents when they preserve campaign context, compress high-output evidence,
 change source/oracle/tool/environment/threat model, reduce elapsed time, improve
 recovery, or avoid expensive CI cycles. Stop adding agents when another result cannot
 change a decision.
 
-Do not poll unchanged remote state or wait serially for an entire review batch.
+Do not poll unchanged remote state or wait serially for an entire batch.
+
+## Skill-directed continuity
+
+Skills must route the same lane according to their typed result.
+
+```text
+`$review-pr`: CHANGES_REQUIRED
+→ same lane `$address-review-comments` / `$build-candidate`
+→ same lane affected proof
+→ same lane affected `$final-challenge` / `$review-pr`
+
+`$review-pr`: REVIEW_CURRENT
+→ same lane `$verify-live-ci`
+
+`$verify-live-ci`: PRODUCT_OR_TEST_FAILURE
+→ same lane `$build-candidate`
+→ same lane affected proof and review
+
+`$verify-live-ci`: INTEGRATION_READY
+→ same lane `$merge-reconcile` when authorized
+```
+
+Use each skill's `Routes`, `Valid exits`, or equivalent next-step table. Do not return an
+intermediate review packet merely so another agent can rediscover the PR. Split to a new
+lane only when the durable claim itself splits or a separate prerequisite becomes a new
+owned claim.
+
+When GitHub owns the next transition, return `IN_FLIGHT` with the exact wake event. Resume
+the same lane when the runtime retains it; otherwise reconstruct from GitHub and
+repository artifacts without creating a rival candidate.
 
 ## Proof and convergence control
 
-Review output is not repository progress until useful findings are either disproved,
-repaired, or converted into durable blockers. Published repairs are not solid state
-until their affected proof and review converge.
+Review output is not repository progress until useful findings are disproved, repaired,
+or converted into durable blockers. Published repairs are not solid state until their
+affected proof and review converge.
 
 Maintain a useful proof path:
 
-- when behavioral repairs need proof and the host permits it, keep one focused proof
-  lane active;
+- when behavioral repairs need proof and the host permits it, keep focused proof moving;
 - use the smallest command that can falsify the changed seam;
-- do not start many heavy Cargo jobs merely because many agents exist;
-- when proof debt accumulates, stop promoting additional writers and keep remaining
-  capacity read-only;
-- a published repair with missing local proof remains `PR_IN_FLIGHT / NOT_PROVEN` unless
-  a known hosted gate directly exercises the seam;
+- do not start many heavy Cargo jobs merely because many lanes exist;
+- when proof debt accumulates, stop starting more mutation and keep remaining capacity
+  on review/evidence/integration work;
+- a published repair with missing affected proof remains `PR_IN_FLIGHT / NOT_PROVEN`
+  unless a known hosted gate directly exercises the seam;
 - formatting and `git diff --check` do not prove changed behavior;
 - a hosted gate may discharge local instrument limits, but not an unrelated or
   self-attested check.
@@ -210,6 +264,7 @@ For substantive PRs the native route is:
 → cumulative `$review-pr`
 → REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN |
   BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
+→ same lane follows the result
 → only REVIEW_CURRENT enters `$verify-live-ci`
 → INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | NOT_PROVEN
 → `$merge-reconcile`
@@ -271,8 +326,8 @@ Use issues for durable research, rulings, plans, dependencies, and successor wor
 PR bodies/comments for candidate-wide proof or limitation summaries, inline review for
 localized findings, and submitted reviews for cumulative judgment.
 
-Keep agent identity, topology, liveness, retries, routine handoffs, raw logs, unchanged
-polling, and temporary task state runtime-local.
+Keep agent identity, topology, liveness, retries, ordinary skill transitions, raw logs,
+unchanged polling, and temporary task state runtime-local.
 
 ## Hard stops
 
@@ -297,10 +352,10 @@ Otherwise detect, explain, repair, delegate, and continue independent campaign w
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
 - never use `git stash` in worktrees; use scoped restore or a WIP commit;
 - stage intended paths explicitly;
-- use one worktree per genuine concurrent write claim, not per lifecycle pass or
-  read-only review by default;
+- use one worktree per genuine concurrent write claim, not per lifecycle pass;
+- a persistent PR lane may retain its worktree across review, repair, and proof;
 - the child that creates a worktree cleans it after retained work is safely published
-  and no further local proof is needed;
+  or abandoned and no near-term same-lane transition needs the cache;
 - parent contexts verify cleanup from typed returns and perform broad cleanup only when
   storage blocks work or the campaign is closing;
 - preserve shared targets/caches, locked or ambiguous worktrees, and state owned by
