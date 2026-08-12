@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 include!("perl-core-harness-transition/cli.rs");
@@ -168,54 +169,45 @@ fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
 
 #[cfg(windows)]
 fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-    use winapi::um::fileapi::{
-        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
-    };
-    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::winnt::{
-        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
 
     let display_path = path.display().to_string();
-    let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let handle = unsafe {
-        CreateFileW(
-            wide_path.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            null_mut(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::NotFound {
-            return Ok(None);
+    // Route pathname opening through Rust's standard Windows path handling so
+    // absolute paths beyond MAX_PATH receive the same verbatim normalization
+    // as the fs operations that created the receipt sibling. This deliberately
+    // follows links for output/evidence alias detection; temporary-entry checks
+    // reject symlinks with `symlink_metadata` before calling this helper.
+    let file = match OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading file identity {display_path}"));
         }
-        return Err(error).with_context(|| format!("reading file identity {display_path}"));
-    }
+    };
+    windows_handle_identity(file.as_raw_handle().cast(), &display_path).map(Some)
+}
+
+#[cfg(windows)]
+fn windows_handle_identity(
+    handle: winapi::um::winnt::HANDLE,
+    label: &str,
+) -> Result<(u32, u32, u32)> {
+    use winapi::um::fileapi::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
 
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     let result = unsafe { GetFileInformationByHandle(handle, &mut information) };
-    let get_info_error = if result == 0 { Some(std::io::Error::last_os_error()) } else { None };
-    let close_result = unsafe { CloseHandle(handle) };
-    if let Some(error) = get_info_error {
-        return Err(error).with_context(|| format!("reading file identity {display_path}"));
-    }
-    if close_result == 0 {
+    if result == 0 {
         return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("closing file identity handle {display_path}"));
+            .with_context(|| format!("reading file identity {label}"));
     }
-
-    Ok(Some((
-        information.dwVolumeSerialNumber,
-        information.nFileIndexHigh,
-        information.nFileIndexLow,
-    )))
+    Ok((information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -405,10 +397,36 @@ fn write_classification_receipt(
     accepted_baseline_digest: &str,
     compile_digest: &str,
 ) -> Result<()> {
+    write_classification_receipt_with_hook(
+        path,
+        classification,
+        accepted_baseline_digest,
+        compile_digest,
+        |_| Ok(()),
+    )
+}
+
+fn write_classification_receipt_with_hook(
+    path: &Path,
+    classification: &Classification,
+    accepted_baseline_digest: &str,
+    compile_digest: &str,
+    before_persist: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let parent =
         path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(parent)
         .with_context(|| format!("creating output directory {}", parent.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| color_eyre::eyre::eyre!("classify output path has no file name"))?;
+    #[cfg(windows)]
+    let storage_parent = parent.canonicalize().with_context(|| {
+        format!("canonicalizing classify output directory {}", parent.display())
+    })?;
+    #[cfg(not(windows))]
+    let storage_parent = parent.to_path_buf();
+    let publication_path = storage_parent.join(file_name);
     let receipt = ClassifyReceipt {
         schema_version: CLASSIFY_RECEIPT_SCHEMA_VERSION.to_string(),
         command: "classify".to_string(),
@@ -421,27 +439,189 @@ fn write_classification_receipt(
         claim_boundary: CLASSIFY_CLAIM_BOUNDARY.to_string(),
     };
     let encoded = serde_json::to_string_pretty(&receipt).context("serializing classify receipt")?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| color_eyre::eyre::eyre!("classify output path has no file name"))?;
-    let temporary = parent.join(format!(
-        ".{}.classify-{}.tmp",
-        file_name.to_string_lossy(),
-        std::process::id()
-    ));
-    fs::write(&temporary, format!("{encoded}\n"))
-        .with_context(|| format!("writing temporary classify receipt {}", temporary.display()))?;
-    // Rename replaces a colliding directory entry without following a hard-link
-    // target, so a TOCTOU alias at `path` cannot truncate protected evidence.
-    fs::rename(&temporary, path).with_context(|| {
-        let _ = fs::remove_file(&temporary);
-        format!(
-            "atomically persisting classify receipt {} from {}",
-            path.display(),
-            temporary.display()
-        )
-    })?;
+
+    // `tempfile_in` uses exclusive creation and bounded collision retries. A
+    // longer random component makes the sibling impractical to pre-plant, and
+    // all bytes are written through the exclusively opened handle rather than
+    // by reopening its path (which would follow a planted link).
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".perl-core-harness-transition-")
+        .suffix(".tmp")
+        .rand_bytes(16)
+        // Automatic pathname cleanup cannot distinguish our file from an
+        // attacker replacement. Cleanup below is identity-gated instead.
+        .disable_cleanup(true)
+        .tempfile_in(&storage_parent)
+        .with_context(|| {
+            format!("securely creating temporary classify receipt in {}", parent.display())
+        })?;
+    let write_result = temporary
+        .write_all(format!("{encoded}\n").as_bytes())
+        .with_context(|| format!("writing temporary classify receipt for {}", path.display()))
+        .and_then(|()| {
+            temporary.flush().with_context(|| {
+                format!("flushing temporary classify receipt for {}", path.display())
+            })
+        })
+        .and_then(|()| {
+            temporary.as_file().sync_all().with_context(|| {
+                format!("synchronizing temporary classify receipt for {}", path.display())
+            })
+        });
+    if let Err(error) = write_result {
+        cleanup_owned_temporary(&temporary)?;
+        return Err(error);
+    }
+
+    if let Err(error) = before_persist(temporary.path()) {
+        cleanup_owned_temporary(&temporary)?;
+        return Err(error);
+    }
+
+    // `persist` atomically replaces a distinct existing entry on supported
+    // Windows and Unix hosts. It renames the sibling pathname and never opens
+    // the destination for writing, so an alias cannot truncate protected
+    // evidence. Path identity is checked immediately before persistence and
+    // cleanup. Final-path integrity still requires a directory that peers
+    // cannot mutate between that check and the pathname operation.
+    persist_classification_receipt(temporary, &publication_path, &storage_parent)?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn temporary_path_matches_open_file(temporary: &tempfile::NamedTempFile) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let opened = temporary.as_file().metadata().context("reading opened temporary identity")?;
+    let entry = match fs::symlink_metadata(temporary.path()) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("reading temporary path identity"),
+    };
+    Ok(entry.file_type().is_file() && opened.dev() == entry.dev() && opened.ino() == entry.ino())
+}
+
+#[cfg(windows)]
+fn temporary_path_matches_open_file(temporary: &tempfile::NamedTempFile) -> Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+
+    let entry = match fs::symlink_metadata(temporary.path()) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("reading temporary path identity"),
+    };
+    if !entry.file_type().is_file() {
+        return Ok(false);
+    }
+    let opened = windows_handle_identity(
+        temporary.as_file().as_raw_handle().cast(),
+        "opened temporary classify receipt",
+    )?;
+    Ok(windows_file_identity(temporary.path())?.is_some_and(|path| path == opened))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn temporary_path_matches_open_file(_temporary: &tempfile::NamedTempFile) -> Result<bool> {
+    Ok(false)
+}
+
+fn cleanup_owned_temporary(temporary: &tempfile::NamedTempFile) -> Result<()> {
+    // Automatic NamedTempFile cleanup is disabled because it would unlink the
+    // saved pathname even after a peer replaced that entry. Under the output
+    // directory authority contract this identity check ensures ordinary
+    // failures remove only the sibling opened by this process. A detected
+    // replacement is deliberately left untouched.
+    if temporary_path_matches_open_file(temporary)? {
+        fs::remove_file(temporary.path()).with_context(|| {
+            format!("removing owned temporary classify receipt {}", temporary.path().display())
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn persist_classification_receipt(
+    mut temporary: tempfile::NamedTempFile,
+    path: &Path,
+    _parent: &Path,
+) -> Result<()> {
+    const MAX_PERSIST_ATTEMPTS: usize = 8;
+
+    for attempt in 0..MAX_PERSIST_ATTEMPTS {
+        if !temporary_path_matches_open_file(&temporary)? {
+            bail!(
+                "temporary classify receipt path no longer identifies the exclusively opened file; refusing to persist"
+            );
+        }
+        match temporary.persist(path) {
+            Ok(file) => {
+                drop(file);
+                return Ok(());
+            }
+            Err(error)
+                if retryable_windows_persist_error(&error.error)
+                    && attempt + 1 < MAX_PERSIST_ATTEMPTS =>
+            {
+                // Concurrent MoveFileEx replacements can briefly hold the
+                // destination entry. Retain ownership of the same exclusive
+                // sibling and retry with bounded exponential backoff; never
+                // reopen it.
+                temporary = error.file;
+                std::thread::sleep(std::time::Duration::from_millis(1 << attempt.min(6)));
+            }
+            Err(error) => {
+                let persistence_error = color_eyre::eyre::eyre!(
+                    "atomically persisting classify receipt {}: {}",
+                    path.display(),
+                    error.error
+                );
+                cleanup_owned_temporary(&error.file)?;
+                return Err(persistence_error);
+            }
+        }
+    }
+    bail!("bounded classify receipt persistence exhausted without a result")
+}
+
+#[cfg(windows)]
+fn retryable_windows_persist_error(error: &std::io::Error) -> bool {
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+    // MoveFileExW reports these while another process retains a conflicting
+    // destination handle. Other permission failures are not made retryable by
+    // their broad ErrorKind alone.
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+#[cfg(not(windows))]
+fn persist_classification_receipt(
+    temporary: tempfile::NamedTempFile,
+    path: &Path,
+    parent: &Path,
+) -> Result<()> {
+    if !temporary_path_matches_open_file(&temporary)? {
+        bail!(
+            "temporary classify receipt path no longer identifies the exclusively opened file; refusing to persist"
+        );
+    }
+    match temporary.persist(path) {
+        Ok(file) => {
+            drop(file);
+            #[cfg(unix)]
+            fs::File::open(parent).and_then(|directory| directory.sync_all()).with_context(
+                || format!("synchronizing classify receipt directory {}", parent.display()),
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            let persistence_error = color_eyre::eyre::eyre!(
+                "atomically persisting classify receipt {}: {}",
+                path.display(),
+                error.error
+            );
+            cleanup_owned_temporary(&error.file)?;
+            Err(persistence_error)
+        }
+    }
 }
 
 fn load_classify_receipt(path: &Path) -> Result<ClassifyReceipt> {
@@ -687,6 +867,30 @@ mod classify_config_observer {
 #[cfg(test)]
 mod classify_io_observer {
     use super::*;
+    use color_eyre::eyre::ensure;
+
+    fn test_classification(reason: &str) -> Classification {
+        Classification {
+            transition: CompatibilityTransition::NoChange,
+            reason: reason.into(),
+            requires_candidate: false,
+            semantic_boundary_change: false,
+        }
+    }
+
+    fn temporary_receipt_entries(parent: &Path) -> Result<Vec<PathBuf>> {
+        fs::read_dir(parent)?
+            .filter_map(|entry| match entry {
+                Ok(entry) => {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    (name.starts_with(".perl-core-harness-transition-") && name.ends_with(".tmp"))
+                        .then(|| Ok(entry.path()))
+                }
+                Err(error) => Some(Err(error.into())),
+            })
+            .collect()
+    }
 
     /// RIPR boundary discriminator for `paths_equal` (`left == right`).
     #[test]
@@ -795,42 +999,42 @@ mod classify_io_observer {
     /// Discriminator: distinct path strings that hard-link the same file are rejected.
     #[cfg(any(unix, windows))]
     #[test]
-    fn output_hard_link_alias_of_accepted_is_rejected() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn output_hard_link_alias_of_accepted_is_rejected() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let accepted = dir.path().join("accepted.json");
         let compile = dir.path().join("compile.json");
         let output = dir.path().join("out.json");
-        fs::write(&accepted, b"accepted-bytes").expect("write accepted");
-        fs::write(&compile, b"compile-bytes").expect("write compile");
-        fs::hard_link(&accepted, &output).expect("hard_link");
-        assert_eq!(paths_equal(&output, &accepted), false);
-        assert_eq!(same_file_identity(&output, &accepted).expect("identity"), true);
-        let err = reject_output_input_path_collision(&ClassifyConfig {
+        fs::write(&accepted, b"accepted-bytes")?;
+        fs::write(&compile, b"compile-bytes")?;
+        fs::hard_link(&accepted, &output)?;
+        ensure!(!paths_equal(&output, &accepted), "paths must remain lexically distinct");
+        ensure!(same_file_identity(&output, &accepted)?, "hard links must share identity");
+        let Err(error) = reject_output_input_path_collision(&ClassifyConfig {
             accepted_baseline: accepted.clone(),
             compile,
             output: output.clone(),
             series: None,
             discovery: None,
-        })
-        .expect_err("hard-link alias must fail")
-        .to_string();
-        assert_eq!(err.contains("hard-link alias"), true);
-        let retained = fs::read(&accepted).expect("accepted retained");
-        assert_eq!(retained, b"accepted-bytes");
+        }) else {
+            bail!("hard-link alias unexpectedly passed validation");
+        };
+        ensure!(error.to_string().contains("hard-link alias"), "unexpected error: {error}");
+        ensure!(fs::read(&accepted)? == b"accepted-bytes", "accepted evidence changed");
+        Ok(())
     }
 
     /// Negative control: distinct regular files are not treated as hard-link aliases.
     #[cfg(any(unix, windows))]
     #[test]
-    fn distinct_output_file_is_not_hard_link_alias() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn distinct_output_file_is_not_hard_link_alias() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let accepted = dir.path().join("accepted.json");
         let compile = dir.path().join("compile.json");
         let output = dir.path().join("out.json");
-        fs::write(&accepted, b"accepted-bytes").expect("write accepted");
-        fs::write(&compile, b"compile-bytes").expect("write compile");
-        fs::write(&output, b"prior-out").expect("write output");
-        assert_eq!(same_file_identity(&output, &accepted).expect("identity"), false);
+        fs::write(&accepted, b"accepted-bytes")?;
+        fs::write(&compile, b"compile-bytes")?;
+        fs::write(&output, b"prior-out")?;
+        ensure!(!same_file_identity(&output, &accepted)?, "distinct files shared identity");
         reject_output_input_path_collision(&ClassifyConfig {
             accepted_baseline: accepted,
             compile,
@@ -838,37 +1042,373 @@ mod classify_io_observer {
             series: None,
             discovery: None,
         })
-        .expect("distinct files must be allowed");
+    }
+
+    /// A planted alias at the formerly predictable PID-derived sibling is never opened.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_receipt_write_ignores_preplanted_legacy_hard_link() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let evidence = dir.path().join("accepted.json");
+        let output = dir.path().join("out.json");
+        let planted = dir.path().join(format!(".out.json.classify-{}.tmp", std::process::id()));
+        fs::write(&evidence, b"protected-evidence")?;
+        fs::hard_link(&evidence, &planted)?;
+
+        write_classification_receipt(
+            &output,
+            &test_classification("hard-link plant"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        )?;
+
+        ensure!(fs::read(&evidence)? == b"protected-evidence", "protected evidence changed");
+        ensure!(same_file_identity(&planted, &evidence)?, "attacker-owned alias was removed");
+        ensure!(!same_file_identity(&output, &evidence)?, "receipt aliases protected evidence");
+        ensure!(temporary_receipt_entries(dir.path())?.is_empty(), "owned temporary remained");
+        Ok(())
+    }
+
+    /// A planted symbolic link at the formerly predictable sibling is never followed.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_receipt_write_ignores_preplanted_legacy_symlink() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let evidence = dir.path().join("accepted.json");
+        let output = dir.path().join("out.json");
+        let planted = dir.path().join(format!(".out.json.classify-{}.tmp", std::process::id()));
+        fs::write(&evidence, b"protected-evidence")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&evidence, &planted)?;
+        #[cfg(windows)]
+        if let Err(error) = std::os::windows::fs::symlink_file(&evidence, &planted) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                || error.raw_os_error() == Some(1314)
+            {
+                return Ok(());
+            }
+            return Err(error.into());
+        }
+
+        write_classification_receipt(
+            &output,
+            &test_classification("symbolic-link plant"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        )?;
+
+        ensure!(fs::read(&evidence)? == b"protected-evidence", "protected evidence changed");
+        ensure!(planted.symlink_metadata()?.file_type().is_symlink(), "planted symlink changed");
+        ensure!(temporary_receipt_entries(dir.path())?.is_empty(), "owned temporary remained");
+        Ok(())
     }
 
     /// Discriminator: atomic rename onto a hard-linked output path must not
     /// truncate the protected evidence inode (closes check-to-write TOCTOU).
     #[cfg(any(unix, windows))]
     #[test]
-    fn atomic_receipt_write_does_not_truncate_hard_linked_evidence() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn atomic_receipt_write_does_not_truncate_hard_linked_evidence() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let evidence = dir.path().join("accepted.json");
         let output = dir.path().join("out.json");
-        fs::write(&evidence, b"protected-evidence").expect("write evidence");
-        fs::hard_link(&evidence, &output).expect("hard_link");
-        let classification = Classification {
-            transition: CompatibilityTransition::NoChange,
-            reason: "test".into(),
-            requires_candidate: false,
-            semantic_boundary_change: false,
-        };
+        fs::write(&evidence, b"protected-evidence")?;
+        fs::hard_link(&evidence, &output)?;
         write_classification_receipt(
             &output,
-            &classification,
-            "a".repeat(64).as_str(),
-            "b".repeat(64).as_str(),
-        )
-        .expect("atomic write");
-        let retained = fs::read(&evidence).expect("evidence retained");
-        assert_eq!(retained, b"protected-evidence");
-        let written = fs::read_to_string(&output).expect("receipt written");
-        assert_eq!(written.contains("\"command\": \"classify\""), true);
-        assert_eq!(same_file_identity(&output, &evidence).expect("identity"), false);
+            &test_classification("destination replacement"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        )?;
+        ensure!(fs::read(&evidence)? == b"protected-evidence", "protected evidence changed");
+        ensure!(
+            fs::read_to_string(&output)?.contains("\"command\": \"classify\""),
+            "receipt was not persisted"
+        );
+        ensure!(!same_file_identity(&output, &evidence)?, "output still aliases evidence");
+        Ok(())
+    }
+
+    /// Existing distinct output is deliberately replaced on Windows and Unix.
+    #[test]
+    fn secure_receipt_write_replaces_existing_distinct_output() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().join("out.json");
+        fs::write(&output, b"stale receipt")?;
+        write_classification_receipt(
+            &output,
+            &test_classification("replace existing"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        )?;
+        let written = fs::read_to_string(&output)?;
+        ensure!(written.contains("\"reason\": \"replace existing\""), "old output survived");
+        ensure!(temporary_receipt_entries(dir.path())?.is_empty(), "owned temporary remained");
+        Ok(())
+    }
+
+    /// Concurrent contenders can only publish complete receipts, never redirect writes.
+    #[test]
+    fn secure_receipt_write_handles_concurrent_contenders() -> Result<()> {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().join("out.json");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for contender in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            let output = output.clone();
+            handles.push(std::thread::spawn(move || -> Result<()> {
+                barrier.wait();
+                write_classification_receipt(
+                    &output,
+                    &test_classification(&format!("contender {contender}")),
+                    &"a".repeat(64),
+                    &"b".repeat(64),
+                )
+            }));
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(result) => result?,
+                Err(_) => bail!("concurrent receipt writer panicked"),
+            }
+        }
+        let receipt: ClassifyReceipt = serde_json::from_str(&fs::read_to_string(&output)?)?;
+        ensure!(
+            receipt.reason.starts_with("contender "),
+            "partial or redirected receipt persisted"
+        );
+        ensure!(temporary_receipt_entries(dir.path())?.is_empty(), "owned temporary remained");
+        Ok(())
+    }
+
+    /// A peer that swaps the actual randomized sibling cannot redirect a
+    /// write, publish its replacement, or make cleanup unlink that replacement.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_receipt_write_fails_closed_when_random_sibling_is_swapped() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let evidence = dir.path().join("accepted.json");
+        let output = dir.path().join("out.json");
+        fs::write(&evidence, b"protected-evidence")?;
+
+        let result = write_classification_receipt_with_hook(
+            &output,
+            &test_classification("random sibling swap"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+            |temporary_path| {
+                ensure!(
+                    temporary_path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+                        name.starts_with(".perl-core-harness-transition-") && name.ends_with(".tmp")
+                    }),
+                    "hook did not receive the actual randomized sibling"
+                );
+                fs::remove_file(temporary_path)?;
+                fs::hard_link(&evidence, temporary_path)?;
+                Ok(())
+            },
+        );
+
+        let Err(error) = result else {
+            bail!("replaced randomized sibling did not fail closed");
+        };
+        ensure!(error.to_string().contains("no longer identifies"), "unexpected error: {error}");
+        ensure!(fs::read(&evidence)? == b"protected-evidence", "protected evidence changed");
+        ensure!(!output.exists(), "attacker replacement was published");
+        let remaining = temporary_receipt_entries(dir.path())?;
+        ensure!(remaining.len() == 1, "attacker replacement was removed or multiplied");
+        ensure!(
+            same_file_identity(&remaining[0], &evidence)?,
+            "remaining entry is not the attacker replacement"
+        );
+        Ok(())
+    }
+
+    /// Unix entry validation must inspect the sibling itself rather than
+    /// following a swapped symbolic link back to the still-open inode.
+    #[cfg(unix)]
+    #[test]
+    fn secure_receipt_write_rejects_symlink_to_moved_random_sibling() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().join("out.json");
+        let moved = dir.path().join("attacker-held-original.tmp");
+
+        let result = write_classification_receipt_with_hook(
+            &output,
+            &test_classification("random sibling symlink swap"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+            |temporary_path| {
+                fs::rename(temporary_path, &moved)?;
+                std::os::unix::fs::symlink(&moved, temporary_path)?;
+                Ok(())
+            },
+        );
+
+        ensure!(result.is_err(), "symlink replacement did not fail closed");
+        ensure!(!output.exists(), "symlink replacement was published");
+        ensure!(moved.is_file(), "moved original receipt disappeared");
+        let planted = temporary_receipt_entries(dir.path())?;
+        ensure!(planted.len() == 1, "planted symlink was removed or multiplied");
+        ensure!(
+            planted[0].symlink_metadata()?.file_type().is_symlink(),
+            "remaining attacker entry is not a symlink"
+        );
+        Ok(())
+    }
+
+    /// An injected pre-persist error does not make cleanup remove a replacement
+    /// planted at the actual randomized sibling pathname.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_receipt_cleanup_preserves_replaced_random_sibling() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().join("out.json");
+        let result = write_classification_receipt_with_hook(
+            &output,
+            &test_classification("cleanup replacement"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+            |temporary_path| {
+                fs::remove_file(temporary_path)?;
+                fs::write(temporary_path, b"attacker-sentinel")?;
+                bail!("injected pre-persist failure")
+            },
+        );
+
+        let Err(error) = result else {
+            bail!("injected pre-persist failure unexpectedly succeeded");
+        };
+        ensure!(error.to_string().contains("injected pre-persist failure"));
+        ensure!(!output.exists(), "failed write published an output");
+        let remaining = temporary_receipt_entries(dir.path())?;
+        ensure!(remaining.len() == 1, "attacker replacement was removed or multiplied");
+        ensure!(fs::read(&remaining[0])? == b"attacker-sentinel", "attacker entry changed");
+        Ok(())
+    }
+
+    /// Windows retries only the destination-sharing errors emitted by
+    /// MoveFileExW; unrelated permission failures fail immediately.
+    #[cfg(windows)]
+    #[test]
+    fn windows_persist_retry_classifier_is_narrow() -> Result<()> {
+        for code in [5, 32, 33] {
+            ensure!(
+                retryable_windows_persist_error(&std::io::Error::from_raw_os_error(code)),
+                "Windows error {code} was not retryable"
+            );
+        }
+        for code in [2, 3, 87, 123] {
+            ensure!(
+                !retryable_windows_persist_error(&std::io::Error::from_raw_os_error(code)),
+                "Windows error {code} was unexpectedly retryable"
+            );
+        }
+        Ok(())
+    }
+
+    /// A destination handle that denies delete sharing exhausts the bounded
+    /// Windows retry without damaging the destination or leaking our sibling.
+    #[cfg(windows)]
+    #[test]
+    fn secure_receipt_write_bounds_windows_destination_contention() -> Result<()> {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
+        use winapi::um::winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().join("out.json");
+        fs::write(&output, b"held-destination")?;
+        let holder = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&output)?;
+
+        let result = write_classification_receipt(
+            &output,
+            &test_classification("held destination"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        );
+        ensure!(result.is_err(), "persist unexpectedly bypassed held destination");
+        ensure!(fs::read(&output)? == b"held-destination", "held destination changed");
+        ensure!(temporary_receipt_entries(dir.path())?.is_empty(), "owned temporary remained");
+
+        drop(holder);
+        write_classification_receipt(
+            &output,
+            &test_classification("after contention"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        )?;
+        ensure!(
+            fs::read_to_string(&output)?.contains("\"reason\": \"after contention\""),
+            "receipt did not publish after contention cleared"
+        );
+        Ok(())
+    }
+
+    /// Windows identity reopens use std's verbatim-path normalization so an
+    /// otherwise supported absolute output path beyond MAX_PATH can publish.
+    #[cfg(windows)]
+    #[test]
+    fn secure_receipt_write_supports_windows_long_output_path() -> Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir()?;
+        let mut long_dir = dir.path().to_path_buf();
+        while long_dir.as_os_str().encode_wide().count() <= 280 {
+            long_dir.push("transition-receipt-long-path-segment");
+        }
+        if let Err(error) = fs::create_dir_all(&long_dir) {
+            // ERROR_FILENAME_EXCED_RANGE means long-path support is disabled by
+            // this Windows host policy. That environment cannot execute the
+            // integration control; every other creation error is actionable.
+            if error.raw_os_error() == Some(206) {
+                return Ok(());
+            }
+            return Err(error).context("creating Windows long-path receipt directory");
+        }
+
+        let output = long_dir.join("out.json");
+        ensure!(
+            output.as_os_str().encode_wide().count() > 260,
+            "test output did not exceed MAX_PATH"
+        );
+        write_classification_receipt(
+            &output,
+            &test_classification("Windows long output path"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        )?;
+
+        ensure!(windows_file_identity(&output)?.is_some(), "long-path output identity was absent");
+        ensure!(
+            fs::read_to_string(&output)?.contains("\"reason\": \"Windows long output path\""),
+            "long-path receipt did not publish"
+        );
+        ensure!(temporary_receipt_entries(&long_dir)?.is_empty(), "owned temporary remained");
+        Ok(())
+    }
+
+    /// Persist failure identity-checks and removes the exclusively owned sibling.
+    #[test]
+    fn secure_receipt_write_cleans_up_after_persist_failure() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().join("output-is-a-directory");
+        fs::create_dir(&output)?;
+        let result = write_classification_receipt(
+            &output,
+            &test_classification("must fail"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+        );
+        ensure!(result.is_err(), "persisting over a directory unexpectedly succeeded");
+        ensure!(output.is_dir(), "failed persistence removed the destination directory");
+        ensure!(temporary_receipt_entries(dir.path())?.is_empty(), "owned temporary remained");
+        Ok(())
     }
 
     /// RIPR boundary discriminator for unsupported series schema rejection.
