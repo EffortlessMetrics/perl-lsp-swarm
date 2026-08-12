@@ -22,7 +22,6 @@ mod colors;
 mod completion;
 mod document_links;
 mod formatting;
-mod formatting_policy;
 mod hierarchy;
 mod hover;
 mod mason;
