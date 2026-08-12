@@ -87,6 +87,7 @@ which = "8.0.2"
 [build-dependencies]
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
