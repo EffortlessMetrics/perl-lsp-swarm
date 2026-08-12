@@ -571,9 +571,7 @@ mod tests {
     #[test]
     pub(super) fn framed_evaluate_requires_exact_assignment_name() {
         let lines = vec!["$result_extra = 123".to_string()];
-        assert!(
-            DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none()
-        );
+        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
     }
 
     #[test]
@@ -581,12 +579,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
 
-        for kind in [
-            ScopeKind::Locals,
-            ScopeKind::Package,
-            ScopeKind::Globals,
-            ScopeKind::Arguments,
-        ] {
+        for kind in
+            [ScopeKind::Locals, ScopeKind::Package, ScopeKind::Globals, ScopeKind::Arguments]
+        {
             let wire = VariableReference::Scope { frame_id: 1, kind }
                 .encode()
                 .ok_or("scope should encode")?;
@@ -698,7 +693,8 @@ mod tests {
             make_test_frame(2, "Devel::TSPerlDAP::init", "/shim.pm", 10),
             make_test_frame(3, "DB::sub", "/perl5db.pl", 50),
         ];
-        assert!(filter_internal_frames(frames).is_empty());
+        let filtered = filter_internal_frames(frames);
+        assert!(filtered.is_empty(), "Expected empty stack after filtering all internal frames");
     }
 
     #[test]
@@ -710,11 +706,16 @@ mod tests {
         ];
         let filtered = filter_internal_frames(frames);
         assert_eq!(filtered.len(), 3);
+        assert_eq!(filtered[0].name, "main::start");
+        assert_eq!(filtered[1].name, "Lib::helper");
+        assert_eq!(filtered[2].name, "Utils::format");
     }
 
     #[test]
     pub(super) fn test_stack_frame_filtering_empty_input() {
-        assert!(filter_internal_frames(Vec::new()).is_empty());
+        let frames: Vec<StackFrame> = Vec::new();
+        let filtered = filter_internal_frames(frames);
+        assert!(filtered.is_empty());
     }
 
     #[test]
@@ -724,11 +725,19 @@ mod tests {
 # 2 main::start at /app/script.pl line 5"#;
         let frames = DebugAdapter::parse_stack_trace(output);
         assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0].id, 1);
         assert_eq!(frames[0].name, "main::compute_sum");
         assert_eq!(frames[0].source.path, "/app/script.pl");
         assert_eq!(frames[0].line, 20);
+        assert_eq!(frames[0].source.name, Some("script.pl".to_string()));
+        assert_eq!(frames[1].id, 2);
         assert_eq!(frames[1].name, "Foo::process");
+        assert_eq!(frames[1].source.path, "/app/lib/Foo.pm");
+        assert_eq!(frames[1].line, 15);
+        assert_eq!(frames[2].id, 3);
         assert_eq!(frames[2].name, "main::start");
+        assert_eq!(frames[2].source.path, "/app/script.pl");
+        assert_eq!(frames[2].line, 5);
     }
 
     #[test]
@@ -736,6 +745,8 @@ mod tests {
         let output = "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7";
         let (frames, arguments) = DebugAdapter::parse_stack_frames_from_text(output);
         assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].id, 1);
+        assert_eq!(frames[0].name, "main::run");
         assert_eq!(
             arguments.get(&1),
             Some(&vec!["$value".to_string(), "[1, 2]".to_string(), "\"a,b\"".to_string()])
@@ -751,7 +762,13 @@ mod tests {
         let frames = DebugAdapter::parse_stack_trace(output);
         assert_eq!(frames.len(), 4);
         assert_eq!(frames[0].name, "Utils::Helper::validate");
+        assert_eq!(frames[1].name, "Data::Processor::transform");
+        assert_eq!(frames[2].name, "Controller::API::handle_request");
         assert_eq!(frames[3].name, "main::dispatch");
+        assert!(frames[0].source.path.contains("Utils/Helper.pm"));
+        assert!(frames[1].source.path.contains("Data/Processor.pm"));
+        assert!(frames[2].source.path.contains("controller/API.pm"));
+        assert!(frames[3].source.path.contains("app.pl"));
     }
 
     #[test]
@@ -763,7 +780,15 @@ mod tests {
 # 4 main::compute at /app/math.pl line 10"#;
         let frames = DebugAdapter::parse_stack_trace(output);
         assert_eq!(frames.len(), 5);
+        assert_eq!(frames[0].name, "main::factorial");
+        assert_eq!(frames[1].name, "main::factorial");
+        assert_eq!(frames[2].name, "main::factorial");
+        assert_eq!(frames[3].name, "main::factorial");
+        assert_eq!(frames[4].name, "main::compute");
         assert_eq!(frames[0].id, 1);
+        assert_eq!(frames[1].id, 2);
+        assert_eq!(frames[2].id, 3);
+        assert_eq!(frames[3].id, 4);
         assert_eq!(frames[4].id, 5);
     }
 
@@ -775,6 +800,8 @@ mod tests {
         let frames = DebugAdapter::parse_stack_trace(output);
         assert_eq!(frames.len(), 3);
         assert_eq!(frames[0].name, "main::__ANON__");
+        assert_eq!(frames[1].name, "Utils::map");
+        assert_eq!(frames[2].name, "main::process_items");
     }
 
     #[test]
@@ -785,6 +812,8 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].source.path, r"C:\workspace\script.pl");
         assert_eq!(frames[0].source.name, Some("script.pl".to_string()));
+        assert_eq!(frames[1].source.path, r"C:\workspace\lib\Foo.pm");
+        assert_eq!(frames[1].source.name, Some("Foo.pm".to_string()));
     }
 
     #[test]
@@ -794,7 +823,9 @@ mod tests {
         let frames = DebugAdapter::parse_stack_trace(output);
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].source.path, "/tmp/My Project/script.pl");
+        assert_eq!(frames[0].source.name, Some("script.pl".to_string()));
         assert_eq!(frames[1].source.path, r"C:\Work Files\lib\Foo.pm");
+        assert_eq!(frames[1].source.name, Some("Foo.pm".to_string()));
     }
 
     #[test]
@@ -814,9 +845,12 @@ mod tests {
 # 2 Foo::process at /app/lib/Foo.pm line 25
 # 3 Devel::TSPerlDAP::handle_break called at /shim/TSPerlDAP.pm line 50
 # 4 main::start at /app/script.pl line 5"#;
-        let filtered = filter_internal_frames(DebugAdapter::parse_stack_trace(output));
+        let frames = DebugAdapter::parse_stack_trace(output);
+        assert_eq!(frames.len(), 5, "stack parsing must retain all frames before filtering");
+        let filtered = filter_internal_frames(frames);
         assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0].name, "main::user_func");
+        assert_eq!(filtered[1].name, "Foo::process");
         assert_eq!(filtered[2].name, "main::start");
     }
 
