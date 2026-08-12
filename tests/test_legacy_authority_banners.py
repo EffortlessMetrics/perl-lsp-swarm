@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "docs" / "agents" / "authority_status.toml"
+MIGRATOR = ROOT / "scripts" / "migrate-legacy-authority-banners.py"
 MARKER = "<!-- authority-status:v1 -->"
 EXPECTED = {
     "docs/reference/ORCHESTRATION_DOCTRINE.md": (
@@ -82,6 +83,15 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
 
         self.assertEqual(set(EXPECTED), legacy_paths)
         self.assertEqual(len(EXPECTED), 9)
+
+    def test_one_shot_migrator_is_inert(self) -> None:
+        source = MIGRATOR.read_text(encoding="utf-8")
+
+        self.assertIn("RETIRED", source)
+        self.assertIn("tests/test_legacy_authority_banners.py", source)
+        self.assertNotIn("write_text", source)
+        self.assertNotIn("def migrate", source)
+        self.assertIn("raise SystemExit(2)", source)
 
 
 if __name__ == "__main__":
