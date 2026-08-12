@@ -1,10 +1,19 @@
 import type { BinaryIdentityResponseV1 } from '../binaryIdentityProtocol.generated';
+
+jest.mock('vscode-languageclient/node', () => ({
+  LanguageClient: class {},
+  State: { Starting: 'starting', Running: 'running', Stopped: 'stopped' },
+  Trace: { Off: 'off', Messages: 'messages', Verbose: 'verbose' },
+  TransportKind: { stdio: 0 },
+}));
+
 import {
   SHOW_BINARY_IDENTITY_COMMAND,
   showBinaryIdentityStatus,
   type BinaryIdentityCommandHost,
   type BinaryIdentityRequestClient,
 } from '../binaryIdentityCommand';
+import { createBinaryIdentityCommand } from '../extension';
 
 function response(): BinaryIdentityResponseV1 {
   return {
@@ -107,5 +116,50 @@ describe('binary identity command', () => {
 
     expect(copySupportPacket).toHaveBeenCalledTimes(1);
     expect(copySupportPacket.mock.calls[0][0]).toContain('"redacted": true');
+  });
+
+  test('production composition delegates the registered command to the identity adapter', async () => {
+    const request = jest.fn().mockResolvedValue(response());
+    const show = jest.fn().mockResolvedValue(undefined);
+    const client: BinaryIdentityRequestClient = { sendRequest: request };
+    const host: BinaryIdentityCommandHost = {
+      show,
+      refreshIdentity: jest.fn().mockResolvedValue(undefined),
+      repairManagedPair: jest.fn().mockResolvedValue(undefined),
+      inspectConfiguredBinary: jest.fn().mockResolvedValue(undefined),
+      copySupportPacket: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const command = createBinaryIdentityCommand(() => client, '0.18.0', 'managed', host);
+    const result = await command();
+
+    expect(request).toHaveBeenCalledWith('perl/binaryIdentity', expect.anything());
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({ state: 'update_or_repair_required' }));
+  });
+
+  test('reports an identity request failure instead of returning unsupported', async () => {
+    const reportError = jest.fn();
+    const host: BinaryIdentityCommandHost = {
+      show: jest.fn().mockResolvedValue(undefined),
+      refreshIdentity: jest.fn().mockResolvedValue(undefined),
+      repairManagedPair: jest.fn().mockResolvedValue(undefined),
+      inspectConfiguredBinary: jest.fn().mockResolvedValue(undefined),
+      copySupportPacket: jest.fn().mockResolvedValue(undefined),
+    };
+    const client: BinaryIdentityRequestClient = {
+      sendRequest: jest.fn().mockRejectedValue(new Error('method not found')),
+    };
+
+    const result = await createBinaryIdentityCommand(
+      () => client,
+      '0.18.0',
+      'managed',
+      host,
+      reportError,
+    )();
+
+    expect(result).toEqual({ status: 'error', message: 'method not found' });
+    expect(reportError).toHaveBeenCalledWith('method not found');
   });
 });

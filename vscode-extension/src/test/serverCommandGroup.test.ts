@@ -53,8 +53,8 @@ describe('registerServerCommandGroup', () => {
   });
 
   test('binary identity command has an honest unsupported result before composition', async () => {
-    const dependencies = makeDependencies();
-    delete (dependencies as Partial<ServerCommandContext>).showBinaryIdentity;
+    const { showBinaryIdentity, ...dependencies } = makeDependencies();
+    void showBinaryIdentity;
     const disposables = registerServerCommandGroup(dependencies);
 
     const result = await vscode.commands.executeCommand('perl-lsp.showBinaryIdentity');

@@ -41,11 +41,17 @@ function request(input: BinaryIdentityCommandInput): BinaryIdentityRequestV1 {
     expected_extension: {
       id: CANONICAL_EXTENSION_ID,
       version: input.extensionVersion,
-      candidate_identity: input.extensionCandidate,
-      target: input.expectedTarget,
+      ...(input.extensionCandidate === undefined
+        ? {}
+        : { candidate_identity: input.extensionCandidate }),
+      ...(input.expectedTarget === undefined ? {} : { target: input.expectedTarget }),
     },
-    expected_server_instance_id: input.expectedServerInstanceId,
-    expected_environment_snapshot_id: input.expectedEnvironmentSnapshotId,
+    ...(input.expectedServerInstanceId === undefined
+      ? {}
+      : { expected_server_instance_id: input.expectedServerInstanceId }),
+    ...(input.expectedEnvironmentSnapshotId === undefined
+      ? {}
+      : { expected_environment_snapshot_id: input.expectedEnvironmentSnapshotId }),
   };
 }
 
