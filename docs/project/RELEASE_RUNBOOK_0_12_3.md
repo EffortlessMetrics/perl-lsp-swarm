@@ -22,18 +22,18 @@
 
 ## Pre-flight
 
-### 1. Verify master branch CI is green
+### 1. Verify recent main branch CI runs
 
-**What**: Confirm the most recent CI runs on master are all successful.
+**What**: Inspect the five most recent `ci.yml` workflow runs on main and confirm their status and conclusion.
 
-**Why**: Release orchestration validates CI state before tagging. A red master blocks the workflow automatically; catching it here saves a wasted workflow dispatch.
+**Why**: Release orchestration validates CI state before tagging. A failed or incomplete `ci.yml` run on main warrants investigation before dispatching the release workflow.
 
 **Command**:
 ```bash
-rtk gh run list --branch master --limit 5
+gh run list --workflow ci.yml --branch main --limit 5
 ```
 
-**Expected output**: All 5 runs show `completed / success`. The `ci.yml` workflow must be among them.
+**Expected output**: Up to five `ci.yml` runs for main, with each run's status and conclusion. Proceed only after the relevant current run reports `completed / success`; this history listing alone does not prove release readiness.
 
 **If it fails**: Do not proceed. Identify the failing job, fix the root cause on a feature branch, merge, and re-check. The release-orchestration workflow will also reject a non-green HEAD (see `release-orchestration.yml` step "Check default branch and CI status").
 
