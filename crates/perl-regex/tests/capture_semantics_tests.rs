@@ -139,6 +139,30 @@ fn branch_reset_restarts_each_branch_and_advances_by_the_widest_branch()
 }
 
 #[test]
+fn incompatible_branch_reset_makes_numbering_unknown_and_incomplete()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(?|(?<first>a)|(?<second>b))(?<after>c)";
+    let analysis = RegexAnalyzer::analyze_captures(
+        pattern,
+        EffectiveModifiers::default(),
+        profile(8, FeatureState::Enabled),
+    );
+
+    assert_eq!(analysis.declarations.len(), 3);
+    assert!(analysis.declarations.iter().all(|declaration| {
+        declaration.number.is_none()
+            && declaration.confidence.number == CaptureNumberConfidence::StructuralUnknown
+    }));
+    assert_eq!(
+        analysis.diagnostics[0].code,
+        perl_regex::analyzer::CaptureDiagnosticCode::RequiresPerlVersion
+    );
+    assert!(analysis.status.numbering_unknown);
+    assert!(!analysis.status.is_complete());
+    Ok(())
+}
+
+#[test]
 fn duplicate_names_preserve_every_declaration_and_numbered_alias()
 -> Result<(), Box<dyn std::error::Error>> {
     let pattern = "(?<x>a)(?<x>b)(?<y>c)";
@@ -463,5 +487,30 @@ fn unclosed_groups_are_retained_as_recovered_and_filtered_from_legacy_projection
     );
     assert!(analysis.status.malformed);
     assert!(RegexAnalyzer::extract_named_captures(pattern).is_empty());
+    Ok(())
+}
+
+#[test]
+fn malformed_branch_reset_is_recovered_without_complete_numbering()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(?|(?<name>a)|(?<other>b";
+    let analysis = RegexAnalyzer::analyze_captures(
+        pattern,
+        EffectiveModifiers::default(),
+        profile(44, FeatureState::Enabled),
+    );
+
+    assert_eq!(analysis.declarations.len(), 2);
+    assert_eq!(
+        analysis.declarations[0].confidence.source,
+        CaptureSourceConfidence::Exact
+    );
+    assert_eq!(
+        analysis.declarations[1].confidence.source,
+        CaptureSourceConfidence::Recovered
+    );
+    assert!(analysis.status.malformed);
+    assert!(analysis.status.numbering_unknown);
+    assert!(!analysis.status.is_complete());
     Ok(())
 }

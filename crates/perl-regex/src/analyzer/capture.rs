@@ -182,6 +182,8 @@ impl CaptureLanguageProfile {
 pub struct CaptureAnalysisStatus {
     /// Runtime-supplied/interpolated pattern text made later numbering unknown.
     pub dynamic: bool,
+    /// Structural uncertainty made capture numbering incomplete.
+    pub numbering_unknown: bool,
     /// Malformed or truncated group structure was observed.
     pub malformed: bool,
     /// Deterministic structural analysis stopped at a declared budget.
@@ -192,7 +194,10 @@ impl CaptureAnalysisStatus {
     /// Whether capture declarations and numbering are complete for the modeled subset.
     #[must_use]
     pub const fn is_complete(self) -> bool {
-        !self.dynamic && !self.malformed && self.exhausted.is_none()
+        !self.dynamic
+            && !self.numbering_unknown
+            && !self.malformed
+            && self.exhausted.is_none()
     }
 }
 
@@ -383,6 +388,7 @@ pub(crate) fn analyze_captures(
         diagnostics,
         status: CaptureAnalysisStatus {
             dynamic,
+            numbering_unknown: numbering_uncertainty != NumberingUncertainty::None,
             malformed,
             exhausted: stream.exhausted.map(map_budget),
         },
