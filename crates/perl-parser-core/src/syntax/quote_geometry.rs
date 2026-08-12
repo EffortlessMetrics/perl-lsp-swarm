@@ -322,16 +322,30 @@ fn scan_unpaired_body(
         };
     };
 
-    for (relative, ch) in rest.char_indices() {
+    let mut relative = 0usize;
+    while let Some(ch) = rest.get(relative..).and_then(|tail| tail.chars().next()) {
         let Some(offset) = body_start.checked_add(relative) else {
             break;
         };
         if escaped {
             escaped = false;
+            relative = relative.saturating_add(ch.len_utf8());
             continue;
         }
         if ch == '\\' {
             escaped = true;
+            relative = relative.saturating_add(ch.len_utf8());
+            continue;
+        }
+        if matches!(ch, '\'' | '"')
+            && ch != delimiter
+            && !is_word_apostrophe(text, offset, ch)
+            && let Some(string_end) = scan_inner_string(text, offset, ch, delimiter)
+        {
+            let Some(next_relative) = string_end.checked_sub(body_start) else {
+                break;
+            };
+            relative = next_relative;
             continue;
         }
         if ch == delimiter {
@@ -345,6 +359,7 @@ fn scan_unpaired_body(
                 delimiter,
             };
         }
+        relative = relative.saturating_add(ch.len_utf8());
     }
 
     ScannedBody {
@@ -355,6 +370,43 @@ fn scan_unpaired_body(
         rest_offset: text.len(),
         delimiter,
     }
+}
+
+fn scan_inner_string(text: &str, start: usize, quote: char, delimiter: char) -> Option<usize> {
+    let content_start = start.checked_add(quote.len_utf8())?;
+    let mut escaped = false;
+    let mut contains_delimiter = false;
+
+    for (relative, ch) in text.get(content_start..)?.char_indices() {
+        let offset = content_start.checked_add(relative)?;
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '\n' {
+            return None;
+        }
+        if ch == delimiter {
+            contains_delimiter = true;
+        }
+        if ch == quote {
+            return contains_delimiter.then_some(offset.checked_add(ch.len_utf8())?);
+        }
+    }
+
+    None
+}
+
+fn is_word_apostrophe(text: &str, position: usize, quote: char) -> bool {
+    quote == '\''
+        && text
+            .get(..position)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn body_geometry(
