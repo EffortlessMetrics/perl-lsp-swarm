@@ -36,6 +36,19 @@ fn collect_remaining(lexer: &mut PerlLexer<'_>) -> Vec<TokenSignature> {
         .collect()
 }
 
+fn assert_symbol_table_invariant(label: &str, input: &str) {
+    let without_table = signatures(input, LexerConfig::default());
+    let with_table = signatures(
+        input,
+        LexerConfig {
+            symbol_table: Some(LocalSymbolTable::scan_subs(input)),
+            ..LexerConfig::default()
+        },
+    );
+
+    assert_eq!(without_table, with_table, "symbol table changed {label}");
+}
+
 #[test]
 fn interpolation_switch_has_an_exact_legacy_segmentation_contract() -> R {
     let cases = [
@@ -205,16 +218,30 @@ fn symbol_table_changes_only_the_declared_bareword_slash_case() {
     assert!(configured.iter().any(|token| matches!(&token.0, TokenType::RegexMatch)));
     assert!(!configured.iter().any(|token| matches!(&token.0, TokenType::Division)));
 
-    let invariant = "$obj->builder(); $h{builder}; sub builder { 1 }";
-    let without_table = signatures(invariant, LexerConfig::default());
-    let with_table = signatures(
-        invariant,
-        LexerConfig {
-            symbol_table: Some(LocalSymbolTable::scan_subs(invariant)),
-            ..LexerConfig::default()
-        },
+    let undeclared = "consumer /pattern/; sub builder { 1 }";
+    let undeclared_tokens = signatures(undeclared, LexerConfig::default());
+    assert!(undeclared_tokens.iter().any(|token| matches!(&token.0, TokenType::Division)));
+    assert!(!undeclared_tokens.iter().any(|token| matches!(&token.0, TokenType::RegexMatch)));
+    assert_symbol_table_invariant("an undeclared bareword/slash case", undeclared);
+
+    let builtin = "print /pattern/; sub builder { 1 }";
+    let builtin_tokens = signatures(builtin, LexerConfig::default());
+    assert!(builtin_tokens.iter().any(|token| matches!(&token.0, TokenType::RegexMatch)));
+    assert!(!builtin_tokens.iter().any(|token| matches!(&token.0, TokenType::Division)));
+    assert_symbol_table_invariant("a builtin-controlled regex", builtin);
+
+    assert_symbol_table_invariant(
+        "a method name",
+        "$obj->builder(); sub builder { 1 }",
     );
-    assert_eq!(without_table, with_table);
+    assert_symbol_table_invariant("a hash key", "$h{builder}; sub builder { 1 }");
+    assert_symbol_table_invariant("the declaration itself", "sub builder { 1 }");
+
+    let unrelated_division = "$value / 2; sub builder { 1 }";
+    let division_tokens = signatures(unrelated_division, LexerConfig::default());
+    assert!(division_tokens.iter().any(|token| matches!(&token.0, TokenType::Division)));
+    assert!(!division_tokens.iter().any(|token| matches!(&token.0, TokenType::RegexMatch)));
+    assert_symbol_table_invariant("an unrelated division operator", unrelated_division);
 }
 
 #[test]
