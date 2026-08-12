@@ -1,8 +1,8 @@
-use perl_regex::{RegexError, RegexValidator};
 use perl_regex::validator::{
     EmbeddedCodeKind, RegexAnalysisCompleteness, RegexDiagnosticClass, RegexDiagnosticCode,
     RegexValidationConfig,
 };
+use perl_regex::{RegexError, RegexValidator};
 
 #[test]
 fn safe_pattern_returns_complete_clean_analysis() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,8 +16,8 @@ fn safe_pattern_returns_complete_clean_analysis() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn one_batch_preserves_dynamic_advisory_and_policy_findings()
--> Result<(), Box<dyn std::error::Error>> {
+fn one_batch_preserves_dynamic_advisory_and_policy_findings(
+) -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,
         max_unicode_properties: 1,
@@ -26,11 +26,7 @@ fn one_batch_preserves_dynamic_advisory_and_policy_findings()
     let pattern = r"\p{L}\p{N}(a+)+(?{ run })(??{ later })";
 
     let analysis = validator.analyze(pattern);
-    let codes = analysis
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code)
-        .collect::<Vec<_>>();
+    let codes = analysis.diagnostics.iter().map(|diagnostic| diagnostic.code).collect::<Vec<_>>();
 
     assert_eq!(
         codes,
@@ -53,8 +49,8 @@ fn one_batch_preserves_dynamic_advisory_and_policy_findings()
 }
 
 #[test]
-fn diagnostic_identity_is_separate_from_presentation_text()
--> Result<(), Box<dyn std::error::Error>> {
+fn diagnostic_identity_is_separate_from_presentation_text() -> Result<(), Box<dyn std::error::Error>>
+{
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,
         max_unicode_properties: 1,
@@ -73,8 +69,7 @@ fn diagnostic_identity_is_separate_from_presentation_text()
 }
 
 #[test]
-fn diagnostics_are_deterministic_and_source_ordered()
--> Result<(), Box<dyn std::error::Error>> {
+fn diagnostics_are_deterministic_and_source_ordered() -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,
         max_unicode_properties: 1,
@@ -92,22 +87,17 @@ fn diagnostics_are_deterministic_and_source_ordered()
 }
 
 #[test]
-fn compatibility_validate_keeps_embedded_code_category_priority()
--> Result<(), Box<dyn std::error::Error>> {
+fn compatibility_validate_keeps_embedded_code_category_priority(
+) -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::new();
     let pattern = r"(a+)+literal(?{ run })";
     let analysis = validator.analyze(pattern);
 
     assert_eq!(analysis.diagnostics[0].code, RegexDiagnosticCode::NestedQuantifierRisk);
-    assert_eq!(
-        analysis.diagnostics[1].code,
-        RegexDiagnosticCode::EmbeddedCodeImmediate
-    );
+    assert_eq!(analysis.diagnostics[1].code, RegexDiagnosticCode::EmbeddedCodeImmediate);
 
-    let error = validator
-        .validate(pattern, 100)
-        .err()
-        .ok_or("expected compatibility validation error")?;
+    let error =
+        validator.validate(pattern, 100).err().ok_or("expected compatibility validation error")?;
     match error {
         RegexError::Syntax { message, offset } => {
             assert!(message.contains("Embedded code execution"));
@@ -118,8 +108,8 @@ fn compatibility_validate_keeps_embedded_code_category_priority()
 }
 
 #[test]
-fn compatibility_finders_project_relative_batch_ranges_to_absolute_offsets()
--> Result<(), Box<dyn std::error::Error>> {
+fn compatibility_finders_project_relative_batch_ranges_to_absolute_offsets(
+) -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::new();
 
     let code_analysis = validator.analyze("xx(?{ run })");
@@ -148,8 +138,7 @@ fn compatibility_finders_project_relative_batch_ranges_to_absolute_offsets()
 }
 
 #[test]
-fn dynamic_and_policy_completeness_remain_distinct()
--> Result<(), Box<dyn std::error::Error>> {
+fn dynamic_and_policy_completeness_remain_distinct() -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,
         max_unicode_properties: 1,

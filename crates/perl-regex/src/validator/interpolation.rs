@@ -11,7 +11,9 @@ pub(crate) fn find_interpolations(
     let mut ranges = Vec::new();
 
     while cursor.current().is_some() {
-        if let Some(excluded) = excluded_ranges.iter().find(|range| range.contains(cursor.position())) {
+        if let Some(excluded) =
+            excluded_ranges.iter().find(|range| range.contains(cursor.position()))
+        {
             cursor.advance_to(excluded.end);
             continue;
         }
@@ -98,9 +100,31 @@ fn is_special_variable(sigil: u8, ch: u8) -> bool {
     match sigil {
         b'$' => matches!(
             ch,
-            b'$' | b'@' | b'%' | b'&' | b'`' | b'\'' | b'+' | b'-' | b'!' | b'?' | b'^'
-                | b'/' | b'\\' | b'|' | b'~' | b'=' | b':' | b'.' | b',' | b';' | b'<'
-                | b'>' | b'(' | b')' | b'[' | b']'
+            b'$' | b'@'
+                | b'%'
+                | b'&'
+                | b'`'
+                | b'\''
+                | b'+'
+                | b'-'
+                | b'!'
+                | b'?'
+                | b'^'
+                | b'/'
+                | b'\\'
+                | b'|'
+                | b'~'
+                | b'='
+                | b':'
+                | b'.'
+                | b','
+                | b';'
+                | b'<'
+                | b'>'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
         ),
         b'@' => matches!(ch, b'+' | b'-' | b'_'),
         _ => false,
