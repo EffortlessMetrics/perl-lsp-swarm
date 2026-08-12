@@ -1,0 +1,73 @@
+name: Bootstrap issue 7119 implementation
+
+on:
+  push:
+    branches:
+      - agent/remove-generic-vscode-mcp
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-7119-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Apply implementation
+        run: python3 .github/bootstrap/implement-7119.py
+
+      - name: Set up VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Verify retired surface guard
+        working-directory: vscode-extension
+        run: |
+          node --test scripts/check-no-generic-mcp-surface.test.js
+          node scripts/check-no-generic-mcp-surface.js
+
+      - name: Typecheck and compile extension
+        working-directory: vscode-extension
+        run: |
+          npm run typecheck:all
+          npm run compile
+
+      - name: Focused extension tests
+        working-directory: vscode-extension
+        run: npm test -- featureActivationMetrics.test.ts --runInBand
+
+      - name: Format and lint checks
+        working-directory: vscode-extension
+        run: |
+          npm run fmt:check
+          npm run lint
+
+      - name: Commit implementation and remove bootstrap files
+        shell: bash
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm -- .github/workflows/bootstrap-7119.yml .github/bootstrap/implement-7119.py
+          git add -A -- \
+            vscode-extension/package.json \
+            vscode-extension/src/extension.ts \
+            vscode-extension/src/featureActivationMetrics.ts \
+            vscode-extension/src/test/featureActivationMetrics.test.ts \
+            vscode-extension/src/mcpSupport.ts \
+            vscode-extension/scripts/check-no-generic-mcp-surface.js \
+            vscode-extension/scripts/check-no-generic-mcp-surface.test.js \
+            vscode-extension/README.md \
+            docs/EXTENSION.md
+          git diff --cached --check
+          git commit -m "fix(vscode): retire generic MCP command registry (#7119)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
