@@ -259,6 +259,20 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
     Some(group)
 }
 
+/// The reviewed export-plus-export-ok set for a known Test2 module.
+///
+/// Most currently modeled modules use the same reviewed set for defaults and
+/// `:ALL`. `Test2::Tools::Compare` is the important exception: standalone
+/// default imports are only `is`/`like`, while the already-reviewed `COMPARE`
+/// table records its complete known menu. Unknown/custom modules remain
+/// `None` rather than receiving invented names.
+fn module_all_exports(module: &str) -> Option<&'static [&'static str]> {
+    match module {
+        "Test2::Tools::Compare" => Some(COMPARE),
+        _ => module_default_exports(module),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Import resolution.
 // ---------------------------------------------------------------------------
@@ -325,6 +339,8 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         && (args_contains_option(raw_args, "import") || v1_short_flag(raw_args, 'i'));
     let default_set =
         if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_default_exports(module) };
+    let all_set =
+        if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_all_exports(module) };
 
     // Pragma resolution (bundles only). Most bundles (`Test2::V0`, `Test2::Suite`,
     // `Test2::Bundle::*`) enable strict/warnings by default and opt OUT via
@@ -420,14 +436,10 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     // known import merely because the tag itself is explicit.
     let has_local_selection = !positives.is_empty() || !renames.is_empty();
     let use_default = !has_local_selection || include_default_tag || include_all_tag;
+    let requested_base_set = if include_all_tag { all_set } else { default_set };
 
-    // The provider-local migration oracle does not enumerate every EXPORT_OK
-    // symbol for every possible Test2 module. For modules with a reviewed table,
-    // `:ALL` therefore starts from that known set instead of inventing names or
-    // incorrectly returning an empty import. Exact module-specific `:ALL`
-    // expansion belongs to the registered adapters tracked by #6946/#6948.
     let mut symbols: BTreeSet<String> = BTreeSet::new();
-    if use_default && let Some(defaults) = default_set {
+    if use_default && let Some(defaults) = requested_base_set {
         for &sym in defaults {
             symbols.insert(sym.to_string());
         }
