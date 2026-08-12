@@ -1446,16 +1446,14 @@ fn finalize_tokens_controlled(
 }
 
 /// Comprehensive AST walker for semantic token extraction.
+#[cfg(test)]
 fn walk_ast_full<F>(node: &Node, visitor: &mut F) -> bool
 where
     F: FnMut(&Node) -> bool,
 {
     let control = SemanticTokensTraversalControl::unlimited();
     let mut traversal = TraversalState { control: &control, work_done: 0 };
-    match walk_ast_full_controlled(node, &mut traversal, visitor) {
-        Ok(completed) => completed,
-        Err(_) => false,
-    }
+    walk_ast_full_controlled(node, &mut traversal, visitor).unwrap_or_default()
 }
 
 fn walk_ast_full_controlled<F>(
