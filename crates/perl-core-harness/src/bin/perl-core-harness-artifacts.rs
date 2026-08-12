@@ -3,10 +3,10 @@
 
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
-    HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION,
-    RUNNER_RECORD_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunnerRecord, RunnerStatus,
-    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
-    SemanticBoundaryRecord,
+    HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary,
+    RUN_REPORT_SCHEMA_VERSION, RUNNER_RECORD_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
+    RunnerRecord, RunnerStatus, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+    SemanticBoundaryLockScope, SemanticBoundaryRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -51,9 +51,8 @@ impl Options {
             if !flag.starts_with("--") {
                 bail!("expected an option beginning with --, found {flag}");
             }
-            let value = args
-                .next()
-                .ok_or_else(|| color_eyre::eyre::eyre!("missing value for {flag}"))?;
+            let value =
+                args.next().ok_or_else(|| color_eyre::eyre::eyre!("missing value for {flag}"))?;
             if value.starts_with("--") {
                 bail!("missing value for {flag}; found option {value}");
             }
@@ -63,11 +62,10 @@ impl Options {
     }
 
     fn required(&mut self, flag: &str) -> Result<String> {
-        let value = self
-            .values
-            .get_mut(flag)
-            .and_then(VecDeque::pop_front)
-            .ok_or_else(|| color_eyre::eyre::eyre!("required option {flag} was not supplied"))?;
+        let value =
+            self.values.get_mut(flag).and_then(VecDeque::pop_front).ok_or_else(|| {
+                color_eyre::eyre::eyre!("required option {flag} was not supplied")
+            })?;
         if self.values.get(flag).is_some_and(|values| !values.is_empty()) {
             bail!("option {flag} may be supplied only once");
         }
@@ -90,10 +88,7 @@ impl Options {
     }
 
     fn repeated(&mut self, flag: &str) -> Vec<String> {
-        self.values
-            .remove(flag)
-            .map(|values| values.into_iter().collect())
-            .unwrap_or_default()
+        self.values.remove(flag).map(|values| values.into_iter().collect()).unwrap_or_default()
     }
 
     fn finish(self) -> Result<()> {
@@ -139,11 +134,8 @@ struct DeriveRunnerRecordsConfig {
 
 impl DeriveRunnerRecordsConfig {
     fn from_options(mut options: Options) -> Result<Self> {
-        let reports = options
-            .repeated("--report")
-            .into_iter()
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
+        let reports =
+            options.repeated("--report").into_iter().map(PathBuf::from).collect::<Vec<_>>();
         if reports.is_empty() {
             bail!("derive-runner-records requires at least one --report");
         }
@@ -166,11 +158,8 @@ struct CheckRunnerRecordsConfig {
 
 impl CheckRunnerRecordsConfig {
     fn from_options(mut options: Options) -> Result<Self> {
-        let reports = options
-            .repeated("--report")
-            .into_iter()
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
+        let reports =
+            options.repeated("--report").into_iter().map(PathBuf::from).collect::<Vec<_>>();
         if reports.is_empty() {
             bail!("check-runner-records requires at least one --report");
         }
@@ -212,10 +201,7 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     if !script.is_file() {
         bail!("prepared Perl tree is missing runner script {}", script.display());
     }
-    reject_output_aliases(
-        std::slice::from_ref(&script),
-        std::slice::from_ref(&config.output),
-    )?;
+    reject_output_aliases(std::slice::from_ref(&script), std::slice::from_ref(&config.output))?;
 
     let script_name = script
         .file_name()
@@ -255,10 +241,7 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     };
     write_json(&config.output, &envelope)?;
     if !envelope.success {
-        let detail = envelope
-            .spawn_error
-            .as_deref()
-            .unwrap_or_else(|| envelope.stderr.trim());
+        let detail = envelope.spawn_error.as_deref().unwrap_or_else(|| envelope.stderr.trim());
         bail!(
             "upstream discovery failed; raw evidence was written to {}: {detail}",
             config.output.display()
@@ -358,9 +341,8 @@ fn read_reports(paths: &[PathBuf]) -> Result<Vec<RunReport>> {
 }
 
 fn validate_report_collection(reports: &[RunReport]) -> Result<()> {
-    let first = reports
-        .first()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no run reports were supplied"))?;
+    let first =
+        reports.first().ok_or_else(|| color_eyre::eyre::eyre!("no run reports were supplied"))?;
     let expected_membership = report_membership(first);
     let mut modes = BTreeSet::new();
     for report in reports {
@@ -421,25 +403,16 @@ fn validate_report(report: &RunReport) -> Result<()> {
             files.len()
         );
     }
-    let passed = report
-        .file_results
-        .iter()
-        .filter(|result| result.status == RunnerStatus::Pass)
-        .count();
+    let passed =
+        report.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
     let failed = report.file_results.len().saturating_sub(passed);
     if passed != report.summary.files_passed || failed != report.summary.files_failed {
         bail!("run report file status counts do not match its summary");
     }
-    let assertions_total: usize = report
-        .file_results
-        .iter()
-        .map(|result| result.assertions_total)
-        .sum();
-    let assertions_passed: usize = report
-        .file_results
-        .iter()
-        .map(|result| result.assertions_passed)
-        .sum();
+    let assertions_total: usize =
+        report.file_results.iter().map(|result| result.assertions_total).sum();
+    let assertions_passed: usize =
+        report.file_results.iter().map(|result| result.assertions_passed).sum();
     if assertions_total != report.summary.tap_assertions_total
         || assertions_passed != report.summary.tap_assertions_passed
     {
@@ -481,9 +454,7 @@ fn validate_report(report: &RunReport) -> Result<()> {
     Ok(())
 }
 
-fn validate_semantic_boundary_inventory(
-    boundaries: &[ObservedSemanticBoundary],
-) -> Result<()> {
+fn validate_semantic_boundary_inventory(boundaries: &[ObservedSemanticBoundary]) -> Result<()> {
     let mut violations = Vec::new();
     let mut keys = BTreeSet::new();
     for boundary in boundaries {
@@ -624,10 +595,8 @@ fn boundary_record(boundary: &ObservedSemanticBoundary) -> SemanticBoundaryRecor
 }
 
 fn compile_boundaries(reports: &[RunReport]) -> Result<Vec<ObservedSemanticBoundary>> {
-    let compile_reports = reports
-        .iter()
-        .filter(|report| report.mode == HarnessMode::Compile)
-        .collect::<Vec<_>>();
+    let compile_reports =
+        reports.iter().filter(|report| report.mode == HarnessMode::Compile).collect::<Vec<_>>();
     if compile_reports.len() > 1 {
         bail!("runner-record derivation accepts at most one compile report");
     }
@@ -688,9 +657,8 @@ fn read_json_lines(path: &Path) -> Result<Vec<RunnerRecord>> {
 }
 
 fn sort_records(records: &mut [RunnerRecord]) {
-    records.sort_by(|left, right| {
-        left.mode.cmp(&right.mode).then_with(|| left.path.cmp(&right.path))
-    });
+    records
+        .sort_by(|left, right| left.mode.cmp(&right.mode).then_with(|| left.path.cmp(&right.path)));
 }
 
 fn boundary_key(boundary: &ObservedSemanticBoundary) -> (String, String, usize, usize) {
@@ -731,25 +699,17 @@ fn resolve_destination(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .context("reading current directory")?
-            .join(path)
+        std::env::current_dir().context("reading current directory")?.join(path)
     };
     let mut ancestor = absolute.as_path();
     let mut suffix = Vec::new();
     while !ancestor.exists() {
         let component = ancestor.file_name().ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "output path has no existing ancestor: {}",
-                path.display()
-            )
+            color_eyre::eyre::eyre!("output path has no existing ancestor: {}", path.display())
         })?;
         suffix.push(component.to_os_string());
         ancestor = ancestor.parent().ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "output path has no existing ancestor: {}",
-                path.display()
-            )
+            color_eyre::eyre::eyre!("output path has no existing ancestor: {}", path.display())
         })?;
     }
     let mut resolved = fs::canonicalize(ancestor)
@@ -795,14 +755,9 @@ fn parse_profile(value: &str) -> Result<HarnessProfile> {
 }
 
 fn sanitize_perl_env(command: &mut Command) {
-    for key in [
-        "PERL5LIB",
-        "PERLLIB",
-        "PERL5OPT",
-        "PERL_UNICODE",
-        "PERL_LOCAL_LIB_ROOT",
-        "PERL_MB_OPT",
-    ] {
+    for key in
+        ["PERL5LIB", "PERLLIB", "PERL5OPT", "PERL_UNICODE", "PERL_LOCAL_LIB_ROOT", "PERL_MB_OPT"]
+    {
         command.env_remove(key);
     }
 }
@@ -825,9 +780,7 @@ fn write_json_lines(path: &Path, records: &[RunnerRecord]) -> Result<()> {
             .write_all(b"\n")
             .with_context(|| format!("writing runner records {}", path.display()))?;
     }
-    writer
-        .flush()
-        .with_context(|| format!("flushing runner records {}", path.display()))
+    writer.flush().with_context(|| format!("flushing runner records {}", path.display()))
 }
 
 fn create_parent(path: &Path) -> Result<()> {
@@ -904,10 +857,9 @@ mod tests {
         let report = temp.path().join("report.json");
         let boundaries = temp.path().join("boundaries.json");
         fs::write(&report, "{}\n")?;
-        let Err(error) = reject_output_aliases(
-            std::slice::from_ref(&report),
-            &[report.clone(), boundaries],
-        ) else {
+        let Err(error) =
+            reject_output_aliases(std::slice::from_ref(&report), &[report.clone(), boundaries])
+        else {
             bail!("output aliases must be rejected before writing");
         };
         if !error.to_string().contains("aliases an input") {
@@ -922,10 +874,9 @@ mod tests {
         let report = temp.path().join("report.json");
         let output = temp.path().join("records.jsonl");
         fs::write(&report, "{}\n")?;
-        let Err(error) = reject_output_aliases(
-            std::slice::from_ref(&report),
-            &[output, report.clone()],
-        ) else {
+        let Err(error) =
+            reject_output_aliases(std::slice::from_ref(&report), &[output, report.clone()])
+        else {
             bail!("boundary output aliases must be rejected before writing");
         };
         if !error.to_string().contains("aliases an input") {
