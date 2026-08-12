@@ -57,7 +57,7 @@ fn run_peer(listener: TcpListener, caps: PeerReportedCapabilities, steps: Vec<Pe
     let mut read = stream;
     let mut seq = 500i64;
 
-    let mut send = |w: &mut TcpStream, msg: &PeerMessage| {
+    let send = |w: &mut TcpStream, msg: &PeerMessage| {
         let _ = w.write_all(&encode_message(msg).expect("encode"));
         let _ = w.flush();
     };
@@ -368,4 +368,125 @@ fn peer_crash_surfaces_as_error_not_hang() {
         ),
         "unexpected error: {msg}"
     );
+}
+
+fn output_event(text: String) -> PeerEvent {
+    PeerEvent {
+        seq: 0,
+        event: event::OUTPUT.to_string(),
+        body: serde_json::to_value(perl_dap::peer_protocol::payloads::OutputEventBody {
+            category: "stdout".to_string(),
+            output: text,
+        })
+        .ok(),
+    }
+}
+
+fn stopped_event(line: u32) -> PeerEvent {
+    PeerEvent {
+        seq: 0,
+        event: event::STOPPED.to_string(),
+        body: serde_json::to_value(perl_dap::peer_protocol::payloads::StoppedEventBody {
+            reason: "breakpoint".to_string(),
+            thread_id: 1,
+            source: Some(WireSource {
+                path: "/work/flood.pl".to_string(),
+                name: Some("flood.pl".to_string()),
+                source_reference: None,
+            }),
+            line: Some(line),
+            column: Some(1),
+        })
+        .ok(),
+    }
+}
+
+fn terminated_event() -> PeerEvent {
+    PeerEvent {
+        seq: 0,
+        event: event::TERMINATED.to_string(),
+        body: serde_json::to_value(perl_dap::peer_protocol::payloads::TerminatedEventBody {
+            exit_code: Some(0),
+        })
+        .ok(),
+    }
+}
+
+fn collect_until_terminated(
+    backend: &mut ExternalDebuggerPeerBackend,
+    timeout: Duration,
+) -> Vec<DebugEvent> {
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    loop {
+        events.extend(backend.drain_events());
+        if events.iter().any(|event| matches!(event, DebugEvent::Terminated { .. }))
+            || Instant::now() >= deadline
+        {
+            return events;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn output_flood_is_bounded_and_preserves_stop_and_termination() {
+    let mut steps = (0..2_000)
+        .map(|index| PeerStep::Emit(output_event(format!("peer line {index}\n"))))
+        .collect::<Vec<_>>();
+    steps.push(PeerStep::Emit(stopped_event(42)));
+    steps.push(PeerStep::Emit(terminated_event()));
+
+    let peer = FakePeer::start(full_caps(), steps);
+    let mut backend = connect(&peer);
+    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    let events = collect_until_terminated(&mut backend, Duration::from_secs(5));
+
+    // The helper drains repeatedly while the peer is still sending, so the
+    // aggregate delivered count may exceed one queue window. The unit buffer
+    // tests own the retained-at-once count/byte assertion; this real transport
+    // test proves that a sustained flood is degraded observably without losing
+    // the stop or terminal transitions.
+    assert!(
+        events.iter().any(|event| {
+            matches!(event, DebugEvent::Output { output, .. } if output.contains("event stream degraded"))
+        }),
+        "output loss must be observable: {events:?}"
+    );
+    assert!(events.iter().any(|event| matches!(event, DebugEvent::Stopped { .. })));
+    assert!(events.iter().any(|event| matches!(event, DebugEvent::Terminated { .. })));
+
+    drop(backend);
+    let _ = peer.handle.join();
+}
+
+#[test]
+fn critical_event_flood_closes_with_typed_resource_limit() {
+    let steps = (0..400).map(|index| PeerStep::Emit(stopped_event(index + 1))).collect::<Vec<_>>();
+    let peer = FakePeer::start(full_caps(), steps);
+    let mut backend = connect(&peer);
+    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+
+    // Do not drain while the peer is flooding critical events: draining is the
+    // consumer backpressure relief path. This fixture deliberately models an
+    // editor that never consumes events and waits for the bounded queue to close
+    // the peer with a typed resource-limit outcome.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !backend.is_closed() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(backend.is_closed(), "critical overload must close the peer session");
+    let events = backend.drain_events();
+    assert!(events.iter().any(|event| matches!(event, DebugEvent::Terminated { .. })));
+    assert!(events.iter().any(|event| {
+        matches!(event, DebugEvent::Output { output, .. } if output.contains("event buffer exhausted"))
+    }));
+
+    let error = backend
+        .stack_trace(StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None })
+        .expect_err("closed overloaded peer must reject later requests");
+    assert!(matches!(error, perl_dap::backend::BackendError::ResourceLimit(_)));
+
+    drop(backend);
+    let _ = peer.handle.join();
 }
