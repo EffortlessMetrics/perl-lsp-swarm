@@ -24,7 +24,6 @@ struct ServerIdentity {
     package_manifest: PathBuf,
     implementation_crate: String,
     implementation_manifest: PathBuf,
-    compatibility_executable: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,11 +54,13 @@ pub(super) fn check(repo_root: &Path) -> Result<()> {
         &contract.server.package_manifest,
         &contract.server.primary_executable,
     )?;
-    validate_default_binary(
+    // perl-lsp-rs is the implementation library; it must expose no product binaries.
+    // The "perl-lsp" executable was retired in #7497 (closes #7213). Restoring any
+    // [[bin]] entry here is a product-topology violation caught by this check.
+    validate_library_only(
         repo_root,
-        "server compatibility",
+        "server implementation",
         &contract.server.implementation_manifest,
-        &contract.server.compatibility_executable,
     )?;
     validate_default_binary(
         repo_root,
@@ -69,10 +70,9 @@ pub(super) fn check(repo_root: &Path) -> Result<()> {
     )?;
 
     println!(
-        "Product identity default build: implementation {}, binaries [{}, {}, {}]",
+        "Product identity default build: implementation {} (library-only), binaries [{}, {}]",
         contract.server.implementation_crate,
         contract.server.primary_executable,
-        contract.server.compatibility_executable,
         contract.debug_adapter.executable
     );
     Ok(())
@@ -122,6 +122,68 @@ fn validate_default_implementation_dependency(
     bail!(
         "primary server manifest has no dependency resolving to implementation crate {implementation_crate:?}"
     )
+}
+
+/// Reject any crate whose manifest declares a product binary when the settled
+/// product topology requires it to be library-only. This guards the seam left
+/// by the retirement of the `perl-lsp` executable in #7497: if the [[bin]]
+/// entry is ever restored, this check fails before it can reach a build or
+/// release gate.
+fn validate_library_only(
+    repo_root: &Path,
+    label: &str,
+    manifest_path: &Path,
+) -> Result<()> {
+    let manifest = read_toml(repo_root, manifest_path)?;
+
+    // Reject explicit [[bin]] declarations.
+    if let Some(bins) = manifest.get("bin") {
+        let bins =
+            bins.as_array().ok_or_else(|| eyre!("{label} Cargo bin targets are not an array"))?;
+        if !bins.is_empty() {
+            let names: Vec<&str> = bins
+                .iter()
+                .filter_map(|bin| bin.get("name").and_then(toml::Value::as_str))
+                .collect();
+            bail!(
+                "{label} manifest {} must be library-only but declares binaries {:?}; \
+                 restoring an executable here violates the settled product topology \
+                 — see #7213 and #7497",
+                manifest_path.display(),
+                names
+            );
+        }
+    }
+
+    // Reject an implicit binary contributed by autobins + src/main.rs.
+    let package = manifest
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| eyre!("{label} manifest has no [package] table"))?;
+    let autobins = package.get("autobins").and_then(toml::Value::as_bool).unwrap_or(true);
+    if autobins {
+        let manifest_dir = repo_root.join(
+            manifest_path
+                .parent()
+                .ok_or_else(|| eyre!("{label} manifest path has no parent"))?,
+        );
+        if manifest_dir.join("src/main.rs").is_file() {
+            let package_name = package
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("<unknown>");
+            bail!(
+                "{label} manifest {} is library-only but src/main.rs exists, \
+                 contributing an implicit binary {:?}; restoring an implicit \
+                 executable here violates the settled product topology \
+                 — see #7213 and #7497",
+                manifest_path.display(),
+                package_name
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_default_binary(
@@ -325,7 +387,6 @@ primary_executable = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
 implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
 
 [debug_adapter]
 executable = "perl-dap"
@@ -378,18 +439,35 @@ package_manifest = "crates/perl-dap/Cargo.toml"
         expect_failure(repo.path(), "binary \"perllsp\" is unavailable in the default feature set")
     }
 
+    /// Restoring `[[bin]] name = "perl-lsp"` in the implementation crate must be
+    /// rejected by the product-topology contract. This is the negative topology
+    /// control required by #7536 / #7497 / #7213.
     #[test]
-    fn compatibility_binary_hidden_by_required_feature_fails() -> Result<()> {
+    fn implementation_crate_with_explicit_binary_is_rejected() -> Result<()> {
         let repo = fixture_repo()?;
         write_binary_manifest(
             repo.path(),
             "crates/perl-lsp-rs",
             "perl-lsp-rs",
             "perl-lsp",
-            "required-features = [\"internal-only\"]\n",
-            "[features]\ninternal-only = []\n",
+            "",
+            "",
         )?;
-        expect_failure(repo.path(), "binary \"perl-lsp\" is unavailable in the default feature set")
+        expect_failure(repo.path(), "must be library-only but declares binaries")
+    }
+
+    /// An implicit binary contributed by autobins + src/main.rs is also rejected.
+    #[test]
+    fn implementation_crate_with_implicit_binary_via_main_rs_is_rejected() -> Result<()> {
+        let repo = fixture_repo()?;
+        // Write a library manifest (no [[bin]]) but add src/main.rs, triggering autobins.
+        write(
+            repo.path(),
+            "crates/perl-lsp-rs/Cargo.toml",
+            "[package]\nname = \"perl-lsp-rs\"\n\n[lib]\nname = \"perl_lsp\"\n",
+        )?;
+        write(repo.path(), "crates/perl-lsp-rs/src/main.rs", "")?;
+        expect_failure(repo.path(), "library-only but src/main.rs exists")
     }
 
     #[test]
@@ -434,14 +512,8 @@ package_manifest = "crates/perl-dap/Cargo.toml"
             &facade_manifest("perl-lsp-rs = { workspace = true }", ""),
         )?;
         write(repo.path(), "crates/perllsp/src/main.rs", "")?;
-        write_binary_manifest(
-            repo.path(),
-            "crates/perl-lsp-rs",
-            "perl-lsp-rs",
-            "perl-lsp",
-            "",
-            "",
-        )?;
+        // perl-lsp-rs is library-only: no [[bin]] and no src/main.rs.
+        write_library_manifest(repo.path(), "crates/perl-lsp-rs", "perl-lsp-rs")?;
         write_binary_manifest(repo.path(), "crates/perl-dap", "perl-dap", "perl-dap", "", "")?;
         Ok(repo)
     }
@@ -454,6 +526,16 @@ package_manifest = "crates/perl-dap/Cargo.toml"
         format!(
             "[package]\nname = \"perllsp\"\n\n[[bin]]\nname = \"perllsp\"\n{bin_extra}\n[dependencies]\n{dependency}\n\n{features}"
         )
+    }
+
+    /// Write a library-only Cargo manifest (no [[bin]], no src/main.rs).
+    fn write_library_manifest(root: &Path, relative: &str, name: &str) -> Result<()> {
+        write(
+            root,
+            &format!("{relative}/Cargo.toml"),
+            &format!("[package]\nname = {name:?}\n\n[lib]\nname = \"perl_lsp\"\n"),
+        )?;
+        write(root, &format!("{relative}/src/lib.rs"), "")
     }
 
     fn write_binary_manifest(

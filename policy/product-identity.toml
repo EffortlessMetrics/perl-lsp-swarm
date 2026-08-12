@@ -11,7 +11,9 @@ cargo_package = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
 implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
+# perl-lsp-rs is the implementation library; it exposes no product binary.
+# The retired "perl-lsp" executable was removed in #7497 (closes #7213).
+# Restoring any [[bin]] entry to this crate is rejected by the product-topology contract.
 
 [extension]
 publisher = "EffortlessMetrics"

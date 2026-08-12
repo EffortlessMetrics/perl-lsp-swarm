@@ -46,7 +46,6 @@ struct ServerIdentity {
     package_manifest: PathBuf,
     implementation_crate: String,
     implementation_manifest: PathBuf,
-    compatibility_executable: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,12 +191,13 @@ fn validate_contract(
         &contract.server.primary_executable,
         workspace_repository,
     )?;
-    validate_cargo_identity(
+    // perl-lsp-rs is the implementation library; it must not expose any product
+    // binaries. The "perl-lsp" executable was retired in #7497 (closes #7213).
+    // Restoring a [[bin]] entry here is a product-topology violation.
+    validate_library_only_implementation(
         repo_root,
-        "server implementation",
         &contract.server.implementation_manifest,
         &contract.server.implementation_crate,
-        &contract.server.compatibility_executable,
         workspace_repository,
     )?;
     validate_cargo_identity(
@@ -247,6 +247,42 @@ fn validate_repository_context(
             repository_context,
             contract.product.public_repository,
             contract.product.development_repository
+        );
+    }
+    Ok(())
+}
+
+/// Validate that the server implementation crate is a pure library with no exposed
+/// binaries. The implementation crate (`perl-lsp-rs`) is library-only; its retired
+/// product executable (`perl-lsp`) was removed in #7497. Any future attempt to
+/// restore a binary in this manifest violates the product topology contract.
+fn validate_library_only_implementation(
+    repo_root: &Path,
+    manifest_path: &Path,
+    expected_package: &str,
+    workspace_repository: &str,
+) -> Result<()> {
+    validate_relative_path(manifest_path)?;
+    let manifest = read_toml(repo_root, manifest_path)?;
+    let package_name = toml_string(&manifest, &["package", "name"], "Cargo package name")?;
+    require_equal("server implementation Cargo package", package_name, expected_package)?;
+
+    let package_repository = effective_package_repository(&manifest, workspace_repository)?;
+    require_equal(
+        "server implementation package repository",
+        package_repository,
+        workspace_repository,
+    )?;
+
+    // Reject any explicit [[bin]] declarations.
+    let binary_names = cargo_binary_names(repo_root, manifest_path, &manifest, package_name)?;
+    if !binary_names.is_empty() {
+        bail!(
+            "server implementation {} must be library-only (no product binaries) \
+             but exposes {:?}; restoring an executable here violates the settled \
+             product topology — see #7213 and #7497",
+            manifest_path.display(),
+            binary_names
         );
     }
     Ok(())

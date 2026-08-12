@@ -21,7 +21,6 @@ cargo_package = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
 implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
 
 [extension]
 publisher = "EffortlessMetrics"
@@ -160,6 +159,7 @@ perl-lsp-rs = { path = "crates/perl-lsp-rs" }
 #[test]
 fn implementation_package_drift_fails() -> Result<()> {
     let repo = fixture_repo()?;
+    // Library-only manifest but wrong package name — must be caught.
     write(
         repo.path(),
         "crates/perl-lsp-rs/Cargo.toml",
@@ -167,12 +167,34 @@ fn implementation_package_drift_fails() -> Result<()> {
 name = "different-implementation"
 repository.workspace = true
 
-[[bin]]
-name = "perl-lsp"
+[lib]
+name = "perl_lsp"
 "#,
     )?;
 
     expect_failure(repo.path(), "server implementation Cargo package drifted")
+}
+
+/// Restoring `[[bin]] name = "perl-lsp"` in the implementation crate must be
+/// rejected by the product-topology contract. This is the negative topology
+/// control required by #7536 / #7497 / #7213.
+#[test]
+fn implementation_crate_with_binary_is_rejected() -> Result<()> {
+    let repo = fixture_repo()?;
+    write(
+        repo.path(),
+        "crates/perl-lsp-rs/Cargo.toml",
+        r#"[package]
+name = "perl-lsp-rs"
+repository.workspace = true
+
+[[bin]]
+name = "perl-lsp"
+"#,
+    )?;
+    write(repo.path(), "crates/perl-lsp-rs/src/main.rs", "fn main() {}\n")?;
+
+    expect_failure(repo.path(), "must be library-only (no product binaries)")
 }
 
 #[test]
@@ -483,6 +505,7 @@ perl-lsp-rs = { workspace = true }
 "#,
     )?;
     write(repo.path(), "crates/perllsp/src/main.rs", "fn main() {}\n")?;
+    // perl-lsp-rs is library-only: the "perl-lsp" executable was retired in #7497.
     write(
         repo.path(),
         "crates/perl-lsp-rs/Cargo.toml",
@@ -490,11 +513,11 @@ perl-lsp-rs = { workspace = true }
 name = "perl-lsp-rs"
 repository.workspace = true
 
-[[bin]]
-name = "perl-lsp"
+[lib]
+name = "perl_lsp"
 "#,
     )?;
-    write(repo.path(), "crates/perl-lsp-rs/src/main.rs", "fn main() {}\n")?;
+    write(repo.path(), "crates/perl-lsp-rs/src/lib.rs", "")?;
     write(
         repo.path(),
         "crates/perl-dap/Cargo.toml",
