@@ -2,22 +2,13 @@
 //! Differential recovery-transition proof for generation-bound parse snapshots.
 
 use perl_parser::incremental::{
-    Edit, IncrementalState, ParseGeneration, ParseSnapshot, ParseSnapshotStrategy,
+    ContentFingerprint, Edit, IncrementalState, ParseSnapshot, ParseSnapshotStrategy,
     ParseTerminalDisposition, apply_edits,
 };
 use perl_parser::{ParseOutput, Parser};
 
 fn fresh_output(source: &str) -> ParseOutput {
     Parser::new(source).parse_with_recovery()
-}
-
-fn fresh_snapshot(source: &str) -> ParseSnapshot {
-    ParseSnapshot::from_output(
-        source,
-        ParseGeneration::INITIAL,
-        ParseSnapshotStrategy::Fresh,
-        fresh_output(source),
-    )
 }
 
 fn replacement(source: &str, needle: &str, replacement: &str) -> Edit {
@@ -63,26 +54,43 @@ fn assert_budget_equal(actual: &ParseOutput, expected: &ParseOutput) {
     );
 }
 
-fn assert_fresh_parity(initial: &str, edits: &[Edit]) -> anyhow::Result<IncrementalState> {
+fn assert_parse_output_equal(actual: &ParseOutput, expected: &ParseOutput) {
+    assert_eq!(actual.ast, expected.ast);
+    assert_eq!(actual.diagnostics, expected.diagnostics);
+    assert_eq!(actual.terminated_early, expected.terminated_early);
+    assert_eq!(actual.recovered_count, expected.recovered_count);
+    assert_budget_equal(actual, expected);
+}
+
+fn assert_snapshot_equal(actual: &ParseSnapshot, expected: &ParseSnapshot) {
+    assert_eq!(actual.generation, expected.generation);
+    assert_eq!(actual.content_fingerprint, expected.content_fingerprint);
+    assert_eq!(actual.source_len, expected.source_len);
+    assert_eq!(actual.disposition, expected.disposition);
+    assert_eq!(actual.strategy, expected.strategy);
+    assert_parse_output_equal(&actual.parse_output, &expected.parse_output);
+}
+
+fn assert_fresh_parity(
+    initial: &str,
+    edits: &[Edit],
+    expected_disposition: ParseTerminalDisposition,
+) -> anyhow::Result<IncrementalState> {
     let final_source = apply_reference(initial, edits);
-    let expected = fresh_snapshot(&final_source);
+    let expected = fresh_output(&final_source);
     let mut state = IncrementalState::new(initial.to_string());
     let result = apply_edits(&mut state, edits)?;
 
     assert_eq!(state.source(), final_source);
     assert_eq!(state.generation().get(), 1);
     assert_eq!(result.snapshot.generation, state.generation());
-    assert_eq!(result.snapshot.content_fingerprint, expected.content_fingerprint);
-    assert_eq!(result.snapshot.source_len, expected.source_len);
-    assert_eq!(result.snapshot.disposition, expected.disposition);
+    assert_eq!(result.snapshot.content_fingerprint, ContentFingerprint::from_source(&final_source));
+    assert_eq!(result.snapshot.source_len, final_source.len());
+    assert_eq!(result.snapshot.disposition, expected_disposition);
     assert_ne!(result.snapshot.strategy, ParseSnapshotStrategy::Fresh);
-    assert_eq!(result.snapshot.parse_output.ast, expected.parse_output.ast);
-    assert_eq!(result.snapshot.parse_output.diagnostics, expected.parse_output.diagnostics);
-    assert_eq!(result.snapshot.parse_output.recovered_count, expected.parse_output.recovered_count);
-    assert_eq!(result.snapshot.parse_output.terminated_early, expected.parse_output.terminated_early);
-    assert_budget_equal(&result.snapshot.parse_output, &expected.parse_output);
-    assert_eq!(result.parse_output.ast, result.snapshot.parse_output.ast);
-    assert_eq!(result.parse_output.diagnostics, result.snapshot.parse_output.diagnostics);
+    assert_parse_output_equal(&result.snapshot.parse_output, &expected);
+    assert_parse_output_equal(&result.parse_output, &result.snapshot.parse_output);
+    assert_snapshot_equal(&result.snapshot, state.snapshot());
     result.snapshot.validate_against(state.source())?;
     state.snapshot().validate_against(state.source())?;
     Ok(state)
@@ -92,34 +100,37 @@ fn assert_fresh_parity(initial: &str, edits: &[Edit]) -> anyhow::Result<Incremen
 fn clean_recovered_and_repaired_transitions_match_fresh_parsing() -> anyhow::Result<()> {
     let clean = "my $x = 1;";
     let clean_to_clean = replacement(clean, "1", "2");
-    let state = assert_fresh_parity(clean, &[clean_to_clean])?;
+    let state = assert_fresh_parity(clean, &[clean_to_clean], ParseTerminalDisposition::Clean)?;
     assert_eq!(state.snapshot().disposition, ParseTerminalDisposition::Clean);
 
     let clean_to_recovered = replacement(clean, "1", "");
-    let state = assert_fresh_parity(clean, &[clean_to_recovered])?;
+    let state =
+        assert_fresh_parity(clean, &[clean_to_recovered], ParseTerminalDisposition::Recovered)?;
     assert_eq!(state.snapshot().disposition, ParseTerminalDisposition::Recovered);
 
     let recovered = "my $x = ;";
-    let recovered_to_clean = insertion(recovered, recovered.find(';').expect("semicolon missing"), "1");
-    let state = assert_fresh_parity(recovered, &[recovered_to_clean])?;
+    let recovered_to_clean =
+        insertion(recovered, recovered.find(';').expect("semicolon missing"), "1");
+    let state =
+        assert_fresh_parity(recovered, &[recovered_to_clean], ParseTerminalDisposition::Clean)?;
     assert_eq!(state.snapshot().disposition, ParseTerminalDisposition::Clean);
     Ok(())
 }
 
 #[test]
-fn recovered_diagnostics_shift_and_change_family_exactly_like_fresh_output(
-) -> anyhow::Result<()> {
+fn recovered_diagnostics_shift_and_change_family_exactly_like_fresh_output() -> anyhow::Result<()> {
     let source = "my $x = ;\nmy $y = 2;\n";
     let old_diagnostics = fresh_output(source).diagnostics;
     assert!(!old_diagnostics.is_empty());
 
     let prefix = insertion(source, 0, "# café\r\n");
-    let shifted = assert_fresh_parity(source, &[prefix])?;
+    let shifted = assert_fresh_parity(source, &[prefix], ParseTerminalDisposition::Recovered)?;
     assert_eq!(shifted.snapshot().disposition, ParseTerminalDisposition::Recovered);
     assert_ne!(shifted.snapshot().parse_output.diagnostics, old_diagnostics);
 
     let changed_family = replacement(source, "my $x = ;", "my $x = (");
-    let changed = assert_fresh_parity(source, &[changed_family])?;
+    let changed =
+        assert_fresh_parity(source, &[changed_family], ParseTerminalDisposition::Recovered)?;
     assert_eq!(changed.snapshot().disposition, ParseTerminalDisposition::Recovered);
     assert_ne!(changed.snapshot().parse_output.diagnostics, old_diagnostics);
     Ok(())
@@ -132,7 +143,7 @@ fn multi_edit_transactions_publish_one_final_recovery_snapshot() -> anyhow::Resu
     let second_start = source.rfind(';').expect("second semicolon missing");
     let second = insertion(source, second_start, "2");
 
-    let state = assert_fresh_parity(source, &[first, second])?;
+    let state = assert_fresh_parity(source, &[first, second], ParseTerminalDisposition::Clean)?;
 
     assert_eq!(state.generation().get(), 1);
     assert_eq!(state.snapshot().disposition, ParseTerminalDisposition::Clean);
@@ -141,25 +152,24 @@ fn multi_edit_transactions_publish_one_final_recovery_snapshot() -> anyhow::Resu
 }
 
 #[test]
-fn stateful_unicode_and_newline_transition_matrix_has_exact_fresh_parity(
-) -> anyhow::Result<()> {
+fn stateful_unicode_and_newline_transition_matrix_has_exact_fresh_parity() -> anyhow::Result<()> {
     let cases = [
-        ("my $text = qq{café};\n", "café", "cafø"),
-        ("my $ok = /foo/;\r\n", "foo", "bar"),
-        ("my $value = <<EOF;\nbody\nEOF\n", "body", "changed"),
-        ("my $x = 1;\rmy $y = 2;\r", "2", "3"),
-        ("\u{feff}my $x = 1;\n", "1", "2"),
-        ("", "", "my $x = ;"),
-        ("   \n", "   ", "my $x = ;"),
+        ("my $text = qq{café};\n", "café", "cafø", ParseTerminalDisposition::Clean),
+        ("my $ok = /foo/;\r\n", "foo", "bar", ParseTerminalDisposition::Clean),
+        ("my $value = <<EOF;\nbody\nEOF\n", "body", "changed", ParseTerminalDisposition::Clean),
+        ("my $x = 1;\rmy $y = 2;\r", "2", "3", ParseTerminalDisposition::Clean),
+        ("\u{feff}my $x = 1;\n", "1", "2", ParseTerminalDisposition::Clean),
+        ("", "", "my $x = ;", ParseTerminalDisposition::Recovered),
+        ("   \n", "   ", "my $x = ;", ParseTerminalDisposition::Recovered),
     ];
 
-    for (source, needle, replacement_text) in cases {
+    for (source, needle, replacement_text, expected_disposition) in cases {
         let edit = if source.is_empty() {
             insertion(source, 0, replacement_text)
         } else {
             replacement(source, needle, replacement_text)
         };
-        let _ = assert_fresh_parity(source, &[edit])?;
+        let _ = assert_fresh_parity(source, &[edit], expected_disposition)?;
     }
     Ok(())
 }
@@ -177,18 +187,8 @@ fn invalid_transaction_preserves_the_complete_previous_snapshot() {
     let result = apply_edits(
         &mut state,
         &[
-            Edit {
-                start_byte: 0,
-                old_end_byte: 5,
-                new_end_byte: 1,
-                new_text: "x".to_string(),
-            },
-            Edit {
-                start_byte: 2,
-                old_end_byte: 7,
-                new_end_byte: 3,
-                new_text: "y".to_string(),
-            },
+            Edit { start_byte: 0, old_end_byte: 5, new_end_byte: 1, new_text: "x".to_string() },
+            Edit { start_byte: 2, old_end_byte: 7, new_end_byte: 3, new_text: "y".to_string() },
         ],
     );
 
