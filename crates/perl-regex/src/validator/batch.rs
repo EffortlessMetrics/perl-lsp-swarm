@@ -47,8 +47,9 @@ pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAna
         facts.dynamic_regions.push(range);
     }
     facts.dynamic_regions.sort_by_key(|fact| fact.range);
+    let dynamic_ranges = facts.dynamic_regions.iter().map(|fact| fact.range).collect::<Vec<_>>();
 
-    for offset in nested_quantifier::find_nested_quantifiers(pattern, &embedded_ranges) {
+    for offset in nested_quantifier::find_nested_quantifiers(pattern, &dynamic_ranges) {
         if let Some(range) = RegexRange::anchored(offset, 1, pattern.len()) {
             facts.nested_quantifiers.push(range);
             diagnostics.push(RegexDiagnostic::new(
@@ -60,7 +61,7 @@ pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAna
     }
 
     let policy_diagnostics =
-        complexity::find_complexity_diagnostics(pattern, config, &embedded_ranges);
+        complexity::find_complexity_diagnostics(pattern, config, &dynamic_ranges);
     let dynamic = !facts.dynamic_regions.is_empty();
     let policy_limited = !policy_diagnostics.is_empty();
     diagnostics.extend(policy_diagnostics);

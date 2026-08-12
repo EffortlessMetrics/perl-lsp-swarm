@@ -114,6 +114,64 @@ fn interpolation_is_a_typed_dynamic_boundary_without_becoming_a_syntax_error()
 }
 
 #[test]
+fn interpolation_masks_nested_quantifiers_but_preserves_outer_findings(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pattern = r"${(a+)+}(b+)+";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert_eq!(analysis.facts.dynamic_regions.len(), 1);
+    assert_eq!(
+        pattern.get(
+            analysis.facts.dynamic_regions[0].range.start
+                ..analysis.facts.dynamic_regions[0].range.end
+        ),
+        Some("${(a+)+}")
+    );
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        pattern.get(
+            analysis.facts.nested_quantifiers[0].start..analysis.facts.nested_quantifiers[0].end
+        ),
+        Some("+")
+    );
+    let outer_start = pattern.find("(b+)+").ok_or("missing outer nested quantifier")?;
+    assert!(analysis
+        .diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic.range.start >= outer_start));
+    Ok(())
+}
+
+#[test]
+fn interpolation_masks_complexity_like_escapes_but_preserves_outer_limits(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::with_config(RegexValidationConfig {
+        max_nesting: 10,
+        max_unicode_properties: 1,
+        max_branch_reset_branches: 50,
+    });
+    let pattern = r"${\p{L}\p{N}}\p{L}\p{N}";
+    let analysis = validator.analyze(pattern);
+
+    assert_eq!(analysis.facts.dynamic_regions.len(), 1);
+    assert_eq!(
+        analysis
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::UnicodePropertyLimit)
+            .count(),
+        1
+    );
+    let interpolation_end = analysis.facts.dynamic_regions[0].range.end;
+    assert!(analysis.diagnostics.iter().all(|diagnostic| {
+        diagnostic.code != RegexDiagnosticCode::UnicodePropertyLimit
+            || diagnostic.range.start >= interpolation_end
+    }));
+    assert_eq!(analysis.completeness, RegexAnalysisCompleteness::DynamicAndPolicyLimited);
+    Ok(())
+}
+
+#[test]
 fn interpolation_looking_text_in_excluded_regions_is_not_dynamic()
 -> Result<(), Box<dyn std::error::Error>> {
     let pattern = r"\Q$quoted @quoted\E[$class](?# $comment @comment )\$escaped\@escaped";
