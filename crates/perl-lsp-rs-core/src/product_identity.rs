@@ -291,11 +291,8 @@ impl BinaryIdentityPacketV1 {
             display_optional(self.build.source_tree_digest.as_deref())
         );
         let _ = writeln!(output, "Target: {}", display_optional(self.build.target.as_deref()));
-        let _ = writeln!(
-            output,
-            "Build profile: {}",
-            display_optional(self.build.profile.as_deref())
-        );
+        let _ =
+            writeln!(output, "Build profile: {}", display_optional(self.build.profile.as_deref()));
         let _ = writeln!(output, "Build identity: {}", build_state_name(self.build.identity_state));
         let _ = writeln!(output, "Artifact role: {}", artifact_role_name(self.artifact.role));
         let _ = writeln!(
@@ -476,14 +473,10 @@ fn normalize_sha256(
     let (normalized, invalid) =
         normalize_field(value, missing_reason, invalid_reason, limitations, |item| {
             let digest = item.strip_prefix("sha256:").unwrap_or(item);
-            digest.len() == SHA256_HEX_LEN
-                && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            digest.len() == SHA256_HEX_LEN && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
         });
-    let normalized = normalized.map(|item| {
-        item.strip_prefix("sha256:")
-            .unwrap_or(&item)
-            .to_ascii_lowercase()
-    });
+    let normalized =
+        normalized.map(|item| item.strip_prefix("sha256:").unwrap_or(&item).to_ascii_lowercase());
     (normalized, invalid)
 }
 
@@ -651,10 +644,7 @@ mod tests {
 
         assert_eq!(packet.build.identity_state, BuildIdentityState::Exact);
         assert_eq!(packet.build.source_revision.as_deref(), Some(expected_revision.as_str()));
-        assert_eq!(
-            packet.build.source_tree_digest.as_deref(),
-            Some(expected_tree_digest.as_str())
-        );
+        assert_eq!(packet.build.source_tree_digest.as_deref(), Some(expected_tree_digest.as_str()));
         assert_eq!(packet.artifact.digest.as_deref(), Some(expected_artifact_digest.as_str()));
         assert_eq!(packet.artifact.role, ArtifactRole::Archive);
         assert!(packet.limitations.is_empty(), "limitations={:?}", packet.limitations);
@@ -805,7 +795,8 @@ mod tests {
         let json = vec!["perllsp".to_owned(), "--info".to_owned(), "--json".to_owned()];
         let reversed_json = vec!["perllsp".to_owned(), "--json".to_owned(), "--info".to_owned()];
         let human = vec!["perllsp".to_owned(), "--identity".to_owned()];
-        let mixed_server = vec!["perllsp".to_owned(), "--stdio".to_owned(), "--identity".to_owned()];
+        let mixed_server =
+            vec!["perllsp".to_owned(), "--stdio".to_owned(), "--identity".to_owned()];
         let terminated = vec![
             "perllsp".to_owned(),
             "--check".to_owned(),
