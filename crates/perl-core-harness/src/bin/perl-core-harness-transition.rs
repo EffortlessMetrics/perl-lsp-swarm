@@ -1,16 +1,16 @@
 //! Thin CLI for the transition classify + check command surface.
 //!
 //! `classify` loads V2 accepted baseline + current run-report JSON, optionally
-//! binds `--series` identity, applies the in-lib `classify_transition` core, and
-//! writes a non-authorizing classification receipt (with input digests) to
-//! `--output`.
+//! binds `--series` identity and `--discovery` to that series, applies the
+//! in-lib `classify_transition` core, and writes a non-authorizing
+//! classification receipt (with input digests) to `--output`.
 //!
-//! `check` reloads the same evidence (and optional series), recomputes
-//! classification + digests, and verifies an existing receipt matches exactly.
+//! `check` reloads the same evidence (and optional series/discovery),
+//! recomputes classification + digests, and verifies an existing receipt
+//! matches exactly.
 //!
-//! Discovery-report binding and Windows hard-link identity remain follow-up
-//! slices. Full #6880 validated-wrapper centralization is intentionally out of
-//! scope.
+//! Windows hard-link identity remains a follow-up slice. Full #6880
+//! validated-wrapper centralization is intentionally out of scope.
 
 #![warn(missing_docs)]
 #![cfg_attr(clippy, allow(missing_docs))]
@@ -19,7 +19,8 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness::transition::{AcceptedBaseline, Classification, classify_transition};
 use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2,
-    RUN_REPORT_SCHEMA_VERSION, RunReport, SERIES_MANIFEST_SCHEMA_VERSION, SeriesManifest,
+    DISCOVERY_SCHEMA_VERSION, DiscoveryReport, RUN_REPORT_SCHEMA_VERSION, RunReport,
+    SERIES_MANIFEST_SCHEMA_VERSION, SeriesManifest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -60,6 +61,10 @@ fn run_classify(config: &ClassifyConfig) -> Result<()> {
     if let Some(series_path) = &config.series {
         let series = load_series_manifest(series_path)?;
         bind_series_identity(&series, &accepted)?;
+        if let Some(discovery_path) = &config.discovery {
+            let discovery = load_discovery_report(discovery_path)?;
+            bind_discovery_to_series(&discovery, &series)?;
+        }
     }
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     write_classification_receipt(
@@ -78,6 +83,10 @@ fn run_check(config: &CheckConfig) -> Result<()> {
     if let Some(series_path) = &config.series {
         let series = load_series_manifest(series_path)?;
         bind_series_identity(&series, &accepted)?;
+        if let Some(discovery_path) = &config.discovery {
+            let discovery = load_discovery_report(discovery_path)?;
+            bind_discovery_to_series(&discovery, &series)?;
+        }
     }
     let expected = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     let expected_accepted_digest = sha256_digest_bytes(&accepted_bytes);
@@ -96,9 +105,10 @@ fn reject_output_input_path_collision(config: &ClassifyConfig) -> Result<()> {
     if paths_equal(&config.output, &config.accepted_baseline)
         || paths_equal(&config.output, &config.compile)
         || config.series.as_ref().is_some_and(|series| paths_equal(&config.output, series))
+        || config.discovery.as_ref().is_some_and(|discovery| paths_equal(&config.output, discovery))
     {
         bail!(
-            "output path must not alias --accepted-baseline, --compile, or --series; refusing to overwrite evidence"
+            "output path must not alias --accepted-baseline, --compile, --series, or --discovery; refusing to overwrite evidence"
         );
     }
     Ok(())
@@ -161,8 +171,7 @@ fn load_series_manifest(path: &Path) -> Result<SeriesManifest> {
 /// Binds accepted V2 to an explicit `--series` manifest via `series_id`,
 /// `manifest_hash`, exact `file_membership`/`normalized_manifest` equality, and
 /// subject fields (`profile`, `runner`, `perl_resolved_ref`). Does not rehash
-/// the series, bind discovery reports, claim hard-link identity, or centralize
-/// #6880 validated wrappers.
+/// the series, claim hard-link identity, or centralize #6880 validated wrappers.
 fn bind_series_identity(series: &SeriesManifest, accepted: &CompileBaselineV2) -> Result<()> {
     if accepted.series_id != series.series_id {
         bail!("accepted baseline is not bound to series {}: series_id mismatch", series.series_id);
@@ -188,6 +197,66 @@ fn bind_series_identity(series: &SeriesManifest, accepted: &CompileBaselineV2) -
     if accepted.perl_resolved_ref != series.perl_resolved_ref {
         bail!(
             "accepted baseline is not bound to series {}: perl_resolved_ref mismatch",
+            series.series_id
+        );
+    }
+    Ok(())
+}
+
+fn load_discovery_report(path: &Path) -> Result<DiscoveryReport> {
+    let bytes = read_bytes(path, "discovery report")?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding discovery report JSON {}", path.display()))?;
+    let schema =
+        value.get("schema_version").and_then(serde_json::Value::as_str).unwrap_or("missing");
+    if schema != DISCOVERY_SCHEMA_VERSION {
+        bail!(
+            "unsupported discovery report schema: {schema}; classify I/O accepts {} only",
+            DISCOVERY_SCHEMA_VERSION
+        );
+    }
+    serde_json::from_value(value)
+        .with_context(|| format!("decoding discovery report {}", path.display()))
+}
+
+/// Lean discovery→series binding for classify/check.
+///
+/// When `--discovery` is supplied (requires `--series`), binds discovery
+/// `schema_version`/`profile`/`runner`/`perl_ref`/`commit` and sorted test
+/// paths to the series harness schema, subject fields, repository commit, and
+/// `normalized_manifest`. Does not re-normalize paths, rehash the series,
+/// claim hard-link identity, or centralize #6880 validated wrappers.
+fn bind_discovery_to_series(discovery: &DiscoveryReport, series: &SeriesManifest) -> Result<()> {
+    if discovery.schema_version != series.harness_schema_version {
+        bail!(
+            "discovery report is not bound to series {}: harness_schema_version mismatch",
+            series.series_id
+        );
+    }
+    if discovery.profile != series.profile {
+        bail!("discovery report is not bound to series {}: profile mismatch", series.series_id);
+    }
+    if discovery.runner != series.runner {
+        bail!("discovery report is not bound to series {}: runner mismatch", series.series_id);
+    }
+    if discovery.perl_ref != series.perl_resolved_ref {
+        bail!(
+            "discovery report is not bound to series {}: perl_resolved_ref mismatch",
+            series.series_id
+        );
+    }
+    if discovery.commit != series.repository_commit {
+        bail!(
+            "discovery report is not bound to series {}: repository_commit mismatch",
+            series.series_id
+        );
+    }
+    let mut discovery_paths: Vec<String> =
+        discovery.tests.iter().map(|test| test.path.clone()).collect();
+    discovery_paths.sort();
+    if discovery_paths != series.normalized_manifest {
+        bail!(
+            "discovery report is not bound to series {}: normalized_manifest mismatch",
             series.series_id
         );
     }
@@ -288,7 +357,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 const CLASSIFY_RECEIPT_SCHEMA_VERSION: &str = "perl_core_harness.transition_classify_result.v1";
-const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets, bind discovery reports, or claim hard-link identity";
+const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref and --discovery via harness_schema_version/profile/runner/perl_resolved_ref/repository_commit/normalized_manifest, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets or claim hard-link identity";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct ClassifyReceipt {
@@ -318,14 +387,14 @@ mod classify_config_observer {
                 "compile.json".to_string(),
                 "--output".to_string(),
                 "out.json".to_string(),
-                "--discovery".to_string(),
-                "discovery.json".to_string(),
+                "--unknown".to_string(),
+                "x.json".to_string(),
             ]
             .into_iter(),
         )
         .expect_err("unrecognized options must fail")
         .to_string();
-        assert_eq!(err, "unrecognized option(s): --discovery");
+        assert_eq!(err, "unrecognized option(s): --unknown");
     }
 
     #[test]
@@ -346,6 +415,56 @@ mod classify_config_observer {
         .expect("series option must parse");
         let config = ClassifyConfig::from_options(options).expect("classify config");
         assert_eq!(config.series, Some(PathBuf::from("series.json")));
+        assert_eq!(config.discovery, None);
+    }
+
+    #[test]
+    fn discovery_option_requires_series() {
+        let err = ClassifyConfig::from_options(
+            Options::parse(
+                [
+                    "--accepted-baseline".to_string(),
+                    "accepted.json".to_string(),
+                    "--compile".to_string(),
+                    "compile.json".to_string(),
+                    "--output".to_string(),
+                    "out.json".to_string(),
+                    "--discovery".to_string(),
+                    "discovery.json".to_string(),
+                ]
+                .into_iter(),
+            )
+            .expect("parse"),
+        )
+        .expect_err("discovery without series must fail")
+        .to_string();
+        assert_eq!(
+            err,
+            "--discovery requires --series; discovery binds to the comparison-series manifest"
+        );
+    }
+
+    #[test]
+    fn discovery_option_is_accepted_with_series() {
+        let options = Options::parse(
+            [
+                "--accepted-baseline".to_string(),
+                "accepted.json".to_string(),
+                "--compile".to_string(),
+                "compile.json".to_string(),
+                "--output".to_string(),
+                "out.json".to_string(),
+                "--series".to_string(),
+                "series.json".to_string(),
+                "--discovery".to_string(),
+                "discovery.json".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("discovery+series options must parse");
+        let config = ClassifyConfig::from_options(options).expect("classify config");
+        assert_eq!(config.series, Some(PathBuf::from("series.json")));
+        assert_eq!(config.discovery, Some(PathBuf::from("discovery.json")));
     }
 
     /// RIPR observer for `Options::optional` empty-recorded queue → absent.
@@ -484,6 +603,7 @@ mod classify_io_observer {
             compile: PathBuf::from("compile.json"),
             output: PathBuf::from("accepted.json"),
             series: None,
+            discovery: None,
         })
         .expect_err("alias must fail")
         .to_string();
@@ -498,10 +618,26 @@ mod classify_io_observer {
             compile: PathBuf::from("compile.json"),
             output: PathBuf::from("series.json"),
             series: Some(PathBuf::from("series.json")),
+            discovery: None,
         })
         .expect_err("series alias must fail")
         .to_string();
         assert_eq!(err.contains("--series"), true);
+    }
+
+    /// RIPR-named observer for output/--discovery path-string collision rejection.
+    #[test]
+    fn output_discovery_path_collision_bail_is_observed() {
+        let err = reject_output_input_path_collision(&ClassifyConfig {
+            accepted_baseline: PathBuf::from("accepted.json"),
+            compile: PathBuf::from("compile.json"),
+            output: PathBuf::from("discovery.json"),
+            series: Some(PathBuf::from("series.json")),
+            discovery: Some(PathBuf::from("discovery.json")),
+        })
+        .expect_err("discovery alias must fail")
+        .to_string();
+        assert_eq!(err.contains("--discovery"), true);
     }
 
     /// RIPR boundary discriminator for unsupported series schema rejection.
@@ -600,6 +736,138 @@ mod classify_io_observer {
             err,
             "accepted baseline is not bound to series series: perl_resolved_ref mismatch"
         );
+    }
+
+    /// RIPR boundary discriminator for unsupported discovery schema rejection.
+    #[test]
+    fn load_discovery_report_schema_boundary_discriminator() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("discovery.json");
+        let schema = "perl_core_harness.discovery.not_v1";
+        assert_eq!(schema != DISCOVERY_SCHEMA_VERSION, true);
+        fs::write(&path, format!(r#"{{"schema_version":"{schema}"}}"#)).expect("write");
+        let err = load_discovery_report(&path)
+            .expect_err("unsupported discovery schema must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "unsupported discovery report schema: {schema}; classify I/O accepts {} only",
+                DISCOVERY_SCHEMA_VERSION
+            )
+        );
+    }
+
+    /// RIPR boundary discriminator for discovery.schema_version != series.harness_schema_version.
+    #[test]
+    fn bind_discovery_schema_boundary_discriminator() {
+        let (series, mut discovery) = discovery_bind_fixture();
+        discovery.schema_version = "perl_core_harness.discovery.not_v1".into();
+        assert_eq!(discovery.schema_version != series.harness_schema_version, true);
+        let err = bind_discovery_to_series(&discovery, &series)
+            .expect_err("schema mismatch must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            "discovery report is not bound to series series: harness_schema_version mismatch"
+        );
+    }
+
+    /// RIPR boundary discriminator for discovery.profile != series.profile.
+    #[test]
+    fn bind_discovery_profile_boundary_discriminator() {
+        let (series, mut discovery) = discovery_bind_fixture();
+        discovery.profile = perl_core_harness_types::HarnessProfile::Full;
+        assert_eq!(discovery.profile != series.profile, true);
+        let err = bind_discovery_to_series(&discovery, &series)
+            .expect_err("profile mismatch must fail")
+            .to_string();
+        assert_eq!(err, "discovery report is not bound to series series: profile mismatch");
+    }
+
+    /// RIPR boundary discriminator for discovery.runner != series.runner.
+    #[test]
+    fn bind_discovery_runner_boundary_discriminator() {
+        let (series, mut discovery) = discovery_bind_fixture();
+        discovery.runner = perl_core_harness_types::HarnessRunner::Harness;
+        assert_eq!(discovery.runner != series.runner, true);
+        let err = bind_discovery_to_series(&discovery, &series)
+            .expect_err("runner mismatch must fail")
+            .to_string();
+        assert_eq!(err, "discovery report is not bound to series series: runner mismatch");
+    }
+
+    /// RIPR boundary discriminator for discovery.perl_ref != series.perl_resolved_ref.
+    #[test]
+    fn bind_discovery_perl_ref_boundary_discriminator() {
+        let (series, mut discovery) = discovery_bind_fixture();
+        discovery.perl_ref = "other-perl".into();
+        assert_eq!(discovery.perl_ref != series.perl_resolved_ref, true);
+        let err = bind_discovery_to_series(&discovery, &series)
+            .expect_err("perl_ref mismatch must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            "discovery report is not bound to series series: perl_resolved_ref mismatch"
+        );
+    }
+
+    /// RIPR boundary discriminator for discovery.commit != series.repository_commit.
+    #[test]
+    fn bind_discovery_commit_boundary_discriminator() {
+        let (series, mut discovery) = discovery_bind_fixture();
+        discovery.commit = "b".repeat(40);
+        assert_eq!(discovery.commit != series.repository_commit, true);
+        let err = bind_discovery_to_series(&discovery, &series)
+            .expect_err("commit mismatch must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            "discovery report is not bound to series series: repository_commit mismatch"
+        );
+    }
+
+    /// RIPR boundary discriminator for discovery paths != series.normalized_manifest.
+    #[test]
+    fn bind_discovery_membership_boundary_discriminator() {
+        let (series, mut discovery) = discovery_bind_fixture();
+        discovery.tests = vec![perl_core_harness_types::DiscoveredTest {
+            path: "base/9.t".into(),
+            root: "base".into(),
+        }];
+        let mut paths: Vec<String> = discovery.tests.iter().map(|t| t.path.clone()).collect();
+        paths.sort();
+        assert_eq!(paths != series.normalized_manifest, true);
+        let err = bind_discovery_to_series(&discovery, &series)
+            .expect_err("membership mismatch must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            "discovery report is not bound to series series: normalized_manifest mismatch"
+        );
+    }
+
+    fn discovery_bind_fixture() -> (SeriesManifest, DiscoveryReport) {
+        let (series, _) = series_bind_fixture();
+        let discovery = DiscoveryReport {
+            schema_version: DISCOVERY_SCHEMA_VERSION.into(),
+            commit: series.repository_commit.clone(),
+            timestamp: "2026-08-11T00:00:00Z".into(),
+            perl_ref: series.perl_resolved_ref.clone(),
+            prepared_tree: "<prepared>".into(),
+            host_perl: "perl".into(),
+            runner: series.runner,
+            profile: series.profile,
+            tests: series
+                .normalized_manifest
+                .iter()
+                .map(|path| perl_core_harness_types::DiscoveredTest {
+                    path: path.clone(),
+                    root: "base".into(),
+                })
+                .collect(),
+        };
+        (series, discovery)
     }
 
     fn series_bind_fixture() -> (SeriesManifest, CompileBaselineV2) {
