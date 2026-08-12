@@ -4,6 +4,13 @@ name: Deploy Documentation
 # Cost: ~$0.02 per deployment
 
 on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'book/**'
+      - 'scripts/populate-book.sh'
+      - 'scripts/tests/test-populate-book-roadmap-links.sh'
+      - '.github/workflows/docs-deploy.yml'
   push:
     branches:
       - main
@@ -12,18 +19,18 @@ on:
       - 'docs/**'
       - 'book/**'
       - 'scripts/populate-book.sh'
+      - 'scripts/tests/test-populate-book-roadmap-links.sh'
       - '.github/workflows/docs-deploy.yml'
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+# The build is read-only for every event. Deployment authority is granted only
+# to the non-PR deployment job below.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Allow only one concurrent deployment
+# Serialize production deployments while keeping each PR build isolated.
 concurrency:
-  group: "pages"
+  group: ${{ github.event_name != 'pull_request' && 'pages-deploy' || format('docs-pr-{0}', github.event.pull_request.number) }}
   cancel-in-progress: true
 
 jobs:
@@ -57,6 +64,7 @@ jobs:
 
       - name: Populate documentation
         run: |
+          bash scripts/tests/test-populate-book-roadmap-links.sh
           bash scripts/populate-book.sh
 
       - name: Build mdBook
@@ -64,11 +72,17 @@ jobs:
           mdbook build book
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         with:
           path: ./book/book
 
   deploy:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
