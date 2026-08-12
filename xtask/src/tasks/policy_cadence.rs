@@ -461,6 +461,42 @@ mod tests {
     }
 
     #[test]
+    fn quality_review_is_due_on_the_governing_date() -> Result<()> {
+        let as_of = parse_date("2026-08-12", "fixture")?;
+        let mut item = raw(Some("2026-08-12"), Some("2026-09-01"), true);
+        item.source_kind = "quality_gate_exception".to_string();
+        assert_eq!(classify(item, as_of).state, CadenceState::ReviewOverdue);
+        assert_eq!(
+            classify(raw(Some("2026-08-12"), Some("2026-09-01"), true), as_of).state,
+            CadenceState::ReviewDueSoon
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn adapters_accept_governing_optional_and_numeric_issue_fields() -> Result<()> {
+        let quality: QualityLedger = toml::from_str(
+            r#"
+[[exception]]
+id = "fixture"
+owner = "team"
+scope = "fixture"
+evidence = "receipt"
+review_after = "2026-08-12"
+expires = "2026-09-01"
+"#,
+        )?;
+        assert_eq!(quality.exception.len(), 1);
+        assert!(quality.exception[0].issue.is_none());
+
+        let scenario: ScenarioManifest = serde_json::from_str(
+            r#"{"error_waivers":[{"project":"p","journey":"j","expected_error_class":"e","issue":4050,"expires_after":"2026-09-01"}]}"#,
+        )?;
+        assert_eq!(scenario.error_waivers[0].issue, 4050);
+        Ok(())
+    }
+
+    #[test]
     fn input_order_does_not_change_canonical_json() -> Result<()> {
         let as_of = parse_date("2026-08-12", "fixture")?;
         let first = raw(Some("2026-08-15"), None, true);
