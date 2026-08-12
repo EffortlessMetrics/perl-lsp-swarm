@@ -167,6 +167,22 @@ from different ones.
    cannot be dispositioned per finding. `scripts/reviews/inline` never resolves
    anything; resolution stays in `scripts/reviews/disposition`.
 
+
+   A `COMMENTED` review is only a GitHub fact; it does not become substantive merely
+   because a human submitted it. When the cumulative conclusion is `REVIEW_CURRENT`,
+   append one subject-bound marker generated from the current PR diff:
+
+   ```bash
+   python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker
+   ```
+
+   Put the emitted `<!-- semantic-review:v1 ... -->` marker in the same review body
+   after the useful review record below. The marker binds the judgment to the PR's
+   merge base, reviewed head, and cumulative binary diff; it is not an exact-head
+   ceremony. The checker may carry it across a later push only when every later edit is
+   whitespace-only in an already-reviewed `.md` or `.txt` file. Any code, configuration,
+   path, mode, or material prose change requires focused review and a new marker.
+
    **The main thread posts.** Focused review subagents return file/line-anchored
    findings as evidence and do not write to GitHub themselves. This is the same
    boundary `orchestrate-work` applies when it routes joined evidence to the lane root

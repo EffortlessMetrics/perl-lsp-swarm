@@ -126,6 +126,37 @@ receipt. A result may remain `REVIEW_CURRENT` after a non-semantic edit, become
 `CHANGES_REQUIRED` after a substantive regression, or become `NOT_PROVEN` when the
 repair invalidates evidence and reliable replacement proof is missing.
 
+## Durable semantic review record
+
+A GitHub `COMMENTED` review is evidence that somebody submitted text. It does not prove
+that the cumulative claim received a substantive review, and zero unresolved threads
+does not supply the missing judgment.
+
+A `REVIEW_CURRENT` review therefore carries one machine-readable marker in the same
+submitted review body:
+
+```text
+<!-- semantic-review:v1 {"head":"<reviewed-head>","merge_base":"<merge-base>","pr":<number>,"result":"REVIEW_CURRENT","subject_sha256":"<cumulative-diff-digest>"} -->
+```
+
+Generate it only after the useful review record is complete:
+
+```bash
+python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker
+```
+
+The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
+marker is not a requirement to re-review merely because a SHA changed. It makes the
+reviewed subject falsifiable and lets the pre-merge guard distinguish a real cumulative
+judgment from an empty comment.
+
+Automation carries the marker forward only through an intentionally narrow neutral
+class: no candidate change, or whitespace-only edits in already-reviewed `.md`/`.txt`
+files. It never treats whitespace changes in code or configuration as neutral because
+indentation and spacing can be semantic. Any other later change yields `NOT_PROVEN`
+until focused review publishes a new marker. Human review can determine that a broader
+change preserves the conclusion; the mechanical checker does not invent that judgment.
+
 ## GitHub-native merge blockers
 
 Substantive review and live integration remain separate. A useful current review must

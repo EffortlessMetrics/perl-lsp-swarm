@@ -153,6 +153,30 @@ def test_native_convergence_is_fact_only() -> None:
     assert "present_unclassified" in text
 
 
+def test_review_skills_publish_subject_bound_currentness_marker() -> None:
+    for relative in (
+        ".agents/skills/review-pr/SKILL.md",
+        ".claude/skills/review-pr/SKILL.md",
+    ):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert "check-pr-semantic-review-currentness.py" in text
+        assert "--emit-marker" in text
+        assert "semantic-review:v1" in text
+        assert "COMMENTED` review is only a GitHub fact" in text
+
+
+def test_shared_contract_defines_durable_semantic_review_record() -> None:
+    text = " ".join(
+        (ROOT / "docs/agents/REVIEW_CURRENTNESS.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    assert "## Durable semantic review record" in text
+    assert "git diff --binary --full-index" in text
+    assert "whitespace-only edits in already-reviewed `.md`/`.txt` files" in text
+    assert "indentation and spacing can be semantic" in text
+
+
 def test_subject_bound_checker_requires_durable_review_record() -> None:
     text = (
         ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"
