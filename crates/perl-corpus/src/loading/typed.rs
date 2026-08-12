@@ -1,7 +1,22 @@
 use crate::metadata::{self, Section};
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
+#[cfg(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -265,8 +280,9 @@ pub fn load_sectioned_corpus_document(
     let normalized = normalize_newlines(without_bom);
     let declared = validate_section_headers(&asset_id, path, &normalized)?;
 
-    // Generated compatibility IDs must depend on the stable asset identity, not
-    // the absolute runtime checkout path or leaf filename.
+    // The legacy parser continues to derive its compatibility ID from an
+    // asset-shaped path. The public structured ID is assigned separately by
+    // `sectioned_identity` and does not treat this field as global authority.
     let sections = metadata::parser::parse_sections(&normalized, Path::new(&asset_id));
     if sections.len() != declared {
         return Err(CorpusLoadError::SectionPopulationMismatch {
@@ -611,7 +627,23 @@ fn normalize_newlines(source: &str) -> String {
     normalized
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        windows,
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )
+))]
 mod tests {
     use super::*;
 
@@ -835,6 +867,41 @@ mod tests {
         })?;
 
         assert_eq!(loaded.source, "my $original = 1;\n");
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    test,
+    not(any(
+        windows,
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))
+))]
+mod unsupported_platform_tests {
+    use super::*;
+
+    #[test]
+    fn regular_file_fails_with_no_follow_unsupported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("case.pl");
+        fs::write(&path, "my $value = 1;\n")?;
+
+        assert_eq!(
+            load_plain_perl_source("test_corpus/case.pl", &path),
+            Err(CorpusLoadError::NoFollowUnsupported { path })
+        );
         Ok(())
     }
 }
