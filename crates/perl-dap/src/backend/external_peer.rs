@@ -21,7 +21,9 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(test)]
+use std::net::TcpListener;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -226,36 +228,23 @@ impl ExternalDebuggerPeerBackend {
         Ok(Self { shared, reader: Some(reader), timeout, control_mode: ControlMode::Mirror })
     }
 
-    /// Build a backend over an already-connected peer stream.
-    ///
-    /// Use this when the caller manages the socket rendezvous itself (e.g. it
-    /// accepted the peer on its own listener). The peer is still expected to send
-    /// `peer/hello` once the stream is up.
-    ///
-    /// # Errors
-    /// Fails if the socket cannot be cloned or configured.
-    pub fn from_connected_stream(stream: TcpStream, timeout: Duration) -> BackendResult<Self> {
-        Self::from_stream(stream, timeout)
-    }
-
     /// Build a backend over an already-connected peer stream, enforcing a
     /// per-session shared-secret token on the peer's `peer/hello`.
     ///
-    /// When `expected_token` is `Some`, the inbound `peer/hello` must carry a
-    /// `token` equal to it (constant-time compared) or the handshake is rejected
+    /// The inbound `peer/hello` must carry a `token` equal to
+    /// `expected_token` (constant-time compared) or the handshake is rejected
     /// with a well-formed unsuccessful HELLO response and no session goes live.
-    /// When `None`, no token is enforced (identical to
-    /// [`Self::from_connected_stream`]). Used by the listen-mode acceptor, which
-    /// minted the token and advertised it via `PERL_DAP_PEER_TOKEN`.
+    /// Used by the listen-mode acceptor, which minted the token and advertised
+    /// it via `PERL_DAP_PEER_TOKEN`.
     ///
     /// # Errors
     /// Fails if the socket cannot be cloned or configured.
     pub fn from_connected_stream_with_token(
         stream: TcpStream,
         timeout: Duration,
-        expected_token: Option<String>,
+        expected_token: String,
     ) -> BackendResult<Self> {
-        Self::from_stream_with_token(stream, timeout, expected_token)
+        Self::from_stream_with_token(stream, timeout, Some(expected_token))
     }
 
     /// Connect to a running peer (`Connect` mode).
@@ -289,40 +278,25 @@ impl ExternalDebuggerPeerBackend {
         ))
     }
 
-    /// Listen for a peer to connect (`Listen` mode), accepting one client.
+    /// Legacy unauthenticated listen constructor.
     ///
-    /// Returns the backend and the actually-bound socket address (useful when
-    /// `port` was `0`).
-    ///
-    /// # Errors
-    /// Fails if binding fails or no peer connects before `timeout`.
+    /// This API cannot safely return the bearer token a peer must present, so
+    /// it is retained only as a fail-closed migration surface. Use
+    /// `PeerListenEndpoint::bind`, deliver its environment contract to the
+    /// peer, then call [`Self::from_connected_stream_with_token`].
+    #[deprecated(
+        since = "0.17.0",
+        note = "use PeerListenEndpoint::bind and from_connected_stream_with_token"
+    )]
     pub fn listen(
-        host: &str,
-        port: u16,
-        timeout: Duration,
+        _host: &str,
+        _port: u16,
+        _timeout: Duration,
     ) -> BackendResult<(Self, std::net::SocketAddr)> {
-        let listener =
-            TcpListener::bind((host, port)).map_err(|e| BackendError::Transport(e.to_string()))?;
-        let bound = listener.local_addr().map_err(|e| BackendError::Transport(e.to_string()))?;
-        listener.set_nonblocking(true).map_err(|e| BackendError::Transport(e.to_string()))?;
-
-        let deadline = Instant::now() + timeout;
-        let stream = loop {
-            match listener.accept() {
-                Ok((s, _)) => break s,
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(BackendError::Timeout(
-                            "no peer connected before timeout".to_string(),
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(e) => return Err(BackendError::Transport(e.to_string())),
-            }
-        };
-        stream.set_nonblocking(false).map_err(|e| BackendError::Transport(e.to_string()))?;
-        Ok((Self::from_stream(stream, timeout)?, bound))
+        Err(BackendError::Unsupported(
+            "unauthenticated external-peer listen mode was removed; use the token-authenticated PeerListenEndpoint authority"
+                .to_string(),
+        ))
     }
 
     /// Block until the peer handshake completes or the timeout elapses.
@@ -1293,6 +1267,17 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
+    fn legacy_listen_constructor_fails_before_binding() {
+        let error =
+            match ExternalDebuggerPeerBackend::listen("0.0.0.0", 0, Duration::from_millis(10)) {
+                Ok(_) => panic!("legacy unauthenticated listen must fail closed"),
+                Err(error) => error,
+            };
+        assert!(matches!(error, BackendError::Unsupported(_)));
+    }
+
+    #[test]
     fn constant_time_eq_matches_only_identical_slices() {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
@@ -1546,11 +1531,7 @@ mod tests {
         expected_token: Option<String>,
     ) -> ExternalDebuggerPeerBackend {
         let (stream, _) = listener.accept().expect("accept");
-        ExternalDebuggerPeerBackend::from_connected_stream_with_token(
-            stream,
-            timeout,
-            expected_token,
-        )
-        .expect("backend")
+        ExternalDebuggerPeerBackend::from_stream_with_token(stream, timeout, expected_token)
+            .expect("backend")
     }
 }
