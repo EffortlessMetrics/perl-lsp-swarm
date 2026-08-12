@@ -7,9 +7,9 @@
 #[path = "support/real_process.rs"]
 mod real_process;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use real_process::RealProcessClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 fn timeout() -> Duration {
