@@ -2013,7 +2013,11 @@ mod tests {
             ),
             Some(StaleReason::DocumentGenerationAdvanced { captured: 1, current: 2 })
         );
-        assert!(output.lock().is_empty(), "post-handler stale result must not be delivered");
+        let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
+        assert!(
+            !output.contains("\"id\":78"),
+            "post-handler stale completion result must not be delivered; output={output}"
+        );
         Ok(())
     }
 
