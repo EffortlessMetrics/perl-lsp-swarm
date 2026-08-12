@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +13,7 @@ MODULE_PATH = Path(__file__).with_name("verify_binary_identity.py")
 SPEC = importlib.util.spec_from_file_location("verify_binary_identity", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 verify_binary_identity = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = verify_binary_identity
 SPEC.loader.exec_module(verify_binary_identity)
 
 ExpectedBinary = verify_binary_identity.ExpectedBinary
@@ -160,7 +161,7 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             payload = json.dumps(packet())
             executable.write_text(
                 "#!/usr/bin/env python3\n"
-                "import json, sys\n"
+                "import sys\n"
                 f"payload = {payload!r}\n"
                 "if sys.argv[1:] != ['--identity-json']:\n"
                 "    raise SystemExit(9)\n"
@@ -172,7 +173,7 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             self.assertEqual(result.packet["binary"]["role"], "server")
             self.assertEqual(len(result.sha256), 64)
 
-    def test_oversized_or_malformed_packet_is_not_proven(self) -> None:
+    def test_malformed_packet_is_not_proven(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory, "perllsp")
             executable.write_text("#!/bin/sh\nprintf 'not-json'\n", encoding="utf-8")
