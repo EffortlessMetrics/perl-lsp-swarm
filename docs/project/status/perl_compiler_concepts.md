@@ -8,7 +8,8 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 - Schema: `perl_compiler_concepts.v1`
 - Ledger: `perl_compiler_concepts_seed_v1`
 - Controller: #6657
-- Complete: `false`
+- Inventory complete: `false`
+- Inventory authority: —
 - Concepts in this seed: `28`
 
 **Claim boundary:** Rows separate representation, analysis, effects, execution, proof, and provider eligibility. This seed is intentionally incomplete.
@@ -47,8 +48,8 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 | Body HIR | `boundary` | 1 |
 | Body HIR | `bridge` | 5 |
 | Body HIR | `modeled` | 2 |
-| Body HIR | `not_applicable` | 3 |
-| Body HIR | `opaque` | 17 |
+| Body HIR | `not_applicable` | 2 |
+| Body HIR | `opaque` | 18 |
 | PIR-A | `absent` | 9 |
 | PIR-A | `boundary` | 13 |
 | PIR-A | `bridge` | 3 |
@@ -94,7 +95,7 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 | `regex.match` | `Match` | `parsed` | `modeled` | `opaque` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #4848 |
 | `regex.substitution` | `Substitution` | `parsed` | `modeled` | `opaque` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #4848 |
 | `regex.transliteration` | `Transliteration` | `parsed` | `modeled` | `opaque` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #4848 |
-| `source.data_section` | `DataSection` | `parsed` | `absent` | `not_applicable` | `not_applicable` | `absent` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6675 |
+| `source.data_section` | `DataSection` | `parsed` | `absent` | `opaque` | `not_applicable` | `absent` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6675 |
 | `source.ellipsis` | `Ellipsis` | `parsed` | `absent` | `opaque` | `absent` | `not_applicable` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6675 |
 | `values.v_string` | `VString` | `parsed` | `absent` | `opaque` | `absent` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `ineligible` | #6658 |
 
