@@ -11,6 +11,8 @@ use super::super::{
 };
 use crate::value::PerlValue;
 
+const MAX_CACHED_CHILDREN: usize = 1024;
+
 /// Iterate `lines` in reverse, parse variable assignments, apply scope filter,
 /// deduplicate by name, and cap at 256 entries.
 ///
@@ -87,7 +89,7 @@ pub(super) fn render_paged_variable(
 
     let cache_entry = if value.is_expandable() {
         let children = renderer
-            .render_children(&value, 0, 256)
+            .render_children(&value, 0, MAX_CACHED_CHILDREN)
             .into_iter()
             .map(DebugAdapter::rendered_to_variable)
             .collect::<Vec<_>>();

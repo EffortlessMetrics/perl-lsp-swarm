@@ -173,9 +173,9 @@ def probe_session_metrics(
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     script_text = """use strict;
 use warnings;
-our $x = 41;
-our @big = (1..500);
-our %meta = (name => \"dap-scorecard\");
+my $x = 41;
+my @big = (1..500);
+my %meta = (name => \"dap-scorecard\");
 my $marker = $x + 1;
 print \"marker=$marker\\n\";
 """

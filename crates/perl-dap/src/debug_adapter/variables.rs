@@ -410,13 +410,19 @@ impl DebugAdapter {
     /// same sub each invocation has its own pad slot; for non-recursive frames from
     /// different subs, frame_id=0 is the only meaningful choice.
     ///
-    /// Arrays (`@foo`) and hashes (`%foo`) are emitted as `ARRAY(0x0)` / `HASH(0x0)`
-    /// so that `VariableParser::parse_assignment` recognises them as expandable
-    /// collections — the same format used by the `V` command for package variables.
+    /// Arrays and hashes are recovered through `B::SV::object_2svref` and
+    /// serialized as bounded one-line literals. This lets `VariableParser` retain
+    /// child counts and serve later `variables` pages. Pointer-like placeholders
+    /// remain only as an honest fallback when the read-only B object cannot be converted.
     pub(super) fn build_locals_b_eval_cmd(frame_id: i32) -> String {
         format!(
             concat!(
-                "p eval {{ require B; ",
+                "p eval {{ require B; require Data::Dumper; ",
+                "local $Data::Dumper::Terse=1; ",
+                "local $Data::Dumper::Indent=0; ",
+                "local $Data::Dumper::Useqq=1; ",
+                "local $Data::Dumper::Sortkeys=1; ",
+                "local $Data::Dumper::Maxdepth=4; ",
                 "my $cv=$DB::sub?B::svref_2object(\\&{{$DB::sub}}):B::main_cv(); ",
                 "my $pl=$cv->PADLIST; ",
                 "my @nm=$pl->NAMES->ARRAY; ",
@@ -433,8 +439,23 @@ impl DebugAdapter {
                 "  next unless defined $s; ",
                 "  my $rt=ref($s); ",
                 "  my $v; ",
-                "  if ($rt eq 'B::AV') {{ $v='ARRAY(0x0)' }} ",
-                "  elsif ($rt eq 'B::HV') {{ $v='HASH(0x0)' }} ",
+                "  if ($rt eq 'B::AV') {{ ",
+                "    my $r=eval{{$s->object_2svref}}; ",
+                "    if (ref($r) eq 'ARRAY') {{ ",
+                "      my @v=@$r; splice(@v,1024) if @v>1024; ",
+                "      $v=eval{{Data::Dumper::Dumper(\\@v)}}; ",
+                "    }} ",
+                "    $v//='ARRAY(0x0)'; ",
+                "  }} ",
+                "  elsif ($rt eq 'B::HV') {{ ",
+                "    my $r=eval{{$s->object_2svref}}; ",
+                "    if (ref($r) eq 'HASH') {{ ",
+                "      my @k=sort keys %$r; splice(@k,1024) if @k>1024; ",
+                "      my %v; @v{{@k}}=@$r{{@k}}; ",
+                "      $v=eval{{Data::Dumper::Dumper(\\%v)}}; ",
+                "    }} ",
+                "    $v//='HASH(0x0)'; ",
+                "  }} ",
                 "  else {{ $v=eval{{$s->SV->PV}}//eval{{$s->SV->IV}}//eval{{$s->IV}}//eval{{$s->PV}}//'undef' }} ",
                 "  $o.=\"$pv = $v\\n\" ",
                 "}} $o }}",
@@ -1019,13 +1040,44 @@ mod hazard_invariant_tests {
         assert!(cmd.contains("'B::AV'"), "Perl code must check for B::AV (array variables): {cmd}");
         // B::HV detection for hash variables (%foo).
         assert!(cmd.contains("'B::HV'"), "Perl code must check for B::HV (hash variables): {cmd}");
-        // Arrays must produce an ARRAY(0x0) value parseable by VariableParser.
         assert!(
-            cmd.contains("ARRAY(0x0)"),
-            "Perl code must format array vars as ARRAY(0x0): {cmd}"
+            cmd.contains("object_2svref"),
+            "Perl code must recover the read-only collection value from B: {cmd}"
         );
-        // Hashes must produce a HASH(0x0) value parseable by VariableParser.
-        assert!(cmd.contains("HASH(0x0)"), "Perl code must format hash vars as HASH(0x0): {cmd}");
+        assert!(
+            cmd.contains("Data::Dumper::Dumper"),
+            "Perl code must emit a one-line parseable collection literal: {cmd}"
+        );
+        assert!(
+            cmd.contains("splice(@v,1024)") && cmd.contains("splice(@k,1024)"),
+            "Perl code must bound array and hash materialization: {cmd}"
+        );
+        // Pointer-like values remain explicit fallbacks when B cannot expose the collection.
+        assert!(cmd.contains("ARRAY(0x0)"), "array fallback must remain explicit: {cmd}");
+        assert!(cmd.contains("HASH(0x0)"), "hash fallback must remain explicit: {cmd}");
+    }
+
+    #[test]
+    fn parsed_lexical_array_preserves_a_deep_page() {
+        let values = (1..=500).map(|value| value.to_string()).collect::<Vec<_>>().join(",");
+        let lines = vec![format!("@big = [{values}]")];
+        let (roots, child_cache) =
+            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 1024);
+        let root = roots
+            .iter()
+            .find(|variable| variable.name == "@big")
+            .expect("@big root must be rendered");
+        assert_eq!(root.indexed_variables, Some(500));
+        assert!(root.variables_reference > 0);
+
+        let children = child_cache
+            .get(&root.variables_reference)
+            .expect("@big children must be cached for paging");
+        assert_eq!(children.len(), 500);
+        assert_eq!(children[250].name, "[250]");
+        assert_eq!(children[250].value, "251");
+        assert_eq!(children[274].name, "[274]");
+        assert_eq!(children[274].value, "275");
     }
 
     #[test]
