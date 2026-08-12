@@ -136,9 +136,8 @@ fn validate_default_binary(
     let mut unavailable_requirements = BTreeSet::new();
 
     if let Some(bins) = manifest.get("bin") {
-        let bins = bins
-            .as_array()
-            .ok_or_else(|| eyre!("{label} Cargo bin targets are not an array"))?;
+        let bins =
+            bins.as_array().ok_or_else(|| eyre!("{label} Cargo bin targets are not an array"))?;
         for bin in bins {
             if bin.get("name").and_then(toml::Value::as_str) != Some(expected_binary) {
                 continue;
@@ -149,9 +148,7 @@ fn validate_default_binary(
                 return Ok(());
             }
             unavailable_requirements.extend(
-                required
-                    .into_iter()
-                    .filter(|feature| !default_state.features.contains(feature)),
+                required.into_iter().filter(|feature| !default_state.features.contains(feature)),
             );
         }
     }
@@ -175,9 +172,8 @@ fn default_feature_state(manifest: &toml::Value) -> Result<DefaultFeatureState> 
     let Some(features) = manifest.get("features") else {
         return Ok(DefaultFeatureState::default());
     };
-    let features = features
-        .as_table()
-        .ok_or_else(|| eyre!("Cargo [features] value is not a table"))?;
+    let features =
+        features.as_table().ok_or_else(|| eyre!("Cargo [features] value is not a table"))?;
     let mut state = DefaultFeatureState::default();
     let mut queue = VecDeque::new();
 
@@ -234,9 +230,7 @@ fn feature_entries<'a>(value: &'a toml::Value, label: &str) -> Result<Vec<&'a st
         .ok_or_else(|| eyre!("Cargo {label} must be an array"))?
         .iter()
         .map(|entry| {
-            entry
-                .as_str()
-                .ok_or_else(|| eyre!("Cargo {label} contains a non-string feature entry"))
+            entry.as_str().ok_or_else(|| eyre!("Cargo {label} contains a non-string feature entry"))
         })
         .collect()
 }
@@ -268,22 +262,15 @@ fn implicit_binary_exists(
         .get("package")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("Cargo manifest has no [package] table"))?;
-    if package
-        .get("autobins")
-        .and_then(toml::Value::as_bool)
-        == Some(false)
-    {
+    if package.get("autobins").and_then(toml::Value::as_bool) == Some(false) {
         return Ok(false);
     }
     let package_name = package
         .get("name")
         .and_then(toml::Value::as_str)
         .ok_or_else(|| eyre!("Cargo package has no string name"))?;
-    let manifest_dir = repo_root.join(
-        manifest_path
-            .parent()
-            .ok_or_else(|| eyre!("Cargo manifest path has no parent"))?,
-    );
+    let manifest_dir = repo_root
+        .join(manifest_path.parent().ok_or_else(|| eyre!("Cargo manifest path has no parent"))?);
     if expected_binary == package_name && manifest_dir.join("src/main.rs").is_file() {
         return Ok(true);
     }
@@ -292,18 +279,12 @@ fn implicit_binary_exists(
 }
 
 fn inherits_workspace(specification: &toml::Value) -> bool {
-    specification
-        .as_table()
-        .and_then(|table| table.get("workspace"))
-        .and_then(toml::Value::as_bool)
+    specification.as_table().and_then(|table| table.get("workspace")).and_then(toml::Value::as_bool)
         == Some(true)
 }
 
 fn dependency_optional(specification: &toml::Value) -> bool {
-    specification
-        .as_table()
-        .and_then(|table| table.get("optional"))
-        .and_then(toml::Value::as_bool)
+    specification.as_table().and_then(|table| table.get("optional")).and_then(toml::Value::as_bool)
         == Some(true)
 }
 
@@ -461,14 +442,7 @@ package_manifest = "crates/perl-dap/Cargo.toml"
             "",
             "",
         )?;
-        write_binary_manifest(
-            repo.path(),
-            "crates/perl-dap",
-            "perl-dap",
-            "perl-dap",
-            "",
-            "",
-        )?;
+        write_binary_manifest(repo.path(), "crates/perl-dap", "perl-dap", "perl-dap", "", "")?;
         Ok(repo)
     }
 
