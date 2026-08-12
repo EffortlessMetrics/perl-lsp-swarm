@@ -1,8 +1,8 @@
 #![cfg(feature = "incremental")]
-//! Public-contract tests for correctness-first live lexer restart.
+//! Public-contract tests for generation-bound stored lexer restart.
 
 use perl_lexer::{PerlLexer, Token, TokenType};
-use perl_parser::incremental::LexRestartStrategy;
+use perl_parser::incremental::{LexRestartStrategy, MAX_STORED_LEX_CHECKPOINTS};
 use perl_parser::{Edit, IncrementalState, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -51,11 +51,13 @@ fn empty_edit_batch_reports_unchanged_without_lexer_or_parser_work() -> TestResu
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::Unchanged);
     assert_eq!(result.lex_restart.restart_byte, source.len());
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert_eq!(result.lex_restart.relexed_bytes, 0);
     assert_eq!(result.lex_restart.reused_prefix_tokens, token_count);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_eq!(result.reused_tokens, token_count);
     assert_eq!(result.reparsed_bytes, 0);
+    assert!(result.lex_restart.stored_checkpoint_count > 0);
     assert!(result.changed_ranges.is_empty());
     assert_eq!(state.source(), source);
     assert_tokens_equal(state.tokens(), &fresh_tokens(source));
@@ -63,7 +65,7 @@ fn empty_edit_batch_reports_unchanged_without_lexer_or_parser_work() -> TestResu
 }
 
 #[test]
-fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> TestResult {
+fn late_equal_width_edit_uses_stored_state_and_relexes_the_complete_suffix() -> TestResult {
     let source = "my $before = 1; my $target = 2; my $after = 3;";
     let start = source.find("= 2").ok_or("target literal is missing")? + 2;
     let edit = Edit {
@@ -75,7 +77,8 @@ fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> Tes
     let mut state = IncrementalState::new(source.to_string());
     let result = apply_edits(&mut state, &[edit])?;
 
-    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert!(result.lex_restart.restart_byte > 0);
     assert!(result.lex_restart.reused_prefix_tokens > 0);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
@@ -112,9 +115,10 @@ fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
 
         assert_eq!(
             result.lex_restart.strategy,
-            LexRestartStrategy::LiveCheckpointToEof,
-            "{name} unexpectedly abandoned the live checkpoint path"
+            LexRestartStrategy::StoredCheckpointToEof,
+            "{name} unexpectedly abandoned the stored-checkpoint path"
         );
+        assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0, "{name}");
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0, "{name}");
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     }
@@ -122,7 +126,7 @@ fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
 }
 
 #[test]
-fn method_context_edit_matches_fresh_lexing_after_complete_state_restore() -> TestResult {
+fn method_context_edit_matches_fresh_lexing_after_stored_state_restore() -> TestResult {
     let source = "my $value = $object->method(); my $after = 1;";
     let start = source.find("method").ok_or("method name is missing")?;
     let edit = Edit {
@@ -134,7 +138,8 @@ fn method_context_edit_matches_fresh_lexing_after_complete_state_restore() -> Te
     let mut state = IncrementalState::new(source.to_string());
     let result = apply_edits(&mut state, &[edit])?;
 
-    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     Ok(())
@@ -155,24 +160,26 @@ fn large_edit_reports_full_relex_instead_of_checkpoint_reuse() -> TestResult {
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::FullRelex);
     assert_eq!(result.lex_restart.restart_byte, 0);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert_eq!(result.lex_restart.reused_prefix_tokens, 0);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_eq!(result.lex_restart.relexed_bytes, state.source().len());
+    assert!(result.lex_restart.stored_checkpoint_count <= MAX_STORED_LEX_CHECKPOINTS);
     assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     Ok(())
 }
 
 #[test]
-fn timeout_sensitive_checkpoint_falls_back_with_downstream_span_parity() -> TestResult {
+fn timeout_sensitive_heredoc_state_selects_an_earlier_safe_checkpoint() -> TestResult {
     let source = "my $value = <<EOF;\nbody\nEOF\nmy $after = 1;\n";
     let edit = replacing_edit(source, "body", "changed")?;
     let mut state = IncrementalState::new(source.to_string());
 
     let result = apply_edits(&mut state, &[edit])?;
 
-    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::FullRelex);
-    assert_eq!(result.lex_restart.restart_byte, 0);
-    assert_eq!(result.lex_restart.relexed_bytes, state.source().len());
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
+    assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
 
     let expected = fresh_tokens(state.source());
     assert_tokens_equal(state.tokens(), &expected);

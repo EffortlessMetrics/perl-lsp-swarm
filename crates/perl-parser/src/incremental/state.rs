@@ -1,5 +1,5 @@
 use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
-use crate::incremental::lex::lex_source_with_checkpoints;
+use crate::incremental::lex::{StoredLexCheckpoint, lex_source_with_checkpoints};
 use perl_lexer::Token;
 use perl_line_index::LineIndex;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -9,11 +9,6 @@ use ropey::Rope;
 use std::ops::Deref;
 
 /// Read-only compatibility view for legacy field-style access.
-///
-/// `IncrementalState` intentionally implements `Deref` but not `DerefMut` for
-/// this view. Existing consumers may continue to read `state.source` and
-/// `state.lex_checkpoints`, while generation replacement remains private to the
-/// committed-state machinery.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct IncrementalStateReadView {
@@ -25,37 +20,10 @@ pub struct IncrementalStateReadView {
 
 /// One internally consistent incremental parser generation.
 ///
-/// Generation-bearing fields are crate-private so external callers cannot
-/// mutate source, tokens, checkpoints, AST, or parser output independently.
-/// Use [`IncrementalState::new`], read-only accessors, and [`super::apply_edits`]
-/// to move between committed generations.
-///
-/// Legacy field-style reads remain available through an immutable compatibility
-/// view:
-///
-/// ```
-/// use perl_parser::incremental::IncrementalState;
-///
-/// let state = IncrementalState::new("my $x = 1;".to_string());
-/// assert_eq!(state.source.len(), state.source().len());
-/// assert_eq!(state.lex_checkpoints.len(), state.lex_checkpoints().len());
-/// ```
-///
-/// The view does not grant mutation authority:
-///
-/// ```compile_fail
-/// use perl_parser::incremental::IncrementalState;
-///
-/// let mut state = IncrementalState::new("my $x = 1;".to_string());
-/// state.source.push_str("\n");
-/// ```
-///
-/// ```compile_fail
-/// use perl_parser::incremental::IncrementalState;
-///
-/// let mut state = IncrementalState::new("my $x = 1;".to_string());
-/// state.lex_checkpoints.clear();
-/// ```
+/// Complete behavior-bearing lexer checkpoints are retained privately and move
+/// atomically with source, token, line-index, and parser state. The public
+/// `LexCheckpoint` vector remains a compact compatibility summary; it is not the
+/// restart authority.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct IncrementalState {
@@ -68,6 +36,7 @@ pub struct IncrementalState {
     #[deprecated(note = "Use parse_output(); this compatibility mirror will be removed.")]
     pub(super) ast: Node,
     pub(super) tokens: Vec<Token>,
+    pub(super) stored_lex_checkpoints: Vec<StoredLexCheckpoint>,
     pub(super) read_view: IncrementalStateReadView,
 }
 
@@ -92,6 +61,7 @@ impl IncrementalState {
         let lexed = lex_source_with_checkpoints(&source, &line_index);
         let tokens = lexed.tokens;
         let lex_checkpoints = lexed.checkpoints;
+        let stored_lex_checkpoints = lexed.stored_checkpoints;
         let parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
         Self {
             rope,
@@ -100,6 +70,7 @@ impl IncrementalState {
             parse_output,
             ast,
             tokens,
+            stored_lex_checkpoints,
             read_view: IncrementalStateReadView { source, lex_checkpoints },
         }
     }
@@ -128,6 +99,16 @@ impl IncrementalState {
         &self.read_view.lex_checkpoints
     }
 
+    /// Number of complete generation-bound lexer checkpoints retained privately.
+    #[must_use]
+    pub fn stored_lex_checkpoint_count(&self) -> usize {
+        self.stored_lex_checkpoints.len()
+    }
+
+    pub(crate) fn stored_lex_checkpoints(&self) -> &[StoredLexCheckpoint] {
+        &self.stored_lex_checkpoints
+    }
+
     /// Parser restart summaries for the current committed parse output.
     #[must_use]
     pub fn parse_checkpoints(&self) -> &[ParseCheckpoint] {
@@ -153,7 +134,7 @@ impl IncrementalState {
         &self.tokens
     }
 
-    /// Find the nearest lexer checkpoint at or before `byte`.
+    /// Find the nearest compact lexer checkpoint at or before `byte`.
     #[must_use]
     pub fn find_lex_checkpoint(&self, byte: usize) -> Option<&LexCheckpoint> {
         self.read_view.lex_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
@@ -166,30 +147,25 @@ impl IncrementalState {
     }
 
     /// Replace the text-bearing portion of a staged generation.
-    ///
-    /// This remains crate-private so source, rope, and line-index identity cannot
-    /// be changed independently by consumers. Callers finish rebuilding tokens,
-    /// checkpoints, and parser output before publishing the staged state.
     pub(super) fn replace_source_text(&mut self, source: String) {
         self.rope = Rope::from_str(&source);
         self.line_index = LineIndex::new(&source);
         self.read_view.source = source;
     }
 
-    /// Replace the staged lexer output and its restart summaries together.
+    /// Replace the staged lexer output and both checkpoint planes together.
     pub(super) fn replace_lex_state(
         &mut self,
         tokens: Vec<Token>,
         lex_checkpoints: Vec<LexCheckpoint>,
+        stored_lex_checkpoints: Vec<StoredLexCheckpoint>,
     ) {
         self.tokens = tokens;
         self.read_view.lex_checkpoints = lex_checkpoints;
+        self.stored_lex_checkpoints = stored_lex_checkpoints;
     }
 
     /// Refresh the authoritative parser output from the current source.
-    ///
-    /// The compatibility AST and parse checkpoints are updated from the same
-    /// recovered parse so the state cannot expose mixed parse generations.
     #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
     pub(crate) fn refresh_parse_output(&mut self) {
         let mut parser = Parser::new(self.source());

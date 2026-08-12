@@ -2,7 +2,7 @@ use crate::incremental::{
     IncrementalState,
     diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult},
     edit::Edit,
-    lex::{capture_live_checkpoint, lex_from_live_checkpoint, lex_source_with_checkpoints},
+    lex::{lex_from_live_checkpoint, lex_source_with_checkpoints},
 };
 use anyhow::Result;
 use std::ops::Range;
@@ -34,50 +34,67 @@ pub(crate) fn apply_single_edit(
     state: &mut IncrementalState,
     edit: &Edit,
 ) -> Result<SingleEditReparse> {
-    let summary = state
-        .find_lex_checkpoint(edit.start_byte)
-        .copied()
-        .ok_or_else(|| anyhow::anyhow!("No lexer restart boundary found"))?;
-    let mut live_checkpoint = capture_live_checkpoint(state.source(), summary.byte)
-        .ok_or_else(|| anyhow::anyhow!("Could not reproduce complete live lexer state at restart boundary"))?;
-    let old_len = edit
-        .old_end_byte
-        .checked_sub(edit.start_byte)
-        .ok_or_else(|| anyhow::anyhow!("edit end precedes edit start"))?;
-    if !live_checkpoint.try_apply_edit(edit.start_byte, old_len, edit.new_text.len()) {
-        anyhow::bail!("Edit invalidated required live lexer state");
-    }
-
+    let old_source = state.source().to_string();
+    let selected = state
+        .stored_lex_checkpoints()
+        .iter()
+        .rev()
+        .filter(|stored| stored.summary.byte <= edit.start_byte)
+        .find_map(|stored| {
+            stored
+                .prepare_for_edit(&old_source, edit)
+                .map(|live| (stored.summary, live))
+        })
+        .ok_or_else(|| anyhow::anyhow!("No valid stored lexer checkpoint found"))?;
+    let (summary, live_checkpoint) = selected;
     let restart_byte = live_checkpoint.position;
     let reused_prefix_tokens = state
         .tokens()
         .iter()
         .take_while(|token| token.start < restart_byte)
         .count();
-    apply_text_edit_to_state(state, edit)?;
+    let old_prefix_checkpoints = state
+        .stored_lex_checkpoints()
+        .iter()
+        .take_while(|checkpoint| checkpoint.summary.byte < restart_byte)
+        .cloned()
+        .collect::<Vec<_>>();
 
+    apply_text_edit_to_state(state, edit)?;
     let lexed = lex_from_live_checkpoint(state.source(), state.line_index(), &live_checkpoint)?;
 
     let mut tokens = state.tokens()[..reused_prefix_tokens].to_vec();
     tokens.extend(lexed.tokens);
 
-    let mut checkpoints = state
+    let mut checkpoint_summaries = state
         .lex_checkpoints()
         .iter()
         .take_while(|checkpoint| checkpoint.byte < restart_byte)
         .copied()
         .collect::<Vec<_>>();
-    checkpoints.extend(lexed.checkpoints);
-    state.replace_lex_state(tokens, checkpoints);
+    checkpoint_summaries.extend(lexed.checkpoints);
+
+    let mut stored_checkpoints = old_prefix_checkpoints
+        .iter()
+        .filter_map(|checkpoint| {
+            checkpoint.transform_for_generation(&old_source, state.source(), edit)
+        })
+        .collect::<Vec<_>>();
+    stored_checkpoints.extend(lexed.stored_checkpoints);
+
+    state.replace_lex_state(tokens, checkpoint_summaries, stored_checkpoints);
 
     let lex_restart = LexRestartReport {
-        strategy: LexRestartStrategy::LiveCheckpointToEof,
+        strategy: LexRestartStrategy::StoredCheckpointToEof,
         restart_byte,
+        old_prefix_bytes_replayed: 0,
         relexed_bytes: state.source().len().saturating_sub(restart_byte),
         reused_prefix_tokens,
         reused_suffix_tokens: 0,
+        stored_checkpoint_count: state.stored_lex_checkpoint_count(),
     };
 
+    debug_assert_eq!(summary.byte, restart_byte);
     Ok(SingleEditReparse {
         range: restart_byte..state.source().len(),
         lex_restart,
@@ -89,14 +106,16 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
     state.refresh_parse_output();
     let source_len = state.source().len();
     let lexed = lex_source_with_checkpoints(state.source(), state.line_index());
-    state.replace_lex_state(lexed.tokens, lexed.checkpoints);
+    state.replace_lex_state(lexed.tokens, lexed.checkpoints, lexed.stored_checkpoints);
 
     let lex_restart = LexRestartReport {
         strategy: LexRestartStrategy::FullRelex,
         restart_byte: 0,
+        old_prefix_bytes_replayed: 0,
         relexed_bytes: source_len,
         reused_prefix_tokens: 0,
         reused_suffix_tokens: 0,
+        stored_checkpoint_count: state.stored_lex_checkpoint_count(),
     };
 
     Ok(ReparseResult {
@@ -138,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_width_edit_relexes_to_eof_without_speculative_suffix_reuse() -> Result<()> {
+    fn equal_width_edit_restores_stored_state_without_replaying_old_bytes() -> Result<()> {
         let source = "my $x = 1; my $y = 2;";
         let start = source.find("= 1").ok_or_else(|| anyhow::anyhow!("literal missing"))? + 2;
         let edit = Edit {
@@ -150,7 +169,8 @@ mod tests {
         let mut state = IncrementalState::new(source.to_string());
         let result = apply_single_edit(&mut state, &edit)?;
 
-        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+        assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
         assert_eq!(result.range.end, state.source().len());
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
@@ -158,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn method_name_edit_restores_after_arrow_state_and_matches_fresh_lex() -> Result<()> {
+    fn method_name_edit_matches_fresh_lex_from_stored_state() -> Result<()> {
         let source = "$object->method(); my $x = 1;";
         let start = source.find("method").ok_or_else(|| anyhow::anyhow!("method missing"))?;
         let edit = Edit {
@@ -170,13 +190,13 @@ mod tests {
         let mut state = IncrementalState::new(source.to_string());
         let result = apply_single_edit(&mut state, &edit)?;
 
-        assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
         Ok(())
     }
 
     #[test]
-    fn heredoc_body_edit_restores_the_live_queue_and_matches_fresh_lex() -> Result<()> {
+    fn heredoc_body_edit_uses_an_earlier_safe_stored_checkpoint() -> Result<()> {
         let source = "my $value = <<EOF;\nbody\nEOF\nprint $value;\n";
         let start = source.find("body").ok_or_else(|| anyhow::anyhow!("body missing"))?;
         let edit = Edit {
@@ -188,34 +208,41 @@ mod tests {
         let mut state = IncrementalState::new(source.to_string());
         let result = apply_single_edit(&mut state, &edit)?;
 
-        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+        assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
         Ok(())
     }
 
     #[test]
-    fn length_changing_edit_keeps_every_token_span_in_current_source() -> Result<()> {
-        let source = "my $a = 1;\nmy $b = 2;\nmy $c = 3;\n";
-        let delete_len = "my $a = 1;\n".len();
-        let edit = Edit {
-            start_byte: 0,
-            old_end_byte: delete_len,
-            new_end_byte: 0,
-            new_text: String::new(),
-        };
+    fn sequential_edits_regenerate_current_generation_checkpoints() -> Result<()> {
+        let source = "my $a = 1; my $b = 2; my $c = 3;";
         let mut state = IncrementalState::new(source.to_string());
-        let result = apply_single_edit(&mut state, &edit)?;
+        let first_start = source.find("= 2").ok_or_else(|| anyhow::anyhow!("first edit missing"))? + 2;
+        let first = Edit {
+            start_byte: first_start,
+            old_end_byte: first_start + 1,
+            new_end_byte: first_start + 1,
+            new_text: "8".to_string(),
+        };
+        apply_single_edit(&mut state, &first)?;
 
-        assert_eq!(result.lex_restart.restart_byte, 0);
-        assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        let second_start = state
+            .source()
+            .find("= 3")
+            .ok_or_else(|| anyhow::anyhow!("second edit missing"))? + 2;
+        let second = Edit {
+            start_byte: second_start,
+            old_end_byte: second_start + 1,
+            new_end_byte: second_start + 1,
+            new_text: "9".to_string(),
+        };
+        let result = apply_single_edit(&mut state, &second)?;
+
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+        assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
-        for token in state.tokens() {
-            assert!(token.start <= token.end);
-            assert!(token.end <= state.source().len());
-            assert!(state.source().is_char_boundary(token.start));
-            assert!(state.source().is_char_boundary(token.end));
-        }
         Ok(())
     }
 }

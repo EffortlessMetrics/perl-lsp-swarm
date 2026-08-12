@@ -17,6 +17,7 @@ pub use perl_line_index::LineIndex;
 pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
+pub use lex::MAX_STORED_LEX_CHECKPOINTS;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;
@@ -95,9 +96,11 @@ fn unchanged_result(state: &IncrementalState) -> ReparseResult {
     let lex_restart = LexRestartReport {
         strategy: LexRestartStrategy::Unchanged,
         restart_byte: state.source().len(),
+        old_prefix_bytes_replayed: 0,
         relexed_bytes: 0,
         reused_prefix_tokens: state.tokens().len(),
         reused_suffix_tokens: 0,
+        stored_checkpoint_count: state.stored_lex_checkpoint_count(),
     };
     ReparseResult {
         changed_ranges: Vec::new(),
