@@ -1,5 +1,6 @@
 name: Agent finalize compiler concepts
 
+# Durable closeout trigger: remove this workflow and its repair helpers after validation.
 on:
   push:
     branches:
