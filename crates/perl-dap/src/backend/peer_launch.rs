@@ -1549,6 +1549,17 @@ mod tests {
     }
 
     #[test]
+    fn acceptor_refuses_missing_expected_token() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(1), None);
+
+        assert!(matches!(
+            peer_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
     fn silent_peer_cannot_starve_correct_peer() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
         let addr = listener.local_addr().expect("listener address");
