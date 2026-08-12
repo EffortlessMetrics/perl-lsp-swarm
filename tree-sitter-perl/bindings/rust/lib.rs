@@ -44,12 +44,36 @@ pub const INJECTIONS_QUERY: &str = include_str!("../../queries/injections.scm");
 
 #[cfg(test)]
 mod tests {
+    use tree_sitter::Parser;
+
     #[test]
     fn test_can_load_grammar() {
-        let mut parser = tree_sitter::Parser::new();
+        let mut parser = Parser::new();
         let language: tree_sitter::Language = super::language().into();
-        parser
-            .set_language(&language)
-            .expect("Error loading perl language");
+        parser.set_language(&language).expect("Error loading perl language");
+    }
+
+    #[test]
+    fn deep_quote_stack_preserves_the_64_byte_delimiter() {
+        let delimiter = "A".repeat(64);
+        let mut nested = String::from("${qq{");
+        for _ in 0..78 {
+            nested.push_str("${qq{");
+        }
+        nested.push('X');
+        for _ in 0..79 {
+            nested.push_str("}}");
+        }
+
+        let source = format!("my $value = <<{delimiter};\n{nested}\n{delimiter}\nprint $value;\n");
+        let mut parser = Parser::new();
+        let language: tree_sitter::Language = super::language().into();
+        parser.set_language(&language).expect("Error loading perl language");
+        let tree = parser.parse(source, None).expect("tree-sitter returned no tree");
+        assert!(
+            !tree.root_node().has_error(),
+            "unexpected parse error: {}",
+            tree.root_node().to_sexp()
+        );
     }
 }

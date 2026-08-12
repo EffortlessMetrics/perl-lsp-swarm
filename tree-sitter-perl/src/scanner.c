@@ -362,15 +362,30 @@ static bool isidcont(int32_t c) { return c == '_' || is_tsp_id_continue(c); }
 // there's a matching rule in the grammar to catch when it doesn't match a rule
 static bool is_interpolation_escape(int32_t c) { return c < 256 && tsp_strchr("$@-[{\\", c); }
 
+static bool tspstring_is_valid(const TSPString *s) {
+  return !s->overflowed && s->length <= MAX_TSPSTRING_LEN;
+}
+
+static size_t scanner_state_max_quote_count(void) {
+  const size_t fixed_size = 1 + 3 + sizeof(TSPString);
+  return (TREE_SITTER_SERIALIZATION_BUFFER_SIZE - fixed_size) / sizeof(TSPQuote);
+}
+
 unsigned int tree_sitter_perl_external_scanner_serialize(void *payload, char *buffer) {
   LexerState *state = payload;
+  size_t quote_count = state->quotes.size;
+  const size_t fixed_size = 1 + 3 + sizeof(TSPString);
+  const size_t max_quote_count = scanner_state_max_quote_count();
+
+  if (buffer == NULL || quote_count > UINT8_MAX || quote_count > max_quote_count ||
+      !tspstring_is_valid(&state->heredoc_delim) ||
+      state->heredoc_state < HEREDOC_NONE || state->heredoc_state > HEREDOC_END) {
+    return 0;
+  }
+
   size_t size = 0;
 
-  // Serialize the quotes array
-  size_t quote_count = state->quotes.size;
-  if (quote_count > UINT8_MAX) {
-    quote_count = UINT8_MAX;
-  }
+  // Serialize the quotes array only after proving the complete state fits.
   buffer[size++] = (char)quote_count;
 
   if (quote_count > 0) {
@@ -385,6 +400,7 @@ unsigned int tree_sitter_perl_external_scanner_serialize(void *payload, char *bu
   memcpy(&buffer[size], &state->heredoc_delim, sizeof(TSPString));
   size += sizeof(TSPString);
 
+  if (size != fixed_size + quote_count * sizeof(TSPQuote)) return 0;
   return size;
 }
 
@@ -393,24 +409,43 @@ void tree_sitter_perl_external_scanner_deserialize(void *payload, const char *bu
   LexerState *state = payload;
   size_t size = 0;
   array_delete(&state->quotes);
-  if (length > 0) {
-    // Deserialize the quotes array
-    size_t quote_count = (uint8_t)buffer[size++];
-    if (quote_count > 0) {
-      array_reserve(&state->quotes, quote_count);
-      state->quotes.size = quote_count;
-      memcpy(state->quotes.contents, &buffer[size], quote_count * sizeof(TSPQuote));
-      size += quote_count * sizeof(TSPQuote);
-    }
+  state->heredoc_interpolates = false;
+  state->heredoc_indents = false;
+  state->heredoc_state = HEREDOC_NONE;
+  tspstring_reset(&state->heredoc_delim);
 
-    // Deserialize the heredoc state and delimiter
-    state->heredoc_interpolates = (bool)buffer[size++];
-    state->heredoc_indents = (bool)buffer[size++];
-    state->heredoc_state = (enum HeredocState)buffer[size++];
+  const size_t fixed_size = 1 + 3 + sizeof(TSPString);
+  if (buffer == NULL || length < fixed_size || length > TREE_SITTER_SERIALIZATION_BUFFER_SIZE) return;
 
-    memcpy(&state->heredoc_delim, &buffer[size], sizeof(TSPString));
-    size += sizeof(TSPString);
+  // Validate the complete envelope before allocating or reading any fields.
+  size_t quote_count = (uint8_t)buffer[size++];
+  const size_t quote_bytes = quote_count * sizeof(TSPQuote);
+  if (quote_bytes > length - fixed_size ||
+      length != fixed_size + quote_bytes || quote_count > scanner_state_max_quote_count()) {
+    return;
   }
+
+  const unsigned char *raw = (const unsigned char *)buffer;
+  const size_t flags_offset = 1 + quote_bytes;
+  if (raw[flags_offset] > 1 || raw[flags_offset + 1] > 1 ||
+      raw[flags_offset + 2] > HEREDOC_END) {
+    return;
+  }
+
+  TSPString delim;
+  memcpy(&delim, &buffer[flags_offset + 3], sizeof(TSPString));
+  if (!tspstring_is_valid(&delim)) return;
+
+  if (quote_count > 0) {
+    array_reserve(&state->quotes, quote_count);
+    state->quotes.size = quote_count;
+    memcpy(state->quotes.contents, &buffer[size], quote_bytes);
+  }
+
+  state->heredoc_interpolates = (bool)raw[flags_offset];
+  state->heredoc_indents = (bool)raw[flags_offset + 1];
+  state->heredoc_state = (enum HeredocState)raw[flags_offset + 2];
+  state->heredoc_delim = delim;
 }
 
 bool tree_sitter_perl_external_scanner_scan(void *payload, TSLexer *lexer,

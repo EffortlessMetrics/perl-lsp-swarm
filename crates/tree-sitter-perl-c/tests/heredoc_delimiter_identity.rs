@@ -77,3 +77,19 @@ fn reused_tree_preserves_long_delimiter_identity() -> TestResult {
     assert_eq!(first.root_node().to_sexp(), reused.root_node().to_sexp());
     Ok(())
 }
+
+#[test]
+fn deep_quote_stack_preserves_the_64_byte_delimiter() -> TestResult {
+    let delimiter = "A".repeat(64);
+    let mut nested = String::from("${qq{");
+    for _ in 0..78 {
+        nested.push_str("${qq{");
+    }
+    nested.push('X');
+    for _ in 0..79 {
+        nested.push_str("}}");
+    }
+
+    let source = format!("my $value = <<{delimiter};\n{nested}\n{delimiter}\nprint $value;\n");
+    assert_clean(&source)
+}
