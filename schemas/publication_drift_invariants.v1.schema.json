@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_drift_invariants.v1.schema.json",
+  "title": "perl-lsp publication drift invariant packet v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "swarm_sha",
+    "swarm_tree_digest",
+    "public_sha",
+    "public_tree_digest",
+    "invariants"
+  ],
+  "properties": {
+    "schema_version": { "const": "perl_lsp.publication_drift_invariants.v1" },
+    "swarm_sha": { "$ref": "#/$defs/sha40" },
+    "swarm_tree_digest": { "$ref": "#/$defs/sha64" },
+    "public_sha": { "$ref": "#/$defs/sha40" },
+    "public_tree_digest": { "$ref": "#/$defs/sha64" },
+    "invariants": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "owner", "evidence"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9_]+$"
+          },
+          "status": { "enum": ["pass", "fail", "not_proven"] },
+          "owner": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha64": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
