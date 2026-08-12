@@ -50,6 +50,30 @@ fn classify_cli_rejects_unrecognized_option() {
             "compile.json",
             "--output",
             "out.json",
+            "--unknown",
+            "x.json",
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let marker = "unrecognized option(s): --unknown";
+    let observed = stderr.contains(marker);
+    assert_eq!(observed, true);
+    assert_eq!(marker, "unrecognized option(s): --unknown");
+}
+
+#[test]
+fn classify_cli_rejects_discovery_without_series() {
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            "accepted.json",
+            "--compile",
+            "compile.json",
+            "--output",
+            "out.json",
             "--discovery",
             "discovery.json",
         ])
@@ -57,10 +81,7 @@ fn classify_cli_rejects_unrecognized_option() {
         .expect("spawn classify CLI");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let marker = "unrecognized option(s): --discovery";
-    let observed = stderr.contains(marker);
-    assert_eq!(observed, true);
-    assert_eq!(marker, "unrecognized option(s): --discovery");
+    assert!(stderr.contains("--discovery requires --series"), "unexpected stderr: {stderr}");
 }
 
 #[test]
@@ -600,6 +621,164 @@ fn classify_cli_rejects_series_perl_resolved_ref_mismatch() {
     assert!(!output.exists(), "perl_resolved_ref mismatch must not write a classify receipt");
 }
 
+#[test]
+fn classify_cli_accepts_matching_discovery_binding() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let discovery = dir.path().join("discovery.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series(&series, "series", "manifest", &["base/0.t", "base/1.t"]);
+    write_discovery(&discovery, "perl", &["base/0.t", "base/1.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--discovery",
+            discovery.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        result.status.success(),
+        "classify failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: Value =
+        serde_json::from_str(&fs::read_to_string(&output).expect("read receipt")).expect("decode");
+    assert_eq!(value["transition"], "no_change");
+}
+
+#[test]
+fn classify_cli_rejects_discovery_membership_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let discovery = dir.path().join("discovery.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series(&series, "series", "manifest", &["base/0.t", "base/1.t"]);
+    write_discovery(&discovery, "perl", &["base/0.t", "base/9.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--discovery",
+            discovery.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("normalized_manifest mismatch"), "unexpected stderr: {stderr}");
+    assert!(!output.exists(), "discovery membership mismatch must not write a classify receipt");
+}
+
+#[test]
+fn classify_cli_rejects_discovery_perl_ref_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let discovery = dir.path().join("discovery.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series(&series, "series", "manifest", &["base/0.t", "base/1.t"]);
+    write_discovery(&discovery, "other-perl", &["base/0.t", "base/1.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--discovery",
+            discovery.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("perl_resolved_ref mismatch"), "unexpected stderr: {stderr}");
+    assert!(!output.exists(), "discovery perl_ref mismatch must not write a classify receipt");
+}
+
+#[test]
+fn classify_cli_rejects_compile_commit_mismatch_with_series() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let discovery = dir.path().join("discovery.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    let mut report = sample_report(2, 2);
+    report.commit = "b".repeat(40);
+    fs::write(&compile, serde_json::to_string_pretty(&report).expect("encode")).expect("write");
+    write_series(&series, "series", "manifest", &["base/0.t", "base/1.t"]);
+    write_discovery(&discovery, "perl", &["base/0.t", "base/1.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--discovery",
+            discovery.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("compile observation is not bound to series"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(stderr.contains("repository_commit mismatch"), "unexpected stderr: {stderr}");
+    assert!(!output.exists(), "compile commit mismatch must not write a classify receipt");
+}
+
 fn write_baseline(path: &Path, total: usize, passed: usize) {
     let baseline = sample_v2_baseline(total, passed);
     fs::write(path, serde_json::to_string_pretty(&baseline).expect("encode")).expect("write");
@@ -651,6 +830,28 @@ fn write_series_with_subject(
         files = serde_json::to_string(files).expect("encode files"),
     );
     fs::write(path, body).expect("write series");
+}
+
+fn write_discovery(path: &Path, perl_ref: &str, files: &[&str]) {
+    let tests: Vec<Value> = files
+        .iter()
+        .map(|file| {
+            let root = file.split('/').next().expect("root");
+            serde_json::json!({ "path": file, "root": root })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "schema_version": "perl_core_harness.discovery.v1",
+        "commit": "a".repeat(40),
+        "timestamp": "2026-08-11T00:00:00Z",
+        "perl_ref": perl_ref,
+        "prepared_tree": "<prepared>",
+        "host_perl": "perl",
+        "runner": "test",
+        "profile": "base",
+        "tests": tests,
+    });
+    fs::write(path, serde_json::to_string_pretty(&body).expect("encode")).expect("write discovery");
 }
 
 fn sample_report(total: usize, passed: usize) -> RunReport {

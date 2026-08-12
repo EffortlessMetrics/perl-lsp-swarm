@@ -12,7 +12,12 @@ impl Options {
                 bail!("expected an option beginning with --, found {flag}");
             }
             match flag.as_str() {
-                "--accepted-baseline" | "--compile" | "--output" | "--receipt" | "--series" => {}
+                "--accepted-baseline"
+                | "--compile"
+                | "--output"
+                | "--receipt"
+                | "--series"
+                | "--discovery" => {}
                 _ => bail!("unrecognized option(s): {flag}"),
             }
             let value = args
@@ -75,6 +80,7 @@ struct ClassifyConfig {
     compile: PathBuf,
     output: PathBuf,
     series: Option<PathBuf>,
+    discovery: Option<PathBuf>,
 }
 
 impl ClassifyConfig {
@@ -84,8 +90,12 @@ impl ClassifyConfig {
             compile: PathBuf::from(options.required("--compile")?),
             output: PathBuf::from(options.required("--output")?),
             series: options.optional("--series")?.map(PathBuf::from),
+            discovery: options.optional("--discovery")?.map(PathBuf::from),
         };
         options.reject_unused()?;
+        if config.discovery.is_some() && config.series.is_none() {
+            bail!("--discovery requires --series; discovery binds to the comparison-series manifest");
+        }
         Ok(config)
     }
 }
@@ -96,6 +106,7 @@ struct CheckConfig {
     compile: PathBuf,
     receipt: PathBuf,
     series: Option<PathBuf>,
+    discovery: Option<PathBuf>,
 }
 
 impl CheckConfig {
@@ -105,8 +116,12 @@ impl CheckConfig {
             compile: PathBuf::from(options.required("--compile")?),
             receipt: PathBuf::from(options.required("--receipt")?),
             series: options.optional("--series")?.map(PathBuf::from),
+            discovery: options.optional("--discovery")?.map(PathBuf::from),
         };
         options.reject_unused()?;
+        if config.discovery.is_some() && config.series.is_none() {
+            bail!("--discovery requires --series; discovery binds to the comparison-series manifest");
+        }
         Ok(config)
     }
 }
