@@ -51,10 +51,7 @@ fn claude_marketplace_points_at_the_single_plugin_package() -> Result<(), Box<dy
     let entry = object(&plugins[0], "marketplace plugin entry")?;
     assert_eq!(string_field(entry, "name")?, "perl-lsp");
     assert_eq!(string_field(entry, "source")?, format!("./{PLUGIN_ROOT}"));
-    assert!(
-        entry.get("version").is_none(),
-        "plugin version must be single-sourced in plugin.json"
-    );
+    assert!(entry.get("version").is_none(), "plugin version must be single-sourced in plugin.json");
     assert!(
         !string_field(entry, "source")?.contains(".."),
         "plugin source must not escape the marketplace root"
@@ -123,7 +120,11 @@ fn claude_plugin_package_inventory_contains_no_binary_or_bridge() -> Result<(), 
     for entry in WalkDir::new(&root) {
         let entry = entry?;
         if entry.file_type().is_symlink() {
-            return Err(format!("plugin package must not contain symlink: {}", entry.path().display()).into());
+            return Err(format!(
+                "plugin package must not contain symlink: {}",
+                entry.path().display()
+            )
+            .into());
         }
         if !entry.file_type().is_file() {
             continue;
