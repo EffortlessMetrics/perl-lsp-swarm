@@ -1,5 +1,5 @@
-use super::*;
 use super::config::AQUA_CONFIG_PATH;
+use super::*;
 use color_eyre::eyre::{Context, Result, bail};
 use std::fs;
 use std::path::Path;
@@ -31,9 +31,8 @@ impl TempRepo {
             vec!["config", "user.email", "test@example.com"],
             vec!["config", "user.name", "Test"],
         ] {
-            let status = repo.git().args(&args)
-                .status()
-                .context("failed to configure temp git repo")?;
+            let status =
+                repo.git().args(&args).status().context("failed to configure temp git repo")?;
             if !status.success() {
                 bail!("git command {args:?} failed");
             }
@@ -55,9 +54,7 @@ impl TempRepo {
     }
 
     fn add(&self, path: &str) -> Result<()> {
-        let status = self.git().args(["add", path])
-            .status()
-            .context("failed to stage fixture")?;
+        let status = self.git().args(["add", path]).status().context("failed to stage fixture")?;
         if !status.success() {
             bail!("git add {path} failed");
         }
@@ -65,7 +62,9 @@ impl TempRepo {
     }
 
     fn commit(&self) -> Result<()> {
-        let status = self.git().args(["commit", "--quiet", "--no-verify", "-m", "baseline"])
+        let status = self
+            .git()
+            .args(["commit", "--quiet", "--no-verify", "-m", "baseline"])
             .status()
             .context("failed to commit fixture")?;
         if !status.success() {
@@ -79,12 +78,7 @@ impl TempRepo {
         self.write(AQUA_CONFIG_PATH, AQUA_CONFIG)?;
         self.write(".changes/header.tpl.md", "# Changelog\n")?;
         self.write("CHANGELOG.md", "# Changelog\n")?;
-        for path in [
-            CONFIG_PATH,
-            AQUA_CONFIG_PATH,
-            ".changes/header.tpl.md",
-            "CHANGELOG.md",
-        ] {
+        for path in [CONFIG_PATH, AQUA_CONFIG_PATH, ".changes/header.tpl.md", "CHANGELOG.md"] {
             self.add(path)?;
         }
         self.commit()
@@ -149,9 +143,7 @@ fn changie_rejection_is_a_blocking_staged_input_finding() -> Result<()> {
     repo.add(fragment_path)?;
 
     let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {
-        Ok(RenderOutcome::Rejected(vec![
-            "template execution failed".to_string(),
-        ]))
+        Ok(RenderOutcome::Rejected(vec!["template execution failed".to_string()]))
     })?;
     match outcome {
         CommitCheckOutcome::Flagged(report) => {
@@ -162,10 +154,7 @@ fn changie_rejection_is_a_blocking_staged_input_finding() -> Result<()> {
                 report.result
             );
             assert!(
-                report
-                    .fix
-                    .as_deref()
-                    .is_some_and(|fix| fix.contains("cargo change")),
+                report.fix.as_deref().is_some_and(|fix| fix.contains("cargo change")),
                 "blocking report must provide the cargo change repair: {:?}",
                 report.fix
             );
@@ -187,12 +176,7 @@ fn configured_changes_and_unreleased_directories_drive_materialization() -> Resu
     repo.write(AQUA_CONFIG_PATH, AQUA_CONFIG)?;
     repo.write("notes/header.tpl.md", "# Changelog\n")?;
     repo.write("CHANGELOG.md", "# Changelog\n")?;
-    for path in [
-        CONFIG_PATH,
-        AQUA_CONFIG_PATH,
-        "notes/header.tpl.md",
-        "CHANGELOG.md",
-    ] {
+    for path in [CONFIG_PATH, AQUA_CONFIG_PATH, "notes/header.tpl.md", "CHANGELOG.md"] {
         repo.add(path)?;
     }
     repo.commit()?;
@@ -221,10 +205,7 @@ fn configured_changes_and_unreleased_directories_drive_materialization() -> Resu
 fn unsafe_config_paths_block_before_rendering() -> Result<()> {
     let repo = TempRepo::init()?;
     repo.stage_baseline(CONFIG)?;
-    repo.write(
-        CONFIG_PATH,
-        &CONFIG.replace("changesDir: .changes", "changesDir: ../outside"),
-    )?;
+    repo.write(CONFIG_PATH, &CONFIG.replace("changesDir: .changes", "changesDir: ../outside"))?;
     repo.add(CONFIG_PATH)?;
 
     let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {

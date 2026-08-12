@@ -83,21 +83,14 @@ impl RenderSurface {
             });
         }
 
-        Ok(Self {
-            changes_dir,
-            unreleased_dir,
-            projects,
-        })
+        Ok(Self { changes_dir, unreleased_dir, projects })
     }
 
     pub(super) fn is_input(&self, path: &str) -> bool {
         path == CONFIG_PATH
             || path == AQUA_CONFIG_PATH
             || is_within(path, &self.changes_dir)
-            || self
-                .projects
-                .iter()
-                .any(|project| project.changelog == path)
+            || self.projects.iter().any(|project| project.changelog == path)
     }
 
     pub(super) fn is_fragment(&self, path: &str) -> bool {
@@ -107,10 +100,7 @@ impl RenderSurface {
     }
 
     pub(super) fn project_keys(&self) -> Vec<String> {
-        self.projects
-            .iter()
-            .map(|project| project.key.clone())
-            .collect()
+        self.projects.iter().map(|project| project.key.clone()).collect()
     }
 }
 
@@ -118,25 +108,20 @@ pub(super) fn normalize_repo_relative(value: &str, label: &str) -> Result<String
     let portable = value.replace('\\', "/");
     let path = Path::new(&portable);
     if path.is_absolute() {
-        return Err(format!(
-            "{label} must be repository-relative, got `{value}`"
-        ));
+        return Err(format!("{label} must be repository-relative, got `{value}`"));
     }
 
     let mut parts = Vec::new();
     for component in path.components() {
         match component {
             Component::Normal(part) => {
-                let part = part
-                    .to_str()
-                    .ok_or_else(|| format!("{label} contains non-UTF-8 path data"))?;
+                let part =
+                    part.to_str().ok_or_else(|| format!("{label} contains non-UTF-8 path data"))?;
                 parts.push(part.to_string());
             }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!(
-                    "{label} must not escape the repository, got `{value}`"
-                ));
+                return Err(format!("{label} must not escape the repository, got `{value}`"));
             }
         }
     }
@@ -147,8 +132,5 @@ pub(super) fn normalize_repo_relative(value: &str, label: &str) -> Result<String
 }
 
 fn is_within(path: &str, directory: &str) -> bool {
-    path == directory
-        || path
-            .strip_prefix(directory)
-            .is_some_and(|suffix| suffix.starts_with('/'))
+    path == directory || path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/'))
 }

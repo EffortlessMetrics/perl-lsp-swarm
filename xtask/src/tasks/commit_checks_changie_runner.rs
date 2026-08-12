@@ -19,22 +19,12 @@ enum ChangieRunner {
     Direct,
 }
 
-pub(super) fn render_with_changie(
-    workspace: &Path,
-    projects: &[String],
-) -> Result<RenderOutcome> {
+pub(super) fn render_with_changie(workspace: &Path, projects: &[String]) -> Result<RenderOutcome> {
     let runner = select_changie_runner(workspace)?;
     let mut rejected = Vec::new();
     for project in projects {
         let output = changie_command(workspace, runner)
-            .args([
-                "batch",
-                DRY_RUN_VERSION,
-                "--project",
-                project,
-                "--dry-run",
-                "--keep",
-            ])
+            .args(["batch", DRY_RUN_VERSION, "--project", project, "--dry-run", "--keep"])
             .output()
             .with_context(|| format!("failed to run Changie for project `{project}`"))?;
         if !output.status.success() {
@@ -60,23 +50,13 @@ pub(super) fn render_with_changie(
 }
 
 fn select_changie_runner(workspace: &Path) -> Result<ChangieRunner> {
-    let aqua_probe = changie_command(workspace, ChangieRunner::Aqua)
-        .arg("--version")
-        .output();
-    if aqua_probe
-        .as_ref()
-        .is_ok_and(|output| output.status.success())
-    {
+    let aqua_probe = changie_command(workspace, ChangieRunner::Aqua).arg("--version").output();
+    if aqua_probe.as_ref().is_ok_and(|output| output.status.success()) {
         return Ok(ChangieRunner::Aqua);
     }
 
-    let direct_probe = changie_command(workspace, ChangieRunner::Direct)
-        .arg("--version")
-        .output();
-    if direct_probe
-        .as_ref()
-        .is_ok_and(|output| output.status.success())
-    {
+    let direct_probe = changie_command(workspace, ChangieRunner::Direct).arg("--version").output();
+    if direct_probe.as_ref().is_ok_and(|output| output.status.success()) {
         return Ok(ChangieRunner::Direct);
     }
 
@@ -139,9 +119,5 @@ fn limit_output(raw: &str) -> String {
     if chars.next().is_some() {
         limited.push('…');
     }
-    if limited.is_empty() {
-        "no diagnostic output".to_string()
-    } else {
-        limited
-    }
+    if limited.is_empty() { "no diagnostic output".to_string() } else { limited }
 }

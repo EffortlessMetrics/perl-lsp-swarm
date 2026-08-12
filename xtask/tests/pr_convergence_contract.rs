@@ -25,9 +25,7 @@ fn prose(text: &str) -> String {
 }
 
 fn section<'a>(document: &'a str, heading: &str) -> Result<&'a str, String> {
-    let start = document
-        .find(heading)
-        .ok_or_else(|| format!("missing section {heading:?}"))?;
+    let start = document.find(heading).ok_or_else(|| format!("missing section {heading:?}"))?;
     let tail = &document[start + heading.len()..];
     let end = tail.find("\n## ").unwrap_or(tail.len());
     Ok(&tail[..end])
@@ -83,10 +81,8 @@ fn validate_contract(spec: &str) -> Result<(), String> {
     }
 
     let disposition_rows = table_rows(section(spec, "## Canonical dispositions")?);
-    let actual_dispositions = disposition_rows
-        .iter()
-        .filter_map(|row| row.first().cloned())
-        .collect::<BTreeSet<_>>();
+    let actual_dispositions =
+        disposition_rows.iter().filter_map(|row| row.first().cloned()).collect::<BTreeSet<_>>();
     let expected_dispositions = [
         "MERGE_EXISTING_CANDIDATE",
         "REPAIR_EXISTING_CANDIDATE",
@@ -124,10 +120,7 @@ fn validate_contract(spec: &str) -> Result<(), String> {
         .iter()
         .find(|row| row.first().is_some_and(|cell| cell == "BEHIND_ONLY"))
         .ok_or_else(|| "missing BEHIND_ONLY observation".to_string())?;
-    if behind_only
-        .last()
-        .is_none_or(|route| !prose(route).contains("no required action"))
-    {
+    if behind_only.last().is_none_or(|route| !prose(route).contains("no required action")) {
         return Err("BEHIND_ONLY must remain a no-action observation".to_string());
     }
 
@@ -175,10 +168,7 @@ fn validate_contract(spec: &str) -> Result<(), String> {
 #[test]
 fn accepted_spec_has_closed_semantic_model() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
-    let spec = read(
-        &root,
-        "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
-    )?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
 
     if let Err(error) = validate_contract(&spec) {
         panic!("PLSP-SPEC-0006: {error}");
@@ -189,10 +179,7 @@ fn accepted_spec_has_closed_semantic_model() -> Result<(), Box<dyn std::error::E
 #[test]
 fn ratchet_rejects_paraphrased_mandatory_refresh() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
-    let spec = read(
-        &root,
-        "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
-    )?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
     let mutated = format!("{spec}\n\nEvery candidate must update its base before merge.\n");
 
     assert!(
@@ -205,10 +192,7 @@ fn ratchet_rejects_paraphrased_mandatory_refresh() -> Result<(), Box<dyn std::er
 #[test]
 fn ratchet_rejects_age_driven_disposition() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
-    let spec = read(
-        &root,
-        "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
-    )?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
     let anchor = "| `NOT_PROVEN` | Required source, review, proof, policy, or tool evidence could not be established |";
     let replacement = format!("| `NEEDS_REBASE` | The branch is behind `main` |\n{anchor}");
     let mutated = spec.replacen(anchor, &replacement, 1);
@@ -224,10 +208,7 @@ fn ratchet_rejects_age_driven_disposition() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn ratchet_rejects_behind_only_update_route() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
-    let spec = read(
-        &root,
-        "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
-    )?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
     let current = "| `BEHIND_ONLY` | The candidate is conflict-free while `main` advanced | no required action |";
     let regressed = "| `BEHIND_ONLY` | The candidate is conflict-free while `main` advanced | update the branch before merge |";
     let mutated = spec.replacen(current, regressed, 1);

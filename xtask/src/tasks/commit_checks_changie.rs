@@ -23,8 +23,7 @@ use std::fs;
 use std::path::Path;
 
 const CHECK: &str = "changie_fragment_staged";
-const RERUN: &str =
-    "cargo xtask gates --tier commit --staged --gate changie_fragment_staged";
+const RERUN: &str = "cargo xtask gates --tier commit --staged --gate changie_fragment_staged";
 
 pub(super) fn run(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
     run_with_renderer(root, tree_oid, render_with_changie)
@@ -91,23 +90,16 @@ where
         }
     };
 
-    let relevant_changed: Vec<String> = changed
-        .into_iter()
-        .filter(|path| surface.is_input(path))
-        .collect();
+    let relevant_changed: Vec<String> =
+        changed.into_iter().filter(|path| surface.is_input(path)).collect();
     if relevant_changed.is_empty() {
-        return Ok(CommitCheckOutcome::Pass(
-            "no staged Changie inputs changed".to_string(),
-        ));
+        return Ok(CommitCheckOutcome::Pass("no staged Changie inputs changed".to_string()));
     }
 
     let mut findings = Vec::new();
     let mut affected = BTreeSet::new();
     let mut present_fragment_count = 0usize;
-    for path in relevant_changed
-        .iter()
-        .filter(|path| surface.is_fragment(path))
-    {
+    for path in relevant_changed.iter().filter(|path| surface.is_fragment(path)) {
         match staged::read_staged_path_text(root, path, Some(&tree_oid))? {
             StagedPathText::Absent => {}
             StagedPathText::Binary => {
@@ -144,10 +136,7 @@ where
 
     let temp = tempfile::tempdir().context("failed to create staged Changie render sandbox")?;
     let entries = staged::list_staged_entries(root, &tree_oid)?;
-    for entry in entries
-        .into_iter()
-        .filter(|entry| surface.is_input(&entry.path))
-    {
+    for entry in entries.into_iter().filter(|entry| surface.is_input(&entry.path)) {
         if entry.mode != "100644" && entry.mode != "100755" {
             return Ok(blocked(
                 format!(
@@ -194,17 +183,11 @@ where
         let destination = temp.path().join(safe_path);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create staged Changie directory {}",
-                    parent.display()
-                )
+                format!("failed to create staged Changie directory {}", parent.display())
             })?;
         }
         fs::write(&destination, text).with_context(|| {
-            format!(
-                "failed to materialize staged Changie input `{}`",
-                entry.path
-            )
+            format!("failed to materialize staged Changie input `{}`", entry.path)
         })?;
     }
 
