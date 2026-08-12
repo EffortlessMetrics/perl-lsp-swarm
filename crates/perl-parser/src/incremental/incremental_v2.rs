@@ -401,17 +401,13 @@ impl IncrementalParserV2 {
             return None;
         }
 
-        let materialized_tree = self.materialize_advanced_reuse_tree(&new_tree, &replacements);
-        if materialized_tree != new_tree {
-            self.materialized_reuse_nodes = 0;
-            return None;
-        }
+        self.materialized_reuse_nodes = replacements.values().map(Vec::len).sum();
 
         self.reused_nodes = analysis_result.reused_nodes;
         self.reparsed_nodes = analysis_result.total_new_nodes - analysis_result.reused_nodes;
         self.advanced_reuse_selected = true;
         self.last_reuse_analysis = Some(analysis_result);
-        Some(materialized_tree)
+        Some(new_tree)
     }
 
     fn collect_materializable_reuse(
