@@ -49,23 +49,65 @@ jobs:
           cargo fmt --all -- --check
           git diff --check
 
-      - name: Run focused update-status unit tests
-        run: cargo test -p xtask --locked update_status
-
-      - name: Prove full regeneration discovers workspace lib tests once
+      - name: Prove cold full regeneration discovers workspace lib tests once
         run: |
           set -euo pipefail
           cargo run -p xtask --locked -- update-status --write \
             2>&1 | tee target/agent-status-full.log
-          test "$(grep -c '\[update-status\] running: cargo test --workspace --lib --exclude tree-sitter-perl -- --list' target/agent-status-full.log)" -eq 1
+          STATUS_LOG=target/agent-status-full.log python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          lines = Path(os.environ["STATUS_LOG"]).read_text(encoding="utf-8").splitlines()
+          matches = [
+              line
+              for line in lines
+              if "[update-status] running:" in line
+              and "cargo" in line
+              and "test" in line
+              and "--workspace" in line
+              and "--lib" in line
+              and "--exclude" in line
+              and "tree-sitter-perl" in line
+              and "--list" in line
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one workspace lib-test discovery, found {len(matches)}: {matches!r}"
+              )
+          PY
           git diff --name-only -z -- docs | xargs -0 -r git checkout --
+
+      - name: Run focused update-status unit tests
+        run: cargo test -p xtask --locked update_status
 
       - name: Prove tests-only retains one best-effort authority
         run: |
           set -euo pipefail
           cargo run -p xtask --locked -- update-status --write --only tests \
             2>&1 | tee target/agent-status-tests.log
-          test "$(grep -c '\[update-status\] running: cargo test --workspace --lib --exclude tree-sitter-perl -- --list' target/agent-status-tests.log)" -eq 1
+          STATUS_LOG=target/agent-status-tests.log python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          lines = Path(os.environ["STATUS_LOG"]).read_text(encoding="utf-8").splitlines()
+          matches = [
+              line
+              for line in lines
+              if "[update-status] running:" in line
+              and "cargo" in line
+              and "test" in line
+              and "--workspace" in line
+              and "--lib" in line
+              and "--exclude" in line
+              and "tree-sitter-perl" in line
+              and "--list" in line
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one workspace lib-test discovery, found {len(matches)}: {matches!r}"
+              )
+          PY
           git checkout -- docs/project/status/tests.md
 
       - name: Package exact source candidate
