@@ -1,0 +1,112 @@
+name: Semantic port adapter rebuild runner 6846
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild-adapters:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      BASE_HEAD: __BASE_HEAD__
+      OLD_CHILD_HEAD: 0e8eb95f3338a9861d3c71034063783a90da87f1
+      PATCH_SHA256: 1babe12619f9063477726a28c4b120cfff15fda9e5f620580621152093fae00b
+    steps:
+      - name: Check out patch authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/semantic-port-adapters-runner-6846
+          path: patch-source
+          persist-credentials: false
+
+      - name: Check out exact semantic-port base
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/semantic-provider-port-6816
+          path: work
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify base and reconstruct exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C work rev-parse HEAD)" = "$BASE_HEAD"
+          cat patch-source/.github/semantic-port-adapters-patch/part-* > "$RUNNER_TEMP/semantic-port-adapters.patch"
+          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/semantic-port-adapters.patch" | sha256sum --check --strict
+
+      - name: Apply adapter rebuild
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          git apply --index "$RUNNER_TEMP/semantic-port-adapters.patch"
+          git diff --cached --check
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Format adapter rebuild
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 fmt --all 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          cargo +1.95.0 fmt --all -- --check 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          git add -A
+          git diff --cached --check
+
+      - name: Compile adapter targets
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 check --locked -p perl-lsp-rs-core --all-targets 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+
+      - name: Test adapter public contract
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 test --locked -p perl-lsp-rs-core --test semantic_port_adapters 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          cargo +1.95.0 test --locked -p perl-lsp-rs-core --all-targets semantic_port 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+
+      - name: Verify adapter file policy
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 run --locked -p xtask -- check-file-policy 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+
+      - name: Upload adapter transcript
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semantic-port-adapters-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/semantic-port-adapters.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Rewrite child branch onto the verified base
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          remote_head="$(git ls-remote origin refs/heads/agent/semantic-provider-adapters-6817 | awk '{print $1}')"
+          test "$remote_head" = "$OLD_CHILD_HEAD"
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "feat(semantic-port): adapt current fact producers"
+          git push \
+            --force-with-lease=refs/heads/agent/semantic-provider-adapters-6817:$OLD_CHILD_HEAD \
+            origin HEAD:agent/semantic-provider-adapters-6817
