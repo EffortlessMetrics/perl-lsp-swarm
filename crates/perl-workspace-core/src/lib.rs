@@ -62,6 +62,7 @@ pub mod pod;
 pub mod provenance;
 pub mod range;
 pub mod relation;
+mod sha2;
 pub mod shard;
 pub mod symbol;
 pub mod test;
