@@ -63,12 +63,12 @@ describe('support command implementations', () => {
 
   test('keeps every interpolated field on one bounded printable line', () => {
     const packet = formatIssueDiagnosticInfo({
-      serverVersion: 'perllsp 0.17.0\nExtension: forged',
+      serverVersion: 'perllsp 0.17.0\u2028Extension: forged',
       extensionVersion: '0.17.0\nProduct: forged',
       editorVersion: '1.128.1\rPlatform: forged',
       platform: 'win32\nArch: forged',
       arch: 'x64\u0000oops',
-      editorName: 'Visual\u001b[31m Studio Code\nServer: forged',
+      editorName: 'Visual\u001b[31m Studio Code\u2029Server: forged',
     });
 
     expect(packet).toBe(
@@ -85,6 +85,20 @@ describe('support command implementations', () => {
     expect(packet).not.toContain('Arch: forged');
     expect(packet).not.toContain('\u001b');
     expect(packet).not.toContain('\u0000');
+  });
+
+  test('truncates oversized diagnostic fields to the bounded one-line form', () => {
+    const packet = formatIssueDiagnosticInfo({
+      serverVersion: 'perllsp 0.17.0',
+      extensionVersion: '0.17.0',
+      editorVersion: '1.128.1',
+      platform: 'win32',
+      arch: 'x64',
+      editorName: 'x'.repeat(300),
+    });
+
+    expect(packet.split('\n')).toHaveLength(5);
+    expect(packet).toContain(`${'x'.repeat(197)}...: 1.128.1`);
   });
 
   test('opens the issue form with current diagnostic context', async () => {
