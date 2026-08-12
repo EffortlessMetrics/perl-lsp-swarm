@@ -9,10 +9,7 @@ pub enum DapMode {
     /// Native adapter using `perl -d` directly.
     #[default]
     Native,
-    /// Legacy compatibility bridge proxying to `Perl::LanguageServer`.
+    /// Hidden compatibility selector for the default-off legacy bridge.
     #[doc(hidden)]
-    #[deprecated(
-        note = "legacy Perl::LanguageServer compatibility; use DapMode::Native instead"
-    )]
     Bridge,
 }
