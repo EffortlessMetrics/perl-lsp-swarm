@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_drift_authorities.v1.schema.json",
+  "title": "perl-lsp publication drift authorities v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "control",
+    "subjects",
+    "manifest",
+    "topology",
+    "public_claims",
+    "api_audit",
+    "runtime_bundle"
+  ],
+  "properties": {
+    "schema_version": { "const": "perl_lsp.publication_drift_authorities.v1" },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "control_sha", "control_tree_digest", "workflow_sha256"],
+      "properties": {
+        "schema_version": { "const": "perl_lsp.publication_drift_control.v1" },
+        "control_sha": { "$ref": "#/$defs/sha40" },
+        "control_tree_digest": { "$ref": "#/$defs/sha64" },
+        "workflow_sha256": { "$ref": "#/$defs/sha64" }
+      }
+    },
+    "subjects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["swarm", "public"],
+      "properties": {
+        "swarm": { "$ref": "#/$defs/subject" },
+        "public": { "$ref": "#/$defs/subject" }
+      }
+    },
+    "manifest": { "$ref": "#/$defs/authority" },
+    "topology": { "$ref": "#/$defs/authority" },
+    "public_claims": { "$ref": "#/$defs/authority" },
+    "api_audit": { "$ref": "#/$defs/authority" },
+    "runtime_bundle": {
+      "anyOf": [{ "$ref": "#/$defs/authority" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "sha40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "sha", "tree_digest", "version"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sha": { "$ref": "#/$defs/sha40" },
+        "tree_digest": { "$ref": "#/$defs/sha64" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "sha256": { "$ref": "#/$defs/sha64" }
+      }
+    }
+  }
+}
