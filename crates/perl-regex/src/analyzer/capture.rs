@@ -13,12 +13,12 @@ const NAMED_CAPTURE_MIN_VERSION: (u16, u16) = (5, 10);
 
 /// Stable identifier for one capture declaration in an analysis result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CaptureId(u32);
+pub struct CaptureId(usize);
 
 impl CaptureId {
     /// Return the zero-based declaration index.
     #[must_use]
-    pub const fn index(self) -> u32 {
+    pub const fn index(self) -> usize {
         self.0
     }
 }
@@ -55,6 +55,8 @@ pub enum CaptureNumberConfidence {
     Exact,
     /// Earlier interpolation or runtime-supplied pattern text can change numbering.
     DynamicUnknown,
+    /// Invalid, malformed, or exhausted structure prevents exact numbering.
+    StructuralUnknown,
 }
 
 /// Confidence that the capture name is valid for the supplied language profile.
@@ -200,7 +202,7 @@ impl CaptureAnalysisStatus {
 pub struct CaptureAnalysis {
     /// All ordinary and named capture declarations in source order.
     pub declarations: Vec<CaptureDeclaration>,
-    /// Named families in lexical name order; declarations remain source ordered.
+    /// Named families in first-declaration source order.
     pub named_families: Vec<NamedCaptureFamily>,
     /// Capture-specific diagnostics in source order.
     pub diagnostics: Vec<CaptureDiagnostic>,
@@ -226,6 +228,13 @@ enum OpenFrame {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberingUncertainty {
+    None,
+    Dynamic,
+    Structural,
+}
+
 pub(crate) fn analyze_captures(
     pattern: &str,
     modifiers: EffectiveModifiers,
@@ -236,6 +245,7 @@ pub(crate) fn analyze_captures(
     let mut diagnostics = Vec::new();
     let mut stack = Vec::new();
     let mut next_number = Some(1u32);
+    let mut numbering_uncertainty = NumberingUncertainty::None;
     let mut dynamic = false;
     let mut malformed = stream.malformed;
 
@@ -252,6 +262,7 @@ pub(crate) fn analyze_captures(
                         None,
                         CaptureSyntax::Unnamed,
                         CaptureProfileConfidence::Exact,
+                        number_confidence(numbering_uncertainty),
                         pattern.len(),
                     ));
                     stack.push(OpenFrame::Capture { declaration_index });
@@ -265,13 +276,14 @@ pub(crate) fn analyze_captures(
                         profile,
                         &mut diagnostics,
                     );
-                    if raw_name.is_empty() || !basic_name_shape(raw_name) {
+                    if raw_name.is_empty() || !structural_name_shape(raw_name) {
                         diagnostics.push(CaptureDiagnostic {
                             code: CaptureDiagnosticCode::InvalidName,
                             range: name_range,
                             required_perl_version: None,
                         });
                         next_number = None;
+                        numbering_uncertainty = NumberingUncertainty::Structural;
                         stack.push(OpenFrame::Other);
                         malformed = true;
                     } else {
@@ -284,6 +296,7 @@ pub(crate) fn analyze_captures(
                             Some(name_range),
                             syntax,
                             profile_confidence,
+                            number_confidence(numbering_uncertainty),
                             pattern.len(),
                         ));
                         stack.push(OpenFrame::Capture { declaration_index });
@@ -297,6 +310,7 @@ pub(crate) fn analyze_captures(
                     );
                     if profile_confidence == CaptureProfileConfidence::Incompatible {
                         next_number = None;
+                        numbering_uncertainty = NumberingUncertainty::Structural;
                     }
                     stack.push(OpenFrame::BranchReset {
                         base: next_number,
@@ -335,10 +349,14 @@ pub(crate) fn analyze_captures(
             } => {
                 dynamic = true;
                 next_number = None;
+                numbering_uncertainty = NumberingUncertainty::Dynamic;
             }
             RegexEventKind::Malformed(_) => {
                 malformed = true;
                 next_number = None;
+                if numbering_uncertainty == NumberingUncertainty::None {
+                    numbering_uncertainty = NumberingUncertainty::Structural;
+                }
             }
             _ => {}
         }
@@ -349,13 +367,6 @@ pub(crate) fn analyze_captures(
             && let Some(declaration) = declarations.get_mut(declaration_index)
         {
             declaration.confidence.source = CaptureSourceConfidence::Recovered;
-        }
-    }
-    if dynamic {
-        for declaration in &mut declarations {
-            if declaration.number.is_none() {
-                declaration.confidence.number = CaptureNumberConfidence::DynamicUnknown;
-            }
         }
     }
 
@@ -395,10 +406,10 @@ pub(crate) fn extract_named_captures(pattern: &str) -> Vec<CaptureGroup> {
             return None;
         }
         let index = usize::try_from(number).ok()?;
-        let pattern = pattern
+        let subpattern = pattern
             .get(declaration.body_range.start..declaration.body_range.end)?
             .to_string();
-        Some(CaptureGroup { name, index, pattern })
+        Some(CaptureGroup { name, index, pattern: subpattern })
     })
     .collect()
 }
@@ -411,10 +422,11 @@ fn new_declaration(
     name_range: Option<RegexRange>,
     syntax: CaptureSyntax,
     profile: CaptureProfileConfidence,
+    number_confidence: CaptureNumberConfidence,
     pattern_len: usize,
 ) -> CaptureDeclaration {
     CaptureDeclaration {
-        id: CaptureId(u32::try_from(index).unwrap_or(u32::MAX)),
+        id: CaptureId(index),
         name,
         number,
         group_range: RegexRange { start: open_range.start, end: pattern_len },
@@ -426,7 +438,7 @@ fn new_declaration(
             number: if number.is_some() {
                 CaptureNumberConfidence::Exact
             } else {
-                CaptureNumberConfidence::DynamicUnknown
+                number_confidence
             },
             profile,
         },
@@ -447,16 +459,27 @@ fn merge_branch_next(accumulated: Option<u32>, current: Option<u32>) -> Option<u
 }
 
 fn named_families(declarations: &[CaptureDeclaration]) -> Vec<NamedCaptureFamily> {
-    let mut families = BTreeMap::<String, Vec<CaptureId>>::new();
+    let mut family_indexes = BTreeMap::<String, usize>::new();
+    let mut families = Vec::<NamedCaptureFamily>::new();
     for declaration in declarations {
-        if let Some(name) = &declaration.name {
-            families.entry(name.clone()).or_default().push(declaration.id);
-        }
+        let Some(name) = &declaration.name else {
+            continue;
+        };
+        let family_index = match family_indexes.get(name).copied() {
+            Some(index) => index,
+            None => {
+                let index = families.len();
+                family_indexes.insert(name.clone(), index);
+                families.push(NamedCaptureFamily {
+                    name: name.clone(),
+                    declarations: Vec::new(),
+                });
+                index
+            }
+        };
+        families[family_index].declarations.push(declaration.id);
     }
     families
-        .into_iter()
-        .map(|(name, declarations)| NamedCaptureFamily { name, declarations })
-        .collect()
 }
 
 fn named_syntax(pattern: &str, name_range: RegexRange) -> CaptureSyntax {
@@ -516,9 +539,7 @@ fn form_version_confidence(
     diagnostics: &mut Vec<CaptureDiagnostic>,
 ) -> CaptureProfileConfidence {
     match profile.regex.perl_version {
-        Some(version)
-            if (version.major, version.minor) < NAMED_CAPTURE_MIN_VERSION =>
-        {
+        Some(version) if (version.major, version.minor) < NAMED_CAPTURE_MIN_VERSION => {
             diagnostics.push(CaptureDiagnostic {
                 code: CaptureDiagnosticCode::RequiresPerlVersion,
                 range,
@@ -531,7 +552,7 @@ fn form_version_confidence(
     }
 }
 
-fn basic_name_shape(name: &str) -> bool {
+fn structural_name_shape(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -539,11 +560,28 @@ fn basic_name_shape(name: &str) -> bool {
     if first.is_ascii_digit() || first == '-' || !(first == '_' || first.is_alphabetic()) {
         return false;
     }
-    chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+    chars.all(|ch| {
+        ch == '_'
+            || ch.is_alphanumeric()
+            || (!ch.is_ascii() && !ch.is_whitespace() && ch != '-')
+    })
 }
 
 fn conservative_unicode_name(name: &str) -> bool {
-    basic_name_shape(name)
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+}
+
+fn number_confidence(uncertainty: NumberingUncertainty) -> CaptureNumberConfidence {
+    match uncertainty {
+        NumberingUncertainty::None => CaptureNumberConfidence::Exact,
+        NumberingUncertainty::Dynamic => CaptureNumberConfidence::DynamicUnknown,
+        NumberingUncertainty::Structural => CaptureNumberConfidence::StructuralUnknown,
+    }
 }
 
 fn initial_mode(modifiers: EffectiveModifiers) -> RegexModeState {
