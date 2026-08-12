@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/schemas/vsix-inventory-transition.schema.json",
+  "title": "VSIX inventory transition declaration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "owner_issue",
+    "reason",
+    "base_baseline_sha256",
+    "candidate_baseline_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "owner_issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 12
+    },
+    "base_baseline_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "candidate_baseline_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
