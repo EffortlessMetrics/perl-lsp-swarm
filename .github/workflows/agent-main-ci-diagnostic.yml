@@ -1,0 +1,148 @@
+name: Agent Main CI Diagnostic
+
+on:
+  push:
+    branches:
+      - agent/diagnose-main-ci-20260811
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-main-ci-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: Capture exact rustfmt payload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Format and package exact changed files
+        run: |
+          set -euo pipefail
+          rm -rf target/agent-main-ci-format
+          mkdir -p target/agent-main-ci-format/files
+
+          cargo fmt --all
+          git diff --binary -- . ':!target' > target/agent-main-ci-format/rustfmt.patch
+          git diff --name-only -z -- . ':!target' > target/agent-main-ci-format/changed-paths.zlist
+          git diff --name-only -- . ':!target' > target/agent-main-ci-format/changed-paths.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import shutil
+
+          root = Path.cwd()
+          payload = root / "target/agent-main-ci-format"
+          paths = [
+              raw.decode("utf-8", errors="surrogateescape")
+              for raw in (payload / "changed-paths.zlist").read_bytes().split(b"\0")
+              if raw
+          ]
+          records = []
+          for relative in paths:
+              source = root / relative
+              destination = payload / "files" / relative
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(source, destination)
+              data = source.read_bytes()
+              records.append(
+                  {
+                      "path": relative,
+                      "bytes": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                  }
+              )
+          (payload / "manifest.json").write_text(
+              json.dumps(
+                  {
+                      "schema_version": 1,
+                      "source_sha": "${{ github.sha }}",
+                      "files": records,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cargo fmt --all -- --check
+
+      - name: Upload exact rustfmt payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-main-ci-format-${{ github.sha }}
+          path: target/agent-main-ci-format
+          if-no-files-found: error
+          retention-days: 3
+
+  status:
+    name: Capture update-status transcript
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-targets: false
+          shared-key: agent-main-ci-status-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run generator and preserve exact failure evidence
+        run: |
+          set -uo pipefail
+          rm -rf target/agent-main-ci-status
+          mkdir -p target/agent-main-ci-status
+
+          set +e
+          cargo run -p xtask -- update-status --write \
+            > >(tee target/agent-main-ci-status/stdout.log) \
+            2> >(tee target/agent-main-ci-status/stderr.log >&2)
+          status=$?
+          set -e
+
+          printf '%s\n' "$status" > target/agent-main-ci-status/exit-code.txt
+          git diff --name-status > target/agent-main-ci-status/diff-name-status.txt
+          git ls-files --others --exclude-standard > target/agent-main-ci-status/untracked.txt
+          git status --short > target/agent-main-ci-status/git-status.txt
+          df -h > target/agent-main-ci-status/disk.txt
+          printf '%s\n' '${{ github.sha }}' > target/agent-main-ci-status/source-sha.txt
+
+      - name: Upload exact update-status evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-main-ci-status-${{ github.sha }}
+          path: target/agent-main-ci-status
+          if-no-files-found: error
+          retention-days: 3
