@@ -9,6 +9,7 @@ const CLEAN: &str = include_str!("../../../fixtures/publication_drift/clean.json
 const DRIFT: &str =
     include_str!("../../../fixtures/publication_drift/windows_arm64_target_drift.json");
 const NOT_PROVEN: &str = include_str!("../../../fixtures/publication_drift/missing_manifest.json");
+const WINDOWS_PATH: &str = include_str!("../../../fixtures/publication_drift/windows_path.json");
 const AUTHORITY: &[u8] =
     include_bytes!("../../../fixtures/publication_drift/publication_manifest.v1.json");
 const MANIFEST_SCHEMA: &str = include_str!("../../../schemas/publication_manifest.v1.schema.json");
@@ -46,6 +47,11 @@ fn emitted_clean_drift_and_not_proven_receipts_conform_to_schema() -> Result<()>
         ("clean", receipt_value(CLEAN, fixture_authority()?)?, "clean"),
         ("drift", receipt_value(DRIFT, fixture_authority()?)?, "drift"),
         ("not_proven", receipt_value(NOT_PROVEN, AuthoritySource::Missing)?, "not_proven"),
+        (
+            "invalid_path_not_proven",
+            receipt_value(WINDOWS_PATH, fixture_authority()?)?,
+            "not_proven",
+        ),
     ];
 
     for (name, receipt, expected_verdict) in cases {
@@ -136,7 +142,10 @@ fn receipt_value(raw: &str, authority: AuthoritySource) -> Result<Value> {
 
 fn fixture_authority() -> Result<AuthoritySource> {
     let document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: sha256_hex(AUTHORITY) }))
+    Ok(AuthoritySource::Loaded(LoadedManifest {
+        document,
+        actual_sha256: sha256_hex(AUTHORITY),
+    }))
 }
 
 fn validate_schema_document(value: &Value, schema: &Value, context: &str) -> Result<()> {
