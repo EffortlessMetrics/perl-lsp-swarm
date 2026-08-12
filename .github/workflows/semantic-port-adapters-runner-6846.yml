@@ -15,7 +15,7 @@ jobs:
     env:
       BASE_HEAD: d19c114a7de42488612121fd91264700be0da477
       OLD_CHILD_HEAD: 0e8eb95f3338a9861d3c71034063783a90da87f1
-      PATCH_SHA256: 1babe12619f9063477726a28c4b120cfff15fda9e5f620580621152093fae00b
+      PATCH_SHA256: f3e503b4766208e2e61b91077b5d534470c74494f39cf1e04ab2760e26743d57
     steps:
       - name: Check out patch authority
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -48,25 +48,14 @@ jobs:
         run: |
           set -euo pipefail
           git apply --3way --index "$RUNNER_TEMP/semantic-port-adapters.patch"
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs')
-          text = path.read_text(encoding='utf-8')
-          old = '''        authority: ProviderCompletenessAuthorityReceipt {
-              capability,
-              project_identity: request.context.project_identity.clone(),
-          '''
-          new = '''        authority: ProviderCompletenessAuthorityReceipt {
-              capability,
-              query_kind: request.kind.clone(),
-              subject: request.subject.clone(),
-              project_identity: request.context.project_identity.clone(),
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'completeness authority literal changed: {text.count(old)}')
-          path.write_text(text.replace(old, new), encoding='utf-8')
-          PY
-          git add -A
+          printf '%s\n' \
+            .changes/unreleased/product-6846-Added-210342.yaml \
+            crates/perl-lsp-rs-core/src/providers/mod.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
+            crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs \
+            | sort > "$RUNNER_TEMP/expected-adapter-paths"
+          git diff --cached --name-only | sort > "$RUNNER_TEMP/actual-adapter-paths"
+          diff -u "$RUNNER_TEMP/expected-adapter-paths" "$RUNNER_TEMP/actual-adapter-paths"
           git diff --cached --check
 
       - name: Install Rust 1.95
@@ -82,8 +71,15 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo +1.95.0 fmt --all 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          unexpected_paths="$(git status --short | awk '{print $2}' | grep -Ev '^(.changes/unreleased/product-6846-Added-210342.yaml|crates/perl-lsp-rs-core/src/providers/mod.rs|crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs|crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs)$' || true)"
+          test -z "$unexpected_paths"
+          git add \
+            .changes/unreleased/product-6846-Added-210342.yaml \
+            crates/perl-lsp-rs-core/src/providers/mod.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
+            crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs
+          test -z "$(git diff --name-only)"
           cargo +1.95.0 fmt --all -- --check 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
-          git add -A
           git diff --cached --check
 
       - name: Compile adapter targets
@@ -93,6 +89,14 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo +1.95.0 check --locked -p perl-lsp-rs-core --all-targets 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+
+      - name: Lint adapter targets
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 clippy --locked -p perl-lsp-rs-core --all-targets -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
 
       - name: Test adapter public contract
         shell: bash
@@ -130,6 +134,8 @@ jobs:
           git config user.name "EffortlessSteven"
           git config user.email "git@effortlesssteven.com"
           git commit -m "feat(semantic-port): adapt current fact producers"
+          test "$(git rev-parse HEAD^)" = "$BASE_HEAD"
+          test -z "$(git status --porcelain)"
           git push \
             --force-with-lease=refs/heads/agent/semantic-provider-adapters-6817:$OLD_CHILD_HEAD \
             origin HEAD:agent/semantic-provider-adapters-6817
