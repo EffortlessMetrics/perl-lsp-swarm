@@ -131,9 +131,10 @@ pub fn extract_regex_family_geometry(
         | RegexFamilyOperator::QuoteRegex => None,
     };
 
-    let replacement = replacement_scan
-        .map(|scan| body_geometry(text, source_start, scan))
-        .transpose()?;
+    let replacement = match replacement_scan {
+        Some(scan) => Some(body_geometry(text, source_start, scan)?),
+        None => None,
+    };
     let modifiers_start = replacement_scan.map_or(pattern_scan.rest_offset, |scan| scan.rest_offset);
     let modifiers_end = modifier_end(text, modifiers_start);
     let operator_range = absolute_range(source_start, 0, prefix.len)?;
@@ -310,7 +311,18 @@ fn scan_unpaired_body(
     delimiter: char,
 ) -> ScannedBody {
     let mut escaped = false;
-    for (relative, ch) in text.get(body_start..).unwrap_or_default().char_indices() {
+    let Some(rest) = text.get(body_start..) else {
+        return ScannedBody {
+            open_offset: shared_open_offset,
+            body_start,
+            body_end: body_start,
+            close_offset: None,
+            rest_offset: body_start,
+            delimiter,
+        };
+    };
+
+    for (relative, ch) in rest.char_indices() {
         let Some(offset) = body_start.checked_add(relative) else {
             break;
         };
@@ -351,14 +363,19 @@ fn body_geometry(
     scan: ScannedBody,
 ) -> Option<DelimitedBodyGeometry> {
     let delimiter_len = scan.delimiter.len_utf8();
-    let opening_delimiter_range =
-        absolute_range(source_start, scan.open_offset, scan.open_offset.checked_add(delimiter_len)?)?;
-    let closing_delimiter_range = scan
-        .close_offset
-        .map(|offset| {
-            absolute_range(source_start, offset, offset.checked_add(delimiter_len)?)
-        })
-        .transpose()?;
+    let opening_delimiter_range = absolute_range(
+        source_start,
+        scan.open_offset,
+        scan.open_offset.checked_add(delimiter_len)?,
+    )?;
+    let closing_delimiter_range = match scan.close_offset {
+        Some(offset) => Some(absolute_range(
+            source_start,
+            offset,
+            offset.checked_add(delimiter_len)?,
+        )?),
+        None => None,
+    };
 
     Some(DelimitedBodyGeometry {
         text: text.get(scan.body_start..scan.body_end)?.to_string(),
