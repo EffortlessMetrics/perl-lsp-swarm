@@ -102,6 +102,7 @@ class TargetPlan:
 class AuthoritySubject:
     """Exact bytes and identity used to construct a proof plan."""
 
+    root: Path
     path: Path
     content: bytes
     sha256: str
@@ -396,6 +397,13 @@ def _absolute_under_root(root: Path, path: Path) -> Path:
 
 
 def _reject_symlink_components(root: Path, path: Path) -> None:
+    try:
+        root_metadata = root.lstat()
+    except FileNotFoundError:
+        root_metadata = None
+    if root_metadata is not None and stat.S_ISLNK(root_metadata.st_mode):
+        raise ValueError(f"symlink component is not allowed: {root}")
+
     relative = path.relative_to(root)
     current = root
     for component in relative.parts:
@@ -419,6 +427,7 @@ def read_authority(root: Path, path: Path, label: str) -> AuthoritySubject:
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueError(f"parser integration {label} is not a regular file: {absolute}")
     return AuthoritySubject(
+        root=root,
         path=absolute,
         content=content,
         sha256=hashlib.sha256(content).hexdigest(),
@@ -426,11 +435,34 @@ def read_authority(root: Path, path: Path, label: str) -> AuthoritySubject:
 
 
 def assert_authority_unchanged(subject: AuthoritySubject) -> None:
-    current = read_authority(subject.path.parent, subject.path, "authority")
+    current = read_authority(subject.root, subject.path, "authority")
     if current.content != subject.content:
         raise ValueError(
             f"parser integration authority changed during execution: {subject.path}"
         )
+
+
+def validate_receipt_subject(
+    root: Path,
+    receipt_path: Path,
+    manifest_path: Path,
+    lock_path: Path,
+) -> None:
+    """Require a parser receipt for the exact manifest and lock under test."""
+
+    receipt = read_authority(root, receipt_path, "receipt")
+    manifest = read_authority(root, manifest_path, "target manifest")
+    lock = read_authority(root, lock_path, "identity lock")
+    try:
+        payload: Any = json.loads(receipt.content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot decode parser integration receipt: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("parser integration receipt must be an object")
+    if payload.get("manifest_sha256") != manifest.sha256:
+        raise ValueError("parser integration receipt manifest subject does not match")
+    if payload.get("lock_sha256") != lock.sha256:
+        raise ValueError("parser integration receipt lock subject does not match")
 
 
 def prepare_output_path(

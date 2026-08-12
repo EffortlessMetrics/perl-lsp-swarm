@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -465,6 +466,57 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
 
         self.assertEqual(returncode, 2)
         self.assertFalse((outside / "receipt.json").exists())
+
+    def test_authority_parent_replacement_cannot_rebind_subject_root(self) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks are unavailable")
+        root, manifest, _lock, _receipt = self.authority_root()
+        subject = runner.read_authority(root, manifest, "target manifest")
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        replacement = outside / "replacement-ci"
+        replacement.mkdir()
+        (replacement / manifest.name).write_bytes(manifest.read_bytes())
+        original_parent = manifest.parent
+        moved_parent = root / ".ci-original"
+        original_parent.rename(moved_parent)
+        try:
+            os.symlink(replacement, original_parent, target_is_directory=True)
+        except OSError as error:
+            moved_parent.rename(original_parent)
+            self.skipTest(f"symlink creation is unavailable: {error}")
+
+        def restore_parent() -> None:
+            if original_parent.is_symlink():
+                original_parent.unlink()
+            if moved_parent.exists():
+                moved_parent.rename(original_parent)
+
+        self.addCleanup(restore_parent)
+        with self.assertRaisesRegex(ValueError, "symlink component"):
+            runner.assert_authority_unchanged(subject)
+
+    def test_receipt_subject_validation_rejects_missing_receipt(self) -> None:
+        root, manifest, lock, receipt = self.authority_root()
+
+        with self.assertRaisesRegex(ValueError, "cannot read parser integration receipt"):
+            runner.validate_receipt_subject(root, receipt, manifest, lock)
+
+    def test_receipt_subject_validation_rejects_stale_receipt(self) -> None:
+        root, manifest, lock, receipt = self.authority_root()
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(
+            json.dumps(
+                {
+                    "manifest_sha256": "0" * 64,
+                    "lock_sha256": "0" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "manifest subject does not match"):
+            runner.validate_receipt_subject(root, receipt, manifest, lock)
 
     def test_checked_in_manifest_matches_exact_identity_lock(self) -> None:
         plans = runner.load_targets(runner.TARGETS_PATH)
