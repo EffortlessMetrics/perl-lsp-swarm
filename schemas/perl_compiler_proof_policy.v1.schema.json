@@ -44,8 +44,7 @@
     },
     "closure_authority": {
       "type": "string",
-      "minLength": 1,
-      "pattern": "\\S"
+      "pattern": "^issue:#[1-9][0-9]*/[a-z0-9][a-z0-9_-]*$"
     },
     "proof_classes": {
       "type": "array",
@@ -81,6 +80,21 @@
       },
       "then": {
         "required": ["closure_authority"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "complete": {
+            "const": false
+          }
+        },
+        "required": ["complete"]
+      },
+      "then": {
+        "not": {
+          "required": ["closure_authority"]
+        }
       }
     }
   ],
