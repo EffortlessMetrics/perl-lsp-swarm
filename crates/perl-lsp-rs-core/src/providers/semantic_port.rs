@@ -1,24 +1,35 @@
 //! Transport-neutral semantic query contract for provider implementations.
 //!
-//! The contract keeps four identities separate:
+//! The contract keeps five identities separate:
 //!
 //! - the request subject that selects a target;
 //! - selector facts that establish what is at that subject;
 //! - value facts returned by the provider;
-//! - supporting facts that justify a qualified or no-value outcome.
+//! - supporting facts that justify a qualified or no-value outcome;
+//! - caller-owned live controls that validate terminal claims after the provider returns.
 //!
 //! One canonical fact set supplies both values and evidence. Exact empty requires
-//! a separate request-bound completeness grant; generic evidence metadata cannot
-//! manufacture producers, generations, provenance, confidence, or completeness.
-//! Retained results serialize deterministically but intentionally cannot be
-//! deserialized without going through a versioned receipt validator.
+//! a capability-private grant issued from a concrete denominator snapshot; generic
+//! evidence metadata cannot manufacture producers, generations, provenance,
+//! confidence, or completeness. Provider implementations return unchecked drafts,
+//! while [`execute_provider_query`] alone creates a checked result against the
+//! original request and control. Retained results serialize deterministically but
+//! intentionally cannot be deserialized without a versioned receipt validator.
 
 mod model;
 mod result;
 
-pub use model::*;
+pub use model::{
+    NoopProviderQueryControl, ProviderCancellationState,
+    ProviderCompletenessAuthorityReceipt, ProviderCompletenessGrant,
+    ProviderFactGenerationScope, ProviderIdentity, ProviderQueryCapability,
+    ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline, ProviderQueryFact,
+    ProviderQueryFactRole, ProviderQueryKind, ProviderQueryRequest, ProviderQuerySubject,
+    ProviderReadinessRequirement, ProviderReadinessState,
+};
 pub use result::*;
 
+use model::{facts_are_related, semantic_provenance_is_exact};
 use perl_semantic_facts::{FactId, SemanticFactEnvelope};
 use std::error::Error;
 use std::fmt;
@@ -47,7 +58,7 @@ pub enum ProviderQueryContractError {
     InvalidCompletenessGrant,
     /// Exact empty lacks a separate request-bound completeness grant.
     MissingCompletenessGrant,
-    /// A non-empty result supplied an unrelated completeness grant.
+    /// A non-empty result supplied unrelated completeness authority.
     UnexpectedCompletenessGrant,
     /// A retained trace names a different provider surface.
     TraceSurfaceMismatch,
@@ -65,13 +76,21 @@ impl fmt::Display for ProviderQueryContractError {
                 formatter.write_str("provider query symbol key is malformed")
             }
             Self::MalformedFact(fact_id) => {
-                write!(formatter, "provider fact {} is structurally malformed", fact_id.0)
+                write!(
+                    formatter,
+                    "provider fact {} is structurally malformed",
+                    fact_id.0
+                )
             }
             Self::DuplicateFactId(fact_id) => {
                 write!(formatter, "duplicate provider fact identity {}", fact_id.0)
             }
             Self::FactDoesNotMatchSubject(fact_id) => {
-                write!(formatter, "provider fact {} does not match query subject", fact_id.0)
+                write!(
+                    formatter,
+                    "provider fact {} does not match query subject",
+                    fact_id.0
+                )
             }
             Self::MissingPositionSelector => {
                 formatter.write_str("position query has no cursor-bound selector fact")
@@ -82,7 +101,11 @@ impl fmt::Display for ProviderQueryContractError {
                 fact_id.0
             ),
             Self::FactKindDoesNotMatchRequest(fact_id) => {
-                write!(formatter, "provider fact {} does not match query family", fact_id.0)
+                write!(
+                    formatter,
+                    "provider fact {} does not match query family",
+                    fact_id.0
+                )
             }
             Self::InvalidCompletenessGrant => {
                 formatter.write_str("provider completeness grant is invalid for this request")
@@ -100,7 +123,10 @@ impl fmt::Display for ProviderQueryContractError {
                 formatter.write_str("provider result is bound to a different request")
             }
             Self::InvalidOutcomeEvidence(outcome) => {
-                write!(formatter, "provider outcome {outcome:?} has contradictory evidence")
+                write!(
+                    formatter,
+                    "provider outcome {outcome:?} has contradictory evidence"
+                )
             }
         }
     }
