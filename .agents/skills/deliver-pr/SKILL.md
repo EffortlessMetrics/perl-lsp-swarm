@@ -1,22 +1,25 @@
 ---
 name: deliver-pr
-description: Run one coherent claim through its named Codex route in one persistent claim-local lane, preserving context across review, repair, proof, live integration, and closeout.
+description: Run one coherent claim through its named Codex route in one persistent claim-local lane, preserving context across issue, proof, build, candidate-bound local proof, review, live integration, and closeout.
 ---
 
 # Deliver PR
 
 This is the lane-root flow for one coherent acceptance-and-rollback claim. Reconstruct
-only that lane's issue, governing contract, proof, branch/worktree, candidate, PR,
-substantive review, live integration, explicit prerequisites, and closeout state.
+only that lane's issue, governing contract, proof, branch/worktree, candidate, local
+candidate result, PR, substantive review, live integration, explicit prerequisites, and
+closeout state.
 
 The lane root runs the route. It is not a stage-specific reviewer, repairer, proof
 runner, or finisher. Keep the same lane context and worktree across useful transitions.
 Invoke the next named skill from the current skill's result instead of returning an
 intermediate packet so another agent can rediscover the claim.
 
-Use `$orchestrate-work` for focused evidence lenses where useful. Those workers return
-evidence to this lane; they do not replace the lane root or become rival candidates.
-Keep one writer on the current candidate at a time.
+A campaign or claim orchestrator ingests `$change-graph` once before entering this flow.
+Do not reload the whole graph at every transition. Use `$orchestrate-work` for focused
+independent evidence where useful; those workers return evidence to this lane and do not
+replace the lane root or become rival candidates. Keep one writer on the current
+candidate at a time.
 
 Mentioning one issue or PR does not make the campaign root a leaf worker. A campaign
 root normally delegates a substantial claim as one whole-flow `$deliver-pr` lane. A
@@ -32,9 +35,13 @@ unrelated worktrees as a routine ownership check.
 The durable unit is the claim lane, not the current skill.
 
 ```text
+candidate becomes coherent
+→ same lane `$prove-before-push`
+→ same lane `$publish-pr`
+
 review finds a candidate-owned defect
 → same lane `$address-review-comments` or `$build-candidate`
-→ same lane affected proof
+→ same lane affected proof / `$prove-before-push` where publication state changed
 → same lane affected `$final-challenge` and `$review-pr`
 
 review is current
@@ -48,10 +55,11 @@ integration is ready
 → same lane `$merge-reconcile` when authorized
 ```
 
-Do not close, replace, or cold-start the lane merely to change from review to repair,
-repair to proof, proof to review, or review to integration. A lane may change from
-read-only review activity to candidate mutation when the accepted result and its parent
-brief grant mutation authority. Focused child reviewers remain read-only.
+Do not close, replace, or cold-start the lane merely to change from issue to proof,
+review to repair, repair to local proof, local proof to publication, proof to review, or
+review to integration. A lane may change from read-only activity to candidate mutation
+when the accepted result and parent brief grant mutation authority. Focused child
+reviewers remain read-only unless explicitly promoted inside their same context.
 
 When a remote-owned wait pauses the route, return `IN_FLIGHT` with the exact wake event.
 The campaign root should resume this same lane when the runtime still retains it. When
@@ -63,7 +71,7 @@ invent a second candidate.
 Enter at the earliest absent or stale useful judgment:
 
 ```text
-concern, issue, owner, scope, or plan unsettled
+concern, issue, owner, scope, acceptance, or plan unsettled
 → `$prepare-issue`
 
 intent settled, proof absent or weak
@@ -72,7 +80,13 @@ intent settled, proof absent or weak
 reviewed proof or implementation candidate needs completion
 → `$build-candidate`
 
-publication-ready candidate or existing PR needs convergence
+coherent un-published candidate needs candidate-bound local proof
+→ `$prove-before-push`
+
+locally proven candidate needs publication
+→ `$publish-pr`
+
+existing PR needs convergence
 → `$finish-pr`
 
 merged or deliberately closed but unreconciled
@@ -89,12 +103,19 @@ work merely to manufacture chronology.
 
 Every invoked skill owns its immediate procedure and returns a typed result. Continue in
 this lane according to that skill's `Routes`, `Valid exits`, or equivalent next-step
-table. The common transitions are:
+table.
 
 | Result | Same-lane next action |
 | --- | --- |
 | `PROOF_READY` / `ALREADY_PROVEN` | `$build-candidate` |
-| `CANDIDATE_READY` | publication/convergence through `$finish-pr` |
+| `CANDIDATE_READY` | `$prove-before-push` |
+| `LOCAL_CANDIDATE_PROVEN` | `$publish-pr` |
+| `REMOTE_ONLY_PROOF_REQUIRED` | `$publish-pr` only through an explicit draft/remote-proof boundary |
+| `CANDIDATE_PRODUCT_OR_TEST_FAILURE` | `$build-candidate`, then repeat `$prove-before-push` |
+| `RIPR_GAP_REQUIRES_REPAIR` | `$improve-test-suite` or `$build-candidate`, then repeat affected proof |
+| `WEAK_OR_CIRCULAR_PROOF` | `$prepare-proof`, then resume `$build-candidate` |
+| `INSTRUMENT_NOT_PROVEN` | repair/bootstrap the named instrument or preserve the exact boundary |
+| `PR_PUBLISHED_READY` / `PR_RESUMED` | `$finish-pr` at current findings/review state |
 | `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` | `$address-review-comments`; use `$build-candidate` for implementation work |
 | `FINDINGS_REPAIRED_OR_DISPOSITIONED` | affected proof, `$final-challenge`, affected `$review-pr` |
 | `WEAK_PROOF` / `PROOF_REVISE` | `$prepare-proof`, then resume the requesting route |
@@ -105,12 +126,13 @@ table. The common transitions are:
 | `PR_IN_FLIGHT` / `PENDING_REMOTE` | return `IN_FLIGHT` with the wake event |
 | `BLOCKED_BY_PREREQUISITE` | return the exact prerequisite without taking unrelated ownership |
 | `SUPERSEDED_OR_CLOSE` | `$merge-reconcile` when authorized, otherwise return durable closeout |
+| `RETURN_TO_ISSUE` / material premise change | `$prepare-issue` |
 | `NOT_PROVEN` | resolve the named missing evidence when possible; otherwise return the exact boundary |
 
-Do not stop after a review packet when the repair is bounded, candidate-owned, within
-the accepted claim, and authorized. Do not treat formatting or `git diff --check` as
-behavioral proof. Do not call a published repair solid while affected proof or review is
-`NOT_PROVEN`.
+Do not stop after a review or proof packet when the next action is bounded,
+candidate-owned, within the accepted claim, and authorized. Do not treat formatting or
+`git diff --check` as behavioral proof. Do not call a published repair solid while
+affected proof, local candidate result, or review is `NOT_PROVEN`.
 
 ## Run the route through claim-local orchestration
 
@@ -121,11 +143,15 @@ For each current transition:
 3. Require children to consume the named `$skill` when one is supplied.
 4. Join compact evidence and contradictions; do not adopt a child verdict as approval.
 5. Send accepted mutations through this lane's one candidate writer.
-6. Run the smallest affected proof that can falsify the changed seam.
-7. Publish useful durable facts at the native GitHub boundary.
-8. Continue in this lane through the named next/backward route.
-9. Return only at a real remote wait, terminal disposition, named prerequisite, durable
-   hazard, external-action boundary, or precise `NOT_PROVEN` boundary.
+6. Encode durable issue/spec/proof/Changie/PR state at the first boundary where another
+   competent context would otherwise need to rediscover it.
+7. After each coherent candidate commit, run the smallest affected proof and
+   `$prove-before-push` before ordinary publication or republishing a material repair.
+8. Publish useful durable facts at the native GitHub boundary; keep runtime topology and
+   ordinary transitions local.
+9. Continue in this lane through the named next/backward route.
+10. Return only at a real remote wait, terminal disposition, named prerequisite, durable
+    hazard, external-action boundary, or precise `NOT_PROVEN` boundary.
 
 A whole-flow lane may recursively orchestrate focused workers within this claim. Leaf
 workers may not select unrelated work or widen into lane ownership unless their brief
@@ -152,40 +178,24 @@ material integration event. A head SHA change alone does not end the lane.
 Use direct issue or PR comments for material cross-lane facts. Do not create
 reservations, overlap ledgers, central lane state, or routine sibling-PR surveillance.
 
-## Traceable intended route
+## Durable state boundary
 
-When another context will need the route and it is not already obvious, publish one
-compact declaration on the controlling issue or PR:
+Follow `$change-graph`:
 
-```text
-Route
-- Goal / parent: <umbrella or durable outcome>
-- Claim: <one acceptance-and-rollback claim>
-- Entry flow: `$deliver-pr`
-- Current useful transition: <named skill or external wait>
-- Why: <material missing judgment>
-- Durable subject: <issue / PR / merged commit>
-- Resume when: <material wake event, if any>
-```
+- issue body/comments own the current problem, research, plan, decisions, and
+  prerequisites;
+- `.spec/`, ADR, policy, schema, or contract owns settled cross-PR/public invariants;
+- tests, fixtures, and oracles own executable discrimination;
+- `.changes/unreleased/` owns user-visible disposition while context is fresh;
+- the local candidate packet owns exact committed-range affected proof, Changie, RIPR,
+  and limitations;
+- the PR body owns the cumulative candidate review index;
+- review threads/submitted review own findings, dispositions, and cumulative judgment;
+- checks own current-head remote integration facts;
+- merge/issue closeout owns landed effect and residual work.
 
-Update only when the material route changes. This is a resumability aid, not a stage
-record, lease, or per-step status protocol.
-
-## Useful GitHub boundaries
-
-Publish a durable issue/PR comment, inline review, submitted review, or finding
-disposition when the information:
-
-- changes claim, authority, accepted plan, proof obligation, route, prerequisite,
-  support, risk, or rollback meaning;
-- is source-backed evidence another context would otherwise rediscover;
-- is a localized review finding or evidence-backed disposition;
-- records a real external wait and its wake event;
-- provides a useful candidate-wide review, integration, merge, or closeout synthesis.
-
-Keep agent identity, topology, liveness, retry order, provisional reasoning, raw logs,
-unchanged polls, and routine skill transitions runtime-local. Do not write lane state to
-a tracked file.
+Keep agent identity, topology, liveness, retry order, proof-token allocation, provisional
+reasoning, raw logs, unchanged polls, and routine skill transitions runtime-local.
 
 ## Remote-owned waits
 
@@ -203,15 +213,15 @@ owns the next action:
 ## Completion
 
 Return `RECONCILED`, `IN_FLIGHT`, `PARTIAL`, `SUPERSEDED`, `BLOCKED`, or
-`NOT_PROVEN`, naming what landed or remains, which evidence is current, the durable
-issue/PR subject, the current/next skill or wake event, and cleanup of lane-created
-worktrees/process groups when no longer needed.
+`NOT_PROVEN`, naming what landed or remains, which evidence is current, durable state
+written or deliberately omitted, the issue/PR subject, current/next skill or wake event,
+and cleanup of lane-created worktrees/process groups when no longer needed.
 
 ## What this establishes
 
 One persistent claim-local context follows a traceable provider-native route through
-issue, proof, candidate, review, integration, merge, and closeout without paying a new
-agent cold start at each skill boundary.
+issue, proof, candidate, local candidate verification, publication, review, integration,
+merge, and closeout without paying a new agent cold start at each skill boundary.
 
 ## What this does not establish
 
