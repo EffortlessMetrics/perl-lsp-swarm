@@ -2291,12 +2291,11 @@ print "ok" foreach @ys;
         let mut visited = 0usize;
         let control = SemanticTokensTraversalControl::unlimited();
         let mut traversal = TraversalState { control: &control, work_done: 0 };
-        let completed =
-            walk_ast_full_controlled(&ast, &mut traversal, &mut |_| {
-                visited += 1;
-                true
-            })
-            .unwrap_or_default();
+        let completed = walk_ast_full_controlled(&ast, &mut traversal, &mut |_| {
+            visited += 1;
+            true
+        })
+        .unwrap_or_default();
         assert!(completed);
         assert_eq!(visited, ast.count_nodes());
         Ok(())
