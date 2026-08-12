@@ -22,6 +22,9 @@ use perl_dap::model::{DebugSessionPacket, DebugSource};
 use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
 use perl_dap::session_plan::DebugSessionPlanBuilder;
 use perl_dap::{DapConfig, DapMode, DapServer, DapSocketBindError};
+use perl_lsp_rs_core::product_identity::{
+    BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
+};
 use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
 const DEFAULT_DAP_PORT: u16 = 13_603;
@@ -337,6 +340,15 @@ fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs
     }
 }
 
+fn write_runtime_identity(format: IdentityOutputFormat) -> anyhow::Result<()> {
+    let packet = BinaryIdentityPacketV1::embedded_dap(env!("CARGO_PKG_VERSION"));
+    match format {
+        IdentityOutputFormat::Human => write!(std::io::stdout(), "{}", packet.to_human())?,
+        IdentityOutputFormat::Json => writeln!(std::io::stdout(), "{}", packet.to_json()?)?,
+    }
+    Ok(())
+}
+
 /// Perl Debug Adapter Protocol server
 #[derive(Parser, Debug)]
 #[command(name = "perl-dap", version, about, long_about = None)]
@@ -375,7 +387,12 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let raw_args: Vec<String> = std::env::args().collect();
+    if let Some(format) = requested_identity_output(&raw_args) {
+        write_runtime_identity(format)?;
+        return Ok(());
+    }
+    let args = Args::parse_from(raw_args);
 
     // One-shot emit surfaces: these do not start a server. Write directly to
     // the stdout handle (rather than the print!/println! macros) so the shipped
@@ -443,6 +460,9 @@ mod tests {
     };
     use anyhow::Context as _;
     use clap::{CommandFactory, Parser};
+    use perl_lsp_rs_core::product_identity::{
+        BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
+    };
 
     /// A taken port must produce an actionable message, not `os error 98`.
     ///
@@ -621,6 +641,18 @@ mod tests {
     fn cli_rejects_removed_bridge_flag() {
         let result = Args::try_parse_from(["perl-dap", "--bridge"]);
         assert!(result.is_err(), "--bridge must be rejected by the shipped CLI");
+    }
+
+    #[test]
+    fn dap_identity_flags_select_the_shared_packet_without_starting_clap() {
+        let json_args = vec!["perl-dap".to_owned(), "--info".to_owned(), "--json".to_owned()];
+        let human_args = vec!["perl-dap".to_owned(), "--identity".to_owned()];
+        assert_eq!(requested_identity_output(&json_args), Some(IdentityOutputFormat::Json));
+        assert_eq!(requested_identity_output(&human_args), Some(IdentityOutputFormat::Human));
+
+        let packet = BinaryIdentityPacketV1::embedded_dap("0.18.0");
+        assert_eq!(packet.binary.role, BinaryRole::Dap);
+        assert_eq!(packet.binary.executable, "perl-dap");
     }
 
     #[test]
