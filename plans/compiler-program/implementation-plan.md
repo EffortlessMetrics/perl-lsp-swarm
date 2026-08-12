@@ -24,8 +24,7 @@ or provider-support claims:
 - human-owned [compiler facts](../../docs/project/status/compiler_facts.md)
   records bounded layer status;
 - [#2559](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2559),
-  its live subordinate issues and PRs, and current status ledgers own work
-  routing.
+  its re-queried live subordinate issues and PRs own work routing.
 
 ## Current state and claim boundary
 
@@ -35,12 +34,16 @@ HIR-body/PIR-A/EIR vocabulary. Phase 1 is complete historical context, not an
 active gate.
 
 L0-L6 HIR side graphs and Tooling PIR are `fixture-backed`; see
-[compiler facts](../../docs/project/status/compiler_facts.md). The canonical
-PIR-A body path now emits first-class `Branch`, `Loop`, `Return`,
-`LexicalRead`, and `StashRead` operations with focused fixtures. This establishes
-the operation families and their bounded lowering paths. It does not establish
-full Perl semantics, precise value merging, EIR, compiler-world completion, or
-broad provider cutover.
+[compiler facts](../../docs/project/status/compiler_facts.md). That human status
+page records first-class `Branch`, `Loop`, and `Return` lowering. The canonical
+[PIR-A lowering](../../crates/perl-parser-core/src/pir/lower.rs) and
+[body fixtures](../../crates/perl-parser-core/tests/pir_a_bodies_test.rs)
+independently prove bounded `LexicalRead` and `StashRead` lowering. Accepted
+PLSP-SPEC-0025 still reserves read-side lowering for later, and the human status
+page does not name it, so this implementation drift is explicit rather than
+attributed to either authority. The fixtures do not establish full Perl
+semantics, precise value merging, EIR, compiler-world completion, or broad
+provider cutover.
 
 Do not copy HIR totals into this plan. The generated
 [HIR lowering coverage](../../docs/project/status/hir_lowering.md), sourced from
@@ -50,8 +53,9 @@ authority for those totals.
 Provider promotion remains independently staged. The former provider umbrella
 [#8197](https://github.com/EffortlessMetrics/perl-lsp/issues/8197) is completed;
 it is historical evidence, not a live sole gate. Use the current
-[provider cutover status](../../docs/project/status/provider_cutover.md) and its
-named owner issues and receipts for residual provider work.
+[provider cutover status](../../docs/project/status/provider_cutover.md) for
+provider state, support boundaries, and receipts. Use #2559 and re-queried live
+GitHub subjects for residual work routing.
 
 ## Durable implementation sequence
 

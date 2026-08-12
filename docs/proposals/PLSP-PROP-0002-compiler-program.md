@@ -34,7 +34,7 @@ EIR (execution IR) is an evolution of PIR or a separate concern.
 - Compiler-substrate engineers adding HIR body constructs or PIR operations
 - Agents routing build work to HIR-body vs. PIR-A vs. EIR slices
 - Reviewers deciding whether a PR is in-contract with the layer order
-- Plan-reviewers setting the Phase-2 gate and expressions-before-control-flow order
+- Plan reviewers preserving expressions-before-dependent-control-flow order
 - LSP provider engineers planning provider cutover sequences
 
 ## Current Evidence
@@ -45,16 +45,21 @@ links to those sources instead of duplicating their tables.
 - [HIR lowering coverage](../project/status/hir_lowering.md) is the generated,
   registry-backed authority for current HIR construct counts and dispositions.
 - [Compiler facts](../project/status/compiler_facts.md) records Tooling PIR as
-  `fixture-backed`, including first-class `Branch`, `Loop`, `Return`,
-  `LexicalRead`, and `StashRead` lowering. Operation presence does not prove
-  full Perl semantics, EIR, or provider cutover.
+  `fixture-backed`, including first-class `Branch`, `Loop`, and `Return`
+  lowering. Current [PIR-A lowering](../../crates/perl-parser-core/src/pir/lower.rs)
+  and [body fixtures](../../crates/perl-parser-core/tests/pir_a_bodies_test.rs)
+  independently prove bounded `LexicalRead` and `StashRead` lowering, which the
+  human status page does not yet record.
 - [Provider cutover status](../project/status/provider_cutover.md) owns current
-  provider state and residual owner routing. The former umbrella
+  provider state, support boundaries, and receipts. The former umbrella
   [#8197](https://github.com/EffortlessMetrics/perl-lsp/issues/8197) is completed
-  historical evidence, not a live sole gate.
+  historical evidence, not a live sole gate; #2559 and re-queried live GitHub
+  subjects own residual work routing.
 - [PLSP-SPEC-0025 (PIR v0)](../specs/PLSP-SPEC-0025-pir-v0.md) contracts the
-  PIR-A data model and lowering, including the landed `Branch`, `Loop`,
-  `Return`, `LexicalRead`, and `StashRead` operation families.
+  PIR-A data model and its operation families, but still describes read-side
+  lowering as reserved future work. The code and fixture evidence above is
+  narrower current implementation truth; this accepted-spec drift remains
+  explicit rather than being silently attributed to the spec.
 - [PLSP-SPEC-0030 (Compile state layers)](../specs/PLSP-SPEC-0030-compile-state-layers.md)
   contracts L0–L6 with no PIR-A or EIR layer defined; those belong in the
   next layer's contract, not in the PLSP-SPEC-0030 revision.
@@ -70,8 +75,8 @@ or the EIR branch-off point. This proposal provides the missing orientation.
   rules so any future IR-adjacent PR can be checked against it without chat context.
 - A proposal records the lane motivation, user surfaces, and non-goals so
   reviewers know what the compiler-program lane is for.
-- An implementation plan records the Phase-2 gate and expressions-before-
-  control-flow ordering so agents can execute the next slice without ambiguity.
+- An implementation plan preserves expressions-before-dependent-control-flow
+  ordering and the remaining cross-layer sequence without caching a live gate.
 - Live [tracker #2559](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2559)
   and its subordinate GitHub subjects route current work.
 - No generated status is altered; no provider behavior is changed; no PIR
@@ -91,10 +96,10 @@ EIR is a future execution IR that branches off PIR-A later; HIR body items are
 the HIR-layer shells for expressions and control-flow, not a new IR. Agents and
 reviewers may cite this ADR when deciding whether a PIR PR is in-contract.
 
-**Implementation plan (plans/compiler-program/)**: records the Phase-2 gate
-and the expressions-before-control-flow ordering within Phase 2. This is the
-PR-sequence map: what must be true before Phase 2 opens, which slices run in
-what order, and how to confirm each slice is complete.
+**Implementation plan (plans/compiler-program/)**: preserves the durable
+expressions-before-dependent-control-flow ordering and remaining cross-layer
+sequence. Current slices and their readiness come from live GitHub subjects,
+not a phase gate cached in this document.
 
 **GitHub routing**: tracker
 [#2559](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2559) and
@@ -156,7 +161,8 @@ cargo xtask ci-hygiene check-doc-paths plans/compiler-program
 The lane can close when all of these are true:
 
 - PLSP-ADR-0005 is accepted and merged with the HIR-body/PIR-A/EIR boundary rules
-- Implementation plan names the Phase-2 gate and expression-ordering
+- Implementation plan preserves expressions-before-dependent-control-flow
+  ordering without claiming a current phase gate
 - Live tracker #2559 and subordinate GitHub subjects own current routing
 - No generated status, provider behavior, or PR sequence is altered by the docs-only PR
 - Agents and reviewers can cite ADR-0005 to decide whether a future IR PR is in-contract
