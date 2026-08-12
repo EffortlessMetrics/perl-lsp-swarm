@@ -769,6 +769,12 @@ struct TraversalState<'control, 'callback> {
     work_done: usize,
 }
 
+#[cfg(test)]
+thread_local! {
+    static CONTROLLED_CHILD_EDGES_ENUMERATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DECLARATION_LOOKUPS_ATTEMPTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl TraversalState<'_, '_> {
     fn admit_work(&mut self) -> Result<(), TraversalStop> {
         if self.control.cancellation.is_some_and(|cancelled| cancelled()) {
@@ -1499,6 +1505,8 @@ where
     }
 
     match node.try_for_each_child_with_field(|_, child| {
+        #[cfg(test)]
+        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(count.get().saturating_add(1)));
         match walk_ast_full_controlled(child, traversal, visitor) {
             Ok(true) => ControlFlow::Continue(()),
             Ok(false) => ControlFlow::Break(Ok(false)),
@@ -1523,6 +1531,8 @@ where
         return Ok(false);
     }
     match node.try_for_each_child_with_field(|_, child| {
+        #[cfg(test)]
+        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(count.get().saturating_add(1)));
         match walk_ast_full_controlled_with_state(child, traversal, visitor) {
             Ok(true) => ControlFlow::Continue(()),
             Ok(false) => ControlFlow::Break(Ok(false)),
@@ -1586,6 +1596,8 @@ fn declaration_flag(
     span: (usize, usize),
     traversal: &mut TraversalState<'_, '_>,
 ) -> Result<Option<bool>, TraversalStop> {
+    #[cfg(test)]
+    DECLARATION_LOOKUPS_ATTEMPTED.with(|count| count.set(count.get().saturating_add(1)));
     traversal.admit_work()?;
     Ok(flags.get(&span).copied())
 }
@@ -1971,6 +1983,7 @@ mod tests {
     #[test]
     fn ast_child_enumeration_stops_before_eager_sibling_work()
     -> Result<(), Box<dyn std::error::Error>> {
+        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(0));
         let source = (0..512).map(|index| format!("{index};\n")).collect::<String>();
         let mut parser = Parser::new(&source);
         let ast = parser.parse()?;
@@ -1987,12 +2000,18 @@ mod tests {
         assert_eq!(result, Err(TraversalStop::BudgetExhausted));
         assert_eq!(traversal.work_done, 1);
         assert_eq!(visited, 1, "only the admitted root may reach the visitor");
+        assert_eq!(
+            CONTROLLED_CHILD_EDGES_ENUMERATED.with(std::cell::Cell::get),
+            1,
+            "the production walker must enumerate only the first rejected child edge"
+        );
         Ok(())
     }
 
     #[test]
     fn ast_child_enumeration_observes_cancellation_before_next_sibling()
     -> Result<(), Box<dyn std::error::Error>> {
+        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(0));
         let source = (0..512).map(|index| format!("{index};\n")).collect::<String>();
         let mut parser = Parser::new(&source);
         let ast = parser.parse()?;
@@ -2011,6 +2030,11 @@ mod tests {
         assert_eq!(traversal.work_done, 1);
         assert_eq!(visited, 1, "cancellation must stop before visiting a sibling");
         assert_eq!(polls.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            CONTROLLED_CHILD_EDGES_ENUMERATED.with(std::cell::Cell::get),
+            1,
+            "cancellation must prevent enumeration of later sibling edges"
+        );
         Ok(())
     }
 
@@ -2040,6 +2064,113 @@ mod tests {
 
         assert_eq!(result, Err(TraversalStop::Cancelled));
         assert_eq!(traversal.work_done, 0);
+    }
+
+    #[test]
+    fn controlled_collector_stops_inside_indexed_declaration_lookups()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source =
+            (0..256).map(|index| format!("my $value_{index} = {index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+
+        DECLARATION_LOOKUPS_ATTEMPTED.with(|count| count.set(0));
+        let cancel_during_second_lookup =
+            || DECLARATION_LOOKUPS_ATTEMPTED.with(std::cell::Cell::get) >= 2;
+        let cancelled = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &SemanticTokensTraversalControl::new(&cancel_during_second_lookup, None),
+        );
+        let SemanticTokensTraversalOutcome::Cancelled { work_done } = cancelled else {
+            return Err("collector did not cancel during declaration lookup".into());
+        };
+        assert_eq!(
+            DECLARATION_LOOKUPS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "the production overlay must route each variable through the indexed lookup"
+        );
+
+        DECLARATION_LOOKUPS_ATTEMPTED.with(|count| count.set(0));
+        let never_cancelled = || false;
+        let exhausted = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &SemanticTokensTraversalControl::new(&never_cancelled, Some(work_done)),
+        );
+        assert!(
+            matches!(
+                exhausted,
+                SemanticTokensTraversalOutcome::BudgetExhausted {
+                    work_done: exhausted_work,
+                    ..
+                } if exhausted_work == work_done
+            ),
+            "the exact cancellation prefix must also exhaust the budget at the lookup boundary"
+        );
+        assert_eq!(
+            DECLARATION_LOOKUPS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "budget exhaustion must occur on the second indexed lookup"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_index_complete_run_preserves_frozen_modifier_geometry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = concat!(
+            "use Const::Fast;\n",
+            "const my $fast => 1;\n",
+            "use Readonly;\n",
+            "Readonly my ($left, $right) => (2, 3);\n",
+            "my ($plain, $other);\n",
+            "$plain = $fast + $left;\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::unlimited(),
+        );
+        let SemanticTokensTraversalOutcome::Complete(encoded) = outcome else {
+            return Err("unlimited declaration fixture did not complete".into());
+        };
+        let variable_kind = kind_idx(&legend(), "variable");
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let variables = encoded
+            .into_iter()
+            .filter_map(|[delta_line, delta_character, length, kind, modifiers]| {
+                if delta_line == 0 {
+                    character = character.saturating_add(delta_character);
+                } else {
+                    line = line.saturating_add(delta_line);
+                    character = delta_character;
+                }
+                (kind == variable_kind).then_some((line, character, length, modifiers))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            variables,
+            vec![
+                (1, 9, 5, 1029),
+                (3, 13, 5, 1029),
+                (3, 20, 6, 1029),
+                (4, 4, 6, 1025),
+                (4, 12, 6, 1025),
+                (5, 0, 6, 1152),
+                (5, 9, 5, 1024),
+                (5, 17, 5, 1024),
+            ],
+            "exact declaration spans must not leak declaration/readonly bits to later uses"
+        );
+        Ok(())
     }
 
     #[test]
