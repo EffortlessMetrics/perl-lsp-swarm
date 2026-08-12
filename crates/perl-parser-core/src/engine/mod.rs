@@ -16,6 +16,8 @@ pub mod parser;
 pub mod parser_context;
 /// Position tracking types and UTF-16 mapping utilities.
 pub mod position;
+/// Parser-owned canonical regex-analysis entry points and output wrapper.
+pub mod regex_retention;
 /// Parser for Perl quote and quote-like operators (internal module, previously `perl-quote`).
 pub mod quote_parser {
     pub use crate::syntax::quote::*;
