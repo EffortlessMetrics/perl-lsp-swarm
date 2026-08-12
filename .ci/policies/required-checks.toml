@@ -55,9 +55,9 @@ reason = "Live main ruleset (id 16664791) requires PR title validation before me
 [[checks]]
 name = "Rust formatting"
 workflow = ".github/workflows/ci.yml"
-required = true
-enforcement = "github-ruleset"
-reason = "Ruleset promotion target for the standalone candidate-bound rustfmt result tracked by #6202 and #7087; live ruleset promotion follows exact-head hosted proof and review."
+required = false
+enforcement = "advisory"
+reason = "Ruleset promotion target tracked by #6202 and #7087; it remains advisory until exact-head hosted proof and review permit live ruleset promotion."
 
 [[checks]]
 name = "Codecov / Patch 95"
