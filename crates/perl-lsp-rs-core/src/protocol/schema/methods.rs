@@ -141,7 +141,7 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         ClientToServer,
         Lsp318Development,
         inline_completion_params,
-        completion_result
+        inline_completion_result
     ),
     request!(
         "textDocument/rangeFormatting",
@@ -265,16 +265,96 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
 
 pub(super) fn schema_for(
     method: &str,
-    direction: Direction,
+    wire_direction: Direction,
     kind: MessageKind,
 ) -> Option<&'static MethodSchema> {
-    let declared_kind = match kind {
-        MessageKind::SuccessResponse | MessageKind::ErrorResponse => MessageKind::Request,
-        other => other,
+    let (declared_direction, declared_kind) = match kind {
+        MessageKind::SuccessResponse | MessageKind::ErrorResponse => {
+            let originating_request_direction = match wire_direction {
+                Direction::ClientToServer => Direction::ServerToClient,
+                Direction::ServerToClient => Direction::ClientToServer,
+            };
+            (originating_request_direction, MessageKind::Request)
+        }
+        other => (wire_direction, other),
     };
+
     METHOD_SCHEMAS.iter().find(|schema| {
-        schema.method == method && schema.direction == direction && schema.kind == declared_kind
+        schema.method == method
+            && schema.direction == declared_direction
+            && schema.kind == declared_kind
     })
+}
+
+fn inline_completion_result(method: &str, value: &Value) -> Result<(), SchemaError> {
+    if value.is_null() {
+        return Ok(());
+    }
+
+    let (items, items_path) = if let Some(items) = value.as_array() {
+        (items, "$.result")
+    } else {
+        let object = value.as_object().ok_or_else(|| {
+            SchemaError::at_value(
+                Some(method),
+                "$.result",
+                "null, inline-completion item array, or InlineCompletionList object",
+                value,
+            )
+        })?;
+        let items = object
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                SchemaError::new(Some(method), "$.result.items", "array", "missing or non-array")
+            })?;
+        (items, "$.result.items")
+    };
+
+    for (index, item) in items.iter().enumerate() {
+        let path = format!("{items_path}[{index}]");
+        let object = item.as_object().ok_or_else(|| {
+            SchemaError::at_value(Some(method), &path, "InlineCompletionItem object", item)
+        })?;
+        let insert_text = object.get("insertText").ok_or_else(|| {
+            SchemaError::new(
+                Some(method),
+                format!("{path}.insertText"),
+                "string or StringValue object",
+                "missing",
+            )
+        })?;
+        if !insert_text.is_string() && !insert_text.is_object() {
+            return Err(SchemaError::at_value(
+                Some(method),
+                format!("{path}.insertText"),
+                "string or StringValue object",
+                insert_text,
+            ));
+        }
+        if let Some(filter_text) = object.get("filterText")
+            && !filter_text.is_string()
+        {
+            return Err(SchemaError::at_value(
+                Some(method),
+                format!("{path}.filterText"),
+                "string",
+                filter_text,
+            ));
+        }
+        if let Some(command) = object.get("command")
+            && !command.is_object()
+        {
+            return Err(SchemaError::at_value(
+                Some(method),
+                format!("{path}.command"),
+                "Command object",
+                command,
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Return deterministic method/direction/kind/version identities for drift checks.
@@ -292,4 +372,67 @@ pub fn registered_schema_identities() -> Vec<String> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn response_lookup_uses_the_originating_request_direction() {
+        let initialize = schema_for(
+            "initialize",
+            Direction::ServerToClient,
+            MessageKind::SuccessResponse,
+        )
+        .expect("initialize response must resolve its client-originated request schema");
+        assert_eq!(initialize.direction, Direction::ClientToServer);
+
+        let configuration = schema_for(
+            "workspace/configuration",
+            Direction::ClientToServer,
+            MessageKind::ErrorResponse,
+        )
+        .expect("configuration response must resolve its server-originated request schema");
+        assert_eq!(configuration.direction, Direction::ServerToClient);
+
+        let request = schema_for(
+            "textDocument/hover",
+            Direction::ClientToServer,
+            MessageKind::Request,
+        )
+        .expect("request direction must remain unchanged");
+        assert_eq!(request.direction, Direction::ClientToServer);
+    }
+
+    #[test]
+    fn inline_completion_result_uses_the_inline_item_union() {
+        inline_completion_result(
+            "textDocument/inlineCompletion",
+            &json!([{ "insertText": "candidate" }]),
+        )
+        .expect("direct InlineCompletionItem arrays are valid");
+        inline_completion_result(
+            "textDocument/inlineCompletion",
+            &json!({ "items": [{ "insertText": { "value": "candidate" } }] }),
+        )
+        .expect("InlineCompletionList objects are valid");
+        inline_completion_result("textDocument/inlineCompletion", &Value::Null)
+            .expect("null is a valid inline-completion result");
+
+        let missing = inline_completion_result(
+            "textDocument/inlineCompletion",
+            &json!([{ "label": "ordinary completion item" }]),
+        )
+        .expect_err("ordinary CompletionItem shape must not pass as InlineCompletionItem");
+        assert_eq!(missing.path, "$.result[0].insertText");
+
+        let wrong = inline_completion_result(
+            "textDocument/inlineCompletion",
+            &json!({ "items": [{ "insertText": 7 }] }),
+        )
+        .expect_err("inline insertText must use the declared union");
+        assert_eq!(wrong.path, "$.result.items[0].insertText");
+    }
 }
