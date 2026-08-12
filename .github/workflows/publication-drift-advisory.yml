@@ -116,6 +116,7 @@ jobs:
           toolchain: stable
 
       - name: Build exact-SHA observation
+        id: observe
         env:
           SWARM_SHA: ${{ inputs.swarm_sha }}
           PUBLIC_SHA: ${{ inputs.public_sha }}
@@ -125,6 +126,7 @@ jobs:
           RUNTIME_BUNDLE_PATH: ${{ inputs.runtime_bundle_path }}
         run: |
           set -euo pipefail
+          set +e
           python3 control/scripts/release/build_publication_drift_observation.py \
             --swarm-root subjects/swarm \
             --public-root subjects/public \
@@ -135,8 +137,11 @@ jobs:
             --public-sha "${PUBLIC_SHA}" \
             --version "${VERSION}" \
             --out target/publication-drift/observation.json
+          observation_exit="$?"
+          set -e
+          echo "observation_exit=${observation_exit}" >> "$GITHUB_OUTPUT"
 
-          if [ -n "${RUNTIME_BUNDLE_PATH}" ]; then
+          if [ "${observation_exit}" -eq 0 ] && [ -n "${RUNTIME_BUNDLE_PATH}" ]; then
             python3 control/scripts/release/publication_runtime_identity.py compose \
               --observation target/publication-drift/observation.json \
               --runtime-bundle "control/${RUNTIME_BUNDLE_PATH}" \
@@ -144,6 +149,8 @@ jobs:
             mv target/publication-drift/observation-with-runtime.json \
               target/publication-drift/observation.json
           fi
+
+          exit 0
 
       - name: Run canonical classifier without converting domain verdict to workflow colour
         id: classify

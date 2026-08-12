@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -24,6 +25,15 @@ INVARIANT_SCHEMA = "perl_lsp.publication_drift_invariants.v1"
 
 class ObservationError(RuntimeError):
     """A deterministic acquisition or identity failure."""
+
+
+@dataclass(frozen=True)
+class TreeEntry:
+    """The Git tree identity needed to compare one tracked path."""
+
+    mode: str
+    object_type: str
+    object_id: str
 
 
 def _run(root: Path, *arguments: str, binary: bool = False) -> bytes | str:
@@ -91,13 +101,41 @@ def _tracked_paths(root: Path) -> set[str]:
     return paths
 
 
-def _blob_digest(root: Path, path: str) -> str | None:
-    try:
-        payload = _run(root, "show", f"HEAD:{path}", binary=True)
-    except ObservationError:
+def _tree_entry(root: Path, path: str) -> TreeEntry | None:
+    output = _run(root, "ls-tree", "-z", "HEAD", "--", f":(literal){path}", binary=True)
+    assert isinstance(output, bytes)
+    if not output:
         return None
+    records = output.rstrip(b"\0").split(b"\0")
+    if len(records) != 1:
+        raise ObservationError(f"git ls-tree returned multiple entries for {path}")
+    header, separator, _observed_path = records[0].partition(b"\t")
+    fields = header.split()
+    if separator != b"\t" or len(fields) != 3:
+        raise ObservationError(f"git ls-tree returned an invalid entry for {path}")
+    try:
+        mode, object_type, object_id = (field.decode("ascii") for field in fields)
+    except UnicodeDecodeError as error:
+        raise ObservationError(f"git ls-tree returned a non-ASCII entry for {path}") from error
+    return TreeEntry(mode=mode, object_type=object_type, object_id=object_id)
+
+
+def _blob_digest(root: Path, entry: TreeEntry | None) -> str | None:
+    if entry is None or entry.object_type != "blob":
+        return None
+    payload = _run(root, "cat-file", "blob", entry.object_id, binary=True)
     assert isinstance(payload, bytes)
     return hashlib.sha256(payload).hexdigest()
+
+
+def _entry_evidence(label: str, entry: TreeEntry | None, digest: str | None) -> str:
+    if entry is None:
+        return f"{label}=absent"
+    digest_value = digest if digest is not None else "not_applicable"
+    return (
+        f"{label}=mode:{entry.mode},type:{entry.object_type},object:{entry.object_id},"
+        f"sha256:{digest_value}"
+    )
 
 
 def _load_json(path: Path, allowed_root: Path, label: str) -> dict[str, Any]:
@@ -213,10 +251,12 @@ def build_observation(
 
     differences: list[dict[str, Any]] = []
     for path in sorted(_tracked_paths(swarm_root) | _tracked_paths(public_root)):
-        swarm_digest = _blob_digest(swarm_root, path)
-        public_digest = _blob_digest(public_root, path)
-        if swarm_digest == public_digest:
+        swarm_entry = _tree_entry(swarm_root, path)
+        public_entry = _tree_entry(public_root, path)
+        if swarm_entry == public_entry:
             continue
+        swarm_digest = _blob_digest(swarm_root, swarm_entry)
+        public_digest = _blob_digest(public_root, public_entry)
         rule = rules.get(path)
         if rule is None:
             differences.append(
@@ -227,8 +267,8 @@ def build_observation(
                     "manifest_rule": None,
                     "owner": "#6857",
                     "evidence": [
-                        f"public_sha256={public_digest or 'missing'}",
-                        f"swarm_sha256={swarm_digest or 'missing'}",
+                        _entry_evidence("public_object", public_entry, public_digest),
+                        _entry_evidence("swarm_object", swarm_entry, swarm_digest),
                         "no approved path rule",
                     ],
                 }
@@ -242,8 +282,8 @@ def build_observation(
                 "manifest_rule": rule.get("id"),
                 "owner": rule.get("owner"),
                 "evidence": [
-                    f"public_sha256={public_digest or 'missing'}",
-                    f"swarm_sha256={swarm_digest or 'missing'}",
+                    _entry_evidence("public_object", public_entry, public_digest),
+                    _entry_evidence("swarm_object", swarm_entry, swarm_digest),
                 ],
             }
         )
@@ -272,6 +312,71 @@ def _write_json(value: dict[str, Any], destination: Path) -> None:
     temporary = destination.with_name(f".{destination.name}.tmp")
     temporary.write_text(payload, encoding="utf-8")
     os.replace(temporary, destination)
+
+
+def _redacted_failure_reason(error: ObservationError) -> str:
+    """Return a stable cause without retaining paths, URLs, or tool stderr."""
+    message = str(error)
+    if "failed to execute" in message or " failed:" in message:
+        return "git_tool_failure"
+    if "checkout is not a Git repository" in message:
+        return "checkout_missing_or_unreadable"
+    if "repository mismatch" in message:
+        return "repository_identity_failure"
+    if "HEAD mismatch" in message or "SHA is invalid" in message:
+        return "subject_identity_failure"
+    if "cannot load" in message or "root must be an object" in message:
+        return "authority_read_failure"
+    if "escapes the approved control checkout" in message:
+        return "authority_containment_failure"
+    return "acquisition_not_proven"
+
+
+def _safe_sha(value: str) -> str:
+    return value if SHA40.fullmatch(value) else "0" * 40
+
+
+def _safe_version(value: str) -> str:
+    if value and value.strip() == value and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", value):
+        return value
+    return "not_proven"
+
+
+def _failure_observation(args: argparse.Namespace, error: ObservationError) -> dict[str, Any]:
+    """Build the classifier input retained when acquisition cannot complete."""
+    reason = _redacted_failure_reason(error)
+    return {
+        "schema_version": 1,
+        "swarm": {
+            "repository": REPOSITORIES["swarm"],
+            "sha": _safe_sha(args.swarm_sha),
+            "tree_digest": "0" * 64,
+            "version": _safe_version(args.version),
+        },
+        "public": {
+            "repository": REPOSITORIES["public"],
+            "sha": _safe_sha(args.public_sha),
+            "tree_digest": "0" * 64,
+            "version": _safe_version(args.version),
+        },
+        "manifest": None,
+        "differences": [
+            {
+                "path": "__acquisition__/failure",
+                "classification": "unknown_or_not_proven",
+                "behavior_changed": False,
+                "manifest_rule": None,
+                "owner": "release-engineering",
+                "evidence": [
+                    f"acquisition_failure={reason}",
+                    f"requested_swarm_sha={_safe_sha(args.swarm_sha)}",
+                    f"requested_public_sha={_safe_sha(args.public_sha)}",
+                    "cause=redacted",
+                ],
+            }
+        ],
+        "invariants": [],
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -303,7 +408,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _write_json(observation, args.out)
     except ObservationError as error:
-        print(f"publication drift observation: not_proven: {error}", file=sys.stderr)
+        try:
+            _write_json(_failure_observation(args, error), args.out)
+        except OSError as write_error:
+            print(
+                "publication drift observation: not_proven: failure receipt unavailable: "
+                f"{type(write_error).__name__}",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"publication drift observation: not_proven: {_redacted_failure_reason(error)}",
+            file=sys.stderr,
+        )
         return 2
     return 0
 

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("build_publication_drift_observation.py")
@@ -20,6 +21,8 @@ SPEC.loader.exec_module(observation_module)
 ObservationError = observation_module.ObservationError
 build_observation = observation_module.build_observation
 checkout_identity = observation_module._checkout_identity
+tree_entry = observation_module._tree_entry
+main = observation_module.main
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -147,7 +150,100 @@ class PublicationDriftObservationTests(unittest.TestCase):
         )
         self.assertEqual(rows["README.md"]["manifest_rule"], "publication_context.readme")
         self.assertEqual(rows["new.txt"]["classification"], "unknown_or_not_proven")
+        self.assertIn("public_object=absent", rows["new.txt"]["evidence"])
+        self.assertIn("mode:", rows["README.md"]["evidence"][0])
         self.assertEqual(result["invariants"][0]["status"], "pass")
+
+    def test_missing_object_is_distinct_from_a_git_tool_failure(self) -> None:
+        self.assertIsNone(tree_entry(self.public, "new.txt"))
+        with mock.patch.object(
+            observation_module,
+            "_run",
+            side_effect=ObservationError("git ls-tree failed: redacted"),
+        ):
+            with self.assertRaisesRegex(ObservationError, "git ls-tree failed"):
+                tree_entry(self.public, "README.md")
+
+    def test_same_bytes_with_different_mode_remain_a_difference(self) -> None:
+        git(self.swarm, "update-index", "--chmod=+x", "same.txt")
+        git(self.swarm, "commit", "-m", "make same object executable")
+        self.swarm_sha = git(self.swarm, "rev-parse", "HEAD")
+        self.swarm_identity = checkout_identity(
+            self.swarm, "EffortlessMetrics/perl-lsp-swarm", self.swarm_sha
+        )
+        self._write_authorities()
+
+        result = self.build()
+        row = {item["path"]: item for item in result["differences"]}["same.txt"]
+        self.assertTrue(any(item.startswith("public_object=mode:100644,") for item in row["evidence"]))
+        self.assertTrue(any(item.startswith("swarm_object=mode:100755,") for item in row["evidence"]))
+
+    def test_acquisition_failure_writes_redacted_not_proven_observation(self) -> None:
+        out = self.root / "target" / "observation.json"
+        exit_code = main(
+            [
+                "--swarm-root",
+                str(self.swarm),
+                "--public-root",
+                str(self.root / "missing-public"),
+                "--control-root",
+                str(self.control),
+                "--manifest",
+                str(self.manifest),
+                "--invariants",
+                str(self.invariants),
+                "--swarm-sha",
+                self.swarm_sha,
+                "--public-sha",
+                self.public_sha,
+                "--version",
+                "0.18.0",
+                "--out",
+                str(out),
+            ]
+        )
+        self.assertEqual(exit_code, 2)
+        failure = json.loads(out.read_text(encoding="utf-8"))
+        evidence = failure["differences"][0]["evidence"]
+        self.assertEqual(failure["differences"][0]["classification"], "unknown_or_not_proven")
+        self.assertIn("acquisition_failure=checkout_missing_or_unreadable", evidence)
+        self.assertIn("cause=redacted", evidence)
+        self.assertNotIn(str(self.root), " ".join(evidence))
+
+    def test_git_tool_failure_writes_redacted_not_proven_observation(self) -> None:
+        out = self.root / "target" / "tool-failure-observation.json"
+        with mock.patch.object(
+            observation_module,
+            "_run",
+            side_effect=ObservationError("git cat-file failed: secret path"),
+        ):
+            exit_code = main(
+                [
+                    "--swarm-root",
+                    str(self.swarm),
+                    "--public-root",
+                    str(self.public),
+                    "--control-root",
+                    str(self.control),
+                    "--manifest",
+                    str(self.manifest),
+                    "--invariants",
+                    str(self.invariants),
+                    "--swarm-sha",
+                    self.swarm_sha,
+                    "--public-sha",
+                    self.public_sha,
+                    "--version",
+                    "0.18.0",
+                    "--out",
+                    str(out),
+                ]
+            )
+        self.assertEqual(exit_code, 2)
+        failure = json.loads(out.read_text(encoding="utf-8"))
+        evidence = failure["differences"][0]["evidence"]
+        self.assertIn("acquisition_failure=git_tool_failure", evidence)
+        self.assertNotIn("secret path", " ".join(evidence))
 
     def test_branch_movement_after_subject_selection_is_rejected(self) -> None:
         (self.swarm / "later.txt").write_text("later", encoding="utf-8")
