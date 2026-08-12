@@ -38,7 +38,9 @@ jobs:
           set -euo pipefail
           test "$(git -C work rev-parse HEAD)" = "$BASE_HEAD"
           cat patch-source/.github/semantic-port-adapters-patch/part-* > "$RUNNER_TEMP/semantic-port-adapters.patch"
-          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/semantic-port-adapters.patch" | sha256sum --check --strict
+          actual_patch_sha256="$(sha256sum "$RUNNER_TEMP/semantic-port-adapters.patch" | awk '{print $1}')"
+          printf 'actual_patch_sha256=%s\n' "$actual_patch_sha256"
+          test "$actual_patch_sha256" = "$PATCH_SHA256"
 
       - name: Apply adapter rebuild to final contract
         shell: bash
