@@ -217,13 +217,18 @@ impl ProofPolicy {
         }
         validate_issue("controller_issue", &self.controller_issue)?;
         match self.closure_authority.as_deref() {
-            Some(authority) if authority.trim().is_empty() => {
-                bail!("compiler proof policy closure authority must not be empty");
+            Some(authority) if !self.complete => {
+                bail!(
+                    "incomplete compiler proof policy must not carry closure_authority {authority:?}"
+                );
+            }
+            Some(authority) => {
+                validate_closure_authority(authority, &self.controller_issue)?;
             }
             None if self.complete => {
                 bail!("complete compiler proof policy requires closure_authority");
             }
-            Some(_) | None => {}
+            None => {}
         }
         if self.proof_classes.is_empty() || self.dimensions.is_empty() || self.campaigns.is_empty()
         {
@@ -639,6 +644,26 @@ fn validate_issue(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_closure_authority(value: &str, controller_issue: &str) -> Result<()> {
+    let authority = value.strip_prefix("issue:").ok_or_else(|| {
+        anyhow!(
+            "closure_authority must use issue:#<number>/<revision> syntax; got {value:?}"
+        )
+    })?;
+    let (issue, revision) = authority.split_once('/').ok_or_else(|| {
+        anyhow!(
+            "closure_authority must use issue:#<number>/<revision> syntax; got {value:?}"
+        )
+    })?;
+    validate_issue("closure_authority issue", issue)?;
+    if issue != controller_issue {
+        bail!(
+            "closure_authority issue {issue:?} must match controller_issue {controller_issue:?}"
+        );
+    }
+    validate_id("closure authority revision", revision)
+}
+
 fn validate_id(kind: &str, value: &str) -> Result<()> {
     if value.is_empty()
         || value.starts_with('-')
@@ -724,12 +749,28 @@ mod tests {
     }
 
     #[test]
-    fn complete_policy_requires_named_closure_authority() -> Result<()> {
+    fn complete_policy_requires_controller_bound_closure_authority() -> Result<()> {
+        let concepts = concepts()?;
         let mut policy = ProofPolicy::from_str(POLICY)?;
         policy.complete = true;
+        assert!(policy.validate(&concepts).is_err());
+
+        policy.closure_authority = Some("arbitrary".to_string());
+        assert!(policy.validate(&concepts).is_err());
+
+        policy.closure_authority = Some("issue:#6657/policy_closure_v1".to_string());
+        assert!(policy.validate(&concepts).is_err());
+
+        policy.closure_authority = Some("issue:#6689/policy_closure_v1".to_string());
+        policy.validate(&concepts)?;
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_policy_rejects_stale_closure_authority() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        policy.closure_authority = Some("issue:#6689/policy_closure_v1".to_string());
         assert!(policy.validate(&concepts()?).is_err());
-        policy.closure_authority = Some("issue:#6689/policy-closure-v1".to_string());
-        policy.validate(&concepts()?)?;
         Ok(())
     }
 
@@ -760,7 +801,9 @@ mod tests {
 
         let policy = ProofPolicy::from_str(POLICY)?;
         let mut concept_index = concepts()?;
-        concept_index.concepts.push(ConceptIndexRow { family: "unexercised_family".to_string() });
+        concept_index.concepts.push(ConceptIndexRow {
+            family: "unexercised_family".to_string(),
+        });
         assert!(policy.validate(&concept_index).is_err());
         Ok(())
     }
