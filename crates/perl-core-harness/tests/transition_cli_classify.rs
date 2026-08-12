@@ -506,7 +506,11 @@ fn classify_cli_rejects_series_profile_mismatch() {
         ])
         .output()
         .expect("spawn classify CLI");
-    assert!(!result.status.success());
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("profile mismatch"), "unexpected stderr: {stderr}");
     assert!(!output.exists(), "profile mismatch must not write a classify receipt");
@@ -544,7 +548,11 @@ fn classify_cli_rejects_series_runner_mismatch() {
         ])
         .output()
         .expect("spawn classify CLI");
-    assert!(!result.status.success());
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("runner mismatch"), "unexpected stderr: {stderr}");
     assert!(!output.exists(), "runner mismatch must not write a classify receipt");
@@ -582,7 +590,11 @@ fn classify_cli_rejects_series_perl_resolved_ref_mismatch() {
         ])
         .output()
         .expect("spawn classify CLI");
-    assert!(!result.status.success());
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("perl_resolved_ref mismatch"), "unexpected stderr: {stderr}");
     assert!(!output.exists(), "perl_resolved_ref mismatch must not write a classify receipt");
