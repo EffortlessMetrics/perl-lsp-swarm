@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -1290,10 +1290,7 @@ mod tests {
     fn assert_over_limit_capture(label: &str) -> TestResult {
         let limit = 8;
         let bytes = vec![b'x'; limit + 5];
-        let stream = RawByteStream::from_capture(
-            capture_stream(Cursor::new(bytes), limit),
-            limit,
-        );
+        let stream = RawByteStream::from_capture(capture_stream(Cursor::new(bytes), limit), limit);
         stream.validate()?;
         if !stream.truncated
             || stream.observed_byte_length != 13
@@ -1348,7 +1345,9 @@ mod tests {
             "stdout":{},
             "stderr":{}
         }"#;
-        let contradictory_failure = contradictory_success.replace("\"status\":7", "\"status\":0").replace("\"success\":true", "\"success\":false");
+        let contradictory_failure = contradictory_success
+            .replace("\"status\":7", "\"status\":0")
+            .replace("\"success\":true", "\"success\":false");
         let missing_outcome = contradictory_success
             .replace("\"status\":7,", "")
             .replace("\"success\":true,", "");
