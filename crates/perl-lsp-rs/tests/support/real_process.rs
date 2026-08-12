@@ -2,10 +2,11 @@
 
 //! Strict real-process LSP test client.
 //!
-//! This client runs only Cargo's exact `perl-lsp` integration-test binary. It
-//! never falls through to PATH, a target directory, or `cargo run`. Stdout is a
-//! bounded, strict Content-Length stream; stderr is retained separately as a
-//! bounded byte tail.
+//! This client runs only Cargo's exact integration-test binary for the package
+//! compiling it: `perl-lsp` for the implementation crate or `perllsp` for the
+//! public facade. It never falls through to PATH, a target directory, or
+//! `cargo run`. Stdout is a bounded, strict Content-Length stream; stderr is
+//! retained separately as a bounded byte tail.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
@@ -20,12 +21,43 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-const EXACT_CANDIDATE: Option<&str> = option_env!("CARGO_BIN_EXE_perl-lsp");
+const PERL_LSP_CANDIDATE: Option<&str> = option_env!("CARGO_BIN_EXE_perl-lsp");
+const PERLLSP_CANDIDATE: Option<&str> = option_env!("CARGO_BIN_EXE_perllsp");
 const EVENT_CAPACITY: usize = 256;
 const PENDING_CAPACITY: usize = 256;
 const STDERR_BYTE_CAPACITY: usize = 32 * 1024;
 const MAX_HEADER_BYTES: usize = 4 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+struct ExactCandidate {
+    path: &'static str,
+    binary_name: &'static str,
+    environment_name: &'static str,
+}
+
+fn exact_candidate() -> Result<ExactCandidate> {
+    match (PERL_LSP_CANDIDATE, PERLLSP_CANDIDATE) {
+        (Some(path), None) => Ok(ExactCandidate {
+            path,
+            binary_name: "perl-lsp",
+            environment_name: "CARGO_BIN_EXE_perl-lsp",
+        }),
+        (None, Some(path)) => Ok(ExactCandidate {
+            path,
+            binary_name: "perllsp",
+            environment_name: "CARGO_BIN_EXE_perllsp",
+        }),
+        (None, None) => bail!(
+            "Cargo did not provide an exact LSP candidate; expected exactly one of \
+             CARGO_BIN_EXE_perl-lsp or CARGO_BIN_EXE_perllsp"
+        ),
+        (Some(_), Some(_)) => bail!(
+            "ambiguous exact LSP candidate: Cargo provided both \
+             CARGO_BIN_EXE_perl-lsp and CARGO_BIN_EXE_perllsp"
+        ),
+    }
+}
 
 #[derive(Debug)]
 enum ProcessEvent {
@@ -45,22 +77,20 @@ pub struct RealProcessClient {
     stdout_thread: Option<JoinHandle<()>>,
     stderr_thread: Option<JoinHandle<()>>,
     candidate_path: PathBuf,
+    candidate_name: &'static str,
+    candidate_environment: &'static str,
     _workspace: TempDir,
     finished: bool,
 }
 
 impl RealProcessClient {
     pub fn spawn_exact() -> Result<Self> {
-        let candidate = EXACT_CANDIDATE.ok_or_else(|| {
-            anyhow!(
-                "Cargo did not provide CARGO_BIN_EXE_perl-lsp; \
-                 run this as a perl-lsp-rs integration test"
-            )
-        })?;
-        let candidate_path = PathBuf::from(candidate);
+        let candidate = exact_candidate()?;
+        let candidate_path = PathBuf::from(candidate.path);
         ensure!(
             candidate_path.is_file(),
-            "exact Cargo candidate is not a file: {}",
+            "exact Cargo candidate from {} is not a file: {}",
+            candidate.environment_name,
             candidate_path.display()
         );
 
@@ -73,7 +103,14 @@ impl RealProcessClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("spawn exact candidate {}", candidate_path.display()))?;
+            .with_context(|| {
+                format!(
+                    "spawn exact {} candidate from {} at {}",
+                    candidate.binary_name,
+                    candidate.environment_name,
+                    candidate_path.display()
+                )
+            })?;
 
         let stdin = take_pipe(&mut child, |child| child.stdin.take(), "stdin")?;
         let stdout = take_pipe(&mut child, |child| child.stdout.take(), "stdout")?;
@@ -83,7 +120,7 @@ impl RealProcessClient {
         let event_overflow = Arc::new(AtomicBool::new(false));
         let reader_overflow = Arc::clone(&event_overflow);
         let stdout_thread = match std::thread::Builder::new()
-            .name("lsp-exact-stdout".to_string())
+            .name(format!("{}-exact-stdout", candidate.binary_name))
             .spawn(move || read_stdout(stdout, event_tx, &reader_overflow))
         {
             Ok(thread) => thread,
@@ -98,7 +135,7 @@ impl RealProcessClient {
         let stderr_truncated = Arc::new(AtomicBool::new(false));
         let truncated_flag = Arc::clone(&stderr_truncated);
         let stderr_thread = match std::thread::Builder::new()
-            .name("lsp-exact-stderr".to_string())
+            .name(format!("{}-exact-stderr", candidate.binary_name))
             .spawn(move || {
                 drain_stderr(stderr, &stderr_sink, &truncated_flag);
             }) {
@@ -121,6 +158,8 @@ impl RealProcessClient {
             stdout_thread: Some(stdout_thread),
             stderr_thread: Some(stderr_thread),
             candidate_path,
+            candidate_name: candidate.binary_name,
+            candidate_environment: candidate.environment_name,
             _workspace: workspace,
             finished: false,
         })
@@ -128,6 +167,14 @@ impl RealProcessClient {
 
     pub fn candidate_path(&self) -> &Path {
         &self.candidate_path
+    }
+
+    pub fn candidate_name(&self) -> &str {
+        self.candidate_name
+    }
+
+    pub fn candidate_environment(&self) -> &str {
+        self.candidate_environment
     }
 
     pub fn encode_message(message: &Value) -> Vec<u8> {
@@ -165,7 +212,10 @@ impl RealProcessClient {
 
     pub fn send_raw_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         ensure!(!self.finished, "cannot write after candidate exit");
-        let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("candidate stdin is closed"))?;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("candidate stdin is closed"))?;
         stdin.write_all(bytes).context("write candidate stdin")?;
         stdin.flush().context("flush candidate stdin")
     }
@@ -210,7 +260,11 @@ impl RealProcessClient {
 
     pub fn receive_response(&mut self, id: &Value, timeout: Duration) -> Result<Value> {
         self.ensure_event_queue_intact()?;
-        if let Some(index) = self.pending.iter().position(|message| is_response_for(message, id)) {
+        if let Some(index) = self
+            .pending
+            .iter()
+            .position(|message| is_response_for(message, id))
+        {
             return self
                 .pending
                 .remove(index)
@@ -234,8 +288,10 @@ impl RealProcessClient {
     }
 
     pub fn receive_server_request(&mut self, method: &str, timeout: Duration) -> Result<Value> {
-        if let Some(index) =
-            self.pending.iter().position(|message| is_server_request_for(message, method))
+        if let Some(index) = self
+            .pending
+            .iter()
+            .position(|message| is_server_request_for(message, method))
         {
             return self
                 .pending
@@ -279,7 +335,10 @@ impl RealProcessClient {
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "candidate did not exit within {timeout:?}; pid={}; stderr={}",
+                    "{} candidate did not exit within {timeout:?}; env={}; path={}; pid={}; stderr={}",
+                    self.candidate_name,
+                    self.candidate_environment,
+                    self.candidate_path.display(),
                     self.child.id(),
                     self.stderr_tail()
                 );
@@ -293,12 +352,16 @@ impl RealProcessClient {
         self.drain_available_events()?;
         self.ensure_event_queue_intact()?;
 
-        if let Some(unexpected) =
-            self.pending.iter().find(|message| !is_server_notification(message))
+        if let Some(unexpected) = self
+            .pending
+            .iter()
+            .find(|message| !is_server_notification(message))
         {
             bail!(
-                "unconsumed terminal message: {unexpected}; \
+                "unconsumed terminal message from {} at {}: {unexpected}; \
                  pending={:?}; stderr={}",
+                self.candidate_name,
+                self.candidate_path.display(),
                 self.pending,
                 self.stderr_tail()
             );
@@ -328,7 +391,10 @@ impl RealProcessClient {
         if remaining.is_zero() {
             bail!(
                 "timed out waiting for {expected_kind} {marker}; \
-                 pending={:?}; stderr={}",
+                 candidate={} env={} path={}; pending={:?}; stderr={}",
+                self.candidate_name,
+                self.candidate_environment,
+                self.candidate_path.display(),
                 self.pending,
                 self.stderr_tail()
             );
@@ -337,24 +403,40 @@ impl RealProcessClient {
         match self.events.recv_timeout(remaining) {
             Ok(ProcessEvent::Message(message)) => Ok(message),
             Ok(ProcessEvent::ProtocolError(error)) => {
-                bail!("stdout protocol error: {error}; stderr={}", self.stderr_tail())
+                bail!(
+                    "stdout protocol error from {} at {}: {error}; stderr={}",
+                    self.candidate_name,
+                    self.candidate_path.display(),
+                    self.stderr_tail()
+                )
             }
             Ok(ProcessEvent::Eof) => {
                 bail!(
-                    "stdout closed before {expected_kind} {marker}; stderr={}",
+                    "stdout closed before {expected_kind} {marker}; \
+                     candidate={} path={}; stderr={}",
+                    self.candidate_name,
+                    self.candidate_path.display(),
                     self.stderr_tail()
                 )
             }
             Err(RecvTimeoutError::Timeout) => {
                 bail!(
                     "timed out waiting for {expected_kind} {marker}; \
-                     pending={:?}; stderr={}",
+                     candidate={} env={} path={}; pending={:?}; stderr={}",
+                    self.candidate_name,
+                    self.candidate_environment,
+                    self.candidate_path.display(),
                     self.pending,
                     self.stderr_tail()
                 )
             }
             Err(RecvTimeoutError::Disconnected) => {
-                bail!("stdout reader disconnected; stderr={}", self.stderr_tail())
+                bail!(
+                    "stdout reader disconnected for {} at {}; stderr={}",
+                    self.candidate_name,
+                    self.candidate_path.display(),
+                    self.stderr_tail()
+                )
             }
         }
     }
@@ -364,7 +446,12 @@ impl RealProcessClient {
             match self.events.try_recv() {
                 Ok(ProcessEvent::Message(message)) => self.push_pending(message)?,
                 Ok(ProcessEvent::ProtocolError(error)) => {
-                    bail!("stdout protocol error: {error}; stderr={}", self.stderr_tail())
+                    bail!(
+                        "stdout protocol error from {} at {}: {error}; stderr={}",
+                        self.candidate_name,
+                        self.candidate_path.display(),
+                        self.stderr_tail()
+                    )
                 }
                 Ok(ProcessEvent::Eof) => {}
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -385,7 +472,9 @@ impl RealProcessClient {
     fn ensure_event_queue_intact(&self) -> Result<()> {
         ensure!(
             !self.event_overflow.load(Ordering::Acquire),
-            "stdout event queue overflowed; stderr={}",
+            "stdout event queue overflowed; candidate={} path={}; stderr={}",
+            self.candidate_name,
+            self.candidate_path.display(),
             self.stderr_tail()
         );
         Ok(())
@@ -490,7 +579,9 @@ fn is_response(message: &Value) -> bool {
     is_jsonrpc_2(message)
         && is_response_like(message)
         && message.get("params").is_none()
-        && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
+        && message
+            .get("id")
+            .is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
         && (has_result ^ has_error)
         && (!has_error || message.get("error").is_some_and(is_valid_error))
 }
@@ -502,7 +593,9 @@ fn is_response_for(message: &Value, id: &Value) -> bool {
 fn is_server_request_for(message: &Value, method: &str) -> bool {
     is_jsonrpc_2(message)
         && message.get("method").and_then(Value::as_str) == Some(method)
-        && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
+        && message
+            .get("id")
+            .is_some_and(|id| id.is_number() || id.is_string())
         && has_no_response_members(message)
         && has_valid_params(message)
 }
@@ -568,8 +661,9 @@ fn read_frame(reader: &mut dyn BufRead) -> Result<Option<Value>> {
             break;
         }
 
-        let (name, value) =
-            line.split_once(':').ok_or_else(|| anyhow!("non-header stdout line: {line:?}"))?;
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| anyhow!("non-header stdout line: {line:?}"))?;
         let name = name.trim();
         let value = value.trim();
         if name.eq_ignore_ascii_case("Content-Length") {
@@ -577,7 +671,10 @@ fn read_frame(reader: &mut dyn BufRead) -> Result<Option<Value>> {
             let parsed = value
                 .parse::<usize>()
                 .with_context(|| format!("invalid Content-Length {value:?}"))?;
-            ensure!(parsed <= MAX_FRAME_BYTES, "frame exceeded {MAX_FRAME_BYTES} bytes");
+            ensure!(
+                parsed <= MAX_FRAME_BYTES,
+                "frame exceeded {MAX_FRAME_BYTES} bytes"
+            );
             content_length = Some(parsed);
         } else if !name.eq_ignore_ascii_case("Content-Type") {
             bail!("unexpected stdout header {name:?}");
@@ -586,11 +683,19 @@ fn read_frame(reader: &mut dyn BufRead) -> Result<Option<Value>> {
 
     let length = content_length.ok_or_else(|| anyhow!("frame omitted Content-Length"))?;
     let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).context("read stdout frame body")?;
+    reader
+        .read_exact(&mut body)
+        .context("read stdout frame body")?;
     let message: Value = serde_json::from_slice(&body).with_context(|| {
-        format!("stdout frame was not JSON: {:?}", String::from_utf8_lossy(&body))
+        format!(
+            "stdout frame was not JSON: {:?}",
+            String::from_utf8_lossy(&body)
+        )
     })?;
-    ensure!(message.is_object(), "stdout JSON-RPC message was not an object");
+    ensure!(
+        message.is_object(),
+        "stdout JSON-RPC message was not an object"
+    );
     Ok(Some(message))
 }
 
