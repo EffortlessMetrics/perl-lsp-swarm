@@ -1,7 +1,8 @@
 // The lifecycle dispatcher retains the deprecated bridge mode solely for
 // existing library consumers and conformance comparisons.
-#![allow(deprecated)]
+#![cfg_attr(feature = "legacy-pls-bridge", allow(deprecated))]
 
+#[cfg(feature = "legacy-pls-bridge")]
 use crate::bridge_adapter::BridgeAdapter;
 use crate::debug_adapter::DebugAdapter;
 use crate::server::config::DapConfig;
@@ -30,8 +31,8 @@ impl perl_parser_core::ErrorClass for DapSocketBindError {
 ///
 /// New callers should use [`DapMode::Native`], which drives the built-in
 /// [`DebugAdapter`] through the local Perl interpreter. The deprecated bridge
-/// mode remains reachable only for legacy library consumers; it is not exposed
-/// by the shipped `perl-dap` CLI.
+/// mode remains as an inert source-compatibility variant in default builds and
+/// is executable only when the `legacy-pls-bridge` feature is selected.
 pub struct DapServer {
     /// Server configuration.
     pub config: DapConfig,
@@ -64,23 +65,32 @@ impl DapServer {
 
     /// Run the DAP server over stdio.
     ///
-    /// [`DapMode::Native`] is the supported product path. The deprecated bridge
-    /// branch is retained for source compatibility and conformance comparison.
+    /// [`DapMode::Native`] is the supported product path. Selecting the
+    /// deprecated bridge mode without its explicit compatibility feature fails
+    /// closed rather than spawning an external backend unexpectedly.
     pub fn run(&mut self) -> anyhow::Result<()> {
         match self.config.mode {
             DapMode::Native => self.adapter.run().map_err(Into::into),
             DapMode::Bridge => {
-                tracing::warn!(
-                    "Starting deprecated Perl::LanguageServer bridge compatibility mode"
+                #[cfg(feature = "legacy-pls-bridge")]
+                {
+                    tracing::warn!(
+                        "Starting deprecated Perl::LanguageServer bridge compatibility mode"
+                    );
+                    let rt = tokio::runtime::Runtime::new()?;
+                    return rt.block_on(async {
+                        let mut bridge = BridgeAdapter::new();
+                        bridge.spawn_pls_dap().await?;
+                        bridge.proxy_messages().await?;
+                        bridge.shutdown().await?;
+                        Ok(())
+                    });
+                }
+
+                #[cfg(not(feature = "legacy-pls-bridge"))]
+                anyhow::bail!(
+                    "legacy Perl::LanguageServer bridge support is not enabled; use DapMode::Native"
                 );
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(async {
-                    let mut bridge = BridgeAdapter::new();
-                    bridge.spawn_pls_dap().await?;
-                    bridge.proxy_messages().await?;
-                    bridge.shutdown().await?;
-                    Ok(())
-                })
             }
         }
     }
