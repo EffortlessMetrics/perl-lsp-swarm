@@ -3,9 +3,13 @@
 //! Keeps cancellation registration and compatibility initialization separate from
 //! method routing and response construction.
 
-// #7098 lands the bounded lifecycle owner at the request-admission boundary.
-// #7100 consumes it for cancellation and supersession policy.
-#[allow(dead_code)]
+// #7098 co-locates the bounded lifecycle substrate at the request-admission
+// boundary. It does not become the live admission owner until #7100 wires it
+// into prepare_request, cancellation, supersession, and response finalization.
+#[expect(
+    dead_code,
+    reason = "incoming request owner remains unwired until #7100"
+)]
 #[path = "request_lifecycle.rs"]
 pub(super) mod request_lifecycle;
 
