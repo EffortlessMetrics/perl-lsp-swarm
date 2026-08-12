@@ -7,6 +7,7 @@ const {
   bundleTargetForPlatform,
   computeOverallStatus,
   finalizeSmokeRun,
+  interpretTransitionResult,
   shouldRunBehavioralSmoke,
   stageServerForPackage,
   writeJsonAtomic,
@@ -66,26 +67,51 @@ void test('cleans failed staging after creating the platform directory', () => {
   }
 });
 
-void test('runs behavioral smoke after a size-only inventory rejection', () => {
+void test('runs behavioral smoke when a size-only policy result remains red', () => {
   assert.equal(
     shouldRunBehavioralSmoke({
       package_creation: { status: 'pass' },
-      package_inventory: { status: 'failed', classification: 'size_only' },
+      package_inventory: {
+        status: 'failed',
+        classification: 'size_only',
+        behavior_safe: true,
+      },
       behavioral_smoke: { status: 'not_run' },
     }),
     true,
   );
 });
 
-void test('does not execute an unsafe structural package', () => {
+void test('runs behavioral smoke for an undeclared but structurally safe transition', () => {
   assert.equal(
     shouldRunBehavioralSmoke({
       package_creation: { status: 'pass' },
-      package_inventory: { status: 'failed', classification: 'structural' },
+      package_inventory: {
+        status: 'failed',
+        classification: 'pass',
+        behavior_safe: true,
+        transition_state: 'undeclared_transition',
+      },
       behavioral_smoke: { status: 'not_run' },
     }),
-    false,
+    true,
   );
+});
+
+void test('does not execute a structural or not-proven package', () => {
+  for (const stage of [
+    { status: 'failed', classification: 'structural', behavior_safe: false },
+    { status: 'not_proven', classification: 'not_proven', behavior_safe: false },
+  ]) {
+    assert.equal(
+      shouldRunBehavioralSmoke({
+        package_creation: { status: 'pass' },
+        package_inventory: stage,
+        behavioral_smoke: { status: 'not_run' },
+      }),
+      false,
+    );
+  }
 });
 
 void test('keeps aggregate failure when behavior passes after size-only rejection', () => {
@@ -110,6 +136,75 @@ void test('reports not-proven rather than pass when behavior did not run', () =>
   );
 });
 
+function transitionReport(overrides = {}) {
+  return {
+    schema_version: 'vsix_inventory_transition.v1',
+    receipt_kind: 'vsix_inventory_transition',
+    candidate_sha: 'a'.repeat(40),
+    base_sha: 'b'.repeat(40),
+    platform: process.platform,
+    architecture: process.arch,
+    state: 'transition_required',
+    passed: false,
+    behavior_safe: true,
+    package_policy_class: 'size_only',
+    policy_violations: ['file out/extension.js grew from 8 to 10 bytes'],
+    declaration_violations: [],
+    ...overrides,
+  };
+}
+
+void test('maps size-only transition policy red to a safe failed inventory stage', () => {
+  const stage = interpretTransitionResult(
+    { status: 1, stdout: JSON.stringify(transitionReport()), stderr: '', error: null },
+    'a'.repeat(40),
+  );
+  assert.equal(stage.status, 'failed');
+  assert.equal(stage.classification, 'size_only');
+  assert.equal(stage.behavior_safe, true);
+  assert.equal(stage.transition_state, 'transition_required');
+});
+
+void test('rejects a transition receipt for another candidate', () => {
+  const stage = interpretTransitionResult(
+    {
+      status: 1,
+      stdout: JSON.stringify(transitionReport({ candidate_sha: 'c'.repeat(40) })),
+      stderr: '',
+      error: null,
+    },
+    'a'.repeat(40),
+  );
+  assert.equal(stage.status, 'not_proven');
+  assert.equal(stage.behavior_safe, false);
+  assert.match(stage.reason, /candidate SHA/);
+});
+
+void test('preserves typed not-proven transition failures', () => {
+  const stage = interpretTransitionResult(
+    {
+      status: 2,
+      stdout: JSON.stringify(
+        transitionReport({
+          state: 'not_proven',
+          passed: false,
+          behavior_safe: false,
+          package_policy_class: 'not_proven',
+          reason: 'unable to resolve base',
+          policy_violations: [],
+        }),
+      ),
+      stderr: '',
+      error: null,
+    },
+    'a'.repeat(40),
+  );
+  assert.equal(stage.status, 'not_proven');
+  assert.equal(stage.classification, 'not_proven');
+  assert.equal(stage.behavior_safe, false);
+  assert.equal(stage.reason, 'unable to resolve base');
+});
+
 void test('writes a complete receipt through an atomic replacement', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-receipt-'));
   const destination = path.join(directory, 'receipt.json');
@@ -129,7 +224,7 @@ function passingReceipt() {
   return {
     stages: {
       package_creation: { status: 'pass' },
-      package_inventory: { status: 'pass', classification: 'pass' },
+      package_inventory: { status: 'pass', classification: 'pass', behavior_safe: true },
       behavioral_smoke: { status: 'pass' },
     },
     instrument_failure: null,

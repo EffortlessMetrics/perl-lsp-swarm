@@ -161,7 +161,12 @@ function initialReceipt(revision) {
     },
     stages: {
       package_creation: { status: 'not_proven', reason: 'not_started' },
-      package_inventory: { status: 'not_proven', reason: 'not_started' },
+      package_inventory: {
+        status: 'not_proven',
+        classification: 'not_proven',
+        behavior_safe: false,
+        reason: 'not_started',
+      },
       behavioral_smoke: { status: 'not_run', reason: 'not_started' },
     },
     instrument_failure: null,
@@ -171,13 +176,10 @@ function initialReceipt(revision) {
 }
 
 function shouldRunBehavioralSmoke(stages) {
-  if (stages.package_creation.status !== 'pass') {
-    return false;
-  }
   return (
-    stages.package_inventory.status === 'pass' ||
-    (stages.package_inventory.status === 'failed' &&
-      stages.package_inventory.classification === 'size_only')
+    stages.package_creation.status === 'pass' &&
+    stages.package_inventory.behavior_safe === true &&
+    stages.package_inventory.status !== 'not_proven'
   );
 }
 
@@ -207,14 +209,12 @@ function persistReceipt(destination, receipt) {
   writeJsonAtomic(destination, receipt);
 }
 
-function runInventoryCheck(env) {
-  const scriptPath = path.join(__dirname, 'check-vsix-inventory.js');
-  const result = spawnSync(process.execPath, [scriptPath], {
-    cwd: root,
-    env,
-    encoding: 'utf8',
-    windowsHide: true,
-  });
+function interpretTransitionResult(
+  result,
+  expectedRevision,
+  expectedPlatform = process.platform,
+  expectedArchitecture = process.arch,
+) {
   if (result.stdout) {
     process.stdout.write(result.stdout);
   }
@@ -225,6 +225,7 @@ function runInventoryCheck(env) {
     return {
       status: 'not_proven',
       classification: 'not_proven',
+      behavior_safe: false,
       reason: result.error.message,
       exit_code: null,
       violations: [],
@@ -234,9 +235,10 @@ function runInventoryCheck(env) {
     return {
       status: 'not_proven',
       classification: 'not_proven',
+      behavior_safe: false,
       reason: result.signal
-        ? `inventory process terminated by ${result.signal}`
-        : 'inventory process did not return a status',
+        ? `transition process terminated by ${result.signal}`
+        : 'transition process did not return a status',
       exit_code: null,
       violations: [],
     };
@@ -249,7 +251,8 @@ function runInventoryCheck(env) {
     return {
       status: 'not_proven',
       classification: 'not_proven',
-      reason: `inventory output was not valid JSON: ${
+      behavior_safe: false,
+      reason: `transition output was not valid JSON: ${
         error instanceof Error ? error.message : String(error)
       }`,
       exit_code: result.status,
@@ -257,38 +260,126 @@ function runInventoryCheck(env) {
     };
   }
 
-  const classification = report.classification;
-  const violations = Array.isArray(report.violations) ? report.violations : [];
-  if (result.status === 0 && classification === 'pass' && violations.length === 0) {
+  const identityViolations = [];
+  if (report.schema_version !== 'vsix_inventory_transition.v1') {
+    identityViolations.push('unsupported transition receipt schema');
+  }
+  if (report.receipt_kind !== 'vsix_inventory_transition') {
+    identityViolations.push('unexpected transition receipt kind');
+  }
+  if (report.candidate_sha !== expectedRevision) {
+    identityViolations.push('transition receipt candidate SHA does not match the smoke subject');
+  }
+  if (report.platform !== expectedPlatform || report.architecture !== expectedArchitecture) {
+    identityViolations.push('transition receipt platform/architecture does not match the smoke host');
+  }
+  if (identityViolations.length > 0) {
+    return {
+      status: 'not_proven',
+      classification: 'not_proven',
+      behavior_safe: false,
+      reason: identityViolations.join('; '),
+      exit_code: result.status,
+      violations: identityViolations,
+      transition: report,
+    };
+  }
+
+  const classification = report.package_policy_class;
+  const knownClassification = ['pass', 'size_only', 'structural', 'not_proven'].includes(
+    classification,
+  );
+  const policyViolations = Array.isArray(report.policy_violations)
+    ? report.policy_violations
+    : [];
+  const declarationViolations = Array.isArray(report.declaration_violations)
+    ? report.declaration_violations
+    : [];
+  const violations = [...policyViolations, ...declarationViolations];
+
+  if (
+    result.status === 0 &&
+    report.passed === true &&
+    report.state !== 'not_proven' &&
+    classification === 'pass' &&
+    report.behavior_safe === true
+  ) {
     return {
       status: 'pass',
       classification,
+      behavior_safe: true,
+      transition_state: report.state,
       exit_code: 0,
       violations,
-      inventory: report,
+      transition: report,
     };
   }
+
   if (
-    result.status !== 0 &&
-    (classification === 'size_only' || classification === 'structural') &&
-    violations.length > 0
+    result.status === 1 &&
+    report.passed === false &&
+    report.state !== 'not_proven' &&
+    knownClassification &&
+    classification !== 'not_proven' &&
+    typeof report.behavior_safe === 'boolean'
   ) {
     return {
       status: 'failed',
       classification,
-      exit_code: result.status,
+      behavior_safe: report.behavior_safe,
+      transition_state: report.state,
+      exit_code: 1,
       violations,
-      inventory: report,
+      transition: report,
     };
   }
+
+  if (
+    result.status === 2 &&
+    report.state === 'not_proven' &&
+    report.passed === false &&
+    classification === 'not_proven' &&
+    report.behavior_safe === false
+  ) {
+    return {
+      status: 'not_proven',
+      classification,
+      behavior_safe: false,
+      transition_state: report.state,
+      reason: report.reason || 'transition instrument did not prove package state',
+      exit_code: 2,
+      violations,
+      transition: report,
+    };
+  }
+
   return {
     status: 'not_proven',
     classification: 'not_proven',
-    reason: `inventory exit ${result.status} contradicted classification ${String(classification)}`,
+    behavior_safe: false,
+    reason: `transition exit ${result.status} contradicted state ${String(
+      report.state,
+    )}, classification ${String(classification)}, and passed=${String(report.passed)}`,
     exit_code: result.status,
     violations,
-    inventory: report,
+    transition: report,
   };
+}
+
+function runInventoryTransition(env, expectedRevision) {
+  const scriptPath = path.join(__dirname, 'check-vsix-inventory-transition.js');
+  const args = [scriptPath];
+  const explicitBase = (env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
+  if (explicitBase) {
+    args.push('--base', explicitBase);
+  }
+  const result = spawnSync(process.execPath, args, {
+    cwd: root,
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  return interpretTransitionResult(result, expectedRevision);
 }
 
 function exitCodeFor(overall) {
@@ -351,6 +442,8 @@ function main() {
     if (receipt.stages.package_inventory.reason === 'not_started') {
       receipt.stages.package_inventory = {
         status: 'not_proven',
+        classification: 'not_proven',
+        behavior_safe: false,
         reason: 'package_creation_or_input_validation_failed',
       };
     }
@@ -406,6 +499,7 @@ function main() {
       const packageEnv = {
         ...process.env,
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+        PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
       const packageResult = runNpm(
         ['exec', '--offline', '--no', '--', '@vscode/vsce', 'package'],
@@ -419,6 +513,8 @@ function main() {
         };
         receipt.stages.package_inventory = {
           status: 'not_proven',
+          classification: 'not_proven',
+          behavior_safe: false,
           reason: 'package_creation_not_proven',
         };
         receipt.stages.behavioral_smoke = {
@@ -436,6 +532,8 @@ function main() {
         };
         receipt.stages.package_inventory = {
           status: 'not_proven',
+          classification: 'not_proven',
+          behavior_safe: false,
           reason: 'package_creation_failed',
         };
         receipt.stages.behavioral_smoke = {
@@ -453,6 +551,8 @@ function main() {
         };
         receipt.stages.package_inventory = {
           status: 'not_proven',
+          classification: 'not_proven',
+          behavior_safe: false,
           reason: 'expected_vsix_missing',
         };
         receipt.stages.behavioral_smoke = {
@@ -470,7 +570,7 @@ function main() {
       receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
       persistReceipt(destination, receipt);
 
-      receipt.stages.package_inventory = runInventoryCheck(packageEnv);
+      receipt.stages.package_inventory = runInventoryTransition(packageEnv, revision);
       persistReceipt(destination, receipt);
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
@@ -512,7 +612,11 @@ function main() {
           reason:
             receipt.stages.package_creation.status !== 'pass'
               ? 'package_creation_not_passed'
-              : `inventory_${receipt.stages.package_inventory.classification || 'not_proven'}`,
+              : `inventory_${
+                  receipt.stages.package_inventory.transition_state ||
+                  receipt.stages.package_inventory.classification ||
+                  'not_proven'
+                }`,
         };
       }
       persistReceipt(destination, receipt);
@@ -534,6 +638,7 @@ module.exports = {
   computeOverallStatus,
   finalizeSmokeRun,
   initialReceipt,
+  interpretTransitionResult,
   receiptPath,
   shouldRunBehavioralSmoke,
   stageServerForPackage,

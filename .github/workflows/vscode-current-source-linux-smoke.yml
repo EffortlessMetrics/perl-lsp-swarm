@@ -1,7 +1,12 @@
 name: VS Code Current-Source Linux Smoke
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      accepted_base_sha:
+        description: Exact accepted base commit to compare with the dispatched candidate
+        required: true
+        type: string
   pull_request:
     branches: [main, master]
     paths:
@@ -53,6 +58,12 @@ jobs:
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
 
+      - name: Test VSIX inventory and orchestration contracts
+        run: >-
+          node --test
+          scripts/check-vsix-inventory-transition.test.js
+          scripts/run-local-vsix-smoke.test.js
+
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
@@ -70,6 +81,7 @@ jobs:
         env:
           PERL_LSP_E2E: '1'
           PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perllsp
+          PERL_LSP_PACKAGE_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.accepted_base_sha }}
           PERL_LSP_SERVER_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           PERL_LSP_SMOKE_SOURCE_LABEL: hosted-linux-current-source
         run: xvfb-run -a npm run test:published:local
