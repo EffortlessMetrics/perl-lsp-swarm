@@ -42,7 +42,7 @@ fn trivia_preserving_parser_returns_canonical_ast() {
     let mut canonical = Parser::new(&source);
     let canonical_output = canonical.parse_with_recovery();
 
-    assert!(matches!(result.parse.ast.kind, NodeKind::Program { .. }));
+    assert!(matches!(&result.parse.ast.kind, NodeKind::Program { .. }));
     assert_eq!(result.parse.ast.to_sexp(), canonical_output.ast.to_sexp());
     assert_eq!(result.parse.diagnostics, canonical_output.diagnostics);
     assert!(result
