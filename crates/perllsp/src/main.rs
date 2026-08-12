@@ -1,4 +1,4 @@
-use perl_lsp_rs_core::product_identity::{
+use perllsp::protocol::product_identity::{
     BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
 };
 use std::io::Write as _;
