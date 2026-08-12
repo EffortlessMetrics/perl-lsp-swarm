@@ -25,168 +25,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Insert status banners and write regression test
-        run: |
-          python3 - <<'PY'
-          from __future__ import annotations
-
-          from pathlib import Path
-
-
-          ROOT = Path.cwd()
-          MARKER = "<!-- authority-status:v1 -->"
-          DOCUMENTS = {
-              "docs/reference/ORCHESTRATION_DOCTRINE.md": (
-                  "superseded",
-                  "../agents/DEVELOPMENT_METHOD.md",
-                  "Development method",
-              ),
-              "docs/reference/PIPELINE_GATES.md": (
-                  "superseded",
-                  "../agents/DEVELOPMENT_METHOD.md",
-                  "Development method",
-              ),
-              "docs/reference/OCTOPUS_CLUSTER.md": (
-                  "historical",
-                  "../agents/DEVELOPMENT_METHOD.md",
-                  "Development method",
-              ),
-              "docs/reference/GLOSSARY.md": (
-                  "superseded",
-                  "../agents/AUTHORITY_STATUS.md",
-                  "Agent and maintainer authority status",
-              ),
-              "docs/reference/LIVE_SIGNALS_VS_LABELS.md": (
-                  "historical",
-                  "../agents/GITHUB_SURFACES.md",
-                  "GitHub surfaces",
-              ),
-              "docs/adr/0044-octopus-cluster-orchestration.md": (
-                  "superseded",
-                  "../agents/DEVELOPMENT_METHOD.md",
-                  "Development method",
-              ),
-              "docs/articles/PIPELINE_STATE_MACHINE.md": (
-                  "historical",
-                  "../agents/GITHUB_SURFACES.md",
-                  "GitHub surfaces",
-              ),
-              "docs/handoff/SWARM_DESIGN.md": (
-                  "historical",
-                  "../agents/DEVELOPMENT_METHOD.md",
-                  "Development method",
-              ),
-              ".spec/3988-merge-readiness/spec.md": (
-                  "historical",
-                  "../../docs/agents/REVIEW_CURRENTNESS.md",
-                  "Review and proof currentness",
-              ),
-          }
-
-
-          def insert_banner(path: str, status: str, successor: str, label: str) -> None:
-              file = ROOT / path
-              text = file.read_text(encoding="utf-8")
-              if MARKER in text:
-                  return
-
-              if path == "docs/reference/PIPELINE_GATES.md":
-                  text = text.replace(
-                      "**Status**: Active doctrine (introduced 2026-04-27; authority model reconciled 2026-07-13 for the #4005 subtraction)",
-                      "**Status**: Superseded historical doctrine (introduced 2026-04-27; superseded by the provider-native method)",
-                      1,
-                  )
-              if path == "docs/adr/0044-octopus-cluster-orchestration.md":
-                  text = text.replace("**Status**: Accepted", "**Status**: Superseded", 1)
-
-              newline = text.find("\n")
-              if newline < 0:
-                  raise RuntimeError(f"{path}: missing title line")
-              banner = (
-                  f"\n\n{MARKER}\n"
-                  f"> **Status: {status}.** Current authority: [{label}]({successor}).\n"
-                  "> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md)."
-              )
-              if path.startswith(".spec/"):
-                  banner = banner.replace(
-                      "(../agents/AUTHORITY_STATUS.md)",
-                      "(../../docs/agents/AUTHORITY_STATUS.md)",
-                  )
-              text = text[:newline] + banner + text[newline:]
-              file.write_text(text, encoding="utf-8")
-
-
-          for path, (status, successor, label) in DOCUMENTS.items():
-              insert_banner(path, status, successor, label)
-
-          test = '''from __future__ import annotations
-
-          import tomllib
-          import unittest
-          from pathlib import Path
-
-
-          ROOT = Path(__file__).resolve().parents[1]
-          REGISTRY = ROOT / "docs" / "agents" / "authority_status.toml"
-          EXPECTED = {
-              "docs/reference/ORCHESTRATION_DOCTRINE.md": ("superseded", "DEVELOPMENT_METHOD.md"),
-              "docs/reference/PIPELINE_GATES.md": ("superseded", "DEVELOPMENT_METHOD.md"),
-              "docs/reference/OCTOPUS_CLUSTER.md": ("historical", "DEVELOPMENT_METHOD.md"),
-              "docs/reference/GLOSSARY.md": ("superseded", "AUTHORITY_STATUS.md"),
-              "docs/reference/LIVE_SIGNALS_VS_LABELS.md": ("historical", "GITHUB_SURFACES.md"),
-              "docs/adr/0044-octopus-cluster-orchestration.md": ("superseded", "DEVELOPMENT_METHOD.md"),
-              "docs/articles/PIPELINE_STATE_MACHINE.md": ("historical", "GITHUB_SURFACES.md"),
-              "docs/handoff/SWARM_DESIGN.md": ("historical", "DEVELOPMENT_METHOD.md"),
-              ".spec/3988-merge-readiness/spec.md": ("historical", "REVIEW_CURRENTNESS.md"),
-          }
-
-
-          class LegacyAuthorityBannerTests(unittest.TestCase):
-              def test_local_banners_match_registry(self) -> None:
-                  registry = tomllib.loads(REGISTRY.read_text(encoding="utf-8"))
-                  by_path = {row["path"]: row for row in registry["documents"]}
-
-                  for path, (status, successor) in EXPECTED.items():
-                      with self.subTest(path=path):
-                          head = "\n".join(
-                              (ROOT / path).read_text(encoding="utf-8").splitlines()[:20]
-                          )
-                          self.assertIn("<!-- authority-status:v1 -->", head)
-                          self.assertIn(f"Status: {status}.", head)
-                          self.assertIn("AUTHORITY_STATUS.md", head)
-                          self.assertIn(successor, head)
-                          self.assertEqual(by_path[path]["status"], status)
-
-              def test_explicit_old_statuses_are_not_still_current(self) -> None:
-                  pipeline = "\n".join(
-                      (ROOT / "docs/reference/PIPELINE_GATES.md")
-                      .read_text(encoding="utf-8")
-                      .splitlines()[:20]
-                  )
-                  adr = "\n".join(
-                      (ROOT / "docs/adr/0044-octopus-cluster-orchestration.md")
-                      .read_text(encoding="utf-8")
-                      .splitlines()[:20]
-                  )
-
-                  self.assertNotIn("**Status**: Active doctrine", pipeline)
-                  self.assertIn("**Status**: Superseded", pipeline)
-                  self.assertNotIn("**Status**: Accepted", adr)
-                  self.assertIn("**Status**: Superseded", adr)
-
-
-          if __name__ == "__main__":
-              unittest.main()
-          '''
-          lines = test.splitlines()
-          normalized = "\n".join(line[10:] if line.startswith("          ") else line for line in lines)
-          (ROOT / "tests/test_legacy_authority_banners.py").write_text(
-              normalized.lstrip() + "\n", encoding="utf-8"
-          )
-          PY
+      - name: Apply bounded banner migration
+        run: python3 scripts/migrate-legacy-authority-banners.py
 
       - name: Verify migrated authority surfaces
         run: python3 -m unittest tests/test_legacy_authority_banners.py
+
+      - name: Check migrated diff hygiene
+        run: git diff --check
 
       - name: Commit migration
         run: |
@@ -202,7 +48,10 @@ jobs:
             docs/adr/0044-octopus-cluster-orchestration.md \
             docs/articles/PIPELINE_STATE_MACHINE.md \
             docs/handoff/SWARM_DESIGN.md \
-            .spec/3988-merge-readiness/spec.md \
-            tests/test_legacy_authority_banners.py
+            .spec/3988-merge-readiness/spec.md
+          if git diff --cached --quiet; then
+            echo "No banner changes required"
+            exit 0
+          fi
           git commit -m "docs(control-plane): mark legacy authority files historical"
           git push origin HEAD
