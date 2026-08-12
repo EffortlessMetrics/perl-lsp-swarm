@@ -31,6 +31,41 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
+      - name: Correct repair helper idempotence
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/scripts/repair_compiler_concepts.py")
+          text = path.read_text()
+          old = '''def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one exact replacement, found {count}")
+              file.write_text(text.replace(old, new, 1))
+          '''
+          new = '''def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count == 1:
+                  file.write_text(text.replace(old, new, 1))
+                  return
+              if count == 0 and new in text:
+                  return
+              raise SystemExit(f"{path}: expected one exact replacement, found {count}")
+          '''
+          if new not in text:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"repair helper definition mismatch: found {count}")
+              path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Apply reviewed repairs
         run: |
           python3 .github/scripts/repair_compiler_concepts.py
