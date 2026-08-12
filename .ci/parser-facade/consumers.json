@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "consumer_groups": [
+    {
+      "name": "incremental_compatibility",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Reduce the compatibility crate to forwarding and downstream compilation proof.",
+      "members": [
+        "crates/perl-incremental-parsing/Cargo.toml"
+      ]
+    },
+    {
+      "name": "parser_validation_and_alternatives",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6698",
+      "target_owner": "#7065",
+      "exit_condition": "Retain as explicit comparison/test consumers; they cannot become parser facade authorities.",
+      "members": [
+        "crates/perl-parser-bench/Cargo.toml",
+        "crates/perl-parser-comparison/Cargo.toml",
+        "crates/perl-parser-pest/Cargo.toml",
+        "crates/perl-tree-sitter-compat/Cargo.toml",
+        "crates/tree-sitter-perl-rs/Cargo.toml"
+      ]
+    },
+    {
+      "name": "lower_crate_tests_and_compatibility",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7065",
+      "exit_condition": "Allow only dev/test or bounded compatibility edges; production reverse dependencies remain forbidden.",
+      "members": [
+        "crates/perl-lexer/Cargo.toml",
+        "crates/perl-parser-core/Cargo.toml",
+        "crates/perl-token/Cargo.toml"
+      ]
+    },
+    {
+      "name": "semantic_workspace_and_tooling",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Keep these consumers above the parser facade and migrate them to explicit parser attachment points.",
+      "members": [
+        "crates/perl-dap/Cargo.toml",
+        "crates/perl-lsp-perltidy/Cargo.toml",
+        "crates/perl-lsp-rs-core/Cargo.toml",
+        "crates/perl-lsp-rs/Cargo.toml",
+        "crates/perl-module/Cargo.toml",
+        "crates/perl-ripr-facts/Cargo.toml",
+        "crates/perl-semantic-analyzer/Cargo.toml",
+        "crates/perl-symbol/Cargo.toml",
+        "crates/perl-tdd-support/Cargo.toml",
+        "crates/perl-workspace-core/Cargo.toml",
+        "crates/perl-workspace/Cargo.toml"
+      ]
+    },
+    {
+      "name": "repository_automation",
+      "classification": "product_composition",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7065",
+      "exit_condition": "Retain repository automation as an external consumer of the documented parser facade.",
+      "members": [
+        "xtask/Cargo.toml"
+      ]
+    }
+  ]
+}
