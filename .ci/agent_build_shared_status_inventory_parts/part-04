@@ -1,0 +1,100 @@
+    )
+    end_marker = "// ---------------------------------------------------------------------------\n// Receipt-reading tests\n"
+    text = quality_tests.read_text(encoding="utf-8")
+    end = text.find(end_marker)
+    if start < 0 or end < 0 or start >= end:
+        raise SystemExit("quality tests: parser-test block anchors not found")
+    quality_tests.write_text(text[:start] + end_marker + text[end + len(end_marker) :], encoding="utf-8")
+
+    tests = Path("xtask/src/tasks/update_status/tests.rs")
+    replace_once(tests, "use regex::Regex;\n\n", "")
+    replace_once(
+        tests,
+        "use super::{replace_block, run_cmd};\n",
+        "use super::test_inventory::WorkspaceLibTestInventory;\nuse super::{replace_block, run_cmd};\n",
+    )
+    replace_once(
+        tests,
+        r'''pub(super) fn count_tier_a_lib_tests(root: &Path) -> Option<usize> {
+    let output = run_cmd(
+        root,
+        &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
+        Duration::from_mins(3),
+    );
+    if output.is_empty() {
+        return None;
+    }
+    let re = Regex::new(r":\s*test\s*$").ok()?;
+    Some(output.lines().filter(|line| re.is_match(line)).count())
+}
+
+''',
+        "",
+    )
+    replace_once(
+        tests,
+        "pub(super) fn count_tests(root: &Path) -> TestCounts {\n    let tier_a = count_tier_a_lib_tests(root);\n",
+        "pub(super) fn count_tests(\n    root: &Path,\n    test_inventory: Option<&WorkspaceLibTestInventory>,\n) -> TestCounts {\n    let tier_a = test_inventory.map(WorkspaceLibTestInventory::total);\n",
+    )
+    replace_once(
+        tests,
+        "    #[test]\n    fn generate_tests_status_handles_zero_discovery_gracefully() -> Result<()> {\n",
+        '''    #[test]
+    fn count_tests_uses_the_shared_inventory_total() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::create_dir_all(dir.path().join("crates"))?;
+        let inventory = WorkspaceLibTestInventory::from_parts(
+            std::collections::BTreeMap::from([
+                ("perl-parser".to_string(), 3),
+                ("perl-lsp-rs".to_string(), 4),
+            ]),
+            2,
+        );
+
+        let counts = count_tests(dir.path(), Some(&inventory));
+
+        assert_eq!(counts.tier_a_lib_tests, Some(9));
+        Ok(())
+    }
+
+    #[test]
+    fn count_tests_without_inventory_preserves_unverified_tier_a() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::create_dir_all(dir.path().join("crates"))?;
+
+        let counts = count_tests(dir.path(), None);
+
+        assert_eq!(counts.tier_a_lib_tests, None);
+        Ok(())
+    }
+
+    #[test]
+    fn generate_tests_status_handles_zero_discovery_gracefully() -> Result<()> {
+''',
+    )
+
+    module = Path("xtask/src/tasks/update_status/mod.rs")
+    replace_once(module, "mod quality;\nmod tests;\n", "mod quality;\nmod test_inventory;\nmod tests;\n")
+    replace_once(
+        module,
+        "// ---------------------------------------------------------------------------\n// Public entry point\n// ---------------------------------------------------------------------------\n",
+        '''// ---------------------------------------------------------------------------
+// Shared evidence collection
+// ---------------------------------------------------------------------------
+
+fn collect_shared_test_inventory<F>(
+    need_tests: bool,
+    need_quality: bool,
+    collect: F,
+) -> Result<Option<test_inventory::WorkspaceLibTestInventory>>
+where
+    F: FnOnce() -> Result<test_inventory::WorkspaceLibTestInventory>,
+{
+    if !need_tests && !need_quality {
+        return Ok(None);
+    }
+
+    match collect() {
+        Ok(inventory) => Ok(Some(inventory)),
+        Err(err) if need_quality => Err(err),
+        Err(err) => {
