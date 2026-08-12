@@ -1,56 +1,150 @@
 ---
 name: publish-pr
-description: Publish one locally complete coherent candidate through a concise GitHub review index, ready by default, with draft reserved for a named remote-only proof or collaboration need.
+description: Publish one candidate-bound locally proven coherent change through a concise GitHub review index, ready by default, with draft reserved for a named remote-only proof or collaboration need.
 user-invocable: false
 ---
 
 # Publish PR
 
-Verify candidate, branch, base, worktree, controlling issue, an equivalent active candidate, and any actual same-branch/worktree writer collision. Do not infer ownership from touched-file or nearby-symbol overlap.
+Publish the current coherent candidate; do not use GitHub as the ordinary scratchpad for
+unfinished local work.
 
-Publish ready only when applicable focused/affected proof and negative protection are current; hardening, simplification, and local candidate review are complete; the worktree is clean; the issue/claim/contract are current; and Changie/changelog, support, migration, and release dispositions are complete or not applicable.
+Verify branch, worktree, candidate commit, base, controlling issue, claim, and governing
+contract identity. Confirm no equivalent active PR or actual same-candidate writer
+collision exists. Touched-file or nearby-symbol overlap alone is not ownership.
 
-Otherwise return to `build-candidate`. Draft only for a named remote-only proof, real collaboration, early visible ownership, or protected integration experiment. Record that reason and its completion condition in the PR body.
+## Required local input
 
-For an existing draft, inspect the named condition. Once complete, recheck the entire ready threshold and explicitly mark the PR ready through Claude's native GitHub surface or `gh pr ready <n>`. Do not leave a completed draft in a repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair rather than marking ready.
+Consume the current `prove-before-push` packet for this exact candidate commit/range.
+The packet must state:
 
-Use the PR body as a review index covering claim, issue, contract, production path, proof, hardening, simplification, deviations, limits, risk, rollback, and review locations.
+- resolved base/head and change-set digest;
+- selected and deferred affected-proof steps;
+- commands/results and affected scope;
+- Changie fragment/exemption identity and dry-render result;
+- diff-scoped RIPR and review-guidance disposition, or an exact local `NOT_PROVEN` /
+  named remote-only boundary owned by #7365;
+- proof deliberately not run and why;
+- one result class and next route.
+
+Do not reconstruct this packet from raw logs or attach a result from another candidate
+head. Formatting, `git diff --check`, a green focused test, or a clean worktree alone do
+not satisfy the candidate-bound result.
+
+## Ready-publication threshold
+
+A candidate publishes ready only when:
+
+- `prove-before-push` returned `LOCAL_CANDIDATE_PROVEN` for the current candidate;
+- focused and selected affected proof passes;
+- relevant negative, stale, failure, refusal, and recovery protection exists;
+- applicable local diff-scoped RIPR and Changie obligations are current;
+- test hardening, simplification, and mutable local candidate review are complete;
+- the worktree contains no accidental or unsalvaged changes;
+- the controlling issue, claim boundary, governing contract, prerequisites, and
+  deviations are current;
+- the candidate is one coherent acceptance-and-rollback claim;
+- deferred and remote-only proof are stated without being represented as already run.
+
+If this threshold is not met, follow the `prove-before-push` result:
+
+- product/test failure or RIPR gap → `build-candidate` / `improve-test-suite`;
+- weak proof → `prepare-proof`;
+- material premise change → `prepare-issue`;
+- instrument `NOT_PROVEN` → repair/bootstrap the instrument or preserve the boundary;
+- incoherent/dirty candidate → `build-candidate`.
+
+Do not open a churn-producing ready PR merely to obtain ordinary proof that belongs
+locally.
+
+## Draft exceptions and transition
+
+Draft publication is allowed only when it buys one concrete capability:
+
+- `prove-before-push` returned `REMOTE_ONLY_PROOF_REQUIRED` and named the platform,
+  packaged artifact, external service, clean-environment behavior, or protected
+  integration fact unavailable locally;
+- real branch collaboration is required;
+- early visible ownership prevents duplicate substantial work;
+- a protected integration experiment is itself the subject.
+
+A local `INSTRUMENT_NOT_PROVEN` result is not automatically remote-only. The body must
+name why the local instrument cannot establish the fact, which GitHub workflow/check
+will, and what exact result completes the draft purpose.
+
+For an existing draft, inspect that named condition. Once complete, re-run any local
+proof invalidated by intervening candidate changes, recheck the entire ready threshold,
+and explicitly mark the PR ready through Claude's native GitHub surface or
+`gh pr ready <n>`. Do not leave a completed draft in a repeating `DRAFT` state.
+
+## PR review index
+
+Use the PR body as an index into durable state, not a copy of the issue or raw logs:
+
+```markdown
+## Claim
+## Controlling issue
+## Governing contract / spec
+## Changed production path
+## Local candidate proof
+- base/head + change-set digest
+- selected/deferred proof
+- tests/oracles and negative controls
+- RIPR disposition
+- Changie disposition
+## Test hardening
+## Simplification
+## Deviations
+## What this establishes
+## What this does not establish
+## Remote-only proof still required
+## Risk and rollback
+## Review index
+```
+
+Do not claim hosted proof, formal review, or merge readiness before current GitHub
+evidence exists. Link stable receipts/artifacts rather than copying high-volume output.
 
 ## Enforcement status is part of the claim
 
-When a candidate adds or changes a gate, check, linting check, ratchet, or policy, state in the body whether it is **required** or **advisory**, and resolve that against live protection rather than intent. A body implying a gate blocks merge when it runs advisory overstates the claim, and the overstatement survives the merge as documentation.
+When a candidate adds or changes a gate, check, ratchet, or policy, state whether it is
+required or advisory, resolved against live classic branch protection and repository
+rulesets. They are independent and additive. Inspect enforcement status, target refs,
+bypass actors, and the reporting job; do not infer blocking authority from the workflow
+name or intent.
 
-Read both enforcement systems. Classic branch protection and repository rulesets are independent and additive, so either one alone gives a confidently wrong answer, and a check may be required by one, the other, both, or neither. Inspect ruleset enforcement status, target refs, and bypass actors as well as classic branch protection. A gate that runs inside a composite or conditional job is required only to the extent its calling job reports it; a skipped job reports Success, while a workflow-level skip leaves a required check Pending.
-
-Where a change is deliberately advisory first — a new ratchet needing a baseline, or a gate that cannot pass until something merges past it — say so and name the condition for promotion. Unenforced-by-design is an honest claim; unenforced-and-described-as-blocking is not.
+Where a change is deliberately advisory first, say so and name the promotion condition.
+Unenforced-by-design is honest; unenforced-and-described-as-blocking is not.
 
 ## A published branch still has one writer
 
-Publishing does not release the candidate. The branch keeps exactly one writer until
-the claim merges or is deliberately closed, and a reviewer who wants a change requests
-it rather than pushing it.
+Publishing does not release the candidate. The branch keeps one writer until the claim
+merges or is deliberately closed. Reviewers request changes; a reviewer may be promoted
+in place only through the claim's one-writer boundary.
 
-A second writer pushing to a published branch produces failures that look like the
-author's: the push can land a change that was never proven, it can be silently absorbed
-by the author's next force-push, and the author's local head and the PR head diverge
-without either party noticing. All three are expensive precisely because the branch
-still looks like one coherent candidate.
+If another actor has already pushed, read and verify what landed before adopting or
+replacing it. Treat a material reviewer-applied repair as new authored candidate state:
+run affected local proof and refresh affected review dimensions. Do not force-push over
+compatible work or rebuild a PR merely because the head changed.
 
-If a reviewer has already pushed, do not race it. Read what landed, verify it against
-observed behavior rather than assuming it is correct, and either adopt it — restating
-the proof, since a reviewer's push carries none — or replace it and say why in the
-thread. Step 8 of `address-review-comments` covers the same case: a reviewer-applied
-repair makes a new authored candidate whose affected review dimensions are invalid.
-
-Recreating a closed PR is a different matter: GitHub refuses to reopen a pull request
-whose branch was force-pushed or rebuilt, so a rebuilt claim needs a fresh PR that
-names what it supersedes. Prefer not rebuilding at all — see the currentness contract.
+When a closed PR can be reopened with its branches intact, reopen it and preserve the
+review record. Create a fresh PR only when the old one cannot represent the rebuilt
+candidate; name what it supersedes and carry forward only verified findings.
 
 ## Routes
 
-- `PR_PUBLISHED_READY` / `PR_RESUMED` → `address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` → run the named experiment or collaboration, then repeat this skill
-- `DRAFT_REASON_COMPLETE` → recheck readiness, mark the PR ready natively, and return `PR_RESUMED`
-- `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` → `build-candidate`
-- `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume or resolve the conflict
-- `IDENTITY_NOT_PROVEN` → stop for identity repair
+- `PR_PUBLISHED_READY` / `PR_RESUMED` → `finish-pr`, entering at current findings or
+  cumulative review rather than replaying publication
+- `DRAFT_FOR_NAMED_REASON` → run the named remote experiment/collaboration, then repeat
+  this skill when its wake event occurs
+- `DRAFT_REASON_COMPLETE` → recheck candidate-bound proof and readiness, mark ready
+  natively, and return `PR_RESUMED`
+- `CANDIDATE_PRODUCT_OR_TEST_FAILURE` / `RIPR_GAP_REQUIRES_REPAIR` /
+  `CANDIDATE_NOT_COHERENT` / `WORKTREE_DIRTY` → `build-candidate`
+- `WEAK_OR_CIRCULAR_PROOF` / `LOCAL_PROOF_STALE` → `prepare-proof` or repeat
+  `prove-before-push` as appropriate
+- `RETURN_TO_ISSUE` → `prepare-issue`
+- `INSTRUMENT_NOT_PROVEN` / `IDENTITY_NOT_PROVEN` → repair the named input/instrument or
+  preserve `NOT_PROVEN`; do not publish ready
+- `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume the equivalent candidate or resolve the
+  actual same-candidate collision
