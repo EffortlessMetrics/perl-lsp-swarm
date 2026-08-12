@@ -627,7 +627,7 @@ impl LspServer {
                 let _ = self.check_index_readiness(
                     crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
                 );
-                !self.workspace_index_stale_for_document(uri)
+                !self.workspace_index_stale_for_any_open_document()
             };
 
             // Wire semantic queries when workspace data is available for this URI.
@@ -714,16 +714,28 @@ impl LspServer {
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
 
-            // Add dead code diagnostics from workspace-wide symbol analysis
+            // Add dead code diagnostics from workspace-wide symbol analysis.
+            // Re-check freshness immediately before reading the index: readiness
+            // work and semantic queries above may have crossed an index-generation
+            // boundary since the first tier decision. Never let a stale snapshot
+            // reach publish even if the earlier readiness sample was current.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+            if workspace_index_tier_enabled
+                && !self.workspace_index_stale_for_any_open_document()
+                && let Some(workspace_index) = self.workspace_index()
+            {
                 let dead_code_diags = perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
                     &workspace_index,
                     uri,
                     &text,
                     &line_starts,
                 );
-                diagnostics.extend(dead_code_diags);
+                // The workspace snapshot can become stale while the
+                // workspace-wide query runs. Recheck after the query and
+                // discard its result unless the complete computation is fresh.
+                if !self.workspace_index_stale_for_any_open_document() {
+                    diagnostics.extend(dead_code_diags);
+                }
             }
 
             // Deduplicate diagnostics appended after the provider's own dedup pass
@@ -4043,8 +4055,12 @@ print \"unreachable\\n\";\n";
         uri: &str,
         indexed_text: &str,
         updated_text: &str,
+        capture: Option<&StdArc<parking_lot::Mutex<Vec<u8>>>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         server.test_apply_did_open(uri, indexed_text, 1)?;
+        if let Some(buf) = capture {
+            wait_for_published_diagnostics(buf, uri)?;
+        }
         server
             .test_index_file_in_building_state(uri, indexed_text)
             .map_err(std::io::Error::other)?;
@@ -4057,8 +4073,74 @@ print \"unreachable\\n\";\n";
             server.workspace_index_stale_for_document(uri),
             "test setup must leave the open document newer than the workspace index"
         );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave at least one edited open document stale"
+        );
 
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn latest_published_diagnostics<'a>(text: &'a str, uri: &str) -> Option<&'a str> {
+        let marker = "\"method\":\"textDocument/publishDiagnostics\"";
+        let uri_key = format!("\"uri\":\"{uri}\"");
+        let mut remaining = text;
+        let mut latest = None;
+
+        while let Some(header_start) = remaining.find("Content-Length:") {
+            let Some(after_header) = remaining.get(header_start + "Content-Length:".len()..) else {
+                break;
+            };
+            let Some((header, body)) = after_header.split_once("\r\n\r\n") else {
+                break;
+            };
+            let Some(length_text) = header.lines().next() else {
+                break;
+            };
+            let Ok(length) = length_text.trim().parse::<usize>() else {
+                break;
+            };
+            let body_bytes = body.as_bytes();
+            let Some(frame_bytes) = body_bytes.get(..length) else {
+                break;
+            };
+            let Some(rest) = body_bytes.get(length..) else {
+                break;
+            };
+            let Ok(frame) = std::str::from_utf8(frame_bytes) else {
+                break;
+            };
+            if frame.contains(marker) && frame.contains(&uri_key) {
+                latest = Some(frame);
+            }
+            let Ok(next) = std::str::from_utf8(rest) else {
+                break;
+            };
+            remaining = next;
+        }
+
+        latest
+    }
+
+    #[cfg(feature = "workspace")]
+    fn wait_for_published_diagnostics(
+        buf: &StdArc<parking_lot::Mutex<Vec<u8>>>,
+        uri: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = String::from_utf8_lossy(&buf.lock()).into_owned();
+            if latest_published_diagnostics(&text, uri).is_some() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    format!("timed out waiting for publishDiagnostics frame for {uri}").into()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[cfg(feature = "workspace")]
@@ -4085,6 +4167,7 @@ print \"unreachable\\n\";\n";
             uri,
             stale_dead_code_indexed_source(),
             stale_dead_code_used_source(),
+            None,
         )?;
 
         let report = server
@@ -4111,13 +4194,14 @@ print \"unreachable\\n\";\n";
         let uri = "file:///workspace/fresh_dead_code_publish.pl";
         let source = stale_dead_code_indexed_source();
         server.test_apply_did_open(uri, source, 1)?;
+        wait_for_published_diagnostics(&buf, uri)?;
         server.test_index_file_in_building_state(uri, source).map_err(std::io::Error::other)?;
         server.test_simulate_indexing_complete();
 
         buf.lock().clear();
         server.publish_diagnostics(uri);
+        wait_for_published_diagnostics(&buf, uri)?;
         drop(server);
-        std::thread::sleep(Duration::from_millis(50));
 
         let text = String::from_utf8(buf.lock().clone())?;
         assert!(
@@ -4141,17 +4225,62 @@ print \"unreachable\\n\";\n";
             uri,
             stale_dead_code_indexed_source(),
             stale_dead_code_used_source(),
+            Some(&buf),
         )?;
 
         buf.lock().clear();
         server.publish_diagnostics(uri);
+        wait_for_published_diagnostics(&buf, uri)?;
         drop(server);
-        std::thread::sleep(Duration::from_millis(50));
 
         let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, uri)
+            .ok_or("stale publish regression must emit a target diagnostic frame")?;
         assert!(
-            !text.contains("dead-code-subroutine"),
-            "stale workspace index must not publish dead-code diagnostics from outdated symbols: {text:?}"
+            !latest.contains("dead-code-subroutine"),
+            "latest stale-target publish must not contain dead-code diagnostics: {latest:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: workspace-wide dead-code analysis must not publish from a
+    /// fresh target URI while another edited open document is stale.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn publish_diagnostic_skips_dead_code_when_other_open_document_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let target_uri = "file:///workspace/fresh_target_dead_code_publish.pl";
+        let contributor_uri = "file:///workspace/stale_contributor_dead_code_publish.pl";
+        let target_source = stale_dead_code_indexed_source();
+
+        server.test_apply_did_open(target_uri, target_source, 1)?;
+        wait_for_published_diagnostics(&buf, target_uri)?;
+        server
+            .test_index_file_in_building_state(target_uri, target_source)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        make_document_index_stale_for_diagnostics(
+            &server,
+            contributor_uri,
+            stale_dead_code_indexed_source(),
+            stale_dead_code_used_source(),
+            Some(&buf),
+        )?;
+
+        buf.lock().clear();
+        server.publish_diagnostics(target_uri);
+        wait_for_published_diagnostics(&buf, target_uri)?;
+        drop(server);
+
+        let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, target_uri)
+            .ok_or("stale contributor regression must emit a target diagnostic frame")?;
+        assert!(
+            !latest.contains("dead-code-subroutine"),
+            "latest target publish must suppress stale-contributor dead-code diagnostics: {latest:?}"
         );
 
         Ok(())
