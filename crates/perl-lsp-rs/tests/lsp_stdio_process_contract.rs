@@ -81,6 +81,42 @@ fn exact_candidate_completes_legal_lifecycle() -> Result<()> {
 }
 
 #[test]
+fn outbound_method_messages_omit_null_params_and_reject_scalars() -> Result<()> {
+    let shutdown = RealProcessClient::method_message_for_test(
+        Some(json!(1)),
+        "shutdown",
+        Value::Null,
+    )?;
+    ensure!(
+        shutdown
+            == json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "shutdown"
+            }),
+        "shutdown wire shape included forbidden fields: {shutdown}"
+    );
+
+    let exit = RealProcessClient::method_message_for_test(None, "exit", Value::Null)?;
+    ensure!(
+        exit
+            == json!({
+                "jsonrpc": "2.0",
+                "method": "exit"
+            }),
+        "exit wire shape included forbidden fields: {exit}"
+    );
+
+    for scalar in [json!(1), json!(true), json!("invalid")] {
+        ensure!(
+            RealProcessClient::method_message_for_test(None, "notification", scalar).is_err(),
+            "scalar params were accepted"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn request_before_initialize_returns_server_not_initialized() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     let request_id = json!("before-initialize");
@@ -215,7 +251,7 @@ fn exit_without_shutdown_returns_status_one() -> Result<()> {
 }
 
 #[test]
-fn strict_parser_rejects_truncated_and_oversized_headers() -> Result<()> {
+fn strict_parser_rejects_truncated_oversized_and_lf_only_headers() -> Result<()> {
     let truncated = b"Content-Length: 12\r\n";
     let error = RealProcessClient::parse_stdout_frame_for_test(truncated)
         .expect_err("truncated header must fail");
@@ -225,6 +261,58 @@ fn strict_parser_rejects_truncated_and_oversized_headers() -> Result<()> {
     let error = RealProcessClient::parse_stdout_frame_for_test(&oversized)
         .expect_err("oversized header must fail");
     ensure!(error.to_string().contains("exceeded"));
+
+    let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
+    let mut frame = format!("Content-Length: {}\n\n", body.len()).into_bytes();
+    frame.extend_from_slice(body);
+    let error = RealProcessClient::parse_stdout_frame_for_test(&frame)
+        .expect_err("LF-only framing must fail");
+    ensure!(
+        error.to_string().contains("CRLF"),
+        "LF-only framing failed for the wrong reason: {error:#}"
+    );
+    Ok(())
+}
+
+#[test]
+fn response_envelopes_reject_request_fields_and_malformed_errors() -> Result<()> {
+    let valid_result = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": null
+    });
+    ensure!(RealProcessClient::is_valid_response_for_test(&valid_result));
+
+    let valid_error = json!({
+        "jsonrpc": "2.0",
+        "id": "request",
+        "error": { "code": -32603, "message": "failure" }
+    });
+    ensure!(RealProcessClient::is_valid_response_for_test(&valid_error));
+
+    for invalid in [
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": null,
+            "params": {}
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": "-32603", "message": "wrong code type" }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32603, "message": 7 }
+        }),
+    ] {
+        ensure!(
+            !RealProcessClient::is_valid_response_for_test(&invalid),
+            "invalid response was accepted: {invalid}"
+        );
+    }
     Ok(())
 }
 
@@ -259,6 +347,16 @@ fn terminal_notification_requires_jsonrpc_2() -> Result<()> {
         "wrong JSON-RPC version was accepted"
     );
 
+    let scalar_params = json!({
+        "jsonrpc": "2.0",
+        "method": "window/logMessage",
+        "params": "not-an-object-or-array"
+    });
+    ensure!(
+        !RealProcessClient::is_valid_server_notification_for_test(&scalar_params),
+        "notification with scalar params was accepted"
+    );
+
     let result_hybrid = json!({
         "jsonrpc": "2.0",
         "method": "window/logMessage",
@@ -279,6 +377,48 @@ fn terminal_notification_requires_jsonrpc_2() -> Result<()> {
         "method/error hybrid was accepted as a notification"
     );
 
+    Ok(())
+}
+
+#[test]
+fn server_request_requires_request_only_members_and_structured_params() -> Result<()> {
+    let method = "client/registerCapability";
+    let valid = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": { "registrations": [] }
+    });
+    ensure!(
+        RealProcessClient::is_valid_server_request_for_test(&valid, method),
+        "valid server request was rejected"
+    );
+
+    for invalid in [
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": method,
+            "params": true
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": method,
+            "result": null
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": method,
+            "error": { "code": -32603, "message": "hybrid" }
+        }),
+    ] {
+        ensure!(
+            !RealProcessClient::is_valid_server_request_for_test(&invalid, method),
+            "invalid server request was accepted: {invalid}"
+        );
+    }
     Ok(())
 }
 
