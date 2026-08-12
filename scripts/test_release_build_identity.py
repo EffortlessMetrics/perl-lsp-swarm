@@ -215,6 +215,7 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                 product_identity=product,
                 runner="cargo",
                 output=output,
+                github_env=None,
             )
             with (
                 mock.patch.object(subject, "tracked_tree_is_clean"),
@@ -275,6 +276,64 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         self.assertEqual(command[0:2], ["cross", "run"])
         self.assertIn(identity.target, command)
         self.assertEqual(command[-2:], ["--", "--identity-json"])
+
+    def test_github_env_projection_is_closed_and_deterministic(self) -> None:
+        identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "github.env"
+            subject.append_github_env(path, identity)
+            first = path.read_text(encoding="utf-8")
+            subject.append_github_env(path, identity)
+            second = path.read_text(encoding="utf-8")
+        expected_lines = [
+            f"PERL_LSP_BUILD_REVISION={identity.source_revision}",
+            f"PERL_LSP_SOURCE_TREE_DIGEST={identity.source_tree_digest}",
+            f"PERL_LSP_TARGET_TRIPLE={identity.target}",
+            "PERL_LSP_BUILD_PROFILE=release",
+            f"PERL_LSP_CANDIDATE_ID={identity.candidate_identity}",
+            "PERL_LSP_ARTIFACT_ROLE=archive",
+        ]
+        self.assertEqual(first.splitlines(), expected_lines)
+        self.assertEqual(second.splitlines(), expected_lines + expected_lines)
+
+    def test_verify_receipt_names_external_build_execution(self) -> None:
+        identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "identity.json"
+            receipt_path = root / "receipt.json"
+            input_path.write_bytes(
+                subject.canonical_json_bytes(identity.as_dict())
+            )
+            args = argparse.Namespace(
+                workspace_root=root,
+                input=input_path,
+                runner="cargo",
+                receipt=receipt_path,
+            )
+            observed = [
+                {"role": "server", "executable": "perllsp"},
+                {"role": "dap", "executable": "perl-dap"},
+            ]
+            with (
+                mock.patch.object(subject, "verify_checkout"),
+                mock.patch.object(
+                    subject,
+                    "toolchain_digest",
+                    return_value=identity.toolchain_digest,
+                ),
+                mock.patch.object(
+                    subject, "execute_identity", side_effect=observed
+                ),
+            ):
+                receipt = subject.verify_binaries(
+                    args, build_execution="external_release_workflow"
+                )
+        self.assertEqual(
+            receipt["build_execution"], "external_release_workflow"
+        )
+        self.assertEqual(len(receipt["build_commands"]), 2)
+        self.assertEqual(receipt["binaries"], observed)
 
     def test_atomic_write_creates_missing_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

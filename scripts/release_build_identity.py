@@ -407,6 +407,8 @@ def prepare_identity(args: argparse.Namespace) -> ReleaseBuildIdentity:
     )
     identity.validate()
     write_atomic(args.output, canonical_json_bytes(identity.as_dict()))
+    if args.github_env is not None:
+        append_github_env(args.github_env, identity)
     return identity
 
 
@@ -431,32 +433,34 @@ def verify_checkout(root: Path, identity: ReleaseBuildIdentity) -> None:
         )
 
 
+def identity_environment(identity: ReleaseBuildIdentity) -> dict[str, str]:
+    return {
+        "PERL_LSP_BUILD_REVISION": identity.source_revision,
+        "PERL_LSP_SOURCE_TREE_DIGEST": identity.source_tree_digest,
+        "PERL_LSP_TARGET_TRIPLE": identity.target,
+        "PERL_LSP_BUILD_PROFILE": identity.profile,
+        "PERL_LSP_CANDIDATE_ID": identity.candidate_identity,
+        "PERL_LSP_ARTIFACT_ROLE": identity.artifact_role,
+    }
+
+
 def build_environment(identity: ReleaseBuildIdentity) -> dict[str, str]:
     env = dict(os.environ)
-    env.update(
-        {
-            "PERL_LSP_BUILD_REVISION": identity.source_revision,
-            "PERL_LSP_SOURCE_TREE_DIGEST": identity.source_tree_digest,
-            "PERL_LSP_TARGET_TRIPLE": identity.target,
-            "PERL_LSP_BUILD_PROFILE": identity.profile,
-            "PERL_LSP_CANDIDATE_ID": identity.candidate_identity,
-            "PERL_LSP_ARTIFACT_ROLE": identity.artifact_role,
-        }
-    )
+    env.update(identity_environment(identity))
     return env
 
 
-def binary_path(
-    root: Path, identity: ReleaseBuildIdentity, executable: str
-) -> Path:
+def append_github_env(path: Path, identity: ReleaseBuildIdentity) -> None:
+    """Append validated single-line build inputs for later workflow steps."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for key, value in identity_environment(identity).items():
+            handle.write(f"{key}={value}\n")
+
+
+def binary_path(root: Path, identity: ReleaseBuildIdentity, executable: str) -> Path:
     suffix = ".exe" if "windows" in identity.target else ""
-    return (
-        root
-        / "target"
-        / identity.target
-        / identity.profile
-        / f"{executable}{suffix}"
-    )
+    return root / "target" / identity.target / identity.profile / f"{executable}{suffix}"
 
 
 def build_command(
@@ -506,19 +510,13 @@ def identity_command(
 
 def parse_packet(raw: bytes, label: str) -> dict[str, Any]:
     if len(raw) > 256 * 1024:
-        raise BuildIdentityError(
-            f"{label} identity output exceeds 256 KiB"
-        )
+        raise BuildIdentityError(f"{label} identity output exceeds 256 KiB")
     try:
         value = json.loads(raw.decode("utf-8", errors="strict"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BuildIdentityError(
-            f"{label} emitted invalid identity JSON"
-        ) from error
+        raise BuildIdentityError(f"{label} emitted invalid identity JSON") from error
     if not isinstance(value, dict):
-        raise BuildIdentityError(
-            f"{label} identity packet must be an object"
-        )
+        raise BuildIdentityError(f"{label} identity packet must be an object")
     return value
 
 
@@ -676,7 +674,11 @@ def execute_identity(
     }
 
 
-def build_and_verify(args: argparse.Namespace) -> dict[str, Any]:
+def verify_binaries(
+    args: argparse.Namespace,
+    *,
+    build_execution: str,
+) -> dict[str, Any]:
     root = args.workspace_root.resolve(strict=True)
     input_path = require_within(
         root, args.input, "release-build identity"
@@ -684,26 +686,17 @@ def build_and_verify(args: argparse.Namespace) -> dict[str, Any]:
     identity = load_identity(input_path)
     verify_checkout(root, identity)
     if args.runner not in ALLOWED_RUNNERS:
-        raise BuildIdentityError(
-            f"unsupported build runner: {args.runner!r}"
-        )
+        raise BuildIdentityError(f"unsupported build runner: {args.runner!r}")
     if toolchain_digest(root, args.runner) != identity.toolchain_digest:
         raise BuildIdentityError(
             "toolchain identity changed after build input generation"
         )
 
     env = build_environment(identity)
-    commands: list[list[str]] = []
-    for package, binary in (
-        ("perllsp", "perllsp"),
-        ("perl-dap", "perl-dap"),
-    ):
-        command = build_command(
-            args.runner, identity, package, binary
-        )
-        commands.append(command)
-        run(command, cwd=root, env=env, capture=False, timeout=1800)
-
+    commands = [
+        build_command(args.runner, identity, "perllsp", "perllsp"),
+        build_command(args.runner, identity, "perl-dap", "perl-dap"),
+    ]
     binaries = [
         execute_identity(
             root,
@@ -732,7 +725,8 @@ def build_and_verify(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "input": identity.as_dict(),
         "runner": args.runner,
-        "commands": commands,
+        "build_execution": build_execution,
+        "build_commands": commands,
         "binaries": binaries,
         "claim_boundary": (
             "Embedded source/candidate identity and observed build-output "
@@ -742,6 +736,34 @@ def build_and_verify(args: argparse.Namespace) -> dict[str, Any]:
     }
     write_atomic(args.receipt, canonical_json_bytes(receipt))
     return receipt
+
+
+def build_and_verify(args: argparse.Namespace) -> dict[str, Any]:
+    root = args.workspace_root.resolve(strict=True)
+    input_path = require_within(
+        root, args.input, "release-build identity"
+    )
+    identity = load_identity(input_path)
+    verify_checkout(root, identity)
+    if args.runner not in ALLOWED_RUNNERS:
+        raise BuildIdentityError(f"unsupported build runner: {args.runner!r}")
+    if toolchain_digest(root, args.runner) != identity.toolchain_digest:
+        raise BuildIdentityError(
+            "toolchain identity changed after build input generation"
+        )
+    env = build_environment(identity)
+    for package, binary in (
+        ("perllsp", "perllsp"),
+        ("perl-dap", "perl-dap"),
+    ):
+        run(
+            build_command(args.runner, identity, package, binary),
+            cwd=root,
+            env=env,
+            capture=False,
+            timeout=1800,
+        )
+    return verify_binaries(args, build_execution="adapter")
 
 
 def write_atomic(path: Path, content: bytes) -> None:
@@ -792,6 +814,11 @@ def parser() -> argparse.ArgumentParser:
         "--runner", required=True, choices=sorted(ALLOWED_RUNNERS)
     )
     prepare.add_argument("--output", type=Path, required=True)
+    prepare.add_argument(
+        "--github-env",
+        type=Path,
+        help="append validated build inputs for later GitHub Actions steps",
+    )
 
     build = subparsers.add_parser(
         "build", help="build and verify both product binaries"
@@ -804,6 +831,18 @@ def parser() -> argparse.ArgumentParser:
         "--runner", required=True, choices=sorted(ALLOWED_RUNNERS)
     )
     build.add_argument("--receipt", type=Path, required=True)
+
+    verify = subparsers.add_parser(
+        "verify", help="verify binaries built by the release workflow"
+    )
+    verify.add_argument(
+        "--workspace-root", type=Path, default=Path(".")
+    )
+    verify.add_argument("--input", type=Path, required=True)
+    verify.add_argument(
+        "--runner", required=True, choices=sorted(ALLOWED_RUNNERS)
+    )
+    verify.add_argument("--receipt", type=Path, required=True)
     return result
 
 
@@ -817,8 +856,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{args.output} "
                 f"({identity.source_revision}/{identity.target})"
             )
-        else:
+        elif args.command == "build":
             receipt = build_and_verify(args)
+            print(
+                "release-build-identity: PASS: "
+                f"{args.receipt} ({len(receipt['binaries'])} binaries)"
+            )
+        else:
+            receipt = verify_binaries(
+                args, build_execution="external_release_workflow"
+            )
             print(
                 "release-build-identity: PASS: "
                 f"{args.receipt} ({len(receipt['binaries'])} binaries)"

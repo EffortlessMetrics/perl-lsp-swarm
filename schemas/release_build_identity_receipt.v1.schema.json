@@ -10,7 +10,8 @@
     "input_sha256",
     "input",
     "runner",
-    "commands",
+    "build_execution",
+    "build_commands",
     "binaries",
     "claim_boundary"
   ],
@@ -34,7 +35,13 @@
         "cross"
       ]
     },
-    "commands": {
+    "build_execution": {
+      "enum": [
+        "adapter",
+        "external_release_workflow"
+      ]
+    },
+    "build_commands": {
       "type": "array",
       "minItems": 2,
       "maxItems": 2,
