@@ -474,6 +474,120 @@ fn classify_cli_rejects_series_membership_mismatch() {
     assert!(!output.exists(), "membership mismatch must not write a classify receipt");
 }
 
+#[test]
+fn classify_cli_rejects_series_profile_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series_with_subject(
+        &series,
+        "series",
+        "manifest",
+        &["base/0.t", "base/1.t"],
+        "full",
+        "test",
+        "perl",
+    );
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("profile mismatch"), "unexpected stderr: {stderr}");
+    assert!(!output.exists(), "profile mismatch must not write a classify receipt");
+}
+
+#[test]
+fn classify_cli_rejects_series_runner_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series_with_subject(
+        &series,
+        "series",
+        "manifest",
+        &["base/0.t", "base/1.t"],
+        "base",
+        "harness",
+        "perl",
+    );
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("runner mismatch"), "unexpected stderr: {stderr}");
+    assert!(!output.exists(), "runner mismatch must not write a classify receipt");
+}
+
+#[test]
+fn classify_cli_rejects_series_perl_resolved_ref_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series_with_subject(
+        &series,
+        "series",
+        "manifest",
+        &["base/0.t", "base/1.t"],
+        "base",
+        "test",
+        "other-perl",
+    );
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("perl_resolved_ref mismatch"), "unexpected stderr: {stderr}");
+    assert!(!output.exists(), "perl_resolved_ref mismatch must not write a classify receipt");
+}
+
 fn write_baseline(path: &Path, total: usize, passed: usize) {
     let baseline = sample_v2_baseline(total, passed);
     fs::write(path, serde_json::to_string_pretty(&baseline).expect("encode")).expect("write");
@@ -485,16 +599,28 @@ fn write_report(path: &Path, total: usize, passed: usize) {
 }
 
 fn write_series(path: &Path, series_id: &str, manifest_hash: &str, files: &[&str]) {
+    write_series_with_subject(path, series_id, manifest_hash, files, "base", "test", "perl");
+}
+
+fn write_series_with_subject(
+    path: &Path,
+    series_id: &str,
+    manifest_hash: &str,
+    files: &[&str],
+    profile: &str,
+    runner: &str,
+    perl_resolved_ref: &str,
+) {
     let body = format!(
         r#"{{
   "schema_version": "perl_core_harness.comparison_series.v1",
   "series_id": "{series_id}",
-  "profile": "base",
+  "profile": "{profile}",
   "profile_roots": ["base"],
   "repository_commit": "{commit}",
   "perl_requested_ref": "perl",
-  "perl_resolved_ref": "perl",
-  "runner": "test",
+  "perl_resolved_ref": "{perl_resolved_ref}",
+  "runner": "{runner}",
   "normalized_manifest": {files},
   "manifest_hash": "{manifest_hash}",
   "preparation_receipt_id": "prepare",
