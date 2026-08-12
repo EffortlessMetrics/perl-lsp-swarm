@@ -1,0 +1,215 @@
+name: Semantic port closure runner 6844 v3
+
+on:
+  push:
+    branches:
+      - agent/semantic-port-closure-runner-6844
+
+permissions:
+  contents: write
+
+jobs:
+  close-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact PR branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/semantic-provider-port-6816
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify expected source head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "9dffdbfd06fb67becf6955214fbbe17ce638807a"
+
+      - name: Flatten and repair semantic-port proof modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+
+          def flatten(parent: str, children: list[str]) -> None:
+              parent_path = root / parent
+              text = parent_path.read_text(encoding='utf-8')
+              for child in children:
+                  marker = f'include!("{child}");'
+                  child_path = parent_path.parent / child
+                  payload = child_path.read_text(encoding='utf-8').rstrip('\n')
+                  if text.count(marker) != 1:
+                      raise SystemExit(f'expected exactly one {marker} in {parent}')
+                  text = text.replace(marker, payload)
+              parent_path.write_text(text, encoding='utf-8')
+              for child in children:
+                  (parent_path.parent / child).unlink()
+
+          flatten(
+              'crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs',
+              [
+                  'model/context.rs',
+                  'model/fact.rs',
+                  'model/completeness.rs',
+                  'model/validation.rs',
+              ],
+          )
+          flatten(
+              'crates/perl-lsp-rs-core/src/providers/semantic_port/result.rs',
+              [
+                  'result/types.rs',
+                  'result/checked.rs',
+                  'result/execute.rs',
+                  'result/evidence.rs',
+                  'result/validate.rs',
+                  'result/summarize.rs',
+              ],
+          )
+          flatten(
+              'crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs',
+              [
+                  'tests/helpers.rs',
+                  'tests/subjects.rs',
+                  'tests/authority.rs',
+                  'tests/ambiguity.rs',
+                  'tests/terminal.rs',
+                  'tests/outcomes.rs',
+                  'tests/contracts.rs',
+              ],
+          )
+
+          model = root / 'crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs'
+          text = model.read_text(encoding='utf-8')
+          needle = (
+              'Confidence, EntityId, FactId, FileId, Provenance, ProviderSurface, '
+              'SemanticConfidence,'
+          )
+          replacement = (
+              'Confidence, EntityId, FileId, Provenance, ProviderSurface, '
+              'SemanticConfidence,'
+          )
+          if text.count(needle) != 1:
+              raise SystemExit('FactId import shape changed')
+          model.write_text(text.replace(needle, replacement), encoding='utf-8')
+
+          result = root / 'crates/perl-lsp-rs-core/src/providers/semantic_port/result.rs'
+          text = result.read_text(encoding='utf-8')
+          marker = '        match self.outcome {\n'
+          guard = ''.join([
+              '        if self.outcome == ProviderQueryOutcome::Exact\n',
+              '            && value_count == 0\n',
+              '            && (!completeness_present\n',
+              '                || self.evidence.completeness != ProviderEvidenceCompleteness::Complete\n',
+              '                || self.evidence.completeness_authority.is_none()\n',
+              '                || !self.evidence.producers.is_empty())\n',
+              '        {\n',
+              '            return Err(ProviderQueryContractError::MissingCompletenessGrant);\n',
+              '        }\n',
+              '\n',
+          ])
+          if text.count(marker) != 1:
+              raise SystemExit('outcome match marker changed')
+          result.write_text(text.replace(marker, guard + marker), encoding='utf-8')
+
+          policy = root / 'policy/non-rust-allowlist.toml'
+          text = policy.read_text(encoding='utf-8')
+          entry = '''[[allow]]
+          id = "non-rust-changelog-fragment-6844"
+          path = ".changes/unreleased/product-6844-Added-204043.yaml"
+          kind = "release_metadata"
+          language = "yaml"
+          surface = "release"
+          classification = "config"
+          owner = "release/ci"
+          reason = "Changie fragment for PR #6844; merged into generated release notes."
+          covered_by = [
+            "cargo xtask check-file-policy",
+          ]
+          created = "2026-08-11"
+          review_after = "2026-11-11"
+
+          '''
+          if 'id = "non-rust-changelog-fragment-6844"' not in text:
+              marker = (
+                  '# =============================================================================\n'
+                  '# Receipts / status / metrics\n'
+              )
+              if text.count(marker) != 1:
+                  raise SystemExit('policy insertion marker changed')
+              policy.write_text(text.replace(marker, entry + marker), encoding='utf-8')
+          PY
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Format closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 fmt --all 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+          cargo +1.95.0 fmt --all -- --check 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Compile semantic-port targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 check --locked -p perl-lsp-rs-core --all-targets 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Test semantic-port contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 test --locked -p perl-lsp-rs-core --all-targets semantic_port 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Verify file policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 run --locked -p xtask -- check-file-policy 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Verify include-path closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R 'include!(' \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/result.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs; then
+            echo 'semantic-port include! remained after closure' | tee -a "$RUNNER_TEMP/semantic-port-closure.log" >&2
+            exit 1
+          fi
+
+      - name: Upload closure transcript
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semantic-port-closure-v3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/semantic-port-closure.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Commit exact closure to the PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A \
+            crates/perl-lsp-rs-core/src/providers/semantic_port.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port \
+            policy/non-rust-allowlist.toml
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "fix(semantic-port): close contract proof gaps"
+          git push origin HEAD:agent/semantic-provider-port-6816
