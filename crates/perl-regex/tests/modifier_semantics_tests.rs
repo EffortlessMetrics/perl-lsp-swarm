@@ -244,7 +244,7 @@ fn e_ee_and_r_remain_substitution_specific()
 }
 
 #[test]
-fn c_d_s_and_r_have_operator_specific_transliteration_meanings()
+fn c_d_s_and_r_have_operator_specific_meanings()
 -> Result<(), Box<dyn std::error::Error>> {
     let matching = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Match,
@@ -254,6 +254,15 @@ fn c_d_s_and_r_have_operator_specific_transliteration_meanings()
     assert!(matching.effective.global);
     assert!(matching.effective.keep_match_position);
     assert!(!matching.effective.transliteration.complement);
+
+    let substitution = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Substitution,
+        sequence("gc", 0)?,
+        profile(44, FeatureState::Disabled),
+    );
+    assert!(substitution.effective.global);
+    assert!(substitution.effective.keep_match_position);
+    assert!(substitution.diagnostics.is_empty());
 
     let transliteration = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Transliteration,
@@ -267,16 +276,6 @@ fn c_d_s_and_r_have_operator_specific_transliteration_meanings()
     assert!(!transliteration.effective.single_line);
     assert_eq!(transliteration.effective.character_set, CharacterSetMode::Default);
     assert!(transliteration.diagnostics.is_empty());
-
-    let substitution = RegexAnalyzer::analyze_modifiers(
-        RegexOperator::Substitution,
-        sequence("c", 0)?,
-        profile(44, FeatureState::Disabled),
-    );
-    assert_eq!(
-        substitution.diagnostics[0].code,
-        RegexDiagnosticCode::ModifierNotAllowedForOperator
-    );
     Ok(())
 }
 
