@@ -1,0 +1,158 @@
+name: Semantic port closure runner 6844
+
+on:
+  push:
+    branches:
+      - agent/semantic-port-closure-runner-6844
+
+permissions:
+  contents: write
+
+jobs:
+  close-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact PR branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/semantic-provider-port-6816
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify expected source head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "9dffdbfd06fb67becf6955214fbbe17ce638807a"
+
+      - name: Flatten semantic-port proof modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+
+          def flatten(parent: str, children: list[str]) -> None:
+              parent_path = root / parent
+              text = parent_path.read_text(encoding='utf-8')
+              for child in children:
+                  marker = f'include!("{child}");'
+                  child_path = parent_path.parent / child
+                  payload = child_path.read_text(encoding='utf-8').rstrip('\n')
+                  if text.count(marker) != 1:
+                      raise SystemExit(f'expected exactly one {marker} in {parent}')
+                  text = text.replace(marker, payload)
+              parent_path.write_text(text, encoding='utf-8')
+              for child in children:
+                  (parent_path.parent / child).unlink()
+
+          flatten(
+              'crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs',
+              [
+                  'model/context.rs',
+                  'model/fact.rs',
+                  'model/completeness.rs',
+                  'model/validation.rs',
+              ],
+          )
+          flatten(
+              'crates/perl-lsp-rs-core/src/providers/semantic_port/result.rs',
+              [
+                  'result/types.rs',
+                  'result/checked.rs',
+                  'result/execute.rs',
+                  'result/evidence.rs',
+                  'result/validate.rs',
+                  'result/summarize.rs',
+              ],
+          )
+          flatten(
+              'crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs',
+              [
+                  'tests/helpers.rs',
+                  'tests/subjects.rs',
+                  'tests/authority.rs',
+                  'tests/ambiguity.rs',
+                  'tests/terminal.rs',
+                  'tests/outcomes.rs',
+                  'tests/contracts.rs',
+              ],
+          )
+
+          model = root / 'crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs'
+          text = model.read_text(encoding='utf-8')
+          needle = (
+              'Confidence, EntityId, FactId, FileId, Provenance, ProviderSurface, '
+              'SemanticConfidence,'
+          )
+          replacement = (
+              'Confidence, EntityId, FileId, Provenance, ProviderSurface, '
+              'SemanticConfidence,'
+          )
+          if text.count(needle) != 1:
+              raise SystemExit('FactId import shape changed')
+          model.write_text(text.replace(needle, replacement), encoding='utf-8')
+
+          policy = root / 'policy/non-rust-allowlist.toml'
+          text = policy.read_text(encoding='utf-8')
+          entry = '''[[allow]]
+          id = "non-rust-changelog-fragment-6844"
+          path = ".changes/unreleased/product-6844-Added-204043.yaml"
+          kind = "release_metadata"
+          language = "yaml"
+          surface = "release"
+          classification = "config"
+          owner = "release/ci"
+          reason = "Changie fragment for PR #6844; merged into generated release notes."
+          covered_by = [
+            "cargo xtask check-file-policy",
+          ]
+          created = "2026-08-11"
+          review_after = "2026-11-11"
+
+          '''
+          if 'id = "non-rust-changelog-fragment-6844"' not in text:
+              marker = (
+                  '# =============================================================================\n'
+                  '# Receipts / status / metrics\n'
+              )
+              if text.count(marker) != 1:
+                  raise SystemExit('policy insertion marker changed')
+              policy.write_text(text.replace(marker, entry + marker), encoding='utf-8')
+          PY
+
+      - name: Format and verify the closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          cargo +1.95.0 fmt --all
+          cargo +1.95.0 fmt --all -- --check
+          cargo +1.95.0 check -p perl-lsp-rs-core --all-targets
+          cargo +1.95.0 test -p perl-lsp-rs-core semantic_port --all-targets
+          cargo +1.95.0 run -p xtask -- check-file-policy
+          if grep -R 'include!(' \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/result.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs; then
+            echo 'semantic-port include! remained after closure' >&2
+            exit 1
+          fi
+
+      - name: Commit exact closure to the PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A \
+            crates/perl-lsp-rs-core/src/providers/semantic_port.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port \
+            policy/non-rust-allowlist.toml
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "fix(semantic-port): close contract proof gaps"
+          git push origin HEAD:agent/semantic-provider-port-6816
