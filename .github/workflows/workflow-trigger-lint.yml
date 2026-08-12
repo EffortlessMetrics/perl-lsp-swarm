@@ -3,148 +3,55 @@ name: Workflow Trigger Lint
 on:
   pull_request:
     branches: [main, master]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: workflow-trigger-lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  finish-client-support-authority:
-    if: github.head_ref == 'test/lsp-client-support-registry-6739'
-    name: Finish client support evidence authority
+  lint:
+    name: Workflow Trigger Lint
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout exact branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          fetch-depth: 4
-          ref: test/lsp-client-support-registry-6739
+          toolchain: stable
 
-      - name: Install pinned Rust toolchain
-        shell: bash
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
-
-      - name: Execute reviewed authority transformation from parent carrier
-        shell: python
-        run: |
-          import ast
-          import base64
-          import hashlib
-          import re
-          import subprocess
-          import zlib
-          from pathlib import Path
-
-          carrier = subprocess.run(
-              ["git", "show", "HEAD^^^:.github/workflows/workflow-trigger-lint.yml"],
-              check=True,
-              capture_output=True,
-              text=True,
-          ).stdout
-          match = re.search(r'encoded = "([A-Za-z0-9+/=]+)"', carrier)
-          if match is None:
-              raise SystemExit("reviewed authority payload was not found in ancestor carrier")
-          original = zlib.decompress(base64.b64decode(match.group(1)))
-          actual = hashlib.sha256(original).hexdigest()
-          expected = "f6612daaed8922c4e2016bf557184d32ad5ccb97bfc5535b536af314f02fcb59"
-          if actual != expected:
-              raise SystemExit(f"authority transformation digest mismatch: {actual}")
-
-          source = original.decode()
-          tree = ast.parse(source)
-          target = None
-          for node in ast.walk(tree):
-              if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-                  continue
-              labels = [
-                  argument.value
-                  for argument in node.value.args
-                  if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
-              ]
-              if "registry vocabulary authority" in labels:
-                  target = node
-                  break
-          if target is None or target.end_lineno is None:
-              raise SystemExit("registry vocabulary transformation node was not found")
-
-          robust = '''lines = text.splitlines()
-          start = next(
-              (index for index, line in enumerate(lines)
-               if line.strip().startswith("let allowed_tiers")),
-              None,
-          )
-          end = next(
-              (index for index, line in enumerate(lines)
-               if line.strip() == "let mut ids = BTreeSet::new();"),
-              None,
-          )
-          if start is not None:
-              if end is None or end <= start:
-                  raise SystemExit("registry vocabulary block end not found")
-              replacement = ''' + "'''" + '''    let declared_tiers = registry
-                  .meta
-                  .allowed_tiers
-                  .iter()
-                  .map(String::as_str)
-                  .collect::<BTreeSet<_>>();
-              let expected_tiers = ALLOWED_TIERS.into_iter().collect::<BTreeSet<_>>();
-              ensure!(
-                  declared_tiers == expected_tiers,
-                  "registry tier vocabulary drifted: declared={declared_tiers:?} expected={expected_tiers:?}"
-              );
-              let declared_evidence_kinds = registry
-                  .meta
-                  .allowed_evidence_kinds
-                  .iter()
-                  .map(String::as_str)
-                  .collect::<BTreeSet<_>>();
-              let expected_evidence_kinds =
-                  ALLOWED_EVIDENCE_KINDS.into_iter().collect::<BTreeSet<_>>();
-              ensure!(
-                  declared_evidence_kinds == expected_evidence_kinds,
-                  "registry evidence vocabulary drifted: declared={declared_evidence_kinds:?} expected={expected_evidence_kinds:?}"
-              );
-              let allowed_tiers = declared_tiers;
-              let allowed_evidence = declared_evidence_kinds;
-          ''' + "'''" + '''.splitlines()
-              lines[start:end] = replacement
-              text = "\\n".join(lines) + "\\n"
-          elif "let declared_tiers = registry" not in text:
-              raise SystemExit("registry vocabulary block not found")'''
-          lines = source.splitlines()
-          lines[target.lineno - 1 : target.end_lineno] = robust.splitlines()
-          patched = ("\n".join(lines) + "\n").encode()
-          path = Path("/tmp/finish_pr6841.py")
-          path.write_bytes(patched)
-          compile(patched, str(path), "exec")
-          exec(patched, {"__name__": "__main__"})
-
-      - name: Stage transcript fixture for tracked-file validation
-        shell: bash
-        run: git add crates/perl-lsp-rs/tests/fixtures/lsp_client_execution_transcript.jsonl
-
-      - name: Update lockfile, format, and verify authority
+      - name: Run workflow trigger lint
+        id: lint
         shell: bash
         run: |
-          cargo check -p perl-lsp-rs --tests
-          rustup run 1.95.0 rustfmt \
-            --edition 2024 \
-            --config-path . \
-            crates/perl-lsp-rs/tests/lsp_client_support_registry.rs
-          cargo test -p perl-lsp-rs --test lsp_client_support_registry --locked
-          cargo test -p perl-lsp-rs --test semantic_definition --locked -- --test-threads=1
+          cargo xtask workflow-trigger-lint \
+            --policy .ci/policies/required-checks.toml \
+            --receipt target/receipts/workflow-trigger-lint.json \
+            --format json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
-      - name: Restore carrier workflow and push reviewed result
-        shell: bash
+      - name: Upload receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: workflow-trigger-lint-receipt
+          path: target/receipts/workflow-trigger-lint.json
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
         run: |
-          git show 334650a5c10e34615ab3bcb584943f57ef59a96d:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            Cargo.lock \
-            crates/perl-lsp-rs/Cargo.toml \
-            crates/perl-lsp-rs/tests/lsp_client_support_registry.rs \
-            crates/perl-lsp-rs/tests/fixtures/lsp_client_execution_transcript.jsonl \
-            .github/workflows/workflow-trigger-lint.yml
-          git diff --cached --check
-          git commit -m "test(lsp): bind client support claims to executable evidence"
-          git push origin HEAD:test/lsp-client-support-registry-6739
+          if [ "${{ steps.lint.outputs.exit_code }}" = "0" ]; then
+            echo "## Workflow trigger lint passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
+            echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
+          fi
