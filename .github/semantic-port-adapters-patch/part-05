@@ -1,0 +1,413 @@
+      let record = record_from_entity(entity, anchor, shard, source, snapshot)?;
++        insert_record(record, records, fact_ids)?;
++    }
++
++    for occurrence in &shard.occurrences {
++        let Some(anchor) = anchors.get(&occurrence.anchor_id).copied() else {
++            mark_incomplete_occurrence(denominator);
++            continue;
++        };
++        let entity = occurrence
++            .entity_id
++            .and_then(|entity_id| entities.get(&entity_id).copied());
++        let record = record_from_occurrence(
++            occurrence,
++            anchor,
++            entity,
++            shard,
++            source,
++            snapshot,
++        )?;
++        insert_record(record, records, fact_ids)?;
++    }
++    Ok(())
++}
++
++fn insert_record(
++    record: AdapterFactRecord,
++    records: &mut Vec<AdapterFactRecord>,
++    fact_ids: &mut BTreeSet<FactId>,
++) -> Result<(), ProviderAdapterError> {
++    let fact_id = record.envelope.fact_id;
++    if !fact_ids.insert(fact_id) {
++        return Err(ProviderAdapterError::DuplicateFactId(fact_id));
++    }
++    records.push(record);
++    Ok(())
++}
++
++fn mark_incomplete_entity(denominator: &mut ShardDenominator) {
++    denominator.incomplete_capabilities.extend([
++        ProviderQueryCapability::Declarations,
++        ProviderQueryCapability::Visibility,
++        ProviderQueryCapability::ScopeBindings,
++    ]);
++}
++
++fn mark_incomplete_occurrence(denominator: &mut ShardDenominator) {
++    denominator.incomplete_capabilities.extend([
++        ProviderQueryCapability::References,
++        ProviderQueryCapability::Visibility,
++        ProviderQueryCapability::ScopeBindings,
++        ProviderQueryCapability::Boundaries,
++    ]);
++}
++
++fn record_from_entity(
++    entity: &EntityFact,
++    anchor: &AnchorFact,
++    shard: &FileFactShard,
++    source: FileFactShardSource,
++    snapshot: &ProviderAdapterSnapshot,
++) -> Result<AdapterFactRecord, ProviderAdapterError> {
++    let fact_id = stable_shard_fact_id(
++        b"entity",
++        source,
++        &shard.source_uri,
++        shard.file_id,
++        entity.id.0,
++    );
++    let canonical_entity_id = stable_shard_entity_id(
++        source,
++        &shard.source_uri,
++        shard.file_id,
++        entity.id,
++    );
++    let envelope = SemanticFactEnvelope::new(
++        fact_id,
++        Some(canonical_entity_id),
++        semantic_kind_for_entity(entity),
++        source_anchor(anchor),
++        source.source_generation(snapshot),
++        entity.scope_id,
++        package_for_entity(entity),
++        snapshot.lifecycle,
++        source.producer(),
++        SemanticProvenance::Known(entity.provenance),
++        SemanticConfidence::Known(entity.confidence),
++        snapshot.freshness,
++        boundary_for(entity.provenance, fact_id),
++        Vec::new(),
++        reason_for(entity.provenance),
++    );
++    let mut symbols = vec![entity.canonical_name.clone()];
++    if let Some((_, bare)) = entity.canonical_name.rsplit_once("::") {
++        symbols.push(bare.to_string());
++    }
++    AdapterFactRecord::try_new(
++        envelope,
++        source.generation_scope(),
++        symbols,
++        None,
++        source.trace_source(),
++        Some(format!("content:{:016x}", shard.content_hash)),
++        Some(shard.producer_schema_version),
++    )
++}
++
++#[allow(clippy::too_many_arguments)]
++fn record_from_occurrence(
++    occurrence: &OccurrenceFact,
++    anchor: &AnchorFact,
++    entity: Option<&EntityFact>,
++    shard: &FileFactShard,
++    source: FileFactShardSource,
++    snapshot: &ProviderAdapterSnapshot,
++) -> Result<AdapterFactRecord, ProviderAdapterError> {
++    let fact_id = stable_shard_fact_id(
++        b"occurrence",
++        source,
++        &shard.source_uri,
++        shard.file_id,
++        occurrence.id.0,
++    );
++    let is_dynamic = occurrence.kind == OccurrenceKind::DynamicBoundary;
++    let kind = if is_dynamic {
++        SemanticFactKind::Boundary
++    } else if occurrence.kind == OccurrenceKind::Import {
++        SemanticFactKind::Import
++    } else {
++        SemanticFactKind::Occurrence
++    };
++    let boundary = if is_dynamic {
++        Some(BoundaryLink::new(
++            Some(fact_id),
++            BoundaryKind::DynamicValue,
++            BoundaryDisposition::Degrade,
++            SemanticReasonCode::DynamicValue,
++        ))
++    } else {
++        boundary_for(occurrence.provenance, fact_id)
++    };
++    let reason = if is_dynamic {
++        SemanticReasonCode::DynamicValue
++    } else {
++        reason_for(occurrence.provenance)
++    };
++    let canonical_entity_id = occurrence.entity_id.map(|entity_id| {
++        stable_shard_entity_id(source, &shard.source_uri, shard.file_id, entity_id)
++    });
++    let envelope = SemanticFactEnvelope::new(
++        fact_id,
++        canonical_entity_id,
++        kind,
++        source_anchor(anchor),
++        source.source_generation(snapshot),
++        occurrence.scope_id,
++        entity.and_then(package_for_entity),
++        snapshot.lifecycle,
++        source.producer(),
++        SemanticProvenance::Known(occurrence.provenance),
++        SemanticConfidence::Known(occurrence.confidence),
++        snapshot.freshness,
++        boundary,
++        Vec::new(),
++        reason,
++    );
++    let mut symbols = Vec::new();
++    if let Some(entity) = entity {
++        symbols.push(entity.canonical_name.clone());
++        if let Some((_, bare)) = entity.canonical_name.rsplit_once("::") {
++            symbols.push(bare.to_string());
++        }
++    }
++    AdapterFactRecord::try_new(
++        envelope,
++        source.generation_scope(),
++        symbols,
++        Some(occurrence.kind),
++        source.trace_source(),
++        Some(format!("content:{:016x}", shard.content_hash)),
++        Some(shard.producer_schema_version),
++    )
++}
++
++fn source_anchor(anchor: &AnchorFact) -> SourceAnchor {
++    SourceAnchor::new(
++        Some(anchor.id),
++        anchor.file_id,
++        anchor.span_start_byte,
++        anchor.span_end_byte,
++    )
++}
++
++fn semantic_kind_for_entity(entity: &EntityFact) -> SemanticFactKind {
++    if entity.kind == EntityKind::Module {
++        SemanticFactKind::Module
++    } else {
++        SemanticFactKind::Declaration
++    }
++}
++
++fn package_for_entity(entity: &EntityFact) -> Option<String> {
++    if matches!(
++        entity.kind,
++        EntityKind::Package | EntityKind::Class | EntityKind::Role | EntityKind::Module
++    ) {
++        return Some(entity.canonical_name.clone());
++    }
++    entity
++        .canonical_name
++        .rsplit_once("::")
++        .map(|(package, _)| package)
++        .filter(|package| !package.is_empty())
++        .map(str::to_string)
++}
++
++fn reason_for(provenance: Provenance) -> SemanticReasonCode {
++    match provenance {
++        Provenance::ExactAst
++        | Provenance::DesugaredAst
++        | Provenance::SemanticAnalyzer
++        | Provenance::LiteralRequireImport => SemanticReasonCode::ExactSource,
++        Provenance::FrameworkSynthesis
++        | Provenance::ImportExportInference
++        | Provenance::PragmaInference => SemanticReasonCode::GeneratedFromSource,
++        Provenance::DynamicBoundary => SemanticReasonCode::DynamicValue,
++        Provenance::NameHeuristic | Provenance::SearchFallback => {
++            SemanticReasonCode::CompatibilityBoundary
++        }
++    }
++}
++
++fn boundary_for(provenance: Provenance, fact_id: FactId) -> Option<BoundaryLink> {
++    match provenance {
++        Provenance::DynamicBoundary => Some(BoundaryLink::new(
++            Some(fact_id),
++            BoundaryKind::DynamicValue,
++            BoundaryDisposition::Degrade,
++            SemanticReasonCode::DynamicValue,
++        )),
++        Provenance::NameHeuristic | Provenance::SearchFallback => Some(BoundaryLink::new(
++            Some(fact_id),
++            BoundaryKind::Compatibility,
++            BoundaryDisposition::Degrade,
++            SemanticReasonCode::CompatibilityBoundary,
++        )),
++        _ => None,
++    }
++}
++
++fn source_for_producer(producer: SemanticProducer) -> ProviderFactSourceKind {
++    match producer {
++        SemanticProducer::Parser => ProviderFactSourceKind::ParserSyntax,
++        SemanticProducer::Hir | SemanticProducer::PirA => ProviderFactSourceKind::CompilerFact,
++        SemanticProducer::SemanticAnalyzer => ProviderFactSourceKind::SemanticFact,
++        SemanticProducer::WorkspaceIndex => ProviderFactSourceKind::LegacyWorkspace,
++        SemanticProducer::FrameworkAdapter => ProviderFactSourceKind::FrameworkAdapter,
++        SemanticProducer::Unknown => ProviderFactSourceKind::Unknown,
++        _ => ProviderFactSourceKind::Unknown,
++    }
++}
++
++fn provider_freshness(freshness: SemanticFreshness) -> ProviderFactFreshness {
++    match freshness {
++        SemanticFreshness::Fresh => ProviderFactFreshness::Fresh,
++        SemanticFreshness::Stale => ProviderFactFreshness::Stale,
++        SemanticFreshness::Unknown => ProviderFactFreshness::Unknown,
++        SemanticFreshness::NotApplicable => ProviderFactFreshness::NotApplicable,
++        _ => ProviderFactFreshness::Unknown,
++    }
++}
++
++fn stable_shard_entity_id(
++    source: FileFactShardSource,
++    source_uri: &str,
++    file_id: FileId,
++    local_id: EntityId,
++) -> EntityId {
++    let mut bytes = Vec::with_capacity(source_uri.len() + 32);
++    bytes.extend_from_slice(b"entity_identity");
++    bytes.push(0xff);
++    bytes.extend_from_slice(source.token().as_bytes());
++    bytes.push(0xfe);
++    bytes.extend_from_slice(source_uri.as_bytes());
++    bytes.push(0xfd);
++    bytes.extend_from_slice(&file_id.0.to_le_bytes());
++    bytes.extend_from_slice(&local_id.0.to_le_bytes());
++    EntityId(stable_hash_bytes(&bytes))
++}
++
++fn stable_shard_fact_id(
++    domain: &[u8],
++    source: FileFactShardSource,
++    source_uri: &str,
++    file_id: FileId,
++    local_id: u64,
++) -> FactId {
++    let mut bytes = Vec::with_capacity(domain.len() + source_uri.len() + 32);
++    bytes.extend_from_slice(domain);
++    bytes.push(0xff);
++    bytes.extend_from_slice(source.token().as_bytes());
++    bytes.push(0xfe);
++    bytes.extend_from_slice(source_uri.as_bytes());
++    bytes.push(0xfd);
++    bytes.extend_from_slice(&file_id.0.to_le_bytes());
++    bytes.extend_from_slice(&local_id.to_le_bytes());
++    FactId(stable_hash_bytes(&bytes))
++}
++
++fn stable_hash_bytes(bytes: &[u8]) -> u64 {
++    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
++    for byte in bytes {
++        hash ^= u64::from(*byte);
++        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
++    }
++    hash
++}
++
++fn optional_hash_token(value: Option<u64>) -> String {
++    value
++        .map(|value| format!("{value:016x}"))
++        .unwrap_or_else(|| "none".to_string())
++}
++
++fn capability_token(capability: ProviderQueryCapability) -> &'static str {
++    match capability {
++        ProviderQueryCapability::Declarations => "declarations",
++        ProviderQueryCapability::References => "references",
++        ProviderQueryCapability::Visibility => "visibility",
++        ProviderQueryCapability::ScopeBindings => "scope_bindings",
++        ProviderQueryCapability::Boundaries => "boundaries",
++        ProviderQueryCapability::Readiness => "readiness",
++    }
++}
++
++fn range_contains(anchor: &SourceAnchor, byte_offset: u32) -> bool {
++    if anchor.start_byte == anchor.end_byte {
++        byte_offset == anchor.start_byte
++    } else {
++        anchor.start_byte <= byte_offset && byte_offset < anchor.end_byte
++    }
++}
++
++fn generation_is_known(generation: &SourceGeneration) -> bool {
++    matches!(generation, SourceGeneration::Known(value) if !value.trim().is_empty())
++}
++
++fn generation_is_malformed(generation: &SourceGeneration) -> bool {
++    matches!(generation, SourceGeneration::Known(value) if value.trim().is_empty())
++}
++diff --git a/crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs b/crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs
++new file mode 100644
++index 0000000000000000000000000000000000000000..cc5cd5419e6df3cdd213b8255d9ae8e7c55b55ed
++--- /dev/null
+++++ b/crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs
++@@ -0,0 +1,777 @@
++use perl_lsp_rs_core::providers::{
++    execute_provider_query, CanonicalEnvelopeInput, CanonicalEnvelopePort, FileFactShardPort,
++    FileFactShardSource, NoopProviderQueryControl, ProviderAdapterError, ProviderAdapterSnapshot,
++    ProviderCancellationState, ProviderFactGenerationScope, ProviderIdentity, ProviderQueryContext,
++    ProviderQueryControl, ProviderQueryDeadline, ProviderQueryKind, ProviderQueryOutcome,
++    ProviderQueryRequest, ProviderQuerySubject, ProviderReadinessRequirement,
++    ProviderReadinessState,
++};
++use perl_semantic_facts::{
++    AnchorFact, AnchorId, Confidence, EntityFact, EntityId, EntityKind, FactId, FileId,
++    LifecyclePhase, OccurrenceFact, OccurrenceId, OccurrenceKind, Provenance,
++    ProviderFallbackState, ProviderSurface, ScopeId, SemanticConfidence, SemanticFactEnvelope,
++    SemanticFactKind, SemanticFreshness, SemanticProducer, SemanticProvenance,
++    SemanticReasonCode, SourceAnchor, SourceGeneration,
++};
++use perl_workspace::workspace::workspace_index::FileFactShard;
++use std::collections::BTreeSet;
++use std::error::Error;
++
++#[derive(Debug, Clone, Copy)]
++struct CancelledControl;
++
++impl ProviderQueryControl for CancelledControl {
++    fn is_cancelled(&self) -> bool {
++        true
++    }
++
++    fn deadline_expired(&self) -> bool {
++        false
++    }
++}
++
++#[derive(Debug, Clone, Copy)]
++struct ExpiredControl;
++
++impl ProviderQueryControl for ExpiredControl {
++    fn is_cancelled(&self) -> bool {
++        false
++    }
++
++    fn deadline_expired(&self) -> bool {
++        true
++    }
++}
++
++fn snapshot() -> Result<ProviderAdapterSnapshot, ProviderAdapterError> {
++    snapshot_with(
++        SemanticFreshness::Fresh,
++        LifecyclePhase::Runtime,
++        ProviderFallbackState::Primary,
++    )
++}
++
++fn snapshot_with(
++    freshness: SemanticFreshness,
++    lifecycle: LifecyclePhase,
++    fallback_state: Provid
