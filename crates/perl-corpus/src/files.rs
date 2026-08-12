@@ -26,10 +26,14 @@ pub struct CorpusPaths {
 }
 
 /// Validated corpus paths plus the authority that selected them.
+///
+/// The wrapped path set is intentionally private. Callers may borrow it through
+/// [`Self::as_paths`] or immutable deref, or explicitly leave the validated
+/// state through [`Self::into_paths`]. This prevents path mutation from making
+/// the recorded selection provenance stale while the value still looks bound.
 #[derive(Debug, Clone)]
 pub struct ResolvedCorpusPaths {
-    /// Validated path set. Deref also exposes `CorpusPaths` methods and fields.
-    pub paths: CorpusPaths,
+    paths: CorpusPaths,
     source: CorpusRootSource,
 }
 
@@ -40,7 +44,16 @@ impl ResolvedCorpusPaths {
         self.source
     }
 
-    /// Consume the validated wrapper and return the compatibility path set.
+    /// Borrow the validated compatibility path set.
+    #[must_use]
+    pub const fn as_paths(&self) -> &CorpusPaths {
+        &self.paths
+    }
+
+    /// Consume the validated wrapper and return the unchecked compatibility path set.
+    ///
+    /// This is an explicit authority downgrade: the returned `CorpusPaths` can
+    /// be mutated and no longer carries selection provenance.
     #[must_use]
     pub fn into_paths(self) -> CorpusPaths {
         self.paths
@@ -408,6 +421,22 @@ mod tests {
         };
         assert_eq!(paths.root, root);
         fs::remove_dir_all(&paths.root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn resolved_paths_require_explicit_authority_downgrade_for_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_root("perl_corpus_resolved_immutability")?;
+        let resolved = CorpusPaths::try_from_root(&root)?;
+        assert_eq!(resolved.as_paths().root, root.canonicalize()?);
+        assert_eq!(resolved.root_source(), CorpusRootSource::Explicit);
+
+        let mut unchecked = resolved.into_paths();
+        unchecked.root = root.join("replacement");
+        assert_eq!(unchecked.root, root.join("replacement"));
+
+        fs::remove_dir_all(&root)?;
         Ok(())
     }
 
