@@ -30,6 +30,7 @@ impl<'a> PerlLexer<'a> {
             current_quote_op: None,
             qw_recovery_enabled: true,
             eof_emitted: false,
+            start_time: std::time::Instant::now(),
         }
     }
 
