@@ -12,17 +12,6 @@ pub(crate) struct EmbeddedCodeFinding {
     pub(crate) kind: EmbeddedCodeKind,
 }
 
-pub(crate) fn detects_code_execution(pattern: &str) -> bool {
-    !find_code_executions(pattern).is_empty()
-}
-
-pub(crate) fn find_code_execution(pattern: &str, start_pos: usize) -> Option<EmbeddedCodeFinding> {
-    find_code_executions(pattern).into_iter().next().map(|finding| EmbeddedCodeFinding {
-        offset: start_pos.saturating_add(finding.offset),
-        kind: finding.kind,
-    })
-}
-
 pub(crate) fn find_code_executions(pattern: &str) -> Vec<EmbeddedCodeFinding> {
     let mut cursor = RegexCursor::new(pattern);
     let mut findings = Vec::new();
