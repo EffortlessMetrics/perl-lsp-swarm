@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# check-pr-review-convergence — semantic GitHub review convergence.
+# check-pr-review-convergence — native GitHub review-fact convergence.
 #
-# This is the only policy-bearing review-convergence entrypoint. The sibling
-# check-pr-review-convergence-core script is a legacy paginated fact collector;
-# its exact-head review fields, stale-review observations, and exit status are
-# compatibility data, not policy. Callers must use this public command.
-#
-# A candidate push does not erase every useful review conclusion. This command
-# composes native requests, submitted reviews, review threads, and dispositions
-# into semantic convergence; changed seams are re-reviewed by the provider-native
-# flow without claim-digest or exact-head receipt requirements.
+# This wrapper classifies native review requests, submitted-review presence,
+# change requests, review threads, and disposition replies. It deliberately does
+# NOT infer that a submitted human COMMENTED review is substantive or semantically
+# current. Subject-bound semantic review is owned by
+# check-pr-semantic-review-currentness.py.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -29,8 +25,8 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 CORE_EXIT=0
-# The core's receipt/head axes are retained only as compatibility observations.
-# Clear the legacy enforcement flag even when inherited from a caller.
+# The core remains the paginated GitHub fact collector. Clear its legacy exact-head
+# protocol enforcement; this wrapper classifies native facts and no more.
 REVIEW_PROTOCOL_ENFORCE= bash "$CORE" "$@" >"$TMP_DIR/core.out" 2>"$TMP_DIR/core.err" || CORE_EXIT=$?
 CORE_JSON="$(sed -n '/^{/,$p' "$TMP_DIR/core.out")"
 
@@ -40,7 +36,9 @@ not_proven() {
     jq -n --arg pr "$PR" --arg reason "$reason" '{
       pr: ($pr | tonumber? // $pr),
       converged: false,
-      review_currentness: "semantic_changed_seam",
+      native_review_facts_converged: false,
+      review_currentness: "NOT_PROVEN",
+      semantic_currentness_required: true,
       exact_head_review_required: false,
       material_claim_receipt_required: false,
       formal_review: {
@@ -92,9 +90,9 @@ load_num UNRESOLVED_TOTAL '.unresolved_total'
 load_num RESOLVED_WITHOUT_DISPOSITION '.resolved_without_disposition'
 load_num HUMAN_REVIEW_COUNT '.human_review_count'
 load_num DISMISSED_HUMAN_REVIEW_COUNT '.dismissed_human_review_count'
-USABLE_HUMAN_REVIEW_COUNT=$((HUMAN_REVIEW_COUNT - DISMISSED_HUMAN_REVIEW_COUNT))
-if [[ "$USABLE_HUMAN_REVIEW_COUNT" -lt 0 ]]; then
-    USABLE_HUMAN_REVIEW_COUNT=0
+SUBMITTED_HUMAN_REVIEW_COUNT=$((HUMAN_REVIEW_COUNT - DISMISSED_HUMAN_REVIEW_COUNT))
+if [[ "$SUBMITTED_HUMAN_REVIEW_COUNT" -lt 0 ]]; then
+    SUBMITTED_HUMAN_REVIEW_COUNT=0
 fi
 
 CONVERGED=true
@@ -130,7 +128,7 @@ fi
 if [[ "$UNRESOLVED_OUTDATED" -gt 0 ]]; then
     FINDINGS_OPEN=true
     CONVERGED=false
-    echo "BLOCK PR #$PR: $UNRESOLVED_OUTDATED outdated review thread(s) remain unresolved; the live ruleset still requires resolution" >&2
+    echo "BLOCK PR #$PR: $UNRESOLVED_OUTDATED outdated review thread(s) remain unresolved; live conversation resolution still requires disposition" >&2
 fi
 
 if [[ "$RESOLVED_WITHOUT_DISPOSITION" -gt 0 ]]; then
@@ -139,10 +137,9 @@ if [[ "$RESOLVED_WITHOUT_DISPOSITION" -gt 0 ]]; then
     echo "BLOCK PR #$PR: $RESOLVED_WITHOUT_DISPOSITION resolved thread(s) have no disposition reply" >&2
 fi
 
-FORMAL_CLASSIFICATION="NOT_APPLICABLE"
-FORMAL_STATUS="not_required"
-FORMAL_REASON="no_pending_or_submitted_human_review"
-
+FORMAL_CLASSIFICATION="NO_SUBMITTED_HUMAN_REVIEW"
+FORMAL_STATUS="absent"
+FORMAL_REASON="no_non_dismissed_human_review_submission"
 if [[ "$PENDING" == "true" ]]; then
     FORMAL_CLASSIFICATION="PENDING"
     FORMAL_STATUS="pending"
@@ -151,16 +148,16 @@ elif [[ "$FINDINGS_OPEN" == "true" ]]; then
     FORMAL_CLASSIFICATION="FINDINGS_OPEN"
     FORMAL_STATUS="findings_open"
     FORMAL_REASON="change_request_or_thread_finding"
-elif [[ "$USABLE_HUMAN_REVIEW_COUNT" -gt 0 ]]; then
-    FORMAL_CLASSIFICATION="REVIEWED"
-    FORMAL_STATUS="reviewed"
-    FORMAL_REASON="submitted_human_review_present"
+elif [[ "$SUBMITTED_HUMAN_REVIEW_COUNT" -gt 0 ]]; then
+    FORMAL_CLASSIFICATION="SUBMITTED_REVIEW_PRESENT"
+    FORMAL_STATUS="present_unclassified"
+    FORMAL_REASON="semantic_currentness_requires_subject_bound_marker"
 fi
 
 if [[ "$CONVERGED" == "true" ]]; then
-    echo "OK   PR #$PR: native review requests and findings have converged; prior review conclusions remain usable except where changed semantic seams require focused refresh"
+    echo "OK   PR #$PR: native review requests and finding threads have converged; semantic review currentness remains a separate required proof"
 else
-    echo "FAIL PR #$PR: semantic review convergence not achieved — see BLOCK lines above"
+    echo "FAIL PR #$PR: native review-fact convergence not achieved — see BLOCK lines above"
 fi
 
 jq -n \
@@ -169,13 +166,15 @@ jq -n \
     --arg classification "$FORMAL_CLASSIFICATION" \
     --arg status "$FORMAL_STATUS" \
     --arg reason "$FORMAL_REASON" \
-    --argjson usableReviews "$USABLE_HUMAN_REVIEW_COUNT" \
+    --argjson submittedReviews "$SUBMITTED_HUMAN_REVIEW_COUNT" \
     '$core + {
       converged: $converged,
-      review_currentness: "semantic_changed_seam",
+      native_review_facts_converged: $converged,
+      review_currentness: "NOT_PROVEN",
+      semantic_currentness_required: true,
       exact_head_review_required: false,
       material_claim_receipt_required: false,
-      useful_submitted_review_count: $usableReviews,
+      submitted_human_review_count: $submittedReviews,
       formal_review: {
         classification: $classification,
         status: $status,
