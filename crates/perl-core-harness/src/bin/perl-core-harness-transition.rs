@@ -349,17 +349,14 @@ mod classify_config_observer {
         assert_eq!(config.series, Some(PathBuf::from("series.json")));
     }
 
-    /// RIPR observer for `Options::optional` empty-recorded-value error path.
+    /// RIPR observer for `Options::optional` empty-recorded queue → absent.
     #[test]
-    fn optional_empty_recorded_value_error_is_observed() {
+    fn optional_empty_recorded_value_is_treated_as_absent() {
         let mut values = BTreeMap::new();
         values.insert("--series".to_string(), VecDeque::new());
         let mut options = Options { values };
-        let err = options
-            .optional("--series")
-            .expect_err("empty recorded optional must fail")
-            .to_string();
-        assert_eq!(err, "option --series was recorded without a value");
+        let value = options.optional("--series").expect("empty recorded optional is absent");
+        assert_eq!(value, None);
     }
 
     /// RIPR observer for `Options::optional` duplicate-value rejection.

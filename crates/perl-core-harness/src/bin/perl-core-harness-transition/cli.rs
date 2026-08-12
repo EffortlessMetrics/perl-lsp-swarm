@@ -47,9 +47,12 @@ impl Options {
         let Some(values) = self.values.get_mut(flag) else {
             return Ok(None);
         };
-        let value = values.pop_front().ok_or_else(|| {
-            color_eyre::eyre::eyre!("option {flag} was recorded without a value")
-        })?;
+        // `Options::parse` only records a flag after reading its value, so an
+        // empty queue here is a defensive no-op (absent), not a distinct error.
+        let Some(value) = values.pop_front() else {
+            self.values.remove(flag);
+            return Ok(None);
+        };
         if !values.is_empty() {
             bail!("option {flag} may be supplied only once");
         }
