@@ -1,4 +1,4 @@
-//! Compatibility adapter for the canonical root-bound fixture-expectation authority.
+//! Compatibility adapter for the canonical content-bound fixture-expectation authority.
 
 use anyhow::Result;
 use serde::{Deserialize, Deserializer};
@@ -232,7 +232,7 @@ impl TryFrom<SnapshotBlock> for sidecar::SidecarSnapshots {
 pub struct SidecarValidation {
     /// Root-relative sidecar path that was inspected.
     pub sidecar_path: PathBuf,
-    /// Root-relative paired fixture path, when path authority succeeded.
+    /// Root-relative paired fixture path, when authority succeeded.
     pub fixture_path: Option<PathBuf>,
     /// Blocking validation failures.
     pub errors: Vec<String>,
@@ -261,7 +261,8 @@ pub fn discover_sidecars(root: &Path) -> Result<sidecar::SidecarValidationContex
     sidecar::SidecarValidationContext::discover(root)
 }
 
-/// Validate through the canonical parser, path authority, and semantic validator.
+/// Open and retain one pair, then parse and validate those exact bytes through
+/// the canonical authority without deriving or reopening a fallback path.
 pub fn validate_sidecar(
     context: &sidecar::SidecarValidationContext,
     path: &Path,
@@ -269,28 +270,6 @@ pub fn validate_sidecar(
 ) -> SidecarValidation {
     let registry =
         concept_registry.map(|values| sidecar::ConceptRegistry::from_ids(values.iter().cloned()));
-    let pair = context.resolve_pair(path);
-    let (fixture_path, path_error) = match pair {
-        Ok(pair) => (Some(pair.identity().fixture_path.clone()), None),
-        Err(error) => (None, Some(error.to_string())),
-    };
-
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
-    match sidecar::parse_sidecar(context, path) {
-        Ok(parsed) => {
-            let validation = sidecar::validate_sidecar(context, path, &parsed, registry.as_ref());
-            errors = validation.errors;
-            warnings = validation.warnings;
-        }
-        Err(error) => errors.push(error.to_string()),
-    }
-    if let Some(path_error) = path_error
-        && !errors.contains(&path_error)
-    {
-        errors.insert(0, path_error);
-    }
-
     let sidecar_path = if path.is_absolute() {
         path.strip_prefix(context.root())
             .map(Path::to_path_buf)
@@ -298,11 +277,36 @@ pub fn validate_sidecar(
     } else {
         path.to_path_buf()
     };
-    SidecarValidation {
-        sidecar_path,
-        fixture_path,
-        errors,
-        warnings,
+
+    let pair = match context.resolve_pair(path) {
+        Ok(pair) => pair,
+        Err(error) => {
+            return SidecarValidation {
+                sidecar_path,
+                fixture_path: None,
+                errors: vec![error.to_string()],
+                warnings: Vec::new(),
+            };
+        }
+    };
+    let fixture_path = Some(pair.identity().fixture_path.clone());
+    match sidecar::parse_validated_sidecar(&pair) {
+        Ok(parsed) => {
+            let validation =
+                sidecar::validate_validated_sidecar(&pair, &parsed, registry.as_ref());
+            SidecarValidation {
+                sidecar_path,
+                fixture_path,
+                errors: validation.errors,
+                warnings: validation.warnings,
+            }
+        }
+        Err(error) => SidecarValidation {
+            sidecar_path,
+            fixture_path,
+            errors: vec![error.to_string()],
+            warnings: Vec::new(),
+        },
     }
 }
 
