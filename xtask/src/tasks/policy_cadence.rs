@@ -120,7 +120,7 @@ struct QualityLedger {
 struct QualityException {
     id: String,
     owner: String,
-    issue: String,
+    issue: Option<String>,
     scope: String,
     evidence: String,
     review_after: String,
@@ -138,7 +138,7 @@ struct ScenarioWaiver {
     project: String,
     journey: String,
     expected_error_class: String,
-    tracking_issue: String,
+    issue: u64,
     expires_after: String,
 }
 
@@ -220,7 +220,7 @@ fn quality_obligations(root: &Path) -> Result<Vec<RawObligation>> {
             source_kind: "quality_gate_exception".to_string(),
             source_path: relative.to_string(),
             owner: entry.owner,
-            owner_issue: Some(entry.issue),
+            owner_issue: entry.issue,
             review_after: Some(entry.review_after),
             expires: Some(entry.expires),
             evidence_identity: nonempty(entry.evidence),
@@ -244,8 +244,8 @@ fn scenario_obligations(root: &Path) -> Result<Vec<RawObligation>> {
             record_id: format!("{}:{}", entry.project, entry.journey),
             source_kind: "scenario_67_error_waiver".to_string(),
             source_path: relative.to_string(),
-            owner: entry.tracking_issue.clone(),
-            owner_issue: Some(entry.tracking_issue),
+            owner: format!("#{}", entry.issue),
+            owner_issue: Some(format!("#{}", entry.issue)),
             review_after: None,
             expires: Some(entry.expires_after),
             evidence_identity: None,
@@ -313,7 +313,9 @@ fn classify(raw: RawObligation, as_of: NaiveDate) -> CadenceObligation {
         CadenceState::Expired
     } else if days_until_expiry.is_some_and(|days| days <= EXPIRY_WINDOW_DAYS) {
         CadenceState::Expiring
-    } else if days_until_review.is_some_and(|days| days < 0) {
+    } else if days_until_review.is_some_and(|days| {
+        days < 0 || (days == 0 && raw.source_kind == "quality_gate_exception")
+    }) {
         CadenceState::ReviewOverdue
     } else if days_until_review.is_some_and(|days| days <= REVIEW_WINDOW_DAYS) {
         CadenceState::ReviewDueSoon
