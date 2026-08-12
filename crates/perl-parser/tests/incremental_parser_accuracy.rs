@@ -113,6 +113,10 @@ fn assert_incremental_edit_matches_fresh(
         Position::new(new_end, line, character + new_changed_bytes as u32),
     ));
     let incremental_ast = incremental.parse(&new_source)?;
+    assert!(
+        !contains_error(&incremental_ast),
+        "{expectation_id}: incremental parse produced a recovery Error node"
+    );
 
     if require_reuse {
         assert!(
@@ -125,7 +129,17 @@ fn assert_incremental_edit_matches_fresh(
         );
     }
 
-    let fresh_ast = Parser::new(&new_source).parse()?;
+    let mut fresh_parser = Parser::new(&new_source);
+    let fresh_ast = fresh_parser.parse()?;
+    assert!(
+        fresh_parser.errors().is_empty(),
+        "{expectation_id}: fresh parse produced diagnostics: {:?}",
+        fresh_parser.errors()
+    );
+    assert!(
+        !contains_error(&fresh_ast),
+        "{expectation_id}: fresh parse produced a recovery Error node"
+    );
     assert_eq!(
         incremental_ast.to_sexp(),
         fresh_ast.to_sexp(),
@@ -142,6 +156,11 @@ fn contains_match(node: &Node) -> bool {
 fn contains_division(node: &Node) -> bool {
     matches!(&node.kind, NodeKind::Binary { op, .. } if op == "/")
         || node.children().into_iter().any(contains_division)
+}
+
+fn contains_error(node: &Node) -> bool {
+    matches!(&node.kind, NodeKind::Error { .. })
+        || node.children().into_iter().any(contains_error)
 }
 
 fn contains_variable_declaration(node: &Node, expected_name: &str) -> bool {
@@ -179,10 +198,7 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         .incremental_expectations
         .first()
         .ok_or("incremental_small_edit has no incremental expectation")?;
-    let edit = expectation
-        .edits
-        .first()
-        .ok_or("incremental_small_edit expectation has no edit")?;
+    let edit = expectation.edits.first().ok_or("incremental_small_edit expectation has no edit")?;
 
     let source = fs::read_to_string(root.join(&fixture.source_path))?;
     let _fresh_ast = assert_incremental_edit_matches_fresh(

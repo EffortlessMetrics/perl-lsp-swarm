@@ -63,7 +63,7 @@ results, unresolved contradictions, limitations, and typed result.
 2. Verify each finding against current source and authority; do not patch comments literally.
    A finding the currentness contract already answers is refuted, not complied with.
    Base staleness, "behind by N", head-SHA movement, and a demand to rebuild on current
-   `main` for a conflict-free candidate are all answered by
+   main for a conflict-free candidate are all answered by
    [`REVIEW_CURRENTNESS.md`](../../../docs/agents/REVIEW_CURRENTNESS.md) —
    this repository squash-merges, so unrelated base movement changes nothing. Reply
    `Disposition: refuted` citing the contract. Rebasing to satisfy such a request costs

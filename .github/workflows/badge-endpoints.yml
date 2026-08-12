@@ -38,12 +38,12 @@ jobs:
           toolchain: stable
 
       - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
 
       - name: Install reviewed ripr release
-        run: cargo install ripr --version 0.10.1 --locked
+        run: cargo install ripr --version 0.9.0 --locked
 
       - name: Refresh badge endpoints
         run: cargo xtask badges
