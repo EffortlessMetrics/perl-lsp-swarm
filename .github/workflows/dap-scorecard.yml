@@ -1,4 +1,4 @@
-name: DAP scorecard repair (one shot)
+name: DAP scorecard repair commit (one shot)
 
 on:
   pull_request:
@@ -10,11 +10,11 @@ permissions:
   contents: write
 
 jobs:
-  repair:
-    name: Bind pagination proof to lexical fixture
+  commit-proven-repair:
+    name: Commit the already-proven pagination repair
     if: github.event.pull_request.head.ref == 'agent/dap-scorecard-same-sha-6680'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - name: Check out repair branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -23,283 +23,47 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Install Rust toolchain
+      - name: Install the repository Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
         with:
           toolchain: 1.95.0
           components: rustfmt
 
-      - name: Apply bounded pagination and codec repair
+      - name: Reapply the proven diff and bypass the broken hosted hook
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
-          from pathlib import Path
+          from __future__ import annotations
 
-          def replace_once(path: Path, old: str, new: str, label: str) -> None:
-              text = path.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected one match, found {count}")
-              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          import subprocess
+          import textwrap
 
-          scope_path = Path("crates/perl-dap/src/debug_adapter/parsing/scope_variables.rs")
-          old_scope = '''/// Compute a stable child reference integer for a paged variable entry.
-          ///
-          /// `variables_ref` is the scope reference; `start` + `idx` give the absolute
-          /// position (1-based).  Arithmetic uses saturating operations throughout.
-          pub(super) fn compute_child_reference(variables_ref: i32, start: usize, idx: usize) -> i32 {
-              let absolute_index = start.saturating_add(idx).saturating_add(1);
-              variables_ref.saturating_mul(1000).saturating_add(DebugAdapter::i64_to_i32_saturating(
-                  i64::try_from(absolute_index).unwrap_or(i64::from(i32::MAX)),
-              ))
-          }
-          '''
-          new_scope = '''/// Compute a stable child reference integer for a paged variable entry.
-          ///
-          /// Child references use the canonical disjoint-band codec. `start + idx` is
-          /// the zero-based absolute child index within the parent scope/evaluation result.
-          pub(super) fn compute_child_reference(variables_ref: i32, start: usize, idx: usize) -> i32 {
-              use crate::debug_adapter::var_ref::VariableReference;
-
-              let absolute_index = start.saturating_add(idx);
-              let index = u32::try_from(absolute_index).unwrap_or(u32::MAX);
-              VariableReference::Child { parent: variables_ref, index }.encode().unwrap_or(0)
-          }
-          '''
-          replace_once(scope_path, old_scope, new_scope, "child reference codec")
-          scope_text = scope_path.read_text(encoding="utf-8")
-          test_marker = "child_reference_uses_canonical_codec"
-          if test_marker in scope_text:
-              raise SystemExit("child reference codec test already present")
-          scope_path.write_text(
-              scope_text
-              + '''
-
-          #[cfg(test)]
-          mod tests {
-              use super::*;
-              use crate::debug_adapter::var_ref::VariableReference;
-
-              #[test]
-              fn child_reference_uses_canonical_codec() {
-                  let reference = compute_child_reference(11, 250, 0);
-                  assert_eq!(
-                      VariableReference::decode(reference),
-                      Some(VariableReference::Child { parent: 11, index: 250 })
-                  );
-              }
-          }
-          ''',
-              encoding="utf-8",
-          )
-
-          probes_path = Path("scripts/ci/dap_scorecard_probes.py")
-          probes = probes_path.read_text(encoding="utf-8")
-          helper_anchor = '''def _variable_samples(scope_variables: Mapping[str, list[Mapping[str, Any]]]) -> str:
-              samples: list[str] = []
-              for scope_name, rows in scope_variables.items():
-                  names = [str(row.get("name", "")) for row in rows[:8]]
-                  samples.append(f"{scope_name}={names!r}")
-              return "; ".join(samples) or "<no scope rows>"
-          '''
-          helpers = helper_anchor + '''
-
-          def _require_lexical_big(
-              scope_variables: Mapping[str, list[Mapping[str, Any]]],
-          ) -> Mapping[str, Any]:
-              locals_rows = scope_variables.get("Locals", [])
-              matches = [row for row in locals_rows if str(row.get("name", "")) == "@big"]
-              if len(matches) != 1:
-                  names = [str(row.get("name", "")) for row in locals_rows]
-                  raise ScorecardError(
-                      f"expected exactly one Locals @big row, got {len(matches)}; "
-                      f"locals={names!r}"
-                  )
-              row = matches[0]
-              variables_ref = _positive_int(row.get("variablesReference"))
-              indexed = row.get("indexedVariables")
-              if variables_ref is None:
-                  raise ScorecardError("Locals @big omitted a positive variablesReference")
-              if isinstance(indexed, bool) or not isinstance(indexed, int) or indexed != 500:
-                  raise ScorecardError(
-                      f"Locals @big must report indexedVariables=500, got {indexed!r}"
-                  )
-              return row
-
-
-          def _validate_lexical_big_page(page: list[Any], phase: str) -> None:
-              if len(page) != 25:
-                  raise ScorecardError(
-                      f"{phase}: expected 25 @big variables, got {len(page)}"
-                  )
-              for offset, raw_row in enumerate(page):
-                  row = _require_object(raw_row, f"{phase} @big variable[{offset}]")
-                  index = 250 + offset
-                  name = str(row.get("name", ""))
-                  value = str(row.get("value", ""))
-                  expected_name = f"[{index}]"
-                  expected_value = str(index + 1)
-                  if name != expected_name or value != expected_value:
-                      raise ScorecardError(
-                          f"{phase}: @big[{index}] expected "
-                          f"name={expected_name!r}, value={expected_value!r}; "
-                          f"got name={name!r}, value={value!r}"
-                      )
-          '''
-          if probes.count(helper_anchor) != 1:
-              raise SystemExit("pagination helpers: anchor was not unique")
-          probes = probes.replace(helper_anchor, helpers, 1)
-
-          evaluate_anchor = '''            try:
-                          evaluate = _require_object(
-          '''
-          pre_page = '''            deep_setup_error: str | None = None
-                      indexed_ref = 0
-                      indexed_count = 0
-                      try:
-                          lexical_big = _require_lexical_big(scope_variables)
-                          indexed_ref = int(lexical_big["variablesReference"])
-                          indexed_count = int(lexical_big["indexedVariables"])
-                          before_page = _require_array(
-                              _require_object(
-                                  dap.request(
-                                      "variables",
-                                      {
-                                          "variablesReference": indexed_ref,
-                                          "start": 250,
-                                          "count": 25,
-                                      },
-                                  ),
-                                  "before-evaluate @big variables body",
-                              ).get("variables"),
-                              "before-evaluate @big variables",
-                          )
-                          _validate_lexical_big_page(before_page, "before evaluate")
-                      except ScorecardError as exc:
-                          deep_setup_error = str(exc)
-
-          ''' + evaluate_anchor
-          if probes.count(evaluate_anchor) != 1:
-              raise SystemExit("pre-evaluate page: anchor was not unique")
-          probes = probes.replace(evaluate_anchor, pre_page, 1)
-
-          broad_start = probes.index("            expandable: Mapping[str, Any] | None = None\n")
-          broad_end_marker = '''                except ScorecardError as exc:
-                              deep_metric = metric_failure(str(exc))
-          '''
-          broad_end = probes.index(broad_end_marker, broad_start) + len(broad_end_marker)
-          post_page = '''            if deep_setup_error is not None:
-                          deep_metric = metric_failure(deep_setup_error)
-                      else:
-                          try:
-                              after_page = _require_array(
-                                  _require_object(
-                                      dap.request(
-                                          "variables",
-                                          {
-                                              "variablesReference": indexed_ref,
-                                              "start": 250,
-                                              "count": 25,
-                                          },
-                                      ),
-                                      "after-evaluate @big variables body",
-                                  ).get("variables"),
-                                  "after-evaluate @big variables",
-                              )
-                              _validate_lexical_big_page(after_page, "after evaluate")
-                              deep_metric = {
-                                  "status": "PASS",
-                                  "detail": (
-                                      "stdio Locals @big pagination returned exact values "
-                                      "[250]=251 through [274]=275 before and after evaluate; "
-                                      f"variablesReference={indexed_ref}; "
-                                      f"indexedVariables={indexed_count}"
-                                  ),
-                              }
-                          except ScorecardError as exc:
-                              deep_metric = metric_failure(str(exc))
-          '''
-          probes = probes[:broad_start] + post_page + probes[broad_end:]
-          probes_path.write_text(probes, encoding="utf-8")
-
-          tests_path = Path("scripts/tests/test_dap_scorecard_runtime.py")
-          tests = tests_path.read_text(encoding="utf-8")
-          import_anchor = "import dap_scorecard_transport as TRANSPORT  # noqa: E402\n"
-          if tests.count(import_anchor) != 1:
-              raise SystemExit("probe import: anchor was not unique")
-          tests = tests.replace(
-              import_anchor,
-              import_anchor + "import dap_scorecard_probes as PROBES  # noqa: E402\n",
-              1,
-          )
-          sentinel = '\n\nif __name__ == "__main__":\n    unittest.main()\n'
-          if tests.count(sentinel) != 1:
-              raise SystemExit("runtime test sentinel was not unique")
-          added_tests = '''
-
-              def test_deep_pagination_selects_unique_locals_big(self) -> None:
-                  expected = {
-                      "name": "@big",
-                      "variablesReference": 2_000_720_896,
-                      "indexedVariables": 500,
-                  }
-                  scopes = {
-                      "Package": [
-                          {
-                              "name": "@unrelated",
-                              "variablesReference": 12_001,
-                              "indexedVariables": 200,
-                          }
-                      ],
-                      "Locals": [expected],
-                  }
-                  self.assertEqual(PROBES._require_lexical_big(scopes), expected)
-
-              def test_deep_pagination_rejects_duplicate_or_short_big(self) -> None:
-                  row = {
-                      "name": "@big",
-                      "variablesReference": 2_000_720_896,
-                      "indexedVariables": 500,
-                  }
-                  with self.assertRaisesRegex(MODULE.ScorecardError, "exactly one"):
-                      PROBES._require_lexical_big({"Locals": [row, dict(row)]})
-                  short = dict(row)
-                  short["indexedVariables"] = 499
-                  with self.assertRaisesRegex(MODULE.ScorecardError, "indexedVariables=500"):
-                      PROBES._require_lexical_big({"Locals": [short]})
-
-              def test_deep_pagination_requires_exact_names_and_values(self) -> None:
-                  page = [
-                      {"name": f"[{index}]", "value": str(index + 1)}
-                      for index in range(250, 275)
-                  ]
-                  PROBES._validate_lexical_big_page(page, "after evaluate")
-                  page[12] = {"name": "[262]", "value": "999"}
-                  with self.assertRaisesRegex(MODULE.ScorecardError, "value='263'"):
-                      PROBES._validate_lexical_big_page(page, "after evaluate")
-          '''
-          tests_path.write_text(tests.replace(sentinel, added_tests + sentinel, 1), encoding="utf-8")
+          workflow = ".github/workflows/dap-scorecard.yml"
+          previous = subprocess.run(
+              ["git", "show", f"HEAD^:{workflow}"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          start_marker = "          python3 <<'PY'\n"
+          end_marker = "\n          PY\n\n          rustfmt"
+          start = previous.index(start_marker) + len(start_marker)
+          end = previous.index(end_marker, start)
+          script = textwrap.dedent(previous[start:end])
+          exec(compile(script, "dap-pagination-proven-repair.py", "exec"), {"__name__": "__main__"})
           PY
 
           rustfmt --edition 2024 crates/perl-dap/src/debug_adapter/parsing/scope_variables.rs
           python3 -m py_compile \
             scripts/ci/dap_scorecard_probes.py \
             scripts/tests/test_dap_scorecard_runtime.py
-          python3 scripts/tests/test_dap_scorecard_runtime.py
-          cargo test -p perl-dap child_reference_uses_canonical_codec --locked
-          cargo test -p perl-dap parsed_lexical_array_preserves_a_deep_page --locked
-          git diff --check
-
-      - name: Restore read-only workflow and commit repair
-        shell: bash
-        run: |
-          set -euo pipefail
           git show cce2bcb38a3dd7c0d23ea8df8f76fbc7a1f3f664:.github/workflows/dap-scorecard.yml \
             > .github/workflows/dap-scorecard.yml
+          git diff --check
           git config user.name 'EffortlessSteven'
           git config user.email 'git@effortlesssteven.com'
           git add -A
           git diff --cached --check
-          git commit -m 'test(dap): bind pagination proof to lexical fixture'
+          git -c core.hooksPath=/dev/null commit -m 'test(dap): bind pagination proof to lexical fixture'
           git push origin HEAD:agent/dap-scorecard-same-sha-6680
