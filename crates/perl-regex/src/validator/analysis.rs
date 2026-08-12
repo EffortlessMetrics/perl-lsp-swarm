@@ -20,6 +20,12 @@ impl RegexRange {
         if start <= end { Some(Self { start, end }) } else { None }
     }
 
+    /// Construct an input-contained range without clamping impossible evidence.
+    pub(crate) fn anchored(start: usize, width: usize, input_len: usize) -> Option<Self> {
+        let end = start.checked_add(width)?;
+        (start <= input_len && end <= input_len).then_some(Self { start, end })
+    }
+
     /// Return the range length in bytes.
     #[must_use]
     pub const fn len(self) -> usize {
@@ -32,8 +38,16 @@ impl RegexRange {
         self.start == self.end
     }
 
-    pub(crate) fn anchored(start: usize, width: usize, input_len: usize) -> Self {
-        Self { start: start.min(input_len), end: start.saturating_add(width).min(input_len) }
+    /// Return whether `offset` lies inside this half-open range.
+    #[must_use]
+    pub const fn contains(self, offset: usize) -> bool {
+        self.start <= offset && offset < self.end
+    }
+
+    /// Return whether this range overlaps another half-open range.
+    #[must_use]
+    pub const fn overlaps(self, other: Self) -> bool {
+        self.start < other.end && other.start < self.end
     }
 }
 
@@ -170,7 +184,7 @@ impl RegexDiagnostic {
     }
 }
 
-/// Kind of executable or runtime-supplied regex region.
+/// Kind of executable code embedded in the pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EmbeddedCodeKind {
@@ -186,7 +200,29 @@ pub enum EmbeddedCodeKind {
 pub struct EmbeddedCodeFact {
     /// Embedded-code form.
     pub kind: EmbeddedCodeKind,
-    /// Body-relative source range for the construct opener.
+    /// Full body-relative range of the executable/dynamic construct.
+    pub range: RegexRange,
+}
+
+/// Kind of source region that prevents a fully static interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexDynamicRegionKind {
+    /// Immediate embedded code.
+    EmbeddedCodeImmediate,
+    /// Deferred runtime-supplied regex text.
+    EmbeddedCodeDeferred,
+    /// Source interpolation such as `$name`, `${expr}`, or `@values`.
+    Interpolation,
+}
+
+/// One source-backed dynamic region.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RegexDynamicRegionFact {
+    /// Dynamic-region category.
+    pub kind: RegexDynamicRegionKind,
+    /// Full body-relative range of the dynamic region.
     pub range: RegexRange,
 }
 
@@ -196,6 +232,8 @@ pub struct EmbeddedCodeFact {
 pub struct RegexFacts {
     /// Embedded executable or runtime-supplied regions in source order.
     pub embedded_code: Vec<EmbeddedCodeFact>,
+    /// All dynamic regions, including interpolation, in source order.
+    pub dynamic_regions: Vec<RegexDynamicRegionFact>,
     /// Nested-quantifier advisory ranges in source order.
     pub nested_quantifiers: Vec<RegexRange>,
 }
