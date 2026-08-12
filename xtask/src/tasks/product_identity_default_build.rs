@@ -151,7 +151,8 @@ fn validate_library_only(repo_root: &Path, label: &str, manifest_path: &Path) ->
         }
     }
 
-    // Reject an implicit binary contributed by autobins + src/main.rs.
+    // Reject implicit binaries contributed by autobins and conventional Cargo
+    // binary locations.
     let package = manifest
         .get("package")
         .and_then(toml::Value::as_table)
@@ -161,21 +162,49 @@ fn validate_library_only(repo_root: &Path, label: &str, manifest_path: &Path) ->
         let manifest_dir = repo_root.join(
             manifest_path.parent().ok_or_else(|| eyre!("{label} manifest path has no parent"))?,
         );
-        if manifest_dir.join("src/main.rs").is_file() {
+        if let Some(binary_path) = implicit_binary_path(&manifest_dir)? {
             let package_name =
                 package.get("name").and_then(toml::Value::as_str).unwrap_or("<unknown>");
             bail!(
-                "{label} manifest {} is library-only but src/main.rs exists, \
-                 contributing an implicit binary {:?}; restoring an implicit \
+                "{label} manifest {} is library-only but {} contributes an implicit \
+                 binary {:?}; restoring an implicit \
                  executable here violates the settled product topology \
                  — see #7213 and #7497",
                 manifest_path.display(),
+                binary_path.display(),
                 package_name
             );
         }
     }
 
     Ok(())
+}
+
+fn implicit_binary_path(manifest_dir: &Path) -> Result<Option<PathBuf>> {
+    let main_path = manifest_dir.join("src/main.rs");
+    if main_path.is_file() {
+        return Ok(Some(main_path));
+    }
+
+    let bin_dir = manifest_dir.join("src/bin");
+    if !bin_dir.is_dir() {
+        return Ok(None);
+    }
+
+    for entry in fs::read_dir(&bin_dir)
+        .wrap_err_with(|| format!("reading implicit Cargo bins in {}", bin_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("rs") {
+            return Ok(Some(path));
+        }
+        if path.is_dir() && path.join("main.rs").is_file() {
+            return Ok(Some(path.join("main.rs")));
+        }
+    }
+
+    Ok(None)
 }
 
 fn validate_default_binary(
@@ -459,7 +488,14 @@ package_manifest = "crates/perl-dap/Cargo.toml"
             "[package]\nname = \"perl-lsp-rs\"\n\n[lib]\nname = \"perl_lsp\"\n",
         )?;
         write(repo.path(), "crates/perl-lsp-rs/src/main.rs", "")?;
-        expect_failure(repo.path(), "library-only but src/main.rs exists")
+        expect_failure(repo.path(), "src/main.rs contributes an implicit binary")
+    }
+
+    #[test]
+    fn implementation_crate_with_implicit_binary_via_src_bin_is_rejected() -> Result<()> {
+        let repo = fixture_repo()?;
+        write(repo.path(), "crates/perl-lsp-rs/src/bin/restored.rs", "fn main() {}\n")?;
+        expect_failure(repo.path(), "src/bin/restored.rs contributes an implicit binary")
     }
 
     #[test]
