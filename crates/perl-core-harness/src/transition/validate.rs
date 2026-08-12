@@ -124,17 +124,12 @@ pub fn validate_compile_baseline_v2(
     }
     validate_file_result_assertions(&baseline.file_results, "accepted")?;
     let files_total = baseline.file_results.len();
-    let files_passed =
-        baseline.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
+    let files_passed = count_passed_files(&baseline.file_results);
     let files_failed = files_total.saturating_sub(files_passed);
     let tap_assertions_total =
-        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-            result.assertions_total
-        })?;
+        checked_assertion_sum(&baseline.file_results, "accepted", assertion_total)?;
     let tap_assertions_passed =
-        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-            result.assertions_passed
-        })?;
+        checked_assertion_sum(&baseline.file_results, "accepted", assertion_passed)?;
     if baseline.files_total != files_total
         || baseline.files_passed != files_passed
         || baseline.files_failed != files_failed
@@ -173,20 +168,12 @@ pub fn validate_accepted_baseline(
             }
             validate_file_result_assertions(&value.file_results, "accepted")?;
             let files_total = value.file_results.len();
-            let files_passed = value
-                .file_results
-                .iter()
-                .filter(|result| result.status == RunnerStatus::Pass)
-                .count();
+            let files_passed = count_passed_files(&value.file_results);
             let files_failed = files_total.saturating_sub(files_passed);
             let tap_assertions_total =
-                checked_assertion_sum(&value.file_results, "accepted", |result| {
-                    result.assertions_total
-                })?;
+                checked_assertion_sum(&value.file_results, "accepted", assertion_total)?;
             let tap_assertions_passed =
-                checked_assertion_sum(&value.file_results, "accepted", |result| {
-                    result.assertions_passed
-                })?;
+                checked_assertion_sum(&value.file_results, "accepted", assertion_passed)?;
             if value.files_total != files_total
                 || value.files_passed != files_passed
                 || value.files_failed != files_failed
@@ -300,13 +287,12 @@ fn validate_summary_against_file_results(
     report: &RunReport,
 ) -> Result<(), EvidenceValidationError> {
     let files_total = report.file_results.len();
-    let files_passed =
-        report.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
+    let files_passed = count_passed_files(&report.file_results);
     let files_failed = files_total.saturating_sub(files_passed);
     let tap_assertions_total =
-        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_total)?;
+        checked_assertion_sum(&report.file_results, "current", assertion_total)?;
     let tap_assertions_passed =
-        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_passed)?;
+        checked_assertion_sum(&report.file_results, "current", assertion_passed)?;
     if report.summary.files_total != files_total
         || report.summary.files_passed != files_passed
         || report.summary.files_failed != files_failed
@@ -324,15 +310,35 @@ fn validate_summary_against_file_results(
 fn checked_assertion_sum(
     results: &[RunFileResult],
     side: &str,
-    value: impl Fn(&RunFileResult) -> usize,
+    value: fn(&RunFileResult) -> usize,
 ) -> Result<usize, EvidenceValidationError> {
-    results.iter().try_fold(0usize, |total, result| {
-        total.checked_add(value(result)).ok_or_else(|| {
+    let mut total = 0usize;
+    for result in results {
+        total = total.checked_add(value(result)).ok_or_else(|| {
             EvidenceValidationError::new(format!(
                 "{side} aggregate assertion count overflows usize"
             ))
-        })
-    })
+        })?;
+    }
+    Ok(total)
+}
+
+fn assertion_total(result: &RunFileResult) -> usize {
+    result.assertions_total
+}
+
+fn assertion_passed(result: &RunFileResult) -> usize {
+    result.assertions_passed
+}
+
+fn count_passed_files(results: &[RunFileResult]) -> usize {
+    let mut passed = 0usize;
+    for result in results {
+        if result.status == RunnerStatus::Pass {
+            passed += 1;
+        }
+    }
+    passed
 }
 
 fn first_duplicate_path(results: &[RunFileResult]) -> Option<&str> {
@@ -411,6 +417,19 @@ mod ripr_inventory_call_observers {
         report.summary.tap_assertions_passed = 0;
         report.failures = vec![failure("base/0.t", "parse_recovery")];
         assert!(validate_run_report(&report).is_ok());
+    }
+
+    #[test]
+    fn aggregate_helpers_observe_each_report_dimension() {
+        let mut results = clean_report().file_results;
+        results[0].assertions_total = 3;
+        results[0].assertions_passed = 2;
+
+        assert_eq!(checked_assertion_sum(&results, "current", assertion_total), Ok(3));
+        assert_eq!(checked_assertion_sum(&results, "current", assertion_passed), Ok(2));
+        assert_eq!(count_passed_files(&results), 1);
+        results[0].status = RunnerStatus::Fail;
+        assert_eq!(count_passed_files(&results), 0);
     }
 
     fn clean_report() -> RunReport {
