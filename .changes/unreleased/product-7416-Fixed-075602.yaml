@@ -4,6 +4,6 @@ kind: Fixed
 body: "Pre-commit now dry-renders the exact staged Changie ledger for every configured project before accepting a commit."
 time: 2026-08-12T07:56:02Z
 custom:
-  PR: "7416"
+  PR: "7504"
   Slug: changie-precommit
   Breaking: "no"
