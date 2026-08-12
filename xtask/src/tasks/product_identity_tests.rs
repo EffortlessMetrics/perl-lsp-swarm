@@ -172,6 +172,48 @@ repository.workspace = true
 }
 
 #[test]
+fn implementation_explicit_binary_fails() -> Result<()> {
+    let repo = fixture_repo()?;
+    write(
+        repo.path(),
+        "crates/perl-lsp-rs/Cargo.toml",
+        r#"[package]
+name = "perl-lsp-rs"
+repository.workspace = true
+
+[[bin]]
+name = "perl-lsp"
+"#,
+    )?;
+
+    expect_failure(repo.path(), "must remain library-only; found binaries {\"perl-lsp\"}")
+}
+
+#[test]
+fn implementation_implicit_main_binary_fails() -> Result<()> {
+    let repo = fixture_repo()?;
+    write(repo.path(), "crates/perl-lsp-rs/src/main.rs", "fn main() {}\n")?;
+
+    expect_failure(repo.path(), "must remain library-only; found binaries {\"perl-lsp-rs\"}")
+}
+
+#[test]
+fn implementation_implicit_src_bin_fails() -> Result<()> {
+    let repo = fixture_repo()?;
+    write(repo.path(), "crates/perl-lsp-rs/src/bin/restored.rs", "fn main() {}\n")?;
+
+    expect_failure(repo.path(), "must remain library-only; found binaries {\"restored\"}")
+}
+
+#[test]
+fn implementation_nested_implicit_binary_fails() -> Result<()> {
+    let repo = fixture_repo()?;
+    write(repo.path(), "crates/perl-lsp-rs/src/bin/restored/main.rs", "fn main() {}\n")?;
+
+    expect_failure(repo.path(), "must remain library-only; found binaries {\"restored\"}")
+}
+
+#[test]
 fn debug_adapter_binary_drift_fails() -> Result<()> {
     let repo = fixture_repo()?;
     write(

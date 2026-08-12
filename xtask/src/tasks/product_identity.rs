@@ -197,12 +197,18 @@ fn validate_contract(
         &primary_manifest,
         &contract.server.primary_executable,
     )?;
-    validate_cargo_package_identity(
+    let implementation_manifest = validate_cargo_package_identity(
         repo_root,
         "server implementation",
         &contract.server.implementation_manifest,
         &contract.server.implementation_crate,
         workspace_repository,
+    )?;
+    validate_library_only_identity(
+        repo_root,
+        &contract.server.implementation_manifest,
+        &implementation_manifest,
+        &contract.server.implementation_crate,
     )?;
     let debug_adapter_manifest = validate_cargo_package_identity(
         repo_root,
@@ -298,6 +304,23 @@ fn validate_cargo_binary_identity(
             "{label} manifest {} does not expose binary {:?}; found {:?}",
             manifest_path.display(),
             expected_binary,
+            binary_names
+        );
+    }
+    Ok(())
+}
+
+fn validate_library_only_identity(
+    repo_root: &Path,
+    manifest_path: &Path,
+    manifest: &toml::Value,
+    package_name: &str,
+) -> Result<()> {
+    let binary_names = cargo_binary_names(repo_root, manifest_path, manifest, package_name)?;
+    if !binary_names.is_empty() {
+        bail!(
+            "server implementation manifest {} must remain library-only; found binaries {:?}",
+            manifest_path.display(),
             binary_names
         );
     }
