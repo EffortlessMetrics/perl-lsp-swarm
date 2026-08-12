@@ -724,7 +724,7 @@ mod tests {
     fn topology_from_root(root: &Path) -> Result<CorpusTopology, CorpusTopologyError> {
         fs::create_dir_all(root.join("test_corpus")).expect("create test corpus layer");
         fs::create_dir_all(root.join("crates/perl-corpus/fuzz")).expect("create fuzz corpus layer");
-        topology_from_root(root)
+        CorpusTopology::from_paths(&CorpusPaths::from_root(root.to_path_buf()))
     }
 
     #[test]
