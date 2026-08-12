@@ -45,9 +45,10 @@ pub(crate) enum IncomingTerminalKind {
     Result,
     Error,
     Shutdown,
+    TransportLost,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) enum IncomingTerminalOutcome {
     Result(Value),
     Error(JsonRpcError),
@@ -62,7 +63,7 @@ impl IncomingTerminalOutcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct SelectedIncomingTerminal {
     pub(crate) id: JsonRpcId,
     pub(crate) method: String,
@@ -289,13 +290,9 @@ impl IncomingRequestRegistry {
         method: impl Into<String>,
     ) -> Result<Option<IncomingRequestHandle>, IncomingRequestRegistryError> {
         let Some(id) = id else {
-            self.inner.state.lock().counters.notifications_bypassed = self
-                .inner
-                .state
-                .lock()
-                .counters
-                .notifications_bypassed
-                .saturating_add(1);
+            let mut state = self.inner.state.lock();
+            state.counters.notifications_bypassed =
+                state.counters.notifications_bypassed.saturating_add(1);
             return Ok(None);
         };
         self.admit(id, method).map(Some)
@@ -429,7 +426,7 @@ impl IncomingRequestRegistry {
                 RecentTerminal {
                     id: id.clone(),
                     method: entry.method.clone(),
-                    terminal_kind: entry.terminal_kind.unwrap_or(IncomingTerminalKind::Error),
+                    terminal_kind: entry.terminal_kind.unwrap_or(IncomingTerminalKind::TransportLost),
                     cleaned_at: now,
                     response_written: false,
                 },
@@ -498,33 +495,34 @@ impl IncomingRequestRegistry {
         let key = IncomingRequestKey::from_id(id);
         let now = Instant::now();
         let mut state = self.inner.state.lock();
-        let Some(entry) = state.active.get_mut(&key) else {
+        let Some(mut entry) = state.active.remove(&key) else {
             record_unknown(&mut state, &key, "phase transition", now);
             return PhaseTransitionDisposition::Unknown;
         };
-        if entry.phase == IncomingRequestPhase::TerminalSelected {
-            return PhaseTransitionDisposition::AlreadyTerminal;
-        }
-        if target.rank() < entry.phase.rank() {
-            let method = entry.method.clone();
-            let detail = format!("phase regression {:?} -> {target:?}", entry.phase);
+
+        let disposition = if entry.phase == IncomingRequestPhase::TerminalSelected {
+            PhaseTransitionDisposition::AlreadyTerminal
+        } else if target.rank() < entry.phase.rank() {
             push_anomaly(
                 &mut state,
                 IncomingRequestAnomalyKind::InvalidPhaseRegression,
-                Some(key),
-                Some(method),
-                detail,
+                Some(key.clone()),
+                Some(entry.method.clone()),
+                format!("phase regression {:?} -> {target:?}", entry.phase),
                 now,
             );
-            return PhaseTransitionDisposition::Unchanged;
-        }
-        if target == entry.phase {
-            return PhaseTransitionDisposition::Unchanged;
-        }
-        entry.phase = target;
-        entry.phase_changed_at = now;
-        state.counters.phase_advanced = state.counters.phase_advanced.saturating_add(1);
-        PhaseTransitionDisposition::Advanced
+            PhaseTransitionDisposition::Unchanged
+        } else if target == entry.phase {
+            PhaseTransitionDisposition::Unchanged
+        } else {
+            entry.phase = target;
+            entry.phase_changed_at = now;
+            state.counters.phase_advanced = state.counters.phase_advanced.saturating_add(1);
+            PhaseTransitionDisposition::Advanced
+        };
+
+        state.active.insert(key, entry);
+        disposition
     }
 
     fn select_terminal(
@@ -536,21 +534,26 @@ impl IncomingRequestRegistry {
         let key = IncomingRequestKey::from_id(id);
         let now = Instant::now();
         let mut state = self.inner.state.lock();
-        let Some(entry) = state.active.get_mut(&key) else {
-            if let Some(recent) = state.recent.iter().find(|recent| recent.id == key) {
+        let Some(mut entry) = state.active.remove(&key) else {
+            let recent = state.recent.iter().find(|recent| recent.id == key).map(|recent| {
+                (
+                    recent.method.clone(),
+                    recent.terminal_kind,
+                    recent.response_written,
+                    recent.cleaned_at,
+                )
+            });
+            if let Some((method, terminal_kind, response_written, cleaned_at)) = recent {
                 state.counters.duplicate_terminal =
                     state.counters.duplicate_terminal.saturating_add(1);
-                let method = recent.method.clone();
-                let detail = format!(
-                    "terminal already cleaned kind={:?} response_written={} cleaned_at={:?}",
-                    recent.terminal_kind, recent.response_written, recent.cleaned_at
-                );
                 push_anomaly(
                     &mut state,
                     IncomingRequestAnomalyKind::DuplicateTerminal,
                     Some(key),
                     Some(method),
-                    detail,
+                    format!(
+                        "terminal already cleaned kind={terminal_kind:?} response_written={response_written} cleaned_at={cleaned_at:?}"
+                    ),
                     now,
                 );
                 return (TerminalSelectionDisposition::AlreadyTerminal, None);
@@ -560,20 +563,24 @@ impl IncomingRequestRegistry {
         };
 
         if entry.phase == IncomingRequestPhase::TerminalSelected {
-            let method = entry.method.clone();
             state.counters.duplicate_terminal = state.counters.duplicate_terminal.saturating_add(1);
             push_anomaly(
                 &mut state,
                 IncomingRequestAnomalyKind::DuplicateTerminal,
-                Some(key),
-                Some(method),
+                Some(key.clone()),
+                Some(entry.method.clone()),
                 "second terminal selection rejected".to_string(),
                 now,
             );
+            state.active.insert(key, entry);
             return (TerminalSelectionDisposition::AlreadyTerminal, None);
         }
 
-        let terminal_kind = if shutdown { IncomingTerminalKind::Shutdown } else { outcome.kind() };
+        let terminal_kind = if shutdown {
+            IncomingTerminalKind::Shutdown
+        } else {
+            outcome.kind()
+        };
         entry.phase = IncomingRequestPhase::TerminalSelected;
         entry.phase_changed_at = now;
         entry.terminal_kind = Some(terminal_kind);
@@ -584,20 +591,20 @@ impl IncomingRequestRegistry {
             selected_at: now,
             outcome,
         };
+        state.active.insert(key, entry);
         state.counters.terminal_selected_total =
             state.counters.terminal_selected_total.saturating_add(1);
-        if shutdown {
-            state.counters.shutdown_selected = state.counters.shutdown_selected.saturating_add(1);
-        } else {
-            match terminal_kind {
-                IncomingTerminalKind::Result => {
-                    state.counters.result_selected = state.counters.result_selected.saturating_add(1);
-                }
-                IncomingTerminalKind::Error => {
-                    state.counters.error_selected = state.counters.error_selected.saturating_add(1);
-                }
-                IncomingTerminalKind::Shutdown => {}
+        match terminal_kind {
+            IncomingTerminalKind::Result => {
+                state.counters.result_selected = state.counters.result_selected.saturating_add(1);
             }
+            IncomingTerminalKind::Error => {
+                state.counters.error_selected = state.counters.error_selected.saturating_add(1);
+            }
+            IncomingTerminalKind::Shutdown => {
+                state.counters.shutdown_selected = state.counters.shutdown_selected.saturating_add(1);
+            }
+            IncomingTerminalKind::TransportLost => {}
         }
         (TerminalSelectionDisposition::Selected, Some(selected))
     }
@@ -612,8 +619,12 @@ impl IncomingRequestRegistry {
         let now = Instant::now();
         let mut state = self.inner.state.lock();
         let Some(entry) = state.active.remove(&key) else {
-            if let Some(recent) = state.recent.iter().find(|recent| recent.id == key) {
-                let method = recent.method.clone();
+            let recent_method = state
+                .recent
+                .iter()
+                .find(|recent| recent.id == key)
+                .map(|recent| recent.method.clone());
+            if let Some(method) = recent_method {
                 push_anomaly(
                     &mut state,
                     IncomingRequestAnomalyKind::ResponseAfterCleanup,
@@ -629,12 +640,13 @@ impl IncomingRequestRegistry {
         };
 
         let Some(terminal_kind) = entry.terminal_kind else {
+            let method = entry.method.clone();
             state.active.insert(key.clone(), entry);
             push_anomaly(
                 &mut state,
                 IncomingRequestAnomalyKind::ResponseBeforeTerminal,
                 Some(key),
-                None,
+                Some(method),
                 "response write attempted before terminal selection".to_string(),
                 now,
             );
@@ -663,7 +675,10 @@ impl IncomingRequestRegistry {
                 IncomingRequestAnomalyKind::ResponseWriteFailed,
                 Some(key),
                 Some(entry.method),
-                bounded_text(failure_detail.unwrap_or("response write failed"), MAX_DIAGNOSTIC_BYTES),
+                bounded_text(
+                    failure_detail.unwrap_or("response write failed"),
+                    MAX_DIAGNOSTIC_BYTES,
+                ),
                 now,
             );
             ResponseWriteDisposition::WriteFailedAndCleaned
@@ -741,11 +756,17 @@ mod tests {
     type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
     fn join<T>(handle: thread::JoinHandle<T>) -> TestResult<T> {
-        handle.join().map_err(|_| io::Error::other("request lifecycle race thread panicked").into())
+        handle
+            .join()
+            .map_err(|_| io::Error::other("request lifecycle race thread panicked").into())
     }
 
     fn error(code: i32, message: &str) -> JsonRpcError {
-        JsonRpcError { code, message: message.to_string(), data: None }
+        JsonRpcError {
+            code,
+            message: message.to_string(),
+            data: None,
+        }
     }
 
     #[test]
@@ -762,16 +783,26 @@ mod tests {
     fn numeric_and_string_ids_are_distinct() -> TestResult {
         let registry = IncomingRequestRegistry::new(2)?;
         let numeric = registry.admit(JsonRpcId::Integer(1), "textDocument/hover")?;
-        let string = registry.admit(JsonRpcId::String("1".to_string()), "textDocument/hover")?;
+        let string = registry.admit(
+            JsonRpcId::String("1".to_string()),
+            "textDocument/hover",
+        )?;
         assert_eq!(registry.active_count(), 2);
         assert_ne!(numeric.id, string.id);
 
         let (numeric_disposition, _) = registry.select_result(&numeric.id, Value::Null);
-        let (string_disposition, _) = registry.select_error(&string.id, error(-32800, "cancelled"));
+        let (string_disposition, _) =
+            registry.select_error(&string.id, error(-32800, "cancelled"));
         assert_eq!(numeric_disposition, TerminalSelectionDisposition::Selected);
         assert_eq!(string_disposition, TerminalSelectionDisposition::Selected);
-        assert_eq!(registry.response_written(&numeric.id), ResponseWriteDisposition::WrittenAndCleaned);
-        assert_eq!(registry.response_written(&string.id), ResponseWriteDisposition::WrittenAndCleaned);
+        assert_eq!(
+            registry.response_written(&numeric.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
+        assert_eq!(
+            registry.response_written(&string.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
         assert_eq!(registry.active_count(), 0);
         Ok(())
     }
@@ -787,7 +818,10 @@ mod tests {
         ));
         assert_eq!(registry.counters().capacity_rejected, 1);
         let _ = registry.select_error(&first.id, error(-32099, "overload test cleanup"));
-        assert_eq!(registry.response_written(&first.id), ResponseWriteDisposition::WrittenAndCleaned);
+        assert_eq!(
+            registry.response_written(&first.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
         Ok(())
     }
 
@@ -795,17 +829,32 @@ mod tests {
     fn phase_progression_is_monotonic() -> TestResult {
         let registry = IncomingRequestRegistry::new(2)?;
         let handle = registry.admit(JsonRpcId::Integer(7), "workspace/symbol")?;
-        assert_eq!(registry.mark_queued(&handle.id), PhaseTransitionDisposition::Advanced);
-        assert_eq!(registry.mark_running(&handle.id), PhaseTransitionDisposition::Advanced);
-        assert_eq!(registry.mark_queued(&handle.id), PhaseTransitionDisposition::Unchanged);
-        let snapshot = registry.snapshots().into_iter().next().ok_or("missing snapshot")?;
+        assert_eq!(
+            registry.mark_queued(&handle.id),
+            PhaseTransitionDisposition::Advanced
+        );
+        assert_eq!(
+            registry.mark_running(&handle.id),
+            PhaseTransitionDisposition::Advanced
+        );
+        assert_eq!(
+            registry.mark_queued(&handle.id),
+            PhaseTransitionDisposition::Unchanged
+        );
+        let snapshot = registry
+            .snapshots()
+            .into_iter()
+            .next()
+            .ok_or("missing snapshot")?;
         assert_eq!(snapshot.phase, IncomingRequestPhase::Running);
-        assert!(registry
-            .anomalies()
-            .iter()
-            .any(|anomaly| anomaly.kind == IncomingRequestAnomalyKind::InvalidPhaseRegression));
+        assert!(registry.anomalies().iter().any(|anomaly| {
+            anomaly.kind == IncomingRequestAnomalyKind::InvalidPhaseRegression
+        }));
         let _ = registry.select_result(&handle.id, json!([]));
-        assert_eq!(registry.response_written(&handle.id), ResponseWriteDisposition::WrittenAndCleaned);
+        assert_eq!(
+            registry.response_written(&handle.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
         Ok(())
     }
 
@@ -813,14 +862,23 @@ mod tests {
     fn terminal_is_selected_once_and_cleanup_is_explicit() -> TestResult {
         let registry = IncomingRequestRegistry::new(2)?;
         let handle = registry.admit(JsonRpcId::Integer(11), "textDocument/definition")?;
-        let (first, selected) = registry.select_result(&handle.id, json!({"uri": "file:///a.pm"}));
+        let (first, selected) =
+            registry.select_result(&handle.id, json!({"uri": "file:///a.pm"}));
         assert_eq!(first, TerminalSelectionDisposition::Selected);
         assert!(selected.is_some());
-        let (second, duplicate) = registry.select_error(&handle.id, error(-32800, "too late"));
+        let (second, duplicate) =
+            registry.select_error(&handle.id, error(-32800, "too late"));
         assert_eq!(second, TerminalSelectionDisposition::AlreadyTerminal);
         assert!(duplicate.is_none());
-        assert_eq!(registry.active_count(), 1, "selection alone must not hide write leaks");
-        assert_eq!(registry.response_written(&handle.id), ResponseWriteDisposition::WrittenAndCleaned);
+        assert_eq!(
+            registry.active_count(),
+            1,
+            "selection alone must not hide write leaks"
+        );
+        assert_eq!(
+            registry.response_written(&handle.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
         let (third, _) = registry.select_result(&handle.id, Value::Null);
         assert_eq!(third, TerminalSelectionDisposition::AlreadyTerminal);
         assert_eq!(registry.counters().duplicate_terminal, 2);
@@ -837,14 +895,20 @@ mod tests {
         );
         assert_eq!(registry.active_count(), 1);
         let _ = registry.select_result(&handle.id, json!([]));
-        assert_eq!(registry.response_written(&handle.id), ResponseWriteDisposition::WrittenAndCleaned);
+        assert_eq!(
+            registry.response_written(&handle.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
         Ok(())
     }
 
     #[test]
     fn response_write_failure_is_distinct_and_cleans_once() -> TestResult {
         let registry = IncomingRequestRegistry::new(1)?;
-        let handle = registry.admit(JsonRpcId::String("write-failure".to_string()), "textDocument/rename")?;
+        let handle = registry.admit(
+            JsonRpcId::String("write-failure".to_string()),
+            "textDocument/rename",
+        )?;
         let _ = registry.select_error(&handle.id, error(-32603, "internal error"));
         assert_eq!(
             registry.response_write_failed(&handle.id, "broken pipe"),
@@ -852,7 +916,10 @@ mod tests {
         );
         assert_eq!(registry.active_count(), 0);
         assert_eq!(registry.counters().response_write_failed, 1);
-        assert_eq!(registry.response_written(&handle.id), ResponseWriteDisposition::AlreadyCleaned);
+        assert_eq!(
+            registry.response_written(&handle.id),
+            ResponseWriteDisposition::AlreadyCleaned
+        );
         Ok(())
     }
 
@@ -880,16 +947,20 @@ mod tests {
         barrier.wait();
         let result_disposition = join(result_thread)?;
         let shutdown_terminals = join(shutdown_thread)?;
-        let selected_count = usize::from(result_disposition == TerminalSelectionDisposition::Selected)
-            + shutdown_terminals.len();
+        let selected_count =
+            usize::from(result_disposition == TerminalSelectionDisposition::Selected)
+                + shutdown_terminals.len();
         assert_eq!(selected_count, 1);
         assert_eq!(registry.counters().terminal_selected_total, 1);
-        assert_eq!(registry.response_written(&handle.id), ResponseWriteDisposition::WrittenAndCleaned);
+        assert_eq!(
+            registry.response_written(&handle.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
         Ok(())
     }
 
     #[test]
-    fn transport_loss_cleans_accepted_queued_running_and_terminal_entries() -> TestResult {
+    fn transport_loss_cleans_every_active_phase() -> TestResult {
         let registry = IncomingRequestRegistry::new(4)?;
         let accepted = registry.admit(JsonRpcId::Integer(31), "accepted")?;
         let queued = registry.admit(JsonRpcId::Integer(32), "queued")?;
@@ -901,12 +972,16 @@ mod tests {
         assert_eq!(registry.transport_lost(), 4);
         assert_eq!(registry.active_count(), 0);
         assert_eq!(registry.counters().transport_cleaned, 4);
-        assert!(registry
-            .anomalies()
-            .iter()
-            .filter(|anomaly| anomaly.kind == IncomingRequestAnomalyKind::TransportCleanup)
-            .count()
-            >= 4);
+        assert!(
+            registry
+                .anomalies()
+                .iter()
+                .filter(|anomaly| {
+                    anomaly.kind == IncomingRequestAnomalyKind::TransportCleanup
+                })
+                .count()
+                >= 4
+        );
         let _ = accepted;
         Ok(())
     }
@@ -916,8 +991,15 @@ mod tests {
         let registry = IncomingRequestRegistry::new(2)?;
         let handle = registry.admit(JsonRpcId::String("same".to_string()), "first")?;
         let duplicate = registry.admit(JsonRpcId::String("same".to_string()), "second");
-        assert!(matches!(duplicate, Err(IncomingRequestRegistryError::DuplicateId { .. })));
-        let snapshot = registry.snapshots().into_iter().next().ok_or("missing owner")?;
+        assert!(matches!(
+            duplicate,
+            Err(IncomingRequestRegistryError::DuplicateId { .. })
+        ));
+        let snapshot = registry
+            .snapshots()
+            .into_iter()
+            .next()
+            .ok_or("missing owner")?;
         assert_eq!(snapshot.method, "first");
         let _ = registry.select_result(&handle.id, Value::Null);
         let _ = registry.response_written(&handle.id);
@@ -929,7 +1011,10 @@ mod tests {
         let registry = IncomingRequestRegistry::new(1)?;
         for index in 0..(MAX_ANOMALIES + 9) {
             let id = JsonRpcId::Integer(i64::try_from(index)? + 10_000);
-            assert_eq!(registry.mark_running(&id), PhaseTransitionDisposition::Unknown);
+            assert_eq!(
+                registry.mark_running(&id),
+                PhaseTransitionDisposition::Unknown
+            );
         }
         assert_eq!(registry.anomalies().len(), MAX_ANOMALIES);
         assert_eq!(registry.counters().anomalies_dropped, 9);
