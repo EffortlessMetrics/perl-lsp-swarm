@@ -216,6 +216,42 @@ fn empty_failure_bucket_blocks_regression() {
 }
 
 #[test]
+fn failure_record_for_passing_file_blocks_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.failures = vec![sample_failure("base/0.t", "parse_recovery")];
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("does not identify a failing file"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn foreign_failure_record_blocks_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.failures = vec![sample_failure("foreign/0.t", "parse_recovery")];
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("has no file-result record"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn duplicate_failure_records_block_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.failures = vec![
+        sample_failure("base/1.t", "parse_recovery"),
+        sample_failure("base/1.t", "compile_error"),
+    ];
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("failure inventory repeats path"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
 fn malformed_semantic_boundary_identity_is_not_proven() {
     let mut accepted = sample_v2_baseline(1, 1);
     let mut current = sample_report(1, 1);

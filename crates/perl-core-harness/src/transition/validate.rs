@@ -82,8 +82,7 @@ pub fn validate_run_report(
     {
         return Err(err);
     }
-    if let Err(err) =
-        validate_semantic_boundary_identities(&report.semantic_boundaries, "current")
+    if let Err(err) = validate_semantic_boundary_identities(&report.semantic_boundaries, "current")
     {
         return Err(err);
     }
@@ -128,12 +127,14 @@ pub fn validate_compile_baseline_v2(
     let files_passed =
         baseline.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
     let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total = checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-        result.assertions_total
-    })?;
-    let tap_assertions_passed = checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-        result.assertions_passed
-    })?;
+    let tap_assertions_total =
+        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
+            result.assertions_total
+        })?;
+    let tap_assertions_passed =
+        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
+            result.assertions_passed
+        })?;
     if baseline.files_total != files_total
         || baseline.files_passed != files_passed
         || baseline.files_failed != files_failed
@@ -145,11 +146,9 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 aggregate file/TAP totals do not reconcile with detailed file_results",
         ));
     }
-    if let Err(err) = validate_failure_inventory(
-        &baseline.expected_failures,
-        &baseline.file_results,
-        "accepted",
-    ) {
+    if let Err(err) =
+        validate_failure_inventory(&baseline.expected_failures, &baseline.file_results, "accepted")
+    {
         return Err(err);
     }
     if let Err(err) =
@@ -180,12 +179,14 @@ pub fn validate_accepted_baseline(
                 .filter(|result| result.status == RunnerStatus::Pass)
                 .count();
             let files_failed = files_total.saturating_sub(files_passed);
-            let tap_assertions_total = checked_assertion_sum(&value.file_results, "accepted", |result| {
-                result.assertions_total
-            })?;
-            let tap_assertions_passed = checked_assertion_sum(&value.file_results, "accepted", |result| {
-                result.assertions_passed
-            })?;
+            let tap_assertions_total =
+                checked_assertion_sum(&value.file_results, "accepted", |result| {
+                    result.assertions_total
+                })?;
+            let tap_assertions_passed =
+                checked_assertion_sum(&value.file_results, "accepted", |result| {
+                    result.assertions_passed
+                })?;
             if value.files_total != files_total
                 || value.files_passed != files_passed
                 || value.files_failed != files_failed
@@ -219,14 +220,39 @@ fn validate_failure_inventory(
     file_results: &[RunFileResult],
     side: &str,
 ) -> Result<(), EvidenceValidationError> {
-    let failure_paths =
-        failures.iter().map(|failure| failure.path.as_str()).collect::<BTreeSet<_>>();
+    let mut failure_paths = BTreeSet::new();
     for failure in failures {
+        if failure.path.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure record has an empty path"
+            )));
+        }
         if failure.bucket.trim().is_empty() {
             return Err(EvidenceValidationError::new(format!(
                 "{side} failure path {} has an empty bucket",
                 failure.path
             )));
+        }
+        if !failure_paths.insert(failure.path.as_str()) {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure inventory repeats path {}",
+                failure.path
+            )));
+        }
+        match file_results.iter().find(|result| result.path == failure.path) {
+            Some(result) if result.status != RunnerStatus::Fail => {
+                return Err(EvidenceValidationError::new(format!(
+                    "{side} failure path {} does not identify a failing file",
+                    failure.path
+                )));
+            }
+            Some(_) => {}
+            None => {
+                return Err(EvidenceValidationError::new(format!(
+                    "{side} failure path {} has no file-result record",
+                    failure.path
+                )));
+            }
         }
     }
     for result in file_results {
@@ -277,12 +303,10 @@ fn validate_summary_against_file_results(
     let files_passed =
         report.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
     let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total = checked_assertion_sum(&report.file_results, "current", |result| {
-        result.assertions_total
-    })?;
-    let tap_assertions_passed = checked_assertion_sum(&report.file_results, "current", |result| {
-        result.assertions_passed
-    })?;
+    let tap_assertions_total =
+        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_total)?;
+    let tap_assertions_passed =
+        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_passed)?;
     if report.summary.files_total != files_total
         || report.summary.files_passed != files_passed
         || report.summary.files_failed != files_failed
