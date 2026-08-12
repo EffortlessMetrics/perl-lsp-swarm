@@ -1,0 +1,59 @@
+name: Agent Move Release Readiness 7166
+
+on:
+  push:
+    branches:
+      - agent/move-perl-release-readiness-7166
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-move-release-readiness-7166
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: agent/move-perl-release-readiness-7166
+          fetch-depth: 0
+
+      - name: Apply mechanical namespace migration
+        run: python3 scripts/agent_move_release_readiness_7166.py
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Validate locked workspace metadata
+        run: cargo metadata --locked --no-deps --format-version 1 >/dev/null
+
+      - name: Clippy moved crate and xtask surfaces
+        run: cargo clippy -p perl-release-readiness -p xtask --tests -- -D warnings
+
+      - name: Test moved crate
+        run: cargo test -p perl-release-readiness --locked
+
+      - name: Test canonical release-readiness CLI
+        run: cargo test -p xtask --test release_readiness_cli --locked
+
+      - name: Test deprecated perl-kwalitee alias
+        run: cargo test -p xtask --test perl_kwalitee_alias_cli --locked
+
+      - name: Commit verified migration and remove agent scaffolding
+        env:
+          BRANCH: agent/move-perl-release-readiness-7166
+        run: |
+          rm scripts/agent_move_release_readiness_7166.py
+          rm .github/workflows/agent-move-release-readiness-7166.yml
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "refactor(release-readiness): move mixed evaluator namespace (#7166)"
+          git push origin "HEAD:${BRANCH}"
