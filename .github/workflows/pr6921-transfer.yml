@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Fetch and verify transfer archive
+      - name: Fetch, recover, and verify transfer archive
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -44,19 +44,55 @@ jobs:
           if begin not in body or end not in body:
               raise SystemExit('transfer markers missing')
           encoded_block = body.split(begin, 1)[1].split(end, 1)[0]
-          encoded = re.sub(r'\s+', '', encoded_block)
-          print(f'encoded_chars={len(encoded)} modulo4={len(encoded) % 4} tail={encoded[-16:]}')
+          lines = [line.strip() for line in encoded_block.splitlines() if line.strip()]
+          encoded = ''.join(lines)
           if re.search(r'[^A-Za-z0-9+/=]', encoded):
               raise SystemExit('transfer contains non-base64 characters')
-          padded = encoded + ('=' * ((-len(encoded)) % 4))
-          archive = base64.b64decode(padded, validate=True)
+
           expected_size = 5367
           expected_sha = '20e774c365cec7a4704bce0e22290ffca42e033baf78c95633a4f647d322bac7'
-          actual_sha = hashlib.sha256(archive).hexdigest()
-          if len(archive) != expected_size or actual_sha != expected_sha:
-              raise SystemExit(
-                  f'transfer mismatch: bytes={len(archive)} sha256={actual_sha}'
-              )
+          expected_chars = ((expected_size + 2) // 3) * 4
+          print(
+              f'encoded_chars={len(encoded)} expected_chars={expected_chars} '
+              f'line_lengths={[len(line) for line in lines]}'
+          )
+
+          def accepted(candidate):
+              try:
+                  archive = base64.b64decode(candidate, validate=True)
+              except ValueError:
+                  return None
+              if len(archive) != expected_size:
+                  return None
+              return archive if hashlib.sha256(archive).hexdigest() == expected_sha else None
+
+          archive = accepted(encoded)
+          if archive is None and len(encoded) + 1 == expected_chars:
+              offsets = []
+              cursor = 0
+              expected_last = expected_chars - 76 * (len(lines) - 1)
+              for index, line in enumerate(lines):
+                  expected_length = expected_last if index == len(lines) - 1 else 76
+                  if len(line) == expected_length - 1:
+                      offsets.extend(range(cursor, cursor + len(line) + 1))
+                  cursor += len(line)
+              if not offsets:
+                  offsets = range(len(encoded) + 1)
+              alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+              for offset in offsets:
+                  prefix = encoded[:offset]
+                  suffix = encoded[offset:]
+                  for character in alphabet:
+                      candidate = prefix + character + suffix
+                      archive = accepted(candidate)
+                      if archive is not None:
+                          print(f'recovered_missing_base64_character offset={offset} value={character}')
+                          break
+                  if archive is not None:
+                      break
+
+          if archive is None:
+              raise SystemExit('no unique one-character recovery matched the stated archive digest')
           with open('pr6921.tar.gz', 'wb') as destination:
               destination.write(archive)
           PY
