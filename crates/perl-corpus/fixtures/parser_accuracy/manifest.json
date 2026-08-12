@@ -621,7 +621,36 @@
         ],
         "edges": []
       },
-      "ast_expectations": []
+      "ast_expectations": [
+        {
+          "id": "heuristic_generated_member_call_name",
+          "kind": "FunctionCall",
+          "line": 5,
+          "span_text": "has name => (is => 'ro')",
+          "parent_kind": "ExpressionStatement",
+          "depth": 2,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "heuristic_generated_member_has_options_hash",
+          "kind": "HashLiteral",
+          "line": 5,
+          "span_text": "is => 'ro'"
+        },
+        {
+          "id": "heuristic_generated_member_has_options_key",
+          "kind": "String",
+          "line": 5,
+          "span_text": "is"
+        },
+        {
+          "id": "heuristic_generated_member_has_options_value",
+          "kind": "String",
+          "line": 5,
+          "span_text": "'ro'"
+        }
+      ]
     },
     {
       "id": "negative_symbol_regions",
