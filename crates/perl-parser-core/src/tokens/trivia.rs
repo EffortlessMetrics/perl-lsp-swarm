@@ -113,19 +113,12 @@ impl<'a> TriviaLexer<'a> {
     ///
     /// Returns the token along with any whitespace or comments that precede it.
     pub fn next_token_with_trivia(&mut self) -> Option<(perl_lexer::Token, Vec<TriviaToken>)> {
-        // First, collect any trivia
         let trivia = self.collect_trivia();
-
-        // Then get the next meaningful token
         let token = self.lexer.next_token()?;
-
-        // Sync position past this token so next collect_trivia() starts after it
         self.position = self.position.max(token.end);
 
-        // Edge case fix: If we hit EOF but have trailing trivia, return it with the EOF token
         if matches!(token.token_type, TokenType::EOF) {
             if !trivia.is_empty() {
-                // Return EOF with trailing trivia so it's not lost
                 return Some((token, trivia));
             }
             return None;
@@ -141,13 +134,11 @@ impl<'a> TriviaLexer<'a> {
         while self.position < self.source.len() {
             let remaining = &self.source[self.position..];
 
-            // Check for whitespace
             if let Some(ws_len) = self.whitespace_length(remaining) {
                 let ws = &remaining[..ws_len];
                 let start = self.position;
                 let end = start + ws_len;
 
-                // Check if it's just newlines
                 if ws.chars().all(|c| c == '\n' || c == '\r') {
                     trivia.push(TriviaToken::new(
                         Trivia::Newline,
@@ -170,7 +161,6 @@ impl<'a> TriviaLexer<'a> {
                 continue;
             }
 
-            // Check for comments
             if remaining.starts_with('#') {
                 let comment_end = remaining.find('\n').unwrap_or(remaining.len());
                 let comment = &remaining[..comment_end];
@@ -189,36 +179,27 @@ impl<'a> TriviaLexer<'a> {
                 continue;
             }
 
-            // Check for POD
             if remaining.starts_with('=')
                 && (self.position == 0 || self.source.as_bytes()[self.position - 1] == b'\n')
+                && let Some(pod_end) = self.find_pod_end(remaining)
             {
-                if let Some(pod_end) = self.find_pod_end(remaining) {
-                    let pod = &remaining[..pod_end];
-                    let start = self.position;
-                    let end = start + pod_end;
+                let pod = &remaining[..pod_end];
+                let start = self.position;
+                let end = start + pod_end;
 
-                    trivia.push(TriviaToken::new(
-                        Trivia::PodComment(pod.to_string()),
-                        Range::new(
-                            perl_position_tracking::Position::new(start, 0, 0),
-                            perl_position_tracking::Position::new(end, 0, 0),
-                        ),
-                    ));
+                trivia.push(TriviaToken::new(
+                    Trivia::PodComment(pod.to_string()),
+                    Range::new(
+                        perl_position_tracking::Position::new(start, 0, 0),
+                        perl_position_tracking::Position::new(end, 0, 0),
+                    ),
+                ));
 
-                    self.position += pod_end;
-                    continue;
-                }
+                self.position += pod_end;
+                continue;
             }
 
-            // No more trivia
             break;
-        }
-
-        // Sync lexer position
-        if self.position > 0 {
-            // The lexer will skip whitespace internally, so we need to ensure
-            // our position tracking stays in sync
         }
 
         trivia
@@ -231,9 +212,7 @@ impl<'a> TriviaLexer<'a> {
             if ch.is_whitespace() && ch != '\n' && ch != '\r' {
                 len += ch.len_utf8();
             } else if ch == '\n' || ch == '\r' {
-                // Handle newlines separately
                 len += ch.len_utf8();
-                // Handle \r\n
                 if ch == '\r' && s[len..].starts_with('\n') {
                     len += 1;
                 }
@@ -248,16 +227,14 @@ impl<'a> TriviaLexer<'a> {
 
     /// Find the end of a POD section
     fn find_pod_end(&self, s: &str) -> Option<usize> {
-        // POD ends with =cut at the beginning of a line
         let mut pos = 0;
         for line in s.lines() {
             if line.trim() == "=cut" {
                 return Some(pos + line.len());
             }
-            pos += line.len() + 1; // +1 for newline
+            pos += line.len() + 1;
         }
 
-        // If no =cut found, POD extends to end of string
         Some(s.len())
     }
 }
@@ -282,7 +259,6 @@ impl<'a> TriviaPreservingParser<'a> {
             current: None,
             id_generator: perl_ast_v2::NodeIdGenerator::new(),
         };
-        // Prime the lookahead
         parser.advance();
         parser
     }
@@ -295,11 +271,10 @@ impl<'a> TriviaPreservingParser<'a> {
     /// Parse and return AST with trivia preserved.
     ///
     /// Returns a node with leading and trailing trivia attached.
-    pub fn parse(self) -> NodeWithTrivia {
+    pub fn parse(mut self) -> NodeWithTrivia {
         let leading_trivia =
             if let Some((_, trivia)) = &self.current { trivia.clone() } else { Vec::new() };
 
-        // For now, create a simple demonstration node
         let node = Node::new(
             self.id_generator.next_id(),
             NodeKind::Program { statements: Vec::new() },
@@ -325,12 +300,11 @@ mod tests {
 
         let (_token, trivia) = must_some(lexer.next_token_with_trivia());
 
-        // Should have whitespace and comment as trivia
         eprintln!("Trivia count: {}", trivia.len());
         for (i, t) in trivia.iter().enumerate() {
             eprintln!("Trivia[{}]: {:?}", i, t.trivia);
         }
-        assert!(trivia.len() >= 2); // At least whitespace and comment
+        assert!(trivia.len() >= 2);
         assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::Whitespace(_))));
         assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_))));
     }
@@ -342,7 +316,6 @@ mod tests {
 
         let (_, trivia) = must_some(lexer.next_token_with_trivia());
 
-        // Should have POD as trivia
         assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
     }
 
