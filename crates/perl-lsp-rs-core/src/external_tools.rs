@@ -75,7 +75,7 @@ pub enum ExternalToolTrustClass {
 }
 
 /// Policy and capability boundary for one external tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalToolPolicy {
     /// Stable registry identity.
@@ -133,10 +133,10 @@ const PERLCRITIC_ROLES: &[ExternalToolRole] = &[
 ];
 const PTKDB_ROLES: &[ExternalToolRole] = &[ExternalToolRole::ExplicitOptionalPeer];
 
-const PLS_ALIASES: &[&str] = &["Perl::LanguageServer", "Perl-LanguageServer"];
-const PERLTIDY_ALIASES: &[&str] = &["Perl::Tidy", "perltidy"];
-const PERLCRITIC_ALIASES: &[&str] = &["Perl::Critic", "perlcritic"];
-const PTKDB_ALIASES: &[&str] = &["Devel::ptkdb", "ptkdb"];
+const PLS_ALIASES: &[&str] = &["Perl-LanguageServer", "pls"];
+const PERLTIDY_ALIASES: &[&str] = &["perltidy"];
+const PERLCRITIC_ALIASES: &[&str] = &["perlcritic"];
+const PTKDB_ALIASES: &[&str] = &["ptkdb"];
 const PERLTIDY_CONFIG: &[&str] = &[".perltidyrc"];
 const PERLCRITIC_CONFIG: &[&str] = &[".perlcriticrc"];
 const NO_CONFIG_FILES: &[&str] = &[];
@@ -317,7 +317,9 @@ pub fn validate_external_tool_registry(
                 tool: policy.canonical_name,
             });
         }
-        if policy.roles == PLS_ROLES && policy.external_execution_support {
+        if policy.tool_id == ExternalToolId::PerlLanguageServer
+            && policy.external_execution_support
+        {
             return Err(ExternalToolRegistryError::ConformanceRuntimeLeak {
                 tool: policy.canonical_name,
             });
@@ -427,8 +429,13 @@ mod tests {
         let first = external_tool_registry_json()?;
         let second = external_tool_registry_json()?;
         assert_eq!(first, second);
-        let parsed: Vec<ExternalToolPolicy> = serde_json::from_str(&first)?;
-        assert_eq!(parsed, EXTERNAL_TOOL_REGISTRY);
+        let parsed: serde_json::Value = serde_json::from_str(&first)?;
+        let entries = parsed.as_array().ok_or("registry JSON must be an array")?;
+        assert_eq!(entries.len(), EXTERNAL_TOOL_REGISTRY.len());
+        assert_eq!(entries[0]["toolId"], "perl_language_server");
+        assert_eq!(entries[1]["toolId"], "perl_tidy");
+        assert_eq!(entries[2]["toolId"], "perl_critic");
+        assert_eq!(entries[3]["toolId"], "ptkdb");
         Ok(())
     }
 
