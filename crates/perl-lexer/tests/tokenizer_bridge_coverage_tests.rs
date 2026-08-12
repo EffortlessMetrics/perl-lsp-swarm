@@ -607,7 +607,7 @@ fn token_with_position_range() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trivia_lexer_empty_source() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new(String::new());
+    let mut lexer = TriviaLexer::new("");
     // Empty source should produce no tokens (or just EOF)
     let result = lexer.next_token_with_trivia();
     // Either None or an EOF-like result
@@ -620,7 +620,7 @@ fn trivia_lexer_empty_source() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trivia_lexer_whitespace_only_source() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new("   \n\n  \t  ".to_string());
+    let mut lexer = TriviaLexer::new("   \n\n  \t  ");
     // Should produce trivia but eventually exhaust tokens
     let mut total_trivia = Vec::new();
     while let Some((_token, trivia)) = lexer.next_token_with_trivia() {
@@ -636,7 +636,7 @@ fn trivia_lexer_whitespace_only_source() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn trivia_lexer_consecutive_comments() -> Result<(), Box<dyn std::error::Error>> {
     let source = "# comment 1\n# comment 2\n# comment 3\nmy $x;".to_string();
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
 
     let mut all_trivia = Vec::new();
     while let Some((_token, trivia)) = lexer.next_token_with_trivia() {
@@ -652,7 +652,7 @@ fn trivia_lexer_consecutive_comments() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn trivia_lexer_interleaved_code_and_comments() -> Result<(), Box<dyn std::error::Error>> {
     let source = "my $x; # assign x\nmy $y; # assign y\n".to_string();
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
 
     let mut tokens_with_trivia = Vec::new();
     while let Some((token, trivia)) = lexer.next_token_with_trivia() {

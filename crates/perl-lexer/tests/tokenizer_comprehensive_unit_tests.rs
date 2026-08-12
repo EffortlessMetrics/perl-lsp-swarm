@@ -660,7 +660,7 @@ fn trivia_token_new() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trivia_lexer_whitespace_before_token() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new("   42".to_string());
+    let mut lexer = TriviaLexer::new("   42");
     let (token, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::Whitespace(_))));
     assert!(!matches!(token.token_type, perl_lexer::TokenType::EOF));
@@ -669,7 +669,7 @@ fn trivia_lexer_whitespace_before_token() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn trivia_lexer_comment_before_token() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new("# comment\n42".to_string());
+    let mut lexer = TriviaLexer::new("# comment\n42");
     let (_token, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_))));
     Ok(())
@@ -677,7 +677,7 @@ fn trivia_lexer_comment_before_token() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn trivia_lexer_newline_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new("\n42".to_string());
+    let mut lexer = TriviaLexer::new("\n42");
     let (_token, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::Newline)));
     Ok(())
@@ -686,7 +686,7 @@ fn trivia_lexer_newline_trivia() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn trivia_lexer_pod_trivia() -> Result<(), Box<dyn std::error::Error>> {
     let src = "=head1 NAME\n\nStuff\n\n=cut\nmy $x;".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     let (_token, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
     Ok(())
@@ -694,7 +694,7 @@ fn trivia_lexer_pod_trivia() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trivia_lexer_multiple_tokens() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new("my $x = 42;".to_string());
+    let mut lexer = TriviaLexer::new("my $x = 42;");
     let mut count = 0;
     while let Some((_token, _trivia)) = lexer.next_token_with_trivia() {
         count += 1;
@@ -706,7 +706,7 @@ fn trivia_lexer_multiple_tokens() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trivia_lexer_empty_source() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new(String::new());
+    let mut lexer = TriviaLexer::new("");
     // Empty source should return None (EOF only)
     assert!(lexer.next_token_with_trivia().is_none());
     Ok(())
@@ -1786,7 +1786,7 @@ fn trivia_equality_same_whitespace_content() -> Result<(), Box<dyn std::error::E
 #[test]
 fn trivia_lexer_consecutive_comments() -> Result<(), Box<dyn std::error::Error>> {
     let source = "# line 1\n# line 2\nmy $x;".to_string();
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let (_, trivia) = must_some(lexer.next_token_with_trivia());
     let comment_count =
         trivia.iter().filter(|t| matches!(&t.trivia, Trivia::LineComment(_))).count();
@@ -1797,7 +1797,7 @@ fn trivia_lexer_consecutive_comments() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn trivia_lexer_whitespace_only_source() -> Result<(), Box<dyn std::error::Error>> {
     let source = "   \t\t   ".to_string();
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     // Should eventually return None (no meaningful tokens)
     let result = lexer.next_token_with_trivia();
     // Either None or EOF token with trivia
@@ -1813,7 +1813,7 @@ fn trivia_lexer_whitespace_only_source() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn trivia_lexer_comment_only_source() -> Result<(), Box<dyn std::error::Error>> {
     let source = "# just a comment\n".to_string();
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let result = lexer.next_token_with_trivia();
     // Should either return None or EOF with the comment in trivia
     if let Some((tok, trivia)) = result {
@@ -1829,7 +1829,7 @@ fn trivia_lexer_comment_only_source() -> Result<(), Box<dyn std::error::Error>> 
 #[test]
 fn trivia_lexer_mixed_whitespace_and_comments() -> Result<(), Box<dyn std::error::Error>> {
     let source = "  \n  # comment\n  my $x;".to_string();
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let (_, trivia) = must_some(lexer.next_token_with_trivia());
     let has_ws = trivia.iter().any(|t| matches!(&t.trivia, Trivia::Whitespace(_)));
     let has_comment = trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));

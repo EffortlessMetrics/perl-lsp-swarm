@@ -91,28 +91,24 @@ pub trait TriviaCollector {
 ///
 /// New parser consumers should use
 /// [`crate::tokens::trivia_parser::TriviaPreservingParser`]. This lexer remains
-/// available for low-level compatibility tests while #7101 replaces its
-/// lifetime and geometry limitations.
-pub struct TriviaLexer {
+/// available for low-level compatibility tests and borrows its source so its
+/// underlying lexer cannot outlive the caller-owned buffer.
+pub struct TriviaLexer<'a> {
     /// The underlying Perl lexer.
-    lexer: perl_lexer::PerlLexer<'static>,
-    /// Source code (owned).
-    source: String,
+    lexer: perl_lexer::PerlLexer<'a>,
+    /// Borrowed source code.
+    source: &'a str,
     /// Current position for trivia tracking.
     position: usize,
     /// Buffered trivia tokens.
     _trivia_buffer: Vec<TriviaToken>,
 }
 
-impl TriviaLexer {
+impl<'a> TriviaLexer<'a> {
     /// Create a new trivia-preserving lexer.
-    pub fn new(source: String) -> Self {
-        // Legacy compatibility implementation. #7101 owns replacing this
-        // leaked lifetime with snapshot-bound geometry.
-        let source_ref: &'static str = Box::leak(source.clone().into_boxed_str());
-
+    pub fn new(source: &'a str) -> Self {
         Self {
-            lexer: perl_lexer::PerlLexer::new(source_ref),
+            lexer: perl_lexer::PerlLexer::new(source),
             source,
             position: 0,
             _trivia_buffer: Vec::new(),
@@ -235,7 +231,7 @@ mod tests {
     #[test]
     fn collects_whitespace_and_comment_trivia() {
         let source = "  # comment\n  my $x = 42;".to_string();
-        let mut lexer = TriviaLexer::new(source);
+        let mut lexer = TriviaLexer::new(&source);
 
         let (_token, trivia) = must_some(lexer.next_token_with_trivia());
 
@@ -247,10 +243,18 @@ mod tests {
     #[test]
     fn preserves_pod_trivia() {
         let source = "=head1 NAME\n\nTest\n\n=cut\n\nmy $x;".to_string();
-        let mut lexer = TriviaLexer::new(source);
+        let mut lexer = TriviaLexer::new(&source);
 
         let (_, trivia) = must_some(lexer.next_token_with_trivia());
 
         assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
+    }
+
+    #[test]
+    fn borrows_the_original_source_buffer() {
+        let source = String::from("my $x = 42;");
+        let lexer = TriviaLexer::new(&source);
+
+        assert!(std::ptr::eq(lexer.source.as_ptr(), source.as_ptr()));
     }
 }
