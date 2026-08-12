@@ -129,7 +129,7 @@ fn raw_reference(
             ResolutionRequest::Number { number, ambiguous_plain_escape: false },
             None,
         ),
-        ParsedOperand::Relative(offset) if !named_only => (
+        ParsedOperand::Relative(offset) if !named_only && offset < 0 => (
             PatternControlKind::RelativeBackreference { offset, syntax },
             ResolutionRequest::Relative(offset),
             None,
