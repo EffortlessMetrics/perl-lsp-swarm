@@ -55,9 +55,9 @@ source = "ruleset-conventional"
 [[checks]]
   name = "Rust formatting"
   workflow = ".github/workflows/ci.yml"
-  required = true
-  enforcement = "github-ruleset"
-  reason = "Live main ruleset (id 16664791) requires the standalone candidate-bound Rust formatting result before merge."
+  required = false
+  enforcement = "advisory"
+  reason = "Post-merge promotion target tracked by #6202 and #7087; live ruleset promotion is deferred until the candidate lands and merge-group evidence is current."
 
 [[checks]]
   name = "Codecov / Patch 95"
