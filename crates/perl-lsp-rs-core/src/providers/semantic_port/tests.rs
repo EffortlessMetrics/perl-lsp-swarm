@@ -1069,3 +1069,43 @@ fn dynamic_outcome_requires_a_dynamic_boundary() -> Result<(), Box<dyn Error>> {
     assert_eq!(dynamic.outcome(), ProviderQueryOutcome::Dynamic);
     Ok(())
 }
+
+#[test]
+fn exact_empty_authority_rejects_subject_and_query_shape_replay() -> Result<(), Box<dyn Error>> {
+    let source = request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(1)));
+    let grant = verified_grant(&source)?;
+    let other_file = request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(2)));
+    let replay = execute(
+        &other_file,
+        ProviderQueryResultDraft::new(
+            ProviderQueryOutcome::Exact,
+            Vec::new(),
+            Some(grant),
+            primary(SemanticReasonCode::ExactSource),
+        ),
+        &NoopProviderQueryControl,
+    );
+    assert_eq!(replay.err(), Some(ProviderQueryContractError::InvalidCompletenessGrant));
+
+    let references_without_declaration = request(
+        ProviderQueryKind::References { include_declaration: false },
+        ProviderQuerySubject::File(FileId(1)),
+    );
+    let reference_grant = verified_grant(&references_without_declaration)?;
+    let references_with_declaration = request(
+        ProviderQueryKind::References { include_declaration: true },
+        ProviderQuerySubject::File(FileId(1)),
+    );
+    let shape_replay = execute(
+        &references_with_declaration,
+        ProviderQueryResultDraft::new(
+            ProviderQueryOutcome::Exact,
+            Vec::new(),
+            Some(reference_grant),
+            primary(SemanticReasonCode::ExactSource),
+        ),
+        &NoopProviderQueryControl,
+    );
+    assert_eq!(shape_replay.err(), Some(ProviderQueryContractError::InvalidCompletenessGrant));
+    Ok(())
+}

@@ -472,6 +472,8 @@ impl ProviderQueryFact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProviderCompletenessAuthorityReceipt {
     capability: ProviderQueryCapability,
+    query_kind: ProviderQueryKind,
+    subject: ProviderQuerySubject,
     project_identity: ProviderIdentity,
     root_identity: ProviderIdentity,
     document_generation: SourceGeneration,
@@ -582,6 +584,8 @@ impl VerifiedProviderCompletenessSnapshot {
         Ok(Self {
             authority: ProviderCompletenessAuthorityReceipt {
                 capability,
+                query_kind: request.kind.clone(),
+                subject: request.subject.clone(),
                 project_identity: request.context.project_identity.clone(),
                 root_identity: request.context.root_identity.clone(),
                 document_generation: request.context.document_generation.clone(),
@@ -625,6 +629,8 @@ impl ProviderCompletenessGrant {
 
     pub(crate) fn matches(&self, request: &ProviderQueryRequest) -> bool {
         self.authority.capability == ProviderQueryCapability::from_query(&request.kind)
+            && self.authority.query_kind == request.kind
+            && self.authority.subject == request.subject
             && self.authority.project_identity == request.context.project_identity
             && self.authority.root_identity == request.context.root_identity
             && self.authority.document_generation == request.context.document_generation
