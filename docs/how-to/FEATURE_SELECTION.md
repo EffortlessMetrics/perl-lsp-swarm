@@ -26,7 +26,7 @@ The canonical source of truth for all features is `features.toml` at the root of
 
 - `id` - Stable identifier (e.g., `lsp.completion`)
 - `area` - Grouping (`text_document`, `workspace`, `window`, `debug`, `protocol`)
-- `maturity` - Readiness level (currently all `ga` = generally available)
+- `maturity` - Evidence-backed readiness (`preview`, `ga`, and related lifecycle states)
 - `advertised` - Whether the server announces the capability during `initialize`
 
 Profile selection happens at **startup**. The server announces its capabilities to the editor during the LSP `initialize` handshake, so the profile cannot be changed while the server is running.
@@ -39,7 +39,7 @@ Profile selection happens at **startup**. The server announces its capabilities 
 
 **CLI token:** `ga-lock`, `ga`, or `ga_lock`
 
-The conservative profile. It enables a stable subset of features that excludes `lsp.inline_value` (DAP-time inline variable display). Every other feature available in `production` is also present here, including formatting (no perltidy requirement in this profile).
+The conservative profile. It enables a stable subset of features that excludes `lsp.inline_value` (DAP-time inline variable display) and notebook previews. Every other supported feature available in `production` is also present here, including formatting (no perltidy requirement in this profile).
 
 **When to use:**
 - Environments where you need strict backward compatibility
@@ -50,6 +50,7 @@ The conservative profile. It enables a stable subset of features that excludes `
 
 **Notably disabled vs. production:**
 - `lsp.inline_value` is gated out
+- `lsp.notebook_document_sync` and `lsp.notebook_cell_execution` are gated out
 
 ---
 
@@ -67,20 +68,22 @@ The default profile for normal runtime operation. This is what the server uses u
 - `lsp.inline_value` is enabled (DAP debugging shows inline variable values)
 - `lsp.formatting` and `lsp.range_formatting` use the native formatter by default; explicit external Perltidy compatibility mode is opt-in
 
+Notebook synchronization is not advertised by the default production profile. Its in-tree handlers remain preview evidence until transactional versioning, mixed-language lifecycle, save/cleanup semantics, and real Jupyter or VS Code receipts are proven.
+
 ---
 
 ### all Profile
 
 **CLI token:** `all`
 
-Every in-tree capability is enabled. This profile is primarily intended for test matrices, BDD reporting, and snapshot verification. It enables `lsp.formatting` and `lsp.range_formatting` unconditionally regardless of whether Perltidy is installed.
+Every in-tree capability is enabled, including notebook previews. This profile is primarily intended for test matrices, BDD reporting, and snapshot verification. It enables `lsp.formatting` and `lsp.range_formatting` unconditionally regardless of whether Perltidy is installed.
 
 **When to use:**
 - Automated test environments where you want full capability coverage
 - Generating the complete feature grid JSON for documentation tooling
 - Verifying LSP compliance against the full feature catalog
 
-**Caution:** Because every in-tree capability is enabled, this profile can expose experimental surfaces intended for test matrices. Native formatting does not require Perltidy, but explicit external compatibility mode still requires the external tool.
+**Caution:** `all` describes breadth, not maturity. Membership cannot be used as GA evidence. The notebook rows in `features.toml` remain `preview` and explicitly cannot satisfy #7032.
 
 ---
 
@@ -280,7 +283,8 @@ The table below summarizes which features each profile enables. "Dynamic" means 
 | `lsp.linked_editing_range` | yes | yes | yes |
 | `lsp.document_color` | yes | yes | yes |
 | `lsp.moniker` | yes | yes | yes |
-| `lsp.notebook_document_sync` | yes | yes | yes |
+| `lsp.notebook_document_sync` | no | no | preview |
+| `lsp.notebook_cell_execution` | no | no | preview |
 
 DAP features (`dap.*`) are not gated by profile selection and are always present when the DAP server binary is used.
 

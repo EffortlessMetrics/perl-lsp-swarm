@@ -1,12 +1,12 @@
 //! Notebook Document Synchronization (LSP 3.17)
 //!
-//! Handles notebook document lifecycle: didOpen, didChange, didSave, didClose.
+//! Preview implementation of notebook document lifecycle notifications.
 //! Cell text documents are stored in the main DocumentStore, with a mapping
 //! to track which notebook owns each cell.
 //!
 //! ## Features
 //!
-//! - **Document Sync**: Full support for notebook lifecycle notifications
+//! - **Document Sync**: In-process preview handlers for lifecycle notifications
 //! - **Cell Tracking**: Maps cell URIs to their parent notebook
 //! - **Execution Summary**: Tracks cell execution order and success status (LSP 3.17)
 //!
@@ -302,7 +302,10 @@ impl LspServer {
         let notebook_type = params
             .pointer("/notebookDocument/notebookType")
             .and_then(|v| v.as_str())
-            .unwrap_or("jupyter-notebook");
+            .ok_or_else(|| invalid_params("Missing notebookDocument.notebookType"))?;
+        if notebook_type != "jupyter-notebook" {
+            return Err(invalid_params("Unsupported notebookDocument.notebookType"));
+        }
 
         let version = params
             .pointer("/notebookDocument/version")
@@ -331,7 +334,7 @@ impl LspServer {
             .and_then(|v| v.as_array())
             .ok_or_else(|| invalid_params("Missing cellTextDocuments"))?;
 
-        // Open each cell as a text document in the main DocumentStore
+        // Only selector-authorized Perl cells become ordinary documents.
         for cell_doc in cell_text_docs {
             let cell_uri = cell_doc
                 .get("uri")
@@ -350,7 +353,14 @@ impl LspServer {
                 .unwrap_or(1);
 
             // Open cell as a text document using existing didOpen logic
-            let lang_id = cell_doc.get("languageId").and_then(|v| v.as_str()).unwrap_or("perl");
+            let Some(lang_id) = cell_doc.get("languageId").and_then(|v| v.as_str()) else {
+                tracing::debug!(cell_uri, notebook_uri, "Notebook cell omitted languageId");
+                continue;
+            };
+            if lang_id != "perl" {
+                tracing::debug!(cell_uri, notebook_uri, lang_id, "Notebook cell outside selector");
+                continue;
+            }
             let did_open_params =
                 did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
@@ -468,10 +478,15 @@ impl LspServer {
                                 .unwrap_or(1);
 
                             // Open new cell as text document
-                            let lang_id = cell_doc
-                                .get("languageId")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("perl");
+                            let Some(lang_id) = cell_doc.get("languageId").and_then(|v| v.as_str())
+                            else {
+                                tracing::debug!(cell_uri, "New notebook cell omitted languageId");
+                                continue;
+                            };
+                            if lang_id != "perl" {
+                                tracing::debug!(cell_uri, lang_id, "New cell outside selector");
+                                continue;
+                            }
                             let did_open_params =
                                 did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
@@ -647,6 +662,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_lsp_rs_core::features::policy::FeatureProfile;
     use serde_json::json;
 
     #[test]
@@ -695,8 +711,100 @@ mod tests {
     }
 
     #[test]
+    fn supported_profiles_reject_notebook_routes_without_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for profile in [FeatureProfile::Production, FeatureProfile::GaLock] {
+            let server = LspServer::new_with_feature_profile(profile);
+            let notebook_uri = "file:///disabled.ipynb";
+            let cell_uri = "file:///disabled.ipynb#cell1";
+            let open = Some(json!({
+                "notebookDocument": {
+                    "uri": notebook_uri,
+                    "notebookType": "jupyter-notebook",
+                    "version": 1,
+                    "cells": [{"kind": 2, "document": cell_uri}]
+                },
+                "cellTextDocuments": [{
+                    "uri": cell_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "sub must_not_exist {}"
+                }]
+            }));
+
+            let routes = [
+                server.handle_notebook_did_open(open),
+                server.handle_notebook_did_change(Some(json!({
+                    "notebookDocument": {"uri": notebook_uri, "version": 2},
+                    "change": {}
+                }))),
+                server.handle_notebook_did_save(Some(json!({
+                    "notebookDocument": {"uri": notebook_uri}
+                }))),
+                server.handle_notebook_did_close(Some(json!({
+                    "notebookDocument": {"uri": notebook_uri},
+                    "cellTextDocuments": [{"uri": cell_uri}]
+                }))),
+            ];
+
+            for result in routes {
+                let error = result.err().ok_or("disabled notebook route unexpectedly succeeded")?;
+                if error.code != -32601 {
+                    return Err(format!("disabled notebook route returned {}", error.code).into());
+                }
+            }
+            if server.notebook_store.get_notebook(notebook_uri).is_some()
+                || server.notebook_store.get_notebook_for_cell(cell_uri).is_some()
+                || server.documents_guard().contains_key(cell_uri)
+            {
+                return Err(
+                    format!("{} notebook route mutated retained state", profile.as_str()).into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preview_does_not_grant_perl_authority_to_unselected_cells()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
+        let notebook_uri = "file:///mixed.ipynb";
+        let perl_uri = "file:///mixed.ipynb#perl";
+        let python_uri = "file:///mixed.ipynb#python";
+        let missing_uri = "file:///mixed.ipynb#missing";
+
+        server.handle_notebook_did_open(Some(json!({
+            "notebookDocument": {
+                "uri": notebook_uri,
+                "notebookType": "jupyter-notebook",
+                "version": 1,
+                "cells": [
+                    {"kind": 2, "document": perl_uri},
+                    {"kind": 2, "document": python_uri},
+                    {"kind": 2, "document": missing_uri}
+                ]
+            },
+            "cellTextDocuments": [
+                {"uri": perl_uri, "languageId": "perl", "version": 1, "text": "sub perl_cell {}"},
+                {"uri": python_uri, "languageId": "python", "version": 1, "text": "def python_cell(): pass"},
+                {"uri": missing_uri, "version": 1, "text": "sub missing_language {}"}
+            ]
+        })))?;
+
+        let documents = server.documents_guard();
+        if !documents.contains_key(perl_uri)
+            || documents.contains_key(python_uri)
+            || documents.contains_key(missing_uri)
+        {
+            return Err("preview document authority exceeded the exact Perl selector".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn notebook_did_open_registers_cells_and_documents() -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
+        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
         let notebook_uri = "file:///open-test.ipynb";
         let cell_uri = "file:///open-test.ipynb#cell1";
 
@@ -741,7 +849,7 @@ mod tests {
     #[test]
     fn notebook_structure_change_updates_cell_mapping_and_execution_summary()
     -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
+        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
         let notebook_uri = "file:///change-test.ipynb";
         let cell1_uri = "file:///change-test.ipynb#cell1";
         let cell2_uri = "file:///change-test.ipynb#cell2";

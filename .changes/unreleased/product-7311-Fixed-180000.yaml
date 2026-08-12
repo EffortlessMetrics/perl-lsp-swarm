@@ -1,0 +1,12 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Default and GA-lock language-server profiles no longer advertise or route
+  notebook synchronization; the retained implementation is available only in
+  the explicit all-profile preview.
+time: 2026-08-12T18:00:00Z
+custom:
+  PR: "7311"
+  Slug: notebook-preview-profile
+  Breaking: "no"
