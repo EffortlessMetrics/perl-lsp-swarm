@@ -143,6 +143,22 @@ impl RealProcessClient {
         read_frame(&mut reader)
     }
 
+    pub fn method_message_for_test(
+        id: Option<Value>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        build_method_message(id, method, params)
+    }
+
+    pub fn is_valid_response_for_test(message: &Value) -> bool {
+        is_response(message)
+    }
+
+    pub fn is_valid_server_request_for_test(message: &Value, method: &str) -> bool {
+        is_server_request_for(message, method)
+    }
+
     pub fn is_valid_server_notification_for_test(message: &Value) -> bool {
         is_server_notification(message)
     }
@@ -162,11 +178,7 @@ impl RealProcessClient {
     }
 
     pub fn notify(&mut self, method: &str, params: Value) -> Result<()> {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        });
+        let message = build_method_message(None, method, params)?;
         self.send_raw_bytes(&Self::encode_message(&message))
     }
 
@@ -177,16 +189,7 @@ impl RealProcessClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value> {
-        ensure!(
-            id.is_number() || id.is_string(),
-            "request ID must be a number or string, got {id}"
-        );
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
+        let message = build_method_message(Some(id), method, params)?;
         let response_id = message["id"].clone();
         self.send_raw_bytes(&Self::encode_message(&message))?;
         self.receive_response(&response_id, timeout)
@@ -429,8 +432,51 @@ fn take_pipe<T>(
     }
 }
 
+fn build_method_message(id: Option<Value>, method: &str, params: Value) -> Result<Value> {
+    ensure!(!method.is_empty(), "method must not be empty");
+    if let Some(id) = id.as_ref() {
+        ensure!(
+            id.is_number() || id.is_string(),
+            "request ID must be a number or string, got {id}"
+        );
+    }
+    ensure!(
+        params.is_null() || params.is_object() || params.is_array(),
+        "params must be absent, an object, or an array"
+    );
+
+    let mut message = serde_json::Map::new();
+    message.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+    if let Some(id) = id {
+        message.insert("id".to_string(), id);
+    }
+    message.insert("method".to_string(), Value::String(method.to_string()));
+    if !params.is_null() {
+        message.insert("params".to_string(), params);
+    }
+    Ok(Value::Object(message))
+}
+
 fn is_jsonrpc_2(message: &Value) -> bool {
     message.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+}
+
+fn has_valid_params(message: &Value) -> bool {
+    match message.get("params") {
+        None => true,
+        Some(params) => params.is_object() || params.is_array(),
+    }
+}
+
+fn has_no_response_members(message: &Value) -> bool {
+    message.get("result").is_none() && message.get("error").is_none()
+}
+
+fn is_valid_error(error: &Value) -> bool {
+    error.as_object().is_some_and(|object| {
+        object.get("code").and_then(Value::as_i64).is_some()
+            && object.get("message").and_then(Value::as_str).is_some()
+    })
 }
 
 fn is_response_like(message: &Value) -> bool {
@@ -439,10 +485,14 @@ fn is_response_like(message: &Value) -> bool {
 }
 
 fn is_response(message: &Value) -> bool {
+    let has_result = message.get("result").is_some();
+    let has_error = message.get("error").is_some();
     is_jsonrpc_2(message)
         && is_response_like(message)
+        && message.get("params").is_none()
         && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
-        && (message.get("result").is_some() ^ message.get("error").is_some())
+        && (has_result ^ has_error)
+        && (!has_error || message.get("error").is_some_and(is_valid_error))
 }
 
 fn is_response_for(message: &Value, id: &Value) -> bool {
@@ -453,12 +503,16 @@ fn is_server_request_for(message: &Value, method: &str) -> bool {
     is_jsonrpc_2(message)
         && message.get("method").and_then(Value::as_str) == Some(method)
         && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
+        && has_no_response_members(message)
+        && has_valid_params(message)
 }
 
 fn is_server_notification(message: &Value) -> bool {
     is_jsonrpc_2(message)
         && message.get("method").and_then(Value::as_str).is_some()
         && message.get("id").is_none()
+        && has_no_response_members(message)
+        && has_valid_params(message)
 }
 
 fn read_stdout(stdout: ChildStdout, sender: SyncSender<ProcessEvent>, overflow: &AtomicBool) {
@@ -504,8 +558,12 @@ fn read_frame(reader: &mut dyn BufRead) -> Result<Option<Value>> {
         };
         header_bytes = header_bytes.saturating_add(line.len());
 
-        let line = std::str::from_utf8(&line).context("stdout header was not valid UTF-8")?;
-        let line = line.trim_end_matches(['\r', '\n']);
+        ensure!(
+            line.len() >= 2 && line.ends_with(b"\r\n"),
+            "stdout header line did not end with CRLF"
+        );
+        let line = std::str::from_utf8(&line[..line.len() - 2])
+            .context("stdout header was not valid UTF-8")?;
         if line.is_empty() {
             break;
         }
