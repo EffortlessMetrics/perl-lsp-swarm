@@ -1,0 +1,57 @@
+name: Materialize corpus topology repair
+
+on:
+  push:
+    branches:
+      - agent/corpus-topology-6699-current
+    paths:
+      - .github/workflows/materialize-corpus-topology-6745.yml
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v5
+        with:
+          ref: agent/corpus-topology-6699-current
+          fetch-depth: 0
+
+      - name: Apply and publish bounded source diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor a4de2d7f35746d2e63d38fe9ac793650b1d054ac HEAD
+          test "$(git diff --name-only a4de2d7f35746d2e63d38fe9ac793650b1d054ac HEAD | sort)" = $'.github/workflows/diagnose-corpus-topology-6745.yml\n.github/workflows/materialize-corpus-topology-6745.yml\n.github/workflows/repair-corpus-topology-6745.yml'
+
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import re
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/repair-corpus-topology-6745.yml').read_text()
+          match = re.search(r'^\s*PATCH_GZ_B64:\s*(\S+)\s*$', workflow, re.MULTILINE)
+          if match is None:
+              raise SystemExit('embedded topology patch not found')
+          Path('/tmp/patch.py').write_bytes(gzip.decompress(base64.b64decode(match.group(1))))
+          PY
+          python3 /tmp/patch.py
+          cargo fmt -p perl-corpus
+
+          rm .github/workflows/repair-corpus-topology-6745.yml
+          rm .github/workflows/diagnose-corpus-topology-6745.yml
+          rm .github/workflows/materialize-corpus-topology-6745.yml
+          git add crates/perl-corpus/src/api/topology.rs \
+            .github/workflows/repair-corpus-topology-6745.yml \
+            .github/workflows/diagnose-corpus-topology-6745.yml \
+            .github/workflows/materialize-corpus-topology-6745.yml
+          test "$(git diff --cached --name-only | sort)" = $'.github/workflows/diagnose-corpus-topology-6745.yml\n.github/workflows/materialize-corpus-topology-6745.yml\n.github/workflows/repair-corpus-topology-6745.yml\ncrates/perl-corpus/src/api/topology.rs'
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "fix(corpus): close topology root and layer authority"
+          git push origin HEAD:agent/corpus-topology-6699-current
