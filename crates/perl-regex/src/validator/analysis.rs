@@ -1,10 +1,12 @@
 //! Typed results for bounded static regex analysis.
 //!
 //! These types keep machine identity, source ranges, reusable facts, and
-//! completeness separate from presentation text. Ranges are byte offsets
-//! relative to the regex body supplied to [`super::RegexValidator::analyze`].
+//! completeness separate from presentation text. [`RegexRange`] uses the
+//! coordinate space declared by the producing API: [`super::RegexValidator::analyze`]
+//! emits regex-body-relative ranges, while modifier analysis preserves the
+//! caller-supplied source range of its [`crate::analyzer::ModifierSequence`].
 
-/// A half-open byte range relative to an analyzed regex body.
+/// A half-open byte range in the coordinate space declared by its producing API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegexRange {
     /// Inclusive byte offset where the range starts.
@@ -141,7 +143,7 @@ pub struct RegexDiagnostic {
     pub code: RegexDiagnosticCode,
     /// Operational class derived from the diagnostic identity.
     pub class: RegexDiagnosticClass,
-    /// Body-relative byte range.
+    /// Byte range in the producing API's declared coordinate space.
     pub range: RegexRange,
     /// Configured limit relevant to a policy diagnostic, when applicable.
     pub limit: Option<usize>,
@@ -186,9 +188,7 @@ impl RegexDiagnostic {
                 "Too many branches in branch reset group (max {})",
                 self.limit.unwrap_or_default()
             ),
-            RegexDiagnosticCode::UnknownModifier => {
-                "Unknown regex modifier".to_string()
-            }
+            RegexDiagnosticCode::UnknownModifier => "Unknown regex modifier".to_string(),
             RegexDiagnosticCode::ModifierNotAllowedForOperator => {
                 "Regex modifier is not valid for this operator".to_string()
             }
