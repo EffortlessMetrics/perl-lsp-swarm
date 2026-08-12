@@ -113,6 +113,7 @@ pub mod parser_matrix;
 pub mod parser_ratchet;
 pub mod perl_core_harness;
 pub mod perl_kwalitee;
+pub mod policy_cadence;
 pub mod populate_book;
 pub mod pr;
 pub mod pr_close_proof;

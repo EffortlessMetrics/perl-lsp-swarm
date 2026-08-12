@@ -2245,6 +2245,12 @@ enum Commands {
         command: NonRustCommand,
     },
 
+    /// Read-only policy obligation tooling.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+
     /// Check non-Rust files against the policy allowlist and report violations.
     ///
     /// Equivalent to `non-rust check`. Default mode is `advisory` (always
@@ -2441,6 +2447,25 @@ enum NonRustCommand {
         /// Override the workspace root used for `git ls-files`. Test seam only.
         #[arg(long, hide = true)]
         root: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Inventory registered review and expiry obligations at an explicit date.
+    Cadence {
+        /// Evaluation date. Defaults to the current UTC date in production;
+        /// tests and evidence runs should always pass it explicitly.
+        #[arg(long)]
+        as_of: Option<String>,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.json")]
+        json: PathBuf,
+
+        /// Deterministic Markdown summary path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.md")]
+        markdown: PathBuf,
     },
 }
 
@@ -5227,6 +5252,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::file_policy::non_rust_migration_candidates(
                     &root,
                     MigrationCandidatesConfig { format, output, limit, root_override },
+                )
+            }
+        },
+        Commands::Policy { command } => match command {
+            PolicyCommand::Cadence { as_of, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::run(
+                    &root,
+                    tasks::policy_cadence::CadenceArgs { as_of, json, markdown },
                 )
             }
         },
