@@ -273,6 +273,9 @@ fn host_path_kind(text: &str, string_class: PublicStringClass) -> Option<HostPat
     if lower.contains("file:/") {
         return Some(HostPathKind::FileUri);
     }
+    if contains_windows_extended_path(&decoded) {
+        return Some(HostPathKind::WindowsUnc);
+    }
     if contains_windows_drive_path(&decoded) {
         return Some(HostPathKind::WindowsDrive);
     }
@@ -312,6 +315,26 @@ const fn hex_value(value: u8) -> Option<u8> {
     }
 }
 
+fn contains_windows_extended_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() < 4 {
+        return false;
+    }
+    (0..=bytes.len() - 4).any(|index| {
+        if index > 0 && !is_path_boundary(bytes[index - 1]) {
+            return false;
+        }
+        let separator = |byte| matches!(byte, b'/' | b'\\');
+        separator(bytes[index])
+            && ((separator(bytes[index + 1])
+                && matches!(bytes[index + 2], b'?' | b'.')
+                && separator(bytes[index + 3]))
+                || (bytes[index + 1] == b'?'
+                    && bytes[index + 2] == b'?'
+                    && separator(bytes[index + 3])))
+    })
+}
+
 fn contains_windows_drive_path(text: &str) -> bool {
     let bytes = text.as_bytes();
     (0..bytes.len().saturating_sub(2)).any(|index| {
@@ -341,28 +364,50 @@ fn contains_unc_path(text: &str) -> bool {
 
 fn contains_unix_absolute_path(text: &str) -> bool {
     let bytes = text.as_bytes();
-    for index in 0..bytes.len() {
+    let mut index = 0usize;
+    while index < bytes.len() {
         if bytes[index] != b'/' || (index > 0 && !is_path_boundary(bytes[index - 1])) {
+            index += 1;
             continue;
         }
-        if index + 1 >= bytes.len() || bytes[index + 1] == b'/' {
+
+        let mut content_start = index;
+        while content_start < bytes.len() && bytes[content_start] == b'/' {
+            content_start += 1;
+        }
+        if content_start == bytes.len() {
+            return false;
+        }
+        if content_start - index >= 2 && has_uri_scheme_before(bytes, index) {
+            index = content_start;
             continue;
         }
-        let end = bytes[index..]
-            .iter()
-            .position(|byte| is_path_terminator(*byte))
-            .map_or(bytes.len(), |offset| index + offset);
-        if end > index + 1 {
-            return true;
-        }
+        return true;
     }
     false
+}
+
+fn has_uri_scheme_before(bytes: &[u8], slash_index: usize) -> bool {
+    if slash_index == 0 || bytes[slash_index - 1] != b':' {
+        return false;
+    }
+    let mut start = slash_index - 1;
+    while start > 0 && is_uri_scheme_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let scheme = &bytes[start..slash_index - 1];
+    scheme.first().is_some_and(u8::is_ascii_alphabetic)
+        && scheme.iter().copied().all(is_uri_scheme_byte)
+}
+
+const fn is_uri_scheme_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')
 }
 
 const fn is_path_boundary(byte: u8) -> bool {
     matches!(
         byte,
-        b' ' | b'\t' | b'\n' | b'\r' | b'=' | b':' | b'"' | b'\'' | b'(' | b'[' | b'{' | b','
+        b' ' | b'\t' | b'\n' | b'\r' | b'=' | b':' | b'"' | b'\'' | b'(' | b'[' | b'{' | b',' | b';' | b'|' | b'<' | b'>'
     )
 }
 
@@ -406,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_shallow_unknown_and_trailing_slash_unix_paths() {
+    fn rejects_shallow_repeated_and_trailing_slash_unix_paths() {
         for value in [
             "/etc/passwd",
             "/root/build",
@@ -414,11 +459,29 @@ mod tests {
             "arg=/opt/tool",
             "/home/runner/work/",
             "cwd=/srv/cache/",
+            "///etc/passwd",
+            "arg=////srv/cache",
         ] {
             assert_eq!(
                 host_path_kind(value, PublicStringClass::Ordinary),
                 Some(HostPathKind::UnixAbsolute),
                 "absolute path escaped detection: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_windows_extended_and_device_namespaces() {
+        for value in [
+            r"\\?\C:\Users\runner\private",
+            r"\\?\UNC\server\share\private",
+            r"\\.\C:\Users\runner\private",
+            r"\??\C:\Users\runner\private",
+        ] {
+            assert_eq!(
+                host_path_kind(value, PublicStringClass::Ordinary),
+                Some(HostPathKind::WindowsUnc),
+                "Windows namespace path escaped detection: {value}"
             );
         }
     }
@@ -449,6 +512,7 @@ mod tests {
     fn accepts_urls_logical_paths_and_explicit_source_classes() {
         for value in [
             "https://example.com/a/b/c",
+            "https:///example.com/a/b/c",
             "crates/perl-parser/src/lib.rs",
             "key=value:ordinary",
             "perl_core_harness.report.v1",
