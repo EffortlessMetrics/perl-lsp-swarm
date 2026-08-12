@@ -10,13 +10,24 @@
     "expected": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tree_sha", "version", "target", "candidate_identity"],
+      "required": [
+        "tree_sha",
+        "version",
+        "target",
+        "candidate_identity",
+        "server_sha256",
+        "dap_sha256"
+      ],
       "properties": {
         "tree_sha": { "$ref": "#/$defs/sha40" },
         "version": { "$ref": "#/$defs/identity" },
         "target": { "$ref": "#/$defs/identity" },
         "candidate_identity": {
           "anyOf": [{ "$ref": "#/$defs/identity" }, { "type": "null" }]
+        },
+        "server_sha256": { "$ref": "#/$defs/sha64" },
+        "dap_sha256": {
+          "anyOf": [{ "$ref": "#/$defs/sha64" }, { "type": "null" }]
         }
       }
     },
