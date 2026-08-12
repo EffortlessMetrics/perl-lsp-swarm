@@ -19,7 +19,21 @@ mod dap_dependencies {
         Ok(std::fs::read_to_string(path)?)
     }
 
-    /// Tests native stack policy: public crate docs must not require legacy bridge dependencies.
+    /// Public crate docs must describe the native runtime rather than the legacy bridge.
+    #[test]
+    // AC:18
+    fn test_published_crate_rustdoc_is_native_first() -> Result<()> {
+        let crate_root = read(repo_root().join("crates/perl-dap/src/lib.rs"))?;
+        assert!(crate_root.contains("Native Debug Adapter Protocol implementation for Perl"));
+        assert!(crate_root.contains("The supported first-mile runtime is the native"));
+        assert!(!crate_root.contains("**Legacy Bridge Mode**"));
+        assert!(!crate_root.contains("## Native and Bridge Modes"));
+        assert!(!crate_root.contains("Users can start with bridge mode today"));
+        assert!(!crate_root.contains("adapter.spawn_pls_dap"));
+        Ok(())
+    }
+
+    /// Public crate landing-page docs must not require legacy bridge dependencies.
     #[test]
     // AC:18
     fn test_crate_readme_is_native_first() -> Result<()> {
@@ -64,7 +78,7 @@ mod dap_dependencies {
         Ok(())
     }
 
-    /// Tests native stack policy: first-mile DAP docs must describe native perl-dap only.
+    /// First-mile DAP docs must describe the native `perl-dap` path only.
     #[test]
     // AC:18
     fn test_native_dap_user_docs_do_not_require_bridge_or_pls() -> Result<()> {
@@ -111,8 +125,6 @@ mod dap_dependencies {
                 assert!(version_num >= 5.010, "Perl version must be >= 5.010, got {version_num}");
             }
             _ => {
-                // If Perl is unavailable in the test environment, ensure compatibility
-                // requirements are documented.
                 let guide = read(repo_root().join("docs/tutorials/DAP_USER_GUIDE.md"))?;
                 assert!(guide.contains("Perl 5.10 or higher"));
             }
@@ -121,7 +133,7 @@ mod dap_dependencies {
         Ok(())
     }
 
-    /// Tests native stack policy: legacy bridge dependency details live in reference docs only.
+    /// Legacy bridge dependency details belong in reference documentation only.
     #[test]
     // AC:18
     fn test_legacy_bridge_reference_documents_pls_dependency() -> Result<()> {
@@ -132,6 +144,28 @@ mod dap_dependencies {
         assert!(guide.contains("--bridge"));
         assert!(guide.contains("BridgeAdapter"));
         assert!(guide.contains("launch.json"));
+        Ok(())
+    }
+
+    /// Legacy bridge library symbols must advertise their transition status.
+    #[test]
+    // AC:18
+    fn test_legacy_bridge_api_is_explicitly_deprecated() -> Result<()> {
+        let crate_root = read(repo_root().join("crates/perl-dap/src/lib.rs"))?;
+        assert!(crate_root.contains(
+            "legacy Perl::LanguageServer compatibility; use the native DapServer/DebugAdapter path"
+        ));
+        assert!(crate_root.contains("pub mod bridge_adapter;"));
+        assert!(crate_root.contains("pub use bridge_adapter::{BridgeAdapter, DapBridgeEnvConfig};"));
+
+        let mode_module = read(repo_root().join("crates/perl-dap/src/server/mode.rs"))?;
+        assert!(mode_module.contains(
+            "legacy Perl::LanguageServer compatibility; use DapMode::Native instead"
+        ));
+
+        let lifecycle = read(repo_root().join("crates/perl-dap/src/server/lifecycle.rs"))?;
+        assert!(lifecycle.contains("#![allow(deprecated)]"));
+        assert!(lifecycle.contains("deprecated bridge mode"));
         Ok(())
     }
 }
