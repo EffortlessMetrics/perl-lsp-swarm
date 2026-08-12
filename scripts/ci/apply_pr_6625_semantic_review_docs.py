@@ -93,8 +93,10 @@ TEST_INSERT = """def test_review_skills_publish_subject_bound_currentness_marker
 
 
 def test_shared_contract_defines_durable_semantic_review_record() -> None:
-    text = (ROOT / "docs/agents/REVIEW_CURRENTNESS.md").read_text(
-        encoding="utf-8"
+    text = " ".join(
+        (ROOT / "docs/agents/REVIEW_CURRENTNESS.md")
+        .read_text(encoding="utf-8")
+        .split()
     )
     assert "## Durable semantic review record" in text
     assert "git diff --binary --full-index" in text
