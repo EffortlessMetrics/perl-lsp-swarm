@@ -13,8 +13,11 @@ on:
       - '.github/workflows/vscode-current-source-linux-smoke.yml'
 
 concurrency:
+  # Preserve the active exact-subject run. GitHub keeps only the latest pending
+  # run for this group, so intermediate queued heads coalesce without killing
+  # work that has already consumed a runner.
   group: vscode-current-source-linux-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
