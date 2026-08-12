@@ -95,9 +95,13 @@ fn reject_output_input_path_collision(config: &ClassifyConfig) -> Result<()> {
     // Lean path-string identity only. Symlink/hard-link identity remains deferred.
     if paths_equal(&config.output, &config.accepted_baseline)
         || paths_equal(&config.output, &config.compile)
+        || config
+            .series
+            .as_ref()
+            .is_some_and(|series| paths_equal(&config.output, series))
     {
         bail!(
-            "output path must not alias --accepted-baseline or --compile; refusing to overwrite evidence"
+            "output path must not alias --accepted-baseline, --compile, or --series; refusing to overwrite evidence"
         );
     }
     Ok(())
@@ -477,6 +481,20 @@ mod classify_io_observer {
         .expect_err("alias must fail")
         .to_string();
         assert_eq!(err.contains("output path must not alias"), true);
+    }
+
+    /// RIPR-named observer for output/--series path-string collision rejection.
+    #[test]
+    fn output_series_path_collision_bail_is_observed() {
+        let err = reject_output_input_path_collision(&ClassifyConfig {
+            accepted_baseline: PathBuf::from("accepted.json"),
+            compile: PathBuf::from("compile.json"),
+            output: PathBuf::from("series.json"),
+            series: Some(PathBuf::from("series.json")),
+        })
+        .expect_err("series alias must fail")
+        .to_string();
+        assert_eq!(err.contains("--series"), true);
     }
 
     /// RIPR boundary discriminator for series identity mismatch.
