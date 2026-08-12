@@ -19,7 +19,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -47,22 +47,23 @@ jobs:
           python3 .ci/agent_build_shared_status_inventory.py
           cargo fmt --all
           cargo fmt --all -- --check
+          git diff --check
 
       - name: Run focused update-status unit tests
-        run: cargo test -p xtask --lib --locked update_status
+        run: cargo test -p xtask --locked update_status
 
-      - name: Prove cold quality discovery completes once
+      - name: Prove full regeneration discovers workspace lib tests once
         run: |
           set -euo pipefail
-          cargo run -p xtask -- update-status --write --only quality \
-            2>&1 | tee target/agent-status-quality.log
-          test "$(grep -c '\[update-status\] running: cargo test --workspace --lib --exclude tree-sitter-perl -- --list' target/agent-status-quality.log)" -eq 1
-          git checkout -- docs/project/status/quality.md docs/project/status/editor_ux.json
+          cargo run -p xtask --locked -- update-status --write \
+            2>&1 | tee target/agent-status-full.log
+          test "$(grep -c '\[update-status\] running: cargo test --workspace --lib --exclude tree-sitter-perl -- --list' target/agent-status-full.log)" -eq 1
+          git diff --name-only -z -- docs | xargs -0 -r git checkout --
 
       - name: Prove tests-only retains one best-effort authority
         run: |
           set -euo pipefail
-          cargo run -p xtask -- update-status --write --only tests \
+          cargo run -p xtask --locked -- update-status --write --only tests \
             2>&1 | tee target/agent-status-tests.log
           test "$(grep -c '\[update-status\] running: cargo test --workspace --lib --exclude tree-sitter-perl -- --list' target/agent-status-tests.log)" -eq 1
           git checkout -- docs/project/status/tests.md
@@ -81,7 +82,7 @@ jobs:
             mkdir -p "target/agent-status-inventory-candidate/files/$(dirname "$path")"
             cp "$path" "target/agent-status-inventory-candidate/files/$path"
           done
-          cp target/agent-status-quality.log target/agent-status-inventory-candidate/
+          cp target/agent-status-full.log target/agent-status-inventory-candidate/
           cp target/agent-status-tests.log target/agent-status-inventory-candidate/
           git diff --binary -- \
             xtask/src/tasks/update_status/mod.rs \
