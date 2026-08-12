@@ -1,9 +1,9 @@
 project: product
-component: Compatibility
+component: DAP
 kind: Changed
-body: Make the historical Perl::LanguageServer DAP bridge a default-off compatibility feature; native perl-dap remains the only default, docs.rs, and release path.
+body: Remove the historical Perl::LanguageServer DAP proxy, bridge mode, and published compatibility features; perl-dap now ships only the native runtime and explicit optional peer seam.
 time: 2026-08-12T03:10:00Z
 custom:
   PR: "6991"
-  Slug: dap-legacy-pls-default-off
+  Slug: dap-remove-pls-runtime-bridge
   Breaking: "yes"
