@@ -106,10 +106,11 @@
 
 use perl_lexer::{PerlLexer, StringPart, TokenType};
 use perl_parser_core::ast::{Node, NodeKind};
-use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
-use std::sync::LazyLock;
+
+/// Undelta-encoded semantic token `(line, character, length, type, modifiers)`.
+pub type RawSemanticToken = (u32, u32, u32, u32, u32);
 
 /// LSP semantic token encoding format for client transmission
 ///
@@ -331,20 +332,6 @@ fn method_call_name_offsets(text: &str, object_end: usize, method: &str) -> Opti
 // Heredoc language injection helpers (Issue #2059)
 // ---------------------------------------------------------------------------
 
-/// Regex matching SQL keywords (case-insensitive).
-///
-/// Matches word-boundary-delimited SQL keywords in a heredoc body and emits
-/// `sql_heredoc_keyword` semantic tokens for each match.
-static SQL_KW_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|IS|NULL|LIKE|BETWEEN|JOIN|INNER|LEFT|RIGHT|OUTER|FULL|CROSS|ON|AS|DISTINCT|GROUP|BY|ORDER|HAVING|LIMIT|OFFSET|UNION|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|DROP|ALTER|TABLE|INDEX|VIEW|RETURNING|WITH|CASE|WHEN|THEN|ELSE|END|EXISTS|EXCEPT|INTERSECT)\b"
-    ).ok()
-});
-
-/// Regex matching JSON object keys: `"key":`.
-static JSON_KEY_RE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*"\s*:"#).ok());
-
 /// Determine the injection language for a heredoc start token.
 ///
 /// `text` is the full heredoc start token text (e.g. `<<SQL`, `<<'SQL'`, `<<~SQL`,
@@ -380,22 +367,91 @@ fn tokenize_sql_body(
     body_start: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
     leg: &TokensLegend,
-    out: &mut Vec<(u32, u32, u32, u32, u32)>,
-) {
-    let re = match SQL_KW_RE.as_ref() {
-        Some(r) => r,
-        None => return,
-    };
+    out: &mut Vec<RawSemanticToken>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     let kind = kind_idx(leg, "sql_heredoc_keyword");
-    for mat in re.find_iter(body) {
-        let offset = body_start + mat.start();
+    let mut word_start = None;
+    for (index, character) in body.char_indices().chain(std::iter::once((body.len(), ' '))) {
+        traversal.admit_work()?;
+        if character.is_alphanumeric() || character == '_' {
+            word_start.get_or_insert(index);
+            continue;
+        }
+        let Some(start) = word_start.take() else {
+            continue;
+        };
+        let word = &body[start..index];
+        if !is_sql_keyword(word) {
+            continue;
+        }
+        let offset = body_start + start;
         let (sl, sc) = to_pos16(offset);
-        let (el, ec) = to_pos16(body_start + mat.end());
+        let (el, ec) = to_pos16(body_start + index);
         let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
         if len > 0 {
             out.push((sl, sc, len, kind, 0));
         }
     }
+    Ok(())
+}
+
+fn is_sql_keyword(word: &str) -> bool {
+    [
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "AND",
+        "OR",
+        "NOT",
+        "IN",
+        "IS",
+        "NULL",
+        "LIKE",
+        "BETWEEN",
+        "JOIN",
+        "INNER",
+        "LEFT",
+        "RIGHT",
+        "OUTER",
+        "FULL",
+        "CROSS",
+        "ON",
+        "AS",
+        "DISTINCT",
+        "GROUP",
+        "BY",
+        "ORDER",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "UNION",
+        "ALL",
+        "INSERT",
+        "INTO",
+        "VALUES",
+        "UPDATE",
+        "SET",
+        "DELETE",
+        "CREATE",
+        "DROP",
+        "ALTER",
+        "TABLE",
+        "INDEX",
+        "VIEW",
+        "RETURNING",
+        "WITH",
+        "CASE",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+        "EXISTS",
+        "EXCEPT",
+        "INTERSECT",
+    ]
+    .iter()
+    .any(|keyword| word.eq_ignore_ascii_case(keyword))
 }
 
 /// Emit semantic tokens for JSON key matches inside a heredoc body.
@@ -404,20 +460,59 @@ fn tokenize_json_body(
     body_start: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
     leg: &TokensLegend,
-    out: &mut Vec<(u32, u32, u32, u32, u32)>,
-) {
-    let re = match JSON_KEY_RE.as_ref() {
-        Some(r) => r,
-        None => return,
-    };
+    out: &mut Vec<RawSemanticToken>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     let kind = kind_idx(leg, "json_heredoc_key");
-    for mat in re.find_iter(body) {
-        // Highlight only the key string (before the colon), not the colon itself.
-        // The regex matches `"key":` — trim the trailing colon off the token length.
-        let match_text = mat.as_str();
-        let colon_offset = match_text.rfind(':').unwrap_or(match_text.len());
-        let key_start = body_start + mat.start();
-        let key_end = key_start + colon_offset;
+    let mut cursor = 0usize;
+    while cursor < body.len() {
+        traversal.admit_work()?;
+        let Some(character) = body[cursor..].chars().next() else {
+            break;
+        };
+        if character != '"' {
+            cursor = cursor.saturating_add(character.len_utf8());
+            continue;
+        }
+        let key_start_offset = cursor;
+        cursor = cursor.saturating_add(1);
+        let mut escaped = false;
+        let mut key_end_offset = None;
+        while cursor < body.len() {
+            traversal.admit_work()?;
+            let Some(current) = body[cursor..].chars().next() else {
+                break;
+            };
+            let current_len = current.len_utf8();
+            if current == '"' && !escaped {
+                key_end_offset = Some(cursor.saturating_add(current_len));
+                cursor = cursor.saturating_add(current_len);
+                break;
+            }
+            escaped = current == '\\' && !escaped;
+            if current != '\\' {
+                escaped = false;
+            }
+            cursor = cursor.saturating_add(current_len);
+        }
+        let Some(key_end_offset) = key_end_offset else {
+            break;
+        };
+        while cursor < body.len() {
+            traversal.admit_work()?;
+            let Some(current) = body[cursor..].chars().next() else {
+                break;
+            };
+            if !current.is_whitespace() {
+                break;
+            }
+            cursor = cursor.saturating_add(current.len_utf8());
+        }
+        if body.as_bytes().get(cursor) != Some(&b':') {
+            continue;
+        }
+        let key_start = body_start + key_start_offset;
+        let key_end = body_start + key_end_offset;
         let (sl, sc) = to_pos16(key_start);
         let (el, ec) = to_pos16(key_end);
         let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
@@ -425,6 +520,7 @@ fn tokenize_json_body(
             out.push((sl, sc, len, kind, 0));
         }
     }
+    Ok(())
 }
 
 /// Dispatch to the appropriate body tokenizer based on the injection language.
@@ -434,12 +530,13 @@ fn tokenize_heredoc_body(
     lang: &str,
     to_pos16: &impl Fn(usize) -> (u32, u32),
     leg: &TokensLegend,
-    out: &mut Vec<(u32, u32, u32, u32, u32)>,
-) {
+    out: &mut Vec<RawSemanticToken>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     match lang {
-        "sql" => tokenize_sql_body(body, body_start, to_pos16, leg, out),
-        "json" => tokenize_json_body(body, body_start, to_pos16, leg, out),
-        _ => {}
+        "sql" => tokenize_sql_body(body, body_start, to_pos16, leg, out, traversal),
+        "json" => tokenize_json_body(body, body_start, to_pos16, leg, out, traversal),
+        _ => Ok(()),
     }
 }
 
@@ -504,6 +601,178 @@ fn find_bytes_at(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     (from..=end).find(|&i| haystack[i..i + needle.len()] == *needle)
 }
 
+fn find_bytes_at_controlled(
+    haystack: &[u8],
+    from: usize,
+    needle: &[u8],
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<Option<usize>, TraversalStop> {
+    if needle.is_empty() {
+        return Ok(Some(from));
+    }
+    let end = haystack.len().saturating_sub(needle.len());
+    for index in from..=end {
+        traversal.admit_work()?;
+        if haystack[index..index + needle.len()] == *needle {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
+}
+
+/// Caller-owned limits for semantic-token traversal.
+///
+/// Cancellation is polled before every lexer step and every AST node. A work
+/// budget counts those same units, so cancellation admits no additional work
+/// after it is observed and budget exhaustion reports an exact `work_done`.
+#[non_exhaustive]
+pub struct SemanticTokensTraversalControl<'a> {
+    cancellation: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
+    work_budget: Option<usize>,
+}
+
+impl<'a> SemanticTokensTraversalControl<'a> {
+    /// Traverse without cancellation or a work budget.
+    #[must_use]
+    pub const fn unlimited() -> Self {
+        Self { cancellation: None, work_budget: None }
+    }
+
+    /// Traverse with caller-owned cancellation and an optional deterministic work budget.
+    #[must_use]
+    pub const fn new(
+        cancellation: &'a (dyn Fn() -> bool + Send + Sync),
+        work_budget: Option<usize>,
+    ) -> Self {
+        Self { cancellation: Some(cancellation), work_budget }
+    }
+}
+
+/// Result of a controlled semantic-token traversal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SemanticTokensTraversalOutcome {
+    /// The complete token stream, identical to the compatibility collector output.
+    Complete(Vec<EncodedToken>),
+    /// The caller cancelled traversal before the next work unit was admitted.
+    Cancelled {
+        /// Number of lexer steps and AST nodes visited before cancellation.
+        work_done: usize,
+    },
+    /// The deterministic work budget was consumed before traversal completed.
+    BudgetExhausted {
+        /// Explicitly incomplete raw tokens collected before exhaustion.
+        partial: PartialSemanticTokens,
+        /// Exact number of admitted lexer-step and AST-node work units.
+        work_done: usize,
+    },
+    /// No AST was available at the core collection boundary.
+    NoAst,
+    /// Collection failed before an AST could be supplied to traversal.
+    CollectionFailure(SemanticTokensCollectionError),
+}
+
+/// Typed collection failure supplied to the core semantic-token boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SemanticTokensCollectionError {
+    message: String,
+}
+
+impl SemanticTokensCollectionError {
+    /// Create a collection failure without imposing an LSP wire error policy.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into() }
+    }
+
+    /// Human-readable failure detail for logging or caller-owned policy.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// AST availability at the fallible core collection boundary.
+#[non_exhaustive]
+pub enum SemanticTokensCollectionInput<'a> {
+    /// A parsed AST is available for traversal.
+    Ast(&'a Node),
+    /// Parsing completed without an AST.
+    NoAst,
+    /// Parsing or collection preparation failed.
+    CollectionFailure(SemanticTokensCollectionError),
+}
+
+/// Explicitly incomplete semantic-token data.
+///
+/// This type intentionally does not expose LSP-encoded data: sorting, overlap
+/// removal, and delta encoding may themselves be interrupted. Callers can
+/// inspect the amount of collected raw data without mistaking it for a complete
+/// token stream or paying unbounded finalization cost after a stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PartialSemanticTokens {
+    ast_tokens: Vec<RawSemanticToken>,
+    lexer_tokens: Vec<RawSemanticToken>,
+}
+
+impl PartialSemanticTokens {
+    /// Number of raw tokens retained before traversal or finalization stopped.
+    #[must_use]
+    pub const fn raw_token_count(&self) -> usize {
+        self.ast_tokens.len().saturating_add(self.lexer_tokens.len())
+    }
+
+    /// Iterate the retained raw tokens without sorting or allocating.
+    pub fn raw_tokens(&self) -> impl Iterator<Item = &RawSemanticToken> {
+        self.ast_tokens.iter().chain(&self.lexer_tokens)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TraversalStop {
+    Cancelled,
+    BudgetExhausted,
+    WorkCounterOverflow,
+}
+
+struct TraversalState<'control, 'callback> {
+    control: &'control SemanticTokensTraversalControl<'callback>,
+    work_done: usize,
+}
+
+impl TraversalState<'_, '_> {
+    fn admit_work(&mut self) -> Result<(), TraversalStop> {
+        if self.control.cancellation.is_some_and(|cancelled| cancelled()) {
+            return Err(TraversalStop::Cancelled);
+        }
+        if self.control.work_budget.is_some_and(|budget| self.work_done >= budget) {
+            return Err(TraversalStop::BudgetExhausted);
+        }
+        self.work_done = self.work_done.checked_add(1).ok_or(TraversalStop::WorkCounterOverflow)?;
+        Ok(())
+    }
+}
+
+fn interrupted_outcome(
+    stop: TraversalStop,
+    ast_tokens: Vec<RawSemanticToken>,
+    lexer_tokens: Vec<RawSemanticToken>,
+    work_done: usize,
+) -> SemanticTokensTraversalOutcome {
+    match stop {
+        TraversalStop::Cancelled => SemanticTokensTraversalOutcome::Cancelled { work_done },
+        TraversalStop::BudgetExhausted => SemanticTokensTraversalOutcome::BudgetExhausted {
+            partial: PartialSemanticTokens { ast_tokens, lexer_tokens },
+            work_done,
+        },
+        TraversalStop::WorkCounterOverflow => SemanticTokensTraversalOutcome::CollectionFailure(
+            SemanticTokensCollectionError::new("semantic-token work counter overflow"),
+        ),
+    }
+}
+
 /// Collect semantic tokens for LSP highlighting in the Complete stage.
 ///
 /// # Arguments
@@ -530,12 +799,67 @@ pub fn collect_semantic_tokens(
     text: &str,
     to_pos16: &impl Fn(usize) -> (u32, u32),
 ) -> Vec<EncodedToken> {
+    match collect_semantic_tokens_controlled(
+        ast,
+        text,
+        to_pos16,
+        &SemanticTokensTraversalControl::unlimited(),
+    ) {
+        SemanticTokensTraversalOutcome::Complete(tokens) => tokens,
+        SemanticTokensTraversalOutcome::Cancelled { .. }
+        | SemanticTokensTraversalOutcome::BudgetExhausted { .. }
+        | SemanticTokensTraversalOutcome::NoAst
+        | SemanticTokensTraversalOutcome::CollectionFailure(_) => Vec::new(),
+    }
+}
+
+/// Collect from a boundary that preserves absent-AST and typed-failure states.
+pub fn collect_semantic_tokens_from_input(
+    input: SemanticTokensCollectionInput<'_>,
+    text: &str,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    control: &SemanticTokensTraversalControl<'_>,
+) -> SemanticTokensTraversalOutcome {
+    match input {
+        SemanticTokensCollectionInput::Ast(ast) => {
+            collect_semantic_tokens_controlled(ast, text, to_pos16, control)
+        }
+        SemanticTokensCollectionInput::NoAst => SemanticTokensTraversalOutcome::NoAst,
+        SemanticTokensCollectionInput::CollectionFailure(error) => {
+            SemanticTokensTraversalOutcome::CollectionFailure(error)
+        }
+    }
+}
+
+/// Collect semantic tokens with caller-owned cancellation and deterministic work limits.
+pub fn collect_semantic_tokens_controlled(
+    ast: &Node,
+    text: &str,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    control: &SemanticTokensTraversalControl<'_>,
+) -> SemanticTokensTraversalOutcome {
+    let mut traversal = TraversalState { control, work_done: 0 };
     let leg = legend();
     // AST tokens are collected first so that when lexer tokens occupy the same
     // span (e.g. "method" keyword vs method-name token), the AST token wins
     // the stable-sort tie-break in remove_overlapping_tokens.
-    let mut ast_tokens: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
-    let mut lexer_tokens: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
+    let mut ast_tokens: Vec<RawSemanticToken> = Vec::new();
+    let mut lexer_tokens: Vec<RawSemanticToken> = Vec::new();
+    macro_rules! controlled_value {
+        ($expression:expr) => {
+            match $expression {
+                Ok(value) => value,
+                Err(stop) => {
+                    return interrupted_outcome(
+                        stop,
+                        ast_tokens,
+                        lexer_tokens,
+                        traversal.work_done,
+                    );
+                }
+            }
+        };
+    }
 
     // 1) Fast path from lexer categories: conservative single-line emission
     // FIFO queue of pending heredoc injection languages, one entry per heredoc start token
@@ -544,7 +868,13 @@ pub fn collect_semantic_tokens(
     let mut pending_heredoc_langs: VecDeque<Option<&'static str>> = VecDeque::new();
     // Use with_body_tokens so the lexer emits HeredocBody tokens (needed for injection).
     let mut lexer = PerlLexer::with_body_tokens(text);
-    while let Some(tok) = lexer.next_token() {
+    loop {
+        if let Err(stop) = traversal.admit_work() {
+            return interrupted_outcome(stop, ast_tokens, lexer_tokens, traversal.work_done);
+        }
+        let Some(tok) = lexer.next_token() else {
+            break;
+        };
         let (sl, sc) = to_pos16(tok.start);
         let (el, ec) = to_pos16(tok.end);
         let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
@@ -577,10 +907,15 @@ pub fn collect_semantic_tokens(
                     let text_bytes = tok.text.as_bytes();
                     let mut cursor: usize = 1; // skip opening quote char
                     for part in parts {
+                        controlled_value!(traversal.admit_work());
                         match part {
                             StringPart::Literal(lit) => {
-                                if let Some(rel) = find_bytes_at(text_bytes, cursor, lit.as_bytes())
-                                {
+                                if let Some(rel) = controlled_value!(find_bytes_at_controlled(
+                                    text_bytes,
+                                    cursor,
+                                    lit.as_bytes(),
+                                    &mut traversal,
+                                )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + lit.len();
                                     let (psl, psc) = to_pos16(part_start);
@@ -599,8 +934,12 @@ pub fn collect_semantic_tokens(
                                 }
                             }
                             StringPart::Variable(var) => {
-                                if let Some(rel) = find_bytes_at(text_bytes, cursor, var.as_bytes())
-                                {
+                                if let Some(rel) = controlled_value!(find_bytes_at_controlled(
+                                    text_bytes,
+                                    cursor,
+                                    var.as_bytes(),
+                                    &mut traversal,
+                                )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + var.len();
                                     let (psl, psc) = to_pos16(part_start);
@@ -649,7 +988,15 @@ pub fn collect_semantic_tokens(
                 {
                     let body_end = tok.end.min(text.len());
                     let body = &text[tok.start.min(body_end)..body_end];
-                    tokenize_heredoc_body(body, tok.start, lang, to_pos16, &leg, &mut lexer_tokens);
+                    controlled_value!(tokenize_heredoc_body(
+                        body,
+                        tok.start,
+                        lang,
+                        to_pos16,
+                        &leg,
+                        &mut lexer_tokens,
+                        &mut traversal,
+                    ));
                 }
                 "string"
             }
@@ -678,20 +1025,20 @@ pub fn collect_semantic_tokens(
         }
     }
 
-    let const_fast_enabled = ast_uses_const_fast(ast);
-    let readonly_enabled = ast_uses_readonly(ast);
+    let const_fast_enabled = controlled_value!(ast_uses_const_fast(ast, &mut traversal));
+    let readonly_enabled = controlled_value!(ast_uses_readonly(ast, &mut traversal));
 
     // 2a) Collect variable declaration spans for modifier tagging
-    let decl_spans = declaration_readonly_flags(ast)
+    let decl_spans = controlled_value!(declaration_readonly_flags(ast, &mut traversal))
         .into_iter()
         .map(|((start, end), is_readonly)| (start, end, is_readonly))
         .collect::<Vec<_>>();
 
     // 2a-ii) Collect assignment LHS spans to apply the "modification" modifier (bit 7)
-    let assignment_spans = assignment_lhs_spans(ast);
+    let assignment_spans = controlled_value!(assignment_lhs_spans(ast, &mut traversal));
 
     // 2b) AST overlays: package/sub/variable with precise spans where available
-    walk_ast_full(ast, &mut |node| {
+    controlled_value!(walk_ast_full_controlled(ast, &mut traversal, &mut |node| {
         // For nodes with name_span, use the precise span for better highlighting
         match &node.kind {
             NodeKind::Package { name_span, .. } => {
@@ -943,17 +1290,119 @@ pub fn collect_semantic_tokens(
             ast_tokens.push((sl, sc, len, kind_idx(&leg, kind), mods));
         }
         true
-    });
+    }));
 
-    // 3) Merge: AST tokens first so they win stable-sort ties over same-span lexer tokens
-    let mut raw_tokens = ast_tokens;
-    raw_tokens.extend(lexer_tokens);
+    let tokens =
+        controlled_value!(finalize_tokens_controlled(&ast_tokens, &lexer_tokens, &mut traversal,));
+    SemanticTokensTraversalOutcome::Complete(tokens)
+}
 
-    // 4) Remove overlapping tokens (LSP specification compliance)
-    let dedup_tokens = remove_overlapping_tokens(raw_tokens);
+#[derive(Clone, Copy)]
+struct IndexedRawToken {
+    token: RawSemanticToken,
+    order: usize,
+}
 
-    // 5) Sort by position and encode with deltas (thread-safe)
-    encode_raw_tokens_to_deltas(dedup_tokens)
+fn indexed_token_key(token: &IndexedRawToken) -> (u32, u32, usize) {
+    (token.token.0, token.token.1, token.order)
+}
+
+fn sift_down(
+    tokens: &mut [IndexedRawToken],
+    mut root: usize,
+    end: usize,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    loop {
+        let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) else {
+            return Ok(());
+        };
+        if left >= end {
+            return Ok(());
+        }
+        let mut largest = root;
+        traversal.admit_work()?;
+        if indexed_token_key(&tokens[left]) > indexed_token_key(&tokens[largest]) {
+            largest = left;
+        }
+        let right = left.saturating_add(1);
+        if right < end {
+            traversal.admit_work()?;
+            if indexed_token_key(&tokens[right]) > indexed_token_key(&tokens[largest]) {
+                largest = right;
+            }
+        }
+        if largest == root {
+            return Ok(());
+        }
+        traversal.admit_work()?;
+        tokens.swap(root, largest);
+        root = largest;
+    }
+}
+
+fn controlled_sort_tokens(
+    tokens: &mut [IndexedRawToken],
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    let length = tokens.len();
+    for root in (0..length / 2).rev() {
+        sift_down(tokens, root, length, traversal)?;
+    }
+    for end in (1..length).rev() {
+        traversal.admit_work()?;
+        tokens.swap(0, end);
+        sift_down(tokens, 0, end, traversal)?;
+    }
+    Ok(())
+}
+
+fn finalize_tokens_controlled(
+    ast_tokens: &[RawSemanticToken],
+    lexer_tokens: &[RawSemanticToken],
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<Vec<EncodedToken>, TraversalStop> {
+    let capacity = ast_tokens.len().saturating_add(lexer_tokens.len());
+    let mut indexed = Vec::with_capacity(capacity);
+    for token in ast_tokens.iter().chain(lexer_tokens) {
+        traversal.admit_work()?;
+        indexed.push(IndexedRawToken { token: *token, order: indexed.len() });
+    }
+    controlled_sort_tokens(&mut indexed, traversal)?;
+
+    let mut dedup: Vec<RawSemanticToken> = Vec::with_capacity(indexed.len());
+    for indexed_token in indexed {
+        traversal.admit_work()?;
+        let token = indexed_token.token;
+        let (line, start_char, length, _, _) = token;
+        if let Some(&(last_line, last_start, last_length, _, _)) = dedup.last()
+            && line == last_line
+            && start_char < last_start.saturating_add(last_length)
+        {
+            if length > last_length {
+                dedup.pop();
+                dedup.push(token);
+            }
+        } else {
+            dedup.push(token);
+        }
+    }
+
+    let mut encoded = Vec::with_capacity(dedup.len());
+    let mut previous_line = 0u32;
+    let mut previous_character = 0u32;
+    for (line, character, length, kind, modifiers) in dedup {
+        traversal.admit_work()?;
+        let (delta_line, delta_character) = if line == previous_line {
+            (0, character.saturating_sub(previous_character))
+        } else {
+            (line.saturating_sub(previous_line), character)
+        };
+        encoded.push([delta_line, delta_character, length, kind, modifiers]);
+        previous_line = line;
+        previous_character = character;
+    }
+    Ok(encoded)
 }
 
 /// Remove overlapping tokens to comply with LSP specification
@@ -1025,25 +1474,45 @@ fn walk_ast_full<F>(node: &Node, visitor: &mut F) -> bool
 where
     F: FnMut(&Node) -> bool,
 {
+    let control = SemanticTokensTraversalControl::unlimited();
+    let mut traversal = TraversalState { control: &control, work_done: 0 };
+    match walk_ast_full_controlled(node, &mut traversal, visitor) {
+        Ok(completed) => completed,
+        Err(_) => false,
+    }
+}
+
+fn walk_ast_full_controlled<F>(
+    node: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+    visitor: &mut F,
+) -> Result<bool, TraversalStop>
+where
+    F: FnMut(&Node) -> bool,
+{
+    traversal.admit_work()?;
     if !visitor(node) {
-        return false;
+        return Ok(false);
     }
 
     for child in node.children() {
-        if !walk_ast_full(child, visitor) {
-            return false;
+        if !walk_ast_full_controlled(child, traversal, visitor)? {
+            return Ok(false);
         }
     }
 
-    true
+    Ok(true)
 }
 
-fn declaration_readonly_flags(ast: &Node) -> FxHashMap<(usize, usize), bool> {
+fn declaration_readonly_flags(
+    ast: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<FxHashMap<(usize, usize), bool>, TraversalStop> {
     let mut flags = FxHashMap::default();
-    let const_fast_enabled = ast_uses_const_fast(ast);
-    let readonly_enabled = ast_uses_readonly(ast);
+    let const_fast_enabled = ast_uses_const_fast(ast, traversal)?;
+    let readonly_enabled = ast_uses_readonly(ast, traversal)?;
 
-    walk_ast_full(ast, &mut |node| {
+    walk_ast_full_controlled(ast, traversal, &mut |node| {
         match &node.kind {
             NodeKind::VariableDeclaration { declarator, variable, .. } => {
                 // `our` creates a package-variable alias in lexical scope; it
@@ -1075,44 +1544,53 @@ fn declaration_readonly_flags(ast: &Node) -> FxHashMap<(usize, usize), bool> {
             _ => {}
         }
         true
-    });
+    })?;
 
-    flags
+    Ok(flags)
 }
 
-fn assignment_lhs_spans(ast: &Node) -> FxHashSet<(usize, usize)> {
+fn assignment_lhs_spans(
+    ast: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<FxHashSet<(usize, usize)>, TraversalStop> {
     let mut spans = FxHashSet::default();
-    walk_ast_full(ast, &mut |node| {
+    walk_ast_full_controlled(ast, traversal, &mut |node| {
         if let NodeKind::Assignment { lhs, .. } = &node.kind {
             spans.insert((lhs.location.start, lhs.location.end));
         }
         true
-    });
-    spans
+    })?;
+    Ok(spans)
 }
 
-fn ast_uses_const_fast(ast: &Node) -> bool {
+fn ast_uses_const_fast(
+    ast: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<bool, TraversalStop> {
     let mut enabled = false;
-    walk_ast_full(ast, &mut |node| {
+    walk_ast_full_controlled(ast, traversal, &mut |node| {
         if matches!(&node.kind, NodeKind::Use { module, .. } if module == "Const::Fast") {
             enabled = true;
             return false;
         }
         true
-    });
-    enabled
+    })?;
+    Ok(enabled)
 }
 
-fn ast_uses_readonly(ast: &Node) -> bool {
+fn ast_uses_readonly(
+    ast: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<bool, TraversalStop> {
     let mut enabled = false;
-    walk_ast_full(ast, &mut |node| {
+    walk_ast_full_controlled(ast, traversal, &mut |node| {
         if matches!(&node.kind, NodeKind::Use { module, .. } if module == "Readonly") {
             enabled = true;
             return false;
         }
         true
-    });
-    enabled
+    })?;
+    Ok(enabled)
 }
 
 fn mark_const_fast_decl_flags(args: &[Node], flags: &mut FxHashMap<(usize, usize), bool>) {
@@ -1151,6 +1629,7 @@ fn mark_readonly_decl_flags(args: &[Node], flags: &mut FxHashMap<(usize, usize),
 mod tests {
     use super::*;
     use perl_parser_core::Parser;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Helper to create token tuple
     fn tok(line: u32, start: u32, len: u32, kind: u32, mods: u32) -> (u32, u32, u32, u32, u32) {
@@ -1172,6 +1651,268 @@ mod tests {
             }
         }
         (line, col)
+    }
+
+    fn lexer_work_units(source: &str) -> usize {
+        let mut lexer = PerlLexer::with_body_tokens(source);
+        let mut work = 0usize;
+        while lexer.next_token().is_some() {
+            work = work.saturating_add(1);
+        }
+        work.saturating_add(1)
+    }
+
+    #[test]
+    fn controlled_complete_output_matches_compatibility_collector()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Demo; my $value = 42; sub answer { return $value; }";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let legacy = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let controlled = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::unlimited(),
+        );
+
+        assert_eq!(controlled, SemanticTokensTraversalOutcome::Complete(legacy));
+        Ok(())
+    }
+
+    #[test]
+    fn complete_output_matches_frozen_protocol_vector() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Demo;\nmy $x = 42;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::unlimited(),
+        );
+
+        assert_eq!(
+            outcome,
+            SemanticTokensTraversalOutcome::Complete(vec![
+                [0, 0, 7, 13, 0],
+                [0, 8, 4, 0, 1],
+                [1, 0, 2, 13, 0],
+                [0, 3, 2, 11, 1025],
+                [0, 3, 1, 19, 0],
+                [0, 2, 2, 17, 0],
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collection_boundary_distinguishes_no_ast_and_failure() {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let no_ast = collect_semantic_tokens_from_input(
+            SemanticTokensCollectionInput::NoAst,
+            "",
+            &|_| (0, 0),
+            &control,
+        );
+        let failure = collect_semantic_tokens_from_input(
+            SemanticTokensCollectionInput::CollectionFailure(SemanticTokensCollectionError::new(
+                "parse failed",
+            )),
+            "",
+            &|_| (0, 0),
+            &control,
+        );
+
+        assert_eq!(no_ast, SemanticTokensTraversalOutcome::NoAst);
+        assert_eq!(
+            failure,
+            SemanticTokensTraversalOutcome::CollectionFailure(SemanticTokensCollectionError::new(
+                "parse failed"
+            ))
+        );
+    }
+
+    #[test]
+    fn large_traversal_budget_covers_finalization() -> Result<(), Box<dyn std::error::Error>> {
+        let source =
+            (0..512).map(|index| format!("my $value_{index} = {index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let complete_polls = AtomicUsize::new(0);
+        let never_cancelled = || {
+            complete_polls.fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let complete = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &SemanticTokensTraversalControl::new(&never_cancelled, None),
+        );
+        assert!(matches!(complete, SemanticTokensTraversalOutcome::Complete(_)));
+        let total_work = complete_polls.load(Ordering::Relaxed);
+        let budget = total_work.checked_sub(1).ok_or("complete traversal recorded no work")?;
+        let bounded_never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&bounded_never_cancelled, Some(budget));
+
+        let bounded = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &control,
+        );
+
+        assert!(matches!(
+            bounded,
+            SemanticTokensTraversalOutcome::BudgetExhausted { work_done, .. }
+                if work_done == budget
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn inner_scans_stop_at_the_exact_budget() -> Result<(), Box<dyn std::error::Error>> {
+        let never_cancelled = || false;
+        let find_control = SemanticTokensTraversalControl::new(&never_cancelled, Some(7));
+        let mut find_traversal = TraversalState { control: &find_control, work_done: 0 };
+        let find_result =
+            find_bytes_at_controlled(b"aaaaaaaaaaaaaaaa-target", 0, b"target", &mut find_traversal);
+        assert_eq!(find_result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(find_traversal.work_done, 7);
+
+        let json_control = SemanticTokensTraversalControl::new(&never_cancelled, Some(9));
+        let mut json_traversal = TraversalState { control: &json_control, work_done: 0 };
+        let mut tokens = Vec::new();
+        let json_result = tokenize_json_body(
+            r#"{"a-very-long-key": 1}"#,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut tokens,
+            &mut json_traversal,
+        );
+        assert_eq!(json_result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(json_traversal.work_done, 9);
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_stops_during_lexer_traversal_without_extra_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $first = 1; my $second = 2;";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let polls = AtomicUsize::new(0usize);
+        let cancellation = || {
+            let observed = polls.fetch_add(1, Ordering::Relaxed);
+            observed >= 2
+        };
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        assert_eq!(outcome, SemanticTokensTraversalOutcome::Cancelled { work_done: 2 });
+        assert_eq!(polls.load(Ordering::Relaxed), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_stops_during_ast_traversal_without_extra_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub outer { my $x = 1; if ($x) { return $x; } }";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let lexer_work = lexer_work_units(source);
+        let ast_work_before_cancel = 3usize;
+        let cancel_after = lexer_work.saturating_add(ast_work_before_cancel);
+        let polls = AtomicUsize::new(0usize);
+        let cancellation = || {
+            let observed = polls.fetch_add(1, Ordering::Relaxed);
+            observed >= cancel_after
+        };
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        assert_eq!(outcome, SemanticTokensTraversalOutcome::Cancelled { work_done: cancel_after });
+        assert_eq!(polls.load(Ordering::Relaxed), cancel_after.saturating_add(1));
+        Ok(())
+    }
+
+    #[test]
+    fn budget_exhaustion_reports_exact_work_and_incomplete_partial_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $first = 1; my $second = 2;";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let never_cancelled = || false;
+        let budget = 4usize;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(budget));
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        match outcome {
+            SemanticTokensTraversalOutcome::BudgetExhausted { partial, work_done } => {
+                assert_eq!(work_done, budget);
+                assert!(
+                    partial.raw_token_count() > 0,
+                    "the exhausted outcome should retain collected tokens"
+                );
+            }
+            SemanticTokensTraversalOutcome::Complete(_) => {
+                return Err("budget-exhausted output was incorrectly marked complete".into());
+            }
+            SemanticTokensTraversalOutcome::Cancelled { .. } => {
+                return Err("budget exhaustion was incorrectly reported as cancellation".into());
+            }
+            SemanticTokensTraversalOutcome::NoAst
+            | SemanticTokensTraversalOutcome::CollectionFailure(_) => {
+                return Err("budget exhaustion was incorrectly reported as input failure".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_budget_admits_no_work() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $value = 1;";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(0));
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        assert_eq!(
+            outcome,
+            SemanticTokensTraversalOutcome::BudgetExhausted {
+                partial: PartialSemanticTokens { ast_tokens: Vec::new(), lexer_tokens: Vec::new() },
+                work_done: 0,
+            }
+        );
+        Ok(())
     }
 
     #[test]
