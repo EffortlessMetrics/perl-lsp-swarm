@@ -5,7 +5,7 @@ use crate::{
 
 /// Stable identifier for one pattern-control fact in source order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PatternControlId(usize);
+pub struct PatternControlId(pub(super) usize);
 
 impl PatternControlId {
     /// Return the zero-based fact index.
