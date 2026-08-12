@@ -1,6 +1,4 @@
-use crate::validator::{
-    RegexDiagnostic, RegexDiagnosticCode, RegexRange,
-};
+use crate::validator::{RegexDiagnostic, RegexDiagnosticCode, RegexRange};
 
 const PERL_5_14: PerlVersion = PerlVersion::new(5, 14);
 const PERL_5_22: PerlVersion = PerlVersion::new(5, 22);
@@ -199,7 +197,7 @@ pub struct EffectiveModifiers {
     pub compile_once: bool,
     /// `/g` global matching/substitution.
     pub global: bool,
-    /// `/c` match-position preservation for match operators.
+    /// `/c` match-position preservation for match and substitution operators.
     pub keep_match_position: bool,
     /// Number of `/e` evaluation layers for substitution.
     pub substitution_evaluation_depth: usize,
@@ -338,10 +336,9 @@ pub(crate) fn analyze_modifiers(
             's' => effective.single_line = true,
             'x' => {
                 x_count = x_count.saturating_add(1);
-                if x_count == 1 {
-                    effective.extended = ExtendedMode::Extended;
-                } else {
-                    if x_count == 2 {
+                match x_count {
+                    1 => effective.extended = ExtendedMode::Extended,
+                    2 => {
                         record_version_requirement(
                             token.range,
                             PERL_5_26,
@@ -349,15 +346,16 @@ pub(crate) fn analyze_modifiers(
                             &mut requirements,
                             &mut diagnostics,
                         );
+                        effective.extended = ExtendedMode::ExtraExtended {
+                            enhanced: enhanced_xx_state(
+                                token.range,
+                                profile,
+                                &mut requirements,
+                                &mut diagnostics,
+                            ),
+                        };
                     }
-                    effective.extended = ExtendedMode::ExtraExtended {
-                        enhanced: enhanced_xx_state(
-                            token.range,
-                            profile,
-                            &mut requirements,
-                            &mut diagnostics,
-                        ),
-                    };
+                    _ => {}
                 }
             }
             'a' | 'd' | 'l' | 'u' => {
@@ -459,7 +457,7 @@ fn is_allowed(operator: RegexOperator, modifier: char) -> bool {
         RegexOperator::Substitution => matches!(
             modifier,
             'i' | 'm' | 's' | 'x' | 'g' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'r'
-                | 'o' | 'e'
+                | 'c' | 'o' | 'e'
         ),
         RegexOperator::Transliteration | RegexOperator::TransliterationAlias => {
             matches!(modifier, 'c' | 'd' | 's' | 'r')
