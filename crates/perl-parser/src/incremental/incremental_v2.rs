@@ -233,6 +233,7 @@ pub struct IncrementalParserV2 {
     pub last_reuse_analysis: Option<ReuseAnalysisResult>,
     incremental_path_attempted: bool,
     advanced_reuse_selected: bool,
+    materialized_reuse_nodes: usize,
 }
 
 impl IncrementalParserV2 {
@@ -249,6 +250,7 @@ impl IncrementalParserV2 {
             last_reuse_analysis: None,
             incremental_path_attempted: false,
             advanced_reuse_selected: false,
+            materialized_reuse_nodes: 0,
         }
     }
 
@@ -265,6 +267,7 @@ impl IncrementalParserV2 {
             last_reuse_analysis: None,
             incremental_path_attempted: false,
             advanced_reuse_selected: false,
+            materialized_reuse_nodes: 0,
         }
     }
 
@@ -283,6 +286,7 @@ impl IncrementalParserV2 {
         self.last_reuse_analysis = None;
         self.incremental_path_attempted = false;
         self.advanced_reuse_selected = false;
+        self.materialized_reuse_nodes = 0;
 
         // Try incremental parsing if we have a previous tree and edits
         if let Some(ref last_tree) = self.last_tree {
@@ -392,14 +396,14 @@ impl IncrementalParserV2 {
 
         if analysis_result.reused_nodes == 0
             || analysis_result.reused_nodes > analysis_result.total_new_nodes
-            || !analysis_result
-                .meets_efficiency_target(self.reuse_config.min_confidence * 100.0)
+            || !analysis_result.meets_efficiency_target(self.reuse_config.min_confidence * 100.0)
         {
             return None;
         }
 
         let materialized_tree = self.materialize_advanced_reuse_tree(&new_tree, &replacements);
         if materialized_tree != new_tree {
+            self.materialized_reuse_nodes = 0;
             return None;
         }
 
@@ -496,14 +500,14 @@ impl IncrementalParserV2 {
     }
 
     fn materialize_advanced_reuse_tree(
-        &self,
+        &mut self,
         new_node: &Node,
         replacements: &HashMap<usize, Vec<(Node, Node)>>,
     ) -> Node {
         if let Some(candidates) = replacements.get(&new_node.location.start)
-            && let Some((_, replacement)) =
-                candidates.iter().find(|(target, _)| target == new_node)
+            && let Some((_, replacement)) = candidates.iter().find(|(target, _)| target == new_node)
         {
+            self.materialized_reuse_nodes += 1;
             return replacement.clone();
         }
 
@@ -511,17 +515,13 @@ impl IncrementalParserV2 {
             NodeKind::Program { statements } => NodeKind::Program {
                 statements: statements
                     .iter()
-                    .map(|statement| {
-                        self.materialize_advanced_reuse_tree(statement, replacements)
-                    })
+                    .map(|statement| self.materialize_advanced_reuse_tree(statement, replacements))
                     .collect(),
             },
             NodeKind::Block { statements } => NodeKind::Block {
                 statements: statements
                     .iter()
-                    .map(|statement| {
-                        self.materialize_advanced_reuse_tree(statement, replacements)
-                    })
+                    .map(|statement| self.materialize_advanced_reuse_tree(statement, replacements))
                     .collect(),
             },
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
@@ -532,9 +532,7 @@ impl IncrementalParserV2 {
                     ),
                     attributes: attributes.clone(),
                     initializer: initializer.as_ref().map(|initializer| {
-                        Box::new(
-                            self.materialize_advanced_reuse_tree(initializer, replacements),
-                        )
+                        Box::new(self.materialize_advanced_reuse_tree(initializer, replacements))
                     }),
                 }
             }
@@ -551,22 +549,13 @@ impl IncrementalParserV2 {
                 name: name.clone(),
                 args: args
                     .iter()
-                    .map(|argument| {
-                        self.materialize_advanced_reuse_tree(argument, replacements)
-                    })
+                    .map(|argument| self.materialize_advanced_reuse_tree(argument, replacements))
                     .collect(),
             },
             NodeKind::If {
-                condition,
-                then_branch,
-                elsif_branches,
-                else_branch,
-                keyword,
-                ..
+                condition, then_branch, elsif_branches, else_branch, keyword, ..
             } => NodeKind::If {
-                condition: Box::new(
-                    self.materialize_advanced_reuse_tree(condition, replacements),
-                ),
+                condition: Box::new(self.materialize_advanced_reuse_tree(condition, replacements)),
                 then_branch: Box::new(
                     self.materialize_advanced_reuse_tree(then_branch, replacements),
                 ),
@@ -574,12 +563,8 @@ impl IncrementalParserV2 {
                     .iter()
                     .map(|(condition, branch)| {
                         (
-                            Box::new(
-                                self.materialize_advanced_reuse_tree(condition, replacements),
-                            ),
-                            Box::new(
-                                self.materialize_advanced_reuse_tree(branch, replacements),
-                            ),
+                            Box::new(self.materialize_advanced_reuse_tree(condition, replacements)),
+                            Box::new(self.materialize_advanced_reuse_tree(branch, replacements)),
                         )
                     })
                     .collect(),
@@ -1139,6 +1124,11 @@ impl IncrementalParserV2 {
         self.advanced_reuse_selected
     }
 
+    /// Return the number of old subtrees selected for materialization by the last parse.
+    pub fn get_materialized_reuse_count(&self) -> usize {
+        self.materialized_reuse_nodes
+    }
+
     /// Check if the last parse entered the incremental edit path.
     pub fn incremental_path_attempted(&self) -> bool {
         self.incremental_path_attempted
@@ -1560,19 +1550,13 @@ mod tests {
 
     #[test]
     fn advanced_reuse_materializes_only_exact_old_subtrees() {
-        let parser = IncrementalParserV2::new();
+        let mut parser = IncrementalParserV2::new();
         let location = |start, end| SourceLocation { start, end };
         let old_tree = Node::new(
             NodeKind::Program {
                 statements: vec![
-                    Node::new(
-                        NodeKind::Number { value: "1".to_string() },
-                        location(1, 2),
-                    ),
-                    Node::new(
-                        NodeKind::Number { value: "2".to_string() },
-                        location(3, 4),
-                    ),
+                    Node::new(NodeKind::Number { value: "1".to_string() }, location(1, 2)),
+                    Node::new(NodeKind::Number { value: "2".to_string() }, location(3, 4)),
                 ],
             },
             location(0, 4),
@@ -1580,14 +1564,8 @@ mod tests {
         let new_tree = Node::new(
             NodeKind::Program {
                 statements: vec![
-                    Node::new(
-                        NodeKind::Number { value: "1".to_string() },
-                        location(1, 2),
-                    ),
-                    Node::new(
-                        NodeKind::Number { value: "3".to_string() },
-                        location(3, 4),
-                    ),
+                    Node::new(NodeKind::Number { value: "1".to_string() }, location(1, 2)),
+                    Node::new(NodeKind::Number { value: "3".to_string() }, location(3, 4)),
                 ],
             },
             location(0, 4),
@@ -1621,10 +1599,8 @@ mod tests {
             Some(ReuseType::Direct)
         ));
         assert!(!materialized_map.contains_key(&3));
-        assert_eq!(
-            parser.materialize_advanced_reuse_tree(&new_tree, &replacements),
-            new_tree
-        );
+        assert_eq!(parser.materialize_advanced_reuse_tree(&new_tree, &replacements), new_tree);
+        assert_eq!(parser.get_materialized_reuse_count(), 1);
     }
 
     #[test]

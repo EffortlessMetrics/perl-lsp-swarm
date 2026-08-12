@@ -461,11 +461,7 @@ fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
         "materialized-advanced-reuse",
     )?;
     let incremental_ast = incremental.parse(&edited)?;
-    assert_incremental_outcome(
-        &incremental,
-        &incremental_ast,
-        "materialized-advanced-reuse",
-    )?;
+    assert_incremental_outcome(&incremental, &incremental_ast, "materialized-advanced-reuse")?;
     if !incremental.used_advanced_reuse() {
         return Err("the low-threshold proof must select materialized advanced reuse".into());
     }
@@ -480,12 +476,14 @@ fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
     }) {
         return Err("selected advanced reuse exposed a non-materializable strategy".into());
     }
+    if incremental.get_materialized_reuse_count() == 0 {
+        return Err(
+            "selected advanced reuse must materialize an old subtree rather than only fake counters"
+                .into(),
+        );
+    }
     let fresh_ast = Parser::new(&edited).parse()?;
-    assert_ast_equivalent(
-        &incremental_ast,
-        &fresh_ast,
-        "materialized advanced reuse",
-    )?;
+    assert_ast_equivalent(&incremental_ast, &fresh_ast, "materialized advanced reuse")?;
     Ok(())
 }
 
@@ -496,8 +494,7 @@ fn rejected_advanced_analysis_is_not_exposed_as_last_parse() -> TestResult {
     let source = "my $x = 1;";
     incremental.parse(source)?;
 
-    let edited =
-        apply_incremental_edit(&mut incremental, source, "1", "2", "rejected-analysis")?;
+    let edited = apply_incremental_edit(&mut incremental, source, "1", "2", "rejected-analysis")?;
     incremental.parse(&edited)?;
 
     if !incremental.used_incremental_path() {
@@ -509,10 +506,10 @@ fn rejected_advanced_analysis_is_not_exposed_as_last_parse() -> TestResult {
     if incremental.get_last_reuse_analysis().is_some() {
         return Err("a rejected advanced analysis must not remain public".into());
     }
-    if !incremental
-        .get_reuse_efficiency_report()
-        .starts_with("Basic Incremental Analysis:")
-    {
+    if incremental.get_materialized_reuse_count() != 0 {
+        return Err("a rejected advanced analysis must not materialize an old subtree".into());
+    }
+    if !incremental.get_reuse_efficiency_report().starts_with("Basic Incremental Analysis:") {
         return Err("the efficiency report must describe the accepted simple path".into());
     }
     Ok(())
