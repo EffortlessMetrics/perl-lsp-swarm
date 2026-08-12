@@ -26,10 +26,34 @@ mod dap_dependencies {
         let crate_root = read(repo_root().join("crates/perl-dap/src/lib.rs"))?;
         assert!(crate_root.contains("Native Debug Adapter Protocol implementation for Perl"));
         assert!(crate_root.contains("The supported first-mile runtime is the native"));
+        assert!(crate_root.contains("default-off library compatibility"));
         assert!(!crate_root.contains("**Legacy Bridge Mode**"));
         assert!(!crate_root.contains("## Native and Bridge Modes"));
         assert!(!crate_root.contains("Users can start with bridge mode today"));
         assert!(!crate_root.contains("adapter.spawn_pls_dap"));
+        Ok(())
+    }
+
+    /// The default library and release build must not activate the PLS bridge.
+    #[test]
+    // AC:18
+    fn test_legacy_pls_bridge_is_explicit_and_default_off() -> Result<()> {
+        let dap_manifest = read(repo_root().join("crates/perl-dap/Cargo.toml"))?;
+        assert!(dap_manifest.contains("default = [\"dap-phase2\", \"dap-phase3\"]"));
+        assert!(dap_manifest.contains("legacy-pls-bridge = []"));
+        assert!(dap_manifest.contains("dap-phase1 = [\"legacy-pls-bridge\"]"));
+        assert!(dap_manifest.contains("required-features = [\"legacy-pls-bridge\"]"));
+        assert!(dap_manifest.contains("no-default-features = true"));
+        assert!(dap_manifest.contains("features = [\"dap-phase2\", \"dap-phase3\"]"));
+        assert!(!dap_manifest.contains("all-features = true"));
+
+        let lsp_manifest = read(repo_root().join("crates/perl-lsp-rs/Cargo.toml"))?;
+        assert!(lsp_manifest.contains("dap-phase1 = [\"perl-dap/legacy-pls-bridge\"]"));
+        assert!(lsp_manifest.contains("dap-phase3 = []"));
+
+        let release_workflow = read(repo_root().join(".github/workflows/release.yml"))?;
+        assert!(release_workflow.contains("-p perl-dap --bin perl-dap"));
+        assert!(!release_workflow.contains("-p perl-dap --all-features"));
         Ok(())
     }
 
@@ -152,20 +176,25 @@ mod dap_dependencies {
     // AC:18
     fn test_legacy_bridge_api_is_explicitly_deprecated() -> Result<()> {
         let crate_root = read(repo_root().join("crates/perl-dap/src/lib.rs"))?;
+        assert!(crate_root.contains("#[cfg(feature = \"legacy-pls-bridge\")]"));
         assert!(crate_root.contains(
             "legacy Perl::LanguageServer compatibility; use the native DapServer/DebugAdapter path"
         ));
         assert!(crate_root.contains("pub mod bridge_adapter;"));
         assert!(crate_root.contains("pub use bridge_adapter::{BridgeAdapter, DapBridgeEnvConfig};"));
+        assert!(crate_root.contains("#[doc(hidden)]"));
 
         let mode_module = read(repo_root().join("crates/perl-dap/src/server/mode.rs"))?;
         assert!(mode_module.contains(
             "legacy Perl::LanguageServer compatibility; use DapMode::Native instead"
         ));
+        assert!(mode_module.contains("#[doc(hidden)]"));
 
         let lifecycle = read(repo_root().join("crates/perl-dap/src/server/lifecycle.rs"))?;
-        assert!(lifecycle.contains("#![allow(deprecated)]"));
-        assert!(lifecycle.contains("deprecated bridge mode"));
+        assert!(lifecycle.contains(
+            "#![cfg_attr(feature = \"legacy-pls-bridge\", allow(deprecated))]"
+        ));
+        assert!(lifecycle.contains("legacy Perl::LanguageServer bridge support is not enabled"));
         Ok(())
     }
 }
