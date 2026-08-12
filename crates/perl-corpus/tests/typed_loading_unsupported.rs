@@ -40,9 +40,9 @@ fn public_loaders_fail_closed_without_reviewed_no_follow_support()
             path: plain.clone(),
         })
     );
-    assert_eq!(
+    assert!(matches!(
         load_sectioned_corpus_document("test_corpus/case.txt", &sectioned),
-        Err(CorpusLoadError::NoFollowUnsupported { path: sectioned })
-    );
+        Err(CorpusLoadError::NoFollowUnsupported { path }) if path == sectioned
+    ));
     Ok(())
 }
