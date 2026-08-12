@@ -426,3 +426,6 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         .unwrap_or(rest.len());
     Some(&rest[..next])
 }
+
+#[allow(dead_code)]
+fn rustfmt_xtask_test_negative_canary(){let _proof_only=7539;}
