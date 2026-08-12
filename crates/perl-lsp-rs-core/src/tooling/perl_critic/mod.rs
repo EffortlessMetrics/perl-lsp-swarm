@@ -7,6 +7,7 @@ mod analyzer;
 mod built_in;
 mod identity;
 mod native;
+mod normalized;
 mod quick_fix;
 mod types;
 
@@ -25,6 +26,10 @@ pub use native::{
     ParameterShadowsGlobalRule, PrintfFormatArityRule, RequirePodSectionsRule,
     RequireUseStrictRule, RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule,
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
+};
+pub use normalized::{
+    CriticFindingCandidate, CriticFindingContributor, CriticObservedIdentity,
+    NormalizedCriticFinding, normalize_critic_findings,
 };
 pub use quick_fix::{QuickFix, TextEdit};
 pub use types::{CriticConfig, Severity, Violation};
