@@ -278,6 +278,18 @@ impl RegexAnalysisCompleteness {
     }
 }
 
+/// Deterministic event-stream budget that prevented complete structural analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexAnalysisBudget {
+    /// Maximum event count was reached.
+    Events,
+    /// Maximum structural nesting depth was reached.
+    Nesting,
+    /// Maximum deterministic scan-step count was reached.
+    Steps,
+}
+
 /// Complete typed result of one bounded static regex analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -288,6 +300,10 @@ pub struct RegexAnalysis {
     pub facts: RegexFacts,
     /// Local completeness classification.
     pub completeness: RegexAnalysisCompleteness,
+    /// Event-stream budget that stopped analysis, when any.
+    pub exhausted: Option<RegexAnalysisBudget>,
+    /// Whether malformed or truncated structure was observed by the bounded event stream.
+    pub malformed: bool,
 }
 
 impl RegexAnalysis {
@@ -295,5 +311,11 @@ impl RegexAnalysis {
     #[must_use]
     pub fn is_clean(&self) -> bool {
         self.diagnostics.is_empty()
+    }
+
+    /// Whether deterministic event production stopped at a configured budget.
+    #[must_use]
+    pub const fn is_exhausted(&self) -> bool {
+        self.exhausted.is_some()
     }
 }
