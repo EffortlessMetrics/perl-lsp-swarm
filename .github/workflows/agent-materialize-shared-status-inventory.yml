@@ -1,0 +1,71 @@
+name: Agent Materialize Shared Status Inventory
+
+on:
+  push:
+    branches:
+      - fix/6940-shared-status-test-inventory
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-materialize-shared-status-inventory-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Materialize exact pre-review source
+        run: |
+          set -euo pipefail
+          python3 .ci/agent_build_shared_status_inventory.py
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+          rm -rf target/agent-status-inventory-pre-review
+          mkdir -p target/agent-status-inventory-pre-review/files
+          for path in \
+            xtask/src/tasks/update_status/mod.rs \
+            xtask/src/tasks/update_status/quality.rs \
+            xtask/src/tasks/update_status/quality/tests.rs \
+            xtask/src/tasks/update_status/tests.rs
+          do
+            mkdir -p "target/agent-status-inventory-pre-review/files/$(dirname "$path")"
+            cp "$path" "target/agent-status-inventory-pre-review/files/$path"
+          done
+          git diff --binary -- \
+            xtask/src/tasks/update_status/mod.rs \
+            xtask/src/tasks/update_status/quality.rs \
+            xtask/src/tasks/update_status/quality/tests.rs \
+            xtask/src/tasks/update_status/tests.rs \
+            > target/agent-status-inventory-pre-review/candidate.patch
+          sha256sum \
+            target/agent-status-inventory-pre-review/files/xtask/src/tasks/update_status/mod.rs \
+            target/agent-status-inventory-pre-review/files/xtask/src/tasks/update_status/quality.rs \
+            target/agent-status-inventory-pre-review/files/xtask/src/tasks/update_status/quality/tests.rs \
+            target/agent-status-inventory-pre-review/files/xtask/src/tasks/update_status/tests.rs \
+            > target/agent-status-inventory-pre-review/SHA256SUMS
+          printf '%s\n' '${{ github.sha }}' > target/agent-status-inventory-pre-review/source-sha.txt
+
+      - name: Upload exact pre-review source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-status-inventory-pre-review-${{ github.sha }}
+          path: target/agent-status-inventory-pre-review
+          if-no-files-found: error
+          retention-days: 3
