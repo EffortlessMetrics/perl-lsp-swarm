@@ -1,4 +1,4 @@
-name: Agent format compiler proof policy
+name: Agent collect compiler closeout sources
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  format:
+  collect:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact candidate without write credentials
@@ -32,16 +32,18 @@ jobs:
       - name: Verify formatted source
         run: rustfmt --edition 2024 --check xtask/src/bin/compiler-proof-policy.rs
 
-      - name: Collect formatted production file
+      - name: Collect exact closeout sources
         run: |
-          mkdir -p target/compiler-proof-policy-format/xtask/src/bin
-          cp xtask/src/bin/compiler-proof-policy.rs target/compiler-proof-policy-format/xtask/src/bin/
-          git diff -- xtask/src/bin/compiler-proof-policy.rs > target/compiler-proof-policy-format/rustfmt.patch
+          mkdir -p target/compiler-closeout/xtask/src/bin
+          mkdir -p target/compiler-closeout/policy
+          cp xtask/src/bin/compiler-proof-policy.rs target/compiler-closeout/xtask/src/bin/
+          cp policy/non-rust-allowlist.toml target/compiler-closeout/policy/
+          git diff -- xtask/src/bin/compiler-proof-policy.rs > target/compiler-closeout/rustfmt.patch
 
-      - name: Upload formatted source
+      - name: Upload exact closeout sources
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: compiler-proof-policy-format-${{ github.sha }}
-          path: target/compiler-proof-policy-format
+          name: compiler-closeout-sources-${{ github.sha }}
+          path: target/compiler-closeout
           if-no-files-found: error
           retention-days: 7
