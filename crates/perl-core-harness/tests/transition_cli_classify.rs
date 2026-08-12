@@ -28,7 +28,7 @@ fn classify_cli_rejects_missing_required_option() {
 #[test]
 fn classify_cli_rejects_unknown_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args(["check"])
+        .args(["accept"])
         .output()
         .expect("spawn classify CLI");
     assert!(!output.status.success());
@@ -151,9 +151,12 @@ fn classify_cli_writes_no_change_receipt_for_exact_v2_match() {
     assert_eq!(value["transition"], "no_change");
     assert_eq!(value["requires_candidate"], false);
     assert_eq!(value["semantic_boundary_change"], false);
-    assert!(
-        value["claim_boundary"].as_str().expect("claim boundary").contains("classify_transition")
-    );
+    let accepted_digest = value["accepted_baseline_digest"].as_str().expect("accepted digest");
+    let compile_digest = value["compile_digest"].as_str().expect("compile digest");
+    assert!(accepted_digest.starts_with("sha256:"));
+    assert!(compile_digest.starts_with("sha256:"));
+    assert_ne!(accepted_digest, compile_digest);
+    assert!(value["claim_boundary"].as_str().expect("claim boundary").contains("input digests"));
 }
 
 #[test]
@@ -190,6 +193,149 @@ fn classify_cli_writes_regression_receipt_for_pass_to_fail() {
         serde_json::from_str(&fs::read_to_string(&output).expect("read receipt")).expect("decode");
     assert_eq!(value["transition"], "regression");
     assert!(value["reason"].as_str().expect("reason").contains("changed from pass to fail"));
+}
+
+#[test]
+fn check_cli_accepts_fresh_classify_receipt() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let receipt = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    let classify = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--output",
+            receipt.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        classify.status.success(),
+        "classify failed: {}",
+        String::from_utf8_lossy(&classify.stderr)
+    );
+    let check = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "check",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--receipt",
+            receipt.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn check CLI");
+    assert!(check.status.success(), "check failed: {}", String::from_utf8_lossy(&check.stderr));
+}
+
+#[test]
+fn check_cli_rejects_forged_transition() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let receipt_path = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    let classify = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--output",
+            receipt_path.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(classify.status.success());
+    let mut value: Value =
+        serde_json::from_str(&fs::read_to_string(&receipt_path).expect("read")).expect("decode");
+    value["transition"] = Value::String("regression".into());
+    fs::write(&receipt_path, serde_json::to_string_pretty(&value).expect("encode"))
+        .expect("write forged receipt");
+    let check = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "check",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--receipt",
+            receipt_path.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn check CLI");
+    assert!(!check.status.success());
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(stderr.contains("classify receipt transition mismatch"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn check_cli_rejects_mutated_compile_bytes() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let receipt = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    let classify = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--output",
+            receipt.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(classify.status.success());
+    // Keep decoded classification identical (still exact NoChange) while changing
+    // byte identity so only the digest gate can fail.
+    let mut report = sample_report(2, 2);
+    report.timestamp = "2026-08-11T00:00:01Z".into();
+    fs::write(&compile, serde_json::to_string_pretty(&report).expect("encode")).expect("write");
+    let check = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "check",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--receipt",
+            receipt.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn check CLI");
+    assert!(!check.status.success());
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains("compile_digest does not match current evidence bytes"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn check_cli_rejects_missing_receipt_option() {
+    let output = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args(["check", "--accepted-baseline", "accepted.json", "--compile", "compile.json"])
+        .output()
+        .expect("spawn check CLI");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("required option --receipt was not supplied"),
+        "unexpected stderr: {stderr}"
+    );
 }
 
 fn write_baseline(path: &Path, total: usize, passed: usize) {
