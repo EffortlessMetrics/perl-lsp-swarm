@@ -1,0 +1,94 @@
+name: Agent Publish Shared Status Pre-review
+
+on:
+  push:
+    branches:
+      - fix/6940-shared-status-test-inventory
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-publish-shared-status-pre-review
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact construction source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: builder
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout exact clean branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: fix/6940-shared-status-inventory
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Materialize and verify exact payload
+        run: |
+          set -euo pipefail
+          expected_parent=9389b144e3d47405d00fe49a9830f64345efa794
+          test "$(git -C candidate rev-parse HEAD)" = "$expected_parent"
+
+          (
+            cd builder
+            python3 .ci/agent_build_shared_status_inventory.py
+            cargo fmt --all
+            cargo fmt --all -- --check
+            git diff --check
+          )
+
+          paths=(
+            xtask/src/tasks/update_status/mod.rs
+            xtask/src/tasks/update_status/quality.rs
+            xtask/src/tasks/update_status/quality/tests.rs
+            xtask/src/tasks/update_status/tests.rs
+          )
+          for path in "${paths[@]}"; do
+            cp "builder/$path" "candidate/$path"
+          done
+
+          cat > /tmp/expected.sha256 <<'EOF'
+          889713e2f37d67175b8c7798f2745fab5c38a2eb04eb4d1daf695bdc3418d644  candidate/xtask/src/tasks/update_status/mod.rs
+          add78681415657300f8f82f5daee00b8ce453052de4a747216efb2ebb592e332  candidate/xtask/src/tasks/update_status/quality.rs
+          237734a913fb1eab2ff457b79ac81df76a6dde824bff3da19c6d87c17f874eb6  candidate/xtask/src/tasks/update_status/quality/tests.rs
+          2cbd07b738489086f43f42acda3a52d8774cf633b8270f64549c63489193268d  candidate/xtask/src/tasks/update_status/tests.rs
+          EOF
+          sed -i 's/^          //' /tmp/expected.sha256
+          sha256sum -c /tmp/expected.sha256
+
+          mapfile -t changed < <(git -C candidate diff --name-only)
+          test "${#changed[@]}" -eq 4
+          printf '%s\n' "${changed[@]}" > /tmp/actual-paths
+          printf '%s\n' "${paths[@]}" | sort > /tmp/expected-paths
+          sort -o /tmp/actual-paths /tmp/actual-paths
+          diff -u /tmp/expected-paths /tmp/actual-paths
+          git -C candidate diff --check
+
+      - name: Commit exact pre-review payload
+        run: |
+          set -euo pipefail
+          git -C candidate config user.name EffortlessSteven
+          git -C candidate config user.email git@effortlesssteven.com
+          git -C candidate add \
+            xtask/src/tasks/update_status/mod.rs \
+            xtask/src/tasks/update_status/quality.rs \
+            xtask/src/tasks/update_status/quality/tests.rs \
+            xtask/src/tasks/update_status/tests.rs
+          git -C candidate commit -m 'fix(status): share workspace lib-test inventory (#6940)'
+          git -C candidate push origin HEAD:fix/6940-shared-status-inventory
