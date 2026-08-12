@@ -1,171 +1,179 @@
-# External Debugger Peer Seam — Design Decisions & Scope
+# External Debugger Peer — Decisions and Claim Boundary
 
-**Branch:** `claude/perl-debugger-peer-protocol-hlfa6q`
-**Goal:** Make `perl-dap` a good *host* for external Perl debugger frontends/backends, with `Devel::ptkdb` as the first real partner — by exposing a small, stable, well-tested seam so a future ptkdb-side patch can be thin and not forced to swallow all of DAP.
+This document records the current architecture and evidence boundary for
+external debugger peers, with ptkdb as the first intended partner.
 
-This document records the decisions taken while building the seam, so reviewers
-and future maintainers can see *why* the shape is what it is, and what was
-deliberately deferred.
+## Decision summary
 
-## Architecture landed
+1. `perl-dap` remains the Debug Adapter Protocol server.
+2. Peers speak the backend-neutral Perl Debugger Peer Protocol, not DAP.
+3. Native `perl-dap` remains the default product path.
+4. Peers are explicit, unbundled, and never selected from PATH/module presence.
+5. Capabilities are negotiated per authenticated session.
+6. Repository fake-peer tests establish host/protocol behavior only.
+7. A real ptkdb compatibility claim requires the live partner receipt in #4786.
+8. `.ptkdbrc` bootstrap and live peer are separate product surfaces.
 
+## Architecture
+
+```text
+IDE / DAP client
+        │
+        ▼
+perl-dap DAP frontend
+        │ canonical debugger model
+        ├─ native Perl debugger backend
+        └─ external peer backend
+                │ Content-Length JSON
+                ▼
+          explicit debugger peer
 ```
-IDE / editor
-   │  DAP  (crate::protocol, unchanged production path)
-   ▼
-perl-dap DAP frontend (DebugAdapter — unchanged)
-   │
-   │  canonical model  (crate::model)         ← backend-neutral vocabulary
-   ▼
-crate::backend::DebugBackend  (trait — the authored seam)
-   ├── NativePerlDbBackend        (wraps existing DebugAdapter; catalog caps + AST breakpoints)
-   ├── (LegacyBridgeBackend)      (existing BridgeAdapter path — not re-homed here)
-   └── ExternalDebuggerPeerBackend  (crate::backend::external_peer)
-             │
-             │  Perl Debugger Peer Protocol v1  (crate::peer_protocol)
-             │  Content-Length framed JSON, reusing perl_lsp_rs_core framing
-             ▼
-      Devel::ptkdb future PR (thin: hello + events + optional control)
+
+DAP-to-model translation belongs at the frontend. Peer-to-model translation
+belongs in the peer backend. A peer does not inherit editor protocol complexity.
+
+## Current implementation truth
+
+### Native production path
+
+The established `DebugAdapter` / `DapServer` path remains the v0.18 production
+authority. The backend-neutral migration is incomplete and is tracked by #4783
+and #4785. Architecture convergence should not replace the proven native path
+without response/event parity.
+
+### External peer host
+
+The Rust host includes:
+
+- connect and listen rendezvous modes;
+- Content-Length framing;
+- protocol-version validation;
+- optional per-session token authentication;
+- request/response correlation;
+- output and stop event projection;
+- bounded read, write, connect, handshake, and request waits;
+- capability intersection;
+- cleanup on close, timeout, or failure.
+
+These properties are tested against repository fake/reference peers.
+
+### Real ptkdb partner
+
+No live stock ptkdb build has yet earned the partner claim. Until #4786 closes:
+
+```text
+ptkdb bootstrap                 best-effort compatibility helper
+ptkdb live peer                 experimental / developer preview
+stock ptkdb live compatibility  not proven
 ```
 
-## Decisions
+## Capability model
 
-### D1 — The backend contract is **model-typed**, not DAP-typed.
-The whole point is that ptkdb should not implement DAP. So `DebugBackend`
-speaks the canonical [`crate::model`] vocabulary (`DebugSource`,
-`DebugBreakpoint`, `ResolvedBreakpoint`, `DebugStackFrame`, `DebugVariable`,
-`DebugEvent`, `StopReason`, …). DAP↔model translation happens only at the DAP
-frontend; peer↔model translation happens only in the external peer backend.
-Reasoning from the diff alone: the existing dispatch uses
-`fn(seq, request_seq, args: Option<Value>) -> DapMessage`; adopting *that* as
-the backend contract would leak DAP into every backend and defeat the goal.
+A session starts with `none`, not a tool-name-derived default. The authenticated
+peer advertises each capability.
 
-### D2 — Everything lands **inside `crates/perl-dap/src/`**, no new workspace crate.
-The design offered `crates/perl-debug-model/` *or* inline modules. A new
-workspace member touches root `Cargo.toml`, CI membership, semver tracking, and
-the 39-member count. The seam is cohesive with `perl-dap` and has no other
-consumer yet, so the lower-churn inline option was taken. Promotion to its own
-crate is a mechanical follow-up if a second consumer appears.
+### Mirror minimum
 
-### D3 — The peer transport uses **blocking `std::net` sockets + a reader thread**, not tokio.
-`perl_lsp_rs_core::transport::framing` (`ContentLengthFramer`, `frame`) is a
-*synchronous* byte-level API. The `DebugBackend` trait methods are synchronous.
-Using blocking sockets with a dedicated reader thread and `std::sync::mpsc`
-correlation keeps the peer backend fully decoupled from any ambient tokio
-runtime, avoids blocking a tokio worker, and adds **zero new dependencies**. The
-reader thread parses frames, routes responses to per-request oneshots and events
-to a queue drained by `drain_events()`.
+```text
+hello
+output
+stopped
+terminated
+```
 
-### D4 — Reuse the existing framing, not a new one.
-Peer messages are framed with the *same* `Content-Length` family DAP uses, via
-`perl_lsp_rs_core::transport::{frame, ContentLengthFramer}`. This is why the
-future ptkdb side can reuse ordinary DAP-style framing libraries.
+The external UI owns execution control.
 
-### D5 — `BreakpointOracle` is a **blanket impl over the existing `BreakpointValidator`**.
-The AST validator (`AstBreakpointValidator`) is already the breakpoint truth
-layer. `BreakpointOracle` is defined as a small superset trait and blanket-impl'd
-so both the native path and the peer/session-packet path share one truth layer
-rather than re-deriving breakable-line logic.
+### Mirror inspection
 
-### D6 — Capabilities are **negotiated and intersected**, honestly.
-DAP capabilities advertised to the editor are the intersection of what the
-feature catalog supports and what the selected backend supports
-(`intersect_dap_capabilities`). For a ptkdb peer in `mirror` mode we do **not**
-claim control commands the peer did not offer. The dead `protocol::Capabilities`
-struct is untouched (the live payload is the `json!` in `process.rs`); the
-translation layer is additive and tested in isolation.
+Stack, scopes, variables, evaluate, and source facts require separate live proof.
 
-## Deliberately deferred (inventory, not product)
+### Cooperative control
 
-These are called out so the "done" claim is scoped honestly (closure discipline).
+Breakpoint and execution-control operations require explicit shared-ownership
+semantics and individual capability proof.
 
-- **DF1 — Live dispatch migration.** Rehoming the production `dispatch_request`
-  funnel onto `Box<dyn DebugBackend>` is a large, high-regression-risk refactor
-  (spec "PR 2"). The seam is instead *proven by tests* (mock backend + fake
-  ptkdb peer conformance harness). The existing native DAP path is untouched, so
-  no current behavior regresses. Migration is its own follow-up.
-- **DF2 — End-to-end editor↔peer live session — NOW CLOSED (socket path).**
-  A DAP frontend over the backend (`crate::backend::peer_bridge::DapPeerBridge`)
-  translates DAP requests → model calls → DAP responses and pumps
-  `drain_events()` → DAP events, driven by `run_external_peer_session` over a
-  socket editor connection and reachable from the binary via
-  `perl-dap --socket --port N --external-peer HOST:PORT`. Proven end-to-end by
-  `tests/peer_bridge_e2e.rs`: a real `ExternalDebuggerPeerBackend` connected to a
-  fake ptkdb peer is driven through a full DAP session (initialize → setBreakpoints
-  → continue → the peer's `debugger/stopped` surfaces as a DAP `stopped` event →
-  stackTrace → disconnect), plus a socket-transport driver test. This is a
-  **parallel** path — the native `DapServer`/`DebugAdapter` dispatch funnel is
-  untouched (DF1 stays deferred). Both editor transports are now covered:
-  `run_external_peer_session` (socket) and `run_external_peer_session_stdio`
-  (stdin/stdout, via a reader thread + channel so async events interleave without
-  a stdin read timeout). `perl-dap --external-peer HOST:PORT` uses stdio by
-  default and the socket path when `--socket`/`--port` is given. The VS Code
-  extension passes it through: a debug config with `externalPeer: "HOST:PORT"`
-  launches the adapter in bridge mode (`buildDapExecutableArgs`), and an
-  "External Debugger Peer (ptkdb)" launch.json template + wizard entry make it
-  discoverable. *Residual:* validation against a live `Devel::ptkdb` build (vs.
-  the faithful fake peer) remains a follow-up.
-- **DF3 — `NativePerlDbBackend` full delegation.** The native backend implements
-  the model-typed contract for the surface that does not require a live `perl -d`
-  process (capabilities from the catalog, AST-backed `set_breakpoints`), and
-  documents the delegation path for process-dependent methods. A full live
-  delegate is gated on the DF1 migration.
-- **DF4 — `cooperative`/`dapControlled` control modes.** Only `mirror` is fully
-  exercised end-to-end (the friendliest first integration). The other modes are
-  modeled in types and negotiated, but their bidirectional control paths are
-  future work.
+### DAP-controlled
 
-## Adversarial-review hardening
+Editor-authoritative operation remains future work.
 
-An independent correctness/concurrency review (seam-anchored, opposite direction
-to the producer) confirmed the handshake Condvar, seq numbering, event draining,
-and frame handling are sound, and surfaced three real defects — all fixed with
-test coverage:
+Helpers or examples that describe documented ptkdb behavior are upper-bound
+research material, not session defaults.
 
-- **Write timeout (was: a stalled-but-open peer could block `write_all` under the
-  write mutex, wedging `request()` and `Drop::join()`).** The write half now sets
-  `set_write_timeout`, and any write failure calls `mark_closed()` so subsequent
-  ops fail fast — honoring the documented "never hangs" guarantee even when the
-  peer stops draining (flow control, not a clean close).
-- **Protocol-version validation (was: `peer/hello` accepted any version).** The
-  handshake now rejects a mismatched `protocolVersion` with `success: false` and
-  surfaces a clear `BackendError::Protocol` to `initialize()` instead of an
-  opaque timeout.
-- **Pause capability honesty (was: `pause` inferred from `can_step`).** Added a
-  dedicated `canPause` peer capability; a peer that can step but did not advertise
-  async pause is never sent a `debugger/pause`.
+## Transport decisions
 
-A later automated review (Codex, on the bridge/reachability layer) surfaced three
-more claim-vs-reality gaps — all fixed with test coverage:
+- Use blocking sockets plus a dedicated reader thread for the synchronous backend
+  contract.
+- Reuse the shared Content-Length framing implementation.
+- Give every connection and operation a finite timeout.
+- Mark the connection closed on write failure and wake pending waiters.
+- Reject protocol-version and token mismatches before the session becomes live.
+- Keep sequence and request correlation independent of DAP sequence numbers.
 
-- **Resume-without-step honesty (was: `continue` gated on `stepping`).** A peer
-  advertising `canContinue` but not `canStep` was wrongly refused DAP `continue`.
-  Added a dedicated `continue_execution` backend capability mapped from
-  `can_continue`; `continue_thread` now gates on it, independent of `stepping`.
-- **`terminate` actually handled (was: advertised, then swallowed).** The bridge
-  advertised `supportsTerminateRequest` but had no `terminate` dispatch arm, so a
-  client's Stop fell through the lenient ack without disconnecting the peer. Added
-  a `terminate` arm that calls `disconnect(true)` and emits a `terminated` event.
-- **VS Code config actually drives the bridge (was: two divergent shapes).** The
-  shipped `debuggerBackend: "external"` + `externalDebugger` config was ignored by
-  the descriptor (which only read a flat `externalPeer` string), so selecting it
-  ran the native adapter. `buildDapExecutableArgs` now resolves both shapes; the
-  shipped ptkdb config uses the implemented `connect` mode + a concrete port, and
-  `listen`/`launchPeer`/`port: 0` (not yet wired) fall back rather than fabricate
-  an unconnectable address.
+## Source and breakpoint truth
 
-## Closure receipt
+The native parser-backed breakpoint oracle remains authoritative for source
+facts and pre-session validation. Runtime installation/hits remain backend facts.
+A peer cannot turn a static breakable line into a verified runtime breakpoint
+without reporting the corresponding behavior.
 
-- repo: `effortlessmetrics/perl-lsp-swarm`
-- production_entrypoint: additive modules under `crates/perl-dap/src/`; the live
-  DAP production path (`DebugAdapter`/`DapServer`) is **unchanged**.
-- independent_expected_behavior: peer protocol + backend proven against an
-  in-repo fake ptkdb peer conformance harness (handshake, capability
-  negotiation, breakpoints, stopped/output events, stack/scopes/variables/
-  evaluate, timeout, mirror-mode capability honesty, peer crash).
-- user_visible_effect: **none yet** for end users (DF2) — this is the host-side
-  seam. The user-visible partner integration is the future ptkdb PR.
-- fallback_remaining: `.ptkdbrc` bootstrap renderer + session-packet emitter are
-  the working, shippable surfaces today.
-- uncertainty: real `Devel::ptkdb` conformance is validated against the protocol
-  spec + a faithful fake peer, not against a live ptkdb build.
+## Bootstrap decision
+
+The `.ptkdbrc` renderer is retained because it provides useful one-way setup
+without a ptkdb patch. It:
+
+- emits escaped Perl literals;
+- wraps registrations so one unsupported call degrades locally;
+- can carry session-plan breakpoints and watches.
+
+It cannot claim installation success without ptkdb read-back. Documentation and
+status must use “generated” or “requested,” not “installed,” for that surface.
+
+## VS Code and CLI exposure
+
+- Native is the default debugger configuration.
+- External peer modes require explicit configuration.
+- Unsupported mode combinations fail visibly; they are not coerced into another
+  topology.
+- Discoverable live-peer templates must say experimental until #4786.
+- The Microsoft DAP implementor listing names `perl-dap`, not ptkdb.
+
+## Naming
+
+Reserve terms consistently:
+
+```text
+PLS bridge / BridgeAdapter   historical alternate-DAP proxy; remove from product
+external peer backend        optional backend-neutral engine integration
+DAP frontend/session driver  normal model-to-DAP translation
+ptkdb bootstrap              one-way startup helper
+ptkdb live peer              experimental partner protocol until proven
+```
+
+Do not use “bridge mode” as the generic name for both PLS proxying and normal
+backend translation.
+
+## Evidence and promotion
+
+The host seam is useful engineering but does not by itself establish a supported
+partner journey. Promotion requires:
+
+- real ptkdb source/build and Perl/Tk identities;
+- exact `perl-dap` and VSIX artifacts;
+- authenticated handshake;
+- negotiated capability set;
+- real output/stop/termination results;
+- any claimed inspection/control results;
+- malformed, mismatched, stalled, crashed, and clean-shutdown cases.
+
+The receipt owner is #4786; installed editor proof composes through #6694.
+
+## Deferred work
+
+- #4783 — one production backend-neutral dispatcher;
+- #4785 — complete native backend delegation;
+- #4786 — real ptkdb peer and editor proof;
+- cooperative and DAP-controlled ownership;
+- multi-root/generated-source identity;
+- final terminology cleanup after dispatcher convergence.
+
+None of these optional-peer tasks may weaken or delay honest native behavior.
