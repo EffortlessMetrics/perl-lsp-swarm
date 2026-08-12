@@ -135,6 +135,20 @@ fn fallback_trace() -> perl_semantic_facts::ProviderFactTrace {
     )
 }
 
+fn unavailable_trace() -> perl_semantic_facts::ProviderFactTrace {
+    perl_semantic_facts::ProviderFactTrace::new(
+        ProviderSurface::Definition,
+        ProviderFactSourceKind::LegacyWorkspace,
+        Provenance::NameHeuristic,
+        Confidence::Medium,
+        ProviderFactFreshness::Fresh,
+        ProviderFallbackState::Unavailable,
+        Some("unavailable".to_string()),
+        None,
+        Some(1),
+    )
+}
+
 #[derive(Clone)]
 struct StaticPort {
     draft: ProviderQueryResultDraft,

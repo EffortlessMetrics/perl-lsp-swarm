@@ -193,7 +193,7 @@ fn deterministic_serialization_ignores_input_order() -> Result<(), Box<dyn Error
 
 #[test]
 fn retained_result_rejects_a_different_request() -> Result<(), Box<dyn Error>> {
-    let request = request(
+    let original_request = request(
         ProviderQueryKind::Declaration,
         ProviderQuerySubject::Symbol("foo".to_string()),
     );
@@ -211,7 +211,7 @@ fn retained_result_rejects_a_different_request() -> Result<(), Box<dyn Error>> {
         &["foo"],
     )?;
     let result = execute(
-        &request,
+        &original_request,
         ProviderQueryResultDraft::new(
             ProviderQueryOutcome::Exact,
             vec![value],

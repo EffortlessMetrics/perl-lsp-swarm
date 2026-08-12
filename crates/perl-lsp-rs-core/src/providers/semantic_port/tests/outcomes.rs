@@ -100,6 +100,123 @@ fn fallback_requires_current_values_and_a_fallback_trace() -> Result<(), Box<dyn
 }
 
 #[test]
+fn unavailable_requires_readiness_or_typed_evidence() -> Result<(), Box<dyn Error>> {
+    let request = request(
+        ProviderQueryKind::Declaration,
+        ProviderQuerySubject::Symbol("foo".to_string()),
+    );
+    assert_eq!(
+        execute(
+            &request,
+            ProviderQueryResultDraft::new(
+                ProviderQueryOutcome::Unavailable,
+                Vec::new(),
+                None,
+                primary(SemanticReasonCode::Unknown),
+            ),
+            &NoopProviderQueryControl,
+        )
+        .err(),
+        Some(ProviderQueryContractError::InvalidOutcomeEvidence(
+            ProviderQueryOutcome::Unavailable
+        ))
+    );
+
+    let mut unavailable_request = request.clone();
+    unavailable_request.context.readiness_state = ProviderReadinessState::Unavailable;
+    let readiness_result = execute(
+        &unavailable_request,
+        ProviderQueryResultDraft::new(
+            ProviderQueryOutcome::Unavailable,
+            Vec::new(),
+            None,
+            primary(SemanticReasonCode::Unknown),
+        ),
+        &NoopProviderQueryControl,
+    )?;
+    assert_eq!(
+        readiness_result.outcome(),
+        ProviderQueryOutcome::Unavailable
+    );
+
+    let typed_result = execute(
+        &request,
+        ProviderQueryResultDraft::new(
+            ProviderQueryOutcome::Unavailable,
+            Vec::new(),
+            None,
+            ProviderQueryEvidenceInput::new(
+                ProviderResultPath::Primary,
+                None,
+                SemanticReasonCode::Unknown,
+                vec![unavailable_trace()],
+                Vec::new(),
+                ProviderQueryTerminalState::Completed,
+            ),
+        ),
+        &NoopProviderQueryControl,
+    )?;
+    assert_eq!(typed_result.outcome(), ProviderQueryOutcome::Unavailable);
+    Ok(())
+}
+
+#[test]
+fn refused_requires_refusal_evidence() -> Result<(), Box<dyn Error>> {
+    let request = request(
+        ProviderQueryKind::Declaration,
+        ProviderQuerySubject::Symbol("foo".to_string()),
+    );
+    assert_eq!(
+        execute(
+            &request,
+            ProviderQueryResultDraft::new(
+                ProviderQueryOutcome::Refused,
+                Vec::new(),
+                None,
+                primary(SemanticReasonCode::Unknown),
+            ),
+            &NoopProviderQueryControl,
+        )
+        .err(),
+        Some(ProviderQueryContractError::InvalidOutcomeEvidence(
+            ProviderQueryOutcome::Refused
+        ))
+    );
+    let result = execute(
+        &request,
+        ProviderQueryResultDraft::new(
+            ProviderQueryOutcome::Refused,
+            Vec::new(),
+            None,
+            primary(SemanticReasonCode::UnsupportedEffect),
+        ),
+        &NoopProviderQueryControl,
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Refused);
+    Ok(())
+}
+
+#[test]
+fn error_requires_a_failed_terminal_state() -> Result<(), Box<dyn Error>> {
+    let request = request(
+        ProviderQueryKind::Declaration,
+        ProviderQuerySubject::Symbol("foo".to_string()),
+    );
+    let result = execute(
+        &request,
+        ProviderQueryResultDraft::new(
+            ProviderQueryOutcome::Error,
+            Vec::new(),
+            None,
+            terminal(ProviderQueryTerminalState::Failed),
+        ),
+        &NoopProviderQueryControl,
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Error);
+    Ok(())
+}
+
+#[test]
 fn malformed_ranges_fail_before_degraded_policy() {
     let malformed = envelope(
         1,

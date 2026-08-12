@@ -310,6 +310,15 @@ impl ProviderQueryResult {
                     || self.evidence.proof_class != ProviderProofClass::RefusalOnly
                     || self.evidence.terminal_state != ProviderQueryTerminalState::Completed
                     || self.evidence.result_path != ProviderResultPath::Primary
+                    || !(matches!(
+                        self.request.context.readiness_state,
+                        super::ProviderReadinessState::Unavailable
+                            | super::ProviderReadinessState::Failed
+                    ) || self
+                        .evidence
+                        .traces
+                        .iter()
+                        .any(|trace| trace.fallback_state == ProviderFallbackState::Unavailable))
                 {
                     return invalid(self.outcome);
                 }
