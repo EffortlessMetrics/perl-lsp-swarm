@@ -1,0 +1,100 @@
+        assert_eq!(inventory.by_crate().get("perl-parser-core"), Some(&1));
+        assert_eq!(inventory.by_crate().get("perl-workspace"), Some(&1));
+        assert_eq!(inventory.by_crate().get("perl-lsp-rs"), Some(&1));
+        assert_eq!(inventory.total(), 3);
+    }
+
+    #[test]
+    fn parser_preserves_tests_without_an_active_crate() {
+        let output = "orphan_test: test\n\
+            Running unittests src/lib.rs (target/debug/deps/perl_parser_core-abc123)\n\
+            parser_smoke: test\n\
+            note: test\n\
+            Running unittests src/lib.rs (target/debug/deps/unattributed-987def)\n\
+            package_test: test\n";
+
+        let inventory = parse_workspace_lib_test_inventory(output);
+
+        assert_eq!(inventory.by_crate().get("perl-parser-core"), Some(&2));
+        assert_eq!(inventory.by_crate().get("unattributed"), Some(&1));
+        assert_eq!(inventory.unattributed(), 1);
+        assert_eq!(inventory.total(), 4);
+    }
+
+    #[test]
+    fn validation_rejects_zero_discovery() {
+        let inventory = WorkspaceLibTestInventory::from_parts(
+            BTreeMap::from([(String::from("perl-parser"), 0)]),
+            0,
+        );
+
+        let result = validate_workspace_lib_test_inventory(inventory);
+
+        assert!(result.is_err(), "zero discovery must fail closed");
+    }
+}
+''',
+    )
+
+    quality = Path("xtask/src/tasks/update_status/quality.rs")
+    replace_once(
+        quality,
+        "//! Owns per-crate mutation and lib-test counts; delegates UX receipt generation\n",
+        "//! Owns per-crate mutation and quality rendering; consumes the shared lib-test inventory\n",
+    )
+    replace_once(quality, "use std::time::Duration;\n", "")
+    replace_once(quality, "use color_eyre::eyre::{Result, bail};\n", "use color_eyre::eyre::Result;\n")
+    replace_once(
+        quality,
+        r'''static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Running unittests[^\(]*\([^\)]*deps[/\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)")
+        .expect("running-test regex is valid")
+});
+
+static TEST_LIST_LINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r":\s*test\s*$").expect("test-list-line regex is valid"));
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PerCrateTestCounts {
+    by_crate: BTreeMap<String, usize>,
+    unattributed: usize,
+}
+
+''',
+        "",
+    )
+    replace_once(
+        quality,
+        "use super::flaky::{collect_flaky_test_summary, format_flaky_tests_section};\n",
+        "use super::flaky::{collect_flaky_test_summary, format_flaky_tests_section};\nuse super::test_inventory::WorkspaceLibTestInventory;\n",
+    )
+    replace_once(
+        quality,
+        "use super::{replace_block, run_cmd_merged};\n",
+        "use super::replace_block;\n",
+    )
+    replace_once(
+        quality,
+        r'''/// Run `cargo test --workspace --lib -- --list` and return per-crate counts plus unowned tests.
+///
+/// `cargo test -- --list` writes crate headers ("Running unittests …") to stderr and test
+/// names to stdout.  `run_cmd_merged` (shell `2>&1`) ensures headers appear immediately
+/// before the test names they introduce, so the parser correctly associates each name with
+/// its crate.
+fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
+    let output = run_cmd_merged(
+        root,
+        &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
+        Duration::from_mins(3),
+    );
+    if output.is_empty() {
+        bail!("quality test discovery failed or returned no output");
+    }
+    validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
+}
+
+fn validate_per_crate_test_counts(counts: PerCrateTestCounts) -> Result<PerCrateTestCounts> {
+    if counts.by_crate.values().sum::<usize>() + counts.unattributed == 0 {
+        bail!("quality test discovery returned zero tests; refusing to overwrite quality.md");
+    }
+    Ok(counts)
