@@ -1,4 +1,5 @@
 use super::typed::{self, CorpusLoadError, SectionedCorpusDocument};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Load one strict sectioned corpus document and assign structured case IDs.
@@ -15,14 +16,23 @@ pub fn load_sectioned_corpus_document(
     let asset_id = asset_id.into();
     let mut document =
         typed::load_sectioned_corpus_document(asset_id.clone(), path.as_ref())?;
+    let mut structured_ids = BTreeSet::new();
 
     for (index, case) in document.cases.iter_mut().enumerate() {
-        case.id.asset_id.clone_from(&asset_id);
-        case.id.section_id = case
+        let section_id = case
             .section
             .explicit_id
             .clone()
             .unwrap_or_else(|| generated_section_id(index + 1, &case.section.title));
+        if !structured_ids.insert(section_id.clone()) {
+            return Err(CorpusLoadError::DuplicateSectionId {
+                asset_id,
+                section_id,
+            });
+        }
+
+        case.id.asset_id.clone_from(&asset_id);
+        case.id.section_id = section_id;
     }
 
     Ok(document)
@@ -107,6 +117,36 @@ mod tests {
 
         let document = load_sectioned_corpus_document("corpus/case.txt", &path)?;
         assert_eq!(document.cases[0].id.section_id, "explicit.case");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_and_generated_structured_ids_cannot_collide()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("collision.txt");
+        fs::write(
+            &path,
+            concat!(
+                "==========================================\n",
+                "Explicit case\n",
+                "==========================================\n",
+                "# @id: generated-2-generated-case\n",
+                "my $first = 1;\n",
+                "==========================================\n",
+                "Generated case\n",
+                "==========================================\n",
+                "my $second = 2;\n",
+            ),
+        )?;
+
+        assert!(matches!(
+            load_sectioned_corpus_document("corpus/collision.txt", &path),
+            Err(CorpusLoadError::DuplicateSectionId {
+                section_id,
+                ..
+            }) if section_id == "generated-2-generated-case"
+        ));
         Ok(())
     }
 }
