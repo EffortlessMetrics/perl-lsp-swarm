@@ -1,0 +1,400 @@
+        let selectors = direct_records(&request.subject, records);
++            let targets = entity_ids(&selectors);
++            selection.ambiguous = targets.len() > 1;
++            for record in selectors {
++                let role = if is_declaration(record) {
++                    ProviderQueryFactRole::SelectorValue
++                } else {
++                    ProviderQueryFactRole::Selector
++                };
++                selection.insert(record, role);
++            }
++            if !selection.ambiguous {
++                for record in records.iter().filter(|record| {
++                    is_declaration(record)
++                        && record
++                            .envelope
++                            .entity_id
++                            .is_some_and(|entity_id| targets.contains(&entity_id))
++                }) {
++                    selection.insert(record, ProviderQueryFactRole::Value);
++                }
++            }
++        }
++        ProviderQuerySubject::Symbol(_) => {
++            let candidates: Vec<_> = records
++                .iter()
++                .filter(|record| record.directly_matches(&request.subject))
++                .collect();
++            let targets = entity_ids(&candidates);
++            selection.ambiguous = targets.len() > 1;
++            if selection.ambiguous {
++                for record in candidates {
++                    selection.insert(record, ProviderQueryFactRole::Supporting);
++                }
++            } else {
++                for record in records.iter().filter(|record| {
++                    is_declaration(record)
++                        && (record.directly_matches(&request.subject)
++                            || record
++                                .envelope
++                                .entity_id
++                                .is_some_and(|entity_id| targets.contains(&entity_id)))
++                }) {
++                    selection.insert(record, ProviderQueryFactRole::Value);
++                }
++            }
++        }
++        _ => {
++            for record in records.iter().filter(|record| {
++                is_declaration(record) && record.directly_matches(&request.subject)
++            }) {
++                selection.insert(record, ProviderQueryFactRole::Value);
++            }
++        }
++    }
++    add_direct_boundaries(&request.subject, records, &mut selection);
++    selection
++}
++
++fn select_references<'a>(
++    request: &ProviderQueryRequest,
++    records: &'a [AdapterFactRecord],
++    include_declaration: bool,
++) -> QuerySelection<'a> {
++    let mut selection = QuerySelection::default();
++    match &request.subject {
++        ProviderQuerySubject::Position { .. } => {
++            let selectors = direct_records(&request.subject, records);
++            let targets = entity_ids(&selectors);
++            selection.ambiguous = targets.len() > 1;
++            for record in selectors {
++                selection.insert(record, ProviderQueryFactRole::Selector);
++            }
++            if !selection.ambiguous {
++                add_reference_values(
++                    records,
++                    &targets,
++                    include_declaration,
++                    &mut selection,
++                );
++            }
++        }
++        ProviderQuerySubject::Symbol(_) => {
++            let candidates: Vec<_> = records
++                .iter()
++                .filter(|record| record.directly_matches(&request.subject))
++                .collect();
++            let targets = entity_ids(&candidates);
++            selection.ambiguous = targets.len() > 1;
++            if selection.ambiguous {
++                for record in candidates {
++                    selection.insert(record, ProviderQueryFactRole::Supporting);
++                }
++            } else {
++                add_reference_values(
++                    records,
++                    &targets,
++                    include_declaration,
++                    &mut selection,
++                );
++            }
++        }
++        ProviderQuerySubject::Entity(entity_id) => {
++            add_reference_values(
++                records,
++                &BTreeSet::from([*entity_id]),
++                include_declaration,
++                &mut selection,
++            );
++        }
++        ProviderQuerySubject::File(_)
++        | ProviderQuerySubject::Package(_)
++        | ProviderQuerySubject::Workspace => {
++            for record in records.iter().filter(|record| {
++                record.directly_matches(&request.subject)
++                    && (is_reference_occurrence(record)
++                        || include_declaration && is_declaration(record))
++            }) {
++                selection.insert(record, ProviderQueryFactRole::Value);
++            }
++        }
++    }
++    add_direct_boundaries(&request.subject, records, &mut selection);
++    selection
++}
++
++fn select_visibility<'a>(
++    request: &ProviderQueryRequest,
++    records: &'a [AdapterFactRecord],
++) -> QuerySelection<'a> {
++    let mut selection = QuerySelection::default();
++    for record in records.iter().filter(|record| {
++        record.directly_matches(&request.subject)
++            && matches!(
++                record.envelope.kind,
++                SemanticFactKind::Import
++                    | SemanticFactKind::Module
++                    | SemanticFactKind::Declaration
++                    | SemanticFactKind::Occurrence
++            )
++    }) {
++        let role = if matches!(&request.subject, ProviderQuerySubject::Position { .. }) {
++            ProviderQueryFactRole::SelectorValue
++        } else {
++            ProviderQueryFactRole::Value
++        };
++        selection.insert(record, role);
++    }
++    add_direct_boundaries(&request.subject, records, &mut selection);
++    selection
++}
++
++fn select_scope_bindings<'a>(
++    request: &ProviderQueryRequest,
++    records: &'a [AdapterFactRecord],
++) -> QuerySelection<'a> {
++    let mut selection = QuerySelection::default();
++    match &request.subject {
++        ProviderQuerySubject::Position { .. } => {
++            let selectors: Vec<_> = direct_records(&request.subject, records)
++                .into_iter()
++                .filter(|record| is_scope_fact(record))
++                .collect();
++            let targets = entity_ids(&selectors);
++            selection.ambiguous = targets.len() > 1;
++            for record in selectors {
++                selection.insert(record, ProviderQueryFactRole::SelectorValue);
++            }
++            if !selection.ambiguous {
++                for record in records.iter().filter(|record| {
++                    is_scope_fact(record)
++                        && record
++                            .envelope
++                            .entity_id
++                            .is_some_and(|entity_id| targets.contains(&entity_id))
++                }) {
++                    selection.insert(record, ProviderQueryFactRole::Value);
++                }
++            }
++        }
++        ProviderQuerySubject::Symbol(_) => {
++            let candidates: Vec<_> = records
++                .iter()
++                .filter(|record| {
++                    is_scope_fact(record) && record.directly_matches(&request.subject)
++                })
++                .collect();
++            let targets = entity_ids(&candidates);
++            selection.ambiguous = targets.len() > 1;
++            for record in candidates {
++                selection.insert(
++                    record,
++                    if selection.ambiguous {
++                        ProviderQueryFactRole::Supporting
++                    } else {
++                        ProviderQueryFactRole::Value
++                    },
++                );
++            }
++        }
++        _ => {
++            for record in records.iter().filter(|record| {
++                is_scope_fact(record) && record.directly_matches(&request.subject)
++            }) {
++                selection.insert(record, ProviderQueryFactRole::Value);
++            }
++        }
++    }
++    add_direct_boundaries(&request.subject, records, &mut selection);
++    selection
++}
++
++fn select_boundaries<'a>(
++    request: &ProviderQueryRequest,
++    records: &'a [AdapterFactRecord],
++) -> QuerySelection<'a> {
++    let mut selection = QuerySelection::default();
++    for record in records.iter().filter(|record| {
++        record.envelope.kind == SemanticFactKind::Boundary
++            && record.directly_matches(&request.subject)
++    }) {
++        let role = if matches!(&request.subject, ProviderQuerySubject::Position { .. }) {
++            ProviderQueryFactRole::SelectorValue
++        } else {
++            ProviderQueryFactRole::Value
++        };
++        selection.insert(record, role);
++    }
++    selection
++}
++
++fn add_reference_values<'a>(
++    records: &'a [AdapterFactRecord],
++    targets: &BTreeSet<EntityId>,
++    include_declaration: bool,
++    selection: &mut QuerySelection<'a>,
++) {
++    if targets.is_empty() {
++        return;
++    }
++    for record in records.iter().filter(|record| {
++        record
++            .envelope
++            .entity_id
++            .is_some_and(|entity_id| targets.contains(&entity_id))
++            && (is_reference_occurrence(record)
++                || include_declaration && is_declaration(record))
++    }) {
++        selection.insert(record, ProviderQueryFactRole::Value);
++    }
++}
++
++fn add_direct_boundaries<'a>(
++    subject: &ProviderQuerySubject,
++    records: &'a [AdapterFactRecord],
++    selection: &mut QuerySelection<'a>,
++) {
++    for record in records.iter().filter(|record| {
++        record.envelope.kind == SemanticFactKind::Boundary && record.directly_matches(subject)
++    }) {
++        let role = if matches!(subject, ProviderQuerySubject::Position { .. }) {
++            ProviderQueryFactRole::Selector
++        } else {
++            ProviderQueryFactRole::Supporting
++        };
++        selection.insert(record, role);
++    }
++}
++
++fn direct_records<'a>(
++    subject: &ProviderQuerySubject,
++    records: &'a [AdapterFactRecord],
++) -> Vec<&'a AdapterFactRecord> {
++    records
++        .iter()
++        .filter(|record| record.directly_matches(subject))
++        .collect()
++}
++
++fn entity_ids(records: &[&AdapterFactRecord]) -> BTreeSet<EntityId> {
++    records
++        .iter()
++        .filter(|record| record.envelope.kind != SemanticFactKind::Boundary)
++        .filter_map(|record| record.envelope.entity_id)
++        .collect()
++}
++
++fn is_declaration(record: &AdapterFactRecord) -> bool {
++    matches!(
++        record.envelope.kind,
++        SemanticFactKind::Declaration | SemanticFactKind::Module
++    )
++}
++
++fn is_reference_occurrence(record: &AdapterFactRecord) -> bool {
++    record.envelope.kind == SemanticFactKind::Occurrence
++        && record.occurrence_kind != Some(OccurrenceKind::Definition)
++}
++
++fn is_scope_fact(record: &AdapterFactRecord) -> bool {
++    matches!(
++        record.envelope.kind,
++        SemanticFactKind::Declaration | SemanticFactKind::Occurrence
++    )
++}
++
++fn merge_roles(
++    left: ProviderQueryFactRole,
++    right: ProviderQueryFactRole,
++) -> ProviderQueryFactRole {
++    if left == right {
++        return left;
++    }
++    if left == ProviderQueryFactRole::SelectorValue
++        || right == ProviderQueryFactRole::SelectorValue
++        || role_is_selector(left) && role_is_value(right)
++        || role_is_value(left) && role_is_selector(right)
++    {
++        ProviderQueryFactRole::SelectorValue
++    } else if left == ProviderQueryFactRole::Supporting {
++        right
++    } else {
++        left
++    }
++}
++
++fn role_is_selector(role: ProviderQueryFactRole) -> bool {
++    matches!(
++        role,
++        ProviderQueryFactRole::Selector | ProviderQueryFactRole::SelectorValue
++    )
++}
++
++fn role_is_value(role: ProviderQueryFactRole) -> bool {
++    matches!(
++        role,
++        ProviderQueryFactRole::Value | ProviderQueryFactRole::SelectorValue
++    )
++}
++
++fn role_is_supporting(role: ProviderQueryFactRole) -> bool {
++    role == ProviderQueryFactRole::Supporting
++}
++
++#[allow(clippy::too_many_arguments)]
++fn adapt_shard(
++    shard: &FileFactShard,
++    source: FileFactShardSource,
++    snapshot: &ProviderAdapterSnapshot,
++    records: &mut Vec<AdapterFactRecord>,
++    fact_ids: &mut BTreeSet<FactId>,
++    denominator: &mut ShardDenominator,
++) -> Result<(), ProviderAdapterError> {
++    let mut anchors = BTreeMap::new();
++    for anchor in &shard.anchors {
++        if anchor.file_id != shard.file_id {
++            return Err(ProviderAdapterError::AnchorFileMismatch {
++                shard_file_id: shard.file_id,
++                anchor_file_id: anchor.file_id,
++                anchor_id: anchor.id,
++            });
++        }
++        if anchors.insert(anchor.id, anchor).is_some() {
++            return Err(ProviderAdapterError::DuplicateAnchor {
++                file_id: shard.file_id,
++                anchor_id: anchor.id,
++            });
++        }
++    }
++
++    let mut entities = BTreeMap::new();
++    for entity in &shard.entities {
++        if entities.insert(entity.id, entity).is_some() {
++            return Err(ProviderAdapterError::DuplicateEntity {
++                file_id: shard.file_id,
++                entity_id: entity.id,
++            });
++        }
++    }
++
++    let mut occurrence_ids = BTreeSet::new();
++    for occurrence in &shard.occurrences {
++        if !occurrence_ids.insert(occurrence.id) {
++            return Err(ProviderAdapterError::DuplicateOccurrence {
++                file_id: shard.file_id,
++                occurrence_id: occurrence.id,
++            });
++        }
++    }
++
++    for entity in &shard.entities {
++        let Some(anchor_id) = entity.anchor_id else {
++            mark_incomplete_entity(denominator);
++            continue;
++        };
++        let Some(anchor) = anchors.get(&anchor_id).copied() else {
++            mark_incomplete_entity(denominator);
++            continue;
++        };
++   
