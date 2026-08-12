@@ -703,7 +703,7 @@ fn trivia_context_whitespace_only_eof_behavior() -> Result<(), Box<dyn std::erro
 #[test]
 fn trivia_context_preserves_leading_whitespace_via_parser() -> Result<(), Box<dyn std::error::Error>>
 {
-    let parser = TriviaPreservingParser::new("   42".to_string());
+    let parser = TriviaPreservingParser::new("   42");
     let result = parser.parse();
 
     let has_ws = result.leading_trivia.iter().any(|t| matches!(&t.trivia, Trivia::Whitespace(_)));
@@ -713,7 +713,7 @@ fn trivia_context_preserves_leading_whitespace_via_parser() -> Result<(), Box<dy
 
 #[test]
 fn trivia_context_preserves_leading_comment_via_parser() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# preamble\n42".to_string());
+    let parser = TriviaPreservingParser::new("# preamble\n42");
     let result = parser.parse();
 
     let has_comment =
@@ -728,7 +728,8 @@ fn trivia_context_preserves_leading_comment_via_parser() -> Result<(), Box<dyn s
 
 #[test]
 fn trivia_parser_empty_source_produces_program_node() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new(String::new());
+    let source = String::new();
+    let parser = TriviaPreservingParser::new(&source);
     let result = parser.parse();
     // Should produce a Program node (even if empty)
     assert!(
@@ -740,7 +741,7 @@ fn trivia_parser_empty_source_produces_program_node() -> Result<(), Box<dyn std:
 
 #[test]
 fn trivia_parser_comment_only_preserves_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# just a comment\n".to_string());
+    let parser = TriviaPreservingParser::new("# just a comment\n");
     let result = parser.parse();
 
     // Should have comment as trivia
@@ -756,7 +757,7 @@ fn trivia_parser_comment_only_preserves_trivia() -> Result<(), Box<dyn std::erro
 
 #[test]
 fn format_with_trivia_includes_leading_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# comment\nmy $x;".to_string());
+    let parser = TriviaPreservingParser::new("# comment\nmy $x;");
     let result = parser.parse();
     let formatted = format_with_trivia(&result);
 
@@ -771,7 +772,7 @@ fn format_with_trivia_includes_leading_trivia() -> Result<(), Box<dyn std::error
 
 #[test]
 fn format_with_trivia_includes_whitespace_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("  my $x;".to_string());
+    let parser = TriviaPreservingParser::new("  my $x;");
     let result = parser.parse();
     let formatted = format_with_trivia(&result);
 

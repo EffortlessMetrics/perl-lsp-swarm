@@ -739,7 +739,8 @@ fn ext_trivia_parser_preserves_inline_comment() -> Result<(), Box<dyn std::error
 
 #[test]
 fn ext_trivia_parser_empty_produces_program() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new(String::new());
+    let source = String::new();
+    let parser = TriviaPreservingParser::new(&source);
     let result = parser.parse();
     // Node should be a Program
     assert!(matches!(result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
@@ -748,7 +749,7 @@ fn ext_trivia_parser_empty_produces_program() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn ext_trivia_parser_whitespace_only_source() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("   \n\n  \t  ".into());
+    let parser = TriviaPreservingParser::new("   \n\n  \t  ");
     let result = parser.parse();
     assert!(matches!(result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
     Ok(())
@@ -770,7 +771,7 @@ fn ext_trivia_parser_pod_in_middle() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn ext_format_with_trivia_includes_leading() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# comment\nmy $x;".into());
+    let parser = TriviaPreservingParser::new("# comment\nmy $x;");
     let result = parser.parse();
     let formatted = format_with_trivia(&result);
     assert!(formatted.contains("# comment"));
@@ -780,7 +781,8 @@ fn ext_format_with_trivia_includes_leading() -> Result<(), Box<dyn std::error::E
 #[test]
 fn ext_format_with_trivia_empty_trivia() -> Result<(), Box<dyn std::error::Error>> {
     // Parse an empty source to get a program node with no trivia
-    let parser = TriviaPreservingParser::new(String::new());
+    let source = String::new();
+    let parser = TriviaPreservingParser::new(&source);
     let result = parser.parse();
     let formatted = format_with_trivia(&result);
     // Should contain the node debug output but no trivia

@@ -70,7 +70,7 @@ my   $y   =   99;  # Weird spacing
         println!("{}", source);
         println!("---");
 
-        let parser = TriviaPreservingParser::new(source.to_string());
+        let parser = TriviaPreservingParser::new(source);
         let result = parser.parse();
 
         // Show collected trivia
@@ -109,7 +109,7 @@ my   $y   =   99;  # Weird spacing
     println!("Original:");
     println!("{}", format_test);
 
-    let parser = TriviaPreservingParser::new(format_test.to_string());
+    let parser = TriviaPreservingParser::new(format_test);
     let ast_with_trivia = parser.parse();
 
     // In a real implementation, this would perfectly reconstruct the source
@@ -179,7 +179,7 @@ Example Author <author@example.com>
 # End of file
 "#;
 
-    let parser = TriviaPreservingParser::new(large_example.to_string());
+    let parser = TriviaPreservingParser::new(large_example);
     let result = parser.parse();
 
     // Count trivia types

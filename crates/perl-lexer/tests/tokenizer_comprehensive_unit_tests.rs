@@ -743,7 +743,7 @@ fn trivia_parser_context_whitespace_only() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn trivia_preserving_parser_basic() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("my $x = 1;".to_string());
+    let parser = TriviaPreservingParser::new("my $x = 1;");
     let result = parser.parse();
     // Should produce a Program node
     assert!(matches!(&result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
@@ -752,7 +752,8 @@ fn trivia_preserving_parser_basic() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trivia_preserving_parser_empty_source() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new(String::new());
+    let source = String::new();
+    let parser = TriviaPreservingParser::new(&source);
     let result = parser.parse();
     assert!(matches!(&result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
     Ok(())
@@ -760,7 +761,7 @@ fn trivia_preserving_parser_empty_source() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn trivia_preserving_parser_comment_only() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# just a comment\n".to_string());
+    let parser = TriviaPreservingParser::new("# just a comment\n");
     let result = parser.parse();
     // Should still produce a valid program
     assert!(matches!(&result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
@@ -810,7 +811,7 @@ fn trivia_preserving_parser_pod_in_code() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn format_with_trivia_includes_leading() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# hello\nmy $x;".to_string());
+    let parser = TriviaPreservingParser::new("# hello\nmy $x;");
     let result = parser.parse();
     let formatted = perl_parser_core::trivia_parser::format_with_trivia(&result);
     assert!(formatted.contains("# hello"), "formatted output should contain leading comment");
@@ -1049,7 +1050,8 @@ fn token_with_position_range() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn format_with_trivia_empty() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new(String::new());
+    let source = String::new();
+    let parser = TriviaPreservingParser::new(&source);
     let result = parser.parse();
     let formatted = perl_parser_core::trivia_parser::format_with_trivia(&result);
     // Should not panic or produce garbage

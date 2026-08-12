@@ -146,7 +146,7 @@ fn test_shebang_variations() {
     ];
 
     for source in test_cases {
-        let parser = TriviaPreservingParser::new(source.to_string());
+        let parser = TriviaPreservingParser::new(source);
         let result = parser.parse();
 
         let has_shebang = result.leading_trivia.iter().any(|t| {
