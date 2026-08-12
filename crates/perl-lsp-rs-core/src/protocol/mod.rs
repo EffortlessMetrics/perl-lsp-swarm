@@ -7,6 +7,7 @@
 //! - `errors` — Standard and LSP-specific JSON-RPC error codes and builders
 //! - [`methods`] — LSP 3.18 method name constants for request/notification routing
 //! - [`capabilities`] — Server capability configuration advertised during `initialize`
+//! - [`schema`] — Versioned, bounded method/direction payload validation
 //!
 //! Previously the standalone `perl-lsp-protocol` crate; absorbed into
 //! `perl-lsp-rs-core::protocol` in Wave G3 (#4535).
@@ -17,6 +18,7 @@ pub mod error_inventory;
 mod errors;
 mod jsonrpc;
 pub mod methods;
+pub mod schema;
 
 pub use error_disposition::{Disposition, disposition_for};
 pub use error_inventory::{
