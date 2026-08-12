@@ -19,6 +19,8 @@
 //!   never stored here.
 //! - [`Provenance`] + [`Confidence`] + [`EvidenceSource`] on every fact.
 //! - A [`FactClasses`] selector so a request only pays for what it asks for.
+//! - A framework-neutral [`TestItemSnapshot`] identity contract for test
+//!   discovery consumers; execution and TAP remain outside this crate.
 //!
 //! # What it must never depend on
 //!
@@ -63,6 +65,7 @@ pub mod relation;
 pub mod shard;
 pub mod symbol;
 pub mod test;
+pub mod test_item;
 
 /// The fact-schema version this crate emits. Bump on any breaking model change.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -87,3 +90,8 @@ pub use relation::{RelationFact, RelationKind};
 pub use shard::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 pub use symbol::{SymbolFactKind, SymbolRecord, Visibility};
 pub use test::TestFact;
+pub use test_item::{
+    TEST_ITEM_SCHEMA_VERSION, TestFrameworkIdentity, TestItem, TestItemCapabilities,
+    TestItemDelta, TestItemId, TestItemKind, TestItemName, TestItemSnapshot,
+    TestItemValidationError,
+};
