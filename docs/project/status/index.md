@@ -5,7 +5,7 @@
 
 ## What's True Right Now
 
-- **Release posture**: `v0.17.0` is the current workspace version and shipped public-beta release (2026-06-28); `v0.18.0` is the next public-beta train, not a maturity promotion or version bump in this tree. The published crate surface is 32 crates. See [release.md](release.md) for channel receipts.
+- **Release posture**: `v0.17.0` is the current workspace version and shipped public-beta release (2026-06-28); `v0.18.0` is the next public-beta train, not a maturity promotion or version bump in this tree. The published crate surface is 33 crates. See [release.md](release.md) for channel receipts.
 - **Status discipline**: this file is for narrative, subsystem files are for evidence, and `just status-update` plus `just status-check` are the anti-drift workflow
 - **LSP server**: `features.toml` is the canonical capability catalog; 60 user-visible features at 100% coverage (125/125 including plumbing protocol methods and DAP handlers) — see generated [lsp.md](lsp.md) for current numbers
 - **Test infrastructure**: `nix develop -c just ci-gate` is the canonical merge receipt and `cargo xtask ignored-tests` is the tracked-test-debt source
@@ -44,7 +44,7 @@
 - `v0.17.0` shipped: unified LSP/DAP Perl toolchain profile, automatic `.perltidyrc` discovery, first-run `--doctor` report, workspace method signature help, framework-aware inline completions, quality hardening
 - Keep public-beta wording consistent: package versions use normal SemVer, but the product posture is not stable/GA
 - Keep the three parser verification lanes explicit and green: `just corpus-sweep-check`, `just cpan-corpus-check`, and `just parser-audit`, with `just common-corpus-check` covering the pinned strict-clean subset
-- Keep the top-level README, status docs, and release runbooks aligned with the actual `perllsp` asset line, the `perl-lsp-rs` extension package, and the 32-crate published surface
+- Keep the top-level README, status docs, and release runbooks aligned with the actual `perllsp` asset line, the `perl-lsp-rs` extension package, and the 33-crate published surface
 - Keep Homebrew, GitHub release assets, VS Code Marketplace, and Open VSX install receipts explicit in the release closeout
 - Verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train
 
