@@ -532,7 +532,20 @@ impl TestItemSnapshot {
 }
 
 fn valid_range(range: SourceRange, source_len: u32) -> bool {
-    range.start_byte <= range.end_byte && range.end_byte <= source_len
+    if range.start_byte > range.end_byte || range.end_byte > source_len {
+        return false;
+    }
+    // Serialized snapshots may carry contradictory position metadata even when
+    // byte bounds look ordered. Reject reversed line/column endpoints so
+    // consumers cannot publish inverted editor ranges from a "validated"
+    // snapshot.
+    if range.start_line > range.end_line {
+        return false;
+    }
+    if range.start_line == range.end_line && range.start_column_utf8 > range.end_column_utf8 {
+        return false;
+    }
+    true
 }
 
 fn span_len(range: SourceRange) -> u32 {
@@ -1048,6 +1061,42 @@ mod tests {
         assert!(matches!(
             snapshot.validate(),
             Err(TestItemValidationError::SnapshotIdentityMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn validation_rejects_reversed_stored_source_coordinates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut reversed_lines = snapshot(7)?;
+        let target = reversed_lines
+            .items
+            .iter_mut()
+            .find(|item| item.structural_key == "subtest:1")
+            .ok_or_else(|| io::Error::other("missing first subtest"))?;
+        // Keep byte bounds ordered while forcing start_line after end_line —
+        // the discriminator for trusting stored editor coordinates.
+        target.range.start_line = target.range.end_line.saturating_add(1);
+        assert!(
+            target.range.start_byte <= target.range.end_byte,
+            "byte span must remain ordered so only position metadata fails"
+        );
+        assert!(matches!(
+            reversed_lines.validate(),
+            Err(TestItemValidationError::InvalidRange { .. })
+        ));
+
+        let mut reversed_columns = snapshot(7)?;
+        let target = reversed_columns
+            .items
+            .iter_mut()
+            .find(|item| item.structural_key == "subtest:1")
+            .ok_or_else(|| io::Error::other("missing first subtest"))?;
+        target.range.end_line = target.range.start_line;
+        target.range.start_column_utf8 = target.range.end_column_utf8.saturating_add(1);
+        assert!(matches!(
+            reversed_columns.validate(),
+            Err(TestItemValidationError::InvalidRange { .. })
         ));
         Ok(())
     }
