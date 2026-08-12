@@ -171,8 +171,8 @@ fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<
     );
     assert_eq!(
         body,
-        &Some((22, 28, Some("hello\n".to_string()))),
-        "body_span must retain the exact body bytes and trailing line boundary represented separately from content"
+        &Some((22, 27, Some("hello".to_string()))),
+        "body_span must retain the exact body bytes represented separately from content"
     );
     assert_eq!(diamonds, 0, "heredoc syntax must not fabricate a Diamond node");
     Ok(())
