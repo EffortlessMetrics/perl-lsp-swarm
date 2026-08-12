@@ -1,0 +1,45 @@
+name: Verify content-bound sidecar authority
+
+on:
+  push:
+    branches:
+      - agent/corpus-sidecar-path-authority-6885
+    paths:
+      - .github/workflows/verify-sidecar-authority-6938.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: agent/corpus-sidecar-path-authority-6885
+          fetch-depth: 0
+
+      - name: Verify and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "8a50e945ced6c4d2a046527014365e9b14bdecbf"
+          rustup show
+          cargo fmt --all -- --check
+          cargo check -p perl-corpus --all-targets --locked
+          cargo test -p perl-corpus --all-targets --locked
+          cargo clippy -p perl-corpus --all-targets --locked -- -D warnings
+          git diff --check
+
+      - name: Remove temporary verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/verify-sidecar-authority-6938.yml
+          git add .github/workflows/verify-sidecar-authority-6938.yml
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "ci: record hosted sidecar authority verification"
+          git push origin HEAD:agent/corpus-sidecar-path-authority-6885
