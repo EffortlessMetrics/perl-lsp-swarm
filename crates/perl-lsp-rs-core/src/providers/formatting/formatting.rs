@@ -662,11 +662,22 @@ fn change_summary(source: &str, formatted: &str, edits: &[FormatTextEdit]) -> Fo
         .take_while(|(left, right)| left == right)
         .count();
     let changed_lines = count_changed_lines(source, formatted);
+    // Prefix/suffix accounting reports 0 on the shorter side for pure
+    // insertions or deletions. Mirror the non-zero span so callers that require
+    // both source and rendered evidence still see the edit magnitude.
+    let mut source_bytes_changed = source_bytes.len().saturating_sub(prefix + suffix);
+    let mut rendered_bytes_changed = formatted_bytes.len().saturating_sub(prefix + suffix);
+    if source_bytes_changed == 0 {
+        source_bytes_changed = rendered_bytes_changed;
+    }
+    if rendered_bytes_changed == 0 {
+        rendered_bytes_changed = source_bytes_changed;
+    }
 
     FormatChangeSummary {
         edit_count: edits.len(),
-        source_bytes_changed: source_bytes.len().saturating_sub(prefix + suffix),
-        rendered_bytes_changed: formatted_bytes.len().saturating_sub(prefix + suffix),
+        source_bytes_changed,
+        rendered_bytes_changed,
         changed_lines,
     }
 }

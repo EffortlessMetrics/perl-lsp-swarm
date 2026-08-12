@@ -152,10 +152,12 @@ fn whitespace_fallback_runs_only_after_explicit_native_no_change()
     let provider = FormattingProvider::new(RecordingRuntime { invoked: invoked.clone() });
     let mut formatting_options = options();
     formatting_options.trim_trailing_whitespace = Some(true);
-    let range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 12));
+    // Native leaves comment lines unchanged (NoChange) while preserving trailing
+    // spaces, so LSP whitespace fallback is the only edit source.
+    let range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 10));
 
     let decision = provider.format_range_decision(
-        "print $x;   \n",
+        "# trailing   \n",
         &range,
         &formatting_options,
         &FormatContext::default(),
@@ -164,9 +166,9 @@ fn whitespace_fallback_runs_only_after_explicit_native_no_change()
     assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
     assert_eq!(decision.outcome.reason, FormatReasonCode::Applied);
     assert_eq!(decision.document.edits.len(), 1);
-    assert_eq!(decision.document.edits[0].new_text, "print $x;");
+    assert_eq!(decision.document.edits[0].new_text, "# trailing");
     assert_eq!(
-        decision.document.text, "print $x;\n",
+        decision.document.text, "# trailing\n",
         "fallback text must materialize the emitted range edit exactly"
     );
     assert!(
@@ -192,8 +194,8 @@ fn whitespace_fallback_materializes_crlf_multiline_range_text()
         FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
     let mut formatting_options = options();
     formatting_options.trim_trailing_whitespace = Some(true);
-    let source = "my $x = 1;\r\nprint $x;   \r\n";
-    let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 12));
+    let source = "my $x = 1;\r\n# trailing   \r\n";
+    let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 10));
 
     let decision = provider.format_range_decision(
         source,
@@ -203,7 +205,7 @@ fn whitespace_fallback_materializes_crlf_multiline_range_text()
     )?;
 
     assert_eq!(
-        decision.document.text, "my $x = 1;\r\nprint $x;\r\n",
+        decision.document.text, "my $x = 1;\r\n# trailing\r\n",
         "fallback text must preserve CRLF outside the edited line"
     );
     Ok(())
