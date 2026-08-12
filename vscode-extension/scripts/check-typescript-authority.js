@@ -380,7 +380,10 @@ function evaluateTypeScriptAuthority(input) {
  * @returns {{binPath: string} | {reason: string}}
  */
 function declaredTscBin(typescriptDir) {
-  /** @type {unknown} */
+  // `bin` is either a string (single binary) or a name->path map, per npm's
+  // manifest schema. Typed here rather than left `unknown`, so the map branch
+  // narrows to something with a `tsc` property instead of bare `object`.
+  /** @type {string | {tsc?: string} | undefined} */
   let bin;
   try {
     bin = JSON.parse(fs.readFileSync(path.join(typescriptDir, 'package.json'), 'utf8'))?.bin;
@@ -389,8 +392,7 @@ function declaredTscBin(typescriptDir) {
       reason: `the pinned package's manifest could not be read (${error instanceof Error ? error.message : String(error)})`,
     };
   }
-  const declared =
-    typeof bin === 'string' ? bin : typeof bin === 'object' && bin !== null ? bin.tsc : undefined;
+  const declared = typeof bin === 'string' ? bin : bin?.tsc;
   if (typeof declared !== 'string' || declared.length === 0) {
     return {
       reason: 'the pinned package declares no `bin.tsc`, so there is nothing to bind the shim to',
