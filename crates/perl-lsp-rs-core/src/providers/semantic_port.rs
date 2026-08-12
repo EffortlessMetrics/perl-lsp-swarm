@@ -20,12 +20,11 @@ mod model;
 mod result;
 
 pub use model::{
-    NoopProviderQueryControl, ProviderCancellationState,
-    ProviderCompletenessAuthorityReceipt, ProviderCompletenessGrant,
-    ProviderFactGenerationScope, ProviderIdentity, ProviderQueryCapability,
-    ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline, ProviderQueryFact,
-    ProviderQueryFactRole, ProviderQueryKind, ProviderQueryRequest, ProviderQuerySubject,
-    ProviderReadinessRequirement, ProviderReadinessState,
+    NoopProviderQueryControl, ProviderCancellationState, ProviderCompletenessAuthorityReceipt,
+    ProviderCompletenessGrant, ProviderFactGenerationScope, ProviderIdentity,
+    ProviderQueryCapability, ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline,
+    ProviderQueryFact, ProviderQueryFactRole, ProviderQueryKind, ProviderQueryRequest,
+    ProviderQuerySubject, ProviderReadinessRequirement, ProviderReadinessState,
 };
 pub use result::*;
 
@@ -76,36 +75,22 @@ impl fmt::Display for ProviderQueryContractError {
                 formatter.write_str("provider query symbol key is malformed")
             }
             Self::MalformedFact(fact_id) => {
-                write!(
-                    formatter,
-                    "provider fact {} is structurally malformed",
-                    fact_id.0
-                )
+                write!(formatter, "provider fact {} is structurally malformed", fact_id.0)
             }
             Self::DuplicateFactId(fact_id) => {
                 write!(formatter, "duplicate provider fact identity {}", fact_id.0)
             }
             Self::FactDoesNotMatchSubject(fact_id) => {
-                write!(
-                    formatter,
-                    "provider fact {} does not match query subject",
-                    fact_id.0
-                )
+                write!(formatter, "provider fact {} does not match query subject", fact_id.0)
             }
             Self::MissingPositionSelector => {
                 formatter.write_str("position query has no cursor-bound selector fact")
             }
-            Self::UnrelatedPositionValue(fact_id) => write!(
-                formatter,
-                "provider fact {} is unrelated to the cursor selector",
-                fact_id.0
-            ),
+            Self::UnrelatedPositionValue(fact_id) => {
+                write!(formatter, "provider fact {} is unrelated to the cursor selector", fact_id.0)
+            }
             Self::FactKindDoesNotMatchRequest(fact_id) => {
-                write!(
-                    formatter,
-                    "provider fact {} does not match query family",
-                    fact_id.0
-                )
+                write!(formatter, "provider fact {} does not match query family", fact_id.0)
             }
             Self::InvalidCompletenessGrant => {
                 formatter.write_str("provider completeness grant is invalid for this request")
@@ -123,10 +108,7 @@ impl fmt::Display for ProviderQueryContractError {
                 formatter.write_str("provider result is bound to a different request")
             }
             Self::InvalidOutcomeEvidence(outcome) => {
-                write!(
-                    formatter,
-                    "provider outcome {outcome:?} has contradictory evidence"
-                )
+                write!(formatter, "provider outcome {outcome:?} has contradictory evidence")
             }
         }
     }
