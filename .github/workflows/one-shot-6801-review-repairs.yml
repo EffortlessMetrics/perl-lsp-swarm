@@ -28,169 +28,126 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          def replace_section(text, start_marker, end_marker, transform):
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+              section = text[start:end]
+              return text[:start] + transform(section) + text[end:]
+
+          def insert_after(lines, marker, added):
+              index = lines.index(marker)
+              lines[index + 1:index + 1] = added
+
           engine_path = Path("crates/perl-parser/src/incremental/incremental_advanced_reuse.rs")
           engine = engine_path.read_text(encoding="utf-8")
 
-          content_start = engine.index("    fn find_content_updated_matches(")
-          content_end = engine.index("    /// Find aggressive structural matches", content_start)
-          content = engine[content_start:content_end]
-          opening = (
-              "    ) {\n"
-              "        for (old_pos, old_info) in &old_analysis.node_info {\n"
-          )
-          replacement = (
-              "    ) {\n"
-              "        let mut used_target_positions: HashSet<usize> = reuse_map\n"
-              "            .values()\n"
-              "            .map(|strategy| strategy.target_position)\n"
-              "            .collect();\n"
-              "\n"
-              "        for (old_pos, old_info) in &old_analysis.node_info {\n"
-          )
-          if content.count(opening) != 1:
-              raise SystemExit("content-update opening anchor drifted")
-          content = content.replace(opening, replacement, 1)
+          def repair_content(section):
+              lines = section.splitlines()
+              insert_after(
+                  lines,
+                  "    ) {",
+                  [
+                      "        let mut used_target_positions: HashSet<usize> = reuse_map",
+                      "            .values()",
+                      "            .map(|strategy| strategy.target_position)",
+                      "            .collect();",
+                      "",
+                  ],
+              )
+              insert_after(
+                  lines,
+                  "                for (new_pos, new_info) in &new_analysis.node_info {",
+                  [
+                      "                    if used_target_positions.contains(new_pos) {",
+                      "                        continue;",
+                      "                    }",
+                      "",
+                  ],
+              )
+              start = lines.index("                        if confidence >= config.min_confidence")
+              end = lines.index("                        }", start)
+              lines[start:end + 1] = [
+                  "                        if confidence >= config.min_confidence {",
+                  "                            reuse_map.insert(",
+                  "                                *old_pos,",
+                  "                                ReuseStrategy {",
+                  "                                    target_position: *new_pos,",
+                  "                                    reuse_type: ReuseType::ContentUpdate,",
+                  "                                    confidence_score: confidence,",
+                  "                                    position_adjustment: (*new_pos as isize)",
+                  "                                        - (*old_pos as isize),",
+                  "                                },",
+                  "                            );",
+                  "                            used_target_positions.insert(*new_pos);",
+                  "                            self.analysis_stats.content_matches += 1;",
+                  "                            break;",
+                  "                        }",
+              ]
+              return "\n".join(lines) + "\n"
 
-          scan = (
-              "                for (new_pos, new_info) in &new_analysis.node_info {\n"
-              "                    if old_info.structural_hash == new_info.structural_hash\n"
-          )
-          scan_replacement = (
-              "                for (new_pos, new_info) in &new_analysis.node_info {\n"
-              "                    if used_target_positions.contains(new_pos) {\n"
-              "                        continue;\n"
-              "                    }\n"
-              "\n"
-              "                    if old_info.structural_hash == new_info.structural_hash\n"
-          )
-          if content.count(scan) != 1:
-              raise SystemExit("content-update scan anchor drifted")
-          content = content.replace(scan, scan_replacement, 1)
-
-          registration = (
-              "                        if confidence >= config.min_confidence\n"
-              "                            && self.try_register_match(\n"
-              "                                reuse_map,\n"
-              "                                *old_pos,\n"
-              "                                *new_pos,\n"
-              "                                ReuseType::ContentUpdate,\n"
-              "                                confidence,\n"
-              "                            )\n"
-              "                        {\n"
-              "                            self.analysis_stats.content_matches += 1;\n"
-              "                            break;\n"
-              "                        }\n"
-          )
-          registration_replacement = (
-              "                        if confidence >= config.min_confidence {\n"
-              "                            reuse_map.insert(\n"
-              "                                *old_pos,\n"
-              "                                ReuseStrategy {\n"
-              "                                    target_position: *new_pos,\n"
-              "                                    reuse_type: ReuseType::ContentUpdate,\n"
-              "                                    confidence_score: confidence,\n"
-              "                                    position_adjustment: (*new_pos as isize)\n"
-              "                                        - (*old_pos as isize),\n"
-              "                                },\n"
-              "                            );\n"
-              "                            used_target_positions.insert(*new_pos);\n"
-              "                            self.analysis_stats.content_matches += 1;\n"
-              "                            break;\n"
-              "                        }\n"
-          )
-          if content.count(registration) != 1:
-              raise SystemExit("content-update registration anchor drifted")
-          content = content.replace(registration, registration_replacement, 1)
-          engine = engine[:content_start] + content + engine[content_end:]
-
-          aggressive_start = engine.index("    fn find_aggressive_structural_matches(")
-          aggressive_end = engine.index("    /// Validate reuse candidates", aggressive_start)
-          aggressive = engine[aggressive_start:aggressive_end]
-          aggressive_opening = (
-              "    ) {\n"
-              "        // This is the most sophisticated matching - look for structural patterns\n"
-          )
-          aggressive_opening_replacement = (
-              "    ) {\n"
-              "        let mut used_target_positions: HashSet<usize> = reuse_map\n"
-              "            .values()\n"
-              "            .map(|strategy| strategy.target_position)\n"
-              "            .collect();\n"
-              "\n"
-              "        // This is the most sophisticated matching - look for structural patterns\n"
-          )
-          if aggressive.count(aggressive_opening) != 1:
-              raise SystemExit("aggressive opening anchor drifted")
-          aggressive = aggressive.replace(
-              aggressive_opening,
-              aggressive_opening_replacement,
-              1,
+          engine = replace_section(
+              engine,
+              "    fn find_content_updated_matches(",
+              "    /// Find aggressive structural matches",
+              repair_content,
           )
 
-          occupancy = (
-              "                if reuse_map\n"
-              "                    .values()\n"
-              "                    .any(|strategy| strategy.target_position == *new_pos)\n"
-              "                {\n"
-              "                    continue;\n"
-              "                }\n"
-          )
-          occupancy_replacement = (
-              "                if used_target_positions.contains(new_pos) {\n"
-              "                    continue;\n"
-              "                }\n"
-          )
-          if aggressive.count(occupancy) != 1:
-              raise SystemExit("aggressive occupancy anchor drifted")
-          aggressive = aggressive.replace(occupancy, occupancy_replacement, 1)
+          def repair_aggressive(section):
+              lines = section.splitlines()
+              insert_after(
+                  lines,
+                  "    ) {",
+                  [
+                      "        let mut used_target_positions: HashSet<usize> = reuse_map",
+                      "            .values()",
+                      "            .map(|strategy| strategy.target_position)",
+                      "            .collect();",
+                      "",
+                  ],
+              )
+              occupancy_start = lines.index("                if reuse_map")
+              occupancy_end = lines.index("                }", occupancy_start)
+              lines[occupancy_start:occupancy_end + 1] = [
+                  "                if used_target_positions.contains(new_pos) {",
+                  "                    continue;",
+                  "                }",
+              ]
+              registration_start = lines.index(
+                  "                if confidence >= config.min_confidence * 0.7"
+              )
+              registration_end = lines.index("                }", registration_start)
+              lines[registration_start:registration_end + 1] = [
+                  "                if confidence >= config.min_confidence * 0.7 {",
+                  "                    // Final threshold check",
+                  "                    reuse_map.insert(",
+                  "                        *old_pos,",
+                  "                        ReuseStrategy {",
+                  "                            target_position: best_pos,",
+                  "                            reuse_type: ReuseType::StructuralEquivalent,",
+                  "                            confidence_score: confidence,",
+                  "                            position_adjustment: (best_pos as isize)",
+                  "                                - (*old_pos as isize),",
+                  "                        },",
+                  "                    );",
+                  "                    used_target_positions.insert(best_pos);",
+                  "                    self.analysis_stats.reuse_candidates_found += 1;",
+                  "                }",
+              ]
+              return "\n".join(lines) + "\n"
 
-          best_registration = (
-              "                if confidence >= config.min_confidence * 0.7\n"
-              "                    && self.try_register_match(\n"
-              "                        reuse_map,\n"
-              "                        *old_pos,\n"
-              "                        best_pos,\n"
-              "                        ReuseType::StructuralEquivalent,\n"
-              "                        confidence,\n"
-              "                    )\n"
-              "                {\n"
-              "                    // Final threshold check\n"
-              "                    self.analysis_stats.reuse_candidates_found += 1;\n"
-              "                }\n"
+          engine = replace_section(
+              engine,
+              "    fn find_aggressive_structural_matches(",
+              "    /// Validate reuse candidates",
+              repair_aggressive,
           )
-          best_registration_replacement = (
-              "                if confidence >= config.min_confidence * 0.7 {\n"
-              "                    // Final threshold check\n"
-              "                    reuse_map.insert(\n"
-              "                        *old_pos,\n"
-              "                        ReuseStrategy {\n"
-              "                            target_position: best_pos,\n"
-              "                            reuse_type: ReuseType::StructuralEquivalent,\n"
-              "                            confidence_score: confidence,\n"
-              "                            position_adjustment: (best_pos as isize)\n"
-              "                                - (*old_pos as isize),\n"
-              "                        },\n"
-              "                    );\n"
-              "                    used_target_positions.insert(best_pos);\n"
-              "                    self.analysis_stats.reuse_candidates_found += 1;\n"
-              "                }\n"
-          )
-          if aggressive.count(best_registration) != 1:
-              raise SystemExit("aggressive registration anchor drifted")
-          aggressive = aggressive.replace(
-              best_registration,
-              best_registration_replacement,
-              1,
-          )
-          engine = engine[:aggressive_start] + aggressive + engine[aggressive_end:]
           engine_path.write_text(engine, encoding="utf-8")
 
           parser_path = Path("crates/perl-parser/src/incremental/incremental_v2.rs")
           parser = parser_path.read_text(encoding="utf-8")
           analysis_start = parser.index("        // Store analysis results for inspection")
           analysis_end = parser.index("\n        None\n", analysis_start) + len("\n        None\n")
-          old_analysis = parser[analysis_start:analysis_end]
-          new_analysis = (
+          selected_only = (
               "        // Expose only the analysis selected for the produced tree.\n"
               "        if analysis_result.reused_nodes <= analysis_result.total_new_nodes\n"
               "            && analysis_result\n"
@@ -206,80 +163,70 @@ jobs:
               "\n"
               "        None\n"
           )
-          if old_analysis.count("self.last_reuse_analysis = Some(analysis_result);") != 1:
-              raise SystemExit("advanced-analysis assignment anchor drifted")
-          parser = parser[:analysis_start] + new_analysis + parser[analysis_end:]
+          parser = parser[:analysis_start] + selected_only + parser[analysis_end:]
           parser_path.write_text(parser, encoding="utf-8")
 
           test_path = Path("crates/perl-parser/tests/incremental_parser_accuracy.rs")
           tests = test_path.read_text(encoding="utf-8")
           import_anchor = "use perl_parser::edit::Edit;\n"
-          import_replacement = (
-              "use perl_parser::edit::Edit;\n"
-              "use perl_parser::incremental_advanced_reuse::ReuseConfig;\n"
-          )
           if tests.count(import_anchor) != 1:
               raise SystemExit("reuse-config import anchor drifted")
-          tests = tests.replace(import_anchor, import_replacement, 1)
-
-          test_name = "fn rejected_advanced_analysis_is_not_exposed_as_last_parse()"
-          if test_name in tests:
-              raise SystemExit("rejected-analysis regression already exists")
-          regression = (
-              "\n\n#[test]\n"
-              "fn rejected_advanced_analysis_is_not_exposed_as_last_parse() -> TestResult {\n"
-              "    let config = ReuseConfig { min_confidence: 1.1, ..ReuseConfig::default() };\n"
-              "    let mut incremental = IncrementalParserV2::with_reuse_config(config);\n"
-              "    let source = \"my $x = 1;\";\n"
-              "    incremental.parse(source)?;\n"
-              "\n"
-              "    let edited =\n"
-              "        apply_incremental_edit(&mut incremental, source, \"1\", \"2\", \"rejected-analysis\")?;\n"
-              "    incremental.parse(&edited)?;\n"
-              "\n"
-              "    if !incremental.used_incremental_path() {\n"
-              "        return Err(\"the simple fallback must accept the queued value edit\".into());\n"
-              "    }\n"
-              "    if incremental.used_advanced_reuse() {\n"
-              "        return Err(\"the over-threshold advanced analysis must be rejected\".into());\n"
-              "    }\n"
-              "    if incremental.get_last_reuse_analysis().is_some() {\n"
-              "        return Err(\"a rejected advanced analysis must not remain public\".into());\n"
-              "    }\n"
-              "    if !incremental\n"
-              "        .get_reuse_efficiency_report()\n"
-              "        .starts_with(\"Basic Incremental Analysis:\")\n"
-              "    {\n"
-              "        return Err(\"the efficiency report must describe the accepted simple path\".into());\n"
-              "    }\n"
-              "    Ok(())\n"
-              "}\n"
+          tests = tests.replace(
+              import_anchor,
+              import_anchor + "use perl_parser::incremental_advanced_reuse::ReuseConfig;\n",
+              1,
           )
-          tests = tests.rstrip() + regression
-          test_path.write_text(tests, encoding="utf-8")
+          if "fn rejected_advanced_analysis_is_not_exposed_as_last_parse()" in tests:
+              raise SystemExit("rejected-analysis regression already exists")
+          tests = tests.rstrip() + '''
 
-          Path(".github/workflows/one-shot-6801-review-repairs.yml").unlink()
+#[test]
+fn rejected_advanced_analysis_is_not_exposed_as_last_parse() -> TestResult {
+    let config = ReuseConfig { min_confidence: 1.1, ..ReuseConfig::default() };
+    let mut incremental = IncrementalParserV2::with_reuse_config(config);
+    let source = "my $x = 1;";
+    incremental.parse(source)?;
+
+    let edited =
+        apply_incremental_edit(&mut incremental, source, "1", "2", "rejected-analysis")?;
+    incremental.parse(&edited)?;
+
+    if !incremental.used_incremental_path() {
+        return Err("the simple fallback must accept the queued value edit".into());
+    }
+    if incremental.used_advanced_reuse() {
+        return Err("the over-threshold advanced analysis must be rejected".into());
+    }
+    if incremental.get_last_reuse_analysis().is_some() {
+        return Err("a rejected advanced analysis must not remain public".into());
+    }
+    if !incremental
+        .get_reuse_efficiency_report()
+        .starts_with("Basic Incremental Analysis:")
+    {
+        return Err("the efficiency report must describe the accepted simple path".into());
+    }
+    Ok(())
+}
+'''
+          test_path.write_text(tests, encoding="utf-8")
           PY
 
-          cargo fmt --all
           git diff --check
-
           expected=$(printf '%s\n' \
-            .github/workflows/one-shot-6801-review-repairs.yml \
             crates/perl-parser/src/incremental/incremental_advanced_reuse.rs \
             crates/perl-parser/src/incremental/incremental_v2.rs \
             crates/perl-parser/tests/incremental_parser_accuracy.rs | sort)
           actual=$(git diff --name-only | sort)
           test "$actual" = "$expected"
 
-      - name: Commit repairs and remove this workflow
+      - name: Commit repairs
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "EffortlessSteven"
           git config user.email "git@effortlesssteven.com"
           git add \
-            .github/workflows/one-shot-6801-review-repairs.yml \
             crates/perl-parser/src/incremental/incremental_advanced_reuse.rs \
             crates/perl-parser/src/incremental/incremental_v2.rs \
             crates/perl-parser/tests/incremental_parser_accuracy.rs
