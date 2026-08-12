@@ -228,7 +228,10 @@ fn scan_json_value(
                 } else {
                     escape_json_pointer(key)
                 };
-                let child_class = classify_field(key).unwrap_or(string_class);
+                // Source and regex exemptions identify the value owned by this
+                // exact field. They do not flow through nested maps, where a
+                // `message`, `path`, or other child must be reviewed normally.
+                let child_class = classify_field(key).unwrap_or(PublicStringClass::Ordinary);
                 scan_json_value(
                     value,
                     logical_file,
@@ -252,9 +255,10 @@ fn escape_json_pointer(value: &str) -> String {
 
 fn classify_field(key: &str) -> Option<PublicStringClass> {
     match key.to_ascii_lowercase().as_str() {
-        "source_text" | "source_code" | "source_snippet" | "perl_source" | "fixture_source"
-        | "snippet" => Some(PublicStringClass::SourceText),
-        "regex" | "pattern" | "regular_expression" => Some(PublicStringClass::Regex),
+        "source_text" | "source_code" | "source_snippet" | "perl_source" | "fixture_source" => {
+            Some(PublicStringClass::SourceText)
+        }
+        "regex" | "regular_expression" => Some(PublicStringClass::Regex),
         _ => None,
     }
 }
@@ -274,9 +278,6 @@ fn host_path_kind(text: &str, string_class: PublicStringClass) -> Option<HostPat
     }
     if contains_unc_path(&decoded) {
         return Some(HostPathKind::WindowsUnc);
-    }
-    if looks_like_perl_regex_literal(decoded.trim()) {
-        return None;
     }
     contains_unix_absolute_path(&decoded).then_some(HostPathKind::UnixAbsolute)
 }
@@ -358,14 +359,6 @@ fn contains_unix_absolute_path(text: &str) -> bool {
     false
 }
 
-fn looks_like_perl_regex_literal(value: &str) -> bool {
-    if value.len() > 2 && value.starts_with('/') && value.ends_with('/') {
-        return true;
-    }
-    ["m{", "qr{", "s{", "tr{"].iter().any(|prefix| value.starts_with(prefix))
-        && value.ends_with('}')
-}
-
 const fn is_path_boundary(byte: u8) -> bool {
     matches!(
         byte,
@@ -413,8 +406,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_shallow_unknown_unix_roots() {
-        for value in ["/etc/passwd", "/root/build", "/srv/cache", "arg=/opt/tool"] {
+    fn rejects_shallow_unknown_and_trailing_slash_unix_paths() {
+        for value in [
+            "/etc/passwd",
+            "/root/build",
+            "/srv/cache",
+            "arg=/opt/tool",
+            "/home/runner/work/",
+            "cwd=/srv/cache/",
+        ] {
             assert_eq!(
                 host_path_kind(value, PublicStringClass::Ordinary),
                 Some(HostPathKind::UnixAbsolute),
@@ -446,13 +446,10 @@ mod tests {
     }
 
     #[test]
-    fn accepts_urls_logical_paths_and_reviewed_source_classes() {
+    fn accepts_urls_logical_paths_and_explicit_source_classes() {
         for value in [
             "https://example.com/a/b/c",
             "crates/perl-parser/src/lib.rs",
-            "m{/foo/bar}",
-            "qr{/foo/bar}",
-            "/foo/bar/",
             "key=value:ordinary",
             "perl_core_harness.report.v1",
         ] {
@@ -466,7 +463,9 @@ mod tests {
             host_path_kind("open '/etc/passwd';", PublicStringClass::SourceText),
             None
         );
-        assert_eq!(host_path_kind("/foo/bar", PublicStringClass::Regex), None);
+        for regex in ["m{/foo/bar}", "qr{/foo/bar}", "/foo/bar/"] {
+            assert_eq!(host_path_kind(regex, PublicStringClass::Regex), None);
+        }
     }
 
     #[test]
@@ -489,6 +488,27 @@ mod tests {
         let rendered = format!("{findings:?}");
         assert!(!rendered.contains("private.pl"));
         Ok(())
+    }
+
+    #[test]
+    fn source_classes_are_field_local_and_do_not_exempt_nested_maps() {
+        let value = serde_json::json!({
+            "source_text": {
+                "message": "/etc/passwd"
+            },
+            "source_code": ["open '/etc/passwd';", "my $x = 1;"],
+            "regex": "/foo/bar/"
+        });
+        let mut findings = Vec::new();
+        scan_json_value(
+            &value,
+            "normalized/report.json",
+            "",
+            PublicStringClass::Ordinary,
+            &mut findings,
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].pointer, "/source_text/message");
     }
 
     #[test]
