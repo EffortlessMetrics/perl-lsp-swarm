@@ -1,10 +1,18 @@
-use crate::model::{Finding, FindingKind};
+use crate::model::{Finding, FindingKind, TrustedWriter, TrustedWriterPolicy};
 use serde_yaml_ng::{Mapping, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const WORKFLOW_DIR: &str = ".github/workflows";
 const WRITE_SCOPES: &[&str] = &["actions", "contents", "pull-requests"];
+const CANDIDATE_EVENTS: &[&str] = &["pull_request", "pull_request_target", "merge_group"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionDisposition {
+    ExplicitReadOnly,
+    WriteCapable,
+    Unknown,
+}
 
 pub(crate) fn project_root() -> Result<PathBuf, String> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -14,6 +22,13 @@ pub(crate) fn project_root() -> Result<PathBuf, String> {
 }
 
 pub(crate) fn scan_repository(root: &Path) -> Result<Vec<Finding>, String> {
+    scan_repository_with_policy(root, &TrustedWriterPolicy::empty())
+}
+
+fn scan_repository_with_policy(
+    root: &Path,
+    policy: &TrustedWriterPolicy,
+) -> Result<Vec<Finding>, String> {
     let workflows = root.join(WORKFLOW_DIR);
     let entries = fs::read_dir(&workflows)
         .map_err(|error| format!("reading {}: {error}", workflows.display()))?;
@@ -41,7 +56,7 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<Finding>, String> {
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| format!("workflow filename is not valid UTF-8: {}", path.display()))?;
-        findings.extend(scan_workflow(name, &workflow));
+        findings.extend(scan_workflow_with_policy(name, &workflow, policy));
     }
     findings.sort();
     findings.dedup();
@@ -49,10 +64,18 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<Finding>, String> {
 }
 
 pub(crate) fn scan_workflow(workflow_name: &str, workflow: &Value) -> Vec<Finding> {
+    scan_workflow_with_policy(workflow_name, workflow, &TrustedWriterPolicy::empty())
+}
+
+pub(crate) fn scan_workflow_with_policy(
+    workflow_name: &str,
+    workflow: &Value,
+    policy: &TrustedWriterPolicy,
+) -> Vec<Finding> {
     let triggers = trigger_names(workflow);
     if !triggers
         .iter()
-        .any(|trigger| trigger == "pull_request" || trigger == "pull_request_target")
+        .any(|trigger| CANDIDATE_EVENTS.contains(&trigger.as_str()))
     {
         return Vec::new();
     }
@@ -70,22 +93,38 @@ pub(crate) fn scan_workflow(workflow_name: &str, workflow: &Value) -> Vec<Findin
         let Some(job) = job_value.as_mapping() else {
             continue;
         };
-        if job_is_statically_non_pr(job) || !job_has_write_authority(job, top_permissions) {
+        if job_is_statically_non_candidate(job) {
             continue;
         }
 
-        if let Some(uses) = job
-            .get(Value::String("uses".into()))
-            .and_then(Value::as_str)
-        {
-            scan_reusable_writer(workflow_name, job_name, uses, &mut findings);
+        match job_permission_disposition(job, top_permissions) {
+            PermissionDisposition::ExplicitReadOnly => continue,
+            PermissionDisposition::Unknown => {
+                findings.push(Finding {
+                    workflow: workflow_name.into(),
+                    job: job_name.into(),
+                    kind: FindingKind::UnprovenTokenAuthority,
+                    detail: "candidate-reachable job omits a complete explicit permission boundary; repository-default token authority is unknown"
+                        .into(),
+                });
+                continue;
+            }
+            PermissionDisposition::WriteCapable => {}
+        }
+
+        if let Some(uses) = mapping_get(job, "uses").and_then(Value::as_str) {
+            scan_reusable_writer(workflow_name, job_name, uses, policy, &mut findings);
             continue;
         }
 
-        let Some(steps) = job
-            .get(Value::String("steps".into()))
-            .and_then(Value::as_sequence)
-        else {
+        let Some(steps) = mapping_get(job, "steps").and_then(Value::as_sequence) else {
+            findings.push(Finding {
+                workflow: workflow_name.into(),
+                job: job_name.into(),
+                kind: FindingKind::CandidateDefinedWriter,
+                detail: "write-capable candidate job has neither an approved reusable-writer identity nor an inspectable step list"
+                    .into(),
+            });
             continue;
         };
         scan_writer_steps(workflow_name, job_name, steps, &mut findings);
@@ -97,6 +136,7 @@ fn scan_reusable_writer(
     workflow_name: &str,
     job_name: &str,
     uses: &str,
+    policy: &TrustedWriterPolicy,
     findings: &mut Vec<Finding>,
 ) {
     if uses.starts_with("./") {
@@ -105,16 +145,31 @@ fn scan_reusable_writer(
             job: job_name.into(),
             kind: FindingKind::LocalReusableWriter,
             detail: format!(
-                "write-capable PR job delegates to candidate-controlled reusable workflow `{uses}`"
+                "write-capable candidate job delegates to candidate-controlled reusable workflow `{uses}`"
             ),
         });
-    } else if !is_immutable_reusable_workflow(uses) {
+        return;
+    }
+
+    let Some(writer) = parse_remote_reusable_workflow(uses) else {
         findings.push(Finding {
             workflow: workflow_name.into(),
             job: job_name.into(),
             kind: FindingKind::MutableReusableWriter,
             detail: format!(
-                "write-capable PR job delegates to mutable or non-workflow reference `{uses}`"
+                "write-capable candidate job delegates to mutable, malformed, or non-workflow reference `{uses}`"
+            ),
+        });
+        return;
+    };
+    if !policy.contains(&writer) {
+        findings.push(Finding {
+            workflow: workflow_name.into(),
+            job: job_name.into(),
+            kind: FindingKind::UntrustedReusableWriter,
+            detail: format!(
+                "immutable reusable workflow `{uses}` is absent from trusted writer policy `{}`",
+                policy.policy_identity
             ),
         });
     }
@@ -130,14 +185,14 @@ fn scan_writer_steps(
         workflow: workflow_name.into(),
         job: job_name.into(),
         kind: FindingKind::CandidateDefinedWriter,
-        detail: "write-capable PR job is defined by candidate-controlled workflow steps".into(),
+        detail: "write-capable candidate job is defined by candidate-controlled workflow steps".into(),
     });
 
     for (index, step) in steps.iter().enumerate() {
         let Some(step) = step.as_mapping() else {
             continue;
         };
-        if let Some(run) = step.get(Value::String("run".into())).and_then(Value::as_str)
+        if let Some(run) = mapping_get(step, "run").and_then(Value::as_str)
             && run_self_modifies_writer(run)
         {
             findings.push(Finding {
@@ -173,40 +228,51 @@ fn trigger_names(workflow: &Value) -> Vec<String> {
     }
 }
 
-fn job_has_write_authority(job: &Mapping, top_permissions: Option<&Value>) -> bool {
-    job.get(Value::String("permissions".into()))
-        .or(top_permissions)
-        .is_some_and(permission_set_can_write)
+fn job_permission_disposition(
+    job: &Mapping,
+    top_permissions: Option<&Value>,
+) -> PermissionDisposition {
+    let permissions = mapping_get(job, "permissions").or(top_permissions);
+    let Some(permissions) = permissions else {
+        return PermissionDisposition::Unknown;
+    };
+    permission_set_disposition(permissions)
 }
 
-fn permission_set_can_write(value: &Value) -> bool {
-    if value.as_str() == Some("write-all") {
-        return true;
+fn permission_set_disposition(value: &Value) -> PermissionDisposition {
+    match value {
+        Value::String(value) if value == "read-all" => PermissionDisposition::ExplicitReadOnly,
+        Value::String(value) if value == "write-all" => PermissionDisposition::WriteCapable,
+        Value::Mapping(permissions) => {
+            if WRITE_SCOPES.iter().any(|scope| {
+                mapping_get(permissions, scope).and_then(Value::as_str) == Some("write")
+            }) {
+                PermissionDisposition::WriteCapable
+            } else {
+                PermissionDisposition::ExplicitReadOnly
+            }
+        }
+        _ => PermissionDisposition::Unknown,
     }
-    value.as_mapping().is_some_and(|permissions| {
-        WRITE_SCOPES.iter().any(|scope| {
-            permissions
-                .get(Value::String((*scope).into()))
-                .and_then(Value::as_str)
-                == Some("write")
-        })
-    })
 }
 
-fn job_is_statically_non_pr(job: &Mapping) -> bool {
-    job.get(Value::String("if".into()))
+fn job_is_statically_non_candidate(job: &Mapping) -> bool {
+    mapping_get(job, "if")
         .and_then(Value::as_str)
-        .is_some_and(condition_excludes_pull_request)
+        .is_some_and(condition_excludes_candidate_events)
 }
 
-fn condition_excludes_pull_request(condition: &str) -> bool {
+fn condition_excludes_candidate_events(condition: &str) -> bool {
     let Some(condition) = strip_outer_parentheses(condition) else {
         return false;
     };
     let Some(branches) = split_top_level(condition, "||") else {
         return false;
     };
-    !branches.is_empty() && branches.iter().all(|branch| branch_has_trusted_event_anchor(branch))
+    !branches.is_empty()
+        && branches
+            .iter()
+            .all(|branch| branch_has_trusted_event_anchor(branch))
 }
 
 fn branch_has_trusted_event_anchor(branch: &str) -> bool {
@@ -217,12 +283,17 @@ fn branch_has_trusted_event_anchor(branch: &str) -> bool {
         return false;
     };
     if or_branches.len() > 1 {
-        return or_branches.iter().all(|item| branch_has_trusted_event_anchor(item));
+        return or_branches
+            .iter()
+            .all(|item| branch_has_trusted_event_anchor(item));
     }
     let Some(terms) = split_top_level(branch, "&&") else {
         return false;
     };
-    !terms.is_empty() && terms.iter().any(|term| term_has_trusted_event_anchor(term))
+    !terms.is_empty()
+        && terms
+            .iter()
+            .any(|term| term_has_trusted_event_anchor(term))
 }
 
 fn term_has_trusted_event_anchor(term: &str) -> bool {
@@ -232,14 +303,17 @@ fn term_has_trusted_event_anchor(term: &str) -> bool {
     let Some(stripped) = strip_outer_parentheses(term) else {
         return false;
     };
-    stripped != term && condition_excludes_pull_request(stripped)
+    stripped != term && condition_excludes_candidate_events(stripped)
 }
 
 fn term_is_trusted_event_equality(term: &str) -> bool {
     let Some(term) = strip_outer_parentheses(term) else {
         return false;
     };
-    let normalized = term.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    let normalized = term
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
     matches!(
         normalized.as_str(),
         "github.event_name=='schedule'"
@@ -341,13 +415,27 @@ fn outer_parentheses_wrap_expression(expression: &str) -> Option<bool> {
     Some(false)
 }
 
-fn is_immutable_reusable_workflow(uses: &str) -> bool {
-    let Some((path, reference)) = uses.rsplit_once('@') else {
-        return false;
-    };
-    path.contains("/.github/workflows/")
-        && reference.len() == 40
-        && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
+fn parse_remote_reusable_workflow(uses: &str) -> Option<TrustedWriter> {
+    let (path, reference) = uses.rsplit_once('@')?;
+    if reference.len() != 40 || !reference.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let marker = "/.github/workflows/";
+    let marker_index = path.find(marker)?;
+    let repository = &path[..marker_index];
+    let workflow_path = &path[marker_index + 1..];
+    let mut repository_parts = repository.split('/');
+    let owner = repository_parts.next()?;
+    let name = repository_parts.next()?;
+    if owner.is_empty() || name.is_empty() || repository_parts.next().is_some() {
+        return None;
+    }
+    if !workflow_path.starts_with(".github/workflows/")
+        || !(workflow_path.ends_with(".yml") || workflow_path.ends_with(".yaml"))
+    {
+        return None;
+    }
+    Some(TrustedWriter::new(repository, workflow_path, reference))
 }
 
 fn run_self_modifies_writer(run: &str) -> bool {
@@ -363,10 +451,12 @@ fn run_self_modifies_writer(run: &str) -> bool {
 
 fn normalize_shell(run: &str) -> String {
     run.to_ascii_lowercase()
-        .replace('\n', " ")
-        .replace('\r', " ")
-        .replace('\t', " ")
+        .replace(['\n', '\r', '\t'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
+    mapping.get(&Value::String(key.to_string()))
 }
