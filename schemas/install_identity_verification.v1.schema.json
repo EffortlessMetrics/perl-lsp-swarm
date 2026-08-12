@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.github.io/perl-lsp/schemas/install_identity_verification.v1.schema.json",
+  "title": "perl-lsp install identity verification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "verdict", "reasons"],
+  "properties": {
+    "schema_version": { "const": "perl_lsp.install_identity_verification.v1" },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "version", "target", "candidate_identity", "dap_required"],
+      "properties": {
+        "product": { "const": "perl-lsp" },
+        "version": { "$ref": "#/$defs/identity" },
+        "target": { "anyOf": [{ "$ref": "#/$defs/identity" }, { "type": "null" }] },
+        "candidate_identity": {
+          "anyOf": [{ "$ref": "#/$defs/identity" }, { "type": "null" }]
+        },
+        "dap_required": { "type": "boolean" }
+      }
+    },
+    "binaries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "filename", "sha256", "packet"],
+        "properties": {
+          "role": { "enum": ["server", "dap"] },
+          "filename": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "packet": { "type": "object" }
+        }
+      }
+    },
+    "verdict": { "enum": ["verified", "mismatch", "not_proven"] },
+    "reasons": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9._:@/+\\-]+$"
+    }
+  }
+}
