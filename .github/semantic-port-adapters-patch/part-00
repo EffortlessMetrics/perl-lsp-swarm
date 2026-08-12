@@ -1,0 +1,331 @@
+diff --git a/.changes/unreleased/product-6846-Added-210342.yaml b/.changes/unreleased/product-6846-Added-210342.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..d60adb48d705d4fe486c30bf6901fb7fa1a38da1
+--- /dev/null
++++ b/.changes/unreleased/product-6846-Added-210342.yaml
+@@ -0,0 +1,9 @@
++project: product
++component: Language server
++kind: Added
++body: Added truthful provider-port adapters for current parser, semantic-analyzer, workspace-index, ProjectModel, and already-canonical compiler or framework facts, with request-bound completeness, generation, freshness, and producer evidence.
++time: 2026-08-11T21:03:42Z
++custom:
++  PR: "6846"
++  Slug: semantic-provider-fact-adapters
++  Breaking: "no"
+diff --git a/crates/perl-lsp-rs-core/src/providers/mod.rs b/crates/perl-lsp-rs-core/src/providers/mod.rs
+index ff2bd7cfae080ca7c406d62df6c89e6a78237936..d712fa3a67f39faa99ee167a8bf5b0eb2aa965b9 100644
+--- a/crates/perl-lsp-rs-core/src/providers/mod.rs
++++ b/crates/perl-lsp-rs-core/src/providers/mod.rs
+@@ -14,6 +14,7 @@
+ pub mod completion_item;
+ pub mod provider_decision;
+ pub mod semantic_port;
++pub mod semantic_port_adapters;
+ pub mod symbol_query;
+ 
+ // Group 2 -- consumers of Group 1 helpers
+@@ -82,6 +83,7 @@ pub use provider_decision::*;
+ pub use rename::*;
+ pub use selection_range::*;
+ pub use semantic_port::*;
++pub use semantic_port_adapters::*;
+ pub use semantic_tokens::*;
+ pub use symbol_query::*;
+ pub use type_hierarchy::*;
+diff --git a/crates/perl-lsp-rs-core/src/providers/semantic_port.rs b/crates/perl-lsp-rs-core/src/providers/semantic_port.rs
+index 375f5d91abfe167401561bb6e441e3d1e155ce63..83be29055c9128c1f303e7a4af4d6ecc96592a2e 100644
+--- a/crates/perl-lsp-rs-core/src/providers/semantic_port.rs
++++ b/crates/perl-lsp-rs-core/src/providers/semantic_port.rs
+@@ -30,6 +30,7 @@ pub use model::{
+ pub use result::*;
+ 
+ use model::{facts_are_related, semantic_provenance_is_exact};
++pub(crate) use model::issue_provider_completeness_grant;
+ use perl_semantic_facts::{FactId, SemanticFactEnvelope};
+ use std::error::Error;
+ use std::fmt;
+diff --git a/crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs b/crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs
+index 489801c489029d2e4a22c4b27464e76f1018f956..00e1270f9d2bffad316c4187cfd35cebb234275c 100644
+--- a/crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs
++++ b/crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs
+@@ -750,3 +750,52 @@ pub(crate) fn facts_are_related(left: &ProviderQueryFact, right: &ProviderQueryF
+             .and_then(|boundary| boundary.boundary_id)
+             == Some(left.envelope.fact_id)
+ }
++
++/// Issue exact-empty completeness authority from a concrete producer-owned denominator.
++///
++/// This constructor remains crate-private: adapters must bind the grant to the
++/// original request and retain an actual denominator and snapshot identity.
++#[allow(clippy::too_many_arguments)]
++pub(crate) fn issue_provider_completeness_grant(
++    request: &ProviderQueryRequest,
++    producer: SemanticProducer,
++    denominator_id: impl Into<String>,
++    snapshot_id: impl Into<String>,
++    covered_unit_count: u64,
++    provenance: SemanticProvenance,
++    confidence: SemanticConfidence,
++    freshness: SemanticFreshness,
++) -> Result<ProviderCompletenessGrant, ProviderQueryContractError> {
++    let capability = ProviderQueryCapability::from_query(&request.kind);
++    let denominator_id = denominator_id.into();
++    let snapshot_id = snapshot_id.into();
++    if !request.is_well_formed()
++        || !request.context.is_exact_ready()
++        || producer == SemanticProducer::Unknown
++        || denominator_id.trim().is_empty()
++        || snapshot_id.trim().is_empty()
++        || covered_unit_count == 0
++        || !semantic_provenance_is_exact(provenance)
++        || confidence != SemanticConfidence::Known(Confidence::High)
++        || freshness != SemanticFreshness::Fresh
++    {
++        return Err(ProviderQueryContractError::InvalidCompletenessGrant);
++    }
++
++    Ok(ProviderCompletenessGrant {
++        authority: ProviderCompletenessAuthorityReceipt {
++            capability,
++            project_identity: request.context.project_identity.clone(),
++            root_identity: request.context.root_identity.clone(),
++            document_generation: request.context.document_generation.clone(),
++            workspace_generation: request.context.workspace_generation.clone(),
++            producer,
++            denominator_id,
++            snapshot_id,
++            covered_unit_count,
++        },
++        provenance,
++        confidence,
++        freshness,
++    })
++}
+diff --git a/crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs b/crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..61cc25821f9424e89ebcb6404108140f24404cc1
+--- /dev/null
++++ b/crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs
+@@ -0,0 +1,2155 @@
++//! Truthful adapters from current semantic fact producers into the provider port.
++//!
++//! This module is additive: it does not route live provider requests or change
++//! provider answers. It adapts current file-fact shards and already-canonical
++//! semantic envelopes into the checked query contract while preserving source,
++//! generation, producer, provenance, confidence, lifecycle, and boundary state.
++//!
++//! Exact-empty authority is intentionally narrow. Only a concrete, file-bounded
++//! [`FileFactShard`] denominator whose category hashes prove coverage may issue a
++//! request-bound completeness grant. Canonical envelope collections never infer
++//! completeness from the presence, label, or producer of unrelated facts.
++
++use super::semantic_port::{
++    ProviderCompletenessGrant, ProviderFactGenerationScope, ProviderQueryCapability,
++    ProviderQueryContractError, ProviderQueryControl, ProviderQueryEvidenceInput,
++    ProviderQueryFact, ProviderQueryFactRole, ProviderQueryKind, ProviderQueryOutcome,
++    ProviderQueryRequest, ProviderQueryResultDraft, ProviderQuerySubject,
++    ProviderQueryTerminalState, ProviderReadinessRequirement, ProviderReadinessState,
++    ProviderResultPath, ProviderSemanticPort, issue_provider_completeness_grant,
++};
++use perl_semantic_facts::{
++    AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityFact,
++    EntityId, EntityKind, FactId, FileId, LifecyclePhase, OccurrenceFact, OccurrenceId,
++    OccurrenceKind, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
++    ProviderFallbackState, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind,
++    SemanticFactStatus, SemanticFreshness, SemanticProducer, SemanticProvenance,
++    SemanticReasonCode, SourceAnchor, SourceGeneration,
++};
++use perl_workspace::workspace::workspace_index::FileFactShard;
++use serde::Serialize;
++use std::collections::{BTreeMap, BTreeSet};
++use std::error::Error;
++use std::fmt;
++
++/// Producer boundary represented by a current [`FileFactShard`].
++///
++/// This constrained vocabulary prevents a caller from relabeling parser or
++/// workspace facts as HIR, PIR-A, or framework facts. Actual compiler facts must
++/// enter through [`CanonicalEnvelopePort`] with their canonical producer intact.
++#[non_exhaustive]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
++pub enum FileFactShardSource {
++    /// Current-document parser/AST projection.
++    ParserAst,
++    /// Current-document semantic-analyzer projection.
++    SemanticAnalyzer,
++    /// Canonical workspace-index shard.
++    WorkspaceIndex,
++    /// Current ProjectModel projection stored in the existing workspace producer vocabulary.
++    ///
++    /// `perl-semantic-facts` does not yet define a distinct ProjectModel producer.
++    /// This variant therefore retains `WorkspaceIndex` rather than manufacturing
++    /// compiler attribution. It also cannot issue exact-empty authority.
++    ProjectModel,
++}
++
++impl FileFactShardSource {
++    fn producer(self) -> SemanticProducer {
++        match self {
++            Self::ParserAst => SemanticProducer::Parser,
++            Self::SemanticAnalyzer => SemanticProducer::SemanticAnalyzer,
++            Self::WorkspaceIndex | Self::ProjectModel => SemanticProducer::WorkspaceIndex,
++        }
++    }
++
++    fn trace_source(self) -> ProviderFactSourceKind {
++        match self {
++            Self::ParserAst => ProviderFactSourceKind::ParserSyntax,
++            Self::SemanticAnalyzer | Self::ProjectModel => ProviderFactSourceKind::SemanticFact,
++            Self::WorkspaceIndex => ProviderFactSourceKind::LegacyWorkspace,
++        }
++    }
++
++    fn generation_scope(self) -> ProviderFactGenerationScope {
++        match self {
++            Self::ParserAst | Self::SemanticAnalyzer => ProviderFactGenerationScope::Document,
++            Self::WorkspaceIndex | Self::ProjectModel => ProviderFactGenerationScope::Workspace,
++        }
++    }
++
++    fn source_generation(self, snapshot: &ProviderAdapterSnapshot) -> SourceGeneration {
++        match self.generation_scope() {
++            ProviderFactGenerationScope::Document => snapshot.document_generation.clone(),
++            ProviderFactGenerationScope::Workspace => snapshot.workspace_generation.clone(),
++        }
++    }
++
++    fn completeness_provenance(self) -> Option<SemanticProvenance> {
++        match self {
++            Self::ParserAst | Self::WorkspaceIndex => {
++                Some(SemanticProvenance::Known(Provenance::ExactAst))
++            }
++            Self::SemanticAnalyzer => {
++                Some(SemanticProvenance::Known(Provenance::SemanticAnalyzer))
++            }
++            Self::ProjectModel => None,
++        }
++    }
++
++    fn unavailable_provenance(self) -> Provenance {
++        match self {
++            Self::ParserAst | Self::WorkspaceIndex => Provenance::ExactAst,
++            Self::SemanticAnalyzer | Self::ProjectModel => Provenance::SemanticAnalyzer,
++        }
++    }
++
++    fn unavailable_confidence(self) -> Confidence {
++        match self {
++            Self::ProjectModel => Confidence::Medium,
++            Self::ParserAst | Self::SemanticAnalyzer | Self::WorkspaceIndex => Confidence::High,
++        }
++    }
++
++    const fn token(self) -> &'static str {
++        match self {
++            Self::ParserAst => "parser_ast",
++            Self::SemanticAnalyzer => "semantic_analyzer",
++            Self::WorkspaceIndex => "workspace_index",
++            Self::ProjectModel => "project_model",
++        }
++    }
++}
++
++/// Request-independent metadata for one adapted producer snapshot.
++///
++/// Fields are private and this type intentionally does not implement
++/// `Deserialize`. Exactness is rechecked against every request; serialized labels
++/// cannot restore authority or bypass the request-generation/readiness guard.
++#[non_exhaustive]
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub struct ProviderAdapterSnapshot {
++    document_generation: SourceGeneration,
++    workspace_generation: SourceGeneration,
++    freshness: SemanticFreshness,
++    lifecycle: LifecyclePhase,
++    fallback_state: ProviderFallbackState,
++    model_version: Option<u32>,
++}
++
++impl ProviderAdapterSnapshot {
++    /// Construct validated adapter snapshot metadata.
++    pub fn try_new(
++        document_generation: SourceGeneration,
++        workspace_generation: SourceGeneration,
++        freshness: SemanticFreshness,
++        lifecycle: LifecyclePhase,
++        fallback_state: ProviderFallbackState,
++        model_version: Option<u32>,
++    ) -> Result<Self, ProviderAdapterError> {
++        if generation_is_malformed(&document_generation)
++            || generation_is_malformed(&workspace_generation)
++        {
++            return Err(ProviderAdapterError::InvalidSnapshot(
++                "known generations must be non-empty".to_string(),
++            ));
++        }
++        Ok(Self {
++            document_generation,
++            workspace_generation,
++            freshness,
++            lifecycle,
++            fallback_state,
++            model_version,
++        })
++    }
++
++    /// Document generation represented by this snapshot.
++    #[must_use]
++    pub const fn document_generation(&self) -> &SourceGeneration {
++        &self.document_generation
++    }
++
++    /// Workspace/model generation represented by this snapshot.
++    #[must_use]
++    pub const fn workspace_generation(&self) -> &SourceGeneration {
++        &self.workspace_generation
++    }
++
++    /// Producer-snapshot freshness.
++    #[must_use]
++    pub const fn freshness(&self) -> SemanticFreshness {
++        self.freshness
++    }
++
++    /// Lifecycle phase represented by the adapted facts.
++    #[must_use]
++    pub const fn lifecycle(&self) -> LifecyclePhase {
++        self.lifecycle
++    }
++
++    /// Whether this snapshot is primary, fallback, shadow, unavailable, or blocked.
++    #[must_use]
++    pub const fn fallback_state(&self) -> ProviderFallbackState {
++        self.fallback_state
++    }
++
++    /// Optional producer model/schema version retained in traces.
++    #[must_use]
++    pub const fn model_version(&self) -> Option<u32> {
++        self.model_version
++    }
++
++    fn matches_request(&self, request: &ProviderQueryRequest) -> bool {
++        generation_is_known(&self.document_generation)
++            && generation_is_known(&self.workspace_generation)
++            && self.document_generation == request.context.document_generation
++            && self.workspace_generation == request.context.workspace_generation
++    }
++
++    fn is_primary(&self) -> bool {
++        self.fallback_state == ProviderFallbackState::Primary
++    }
++
++    fn is_fallback(&self) -> bool {
++        self.fallback_state == ProviderFallbackState::Fallback
++    }
++
++    fn can_claim_exact(&self, request: &ProviderQueryRequest) -> bool {
++        self.matches_request(request)
++            && self.is_primary()
++            &
