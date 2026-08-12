@@ -23,6 +23,15 @@ fn request(id: i64, method: &str, params: Value) -> JsonRpcRequest {
     }
 }
 
+fn request_without_params(id: i64, method: &str) -> JsonRpcRequest {
+    JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(JsonRpcId::Integer(id)),
+        method: method.to_string(),
+        params: None,
+    }
+}
+
 fn initialize(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
     let response = server
         .handle_request(request(1, "initialize", json!({})))
@@ -420,6 +429,44 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn disabled_formatting_surfaces_return_method_not_advertised_even_without_params()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    initialize(&server)?;
+    {
+        let mut features = server.advertised_features.lock();
+        features.formatting = false;
+        features.range_formatting = false;
+    }
+    server.advertised_feature_ids.lock().retain(|id| {
+        *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING
+            && *id != perl_lsp_rs_core::features::ids::LSP_RANGE_FORMATTING
+            && *id != perl_lsp_rs_core::features::ids::LSP_RANGES_FORMATTING
+            && *id != perl_lsp_rs_core::features::ids::LSP_ON_TYPE_FORMATTING
+    });
+
+    for (offset, method) in [
+        "textDocument/formatting",
+        "textDocument/rangeFormatting",
+        "textDocument/rangesFormatting",
+        "textDocument/onTypeFormatting",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let response = server
+            .handle_request(request_without_params(300 + offset as i64, method))
+            .ok_or_else(|| format!("{method} returned no response"))?;
+        let code = response.error.as_ref().map(|error| error.code).unwrap_or(0);
+        assert_eq!(
+            code, -32601,
+            "{method} with missing params must still return method-not-advertised (-32601), got {code}"
+        );
+    }
     Ok(())
 }
 

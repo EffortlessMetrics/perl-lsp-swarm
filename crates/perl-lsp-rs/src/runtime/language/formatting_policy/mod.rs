@@ -203,6 +203,14 @@ impl LspServer {
         }
     }
 
+    /// Fail closed with method-not-advertised before parameter validation.
+    fn ensure_surface_advertised(&self, surface: Surface) -> Result<(), JsonRpcError> {
+        if self.surface_advertised(surface) {
+            return Ok(());
+        }
+        Err(crate::protocol::method_not_advertised())
+    }
+
     fn effective_formatting_config(&self) -> Result<EffectiveConfig, JsonRpcError> {
         let discovered_profile = self.discovered_perltidy_profile.lock().clone();
         let config = self.config.lock();
@@ -248,9 +256,7 @@ impl LspServer {
     }
 
     fn admit(&self, surface: Surface, params: &Value) -> Result<Snapshot, JsonRpcError> {
-        if !self.surface_advertised(surface) {
-            return Err(crate::protocol::method_not_advertised());
-        }
+        self.ensure_surface_advertised(surface)?;
 
         let uri = req_uri(params)?.to_string();
         let (text, version, generation) = {

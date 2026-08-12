@@ -11,6 +11,7 @@ impl LspServer {
         let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
         let token = cancellation_token(typed_id.as_ref(), Surface::Document);
         self.ensure_not_cancelled(Surface::Document, token.as_ref(), None, None)?;
+        self.ensure_surface_advertised(Surface::Document)?;
         let params = params.ok_or_else(|| invalid_params("Missing formatting parameters"))?;
         let snapshot = self.admit(Surface::Document, &params)?;
         self.ensure_not_cancelled(Surface::Document, token.as_ref(), Some(&snapshot), None)?;
@@ -44,6 +45,7 @@ impl LspServer {
         let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
         let token = cancellation_token(typed_id.as_ref(), Surface::Range);
         self.ensure_not_cancelled(Surface::Range, token.as_ref(), None, None)?;
+        self.ensure_surface_advertised(Surface::Range)?;
         let params = params.ok_or_else(|| invalid_params("Missing range-formatting parameters"))?;
         let snapshot = self.admit(Surface::Range, &params)?;
         let range = parse_range(
@@ -84,6 +86,7 @@ impl LspServer {
         let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
         let token = cancellation_token(typed_id.as_ref(), Surface::Ranges);
         self.ensure_not_cancelled(Surface::Ranges, token.as_ref(), None, None)?;
+        self.ensure_surface_advertised(Surface::Ranges)?;
         let params =
             params.ok_or_else(|| invalid_params("Missing multi-range formatting parameters"))?;
         let snapshot = self.admit(Surface::Ranges, &params)?;
@@ -255,6 +258,7 @@ impl LspServer {
         let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
         let token = cancellation_token(typed_id.as_ref(), Surface::OnType);
         self.ensure_not_cancelled(Surface::OnType, token.as_ref(), None, None)?;
+        self.ensure_surface_advertised(Surface::OnType)?;
         let params =
             params.ok_or_else(|| invalid_params("Missing on-type formatting parameters"))?;
         let snapshot = self.admit(Surface::OnType, &params)?;
