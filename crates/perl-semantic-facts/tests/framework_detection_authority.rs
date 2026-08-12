@@ -1,7 +1,9 @@
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
     AdapterDisposition, AdapterId, DetectionAbsenceReason, DetectionAuthorityError,
-    DetectionConfigurationEvidence, DetectionOutcome, ModuleActivationIdentity,
+    DetectionConfigurationEvidence, DetectionConfigurationObservation,
+    DetectionConfigurationValue, DetectionEvidenceClass, DetectionOutcome,
+    ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
     ModuleVersionEvidence,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
@@ -32,14 +34,51 @@ fn module(name: &str, generation: &str, version: Option<&str>) -> ModuleActivati
     }
 }
 
-fn input(modules: Vec<ModuleActivationIdentity>) -> AdapterDetectionInput {
+fn observation(
+    evaluations: Vec<ModuleSelectorEvaluation>,
+) -> ModuleObservationReceipt {
+    ModuleObservationReceipt::new(
+        "module-resolver.v1",
+        "root:fixture",
+        "project-environment.v1",
+        SourceGeneration::known("project-1"),
+        "sha256:input",
+        evaluations,
+    )
+}
+
+fn input(evaluations: Vec<ModuleSelectorEvaluation>) -> AdapterDetectionInput {
     AdapterDetectionInput::new(
         descriptor(None),
-        modules,
-        SourceGeneration::known("project-1"),
-        Some("sha256:input".into()),
+        observation(evaluations),
         None,
         AdapterCancellation::active(),
+    )
+}
+
+fn matched_moo(
+    version: Option<&str>,
+    evidence_class: DetectionEvidenceClass,
+) -> (ModuleSelectorEvaluation, ModuleActivationIdentity) {
+    let activation = module("Moo", "project-1", version);
+    (
+        ModuleSelectorEvaluation::matched("Moo", activation.clone(), evidence_class),
+        activation,
+    )
+}
+
+fn configuration_observation(
+    value: bool,
+) -> DetectionConfigurationObservation {
+    DetectionConfigurationObservation::new(
+        "workspace-config:perl-lsp.toml",
+        "sha256:configuration",
+        "frameworks.moo.disabled",
+        DetectionConfigurationValue::Boolean(value),
+        "root:fixture",
+        SourceGeneration::known("project-1"),
+        "project-environment-config.v1",
+        "framework-config.v1",
     )
 }
 
@@ -53,7 +92,8 @@ fn raw_deserialized_shape_cannot_self_authorize_detection() {
             framework_version: None,
         },
     );
-    let observed = input(vec![module("Moo", "project-1", None)]);
+    let (evaluation, _) = matched_moo(None, DetectionEvidenceClass::ResolvedModule);
+    let observed = input(vec![evaluation]);
     assert_eq!(
         result.validate_authority_against(&observed),
         Err(DetectionAuthorityError::MissingInputIdentity)
@@ -62,8 +102,8 @@ fn raw_deserialized_shape_cannot_self_authorize_detection() {
 
 #[test]
 fn required_module_present_invalidates_missing_module_verdict() {
-    let observed = input(vec![module("Moo", "project-1", None)])
-        .with_complete_module_observation();
+    let (evaluation, _) = matched_moo(None, DetectionEvidenceClass::ResolvedModule);
+    let observed = input(vec![evaluation]);
     let result = AdapterDetectionResult::for_input(
         &observed,
         DetectionOutcome::Absent {
@@ -77,8 +117,11 @@ fn required_module_present_invalidates_missing_module_verdict() {
 }
 
 #[test]
-fn partial_module_universe_cannot_prove_absence() {
-    let observed = input(Vec::new());
+fn unresolved_selector_cannot_prove_absence() {
+    let observed = input(vec![ModuleSelectorEvaluation::unresolved(
+        "Moo",
+        "module resolver unavailable",
+    )]);
     let result = AdapterDetectionResult::for_input(
         &observed,
         DetectionOutcome::Absent {
@@ -93,8 +136,10 @@ fn partial_module_universe_cannot_prove_absence() {
 
 #[test]
 fn copied_result_cannot_authorize_another_input() {
-    let first = input(vec![module("Moo", "project-1", None)]);
-    let second = input(vec![module("Moo::Role", "project-1", None)]);
+    let (first_evaluation, first_activation) =
+        matched_moo(None, DetectionEvidenceClass::ResolvedModule);
+    let first = input(vec![first_evaluation]);
+    let second = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
     let result = AdapterDetectionResult::for_input(
         &first,
         DetectionOutcome::Detected {
@@ -102,7 +147,7 @@ fn copied_result_cannot_authorize_another_input() {
             framework_version: None,
         },
     )
-    .with_contributing_modules(first.available_modules.clone());
+    .with_contributing_modules(vec![first_activation]);
     assert_eq!(
         result.validate_authority_against(&second),
         Err(DetectionAuthorityError::InputIdentityMismatch)
@@ -111,7 +156,8 @@ fn copied_result_cannot_authorize_another_input() {
 
 #[test]
 fn version_string_without_observed_module_evidence_is_not_authority() {
-    let mut observed = input(vec![module("Moo", "project-1", None)]);
+    let (evaluation, activation) = matched_moo(None, DetectionEvidenceClass::ResolvedModule);
+    let mut observed = input(vec![evaluation]);
     observed.descriptor = descriptor(Some(">=2"));
     let result = AdapterDetectionResult::for_input(
         &observed,
@@ -120,7 +166,7 @@ fn version_string_without_observed_module_evidence_is_not_authority() {
             framework_version: Some("2.1".into()),
         },
     )
-    .with_contributing_modules(observed.available_modules.clone())
+    .with_contributing_modules(vec![activation])
     .with_version_evidence(ModuleVersionEvidence::new(
         "2.1",
         SourceGeneration::known("project-1"),
@@ -133,7 +179,7 @@ fn version_string_without_observed_module_evidence_is_not_authority() {
 
 #[test]
 fn configuration_exclusion_requires_matching_typed_fact() {
-    let observed = input(Vec::new()).with_complete_module_observation();
+    let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
     let result = AdapterDetectionResult::for_input(
         &observed,
         DetectionOutcome::Absent {
@@ -148,8 +194,9 @@ fn configuration_exclusion_requires_matching_typed_fact() {
 
 #[test]
 fn exact_current_detected_result_is_authoritative() {
-    let activation = module("Moo", "project-1", Some("2.1"));
-    let mut observed = input(vec![activation.clone()]);
+    let (evaluation, activation) =
+        matched_moo(Some("2.1"), DetectionEvidenceClass::ResolvedModule);
+    let mut observed = input(vec![evaluation]);
     observed.descriptor = descriptor(Some(">=2"));
     let result = AdapterDetectionResult::for_input(
         &observed,
@@ -167,8 +214,8 @@ fn exact_current_detected_result_is_authoritative() {
 }
 
 #[test]
-fn complete_current_missing_module_result_is_authoritative() {
-    let observed = input(Vec::new()).with_complete_module_observation();
+fn exact_complete_missing_module_result_is_authoritative() {
+    let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
     let result = AdapterDetectionResult::for_input(
         &observed,
         DetectionOutcome::Absent {
@@ -180,15 +227,14 @@ fn complete_current_missing_module_result_is_authoritative() {
 
 #[test]
 fn exact_configuration_exclusion_is_authoritative() {
+    let observation = configuration_observation(true);
+    let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")])
+        .with_configuration_observations(vec![observation.clone()]);
     let evidence = DetectionConfigurationEvidence::new(
-        "frameworks.moo.disabled",
-        "root:fixture",
-        SourceGeneration::known("project-1"),
-        "framework-config.v1",
+        observation,
+        DetectionConfigurationValue::Boolean(true),
+        "exclude-moo-when-disabled.v1",
     );
-    let observed = input(Vec::new())
-        .with_complete_module_observation()
-        .with_configuration_evidence(vec![evidence.clone()]);
     let result = AdapterDetectionResult::for_input(
         &observed,
         DetectionOutcome::Absent {
@@ -200,9 +246,9 @@ fn exact_configuration_exclusion_is_authoritative() {
 }
 
 #[test]
-fn duplicate_or_cross_generation_module_rows_fail_closed() {
-    let duplicate = module("Moo", "project-1", None);
-    let observed = input(vec![duplicate.clone(), duplicate]);
+fn duplicate_or_cross_generation_selector_rows_fail_closed() {
+    let (evaluation, _) = matched_moo(None, DetectionEvidenceClass::ResolvedModule);
+    let observed = input(vec![evaluation.clone(), evaluation]);
     let result = AdapterDetectionResult::for_input(
         &observed,
         DetectionOutcome::Detected {
@@ -212,10 +258,15 @@ fn duplicate_or_cross_generation_module_rows_fail_closed() {
     );
     assert_eq!(
         result.validate_authority_against(&observed),
-        Err(DetectionAuthorityError::InvalidModuleEvidence)
+        Err(DetectionAuthorityError::InvalidSelectorEvidence)
     );
 
-    let stale = input(vec![module("Moo", "project-0", None)]);
+    let stale_activation = module("Moo", "project-0", None);
+    let stale = input(vec![ModuleSelectorEvaluation::matched(
+        "Moo",
+        stale_activation,
+        DetectionEvidenceClass::ResolvedModule,
+    )]);
     let result = AdapterDetectionResult::for_input(
         &stale,
         DetectionOutcome::Detected {
@@ -226,5 +277,86 @@ fn duplicate_or_cross_generation_module_rows_fail_closed() {
     assert_eq!(
         result.validate_authority_against(&stale),
         Err(DetectionAuthorityError::InvalidModuleEvidence)
+    );
+}
+
+#[test]
+fn empty_content_digest_has_its_own_failure_class() {
+    let (evaluation, _) = matched_moo(None, DetectionEvidenceClass::ResolvedModule);
+    let mut observed = input(vec![evaluation]);
+    observed.module_observation.content_digest.clear();
+    let result = AdapterDetectionResult::for_input(
+        &observed,
+        DetectionOutcome::Detected {
+            confidence: Confidence::High,
+            framework_version: None,
+        },
+    );
+    assert_eq!(
+        result.validate_authority_against(&observed),
+        Err(DetectionAuthorityError::InvalidContentDigest)
+    );
+}
+
+#[test]
+fn descriptor_owned_selector_cannot_be_substituted() {
+    let foo = module("Foo", "project-1", None);
+    let observed = input(vec![ModuleSelectorEvaluation::matched(
+        "Foo",
+        foo,
+        DetectionEvidenceClass::ResolvedModule,
+    )]);
+    let result = AdapterDetectionResult::for_input(
+        &observed,
+        DetectionOutcome::Detected {
+            confidence: Confidence::High,
+            framework_version: None,
+        },
+    );
+    assert_eq!(
+        result.validate_authority_against(&observed),
+        Err(DetectionAuthorityError::InvalidSelectorEvidence)
+    );
+}
+
+#[test]
+fn asserted_high_confidence_cannot_upgrade_probable_evidence() {
+    let (evaluation, activation) =
+        matched_moo(None, DetectionEvidenceClass::ProbableImport);
+    let observed = input(vec![evaluation]);
+    let result = AdapterDetectionResult::for_input(
+        &observed,
+        DetectionOutcome::Detected {
+            confidence: Confidence::High,
+            framework_version: None,
+        },
+    )
+    .with_contributing_modules(vec![activation]);
+    assert_eq!(
+        result.validate_authority_against(&observed),
+        Err(DetectionAuthorityError::InsufficientConfidence)
+    );
+}
+
+#[test]
+fn matching_key_with_nonexcluding_value_cannot_prove_exclusion() {
+    let observation = configuration_observation(false);
+    let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")])
+        .with_configuration_observations(vec![observation.clone()]);
+    let evidence = DetectionConfigurationEvidence::new(
+        observation,
+        DetectionConfigurationValue::Boolean(true),
+        "exclude-moo-when-disabled.v1",
+    );
+    let result = AdapterDetectionResult::for_input(
+        &observed,
+        DetectionOutcome::Absent {
+            reason: DetectionAbsenceReason::ExcludedByConfiguration,
+        },
+    )
+    .with_configuration_evidence(evidence);
+    assert_eq!(
+        result.validate_authority_against(&observed),
+        Err(DetectionAuthorityError::ConfigurationRuleNotSatisfied)
     );
 }

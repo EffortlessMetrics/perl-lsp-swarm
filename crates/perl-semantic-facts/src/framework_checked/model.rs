@@ -2,55 +2,237 @@ use super::{
     AdapterBudget, AdapterCancellation, AdapterDescriptor, DetectionOutcome,
     ModuleActivationIdentity, ModuleVersionEvidence, FRAMEWORK_ADAPTER_SDK_VERSION,
 };
-use crate::SourceGeneration;
+use crate::{Confidence, SourceGeneration};
 use serde::{Deserialize, Serialize};
 
 /// Current schema for checked detection input identities and receipts.
 pub const DETECTION_AUTHORITY_SCHEMA_VERSION: u32 = 1;
 
-/// Completeness of the module population observed for one project/root scope.
+/// Evidence class emitted by the canonical module/import observation producer.
 #[non_exhaustive]
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
-)]
-pub enum ModuleObservationCompleteness {
-    /// Every relevant module selector was evaluated against a complete universe.
-    Complete,
-    /// Positive rows may be usable, but missing rows cannot prove absence.
-    #[default]
-    Partial,
-    /// Module observation was unavailable.
-    Unavailable,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum DetectionEvidenceClass {
+    /// Exact resolved module identity in the current project/root.
+    ResolvedModule,
+    /// Exact resolved import/activation fact in the current scope.
+    ResolvedImport,
+    /// Probable import inferred from incomplete evidence.
+    ProbableImport,
+    /// Name-only heuristic without resolved module identity.
+    NameOnly,
 }
 
-/// Typed configuration fact capable of proving an explicit framework exclusion.
+impl DetectionEvidenceClass {
+    /// Maximum confidence this evidence class can support.
+    #[must_use]
+    pub const fn confidence_ceiling(self) -> Confidence {
+        match self {
+            Self::ResolvedModule | Self::ResolvedImport => Confidence::High,
+            Self::ProbableImport => Confidence::Medium,
+            Self::NameOnly => Confidence::Low,
+        }
+    }
+}
+
+/// One descriptor-owned module selector evaluation.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct DetectionConfigurationEvidence {
-    /// Stable exclusion key or rule identity.
-    pub exclusion_key: String,
-    /// Root, package, or source scope to which the exclusion applies.
+pub enum ModuleSelectorOutcome {
+    /// Selector matched one exact activation row.
+    Matched {
+        /// Current activation identity.
+        activation: ModuleActivationIdentity,
+        /// Evidence class that established the match.
+        evidence_class: DetectionEvidenceClass,
+    },
+    /// Complete resolver evidence established absence.
+    Absent,
+    /// Resolver could not resolve the selector.
+    Unresolved { reason: String },
+    /// More than one candidate prevented a unique verdict.
+    Ambiguous { reason: String },
+    /// Resolver or environment evidence was unavailable.
+    Unavailable { reason: String },
+}
+
+/// One exact selector and its observed terminal or incomplete outcome.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ModuleSelectorEvaluation {
+    /// Exact module selector evaluated by the resolver.
+    pub selector: String,
+    /// Resolver result for that selector.
+    pub outcome: ModuleSelectorOutcome,
+}
+
+impl ModuleSelectorEvaluation {
+    /// Construct an exact matched selector row.
+    #[must_use]
+    pub fn matched(
+        selector: impl Into<String>,
+        activation: ModuleActivationIdentity,
+        evidence_class: DetectionEvidenceClass,
+    ) -> Self {
+        Self {
+            selector: selector.into(),
+            outcome: ModuleSelectorOutcome::Matched {
+                activation,
+                evidence_class,
+            },
+        }
+    }
+
+    /// Construct an exact absent selector row.
+    #[must_use]
+    pub fn absent(selector: impl Into<String>) -> Self {
+        Self {
+            selector: selector.into(),
+            outcome: ModuleSelectorOutcome::Absent,
+        }
+    }
+
+    /// Construct an unresolved selector row.
+    #[must_use]
+    pub fn unresolved(selector: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            selector: selector.into(),
+            outcome: ModuleSelectorOutcome::Unresolved {
+                reason: reason.into(),
+            },
+        }
+    }
+}
+
+/// Checked module/import observation packet consumed by detection validation.
+///
+/// Completeness is derived from one terminal evaluation per descriptor-owned
+/// selector. There is no public `complete = true` switch.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleObservationReceipt {
+    /// Observation schema.
+    pub schema_version: u32,
+    /// Versioned canonical resolver/discovery implementation identity.
+    pub resolver_identity: String,
+    /// Exact project/root/package scope observed.
     pub scope_identity: String,
-    /// Generation that produced the configuration fact.
+    /// Exact project environment identity.
+    pub environment_identity: String,
+    /// Current project generation.
     pub generation: SourceGeneration,
-    /// Versioned configuration-policy identity.
+    /// Digest over the resolver's source/module population.
+    pub content_digest: String,
+    /// Selector evaluations retained by the resolver.
+    pub evaluations: Vec<ModuleSelectorEvaluation>,
+}
+
+impl ModuleObservationReceipt {
+    /// Construct a module observation and canonicalize selector order.
+    #[must_use]
+    pub fn new(
+        resolver_identity: impl Into<String>,
+        scope_identity: impl Into<String>,
+        environment_identity: impl Into<String>,
+        generation: SourceGeneration,
+        content_digest: impl Into<String>,
+        mut evaluations: Vec<ModuleSelectorEvaluation>,
+    ) -> Self {
+        evaluations.sort();
+        Self {
+            schema_version: DETECTION_AUTHORITY_SCHEMA_VERSION,
+            resolver_identity: resolver_identity.into(),
+            scope_identity: scope_identity.into(),
+            environment_identity: environment_identity.into(),
+            generation,
+            content_digest: content_digest.into(),
+            evaluations,
+        }
+    }
+}
+
+/// Typed configuration value used for exclusion-rule evaluation.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum DetectionConfigurationValue {
+    Boolean(bool),
+    Integer(i64),
+    String(String),
+}
+
+/// Exact configuration observation from one source and generation.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct DetectionConfigurationObservation {
+    /// Stable configuration source identity.
+    pub source_identity: String,
+    /// Digest of the exact configuration source/input.
+    pub source_digest: String,
+    /// Exact configuration key.
+    pub key: String,
+    /// Observed typed value.
+    pub value: DetectionConfigurationValue,
+    /// Root/package/source scope to which the value applies.
+    pub scope_identity: String,
+    /// Generation that produced the observation.
+    pub generation: SourceGeneration,
+    /// Provenance class of the observation.
+    pub provenance: String,
+    /// Versioned configuration parser/policy identity.
     pub policy_identity: String,
 }
 
-impl DetectionConfigurationEvidence {
-    /// Construct current typed exclusion evidence.
+impl DetectionConfigurationObservation {
+    /// Construct one exact configuration observation.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        exclusion_key: impl Into<String>,
+        source_identity: impl Into<String>,
+        source_digest: impl Into<String>,
+        key: impl Into<String>,
+        value: DetectionConfigurationValue,
         scope_identity: impl Into<String>,
         generation: SourceGeneration,
+        provenance: impl Into<String>,
         policy_identity: impl Into<String>,
     ) -> Self {
         Self {
-            exclusion_key: exclusion_key.into(),
+            source_identity: source_identity.into(),
+            source_digest: source_digest.into(),
+            key: key.into(),
+            value,
             scope_identity: scope_identity.into(),
             generation,
+            provenance: provenance.into(),
             policy_identity: policy_identity.into(),
+        }
+    }
+}
+
+/// Reason-specific evidence that a configuration observation actually excludes
+/// this adapter under one reviewed rule.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectionConfigurationEvidence {
+    /// Exact observed configuration fact.
+    pub observation: DetectionConfigurationObservation,
+    /// Value that causes exclusion under this rule.
+    pub excluding_value: DetectionConfigurationValue,
+    /// Stable rule identity.
+    pub rule_identity: String,
+}
+
+impl DetectionConfigurationEvidence {
+    /// Construct exclusion evidence from an observed value and rule.
+    #[must_use]
+    pub fn new(
+        observation: DetectionConfigurationObservation,
+        excluding_value: DetectionConfigurationValue,
+        rule_identity: impl Into<String>,
+    ) -> Self {
+        Self {
+            observation,
+            excluding_value,
+            rule_identity: rule_identity.into(),
         }
     }
 }
@@ -63,18 +245,10 @@ pub struct DetectionInputIdentity {
     pub schema_version: u32,
     /// Exact descriptor identity.
     pub descriptor: AdapterDescriptor,
-    /// Exact module selectors whose presence or absence was evaluated.
-    pub required_modules: Vec<String>,
-    /// Sorted module observations, including duplicate/conflicting rows.
-    pub available_modules: Vec<ModuleActivationIdentity>,
-    /// Project generation represented by the observation.
-    pub project_generation: SourceGeneration,
-    /// Optional digest over source/module inputs.
-    pub content_digest: Option<String>,
-    /// Completeness of the observed module universe.
-    pub module_observation: ModuleObservationCompleteness,
-    /// Sorted typed configuration evidence.
-    pub configuration_evidence: Vec<DetectionConfigurationEvidence>,
+    /// Canonical resolver/discovery packet.
+    pub module_observation: ModuleObservationReceipt,
+    /// Sorted typed configuration observations.
+    pub configuration_observations: Vec<DetectionConfigurationObservation>,
     /// Detector/registry/policy implementation identity.
     pub detector_policy_identity: String,
 }
@@ -85,20 +259,11 @@ pub struct DetectionInputIdentity {
 pub struct AdapterDetectionInput {
     /// Adapter descriptor.
     pub descriptor: AdapterDescriptor,
-    /// Exact required module names/selectors for this bounded SDK version.
-    pub required_modules: Vec<String>,
-    /// Modules visible in the current project model.
-    pub available_modules: Vec<ModuleActivationIdentity>,
-    /// Project-model generation.
-    pub project_generation: SourceGeneration,
-    /// Optional digest over the activation/input population.
-    pub content_digest: Option<String>,
-    /// Completeness of the module observation.
+    /// Canonical resolver/discovery packet.
+    pub module_observation: ModuleObservationReceipt,
+    /// Typed configuration observations relevant to exclusion.
     #[serde(default)]
-    pub module_observation: ModuleObservationCompleteness,
-    /// Typed configuration facts relevant to exclusion.
-    #[serde(default)]
-    pub configuration_evidence: Vec<DetectionConfigurationEvidence>,
+    pub configuration_observations: Vec<DetectionConfigurationObservation>,
     /// Versioned detector/registry/policy identity.
     pub detector_policy_identity: String,
     /// Optional resource budget.
@@ -108,53 +273,32 @@ pub struct AdapterDetectionInput {
 }
 
 impl AdapterDetectionInput {
-    /// Construct a fail-closed partial input using the framework name as the
-    /// first exact required-module selector.
+    /// Construct a fail-closed input from one resolver observation packet.
     #[must_use]
     pub fn new(
         descriptor: AdapterDescriptor,
-        available_modules: Vec<ModuleActivationIdentity>,
-        project_generation: SourceGeneration,
-        content_digest: Option<String>,
+        module_observation: ModuleObservationReceipt,
         budget: Option<AdapterBudget>,
         cancellation: AdapterCancellation,
     ) -> Self {
-        let required_modules = vec![descriptor.framework_name.clone()];
         Self {
             descriptor,
-            required_modules,
-            available_modules,
-            project_generation,
-            content_digest,
-            module_observation: ModuleObservationCompleteness::Partial,
-            configuration_evidence: Vec::new(),
+            module_observation,
+            configuration_observations: Vec::new(),
             detector_policy_identity: FRAMEWORK_ADAPTER_SDK_VERSION.to_string(),
             budget,
             cancellation,
         }
     }
 
-    /// Replace the exact required-module selectors.
+    /// Attach typed configuration observations.
     #[must_use]
-    pub fn with_required_modules(mut self, required_modules: Vec<String>) -> Self {
-        self.required_modules = required_modules;
-        self
-    }
-
-    /// Mark the module population complete enough to prove absence.
-    #[must_use]
-    pub fn with_complete_module_observation(mut self) -> Self {
-        self.module_observation = ModuleObservationCompleteness::Complete;
-        self
-    }
-
-    /// Attach typed exclusion evidence.
-    #[must_use]
-    pub fn with_configuration_evidence(
+    pub fn with_configuration_observations(
         mut self,
-        evidence: Vec<DetectionConfigurationEvidence>,
+        mut observations: Vec<DetectionConfigurationObservation>,
     ) -> Self {
-        self.configuration_evidence = evidence;
+        observations.sort();
+        self.configuration_observations = observations;
         self
     }
 
@@ -165,39 +309,26 @@ impl AdapterDetectionInput {
         self
     }
 
+    /// Project generation represented by this input.
+    #[must_use]
+    pub fn project_generation(&self) -> &SourceGeneration {
+        &self.module_observation.generation
+    }
+
     /// Build the deterministic identity recorded by a result.
     #[must_use]
     pub fn identity(&self) -> DetectionInputIdentity {
-        let mut required_modules = self.required_modules.clone();
-        required_modules.sort();
-        let mut available_modules = self.available_modules.clone();
-        available_modules.sort();
-        let mut configuration_evidence = self.configuration_evidence.clone();
-        configuration_evidence.sort();
+        let mut module_observation = self.module_observation.clone();
+        module_observation.evaluations.sort();
+        let mut configuration_observations = self.configuration_observations.clone();
+        configuration_observations.sort();
         DetectionInputIdentity {
             schema_version: DETECTION_AUTHORITY_SCHEMA_VERSION,
             descriptor: self.descriptor.clone(),
-            required_modules,
-            available_modules,
-            project_generation: self.project_generation.clone(),
-            content_digest: self.content_digest.clone(),
-            module_observation: self.module_observation,
-            configuration_evidence,
+            module_observation,
+            configuration_observations,
             detector_policy_identity: self.detector_policy_identity.clone(),
         }
-    }
-
-    /// Whether coherent version evidence exists for `module_name`.
-    #[must_use]
-    pub fn has_version_evidence(&self, module_name: &str) -> bool {
-        self.available_modules.iter().any(|module| {
-            module.module_name == module_name
-                && module.generation == self.project_generation
-                && module.observed_version.as_ref().is_some_and(|version| {
-                    !version.version.trim().is_empty()
-                        && version.generation == module.generation
-                })
-        })
     }
 }
 
@@ -205,49 +336,29 @@ impl AdapterDetectionInput {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DetectionAuthorityError {
-    /// Descriptor or identity schema is unsupported.
     UnsupportedSchema,
-    /// Descriptor disposition is not production.
     NonProduction,
-    /// Descriptor/result/input identities disagree.
     DescriptorMismatch,
-    /// Project or evidence generations are missing or inconsistent.
     GenerationMismatch,
-    /// Admission was already cancelled.
     CancelledInput,
-    /// Detector policy identity is missing.
     MissingPolicyIdentity,
-    /// Required module selector is missing or duplicated.
-    InvalidRequiredModules,
-    /// Module evidence is malformed, stale, duplicated, or contradictory.
+    InvalidContentDigest,
+    InvalidSelectorEvidence,
     InvalidModuleEvidence,
-    /// Configuration evidence is malformed, stale, duplicated, or unrelated.
     InvalidConfigurationEvidence,
-    /// Result did not record the exact input identity.
     MissingInputIdentity,
-    /// Result input identity differs from the supplied observation.
     InputIdentityMismatch,
-    /// A positive result lacks exact contributing module evidence.
     MissingContributingEvidence,
-    /// Contributing evidence is not present in the exact input population.
     UnrelatedContributingEvidence,
-    /// Detection confidence is not high.
     InsufficientConfidence,
-    /// Absence was claimed from an incomplete module universe.
     IncompleteModuleUniverse,
-    /// A required module is present despite a missing-module verdict.
     RequiredModulePresent,
-    /// Version evidence is absent or disagrees with the observed module.
     InvalidVersionEvidence,
-    /// Version-constraint syntax is unsupported by this SDK version.
     UnsupportedVersionConstraint,
-    /// Observed version does not satisfy a positive detection constraint.
     VersionConstraintNotSatisfied,
-    /// Observed version satisfies a constraint claimed as unsatisfied.
     VersionConstraintSatisfied,
-    /// Exclusion was asserted without matching typed configuration evidence.
     MissingConfigurationEvidence,
-    /// Outcome is inspectable but cannot be positive or negative authority.
+    ConfigurationRuleNotSatisfied,
     NonAuthoritativeOutcome,
 }
 
@@ -255,15 +366,10 @@ pub enum DetectionAuthorityError {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionAuthorityReceipt {
-    /// Exact input identity used for validation.
     pub input_identity: DetectionInputIdentity,
-    /// Adapter descriptor represented by the result.
     pub descriptor: AdapterDescriptor,
-    /// Detection outcome.
     pub outcome: DetectionOutcome,
-    /// Whether the result passed the checked contract.
     pub authoritative: bool,
-    /// Stable non-authority reason.
     pub error: Option<DetectionAuthorityError>,
 }
 
@@ -272,22 +378,15 @@ pub struct DetectionAuthorityReceipt {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterDetectionResult {
-    /// Adapter descriptor.
     pub descriptor: AdapterDescriptor,
-    /// Project generation represented by the result.
     pub project_generation: SourceGeneration,
-    /// Detection outcome.
     pub outcome: DetectionOutcome,
-    /// Version evidence used for a version-qualified verdict.
     #[serde(default)]
     pub version_evidence: Option<ModuleVersionEvidence>,
-    /// Exact observed-input identity.
     #[serde(default)]
     pub input_identity: Option<DetectionInputIdentity>,
-    /// Exact activation rows that contributed to the verdict.
     #[serde(default)]
     pub contributing_modules: Vec<ModuleActivationIdentity>,
-    /// Typed configuration evidence that caused an exclusion verdict.
     #[serde(default)]
     pub configuration_evidence: Option<DetectionConfigurationEvidence>,
 }
@@ -317,7 +416,7 @@ impl AdapterDetectionResult {
     pub fn for_input(input: &AdapterDetectionInput, outcome: DetectionOutcome) -> Self {
         Self {
             descriptor: input.descriptor.clone(),
-            project_generation: input.project_generation.clone(),
+            project_generation: input.module_observation.generation.clone(),
             outcome,
             version_evidence: None,
             input_identity: Some(input.identity()),
@@ -326,7 +425,6 @@ impl AdapterDetectionResult {
         }
     }
 
-    /// Attach contributing activation rows.
     #[must_use]
     pub fn with_contributing_modules(
         mut self,
@@ -336,14 +434,12 @@ impl AdapterDetectionResult {
         self
     }
 
-    /// Attach observed version evidence.
     #[must_use]
     pub fn with_version_evidence(mut self, evidence: ModuleVersionEvidence) -> Self {
         self.version_evidence = Some(evidence);
         self
     }
 
-    /// Attach typed configuration evidence for an exclusion verdict.
     #[must_use]
     pub fn with_configuration_evidence(
         mut self,
@@ -353,7 +449,6 @@ impl AdapterDetectionResult {
         self
     }
 
-    /// Whether this result reports framework presence.
     #[must_use]
     pub fn is_detected(&self) -> bool {
         matches!(self.outcome, DetectionOutcome::Detected { .. })

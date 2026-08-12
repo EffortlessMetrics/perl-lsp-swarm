@@ -19,7 +19,7 @@ impl AdapterDetectionResult {
         if self.descriptor != input.descriptor {
             return Err(DetectionAuthorityError::DescriptorMismatch);
         }
-        if self.project_generation != input.project_generation {
+        if self.project_generation != input.module_observation.generation {
             return Err(DetectionAuthorityError::GenerationMismatch);
         }
         let Some(identity) = &self.input_identity else {
