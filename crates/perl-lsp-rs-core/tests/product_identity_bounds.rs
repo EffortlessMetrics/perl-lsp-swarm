@@ -91,10 +91,7 @@ fn oversized_build_and_candidate_inputs_fail_closed() {
     );
     assert_eq!(oversized_target.build.target, None, "oversized target must not be emitted");
     assert!(
-        oversized_target
-            .limitations
-            .iter()
-            .any(|limitation| limitation == "target_triple_invalid"),
+        oversized_target.limitations.iter().any(|limitation| limitation == "target_triple_invalid"),
         "limitations={:?}",
         oversized_target.limitations
     );
@@ -117,8 +114,7 @@ fn oversized_build_and_candidate_inputs_fail_closed() {
         "invalid artifact metadata must not rewrite valid build evidence"
     );
     assert_eq!(
-        oversized_candidate.artifact.candidate_identity,
-        None,
+        oversized_candidate.artifact.candidate_identity, None,
         "oversized candidate must not be emitted"
     );
     assert!(
