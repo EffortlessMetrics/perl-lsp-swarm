@@ -50,27 +50,24 @@ jobs:
               raise SystemExit('authority receipt field shape changed')
           text = text.replace(fields, bound_fields)
 
-          capability_getter = '''    pub const fn capability(&self) -> ProviderQueryCapability {
-              self.capability
-          }
-
+          getter_anchor = '''    /// Project identity bound to the denominator snapshot.
           '''
-          request_getters = capability_getter + '''    /// Full semantic query shape bound to the denominator snapshot.
+          request_getters = '''    /// Full semantic query shape bound to the denominator snapshot.
           #[must_use]
           pub const fn query_kind(&self) -> &ProviderQueryKind {
               &self.query_kind
           }
 
-              /// Semantic subject bound to the denominator snapshot.
+          /// Semantic subject bound to the denominator snapshot.
           #[must_use]
           pub const fn subject(&self) -> &ProviderQuerySubject {
               &self.subject
           }
 
           '''
-          if text.count(capability_getter) != 1:
-              raise SystemExit('capability getter shape changed')
-          text = text.replace(capability_getter, request_getters)
+          if text.count(getter_anchor) != 1:
+              raise SystemExit('project identity getter anchor changed')
+          text = text.replace(getter_anchor, request_getters + getter_anchor)
 
           literal = '''            authority: ProviderCompletenessAuthorityReceipt {
                   capability,
