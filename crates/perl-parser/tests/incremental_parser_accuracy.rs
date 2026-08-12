@@ -1,10 +1,10 @@
 #![cfg(feature = "incremental")]
 //! Manifest-backed incremental parser equivalence checks.
 
-use perl_parser::Parser;
 use perl_parser::edit::Edit;
 use perl_parser::incremental_v2::IncrementalParserV2;
 use perl_parser::position::Position;
+use perl_parser::Parser;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,7 +57,10 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         .incremental_expectations
         .first()
         .ok_or("incremental_small_edit has no incremental expectation")?;
-    let edit = expectation.edits.first().ok_or("incremental_small_edit expectation has no edit")?;
+    let edit = expectation
+        .edits
+        .first()
+        .ok_or("incremental_small_edit expectation has no edit")?;
 
     let source = fs::read_to_string(root.join(&fixture.source_path))?;
     let statement_start = source
@@ -68,8 +71,11 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
     }
     let old_chars: Vec<char> = edit.old_text.chars().collect();
     let new_chars: Vec<char> = edit.new_text.chars().collect();
-    let common_prefix =
-        old_chars.iter().zip(&new_chars).take_while(|(old, new)| old == new).count();
+    let common_prefix = old_chars
+        .iter()
+        .zip(&new_chars)
+        .take_while(|(old, new)| old == new)
+        .count();
     let common_suffix = old_chars[common_prefix..]
         .iter()
         .rev()
@@ -82,8 +88,7 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
         return Err("incremental edit has no changed character range".into());
     }
 
-    let old_prefix_bytes: usize =
-        old_chars[..common_prefix].iter().map(|character| character.len_utf8()).sum();
+    let old_prefix_bytes: usize = old_chars[..common_prefix].iter().map(|character| character.len_utf8()).sum();
     let old_changed_bytes: usize = old_chars[common_prefix..old_chars.len() - common_suffix]
         .iter()
         .map(|character| character.len_utf8())

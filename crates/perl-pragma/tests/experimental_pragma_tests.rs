@@ -13,7 +13,10 @@ fn require_node(version: &str) -> Node {
     Node::new(
         NodeKind::FunctionCall {
             name: "require".to_string(),
-            args: vec![Node::new(NodeKind::Number { value: version.to_string() }, loc(10, 16))],
+            args: vec![Node::new(
+                NodeKind::Number { value: version.to_string() },
+                loc(10, 16),
+            )],
         },
         loc(0, 17),
     )

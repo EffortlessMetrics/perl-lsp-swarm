@@ -146,7 +146,9 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
             if !starts_heredoc_label(after) {
                 return None;
             }
-            let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
+            let end = after
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after.len());
             after[..end].to_string()
         }
         // An *unquoted* heredoc label is an identifier, so it must start with a
@@ -154,7 +156,9 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
         // parse as a heredoc opener whose body then swallowed the rest of the
         // file.
         _ if starts_heredoc_label(rest) => {
-            let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
             rest[..end].to_string()
         }
         _ => return None,

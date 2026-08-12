@@ -95,11 +95,14 @@ fn self_delimited_qw_preserves_a_valid_cr_only_closer() -> Result<(), String> {
     if tokens.iter().any(|token| {
         matches!(token.token_type, TokenType::Error(_)) && token.text.starts_with("qw")
     }) {
-        return Err(format!("a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"));
+        return Err(format!(
+            "a valid ] closer must prevent unclosed-qw recovery: {tokens:?}"
+        ));
     }
     if !tokens.iter().any(|token| {
         token.text.as_ref() == "]"
-            || (matches!(token.token_type, TokenType::QuoteWords) && token.text.ends_with(']'))
+            || (matches!(token.token_type, TokenType::QuoteWords)
+                && token.text.ends_with(']'))
     }) {
         return Err(format!("the list closer must remain in the token stream: {tokens:?}"));
     }

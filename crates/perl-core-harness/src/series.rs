@@ -490,9 +490,10 @@ mod tests {
     #[test]
     fn series_manifest_rejects_duplicate_membership() {
         let mut discovery = fixture_discovery();
-        discovery
-            .tests
-            .push(DiscoveredTest { path: "base/if.t".to_string(), root: "base".to_string() });
+        discovery.tests.push(DiscoveredTest {
+            path: "base/if.t".to_string(),
+            root: "base".to_string(),
+        });
 
         let error = build_series_manifest(
             &discovery,
