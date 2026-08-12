@@ -33,7 +33,7 @@ pub(super) fn parse_escape_control(pattern: &str, start: usize) -> Option<RawCon
                 operand_range: Some(operand_range),
                 request: ResolutionRequest::Number {
                     number,
-                    ambiguous_plain_escape: operand_range.len() > 1,
+                    ambiguous_plain_escape: true,
                 },
                 effect: PatternControlEffect::CaptureRead,
                 boundary: None,
@@ -54,19 +54,27 @@ fn parse_g_reference(pattern: &str, start: usize) -> Option<RawControl> {
             Some(value) => value,
             None => return Some(invalid_reference(pattern, start, pattern.len())),
         },
-        Some(b'\'') => match delimited_operand(bytes, operand_start, b'\'') {
-            Some(value) => value,
-            None => return Some(invalid_reference(pattern, start, pattern.len())),
-        },
-        Some(b'<') => match delimited_operand(bytes, operand_start, b'>') {
-            Some(value) => value,
-            None => return Some(invalid_reference(pattern, start, pattern.len())),
-        },
+        Some(b'\'') => {
+            let end = delimited_operand(bytes, operand_start, b'\'')
+                .map_or(pattern.len(), |(_, end)| end);
+            return Some(invalid_reference(pattern, start, end));
+        }
+        Some(b'<') => {
+            let end = delimited_operand(bytes, operand_start, b'>')
+                .map_or(pattern.len(), |(_, end)| end);
+            return Some(invalid_reference(pattern, start, end));
+        }
         Some(b'+' | b'-' | b'0'..=b'9') => {
             let end = scan_signed_digits(bytes, operand_start);
             (RegexRange { start: operand_start, end }, end)
         }
-        _ => return None,
+        _ => {
+            return Some(invalid_reference(
+                pattern,
+                start,
+                (start + 2).min(pattern.len()),
+            ));
+        }
     };
     raw_reference(
         pattern,
