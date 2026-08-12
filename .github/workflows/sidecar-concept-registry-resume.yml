@@ -54,12 +54,14 @@ jobs:
 
           path = Path('crates/perl-corpus/src/sidecar.rs')
           text = path.read_text()
-          pattern = r'(\s*let second_root = tempfile::tempdir\(\)\?;\n)(\s*)(let second = write_typed_registry\(second_root\.path\(\), "parser\.two"\)\?;)'
-          replacement = r'\1\2fs::write(second_root.path().join("case.pl"), "1;")?;\n\2\3'
-          updated, count = re.subn(pattern, replacement, text, count=1)
-          if count != 1:
-              raise SystemExit(f'expected one identity-fixture repair, found {count}')
-          path.write_text(updated)
+          fixture_write = 'fs::write(second_root.path().join("case.pl"), "1;")?;'
+          if fixture_write not in text:
+              pattern = r'(\s*let second_root = tempfile::tempdir\(\)\?;\n)(\s*)(let second = write_typed_registry\(second_root\.path\(\), "parser\.two"\)\?;)'
+              replacement = r'\1\2fs::write(second_root.path().join("case.pl"), "1;")?;\n\2\3'
+              text, count = re.subn(pattern, replacement, text, count=1)
+              if count != 1:
+                  raise SystemExit(f'expected one identity-fixture repair, found {count}')
+              path.write_text(text)
           PY
 
           cargo fmt -p perl-corpus
