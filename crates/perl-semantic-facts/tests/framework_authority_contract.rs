@@ -1,7 +1,7 @@
 use perl_semantic_facts::framework::{
-    AdapterCancellation, AdapterCancellationControl, AdapterDescriptor, AdapterDisposition,
-    AdapterId, AdapterOutcome, AdapterResult, AdapterSourceScope, EmittedFact, FactClass, FactSink,
-    FactSinkId,
+    AdapterBudget, AdapterCancellation, AdapterCancellationControl, AdapterDescriptor,
+    AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult, AdapterSourceScope,
+    EmittedFact, FactClass, FactSink, FactSinkId,
 };
 use perl_semantic_facts::{
     AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance,
@@ -62,6 +62,9 @@ fn envelope(provenance: Provenance) -> SemanticFactEnvelope {
 fn result(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
     let mut sink = FactSink::new(FactSinkId(9), AdapterId(7));
     sink.facts.push(fact);
+    if let Some(bytes) = sink.serialized_payload_bytes() {
+        sink.total_payload_bytes = bytes;
+    }
     AdapterResult::new(
         descriptor(disposition),
         scope(),
@@ -70,6 +73,17 @@ fn result(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
             sink,
             limitations: Vec::new(),
         },
+    )
+}
+
+fn input() -> AdapterInput {
+    AdapterInput::new(
+        descriptor(AdapterDisposition::Production),
+        scope(),
+        vec![FactClass::GeneratedMembers],
+        Vec::new(),
+        Some(AdapterBudget::new(2, 4096)),
+        AdapterCancellation::active(),
     )
 }
 
@@ -136,7 +150,7 @@ fn exact_source_precedence_is_generation_bound() {
         true,
     );
     let mut candidate = result(AdapterDisposition::Production, fact);
-    assert!(candidate.is_authoritative());
+    assert!(candidate.is_authoritative_against(&input()));
     candidate.invocation_generation = SourceGeneration::known("source-2");
     assert!(!candidate.is_authoritative());
 }
