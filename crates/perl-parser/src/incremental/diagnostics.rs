@@ -1,3 +1,4 @@
+use crate::incremental::work::IncrementalWorkReceipt;
 use lsp_types::Diagnostic;
 use perl_parser_core::error::ParseOutput;
 use std::ops::Range;
@@ -57,6 +58,8 @@ pub struct ReparseResult {
     pub diagnostics: Vec<Diagnostic>,
     /// Lexer restart, fresh-work, and token-retention receipt.
     pub lex_restart: LexRestartReport,
+    /// Validated production strategy and performed-work receipt.
+    pub work: IncrementalWorkReceipt,
     /// Number of source bytes covered by parser reparsing work.
     pub reparsed_bytes: usize,
     /// Compatibility total of old lexer tokens retained from prefix and suffix.

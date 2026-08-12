@@ -116,6 +116,8 @@ def main() -> int:
             "incremental_parse_output",
             "--test",
             "incremental_lexer_restart",
+            "--test",
+            "incremental_work_receipts",
             "--",
             "--test-threads=4",
         ]

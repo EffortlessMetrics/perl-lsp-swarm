@@ -1,5 +1,6 @@
 use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 use crate::incremental::lex::{StoredLexCheckpoint, lex_source_with_checkpoints};
+use crate::incremental::work::ParserInvocationReceipt;
 use perl_lexer::Token;
 use perl_line_index::LineIndex;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -166,13 +167,23 @@ impl IncrementalState {
     }
 
     /// Refresh the authoritative parser output from the current source.
+    ///
+    /// The returned operation-local receipt is created at the same site that
+    /// invokes `parse_with_recovery`, so a caller cannot claim zero parser work
+    /// while this production entry point ran.
     #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
-    pub(crate) fn refresh_parse_output(&mut self) {
+    pub(crate) fn refresh_parse_output(&mut self) -> ParserInvocationReceipt {
         let mut parser = Parser::new(self.source());
         let parse_output = parser.parse_with_recovery();
+        let nodes_constructed = parse_output.ast.count_nodes();
         self.parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
         self.ast = parse_output.ast.clone();
         self.parse_output = parse_output;
+        ParserInvocationReceipt {
+            full_parser_invocations: 1,
+            recovery_parser_invocations: 1,
+            nodes_constructed,
+        }
     }
 
     pub(crate) fn create_parse_checkpoints(ast: &Node) -> Vec<ParseCheckpoint> {

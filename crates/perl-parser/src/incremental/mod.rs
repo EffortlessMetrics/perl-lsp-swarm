@@ -9,6 +9,7 @@ mod lex;
 mod reparse;
 mod state;
 mod strategy;
+mod work;
 
 use anyhow::Result;
 
@@ -21,6 +22,10 @@ pub use lex::MAX_STORED_LEX_CHECKPOINTS;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;
+pub use work::{
+    IncrementalStrategy, IncrementalWorkReceipt, IncrementalWorkReceiptError,
+};
+use work::ParserInvocationReceipt;
 
 pub mod incremental_advanced_reuse;
 #[cfg(test)]
@@ -92,7 +97,7 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
     Ok(total_changed)
 }
 
-fn unchanged_result(state: &IncrementalState) -> ReparseResult {
+fn unchanged_result(state: &IncrementalState) -> Result<ReparseResult> {
     let lex_restart = LexRestartReport {
         strategy: LexRestartStrategy::Unchanged,
         restart_byte: state.source().len(),
@@ -102,15 +107,26 @@ fn unchanged_result(state: &IncrementalState) -> ReparseResult {
         reused_suffix_tokens: 0,
         stored_checkpoint_count: state.stored_lex_checkpoint_count(),
     };
-    ReparseResult {
+    let work = IncrementalWorkReceipt::from_parts(
+        IncrementalStrategy::Unchanged,
+        ParserInvocationReceipt::default(),
+        lex_restart,
+        0,
+        state.source().len(),
+        state.tokens().len(),
+        state.parse_output().ast.count_nodes(),
+    );
+    work.validate()?;
+    Ok(ReparseResult {
         changed_ranges: Vec::new(),
         parse_output: state.parse_output().clone(),
         diagnostics: Vec::new(),
         lex_restart,
+        work,
         reparsed_bytes: 0,
         reused_tokens: lex_restart.reused_tokens(),
         token_count: state.tokens().len(),
-    }
+    })
 }
 
 fn apply_text_edits(state: &mut IncrementalState, edits_descending: &[Edit]) -> Result<()> {
@@ -135,7 +151,7 @@ fn full_reparse_after_edits(
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
     let total_changed = validate_edits(state.source(), edits)?;
     if edits.is_empty() {
-        return Ok(unchanged_result(state));
+        return unchanged_result(state);
     }
 
     let mut sorted_edits = edits.to_vec();
@@ -159,13 +175,25 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
             Err(_) => return full_reparse_after_edits(state, &sorted_edits),
         };
 
-        candidate.refresh_parse_output();
+        let parser_receipt = candidate.refresh_parse_output();
         let reused_tokens = reparse.lex_restart.reused_tokens();
+        let final_node_count = candidate.parse_output().ast.count_nodes();
+        let work = IncrementalWorkReceipt::from_parts(
+            IncrementalStrategy::CheckpointToEofThenFullParse,
+            parser_receipt,
+            reparse.lex_restart,
+            reparse.fresh_tokens_emitted,
+            candidate.source().len(),
+            reparse.token_count,
+            final_node_count,
+        );
+        work.validate()?;
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
             parse_output: candidate.parse_output().clone(),
             diagnostics: vec![],
             lex_restart: reparse.lex_restart,
+            work,
             reparsed_bytes: candidate.source().len(),
             reused_tokens,
             token_count: reparse.token_count,
