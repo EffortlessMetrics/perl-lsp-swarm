@@ -8,7 +8,7 @@ This file provides crate-local guidance for work in `crates/perl-dap`.
 - **Purpose**: native Debug Adapter Protocol server for Perl
 - **Shipped product path**: `perl-dap` drives the local Perl interpreter through the native Rust adapter
 - **Optional integration**: external debugger peers such as `Devel::ptkdb` may cooperate through the Perl Debugger Peer Protocol; they are not bundled or required
-- **Legacy reference**: the `Perl::LanguageServer` bridge is deprecated, default-off library compatibility/conformance code behind `legacy-pls-bridge`; it is not exposed by the shipped CLI
+- **External conformance**: `Perl::LanguageServer` may be invoked only from repository test infrastructure; it is not a package feature, library backend, or runtime mode
 - **Version**: workspace version from the root `Cargo.toml`
 
 ## Commands
@@ -24,18 +24,13 @@ cargo doc -p perl-dap --no-deps
 # Prove the native package without default convenience features.
 cargo test -p perl-dap --no-default-features --features dap-phase2,dap-phase3
 
-# Explicit legacy/conformance lane only.
-cargo test -p perl-dap --features legacy-pls-bridge
-
 ./target/release/perl-dap --stdio
 ./target/release/perl-dap --socket --port 13603
 RUST_LOG=debug ./target/release/perl-dap --stdio
 ```
 
-The shipped CLI must reject `--bridge`. Do not restore that flag or describe
-`Perl::LanguageServer` as a normal runtime dependency. Do not add
-`legacy-pls-bridge` or its compatibility alias `dap-phase1` back to the default
-feature set.
+The shipped CLI must reject `--bridge`. Do not restore that flag, a PLS Cargo
+feature, a `BridgeAdapter` public API, or PLS subprocess lifecycle code.
 
 ## Product Boundary
 
@@ -45,8 +40,8 @@ Preserve these invariants:
 2. A local Perl interpreter is the only external runtime requirement for native sessions.
 3. Workspace parser, lexer, protocol, and adapter support crates are compiled into the binary.
 4. External debugger peers are explicit optional integrations; `perl-dap` remains the DAP server.
-5. Legacy PLS bridge code may be used only for compatibility, migration, or conformance comparisons, under an explicit default-off feature.
-6. Public guides, crate landing pages, CLI help, editor defaults, and docs.rs defaults must not teach or expose the legacy bridge as product setup.
+5. PLS may appear only in repository-only conformance fixtures, commands, or historical documents.
+6. Public guides, crate landing pages, CLI help, editor defaults, docs.rs, Cargo features, and release artifacts contain no PLS runtime path.
 
 Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 
@@ -57,7 +52,7 @@ Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 | Module | Key types | Purpose |
 |---|---|---|
 | `main.rs` | `Args` | shipped CLI, native stdio/TCP and explicit external-peer options |
-| `server/` | `DapServer`, `DapConfig`, `DapMode` | native server lifecycle; legacy bridge selection fails closed unless the explicit feature is enabled |
+| `server/` | `DapServer`, `DapConfig`, `DapMode` | native server lifecycle |
 | `debug_adapter/` | `DebugAdapter`, `DapMessage` | native request routing, process lifecycle, stepping, frames, variables, evaluate |
 | `protocol.rs` | DAP request/response/event types | DAP wire contracts |
 | `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord` | breakpoint replacement, hit counting, and logpoints |
@@ -75,18 +70,16 @@ Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 | `session_plan/` | stable external handoff packet |
 | `ptkdb_bootstrap/` | `.ptkdbrc` bootstrap/fallback rendering |
 
-The external-peer path is not the deprecated PLS bridge. It keeps `perl-dap` as
-the DAP frontend while an optional debugger engine owns some or all runtime
-control.
+The external-peer path is not an alternate DAP server. It keeps `perl-dap` as
+the DAP frontend while an explicitly selected debugger engine owns some or all
+runtime control.
 
-### Legacy compatibility
+### PLS conformance
 
-`bridge_adapter.rs` and the executable `DapMode::Bridge` branch compile only
-with `legacy-pls-bridge`. The `dap-phase1` feature is a compatibility alias for
-older conformance commands; it is not a product phase and must not become a
-default. Keep all setup instructions in
-`docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md`. New production code must not select
-this path.
+PLS comparison code belongs outside `crates/perl-dap/src/**`, for example under
+an xtask or repository compatibility harness. A comparison run binds exact tool,
+Perl, fixture, configuration, and native candidate identities. External behavior
+is evidence for review, not automatically normative.
 
 ## Capability Advertising
 
@@ -109,6 +102,7 @@ Do not advertise a capability merely because a request type exists.
 - Regex initialization must degrade safely rather than panic.
 - Breakpoint and source decisions should consume the parser-backed oracle rather than duplicate line heuristics.
 - External-peer capabilities must be negotiated and intersected honestly; unsupported control remains a visible refusal.
+- Runtime values must be observed for the current session/stop; fabricated placeholders are forbidden.
 
 ## Validation
 
@@ -122,22 +116,20 @@ cargo test -p perl-dap --test dap_dependency_tests --features dap-phase3
 cargo test -p perl-dap --no-default-features --features dap-phase2,dap-phase3
 cargo doc -p perl-dap --no-deps
 cargo run -p xtask -- check-native-product-surface --strict
+cargo package -p perl-dap --allow-dirty --list
 ```
 
-For legacy compatibility/conformance work:
-
-```bash
-cargo test -p perl-dap --features legacy-pls-bridge
-cargo test -p perl-lsp-rs --features dap-phase1 --test dap_bridge_tests
-```
+For PLS comparison work, use the repository-only conformance owner under #7210.
+Do not add a product Cargo feature or package source module to make a comparison
+convenient.
 
 For external-peer changes, add the relevant peer protocol, fake-peer conformance,
-and bridge-session targets. A fake peer proves the repository protocol contract;
-it does not by itself prove compatibility with a live external debugger build.
+and session targets. A fake peer proves the repository protocol contract; it
+does not by itself prove compatibility with a live external debugger build.
 
 ## Documentation Rules
 
 - `crates/perl-dap/README.md` and `docs/tutorials/DAP_USER_GUIDE.md` are native-first product surfaces.
-- `docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md` owns historical PLS bridge details.
+- Historical PLS material belongs in archive/conformance documentation only.
 - `docs/reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md` owns the optional peer-seam boundary.
 - Do not add PLS installation commands, `--bridge`, or bridge-first migration copy to first-mile docs or crate-level Rustdoc.
