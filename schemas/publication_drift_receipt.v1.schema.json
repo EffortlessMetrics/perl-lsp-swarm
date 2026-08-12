@@ -120,11 +120,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "minLength": 1,
-          "pattern": "^[^/\\\\:]+(?:/[^/\\\\:]+)*$",
-          "not": {
-            "pattern": "(^|/)\\.\\.?(/|$)"
-          }
+          "minLength": 1
         },
         "sha256": {
           "type": "string",
@@ -187,11 +183,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "minLength": 1,
-          "pattern": "^[^/\\\\:]+(?:/[^/\\\\:]+)*$",
-          "not": {
-            "pattern": "(^|/)\\.\\.?(/|$)"
-          }
+          "minLength": 1
         },
         "declared_classification": {
           "type": "string",
