@@ -13,17 +13,6 @@ enum LastAtom {
     Group { has_backtracking_quantifier: bool, is_atomic: bool },
 }
 
-pub(crate) fn detect_nested_quantifiers(pattern: &str) -> bool {
-    !find_nested_quantifiers(pattern).is_empty()
-}
-
-pub(crate) fn find_nested_quantifier(pattern: &str, start_pos: usize) -> Option<usize> {
-    find_nested_quantifiers(pattern)
-        .into_iter()
-        .next()
-        .map(|offset| start_pos.saturating_add(offset))
-}
-
 pub(crate) fn find_nested_quantifiers(pattern: &str) -> Vec<usize> {
     let bytes = pattern.as_bytes();
     let mut i = 0;
