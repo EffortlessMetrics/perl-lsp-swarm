@@ -1,4 +1,19 @@
-use perl_corpus::{CorpusLoadError, load_plain_perl_source};
+#![cfg(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+
+use perl_corpus::{load_plain_perl_source, CorpusLoadError};
 
 #[test]
 fn public_loader_rejects_empty_identity_missing_asset_and_directory()
