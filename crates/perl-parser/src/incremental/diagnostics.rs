@@ -1,3 +1,4 @@
+use crate::incremental::snapshot::ParseSnapshot;
 use lsp_types::Diagnostic;
 use perl_parser_core::error::ParseOutput;
 use std::ops::Range;
@@ -8,17 +9,19 @@ use std::ops::Range;
 pub struct ReparseResult {
     /// Byte ranges reparsed or replaced by the selected strategy.
     pub changed_ranges: Vec<Range<usize>>,
+    /// Generation-bound parser snapshot for the committed source.
+    pub snapshot: ParseSnapshot,
     /// Authoritative native parser output for the current source generation.
     ///
-    /// This carries the AST, ordered parser diagnostics, recovery count,
-    /// budget usage, and early-termination state produced by the same
-    /// `Parser::parse_with_recovery` contract used by a fresh parse.
+    /// This compatibility mirror carries the same native output as
+    /// [`Self::snapshot`]. New consumers should use the snapshot so source,
+    /// generation, disposition, and parser output stay bound together.
     pub parse_output: ParseOutput,
     /// Legacy LSP-shaped diagnostics retained for compatibility.
     ///
-    /// Parser consumers should use [`Self::parse_output`]. LSP projection is a
-    /// transport concern and remains intentionally separate from the native
-    /// parser output contract.
+    /// Parser consumers should use `snapshot.parse_output.diagnostics`. LSP
+    /// projection is a transport concern and remains intentionally separate
+    /// from the native parser output contract.
     pub diagnostics: Vec<Diagnostic>,
     /// Number of source bytes covered by reparsing work.
     pub reparsed_bytes: usize,

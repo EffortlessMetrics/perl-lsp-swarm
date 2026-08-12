@@ -1,4 +1,6 @@
-use crate::incremental::{IncrementalState, diagnostics::ReparseResult, edit::Edit};
+use crate::incremental::{
+    IncrementalState, ParseSnapshotStrategy, diagnostics::ReparseResult, edit::Edit,
+};
 use anyhow::Result;
 use perl_lexer::{PerlLexer, TokenType};
 use std::ops::Range;
@@ -112,7 +114,7 @@ pub(crate) fn apply_single_edit(
 }
 
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
-    state.refresh_parse_output();
+    state.refresh_parse_output(ParseSnapshotStrategy::IncrementalFullFallback);
     let source = state.source().to_owned();
     let mut lexer = PerlLexer::new(&source);
     let mut tokens = Vec::new();
@@ -125,7 +127,8 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
     state.replace_tokens(tokens);
     Ok(ReparseResult {
         changed_ranges: vec![0..source.len()],
-        parse_output: state.parse_output.clone(),
+        snapshot: state.snapshot().clone(),
+        parse_output: state.parse_output().clone(),
         diagnostics: vec![],
         reparsed_bytes: source.len(),
         reused_tokens: 0,
