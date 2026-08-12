@@ -1,9 +1,12 @@
-use crate::analysis::{
-    EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness, RegexDiagnostic,
-    RegexDiagnosticClass, RegexDiagnosticCode, RegexFacts, RegexRange,
+use super::{
+    analysis::{
+        EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness,
+        RegexDiagnostic, RegexDiagnosticClass, RegexDiagnosticCode, RegexFacts, RegexRange,
+    },
+    code_execution, complexity,
+    config::RegexValidationConfig,
+    nested_quantifier,
 };
-
-use super::{code_execution, complexity, config::RegexValidationConfig, nested_quantifier};
 
 pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAnalysis {
     let mut diagnostics = Vec::new();
