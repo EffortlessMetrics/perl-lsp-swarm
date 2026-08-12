@@ -366,6 +366,7 @@ impl<'a> EventParser<'a> {
 
         let start = self.pos;
         let mut cursor = start + 1;
+        let mut interpolations = Vec::new();
         if self.bytes.get(cursor) == Some(&b'^') {
             cursor += 1;
         }
@@ -382,6 +383,14 @@ impl<'a> EventParser<'a> {
                     } else {
                         self.bytes.len()
                     };
+                }
+                b'$' | b'@' => {
+                    if let Some(end) = self.interpolation_end_at(cursor) {
+                        interpolations.push(RegexRange { start: cursor, end });
+                        cursor = end;
+                    } else {
+                        cursor = self.next_char_end(cursor);
+                    }
                 }
                 b']' => {
                     cursor += 1;
@@ -404,6 +413,15 @@ impl<'a> EventParser<'a> {
             self.mode,
             self.stack.len(),
         );
+        for range in interpolations {
+            let _ = self.emit(
+                range.start,
+                range.end,
+                RegexEventKind::Interpolation,
+                self.mode,
+                self.stack.len(),
+            );
+        }
         if !closed {
             let _ = self.emit(
                 cursor,
@@ -808,33 +826,9 @@ impl<'a> EventParser<'a> {
     }
 
     fn parse_interpolation(&mut self) -> bool {
-        let sigil = match self.bytes.get(self.pos).copied() {
-            Some(b'$' | b'@') => self.bytes[self.pos],
-            _ => return false,
-        };
         let start = self.pos;
-        let Some(next) = self.bytes.get(start + 1).copied() else {
+        let Some(end) = self.interpolation_end_at(start) else {
             return false;
-        };
-        let dynamic = if next == b'{' {
-            true
-        } else if sigil == b'$' {
-            next.is_ascii_alphanumeric()
-                || next == b'_'
-                || matches!(next, b'$' | b'@' | b'%' | b'&' | b'`' | b'\'')
-        } else {
-            next.is_ascii_alphabetic() || next == b'_'
-        };
-        if !dynamic {
-            return false;
-        }
-
-        let end = if next == b'{' {
-            self.braced_interpolation_end(start + 1)
-        } else if next.is_ascii_alphanumeric() || next == b'_' {
-            self.identifier_interpolation_end(start + 1)
-        } else {
-            (start + 2).min(self.bytes.len())
         };
         if !self.advance(end) {
             return true;
@@ -847,6 +841,49 @@ impl<'a> EventParser<'a> {
             self.stack.len(),
         );
         true
+    }
+
+    fn interpolation_end_at(&self, start: usize) -> Option<usize> {
+        let sigil = match self.bytes.get(start).copied() {
+            Some(b'$' | b'@') => self.bytes[start],
+            _ => return None,
+        };
+        let next = self.bytes.get(start + 1).copied()?;
+        let end = if next == b'{' {
+            self.braced_interpolation_end(start + 1)
+        } else if sigil == b'$'
+            && next == b'^'
+            && self.bytes.get(start + 2) == Some(&b'R')
+        {
+            start.saturating_add(3).min(self.bytes.len())
+        } else if sigil == b'$'
+            && next == b':'
+            && self.bytes.get(start + 2) == Some(&b':')
+            && self
+                .bytes
+                .get(start + 3)
+                .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
+        {
+            self.identifier_interpolation_end(start + 1)
+        } else if sigil == b'$' {
+            if next.is_ascii_alphanumeric()
+                || next == b'_'
+                || matches!(next, b'$' | b'@' | b'%' | b'&' | b'`' | b'\'')
+            {
+                if next.is_ascii_alphanumeric() || next == b'_' {
+                    self.identifier_interpolation_end(start + 1)
+                } else {
+                    (start + 2).min(self.bytes.len())
+                }
+            } else {
+                return None;
+            }
+        } else if next.is_ascii_alphabetic() || next == b'_' {
+            self.identifier_interpolation_end(start + 1)
+        } else {
+            return None;
+        };
+        Some(end)
     }
 
     fn quantifier_at(&self, start: usize) -> Option<(RegexQuantifier, usize)> {
@@ -1160,6 +1197,23 @@ mod tests {
         assert_eq!(embedded.len(), 1);
         assert!(embedded[0].range.start > 20);
         assert!(!embedded[0].mode.extended.enabled());
+        Ok(())
+    }
+
+    #[test]
+    fn interpolation_events_preserve_source_spans_including_character_classes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pattern = r"$^R$::foo[$runtime@items]";
+        let interpolations = parse_regex_events(pattern, RegexModeState::default())
+            .events
+            .iter()
+            .filter_map(|event| match event.kind {
+                RegexEventKind::Interpolation => pattern.get(event.range.start..event.range.end),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(interpolations, vec!["$^R", "$::foo", "$runtime", "@items"]);
         Ok(())
     }
 

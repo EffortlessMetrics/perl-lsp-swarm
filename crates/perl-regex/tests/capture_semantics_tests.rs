@@ -189,6 +189,58 @@ fn interpolation_makes_only_later_capture_numbers_unknown()
     Ok(())
 }
 
+fn assert_interpolation_boundary(pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let analysis = RegexAnalyzer::analyze_captures(
+        pattern,
+        EffectiveModifiers::default(),
+        profile(44, FeatureState::Enabled),
+    );
+
+    assert!(analysis.status.dynamic);
+    assert_eq!(analysis.declarations.len(), 2);
+    assert_eq!(analysis.declarations[0].number, Some(1));
+    assert_eq!(
+        analysis.declarations[0].confidence.number,
+        CaptureNumberConfidence::Exact
+    );
+    assert_eq!(analysis.declarations[1].number, None);
+    assert_eq!(
+        analysis.declarations[1].confidence.number,
+        CaptureNumberConfidence::DynamicUnknown
+    );
+    assert_eq!(
+        pattern.get(
+            analysis.declarations[0].group_range.start..analysis.declarations[0].group_range.end
+        ),
+        Some("(?<before>a)")
+    );
+    assert_eq!(
+        pattern.get(
+            analysis.declarations[1].group_range.start..analysis.declarations[1].group_range.end
+        ),
+        Some("(?<after>b)")
+    );
+    Ok(())
+}
+
+#[test]
+fn caret_r_interpolation_is_a_numbering_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_interpolation_boundary("(?<before>a)$^R(?<after>b)")
+}
+
+#[test]
+fn package_variable_interpolation_is_a_numbering_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_interpolation_boundary("(?<before>a)$::foo(?<after>b)")
+}
+
+#[test]
+fn character_class_interpolation_is_a_numbering_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_interpolation_boundary("(?<before>a)[$runtime](?<after>b)")
+}
+
 #[test]
 fn deferred_runtime_regex_text_is_a_numbering_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
