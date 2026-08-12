@@ -1,12 +1,16 @@
-/// Debug adapter operating mode
+/// Debug adapter operating mode.
 ///
-/// Controls whether the DAP server uses its native `perl -d` adapter
-/// or proxies to Perl::LanguageServer's DAP implementation.
+/// The shipped `perl-dap` CLI always selects [`DapMode::Native`]. The bridge
+/// variant remains only for source compatibility with legacy library consumers
+/// and conformance comparisons.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum DapMode {
-    /// Native adapter using `perl -d` directly
+    /// Native adapter using `perl -d` directly.
     #[default]
     Native,
-    /// Bridge adapter proxying to Perl::LanguageServer
+    /// Legacy compatibility bridge proxying to `Perl::LanguageServer`.
+    #[deprecated(
+        note = "legacy Perl::LanguageServer compatibility; use DapMode::Native instead"
+    )]
     Bridge,
 }
