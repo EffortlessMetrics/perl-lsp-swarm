@@ -55,7 +55,7 @@ The current claim owner retains:
 - proof sufficiency and accepted risk/rollback boundary;
 - which review findings are valid and what disposition they require;
 - when a discovery materially returns to issue or proof preparation;
-- whether the candidate is coherent enough for PR convergence.
+- whether the candidate is coherent enough for candidate-bound local proof.
 
 ### Delegable work
 
@@ -105,13 +105,14 @@ dispositions, limitations, risk/rollback, current GitHub state, and typed candid
 result.
 
 The writer runs formatting, diff hygiene, focused proof, and affected package/semantic
-checks before publication when the local proof budget and host admission permit them.
-Broad workspace, platform, package, or release proof remains hosted or risk-selected;
-do not pay repository-wide CI cost after every edit.
+checks while constructing the candidate when the local proof budget and host admission
+permit them. `$prove-before-push` then binds the committed candidate range to the
+canonical affected-proof plan, Changie disposition, and applicable diff-scoped RIPR
+result before ordinary publication.
 
-A published candidate with affected proof still missing is `PR_IN_FLIGHT / NOT_PROVEN`,
-not solid or review-current. Formatting and `git diff --check` are supporting evidence,
-not behavioral proof.
+Broad workspace, platform, package, or release proof remains hosted or risk-selected;
+do not pay repository-wide CI cost after every edit. Formatting and `git diff --check`
+are supporting evidence, not behavioral proof.
 
 ## Procedure
 
@@ -124,42 +125,40 @@ not behavioral proof.
    authorities.
 6. Repair ordinary findings through this same writer context and repeat affected proof
    and review.
-7. Continue according to the result below; do not terminate merely because the
-   implementation step completed.
+7. Commit one coherent candidate and continue to `$prove-before-push`; do not terminate
+   merely because implementation completed.
 
 ## GitHub boundary
 
-Publish when implementation changes the accepted claim/authority/route, when a reusable
-production-path or external-truth finding affects later work, when a prerequisite or
-support/risk boundary changes, or when the candidate-wide proof/limitation summary is
-ready for PR review.
+Publish durable issue/spec changes when implementation changes the accepted
+claim/authority/route, or when a reusable production-path/external-truth finding affects
+later work. Ordinary candidate publication occurs through `$prove-before-push` and
+`$publish-pr`, not by posting one update per edit, test, agent, or local transition.
 
 Keep agent identities, topology, task progress, temporary experiments, raw build logs,
-retries, and routine local passes runtime-local. Do not post one update per edit, test,
-agent, or normal skill transition.
+retries, and routine local passes runtime-local.
 
 ## Valid exits
 
-- `CANDIDATE_READY` → continue in the current PR context to publication/convergence
-  through `$finish-pr`; if the PR already exists, continue to affected
-  `$final-challenge` and `$review-pr`
+- `CANDIDATE_READY` → `$prove-before-push` in the current PR context
 - `CANDIDATE_FINDINGS_OPEN` → repair within this flow, then rerun affected proof and
   `$review-candidate`
 - `WEAK_PROOF` → continue in this context to `$prepare-proof`, then resume this flow
 - `MATERIAL_SCOPE_OR_AUTHORITY_CHANGE` → `$prepare-issue`; return to the parent only if
   the claim must split or change owner
-- `NO_BUILD_SUBJECT` → return the no-build disposition to the invoking flow for
-  proportional publication/review
+- `NO_BUILD_SUBJECT` → `$prove-before-push` for proportional local disposition, then the
+  invoking publication/review flow
 - `WRITER_COLLISION` / `UNSAFE_WORKTREE` → resolve the same-candidate mechanical hazard
 - `BLOCKED` / `NOT_PROVEN` → preserve the exact boundary and next skill or wake event
 
 ## What this establishes
 
-A locally coherent publication candidate within the stated claim, produced without
-throwing away the review context that discovered the repair.
+A coherent local candidate within the stated claim, produced without throwing away the
+review context that discovered the repair.
 
 ## What this does not establish
 
-Formal cumulative review, current GitHub checks, review-thread convergence, merge
-authorization, or current-main reconciliation. Those continue through `$finish-pr` in
-the current PR context.
+The candidate-bound pre-push result, PR publication, formal cumulative review, current
+GitHub checks, review-thread convergence, merge authorization, or current-main
+reconciliation. Those continue through `$prove-before-push`, `$publish-pr`, and
+`$finish-pr` in the current PR context.
