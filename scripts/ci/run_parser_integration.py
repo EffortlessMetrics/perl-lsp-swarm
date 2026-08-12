@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -37,18 +38,45 @@ TARGET_FIELDS = {
     "disposition",
     "boundedness",
 }
-RESERVED_CARGO_ARGS = {
+CARGO_PLAN_OVERRIDE_EXACT = {
     "-p",
     "--package",
     "--test",
+    "--tests",
+    "--lib",
+    "--bin",
+    "--bins",
+    "--example",
+    "--examples",
+    "--bench",
+    "--benches",
+    "--all-targets",
+    "--doc",
     "--features",
     "--all-features",
     "--no-default-features",
     "--manifest-path",
     "--workspace",
     "--exclude",
+    "--target",
+    "--profile",
+    "--release",
+    "--no-run",
     "--",
 }
+CARGO_PLAN_OVERRIDE_PREFIXES = (
+    "-p=",
+    "--package=",
+    "--test=",
+    "--bin=",
+    "--example=",
+    "--bench=",
+    "--features=",
+    "--manifest-path=",
+    "--exclude=",
+    "--target=",
+    "--profile=",
+)
 
 
 @dataclass(frozen=True)
@@ -68,27 +96,53 @@ class TargetPlan:
     boundedness: str
 
 
+@dataclass(frozen=True)
+class AuthoritySubject:
+    """Exact bytes and identity used to construct a proof plan."""
+
+    path: Path
+    content: bytes
+    sha256: str
+
+
 def _non_empty_string(item: dict[str, Any], key: str) -> str:
     value = item.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"parser integration target field {key!r} must be a non-empty string")
+        raise ValueError(
+            f"parser integration target field {key!r} must be a non-empty string"
+        )
     return value
 
 
 def _string_list(item: dict[str, Any], key: str) -> tuple[str, ...]:
     value = item.get(key)
-    if not isinstance(value, list) or any(not isinstance(entry, str) or not entry for entry in value):
-        raise ValueError(f"parser integration target field {key!r} must be a list of non-empty strings")
+    if not isinstance(value, list) or any(
+        not isinstance(entry, str) or not entry for entry in value
+    ):
+        raise ValueError(
+            f"parser integration target field {key!r} "
+            "must be a list of non-empty strings"
+        )
     return tuple(value)
 
 
-def load_targets(path: Path = TARGETS_PATH) -> list[TargetPlan]:
-    """Load and validate the exact manifest-owned execution plan."""
+def cargo_arg_overrides_plan(argument: str) -> bool:
+    """Return whether one Cargo argument can replace or broaden the proof plan."""
+
+    return argument in CARGO_PLAN_OVERRIDE_EXACT or argument.startswith(
+        CARGO_PLAN_OVERRIDE_PREFIXES
+    )
+
+
+def decode_targets(content: bytes) -> list[TargetPlan]:
+    """Decode and validate the exact manifest-owned execution plan bytes."""
 
     try:
-        payload: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"cannot read parser integration target manifest: {error}") from error
+        payload: Any = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"cannot decode parser integration target manifest: {error}"
+        ) from error
 
     if (
         not isinstance(payload, dict)
@@ -102,13 +156,21 @@ def load_targets(path: Path = TARGETS_PATH) -> list[TargetPlan]:
     invocations: set[str] = set()
     for index, raw_item in enumerate(payload["targets"]):
         if not isinstance(raw_item, dict):
-            raise ValueError(f"parser integration target at index {index} must be an object")
+            raise ValueError(
+                f"parser integration target at index {index} must be an object"
+            )
         unknown = sorted(set(raw_item) - TARGET_FIELDS)
         missing = sorted(TARGET_FIELDS - set(raw_item))
         if unknown:
-            raise ValueError(f"parser integration target contains unknown fields: {', '.join(unknown)}")
+            raise ValueError(
+                "parser integration target contains unknown fields: "
+                + ", ".join(unknown)
+            )
         if missing:
-            raise ValueError(f"parser integration target is missing fields: {', '.join(missing)}")
+            raise ValueError(
+                "parser integration target is missing fields: "
+                + ", ".join(missing)
+            )
 
         proof_id = _non_empty_string(raw_item, "id")
         package = _non_empty_string(raw_item, "package")
@@ -123,21 +185,31 @@ def load_targets(path: Path = TARGETS_PATH) -> list[TargetPlan]:
         no_default_features = raw_item.get("no_default_features")
 
         if not isinstance(no_default_features, bool):
-            raise ValueError("parser integration target field 'no_default_features' must be boolean")
+            raise ValueError(
+                "parser integration target field 'no_default_features' must be boolean"
+            )
         if proof_id in proof_ids:
             raise ValueError(f"duplicate parser integration proof id: {proof_id}")
         if tuple(sorted(set(features))) != features:
             raise ValueError(f"features for {proof_id} must be unique and sorted")
         if any("," in feature or feature.startswith("-") for feature in features):
             raise ValueError(f"invalid Cargo feature token for {proof_id}")
-        if any(argument in RESERVED_CARGO_ARGS for argument in cargo_args):
-            raise ValueError(f"cargo_args for {proof_id} override manifest-owned invocation identity")
+        if any(cargo_arg_overrides_plan(argument) for argument in cargo_args):
+            raise ValueError(
+                f"cargo_args for {proof_id} override manifest-owned invocation identity"
+            )
         if not owner.startswith("#") or not owner[1:].isdigit():
-            raise ValueError(f"owner for {proof_id} must be a GitHub issue reference")
+            raise ValueError(
+                f"owner for {proof_id} must be a GitHub issue reference"
+            )
         if disposition not in ALLOWED_DISPOSITIONS:
-            raise ValueError(f"unsupported disposition for {proof_id}: {disposition}")
+            raise ValueError(
+                f"unsupported disposition for {proof_id}: {disposition}"
+            )
         if boundedness not in ALLOWED_BOUNDEDNESS:
-            raise ValueError(f"unsupported boundedness class for {proof_id}: {boundedness}")
+            raise ValueError(
+                f"unsupported boundedness class for {proof_id}: {boundedness}"
+            )
 
         plan = TargetPlan(
             proof_id=proof_id,
@@ -162,6 +234,17 @@ def load_targets(path: Path = TARGETS_PATH) -> list[TargetPlan]:
     if not plans:
         raise ValueError("parser integration target manifest is empty")
     return plans
+
+
+def load_targets(path: Path = TARGETS_PATH) -> list[TargetPlan]:
+    """Compatibility helper for focused tests and callers."""
+
+    try:
+        return decode_targets(path.read_bytes())
+    except OSError as error:
+        raise ValueError(
+            f"cannot read parser integration target manifest: {error}"
+        ) from error
 
 
 def invocation_payload(plan: TargetPlan) -> dict[str, Any]:
@@ -201,31 +284,13 @@ def lock_payload(plans: Sequence[TargetPlan]) -> dict[str, Any]:
     }
 
 
-def write_json_atomic(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(payload, indent=2, sort_keys=False) + "\n"
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        text=True,
-    )
-    temporary = Path(temporary_name)
+def decode_lock(content: bytes) -> dict[str, str]:
     try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def load_lock(path: Path = LOCK_PATH) -> dict[str, str]:
-    try:
-        payload: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"cannot read parser integration identity lock: {error}") from error
+        payload: Any = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"cannot decode parser integration identity lock: {error}"
+        ) from error
 
     if (
         not isinstance(payload, dict)
@@ -248,11 +313,24 @@ def load_lock(path: Path = LOCK_PATH) -> dict[str, str]:
         ):
             raise ValueError("invalid parser integration identity-lock row")
         if raw_item["id"] in result:
-            raise ValueError(f"duplicate parser integration lock id: {raw_item['id']}")
+            raise ValueError(
+                f"duplicate parser integration lock id: {raw_item['id']}"
+            )
         result[raw_item["id"]] = raw_item["invocation_sha256"]
     if not result:
         raise ValueError("parser integration identity lock is empty")
     return result
+
+
+def load_lock(path: Path = LOCK_PATH) -> dict[str, str]:
+    """Compatibility helper for focused tests and callers."""
+
+    try:
+        return decode_lock(path.read_bytes())
+    except OSError as error:
+        raise ValueError(
+            f"cannot read parser integration identity lock: {error}"
+        ) from error
 
 
 def validate_lock(plans: Sequence[TargetPlan], lock: dict[str, str]) -> None:
@@ -279,10 +357,128 @@ def validate_lock(plans: Sequence[TargetPlan], lock: dict[str, str]) -> None:
         )
 
 
-def available_targets() -> set[tuple[str, str]]:
+def _absolute_under_root(root: Path, path: Path) -> Path:
+    absolute = path if path.is_absolute() else root / path
+    absolute = Path(os.path.abspath(absolute))
+    try:
+        absolute.relative_to(root)
+    except ValueError as error:
+        raise ValueError(f"path escapes parser integration root: {path}") from error
+    return absolute
+
+
+def _reject_symlink_components(root: Path, path: Path) -> None:
+    relative = path.relative_to(root)
+    current = root
+    for component in relative.parts:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"symlink component is not allowed: {current}")
+
+
+def read_authority(root: Path, path: Path, label: str) -> AuthoritySubject:
+    absolute = _absolute_under_root(root, path)
+    _reject_symlink_components(root, absolute)
+    try:
+        metadata = absolute.stat()
+        content = absolute.read_bytes()
+    except OSError as error:
+        raise ValueError(f"cannot read parser integration {label}: {error}") from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"parser integration {label} is not a regular file: {absolute}")
+    return AuthoritySubject(
+        path=absolute,
+        content=content,
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+
+def assert_authority_unchanged(subject: AuthoritySubject) -> None:
+    current = read_authority(subject.path.parent, subject.path, "authority")
+    if current.content != subject.content:
+        raise ValueError(
+            f"parser integration authority changed during execution: {subject.path}"
+        )
+
+
+def prepare_output_path(
+    root: Path,
+    path: Path,
+    authorities: Sequence[AuthoritySubject],
+) -> Path:
+    absolute = _absolute_under_root(root, path)
+    authority_paths = {subject.path for subject in authorities}
+    if absolute in authority_paths:
+        raise ValueError(
+            f"output path aliases parser integration authority: {absolute}"
+        )
+
+    relative_parent = absolute.parent.relative_to(root)
+    current = root
+    for component in relative_parent.parts:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            current.mkdir()
+            metadata = current.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"output parent contains a symlink: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"output parent is not a directory: {current}")
+
+    resolved_parent = absolute.parent.resolve(strict=True)
+    try:
+        resolved_parent.relative_to(root)
+    except ValueError as error:
+        raise ValueError(f"output parent escapes parser integration root: {path}") from error
+    destination = resolved_parent / absolute.name
+
+    if destination.exists() or destination.is_symlink():
+        metadata = destination.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"output path is a symlink: {destination}")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"output path is not a regular file: {destination}")
+        for subject in authorities:
+            if os.path.samefile(destination, subject.path):
+                raise ValueError(
+                    f"output path aliases parser integration authority: {destination}"
+                )
+    elif destination in authority_paths:
+        raise ValueError(
+            f"output path aliases parser integration authority: {destination}"
+        )
+    return destination
+
+
+def write_json_atomic(path: Path, payload: object) -> None:
+    encoded = json.dumps(payload, indent=2, sort_keys=False) + "\n"
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def available_targets(root: Path = ROOT) -> set[tuple[str, str]]:
     completed = subprocess.run(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-        cwd=ROOT,
+        cwd=root,
         check=False,
         capture_output=True,
         text=True,
@@ -326,11 +522,10 @@ def cargo_command(plan: TargetPlan) -> list[str]:
     return command
 
 
-def file_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def execute_plans(plans: Sequence[TargetPlan]) -> tuple[int, list[dict[str, Any]]]:
+def execute_plans(
+    plans: Sequence[TargetPlan],
+    root: Path = ROOT,
+) -> tuple[int, list[dict[str, Any]]]:
     """Execute every selected row and retain the complete denominator."""
 
     first_failure = 0
@@ -339,7 +534,7 @@ def execute_plans(plans: Sequence[TargetPlan]) -> tuple[int, list[dict[str, Any]
         command = cargo_command(plan)
         print(f"parser integration proof {plan.proof_id}: {plan.reason}")
         print("running:", " ".join(command), flush=True)
-        completed = subprocess.run(command, cwd=ROOT, check=False)
+        completed = subprocess.run(command, cwd=root, check=False)
         results.append(
             {
                 "id": plan.proof_id,
@@ -359,14 +554,14 @@ def receipt_payload(
     plans: Sequence[TargetPlan],
     results: Sequence[dict[str, Any]],
     *,
-    manifest_path: Path,
-    lock_path: Path,
+    manifest_sha256: str,
+    lock_sha256: str,
 ) -> dict[str, Any]:
     return {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
-        "manifest_sha256": file_digest(manifest_path),
-        "lock_sha256": file_digest(lock_path),
+        "manifest_sha256": manifest_sha256,
+        "lock_sha256": lock_sha256,
         "planned": len(plans),
         "executed": len(results),
         "passed": sum(item["result"] == "passed" for item in results),
@@ -377,6 +572,7 @@ def receipt_payload(
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--manifest", type=Path, default=TARGETS_PATH)
     parser.add_argument("--lock", type=Path, default=LOCK_PATH)
     parser.add_argument("--receipt", type=Path, default=DEFAULT_RECEIPT_PATH)
@@ -396,36 +592,65 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        plans = load_targets(args.manifest)
+        root = args.root.resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError(f"parser integration root is not a directory: {root}")
+
+        manifest_subject = read_authority(root, args.manifest, "target manifest")
+        plans = decode_targets(manifest_subject.content)
         if args.write_lock:
-            write_json_atomic(args.lock, lock_payload(plans))
-            print(f"wrote parser integration identity lock: {args.lock}")
+            lock_output = prepare_output_path(root, args.lock, [manifest_subject])
+            assert_authority_unchanged(manifest_subject)
+            write_json_atomic(lock_output, lock_payload(plans))
+            assert_authority_unchanged(manifest_subject)
+            print(f"wrote parser integration identity lock: {lock_output}")
             return 0
 
-        lock = load_lock(args.lock)
+        lock_subject = read_authority(root, args.lock, "identity lock")
+        lock = decode_lock(lock_subject.content)
         validate_lock(plans, lock)
 
         missing = sorted(
-            {(plan.package, plan.target) for plan in plans} - available_targets()
+            {(plan.package, plan.target) for plan in plans}
+            - available_targets(root)
         )
         if missing:
-            details = ", ".join(f"{package}:{target}" for package, target in missing)
-            raise ValueError(f"parser integration target manifest is stale: {details}")
+            details = ", ".join(
+                f"{package}:{target}" for package, target in missing
+            )
+            raise ValueError(
+                f"parser integration target manifest is stale: {details}"
+            )
         if args.validate_only:
+            assert_authority_unchanged(manifest_subject)
+            assert_authority_unchanged(lock_subject)
             print(f"validated {len(plans)} exact parser integration proof rows")
             return 0
 
-        returncode, results = execute_plans(plans)
-        write_json_atomic(
+        receipt_output = prepare_output_path(
+            root,
             args.receipt,
+            [manifest_subject, lock_subject],
+        )
+        returncode, results = execute_plans(plans, root)
+        assert_authority_unchanged(manifest_subject)
+        assert_authority_unchanged(lock_subject)
+        write_json_atomic(
+            receipt_output,
             receipt_payload(
                 plans,
                 results,
-                manifest_path=args.manifest,
-                lock_path=args.lock,
+                manifest_sha256=manifest_subject.sha256,
+                lock_sha256=lock_subject.sha256,
             ),
         )
-        print(f"parser integration receipt: {args.receipt}")
+        try:
+            assert_authority_unchanged(manifest_subject)
+            assert_authority_unchanged(lock_subject)
+        except ValueError:
+            receipt_output.unlink(missing_ok=True)
+            raise
+        print(f"parser integration receipt: {receipt_output}")
         return returncode
     except (OSError, RuntimeError, ValueError) as error:
         print(f"parser integration guard failed: {error}", file=sys.stderr)
