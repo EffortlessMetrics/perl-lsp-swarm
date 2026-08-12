@@ -68,9 +68,11 @@ def verify(args: argparse.Namespace) -> None:
     if receipt_path.stat().st_size > 16 * 1024 * 1024:
         raise VerificationError("receipt exceeds 16 MiB verification bound")
     try:
-        receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt: object = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VerificationError(f"receipt parse failed: {error}") from error
+    if not isinstance(receipt, dict):
+        raise VerificationError("receipt must be a JSON object")
     if receipt.get("schema_version") != "rustfmt_check.v1" or receipt.get("receipt_kind") != "rustfmt_check":
         raise VerificationError("receipt schema or kind mismatch")
     if receipt.get("result") != "pass":
@@ -79,6 +81,8 @@ def verify(args: argparse.Namespace) -> None:
     expected_sha = require_sha(args.candidate_sha, "candidate SHA")
     expected_tree = require_sha(args.candidate_tree_sha, "candidate tree SHA")
     subject = receipt.get("subject", {})
+    if not isinstance(subject, dict):
+        raise VerificationError("receipt subject must be a JSON object")
     if subject != {"repository_sha": expected_sha, "repository_tree_sha": expected_tree}:
         raise VerificationError("receipt subject does not match expected candidate")
     if run(["git", "rev-parse", "HEAD^{commit}"], root) != expected_sha:
@@ -95,6 +99,8 @@ def verify(args: argparse.Namespace) -> None:
         raise VerificationError("canonical evidence digest mismatch")
 
     inputs = receipt.get("inputs", {})
+    if not isinstance(inputs, dict):
+        raise VerificationError("receipt inputs must be a JSON object")
     required_inputs = {
         "cargo_toml_sha256": "Cargo.toml",
         "rust_toolchain_sha256": "rust-toolchain.toml",
@@ -125,19 +131,23 @@ def verify(args: argparse.Namespace) -> None:
         raise VerificationError("selected Rust toolchain is not pinned release 1.95.0")
 
     workspace = receipt.get("workspace", {})
+    if not isinstance(workspace, dict):
+        raise VerificationError("receipt workspace must be a JSON object")
     manifests = workspace.get("manifests")
     targets = workspace.get("targets")
     runs = receipt.get("runs")
     if not all(isinstance(value, list) and value for value in (manifests, targets, runs)):
         raise VerificationError("workspace manifests, targets, and runs must be nonempty")
+    if not all(isinstance(row, dict) for rows in (manifests, targets, runs) for row in rows):
+        raise VerificationError("workspace manifests, targets, and runs must contain objects")
     if workspace.get("manifest_count") != len(manifests) or workspace.get("target_count") != len(targets):
         raise VerificationError("workspace counts are incoherent")
-    manifest_names = [row.get("manifest") for row in manifests if isinstance(row, dict)]
-    run_names = [row.get("manifest") for row in runs if isinstance(row, dict)]
-    if len(manifest_names) != len(manifests) or len(set(manifest_names)) != len(manifests):
+    manifest_names = [row.get("manifest") for row in manifests]
+    run_names = [row.get("manifest") for row in runs]
+    if len(set(manifest_names)) != len(manifests):
         raise VerificationError("workspace manifests must be unique and coherent")
-    target_sources = [row.get("source") for row in targets if isinstance(row, dict)]
-    if len(target_sources) != len(targets) or len(set(target_sources)) != len(targets):
+    target_sources = [row.get("source") for row in targets]
+    if len(set(target_sources)) != len(targets):
         raise VerificationError("workspace targets must be unique and coherent")
     if run_names != manifest_names or any(row.get("status") != "pass" for row in runs):
         raise VerificationError("each manifest must have exactly one successful run")

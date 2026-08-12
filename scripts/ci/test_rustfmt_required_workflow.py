@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-import yaml
+from scripts.ci import workflow_security_ratchet as yaml_structure
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,10 +27,56 @@ SUBJECT_EXPRESSION = (
 
 
 def load_workflow() -> dict[str, Any]:
-    payload = yaml.load(WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    if not isinstance(payload, dict):
-        raise AssertionError("CI workflow must parse as a mapping")
-    return payload
+    lines = WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
+    triggers: dict[str, object] = {}
+    job: dict[str, Any] = {"env": {}, "steps": []}
+    section = ""
+    current_step: dict[str, Any] | None = None
+    nested: dict[str, str] | None = None
+    index = 0
+    while index < len(lines):
+        parsed = yaml_structure._parse_key_line(lines[index])
+        if parsed and parsed.indent == 0 and parsed.key in {"on", "jobs"}:
+            section = parsed.key
+        elif section == "on" and parsed and parsed.indent == 2:
+            triggers[parsed.key] = {}
+        elif section in {"jobs", "other-job"} and parsed and parsed.indent == 2:
+            section = "formatter" if parsed.key == JOB_ID else "other-job"
+        elif section == "formatter" and parsed:
+            value = yaml_structure._strip_scalar(parsed.value)
+            if parsed.list_item and parsed.indent == 8 and parsed.key == "name":
+                current_step = {"name": value}
+                job["steps"].append(current_step)
+                nested = None
+            elif parsed.indent == 4:
+                if parsed.key not in {"env", "steps"}:
+                    job[parsed.key] = value
+                current_step = None
+                nested = None
+            elif parsed.indent == 6 and current_step is None:
+                job["env"][parsed.key] = value
+            elif parsed.indent == 8 and current_step is not None:
+                if parsed.key in {"with"}:
+                    nested = {}
+                    current_step[parsed.key] = nested
+                elif parsed.key == "run" and value in {"|", ">"}:
+                    block: list[str] = []
+                    cursor = index + 1
+                    while cursor < len(lines):
+                        candidate = lines[cursor]
+                        if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= 8:
+                            break
+                        block.append(candidate[10:] if len(candidate) >= 10 else "")
+                        cursor += 1
+                    current_step["run"] = "\n".join(block)
+                    index = cursor - 1
+                else:
+                    current_step[parsed.key] = value
+                    nested = None
+            elif parsed.indent == 10 and current_step is not None and nested is not None:
+                nested[parsed.key] = value
+        index += 1
+    return {"on": triggers, "jobs": {JOB_ID: job}}
 
 
 def load_policy() -> dict[str, object]:

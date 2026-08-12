@@ -125,6 +125,15 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
     def test_valid_receipt_passes(self) -> None:
         verifier.verify(self._args())
 
+    def test_non_mapping_receipt_sections_fail_controlled(self) -> None:
+        self.receipt.write_text("[]", encoding="utf-8")
+        with self.assertRaisesRegex(verifier.VerificationError, "receipt must be a JSON object"):
+            verifier.verify(self._args())
+        self.payload = self._valid_payload()
+        self.assert_rejected(lambda value: value.update(inputs=[]))
+        self.payload = self._valid_payload()
+        self.assert_rejected(lambda value: value.update(workspace=[]))
+
     def test_recomputed_digest_non_pass_is_rejected(self) -> None:
         self.assert_rejected(lambda value: value.update(result="format_failure"))
 
