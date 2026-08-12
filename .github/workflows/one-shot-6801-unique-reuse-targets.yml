@@ -46,7 +46,7 @@ jobs:
                             self.analysis_stats.content_matches += 1;
                             break;
                         }
-""",
+                  """,
                   """                        if confidence >= config.min_confidence
                             && self.try_register_match(
                                 reuse_map,
@@ -59,14 +59,14 @@ jobs:
                             self.analysis_stats.content_matches += 1;
                             break;
                         }
-""",
+                  """,
               ),
               (
                   """            let mut best_match: Option<(usize, f64)> = None;
 
             for (new_pos, new_info) in &new_analysis.node_info {
                 if old_info.children_count > 0
-""",
+                  """,
                   """            let mut best_match: Option<(usize, f64)> = None;
 
             for (new_pos, new_info) in &new_analysis.node_info {
@@ -78,7 +78,7 @@ jobs:
                 }
 
                 if old_info.children_count > 0
-""",
+                  """,
               ),
               (
                   """                if confidence >= config.min_confidence * 0.7 {
@@ -94,7 +94,7 @@ jobs:
                     );
                     self.analysis_stats.reuse_candidates_found += 1;
                 }
-""",
+                  """,
                   """                if confidence >= config.min_confidence * 0.7
                     && self.try_register_match(
                         reuse_map,
@@ -107,7 +107,7 @@ jobs:
                     // Final threshold check
                     self.analysis_stats.reuse_candidates_found += 1;
                 }
-""",
+                  """,
               ),
           ]
 
