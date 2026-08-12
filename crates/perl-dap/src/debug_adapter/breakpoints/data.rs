@@ -1,7 +1,7 @@
 use super::{
-    DapMessage, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DataBreakpointRecord,
-    DebugAdapter, SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, Value,
-    is_valid_set_variable_name, lock_or_recover,
+    is_valid_set_variable_name, lock_or_recover, DapMessage, DataBreakpointInfoArguments,
+    DataBreakpointInfoResponseBody, DataBreakpointRecord, DebugAdapter,
+    SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, Value,
 };
 
 fn context_qualified_watchpoint_refusal(

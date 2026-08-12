@@ -1,5 +1,5 @@
 use perl_dap::{DapMessage, DebugAdapter};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
