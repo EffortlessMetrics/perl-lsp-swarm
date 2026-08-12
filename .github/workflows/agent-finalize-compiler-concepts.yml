@@ -95,18 +95,22 @@ jobs:
 
       - name: Commit production repair
         run: |
+          remote_sha="$(git ls-remote origin refs/heads/agent/compiler-concepts-ledger-6657 | cut -f1)"
+          test "$remote_sha" = "$GITHUB_SHA"
           git config user.name "EffortlessSteven"
           git config user.email "git@effortlesssteven.com"
-          git rm .github/workflows/agent-finalize-compiler-concepts.yml
-          git rm .github/workflows/agent-diagnose-compiler-concepts.yml
-          git rm .github/workflows/agent-repair-compiler-concepts-v3.yml
-          git rm .github/scripts/repair_compiler_concepts.py
-          git rm .github/scripts/repair_compiler_concepts_closeout.py
-          git rm .github/scripts/fix_compiler_concept_ast_test.py
+          git rm -f --ignore-unmatch \
+            .github/workflows/agent-finalize-compiler-concepts.yml \
+            .github/workflows/agent-diagnose-compiler-concepts.yml \
+            .github/workflows/agent-repair-compiler-concepts-v3.yml \
+            .github/scripts/repair_compiler_concepts.py \
+            .github/scripts/repair_compiler_concepts_closeout.py \
+            .github/scripts/fix_compiler_concept_ast_test.py
           git add contracts/compiler/perl_compiler_concepts.v1.toml
           git add docs/project/status/perl_compiler_concepts.md
           git add schemas/perl_compiler_concepts.v1.schema.json
           git add xtask/src/bin/compiler-concepts.rs
           git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
           git commit -m "fix(compiler): close concept ledger admission gaps"
-          git push origin HEAD:agent/compiler-concepts-ledger-6657
+          git push origin HEAD:refs/heads/agent/compiler-concepts-ledger-6657
