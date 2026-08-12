@@ -234,13 +234,13 @@ impl LexerCheckpoint {
                     .map(|shifted| *start_position = shifted)
                     .is_some()
             }
-            CheckpointContext::Regex { flags_position, .. } => flags_position.as_mut().is_none_or(
-                |flags| {
+            CheckpointContext::Regex { flags_position, .. } => {
+                flags_position.as_mut().is_none_or(|flags| {
                     transform_offset(*flags, start, old_len, new_len)
                         .map(|shifted| *flags = shifted)
                         .is_some()
-                },
-            ),
+                })
+            }
             CheckpointContext::Normal
             | CheckpointContext::Heredoc { .. }
             | CheckpointContext::QuoteLike { .. } => true,
@@ -266,7 +266,8 @@ impl LexerCheckpoint {
     /// Validate all source-relative checkpoint offsets and replay identity for an input.
     #[must_use]
     pub fn is_valid_for(&self, input: &str) -> bool {
-        self.current_pos.byte == self.position
+        self.current_pos.byte != usize::MAX
+            && offset_is_valid(input, self.current_pos.byte)
             && offset_is_valid(input, self.position)
             && offset_is_valid(input, self.line_start_offset)
             && self.line_start_offset <= self.position
@@ -298,9 +299,9 @@ impl LexerCheckpoint {
 
     fn mark_unrestorable(&mut self) {
         self.current_pos = Position::start();
-        if self.position == 0 {
-            self.current_pos.byte = usize::MAX;
-        }
+        // Keep the invalidation marker distinct from a live checkpoint whose
+        // legacy line/column summary has not advanced with ordinary lexing.
+        self.current_pos.byte = usize::MAX;
     }
 }
 
