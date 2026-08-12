@@ -189,11 +189,44 @@ mod classify_io_observer {
     fn unsupported_accepted_schema_bail_is_observed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("accepted.json");
-        fs::write(&path, r#"{"schema_version":"perl_core_harness.compile_baseline.v1"}"#)
-            .expect("write");
+        let schema = "perl_core_harness.compile_baseline.v1";
+        let inequality = schema != COMPILE_BASELINE_V2_SCHEMA_VERSION;
+        assert_eq!(inequality, true);
+        assert_eq!(
+            COMPILE_BASELINE_V2_SCHEMA_VERSION != COMPILE_BASELINE_V2_SCHEMA_VERSION,
+            false
+        );
+        fs::write(&path, format!(r#"{{"schema_version":"{schema}"}}"#)).expect("write");
         let err = load_accepted_v2(&path).expect_err("v1 must fail").to_string();
         assert!(err.contains("unsupported accepted baseline schema"));
         assert!(err.contains("compile_baseline.v1"));
+    }
+
+    /// RIPR-named observer for paths_equal left == right boundary.
+    #[test]
+    fn paths_equal_left_equals_right_boundary_is_observed() {
+        let left = Path::new("accepted.json");
+        let right = Path::new("accepted.json");
+        let equal = paths_equal(left, right);
+        assert_eq!(equal, true);
+        assert_eq!(left == right, true);
+        let unequal = paths_equal(Path::new("accepted.json"), Path::new("compile.json"));
+        assert_eq!(unequal, false);
+    }
+
+    /// RIPR-named observer for unsupported run-report schema rejection.
+    #[test]
+    fn unsupported_run_report_schema_bail_is_observed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("compile.json");
+        let mut report = sample_report(1, 1);
+        report.schema_version = "perl_core_harness.run_report.not_v1".into();
+        let inequality = report.schema_version != RUN_REPORT_SCHEMA_VERSION;
+        assert_eq!(inequality, true);
+        assert_eq!(RUN_REPORT_SCHEMA_VERSION != RUN_REPORT_SCHEMA_VERSION, false);
+        fs::write(&path, serde_json::to_string_pretty(&report).expect("encode")).expect("write");
+        let err = load_run_report(&path).expect_err("bad schema must fail").to_string();
+        assert!(err.contains("unsupported compile observation schema"));
     }
 
     /// RIPR-named observer for output/input path-string collision rejection.
