@@ -1,0 +1,62 @@
+#[derive(Debug, Default)]
+struct Options {
+    values: BTreeMap<String, VecDeque<String>>,
+}
+
+impl Options {
+    fn parse(args: impl Iterator<Item = String>) -> Result<Self> {
+        let mut args = args;
+        let mut values = BTreeMap::<String, VecDeque<String>>::new();
+        while let Some(flag) = args.next() {
+            if !flag.starts_with("--") {
+                bail!("expected an option beginning with --, found {flag}");
+            }
+            match flag.as_str() {
+                "--accepted-baseline" | "--compile" | "--output" => {}
+                _ => bail!("unrecognized option(s): {flag}"),
+            }
+            let value = args
+                .next()
+                .ok_or_else(|| color_eyre::eyre::eyre!("missing value for {flag}"))?;
+            if value.starts_with("--") {
+                bail!("missing value for {flag}; found option {value}");
+            }
+            values.entry(flag).or_default().push_back(value);
+        }
+        Ok(Self { values })
+    }
+
+    fn required(&mut self, flag: &str) -> Result<String> {
+        let value = self
+            .values
+            .get_mut(flag)
+            .and_then(VecDeque::pop_front)
+            .ok_or_else(|| color_eyre::eyre::eyre!("required option {flag} was not supplied"))?;
+        if self
+            .values
+            .get(flag)
+            .is_some_and(|values| !values.is_empty())
+        {
+            bail!("option {flag} may be supplied only once");
+        }
+        self.values.remove(flag);
+        Ok(value)
+    }
+}
+
+#[derive(Debug)]
+struct ClassifyConfig {
+    accepted_baseline: PathBuf,
+    compile: PathBuf,
+    output: PathBuf,
+}
+
+impl ClassifyConfig {
+    fn from_options(mut options: Options) -> Result<Self> {
+        Ok(Self {
+            accepted_baseline: PathBuf::from(options.required("--accepted-baseline")?),
+            compile: PathBuf::from(options.required("--compile")?),
+            output: PathBuf::from(options.required("--output")?),
+        })
+    }
+}
