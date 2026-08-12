@@ -368,6 +368,38 @@ function evaluateTypeScriptAuthority(input) {
 }
 
 /**
+ * The compiler entry point the installed package itself declares.
+ *
+ * Read from the package's own `bin.tsc` rather than assuming `bin/tsc`, because
+ * that declaration is what npm links the shim to. Both the version probe and
+ * the shim binding resolve through here so there is exactly one notion of "the
+ * package's tsc" — if a future release moved its entry point, a hardcoded path
+ * would have the two checks disagree about which file they were talking about.
+ *
+ * @param {string} typescriptDir
+ * @returns {{binPath: string} | {reason: string}}
+ */
+function declaredTscBin(typescriptDir) {
+  /** @type {unknown} */
+  let bin;
+  try {
+    bin = JSON.parse(fs.readFileSync(path.join(typescriptDir, 'package.json'), 'utf8'))?.bin;
+  } catch (error) {
+    return {
+      reason: `the pinned package's manifest could not be read (${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+  const declared =
+    typeof bin === 'string' ? bin : typeof bin === 'object' && bin !== null ? bin.tsc : undefined;
+  if (typeof declared !== 'string' || declared.length === 0) {
+    return {
+      reason: 'the pinned package declares no `bin.tsc`, so there is nothing to bind the shim to',
+    };
+  }
+  return { binPath: path.resolve(typescriptDir, declared) };
+}
+
+/**
  * Resolves `node_modules/.bin/tsc` to the file it actually executes.
  *
  * Two shim shapes exist and neither reads the same way:
@@ -421,13 +453,18 @@ function resolveBinShim(extensionRoot, typescriptDir) {
   }
   const shim = preferred;
 
+  const declared = declaredTscBin(typescriptDir);
+  if ('reason' in declared) {
+    return { error: declared.reason };
+  }
+
   /** @type {string | undefined} */
   let expected;
   try {
-    expected = fs.realpathSync(path.join(typescriptDir, 'bin', 'tsc'));
+    expected = fs.realpathSync(declared.binPath);
   } catch (error) {
     return {
-      error: `the pinned package has no readable bin/tsc (${error instanceof Error ? error.message : String(error)})`,
+      error: `the pinned package's declared bin.tsc is not readable (${error instanceof Error ? error.message : String(error)})`,
     };
   }
 
@@ -491,10 +528,14 @@ function checkTypeScriptAuthority(extensionRoot) {
   // asserted separately so a broken shim is still a red result.
   /** @type {string | undefined} */
   let binaryVersionOutput;
+  const declaredForVersion = declaredTscBin(typescriptDir);
   try {
+    if ('reason' in declaredForVersion) {
+      throw new Error(declaredForVersion.reason);
+    }
     binaryVersionOutput = execFileSync(
       process.execPath,
-      [path.join(typescriptDir, 'bin', 'tsc'), '--version'],
+      [declaredForVersion.binPath, '--version'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
   } catch {
