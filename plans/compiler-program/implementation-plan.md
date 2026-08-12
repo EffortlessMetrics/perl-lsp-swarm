@@ -126,6 +126,7 @@ git diff --check
 cargo xtask metrics hir-coverage --check
 cargo test -p perl-parser-core --test hir_lowering_completeness_tests --locked
 cargo test -p perl-parser-core --test pir_tests --locked
+cargo test -p perl-parser-core --test pir_a_bodies_test --locked
 cargo test -p perl-parser-core --test pir_a_branch_body_test --locked
 cargo test -p perl-parser-core --test pir_a_loop_body_test --locked
 cargo test -p perl-parser-core --test pir_a_return_body_test --locked
