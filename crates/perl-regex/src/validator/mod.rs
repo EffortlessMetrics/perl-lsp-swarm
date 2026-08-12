@@ -8,12 +8,13 @@ mod config;
 mod nested_quantifier;
 
 pub use analysis::{
-    EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness, RegexDiagnostic,
-    RegexDiagnosticClass, RegexDiagnosticCode, RegexFacts, RegexRange,
+    EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisBudget,
+    RegexAnalysisCompleteness, RegexDiagnostic, RegexDiagnosticClass, RegexDiagnosticCode,
+    RegexFacts, RegexRange,
 };
 pub use config::RegexValidationConfig;
 
-use crate::error::RegexError;
+use crate::{analyzer::EffectiveModifiers, error::RegexError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexFinding {
@@ -44,12 +45,25 @@ impl RegexValidator {
         &self.config
     }
 
-    /// Analyze one regex body and return all typed diagnostics and reusable facts.
+    /// Analyze one regex body with default suffix-modifier state.
     ///
     /// Diagnostic and fact ranges are byte offsets relative to `pattern`.
     #[must_use]
     pub fn analyze(&self, pattern: &str) -> RegexAnalysis {
-        batch::analyze(pattern, &self.config)
+        self.analyze_with_modifiers(pattern, EffectiveModifiers::default())
+    }
+
+    /// Analyze one regex body using explicit effective suffix modifiers.
+    ///
+    /// Inline modifier scopes are applied by the shared structural event stream.
+    /// Diagnostic and fact ranges are byte offsets relative to `pattern`.
+    #[must_use]
+    pub fn analyze_with_modifiers(
+        &self,
+        pattern: &str,
+        modifiers: EffectiveModifiers,
+    ) -> RegexAnalysis {
+        batch::analyze(pattern, &self.config, modifiers)
     }
 
     /// Validate through the historical fail-fast compatibility contract.
