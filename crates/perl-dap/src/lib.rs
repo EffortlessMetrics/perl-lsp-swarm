@@ -13,8 +13,9 @@
 //! shipped binary.
 //!
 //! Historical `Perl::LanguageServer` bridge code is retained only as a
-//! deprecated library compatibility and conformance surface. It is not exposed
-//! by the shipped `perl-dap` CLI and is not required for native launch or attach.
+//! deprecated, default-off library compatibility and conformance surface behind
+//! the `legacy-pls-bridge` feature. It is not exposed by the shipped `perl-dap`
+//! CLI and is not required for native launch or attach.
 //!
 //! Optional external debugger peers, such as `Devel::ptkdb`, integrate through
 //! the backend-neutral peer protocol while `perl-dap` remains the DAP server.
@@ -105,6 +106,7 @@
 #![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]
 
 /// Deprecated compatibility bridge for historical `Perl::LanguageServer` integrations.
+#[cfg(feature = "legacy-pls-bridge")]
 #[deprecated(
     note = "legacy Perl::LanguageServer compatibility; use the native DapServer/DebugAdapter path"
 )]
@@ -175,6 +177,7 @@ pub mod var_ref {
 pub use debug_adapter::var_ref::{ScopeKind, VariableReference, VariableReferenceError};
 
 /// Deprecated compatibility re-exports for historical PLS bridge consumers.
+#[cfg(feature = "legacy-pls-bridge")]
 #[allow(deprecated)]
 #[deprecated(
     note = "legacy Perl::LanguageServer compatibility; use the native DapServer/DebugAdapter path"
