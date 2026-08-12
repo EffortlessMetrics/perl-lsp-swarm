@@ -161,6 +161,31 @@ fn tab_indentation_on_type_is_a_typed_refusal() -> Result<(), Box<dyn std::error
 }
 
 #[test]
+fn heredoc_on_type_is_a_typed_suppression() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::OnType);
+    let uri = "file:///heredoc-on-type.pl";
+    server.test_apply_did_open(uri, "my $x = <<END;\nbody\nEND\n", 1)?;
+
+    let result = server.handle_on_type_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 1, "character": 0 },
+            "ch": "\n",
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    assert_eq!(result, Some(json!([])));
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["decision"], "blocked");
+    assert_eq!(receipt["reason"], "inside_heredoc");
+    assert_eq!(receipt["result_count"], 0);
+    Ok(())
+}
+
+#[test]
 fn malformed_options_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Document);

@@ -298,14 +298,25 @@ impl LspServer {
         let indent =
             snapshot.config.perltidy.indent_columns.unwrap_or(snapshot.options.tab_size).max(1)
                 as usize;
-        let edits = crate::on_type_formatting::compute_on_type_edit(
+        let decision = perl_lsp_rs_core::providers::on_type_formatting::compute_on_type_decision(
             &snapshot.text,
             line,
             column,
             character,
             indent,
-        )
-        .unwrap_or_default();
+        );
+        let (receipt_action, receipt_reason, edits) = match decision {
+            perl_lsp_rs_core::providers::on_type_formatting::OnTypeEditDecision::NoChange => {
+                ("acted", json!("already_formatted"), Vec::new())
+            }
+            perl_lsp_rs_core::providers::on_type_formatting::OnTypeEditDecision::Suppressed(
+                suppression,
+            ) => ("blocked", json!(suppression.reason()), Vec::new()),
+            perl_lsp_rs_core::providers::on_type_formatting::OnTypeEditDecision::Edits(edits) => {
+                let reason = if edits.is_empty() { "already_formatted" } else { "applied" };
+                ("acted", json!(reason), edits)
+            }
+        };
 
         self.ensure_not_cancelled(
             Surface::OnType,
@@ -316,8 +327,8 @@ impl LspServer {
         self.ensure_current(&snapshot)?;
         self.record_formatting_receipt(
             &snapshot,
-            "acted",
-            if edits.is_empty() { json!("already_formatted") } else { json!("applied") },
+            receipt_action,
+            receipt_reason,
             "on_type_indentation",
             "none",
             edits.len(),
