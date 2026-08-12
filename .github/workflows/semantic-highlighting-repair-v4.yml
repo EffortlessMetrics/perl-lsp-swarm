@@ -1,0 +1,154 @@
+name: Semantic highlighting repair bootstrap v4
+
+on:
+  push:
+    branches:
+      - fix/semantic-highlighting-contracts
+
+permissions:
+  contents: write
+
+concurrency:
+  group: semantic-highlighting-repair-bootstrap-v4
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: fix/semantic-highlighting-contracts
+          fetch-depth: 0
+
+      - name: Apply reviewed repair patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/semantic-highlighting-repair-v2.yml').read_text(
+              encoding='utf-8'
+          )
+          opener = "          python3 - <<'PY'\n"
+          start = workflow.index(opener) + len(opener)
+          end = workflow.index("          PY\n", start)
+          body = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in workflow[start:end].splitlines()
+          )
+          Path('/tmp/apply-semantic-highlighting-repair.py').write_text(
+              body + '\n', encoding='utf-8'
+          )
+          PY
+          python3 /tmp/apply-semantic-highlighting-repair.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('vscode-extension/src/test/packagedSemanticTokensSmoke.test.ts')
+          text = path.read_text(encoding='utf-8')
+          old = "                expect(rangeTokens).toEqual(expectedRangeTokens);\n"
+          new = "".join(
+              [
+                  "                expect(rangeTokens).toHaveLength(expectedRangeTokens.length);\n",
+                  "                for (const [index, actual] of rangeTokens.entries()) {\n",
+                  "                  const expected = expectedRangeTokens[index];\n",
+                  "                  if (!expected) {\n",
+                  "                    throw new Error(`missing expected range token at index ${index}`);\n",
+                  "                  }\n",
+                  "                  expect(actual.line).toBe(expected.line);\n",
+                  "                  expect(actual.startChar).toBe(expected.startChar);\n",
+                  "                  expect(actual.length).toBe(expected.length);\n",
+                  "                  expect(actual.type).toBe(expected.type);\n",
+                  "                  expect(actual.modifiers).toBe(expected.modifiers);\n",
+                  "                }\n",
+              ]
+          )
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f'packaged semantic parity assertion target count: {text.count(old)}'
+              )
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+          sed -n '320,380p' vscode-extension/src/test/packagedSemanticTokensSmoke.test.ts
+
+      - name: Setup VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Format changed TypeScript and manifest
+        working-directory: vscode-extension
+        run: npm exec --offline --no -- oxfmt --write package.json src/test/packagedSemanticTokensSmoke.test.ts
+
+      - name: Regenerate and verify TextMate snapshots
+        working-directory: vscode-extension
+        run: |
+          npm run test:grammar:update
+          npm run test:grammar
+
+      - name: Update bounded VSIX inventory sizes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          extension = root / 'vscode-extension'
+          baseline_path = extension / 'scripts/vsix-inventory-baseline.json'
+          baseline = json.loads(baseline_path.read_text(encoding='utf-8'))
+          for packaged, source in {
+              'package.json': extension / 'package.json',
+              'syntaxes/perl.tmLanguage.json': extension / 'syntaxes/perl.tmLanguage.json',
+          }.items():
+              baseline['files'][packaged] = source.stat().st_size
+          baseline['total_bytes'] = sum(baseline['files'].values())
+          baseline_path.write_text(
+              json.dumps(baseline, indent=2) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Format and test Rust semantic disposition
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test -p perl-lsp-rs-core semantic_keyword_disposition --lib --locked
+
+      - name: Build exact server and prove packaged full/range parity
+        working-directory: vscode-extension
+        run: |
+          npm run compile:test
+          npm run bundle-lsp
+          PERL_LSP_REQUIRE_PACKAGED_SEMANTIC_SMOKE=true \
+            node scripts/run-jest.js --runTestsByPath src/test/packagedSemanticTokensSmoke.test.ts
+          npm run package
+
+      - name: Commit reviewed repair and remove bootstrap workflows
+        shell: bash
+        run: |
+          rm .github/workflows/semantic-highlighting-repair.yml
+          rm .github/workflows/semantic-highlighting-repair-v2.yml
+          rm .github/workflows/semantic-highlighting-repair-v3.yml
+          rm .github/workflows/semantic-highlighting-repair-v4.yml
+          git diff --check
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            .github/workflows/semantic-highlighting-repair.yml \
+            .github/workflows/semantic-highlighting-repair-v2.yml \
+            .github/workflows/semantic-highlighting-repair-v3.yml \
+            .github/workflows/semantic-highlighting-repair-v4.yml \
+            .github/workflows/publish-extension.yml \
+            crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs \
+            vscode-extension/package.json \
+            vscode-extension/scripts/vsix-inventory-baseline.json \
+            vscode-extension/src/test/packagedSemanticTokensSmoke.test.ts \
+            vscode-extension/syntaxes/perl.tmLanguage.json \
+            vscode-extension/test/grammar/fixtures/function_declarations.pl \
+            vscode-extension/test/grammar/fixtures/function_declarations.pl.snap
+          git commit -m "fix(editor): close semantic highlighting contract gaps"
+          git push origin HEAD:fix/semantic-highlighting-contracts
