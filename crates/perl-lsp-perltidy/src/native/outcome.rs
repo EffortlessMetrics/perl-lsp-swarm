@@ -1,8 +1,9 @@
+#[cfg(test)]
+use super::implementation::TextPosition;
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
-    format_simple_line, range_includes_line,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextPosition, TextRange, TrailingComma,
+    TextRange, TrailingComma, format_simple_line, range_includes_line,
 };
 use serde::{Deserialize, Serialize};
 
@@ -356,16 +357,13 @@ fn classify(
     }
 }
 
-
 fn valid_range(source: &str, range: TextRange) -> bool {
     if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
         return false;
     }
     let lines: Vec<&str> = source.split('\n').collect();
     let position_is_valid = |position: super::implementation::TextPosition| {
-        lines
-            .get(position.line as usize)
-            .is_some_and(|line| utf16_len(line) >= position.character)
+        lines.get(position.line as usize).is_some_and(|line| utf16_len(line) >= position.character)
     };
     position_is_valid(range.start) && position_is_valid(range.end)
 }
@@ -654,12 +652,8 @@ mod tests {
             PARSE_INCOMPLETE_CODE,
             "parsing terminated early",
         );
-        let classification = classify(
-            "fixture",
-            &FormatConfig::default(),
-            FormatRequestTarget::Document,
-            &result,
-        );
+        let classification =
+            classify("fixture", &FormatConfig::default(), FormatRequestTarget::Document, &result);
         assert_eq!(classification.disposition, FormatDisposition::FailedOrNotProven);
         assert_eq!(classification.reason, FormatReasonCode::InstrumentFailure);
     }
