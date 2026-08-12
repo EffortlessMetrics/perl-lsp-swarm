@@ -222,14 +222,6 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "PERL_LSP_BIN=\"${{ github.workspace }}/target/debug/perl-lsp\" \\",
-      "fingerprint": "8416b7c3eb1afd6d04148fb9ec1a97854db588228f53cbb2b2abdb2c7c854889",
-      "line": 148,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/ci-nightly.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
       "evidence": "--baseline-rev ${{ steps.baseline.outputs.baseline }} \\",
       "fingerprint": "0aa33ea02f9b07438e4662f393d73bcecf4d13fa1b54f17a86b80e844b0a87a9",
       "line": 807,
@@ -814,7 +806,7 @@
       "rule": "checkout_persists_credentials_on_write_surface"
     },
     {
-      "evidence": "echo \"::warning::Primary runner (${{ needs.route-rust-small.outputs.target }}) failed preflight \u2014 falling back to GitHub-hosted. Check runner disk and em-ci-rust image before next run.\"",
+      "evidence": "echo \"::warning::Primary runner (${{ needs.route-rust-small.outputs.target }}) failed preflight — falling back to GitHub-hosted. Check runner disk and em-ci-rust image before next run.\"",
       "fingerprint": "01d4dd93e7c75e33b2cb7d4d39d013fc5cc63559bbe4a76b2ab90f1214378a05",
       "line": 582,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
@@ -1358,7 +1350,7 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "echo \"::warning::Primary runner (${{ needs.route-ripr.outputs.target }}) failed \u2014 falling back to GitHub-hosted for ripr. Reclaim runner disk before next run.\"",
+      "evidence": "echo \"::warning::Primary runner (${{ needs.route-ripr.outputs.target }}) failed — falling back to GitHub-hosted for ripr. Reclaim runner disk before next run.\"",
       "fingerprint": "446e1c1a0d5437b8aef182ef818da5a221952ca2cc7d94336e3678bd6837b30a",
       "line": 837,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
