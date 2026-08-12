@@ -126,6 +126,16 @@ fn interpolation_looking_text_in_excluded_regions_is_not_dynamic()
 }
 
 #[test]
+fn embedded_code_after_the_first_comment_parenthesis_is_not_hidden()
+-> Result<(), Box<dyn std::error::Error>> {
+    let analysis = RegexValidator::new().analyze(r"(?#comment\)(?{ $x = 1 })");
+
+    assert_eq!(analysis.facts.embedded_code.len(), 1);
+    assert_eq!(analysis.diagnostics[0].code, RegexDiagnosticCode::EmbeddedCodeImmediate);
+    Ok(())
+}
+
+#[test]
 fn compatibility_finder_projects_the_start_of_the_full_dynamic_region()
 -> Result<(), Box<dyn std::error::Error>> {
     let pattern = r#"xx(?{ { nested => 1 } })yy"#;

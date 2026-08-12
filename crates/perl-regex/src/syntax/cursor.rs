@@ -55,21 +55,15 @@ impl<'a> RegexCursor<'a> {
     }
 
     pub(crate) fn skip_comment(&mut self) -> bool {
-        if self.current() != Some(b'(')
-            || self.peek(1) != Some(b'?')
-            || self.peek(2) != Some(b'#')
+        if self.current() != Some(b'(') || self.peek(1) != Some(b'?') || self.peek(2) != Some(b'#')
         {
             return false;
         }
         self.pos = self.pos.saturating_add(3).min(self.bytes.len());
         while let Some(ch) = self.current() {
-            if ch == b'\\' {
-                self.pos = self.pos.saturating_add(2).min(self.bytes.len());
-            } else {
-                self.bump();
-                if ch == b')' {
-                    break;
-                }
+            self.bump();
+            if ch == b')' {
+                break;
             }
         }
         true
