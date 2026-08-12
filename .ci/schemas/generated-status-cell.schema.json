@@ -1,111 +1,42 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/schemas/generated-status-cell.schema.json",
-  "title": "Generated status projection cell",
+  "title": "Generated status projection",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "id",
-    "subject",
-    "value",
-    "evidence",
-    "verdict",
-    "claim_boundary",
-    "limitations"
-  ],
+  "required": ["schema_version", "source", "cells"],
   "properties": {
-    "schema_version": {
-      "const": "generated_status_cell.v1"
-    },
-    "id": {
-      "type": "string",
-      "pattern": "^[a-z0-9_.-]+$"
-    },
-    "subject": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["repository_sha", "source_path", "source_sha256"],
+    "schema_version": {"const": "generated_status_projection.v1"},
+    "source": {"$ref": "#/$defs/source"},
+    "cells": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cell"}}
+  },
+  "$defs": {
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["subject_sha", "run_id", "observed_at"],
       "properties": {
-        "repository_sha": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}$"
-        },
-        "source_path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "source_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
+        "subject_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "run_id": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "format": "date-time"}
       }
     },
-    "value": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["display"],
+    "cell": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "subject_sha", "run_id", "observed_at", "expected", "passed", "failed", "skipped", "not_run", "completeness", "verdict", "claim_boundary", "limitations"],
       "properties": {
-        "numerator": {
-          "type": ["integer", "null"],
-          "minimum": 0
-        },
-        "denominator": {
-          "type": ["integer", "null"],
-          "minimum": 0
-        },
-        "percent": {
-          "type": ["number", "null"],
-          "minimum": 0,
-          "maximum": 100
-        },
-        "display": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
-    },
-    "evidence": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["refs", "completeness", "freshness"],
-      "properties": {
-        "refs": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "completeness": {
-          "enum": ["complete", "partial", "missing", "not_proven"]
-        },
-        "freshness": {
-          "enum": ["current", "stale", "not_proven"]
-        }
-      }
-    },
-    "verdict": {
-      "enum": [
-        "proven",
-        "failed",
-        "limited",
-        "not_proven",
-        "stale",
-        "contradictory",
-        "not_applicable"
-      ]
-    },
-    "claim_boundary": {
-      "type": "string",
-      "minLength": 1
-    },
-    "limitations": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
+        "id": {"type": "string", "pattern": "^[a-z0-9_.-]+$"},
+        "subject_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "run_id": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "expected": {"type": "integer", "minimum": 1},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "not_run": {"type": "integer", "minimum": 0},
+        "completeness": {"enum": ["complete", "limited"]},
+        "verdict": {"enum": ["proven", "failed", "limited"]},
+        "claim_boundary": {"type": "string", "minLength": 1},
+        "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}}
       }
     }
   }
