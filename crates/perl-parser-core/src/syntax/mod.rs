@@ -13,8 +13,8 @@
 //! - `path_normalize`, `path_security`, `percentile`, `qualified_name`,
 //!   `source_file`, and `text_line` are re-exported directly at crate root
 //!   so consumers use `perl_parser_core::path_normalize` etc.
-//! - `quote` is only accessed via `engine::quote_parser` to keep quote-parsing
-//!   concerns encapsulated behind the engine boundary.
+//! - `quote` and `quote_geometry` are accessed via `engine::quote_parser` to
+//!   keep quote-parsing concerns encapsulated behind the engine boundary.
 
 /// Edit tracking for incremental parsing (previously `perl-edit`).
 pub mod edit;
@@ -32,6 +32,8 @@ pub mod percentile;
 pub mod qualified_name;
 /// Quote operator parsing helpers (previously `perl-quote`).
 pub mod quote;
+/// Source-backed geometry for regex-family quote operators.
+pub mod quote_geometry;
 /// Lexical source-region index for comment/literal/POD classification.
 pub mod source_context;
 /// Perl source-file classification helpers (previously `perl-source-file`).
