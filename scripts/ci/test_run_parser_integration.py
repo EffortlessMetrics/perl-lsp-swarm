@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,48 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
         return self.write_json(
             {"schema_version": runner.MANIFEST_SCHEMA_VERSION, "targets": targets}
         )
+
+    def authority_root(self) -> tuple[Path, Path, Path, Path]:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        manifest = root / ".ci/parser-integration-targets.json"
+        lock = root / ".ci/parser-integration-targets.lock.json"
+        receipt = root / "target/receipts/parser-integration.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": runner.MANIFEST_SCHEMA_VERSION,
+                    "targets": [self.target()],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plans = runner.load_targets(manifest)
+        lock.write_text(
+            json.dumps(runner.lock_payload(plans)),
+            encoding="utf-8",
+        )
+        return root, manifest, lock, receipt
+
+    def main_args(
+        self,
+        root: Path,
+        manifest: Path,
+        lock: Path,
+        receipt: Path,
+    ) -> list[str]:
+        return [
+            "--root",
+            str(root),
+            "--manifest",
+            str(manifest),
+            "--lock",
+            str(lock),
+            "--receipt",
+            str(receipt),
+        ]
 
     def test_feature_gated_target_builds_one_manifest_owned_command(self) -> None:
         plan = runner.TargetPlan(
@@ -140,16 +183,33 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
                 )
             )
 
-    def test_manifest_rejects_feature_order_and_reserved_cargo_override(self) -> None:
+    def test_manifest_rejects_feature_order_and_selector_overrides(self) -> None:
         unsorted = self.target(features=["workspace", "incremental"])
         with self.assertRaisesRegex(ValueError, "unique and sorted"):
             runner.load_targets(self.manifest([unsorted]))
 
-        override = self.target(cargo_args=["--test"])
-        with self.assertRaisesRegex(ValueError, "override manifest-owned invocation identity"):
-            runner.load_targets(self.manifest([override]))
+        overrides = (
+            "--test",
+            "--test=other_target",
+            "--package=other",
+            "-p=other",
+            "--features=extra",
+            "--manifest-path=other/Cargo.toml",
+            "--tests",
+            "--all-targets",
+            "--no-run",
+        )
+        for argument in overrides:
+            with self.subTest(argument=argument):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "override manifest-owned invocation identity",
+                ):
+                    runner.load_targets(
+                        self.manifest([self.target(cargo_args=[argument])])
+                    )
 
-    def test_lock_rejects_deleted_proof_even_when_an_unrelated_row_is_added(self) -> None:
+    def test_lock_rejects_deleted_proof_even_when_unrelated_row_is_added(self) -> None:
         accepted = runner.load_targets(
             self.manifest(
                 [
@@ -174,7 +234,10 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
                         target="incremental_parser_accuracy",
                         features=["incremental"],
                     ),
-                    self.target("parser.replacement", target="error_recovery_regression"),
+                    self.target(
+                        "parser.replacement",
+                        target="error_recovery_regression",
+                    ),
                 ]
             )
         )
@@ -255,6 +318,103 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
             [item["result"] for item in results],
             ["failed", "passed"],
         )
+
+    def test_manifest_mutation_during_execution_blocks_receipt(self) -> None:
+        root, manifest, lock, receipt = self.authority_root()
+
+        def mutate_manifest(
+            plans: list[runner.TargetPlan],
+            execution_root: Path,
+        ) -> tuple[int, list[dict[str, object]]]:
+            del execution_root
+            manifest.write_text("{}", encoding="utf-8")
+            return 0, [
+                {
+                    "id": plans[0].proof_id,
+                    "package": plans[0].package,
+                    "target": plans[0].target,
+                    "invocation_sha256": runner.invocation_digest(plans[0]),
+                    "returncode": 0,
+                    "result": "passed",
+                }
+            ]
+
+        with mock.patch.object(
+            runner,
+            "available_targets",
+            return_value={("perl-parser", "semantic_smoke_tests")},
+        ), mock.patch.object(
+            runner,
+            "execute_plans",
+            side_effect=mutate_manifest,
+        ):
+            returncode = runner.main(
+                self.main_args(root, manifest, lock, receipt)
+            )
+
+        self.assertEqual(returncode, 2)
+        self.assertFalse(receipt.exists())
+
+    def test_write_lock_rejects_direct_and_canonical_manifest_alias(self) -> None:
+        root, manifest, _lock, receipt = self.authority_root()
+        del receipt
+        direct = [
+            "--root",
+            str(root),
+            "--manifest",
+            str(manifest),
+            "--lock",
+            str(manifest),
+            "--write-lock",
+        ]
+        canonical_alias = manifest.parent / "subdir/../parser-integration-targets.json"
+        canonical = direct.copy()
+        canonical[canonical.index(str(manifest), 5)] = str(canonical_alias)
+
+        self.assertEqual(runner.main(direct), 2)
+        self.assertEqual(runner.main(canonical), 2)
+        self.assertNotEqual(manifest.read_text(encoding="utf-8"), "")
+
+    def test_receipt_rejects_authority_hardlink_alias(self) -> None:
+        if not hasattr(os, "link"):
+            self.skipTest("hard links are unavailable")
+        root, manifest, lock, _receipt = self.authority_root()
+        alias = root / "receipt.json"
+        os.link(manifest, alias)
+
+        with mock.patch.object(
+            runner,
+            "available_targets",
+            return_value={("perl-parser", "semantic_smoke_tests")},
+        ):
+            returncode = runner.main(
+                self.main_args(root, manifest, lock, alias)
+            )
+
+        self.assertEqual(returncode, 2)
+        self.assertEqual(alias.read_bytes(), manifest.read_bytes())
+
+    def test_receipt_rejects_symlinked_parent(self) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks are unavailable")
+        root, manifest, lock, _receipt = self.authority_root()
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: outside.rmdir())
+        linked_parent = root / "linked"
+        os.symlink(outside, linked_parent, target_is_directory=True)
+        receipt = linked_parent / "receipt.json"
+
+        with mock.patch.object(
+            runner,
+            "available_targets",
+            return_value={("perl-parser", "semantic_smoke_tests")},
+        ):
+            returncode = runner.main(
+                self.main_args(root, manifest, lock, receipt)
+            )
+
+        self.assertEqual(returncode, 2)
+        self.assertFalse((outside / "receipt.json").exists())
 
     def test_checked_in_manifest_matches_exact_identity_lock(self) -> None:
         plans = runner.load_targets(runner.TARGETS_PATH)
