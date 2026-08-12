@@ -458,16 +458,15 @@ impl AdvancedReuseAnalyzer {
                         && self.are_compatible_for_content_update(&old_info.node, &new_info.node)
                     {
                         let confidence = 0.8; // Content updates get medium confidence
-                        if confidence >= config.min_confidence {
-                            reuse_map.insert(
+                        if confidence >= config.min_confidence
+                            && self.try_register_match(
+                                reuse_map,
                                 *old_pos,
-                                ReuseStrategy {
-                                    target_position: *new_pos,
-                                    reuse_type: ReuseType::ContentUpdate,
-                                    confidence_score: confidence,
-                                    position_adjustment: (*new_pos as isize) - (*old_pos as isize),
-                                },
-                            );
+                                *new_pos,
+                                ReuseType::ContentUpdate,
+                                confidence,
+                            )
+                        {
                             self.analysis_stats.content_matches += 1;
                             break;
                         }
@@ -495,6 +494,13 @@ impl AdvancedReuseAnalyzer {
             let mut best_match: Option<(usize, f64)> = None;
 
             for (new_pos, new_info) in &new_analysis.node_info {
+                if reuse_map
+                    .values()
+                    .any(|strategy| strategy.target_position == *new_pos)
+                {
+                    continue;
+                }
+
                 if old_info.children_count > 0
                     && self.get_children_count(&old_info.node)
                         != self.get_children_count(&new_info.node)
@@ -514,17 +520,16 @@ impl AdvancedReuseAnalyzer {
             }
 
             if let Some((best_pos, confidence)) = best_match {
-                if confidence >= config.min_confidence * 0.7 {
-                    // Final threshold check
-                    reuse_map.insert(
+                if confidence >= config.min_confidence * 0.7
+                    && self.try_register_match(
+                        reuse_map,
                         *old_pos,
-                        ReuseStrategy {
-                            target_position: best_pos,
-                            reuse_type: ReuseType::StructuralEquivalent,
-                            confidence_score: confidence,
-                            position_adjustment: (best_pos as isize) - (*old_pos as isize),
-                        },
-                    );
+                        best_pos,
+                        ReuseType::StructuralEquivalent,
+                        confidence,
+                    )
+                {
+                    // Final threshold check
                     self.analysis_stats.reuse_candidates_found += 1;
                 }
             }
