@@ -63,6 +63,34 @@ Make reasonable documented engineering decisions and proceed. Missing historical
 ceremony, labels, receipts, or named-agent handoffs is not a reason to discard coherent
 work; perform the cheapest still-useful repair and continue.
 
+## Default orchestration mode
+
+For multi-PR campaigns, queue work, broad review, or any substantive goal containing
+independent claims, the parent context is a campaign manager by default. It should spend
+its attention on claim selection, agent briefing, evidence joins, repair promotion,
+compute admission, dependency and contradiction resolution, integration decisions, and
+durable closeout.
+
+The parent should not normally become the first deep reviewer, routine implementer,
+repetitive proof runner, CI log reader, or worktree janitor merely because direct work is
+available. Direct parent leaf work is exceptional: a tiny integration repair after the
+claim is already understood, one load-bearing inspection needed to choose the route, or
+an immediate blocker when useful agent capacity cannot be recovered. A failed spawn is
+not by itself permission to absorb the leaf task; first reclaim completed agents, join
+available returns, refill another useful review, or make another campaign decision.
+
+For a large PR queue, bias toward a broad read-only review surface—normally about five
+or six disjoint review agents when the queue and runtime capacity support it. This is a
+default fan-out, not a fixed topology, quota, or required role mix. Dispatch useful
+reviews, consume each result as it arrives, and refill the freed capacity without
+waiting for the whole batch.
+
+Keep review breadth wider than mutation breadth. Read-only review, source archaeology,
+and cheap falsifiers may run broadly; promote only actionable findings into writer
+lanes. Prefer promoting the reviewer that already understands the claim when its
+worktree and scope remain suitable. Limit heavy builds and writers by host admission,
+not by the number of review agents.
+
 ## Scope hierarchy
 
 ### Campaign root
@@ -71,30 +99,35 @@ Owns goal meaning, acceptance predicates, claim selection, cross-lane dependenci
 contradictions, runtime-local frontier, joined evidence, exceptions, and goal
 reconciliation.
 
-For substantive work the campaign root normally orchestrates. Leaf implementation,
-broad archaeology, raw logs, repetitive proof, and review exploration should run in
-claim-local lanes or focused workers so the campaign context remains decision-rich and
-raw-output-light.
+For substantive work the campaign root orchestrates. It maintains the useful review
+surface, consumes returns as they arrive, promotes bounded repairs, and keeps the
+campaign moving while writers build or GitHub checks run. Leaf implementation, first-
+pass deep review, broad archaeology, raw logs, repetitive proof, and routine cleanup
+belong in claim-local lanes or focused workers so the campaign context remains decision-
+rich and raw-output-light.
 
 ### Lane root
 
 Owns one coherent acceptance-and-rollback claim. It runs `$deliver-pr`, invokes
-`$orchestrate-work`, keeps one candidate writer, joins claim-local evidence, publishes
-useful GitHub updates, and returns a typed result to its campaign root.
+`$orchestrate-work`, keeps one concurrent candidate writer, joins claim-local evidence,
+publishes useful GitHub updates, and returns a typed result to its campaign root.
 
 A lane root may directly perform tiny tightly coupled claim-local work when briefing
 and joining cost more than the context saved. That does not make campaign-root leaf
-execution the default.
+execution or routine lane-root implementation the default.
 
 ### Worker, writer, and reviewer
 
 - read-only workers answer one bounded question or consume one named `$skill`;
-- one writer mutates the selected candidate branch/worktree;
+- one writer mutates a selected candidate branch/worktree at a time;
 - reviewers change the evidence surface and return findings, falsifiers,
-  contradictions, uncertainty, and references—not approval.
+  contradictions, uncertainty, and references—not approval;
+- a child that creates a worktree owns its cleanup after retained work is published or
+  abandoned safely.
 
-A leaf worker may not widen into claim orchestration unless the brief explicitly grants
-lane-root authority.
+Read-only work normally requires no worktree. Allocate one when the question needs a
+checkout, local proof, or likely promotion into a writer. A leaf worker may not widen
+into claim orchestration unless the brief explicitly grants lane-root authority.
 
 ## Codex orchestration
 
@@ -106,6 +139,12 @@ Normal shapes:
 campaign outcome
 → campaign root runs `$deliver-goal`
 → substantial claims become whole-flow `$deliver-pr` lane roots
+
+multi-PR review campaign
+→ campaign root keeps a broad pool of disjoint read-only reviews
+→ each completed review is joined immediately and its slot is refilled
+→ selected findings become bounded writer lanes
+→ campaign root merges, closes, parks, or records named blockers
 
 claim lane
 → lane root runs the named route
@@ -120,8 +159,8 @@ Use a compact whole-flow brief:
 ```text
 Take issue #123 through `$deliver-pr`.
 You are the accountable lane root for this claim. Use GitHub as durable state, invoke
-`$orchestrate-work` within the claim, keep one candidate writer, follow the public
-flow's normal and material backward routes, and return the typed lane result.
+`$orchestrate-work` within the claim, keep one concurrent candidate writer, follow the
+public flow's normal and material backward routes, and return the typed lane result.
 Do not select unrelated claims or alter the parent goal.
 ```
 
@@ -129,14 +168,18 @@ For focused work, name the `$skill`, exact subject, accepted authority and facts
 read/write boundary, falsifiers, sufficient return, stop conditions, and non-goals.
 Require the child to consume the named skill when supplied.
 
-Choose agents when they preserve campaign/lane context, compress high-output evidence,
-change source/oracle/tool/environment/threat model, reduce elapsed time, improve
-recovery, or avoid expensive CI cycles. Stop adding agents when another result cannot
-change a decision.
+Default to agents when they preserve campaign/lane context, compress high-output
+evidence, change source/oracle/tool/environment/threat model, reduce elapsed time,
+improve recovery, or avoid expensive CI cycles. Direct work is the fallback only when
+delegation cannot produce a useful result at reasonable cost.
+
+Stop adding agents when another result cannot change a decision. Do not stop refilling
+useful review capacity merely because a writer or hosted check is still running. Cap
+build and mutation pressure separately from review fan-out.
 
 Keep campaign frontier and wake events in runtime memory only. Reconstruct them from
 issues, PRs, reviews, checks, merges, and repository artifacts after replacement.
-Do not poll unchanged remote state.
+Do not poll unchanged remote state or wait serially for an entire review batch.
 
 ## Useful GitHub handoffs
 
@@ -204,8 +247,19 @@ Keep candidate, integration, and landed evidence distinct.
 - actual conflict or combined-tree interaction → repair and review the affected seam;
 - unrelated `main` movement with a conflict-free candidate → no rebase, branch refresh,
   full CI replay, or review churn;
-- head SHA change alone → no review invalidation;
+- head SHA change alone → no review invalidation or ownership loss;
 - merge uses current head only as compare-and-swap protection.
+
+A worktree and branch are the writer's operational context, not an exact-head lease.
+Do not repeatedly reauthenticate an unchanged lane with `ls-remote`, PR metadata, or
+expected-SHA checks. Commit and push normally without force. If Git rejects a non-fast-
+forward push, fetch and inspect the intervening work; integrate compatible changes,
+resolve an actual conflict, or return a material supersession/ownership blocker. A
+compatible remote commit is ordinary collaborative Git, not `CANDIDATE_MOVED`.
+
+A SHA is useful for identifying what a hosted run exercised, diagnosing an actual push
+rejection, or protecting the final merge. It is not the scheduling, review-currentness,
+or worktree-ownership model.
 
 Never weaken a test, ratchet, support claim, or required proof merely to obtain green
 status. Missing, partial, stale, contradictory, or instrument-failed evidence is
@@ -223,7 +277,9 @@ Stop only for concrete hazards:
 - substantive findings remain unresolved or review is missing/`NOT_PROVEN` at merge;
 - current rulesets, required checks, mergeability, or queue state block integration.
 
-Otherwise detect, explain, repair, and continue.
+A branch-head change, unrelated `main` movement, failed agent spawn, pending hosted
+check, or unavailable cleanup operation is not by itself a hard stop. Otherwise detect,
+explain, repair, delegate, and continue.
 
 ## Repository hygiene and local proof
 
@@ -232,7 +288,16 @@ Otherwise detect, explain, repair, and continue.
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
 - never use `git stash` in worktrees; use scoped restore or a WIP commit;
 - stage intended paths explicitly;
-- use one worktree per genuine concurrent write claim, not per lifecycle pass;
+- use one worktree per genuine concurrent write claim, not per lifecycle pass or
+  read-only review by default;
+- the agent that creates a worktree cleans it after retained work is safely published
+  and no further local proof is needed;
+- parent contexts verify child cleanup from typed returns and perform broad cleanup only
+  when storage blocks work or the campaign is closing;
+- preserve shared targets/caches, locked or ambiguous worktrees, and state owned by
+  another agent or tool;
+- use short worktree paths on Windows and attribute path-length, shell, timeout, and
+  host-saturation failures to the instrument until proven candidate-owned;
 - run focused proof, then affected package proof, then broader proof only when risk or
   the merge gate selects it;
 - do not run repository-wide Clippy or tests after every edit.
