@@ -1,0 +1,121 @@
+schema_version = 1
+repository = "EffortlessMetrics/perl-lsp-swarm"
+
+[[claim]]
+issue = 6491
+claim_id = "parser.ordinary_call_and_unclosed_qw_expectations"
+state = "not_proven"
+decision = "No current implementation candidate is accepted: every open variant replaces the named non-parenthesized call path with parenthesized syntax and changes the unclosed-qw recovery contract without an accepted semantic transition."
+required_harvest = [
+  "Preserve one safe ExpressionStatement-unwrapping helper without changing the source syntax under test.",
+  "Preserve the Result-returning no-panic test shape where it improves diagnostics without redefining behavior.",
+  "Rebuild the claim under #6908 with path evidence and an accepted recovery contract."
+]
+close_or_retarget = [
+  "After the #6908 replacement candidate exists, close #6605, #6609, and #6610 as duplicate implementation variants.",
+  "Retain #6585 only as the primary salvage source until its useful helper delta is harvested."
+]
+
+[[claim.candidates]]
+pr = 6585
+relationship = "salvage_source"
+unique_delta = [
+  "Unwraps ExpressionStatement before inspecting a parsed call.",
+  "Contains the most complete combined form of the candidate test cleanup."
+]
+open_findings = [
+  "Parenthesized source bypasses the unknown-lowercase non-parenthesized call decision named by the test.",
+  "Two-declaration qw expectation changes recovery semantics without governing-contract evidence."
+]
+disposition = "Harvest the wrapper-handling mechanics into a new #6908-owned candidate; do not merge the current behavior definitions."
+
+[[claim.candidates]]
+pr = 6605
+relationship = "duplicate"
+target_pr = 6585
+unique_delta = [
+  "Uses Result-returning control-flow assertions instead of panic/indexing in one test."
+]
+open_findings = [
+  "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
+]
+disposition = "Harvest the Result-returning assertion shape if useful, then close as duplicate of the replacement work sourced from #6585."
+
+[[claim.candidates]]
+pr = 6609
+relationship = "duplicate"
+target_pr = 6585
+unique_delta = [
+  "Moves ExpressionStatement unwrapping into the shared first_statement helper."
+]
+open_findings = [
+  "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
+]
+disposition = "Compare the helper placement during salvage, then close as duplicate."
+
+[[claim.candidates]]
+pr = 6610
+relationship = "duplicate"
+target_pr = 6585
+unique_delta = [
+  "Uses an explicit inline wrapper match in the control-flow assertion."
+]
+open_findings = [
+  "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
+]
+disposition = "No independent semantic claim; close after wrapper-handling salvage is complete."
+
+[[claim]]
+issue = 6534
+claim_id = "parser.four_hollow_e2e_fixtures_and_negative_shapes"
+state = "reconciled"
+decision = "PR #6612 is the current owner because it contains the four-fixture measurement claim plus the only negative-shape schema. It must be narrowed before merge; the broad unrelated manifest labeling is not part of this claim."
+required_harvest = [
+  "Retain the focused expectations for heredoc_basic, regex_match, quote_like, and post_error_package_sub_recovery.",
+  "Retain the line-scoped forbidden_nodes model and its discriminating negative controls.",
+  "Remove or transfer unrelated dormant-fixture gold and denominator movement before publication."
+]
+close_or_retarget = [
+  "Use #6612 as the only current implementation branch after narrowing.",
+  "Close #6620 and #6623 after confirming they contain no unique four-fixture or negative-shape proof absent from #6612."
+]
+
+[[claim.candidates]]
+pr = 6612
+relationship = "current_candidate"
+unique_delta = [
+  "Adds a line-scoped forbidden_nodes expectation model.",
+  "Documents why negative shape assertions must be position-bounded.",
+  "Combines positive measurement for the four hollow fixtures with two-sided disambiguation proof."
+]
+open_findings = [
+  "The current diff also labels unrelated dormant fixtures and materially widens the metrics authority beyond #6534.",
+  "The branch must be narrowed to one rollback-coherent claim before merge."
+]
+disposition = "Keep as current owner, remove unrelated gold, rerun generated parser status, and refresh focused review."
+
+[[claim.candidates]]
+pr = 6620
+relationship = "superseded"
+target_pr = 6612
+unique_delta = [
+  "Contains additional broad manifest labeling outside the four-fixture claim."
+]
+open_findings = [
+  "Does not supply the focused negative-shape authority that distinguishes #6612.",
+  "Includes unrelated manifest rewrites and removes/reshapes existing entries."
+]
+disposition = "Do not merge as #6534 implementation; inspect only for any missing four-fixture expectation, then close."
+
+[[claim.candidates]]
+pr = 6623
+relationship = "superseded"
+target_pr = 6612
+unique_delta = [
+  "Contains a broad positive-expectation population over dormant fixtures."
+]
+open_findings = [
+  "Widens the parser-accuracy denominator beyond the controlling issue.",
+  "Does not provide the line-scoped forbidden-node proof owned by #6612."
+]
+disposition = "Transfer any genuinely unique four-fixture expectation to #6612 after review; otherwise close as superseded."
