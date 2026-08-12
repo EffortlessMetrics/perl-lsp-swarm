@@ -136,8 +136,9 @@ numeric scoring or a Quality Deltas table.
 Numeric **Quality Deltas** remain part of forensic dossier and casebook exhibit
 synthesis. Those artifacts score each surface from **+2** (significant improvement) to
 **-2** (significant regression requiring justification). See
-[`FORENSICS_SCHEMA.md`](../reference/FORENSICS_SCHEMA.md) and
-[`CASEBOOK.md`](CASEBOOK.md).
+[`FORENSICS_SCHEMA.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FORENSICS_SCHEMA.md)
+and
+[`CASEBOOK.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CASEBOOK.md).
 
 ## Analyzer Integration
 
