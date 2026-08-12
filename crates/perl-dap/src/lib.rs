@@ -12,14 +12,13 @@
 //! parser, lexer, protocol, and adapter support code are compiled into the
 //! shipped binary.
 //!
-//! Historical `Perl::LanguageServer` bridge code is retained only as a
-//! deprecated, default-off library compatibility and conformance surface behind
-//! the `legacy-pls-bridge` feature. It is not exposed by the shipped `perl-dap`
-//! CLI and is not required for native launch or attach.
+//! `Perl::LanguageServer` is not a runtime backend or published compatibility
+//! feature. Repository-only conformance tooling may compare external behavior,
+//! but no PLS process launcher or DAP proxy is part of this crate.
 //!
 //! Optional external debugger peers, such as `Devel::ptkdb`, integrate through
 //! the backend-neutral peer protocol while `perl-dap` remains the DAP server.
-//! Those peers are not bundled or required for the native path.
+//! Those peers are explicit, unbundled, and not required for the native path.
 //!
 //! # Running the server
 //!
@@ -105,12 +104,6 @@
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]
 
-/// Deprecated compatibility bridge for historical `Perl::LanguageServer` integrations.
-#[cfg(feature = "legacy-pls-bridge")]
-#[deprecated(
-    note = "legacy Perl::LanguageServer compatibility; use the native DapServer/DebugAdapter path"
-)]
-pub mod bridge_adapter;
 /// Launch and attach configuration structures for DAP debugging sessions.
 pub mod configuration;
 /// Debug Adapter Protocol (DAP) implementation for Perl debugging.
@@ -176,11 +169,6 @@ pub mod var_ref {
 // Re-export codec types at crate root for ergonomic use in tests and consumer crates.
 pub use debug_adapter::var_ref::{ScopeKind, VariableReference, VariableReferenceError};
 
-/// Explicit compatibility re-exports for legacy PLS bridge consumers.
-#[cfg(feature = "legacy-pls-bridge")]
-#[allow(deprecated)]
-#[doc(hidden)]
-pub use bridge_adapter::{BridgeAdapter, DapBridgeEnvConfig};
 pub use configuration::{
     AttachConfiguration, LaunchConfiguration, create_attach_json_snippet,
     create_launch_json_snippet,
