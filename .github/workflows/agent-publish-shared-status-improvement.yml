@@ -45,11 +45,11 @@ jobs:
           expected_parent=7f5f40db63f08ad56f36158450eba796bdc7fa2e
           test "$(git -C candidate rev-parse HEAD)" = "$expected_parent"
 
-          cat builder/.ci/agent_build_shared_status_inventory_parts/part-* \
-            > /tmp/agent_build_shared_status_inventory.py
+          cp builder/.ci/agent_improve_reviewed_shared_status_inventory.py \
+            /tmp/agent_improve_reviewed_shared_status_inventory.py
           (
-            cd builder
-            python3 /tmp/agent_build_shared_status_inventory.py
+            cd candidate
+            python3 /tmp/agent_improve_reviewed_shared_status_inventory.py
             cargo fmt --all
             cargo fmt --all -- --check
             git diff --check
@@ -63,20 +63,13 @@ jobs:
             xtask/src/tasks/update_status/test_inventory.rs
             xtask/src/tasks/update_status/tests.rs
           )
-          for path in "${paths[@]}"; do
-            mkdir -p "candidate/$(dirname "$path")"
-            cp "builder/$path" "candidate/$path"
-          done
-
           mapfile -t changed < <(git -C candidate diff --name-only)
           test "${#changed[@]}" -eq 6
           printf '%s\n' "${changed[@]}" | sort > /tmp/actual-paths
           printf '%s\n' "${paths[@]}" | sort > /tmp/expected-paths
           diff -u /tmp/expected-paths /tmp/actual-paths
-          git -C candidate diff --check
           (
             cd candidate
-            cargo fmt --all -- --check
             sha256sum "${paths[@]}" | tee /tmp/improvement-sha256
           )
 
