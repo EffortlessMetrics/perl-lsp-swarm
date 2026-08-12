@@ -49,3 +49,6 @@ pub mod tooling;
 pub mod transport;
 /// URI parsing and conversion helpers used by protocol-facing components.
 pub mod uri;
+
+#[allow(dead_code)]
+fn rustfmt_negative_canary(){let _proof_only=7539;}
