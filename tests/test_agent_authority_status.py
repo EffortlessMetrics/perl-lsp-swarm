@@ -9,6 +9,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "docs" / "agents" / "authority_status.toml"
+WORKFLOW = ROOT / ".github" / "workflows" / "agent-authority-status.yml"
 ALLOWED_STATUSES = {"current", "transitional", "historical", "superseded"}
 REQUIRED_CURRENT = {
     "AGENTS.md",
@@ -41,6 +42,15 @@ REQUIRED_TRANSITIONAL = {
     "scripts/reviews/claim-digest",
     "scripts/ci/check-pr-review-convergence-core",
 }
+WORKFLOW_PATHS = {
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/agents/AUTHORITY_STATUS.md",
+    "docs/agents/authority_status.toml",
+    "docs/agents/README.md",
+    "tests/test_agent_authority_status.py",
+    ".github/workflows/agent-authority-status.yml",
+}
 
 
 def load_registry() -> dict[str, Any]:
@@ -49,6 +59,45 @@ def load_registry() -> dict[str, Any]:
 
 def prose(path: Path) -> str:
     return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def workflow_event_paths(event: str) -> set[str]:
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    marker = f"  {event}:"
+    try:
+        start = lines.index(marker)
+    except ValueError as error:
+        raise AssertionError(f"missing on.{event} event block") from error
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _indent(lines[index]) <= 2 and stripped.endswith(":"):
+            end = index
+            break
+
+    block = lines[start:end]
+    try:
+        paths_index = block.index("    paths:")
+    except ValueError as error:
+        raise AssertionError(f"missing on.{event}.paths") from error
+
+    paths: set[str] = set()
+    for line in block[paths_index + 1 :]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _indent(line) <= 4:
+            break
+        if stripped.startswith("- '") and stripped.endswith("'"):
+            paths.add(stripped[3:-1])
+    return paths
 
 
 def validate_registry(document: dict[str, Any]) -> list[str]:
@@ -130,6 +179,25 @@ class AgentAuthorityStatusTests(unittest.TestCase):
         self.assertIn("authority_status.toml", readme)
         self.assertIn("DEVELOPMENT_METHOD.md", readme)
         self.assertIn("REVIEW_CURRENTNESS.md", readme)
+
+    def test_root_routes_delegate_document_status(self) -> None:
+        for path in ("AGENTS.md", "CLAUDE.md"):
+            contract = prose(ROOT / path)
+            self.assertIn("docs/agents/AUTHORITY_STATUS.md", contract)
+            self.assertIn("docs/agents/authority_status.toml", contract)
+            self.assertIn("does not re-enter the hierarchy", contract)
+            self.assertIn("accepted", contract)
+            self.assertIn("active doctrine", contract)
+            self.assertIn("north star", contract)
+
+    def test_workflow_covers_root_delegation_for_both_events(self) -> None:
+        for event in ("pull_request", "push"):
+            paths = workflow_event_paths(event)
+            self.assertEqual(
+                paths,
+                WORKFLOW_PATHS,
+                f"on.{event}.paths must exactly cover the authority contract",
+            )
 
     def test_legacy_document_cannot_silently_become_current(self) -> None:
         document = copy.deepcopy(load_registry())
