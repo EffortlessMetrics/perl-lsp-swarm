@@ -154,6 +154,8 @@ enum RouteSyntax {
     BareTarget,
     ImperativeInvocation,
     ProseMention,
+    CodeIdentifier,
+    InlineCode,
     Placeholder,
 }
 
@@ -411,7 +413,8 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
                 .replace('\\', "/");
 
             for observation in &skill.route_observations {
-                if observation.syntax.is_edge() {
+                let syntax = resolve_route_syntax(observation, &known_names);
+                if syntax.is_edge() {
                     route_count += 1;
                     if !known_names.contains(&observation.target) {
                         errors.push(missing_route_target_message(
@@ -428,8 +431,8 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
                     column_start: observation.column_start,
                     column_end: observation.column_end,
                     target: observation.target.clone(),
-                    syntax: observation.syntax,
-                    executable_edge: observation.syntax.is_edge(),
+                    syntax,
+                    executable_edge: syntax.is_edge(),
                 });
             }
         }
@@ -662,6 +665,19 @@ fn edge_targets(observations: &[RouteObservation]) -> Vec<String> {
         .collect()
 }
 
+fn resolve_route_syntax(
+    observation: &RouteObservation,
+    known_names: &BTreeSet<String>,
+) -> RouteSyntax {
+    match observation.syntax {
+        RouteSyntax::InlineCode if known_names.contains(observation.target.as_str()) => {
+            RouteSyntax::ProseMention
+        }
+        RouteSyntax::InlineCode => RouteSyntax::CodeIdentifier,
+        syntax => syntax,
+    }
+}
+
 fn route_observations(text: &str) -> Vec<RouteObservation> {
     let mut in_route_section = false;
     let mut observations = BTreeSet::new();
@@ -791,7 +807,7 @@ fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
     if is_markdown_list_item(trimmed) && has_imperative_route_prefix(candidate, code_span) {
         return RouteSyntax::ImperativeInvocation;
     }
-    RouteSyntax::ProseMention
+    RouteSyntax::InlineCode
 }
 
 fn has_imperative_route_prefix(candidate: &str, code_span: &str) -> bool {
@@ -879,8 +895,8 @@ mod tests {
     use super::{
         RouteObservation, RouteSyntax, SCENARIO_FIXTURES, check_scenarios,
         frontmatter_metadata_chars, frontmatter_value, missing_markers,
-        missing_route_target_message, route_line_observations, route_observations, route_targets,
-        route_tokens,
+        missing_route_target_message, resolve_route_syntax, route_line_observations,
+        route_observations, route_targets, route_tokens,
     };
 
     #[test]
@@ -937,14 +953,37 @@ mod tests {
     }
 
     #[test]
-    fn existing_skill_name_in_prose_is_not_an_edge() {
+    fn existing_skill_name_in_prose_is_a_prose_mention() {
         let text = "## Procedure\nTake issue #123 through `deliver-pr` after the candidate is coherent.\n";
         assert!(route_targets(text).is_empty());
         let observations = route_observations(text);
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].target, "deliver-pr");
-        assert_eq!(observations[0].syntax, RouteSyntax::ProseMention);
-        assert!(!observations[0].syntax.is_edge());
+        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+        assert_eq!(
+            resolve_route_syntax(
+                &observations[0],
+                &BTreeSet::from(["deliver-pr".to_string()])
+            ),
+            RouteSyntax::ProseMention
+        );
+    }
+
+    #[test]
+    fn unknown_inline_code_is_a_code_identifier() {
+        let text = "## Procedure\nCompare `candidate_sha` before selecting a route.\n";
+        let observations = route_observations(text);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].target, "candidate_sha");
+        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+        assert_eq!(
+            resolve_route_syntax(
+                &observations[0],
+                &BTreeSet::from(["deliver-pr".to_string()])
+            ),
+            RouteSyntax::CodeIdentifier
+        );
+        assert!(!resolve_route_syntax(&observations[0], &BTreeSet::new()).is_edge());
     }
 
     #[test]
@@ -971,9 +1010,11 @@ mod tests {
 
     #[test]
     fn near_miss_explicit_route_remains_load_bearing() {
+        let observations = route_line_observations("- ready -> `delver-pr`", 1, true);
+        assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
         assert_eq!(
-            route_tokens("- ready -> `delver-pr`", true),
-            vec!["delver-pr"]
+            resolve_route_syntax(&observations[0], &BTreeSet::new()),
+            RouteSyntax::ArrowTarget
         );
     }
 
