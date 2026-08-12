@@ -405,12 +405,10 @@ fn write_classification_receipt(
     accepted_baseline_digest: &str,
     compile_digest: &str,
 ) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating output directory {}", parent.display()))?;
-    }
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating output directory {}", parent.display()))?;
     let receipt = ClassifyReceipt {
         schema_version: CLASSIFY_RECEIPT_SCHEMA_VERSION.to_string(),
         command: "classify".to_string(),
@@ -423,8 +421,26 @@ fn write_classification_receipt(
         claim_boundary: CLASSIFY_CLAIM_BOUNDARY.to_string(),
     };
     let encoded = serde_json::to_string_pretty(&receipt).context("serializing classify receipt")?;
-    fs::write(path, format!("{encoded}\n"))
-        .with_context(|| format!("writing classify receipt {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| color_eyre::eyre::eyre!("classify output path has no file name"))?;
+    let temporary = parent.join(format!(
+        ".{}.classify-{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    fs::write(&temporary, format!("{encoded}\n"))
+        .with_context(|| format!("writing temporary classify receipt {}", temporary.display()))?;
+    // Rename replaces a colliding directory entry without following a hard-link
+    // target, so a TOCTOU alias at `path` cannot truncate protected evidence.
+    fs::rename(&temporary, path).with_context(|| {
+        let _ = fs::remove_file(&temporary);
+        format!(
+            "atomically persisting classify receipt {} from {}",
+            path.display(),
+            temporary.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -493,7 +509,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 const CLASSIFY_RECEIPT_SCHEMA_VERSION: &str = "perl_core_harness.transition_classify_result.v1";
-const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref plus compile observation commit/perl_ref/runner/profile, and --discovery via harness_schema_version/profile/runner/perl_resolved_ref/repository_commit/normalized_manifest, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; refuses path-string and existing hard-link output aliases of evidence; does not accept ratchets or centralize #6880 validated wrappers";
+const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref plus compile observation commit/perl_ref/runner/profile, and --discovery via harness_schema_version/profile/runner/perl_resolved_ref/repository_commit/normalized_manifest, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests via atomic temp+rename; check recomputes digests+classification; refuses path-string and existing hard-link output aliases of evidence; does not accept ratchets or centralize #6880 validated wrappers";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct ClassifyReceipt {
@@ -823,6 +839,36 @@ mod classify_io_observer {
             discovery: None,
         })
         .expect("distinct files must be allowed");
+    }
+
+    /// Discriminator: atomic rename onto a hard-linked output path must not
+    /// truncate the protected evidence inode (closes check-to-write TOCTOU).
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn atomic_receipt_write_does_not_truncate_hard_linked_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let evidence = dir.path().join("accepted.json");
+        let output = dir.path().join("out.json");
+        fs::write(&evidence, b"protected-evidence").expect("write evidence");
+        fs::hard_link(&evidence, &output).expect("hard_link");
+        let classification = Classification {
+            transition: CompatibilityTransition::NoChange,
+            reason: "test".into(),
+            requires_candidate: false,
+            semantic_boundary_change: false,
+        };
+        write_classification_receipt(
+            &output,
+            &classification,
+            "a".repeat(64).as_str(),
+            "b".repeat(64).as_str(),
+        )
+        .expect("atomic write");
+        let retained = fs::read(&evidence).expect("evidence retained");
+        assert_eq!(retained, b"protected-evidence");
+        let written = fs::read_to_string(&output).expect("receipt written");
+        assert_eq!(written.contains("\"command\": \"classify\""), true);
+        assert_eq!(same_file_identity(&output, &evidence).expect("identity"), false);
     }
 
     /// RIPR boundary discriminator for unsupported series schema rejection.
