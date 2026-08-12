@@ -3,6 +3,10 @@ name: Publication Drift Advisory
 on:
   workflow_dispatch:
     inputs:
+      control_sha:
+        description: Exact reviewed perl-lsp-swarm commit containing this workflow and classifier
+        required: true
+        type: string
       swarm_sha:
         description: Exact perl-lsp-swarm commit to compare
         required: true
@@ -33,7 +37,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: publication-drift-advisory-${{ inputs.swarm_sha }}-${{ inputs.public_sha }}
+  group: publication-drift-advisory-${{ inputs.control_sha }}-${{ inputs.swarm_sha }}-${{ inputs.public_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -42,12 +46,51 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout reviewed control implementation
+      - name: Checkout exact reviewed control implementation
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          ref: ${{ inputs.control_sha }}
           path: control
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Verify and retain control identity
+        env:
+          CONTROL_SHA: ${{ inputs.control_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${CONTROL_SHA}" | grep -Eq '^[0-9a-f]{40}$'
+          actual="$(git -C control rev-parse HEAD)"
+          test "${actual}" = "${CONTROL_SHA}"
+          # The dispatched workflow definition and executed control tree must be
+          # the same reviewed commit. Any later override needs its own authority
+          # contract rather than silently widening this boundary.
+          test "${DISPATCH_SHA}" = "${CONTROL_SHA}"
+
+          mkdir -p target/publication-drift
+          control_tree_digest="$({ git -C control ls-tree -r -z --full-tree HEAD; } | sha256sum | cut -d' ' -f1)"
+          workflow_digest="$(sha256sum control/.github/workflows/publication-drift-advisory.yml | cut -d' ' -f1)"
+          python3 - "${CONTROL_SHA}" "${control_tree_digest}" "${workflow_digest}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          control_sha, tree_digest, workflow_digest = sys.argv[1:]
+          Path('target/publication-drift/control.json').write_text(
+              json.dumps(
+                  {
+                      'schema_version': 'perl_lsp.publication_drift_control.v1',
+                      'control_sha': control_sha,
+                      'control_tree_digest': tree_digest,
+                      'workflow_sha256': workflow_digest,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              ) + '\n',
+              encoding='utf-8',
+          )
+          PY
 
       - name: Checkout exact swarm subject
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -82,7 +125,6 @@ jobs:
           RUNTIME_BUNDLE_PATH: ${{ inputs.runtime_bundle_path }}
         run: |
           set -euo pipefail
-          mkdir -p target/publication-drift
           python3 control/scripts/release/build_publication_drift_observation.py \
             --swarm-root subjects/swarm \
             --public-root subjects/public \
@@ -130,12 +172,14 @@ jobs:
           from pathlib import Path
 
           receipt = json.loads(Path('target/publication-drift/receipt.json').read_text())
+          control = json.loads(Path('target/publication-drift/control.json').read_text())
           verdict = receipt.get('verdict', 'not_proven')
           counts = receipt.get('counts', {})
           blockers = receipt.get('blockers', [])
           summary = Path(os.environ['GITHUB_STEP_SUMMARY'])
           with summary.open('a', encoding='utf-8') as handle:
               handle.write('## Publication drift domain result\n\n')
+              handle.write(f'- Control SHA: `{control["control_sha"]}`\n')
               handle.write(f'- Verdict: `{verdict}`\n')
               handle.write(f'- Classifier exit: `{os.environ["DOMAIN_EXIT"]}`\n')
               handle.write(f'- Counts: `{json.dumps(counts, sort_keys=True)}`\n')
@@ -143,12 +187,13 @@ jobs:
               handle.write('\nThe workflow completed the advisory instrument; its colour is not the domain verdict.\n')
           PY
 
-      - name: Upload exact observation and receipt
+      - name: Upload exact control, observation, and receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: publication-drift-${{ inputs.swarm_sha }}-${{ inputs.public_sha }}
+          name: publication-drift-${{ inputs.control_sha }}-${{ inputs.swarm_sha }}-${{ inputs.public_sha }}
           path: |
+            target/publication-drift/control.json
             target/publication-drift/observation.json
             target/publication-drift/receipt.json
           if-no-files-found: error
