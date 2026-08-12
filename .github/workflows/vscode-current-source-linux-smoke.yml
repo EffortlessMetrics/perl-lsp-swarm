@@ -70,6 +70,7 @@ jobs:
         env:
           PERL_LSP_E2E: '1'
           PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perllsp
+          PERL_LSP_PACKAGE_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before || github.sha }}
           PERL_LSP_SERVER_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           PERL_LSP_SMOKE_SOURCE_LABEL: hosted-linux-current-source
         run: xvfb-run -a npm run test:published:local
