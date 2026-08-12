@@ -1099,6 +1099,20 @@ jobs:
             --candidate-sha "$SUBJECT_SHA" \
             --candidate-tree-sha "$SUBJECT_TREE_SHA"
 
+      - name: Verify candidate-bound rustfmt receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          python3 scripts/ci/verify_rustfmt_receipt.py \
+            --root . \
+            --receipt "$RECEIPT_PATH" \
+            --producer scripts/ci/rustfmt_check.py \
+            --cargo "$(command -v cargo)" \
+            --rustfmt "$rustfmt_bin" \
+            --candidate-sha "$SUBJECT_SHA" \
+            --candidate-tree-sha "$SUBJECT_TREE_SHA"
+
       - name: Upload candidate-bound rustfmt receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0

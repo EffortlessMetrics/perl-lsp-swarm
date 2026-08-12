@@ -18,6 +18,7 @@ POLICY_PATH = ROOT / ".ci" / "policies" / "required-checks.toml"
 JOB_ID = "rust-formatting"
 CONTEXT_NAME = "Rust formatting"
 RUN_STEP = "Run candidate-bound rustfmt check"
+VERIFY_STEP = "Verify candidate-bound rustfmt receipt"
 UPLOAD_STEP = "Upload candidate-bound rustfmt receipt"
 SUBJECT_EXPRESSION = (
     "github.event_name == 'pull_request' && github.event.pull_request.head.sha || "
@@ -91,6 +92,25 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
     if "|| true" in run:
         raise AssertionError("formatter failure must not be ignored")
 
+    verify_step = named_step(job, VERIFY_STEP)
+    if verify_step.get("continue-on-error") == "true":
+        raise AssertionError("receipt verifier must not continue on error")
+    verify_run = verify_step.get("run", "")
+    for required_fragment in (
+        "scripts/ci/verify_rustfmt_receipt.py",
+        '--receipt "$RECEIPT_PATH"',
+        "--producer scripts/ci/rustfmt_check.py",
+        '--candidate-sha "$SUBJECT_SHA"',
+        '--candidate-tree-sha "$SUBJECT_TREE_SHA"',
+    ):
+        if required_fragment not in verify_run:
+            raise AssertionError(f"receipt verifier missing {required_fragment!r}")
+    if "|| true" in verify_run:
+        raise AssertionError("receipt verifier must not be bypassed")
+    steps = job.get("steps", [])
+    if steps.index(verify_step) <= steps.index(run_step) or steps.index(verify_step) >= steps.index(named_step(job, UPLOAD_STEP)):
+        raise AssertionError("receipt verifier must run after producer and before upload")
+
     upload = named_step(job, UPLOAD_STEP)
     upload_with = upload.get("with", {})
     if upload.get("if") != "always()":
@@ -135,6 +155,20 @@ class RustfmtRequiredWorkflowTests(unittest.TestCase):
         broken = copy.deepcopy(self.workflow)
         named_step(self.job(broken), RUN_STEP)["continue-on-error"] = "true"
         with self.assertRaisesRegex(AssertionError, "run step must not continue"):
+            validate_contract(broken, self.policy)
+
+    def test_verifier_cannot_be_removed_or_bypassed(self) -> None:
+        broken = copy.deepcopy(self.workflow)
+        self.job(broken)["steps"] = [step for step in self.job(broken)["steps"] if step.get("name") != VERIFY_STEP]
+        with self.assertRaisesRegex(AssertionError, "expected exactly one"):
+            validate_contract(broken, self.policy)
+        broken = copy.deepcopy(self.workflow)
+        named_step(self.job(broken), VERIFY_STEP)["continue-on-error"] = "true"
+        with self.assertRaisesRegex(AssertionError, "verifier must not continue"):
+            validate_contract(broken, self.policy)
+        broken = copy.deepcopy(self.workflow)
+        named_step(self.job(broken), VERIFY_STEP)["run"] += "\ntrue || true"
+        with self.assertRaisesRegex(AssertionError, "verifier must not be bypassed"):
             validate_contract(broken, self.policy)
 
     def test_wrong_artifact_name_is_rejected(self) -> None:
