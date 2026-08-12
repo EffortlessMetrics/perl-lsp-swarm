@@ -240,9 +240,11 @@ jobs:
               --bundle-dir "$bundle" \
               --repository-root "$GITHUB_WORKSPACE"; then
               overall_status=1
-              continue
             fi
 
+            # Run the independent host-path scan even when the canonical bundle
+            # contract is already red. Both findings are useful, and canonical
+            # invalidity must not suppress path-leak evidence.
             if ! cargo +1.97.0 run --locked -p perl-core-harness \
               --bin perl-core-harness-public-evidence -- \
               --bundle-dir "$bundle"; then
