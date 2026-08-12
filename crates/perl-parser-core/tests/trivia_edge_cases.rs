@@ -278,7 +278,7 @@ my $x = 1;
 #[test]
 fn low_level_legacy_lexer_still_collects_trivia_during_migration() {
     let source = "# comment\nmy $x = 1;".to_string();
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let (_, trivia) = must_some(lexer.next_token_with_trivia());
 
     assert!(trivia.iter().any(|token| matches!(&token.trivia, Trivia::LineComment(_))));
