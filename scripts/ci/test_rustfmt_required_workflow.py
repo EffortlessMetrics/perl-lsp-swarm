@@ -131,10 +131,10 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
     entry = entries[0]
     if entry.get("workflow") != ".github/workflows/ci.yml":
         raise AssertionError("formatter policy must name the owning workflow")
-    if entry.get("required") is not False or entry.get("enforcement") != "advisory":
-        raise AssertionError("formatter policy must remain advisory before live promotion")
-    if "promotion target" not in str(entry.get("reason", "")).lower():
-        raise AssertionError("formatter policy must retain the explicit promotion target")
+    if entry.get("required") is not True or entry.get("enforcement") != "github-ruleset":
+        raise AssertionError("formatter policy must match live GitHub ruleset enforcement")
+    if "16664791" not in str(entry.get("reason", "")):
+        raise AssertionError("formatter policy must name the live ruleset authority")
 
 
 class RustfmtRequiredWorkflowTests(unittest.TestCase):
@@ -200,12 +200,12 @@ class RustfmtRequiredWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "must fail closed"):
             validate_contract(broken, self.policy)
 
-    def test_live_enforcement_claim_is_rejected_before_promotion(self) -> None:
+    def test_advisory_policy_is_rejected_after_promotion(self) -> None:
         broken = copy.deepcopy(self.policy)
         entry = next(item for item in broken["checks"] if item.get("name") == CONTEXT_NAME)
-        entry["required"] = True
-        entry["enforcement"] = "github-ruleset"
-        with self.assertRaisesRegex(AssertionError, "remain advisory"):
+        entry["required"] = False
+        entry["enforcement"] = "advisory"
+        with self.assertRaisesRegex(AssertionError, "match live GitHub ruleset"):
             validate_contract(self.workflow, broken)
 
 
