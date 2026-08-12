@@ -1,0 +1,155 @@
+name: Publication Drift Advisory
+
+on:
+  workflow_dispatch:
+    inputs:
+      swarm_sha:
+        description: Exact perl-lsp-swarm commit to compare
+        required: true
+        type: string
+      public_sha:
+        description: Exact perl-lsp public commit to compare
+        required: true
+        type: string
+      version:
+        description: Product version represented by both subjects
+        required: true
+        type: string
+      manifest_path:
+        description: Publication manifest path inside this control checkout
+        required: true
+        type: string
+      invariants_path:
+        description: Exact-SHA invariant packet path inside this control checkout
+        required: true
+        type: string
+      runtime_bundle_path:
+        description: Optional runtime identity bundle path inside this control checkout
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publication-drift-advisory-${{ inputs.swarm_sha }}-${{ inputs.public_sha }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Exact-SHA publication drift advisory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout reviewed control implementation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          path: control
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout exact swarm subject
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          repository: EffortlessMetrics/perl-lsp-swarm
+          ref: ${{ inputs.swarm_sha }}
+          path: subjects/swarm
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout exact public subject
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          repository: EffortlessMetrics/perl-lsp
+          ref: ${{ inputs.public_sha }}
+          path: subjects/public
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+        with:
+          toolchain: stable
+
+      - name: Build exact-SHA observation
+        env:
+          SWARM_SHA: ${{ inputs.swarm_sha }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          VERSION: ${{ inputs.version }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          INVARIANTS_PATH: ${{ inputs.invariants_path }}
+          RUNTIME_BUNDLE_PATH: ${{ inputs.runtime_bundle_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/publication-drift
+          python3 control/scripts/release/build_publication_drift_observation.py \
+            --swarm-root subjects/swarm \
+            --public-root subjects/public \
+            --control-root control \
+            --manifest "control/${MANIFEST_PATH}" \
+            --invariants "control/${INVARIANTS_PATH}" \
+            --swarm-sha "${SWARM_SHA}" \
+            --public-sha "${PUBLIC_SHA}" \
+            --version "${VERSION}" \
+            --out target/publication-drift/observation.json
+
+          if [ -n "${RUNTIME_BUNDLE_PATH}" ]; then
+            python3 control/scripts/release/publication_runtime_identity.py compose \
+              --observation target/publication-drift/observation.json \
+              --runtime-bundle "control/${RUNTIME_BUNDLE_PATH}" \
+              --out target/publication-drift/observation-with-runtime.json
+            mv target/publication-drift/observation-with-runtime.json \
+              target/publication-drift/observation.json
+          fi
+
+      - name: Run canonical classifier without converting domain verdict to workflow colour
+        id: classify
+        run: |
+          set -euo pipefail
+          set +e
+          (
+            cd control
+            cargo run -p xtask -- publication-drift \
+              --input ../target/publication-drift/observation.json \
+              --repo-root . \
+              --out ../target/publication-drift/receipt.json
+          )
+          domain_exit="$?"
+          set -e
+          test -s target/publication-drift/receipt.json
+          echo "domain_exit=${domain_exit}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish bounded domain summary
+        env:
+          DOMAIN_EXIT: ${{ steps.classify.outputs.domain_exit }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt = json.loads(Path('target/publication-drift/receipt.json').read_text())
+          verdict = receipt.get('verdict', 'not_proven')
+          counts = receipt.get('counts', {})
+          blockers = receipt.get('blockers', [])
+          summary = Path(os.environ['GITHUB_STEP_SUMMARY'])
+          with summary.open('a', encoding='utf-8') as handle:
+              handle.write('## Publication drift domain result\n\n')
+              handle.write(f'- Verdict: `{verdict}`\n')
+              handle.write(f'- Classifier exit: `{os.environ["DOMAIN_EXIT"]}`\n')
+              handle.write(f'- Counts: `{json.dumps(counts, sort_keys=True)}`\n')
+              handle.write(f'- Blockers: `{len(blockers)}`\n')
+              handle.write('\nThe workflow completed the advisory instrument; its colour is not the domain verdict.\n')
+          PY
+
+      - name: Upload exact observation and receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: publication-drift-${{ inputs.swarm_sha }}-${{ inputs.public_sha }}
+          path: |
+            target/publication-drift/observation.json
+            target/publication-drift/receipt.json
+          if-no-files-found: error
+          retention-days: 30
