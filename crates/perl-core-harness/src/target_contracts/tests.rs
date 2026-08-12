@@ -1,7 +1,7 @@
 //! Focused target-matrix invariants.
 
 use super::*;
-use crate::contract::validate_external_selector_for_test;
+use crate::contract::{validate_external_selector_for_test, validate_selector_for_test};
 use crate::model::{
     TARGET_MATRIX_SCHEMA_VERSION, TARGET_SELECTION_SCHEMA_VERSION,
     TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, CompositeOverlapPolicy, ManifestPopulation,
@@ -373,6 +373,42 @@ fn composite_contract_requires_an_overlap_policy() {
 fn external_selector_allows_one_parent_boundary() {
     assert!(validate_external_selector_for_test("../ext/re/t/*.t").is_ok());
     assert!(validate_external_selector_for_test("../../outside/*.t").is_err());
+}
+
+#[test]
+fn selector_kind_grammar_accepts_valid_shapes() {
+    assert!(validate_selector_for_test(&TargetSelector::ExactFile {
+        path: "op/basic.t".to_string(),
+    })
+    .is_ok());
+    assert!(validate_selector_for_test(&TargetSelector::RecursiveRoot {
+        path: "op/hook".to_string(),
+    })
+    .is_ok());
+    assert!(validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+        pattern: "op/*.t".to_string(),
+    })
+    .is_ok());
+}
+
+#[test]
+fn selector_kind_grammar_rejects_wrong_pattern_shapes() {
+    assert!(validate_selector_for_test(&TargetSelector::ExactFile {
+        path: "op/*.t".to_string(),
+    })
+    .is_err());
+    assert!(validate_selector_for_test(&TargetSelector::RecursiveRoot {
+        path: "op/*".to_string(),
+    })
+    .is_err());
+    assert!(validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+        pattern: "op/**/*.t".to_string(),
+    })
+    .is_err());
+    assert!(validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+        pattern: "op/hook".to_string(),
+    })
+    .is_err());
 }
 
 #[test]

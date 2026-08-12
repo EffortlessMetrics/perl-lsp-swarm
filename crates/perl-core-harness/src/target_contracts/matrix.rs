@@ -1,7 +1,7 @@
 //! Cross-target, ownership, fingerprint, and drift validation.
 
 use crate::contract::{
-    validate_nonempty, validate_sorted_unique_strings, validate_stable_id,
+    validate_nonempty, validate_sorted_unique_strings,
 };
 use crate::model::{
     TARGET_MATRIX_INDEX_SCHEMA_VERSION, TARGET_MATRIX_PART_SCHEMA_VERSION,
@@ -164,7 +164,7 @@ impl UpstreamTargetMatrix {
         self.validate()?;
         let bytes = serde_json::to_vec(self)
             .map_err(|error| format!("serializing normalized target matrix: {error}"))?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        Ok(sha256_hex(&bytes))
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -614,7 +614,14 @@ fn target_topology_digest(contract: &TargetSelectionContract) -> Result<String, 
     normalized.change_reason = None;
     let bytes = serde_json::to_vec(&normalized)
         .map_err(|error| format!("serializing target topology: {error}"))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(sha256_hex(&bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn validate_disjoint_drift_lists(drift: &TargetTopologyDrift) -> Result<(), String> {

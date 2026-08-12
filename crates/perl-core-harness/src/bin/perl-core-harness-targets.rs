@@ -11,7 +11,7 @@ mod matrix;
 #[path = "../target_contracts/io.rs"]
 mod io;
 
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{ContextCompat, Result, bail};
 use io::{read_drift, read_matrix};
 use std::env;
 use std::ffi::OsStr;

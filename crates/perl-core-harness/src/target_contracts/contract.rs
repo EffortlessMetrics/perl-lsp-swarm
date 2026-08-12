@@ -214,13 +214,42 @@ impl TargetSelectionContract {
 
 fn validate_selector(selector: &TargetSelector) -> Result<(), String> {
     match selector {
-        TargetSelector::RecursiveRoot { path } | TargetSelector::ExactFile { path } => {
-            validate_local_selector(path)
+        TargetSelector::RecursiveRoot { path } => validate_literal_local_selector(
+            path,
+            "recursive-root selector",
+        ),
+        TargetSelector::ExactFile { path } => {
+            validate_literal_local_selector(path, "exact-file selector")
         }
-        TargetSelector::NonRecursiveGlob { pattern } => validate_local_selector(pattern),
+        TargetSelector::NonRecursiveGlob { pattern } => validate_nonrecursive_glob(pattern),
         TargetSelector::ExternalGlob { pattern } => validate_external_selector(pattern),
         TargetSelector::ManifestPopulation { .. } => Ok(()),
     }
+}
+
+fn validate_literal_local_selector(value: &str, label: &str) -> Result<(), String> {
+    validate_local_selector(value)?;
+    if contains_glob_metacharacter(value) {
+        return Err(format!("{label} cannot contain glob metacharacters: {value}"));
+    }
+    Ok(())
+}
+
+fn validate_nonrecursive_glob(value: &str) -> Result<(), String> {
+    validate_local_selector(value)?;
+    if value.contains("**") {
+        return Err(format!("non-recursive glob cannot contain **: {value}"));
+    }
+    if !contains_glob_metacharacter(value) {
+        return Err(format!("non-recursive glob must contain a glob pattern: {value}"));
+    }
+    Ok(())
+}
+
+fn contains_glob_metacharacter(value: &str) -> bool {
+    value
+        .bytes()
+        .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
 }
 
 fn validate_local_selector(value: &str) -> Result<(), String> {
@@ -320,4 +349,9 @@ pub(crate) fn validate_nonempty(value: &str, label: &str) -> Result<(), String> 
 #[cfg(test)]
 pub(crate) fn validate_external_selector_for_test(value: &str) -> Result<(), String> {
     validate_external_selector(value)
+}
+
+#[cfg(test)]
+pub(crate) fn validate_selector_for_test(selector: &TargetSelector) -> Result<(), String> {
+    validate_selector(selector)
 }
