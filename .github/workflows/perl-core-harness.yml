@@ -62,11 +62,14 @@ jobs:
           set -euo pipefail
           ref="${{ steps.upstream.outputs.ref }}"
           receipt="target/perl-core/prepare/${ref}/prepare.json"
+          prepared_tree="target/perl-core/upstream/${ref}/perl5"
           test -s "$receipt"
           digest="$(sha256sum "$receipt" | awk '{print $1}')"
+          perl_resolved_ref="$(git -C "$prepared_tree" rev-parse HEAD)"
           {
             echo "receipt=$receipt"
             echo "digest=$digest"
+            echo "perl_resolved_ref=$perl_resolved_ref"
             echo "preparation_id=perl-prepare-${ref}"
             echo "compiler_subject_identity=perl-lsp-swarm:${GITHUB_SHA}:rustc-1.97.0:perl-core-harness.v1"
             echo "invocation_identity=perl-core-harness:smoke:v1:runner-${{ steps.upstream.outputs.runner }}:parse-compile"
@@ -80,6 +83,7 @@ jobs:
           set -uo pipefail
           overall_status=0
           ref="${{ steps.upstream.outputs.ref }}"
+          perl_resolved_ref="${{ steps.identity.outputs.perl_resolved_ref }}"
           modes="${{ steps.upstream.outputs.modes }}"
           runner="${{ steps.upstream.outputs.runner }}"
           prepared_tree="target/perl-core/upstream/${ref}/perl5"
@@ -117,7 +121,7 @@ jobs:
               --series-id "$series_id" \
               --profile "$profile" \
               --perl-requested-ref "$ref" \
-              --perl-resolved-ref "$ref" \
+              --perl-resolved-ref "$perl_resolved_ref" \
               --preparation-receipt-id "$preparation_id" \
               --preparation-receipt-digest "$preparation_digest" \
               --compiler-subject-identity "$compiler_subject_identity" \
@@ -135,7 +139,7 @@ jobs:
               --series-id "$series_id" \
               --profile "$profile" \
               --perl-requested-ref "$ref" \
-              --perl-resolved-ref "$ref" \
+              --perl-resolved-ref "$perl_resolved_ref" \
               --preparation-receipt-id "$preparation_id" \
               --preparation-receipt-digest "$preparation_digest" \
               --compiler-subject-identity "$compiler_subject_identity" \
@@ -163,16 +167,34 @@ jobs:
             fi
 
             terminal_receipt="$profile_dir/terminal-admission.json"
+            admitted_dir="$profile_dir/admitted-reports"
+            admitted_parse="$admitted_dir/parse.json"
+            admitted_compile="$admitted_dir/compile.json"
             if ! cargo +1.97.0 run --locked -p perl-core-harness \
               --bin perl-core-harness-terminal-admission -- \
               --report "$profile_dir/parse.json" \
               --report "$profile_dir/compile.json" \
-              --output "$terminal_receipt"; then
+              --output "$terminal_receipt" \
+              --admitted-dir "$admitted_dir" \
+              --expected-runner "$runner" \
+              --expected-profile "$profile" \
+              --expected-commit "$GITHUB_SHA" \
+              --expected-perl-ref "$perl_resolved_ref"; then
               # Legacy missing/nonzero status is NOT_PROVEN even when file and
               # assertion counts are green. Preserve the typed receipt and stop.
               overall_status=1
               continue
             fi
+
+            verify_terminal_receipt() {
+              cargo +1.97.0 run --locked -p perl-core-harness \
+                --bin perl-core-harness-terminal-admission -- \
+                --check-receipt "$terminal_receipt" \
+                --expected-runner "$runner" \
+                --expected-profile "$profile" \
+                --expected-commit "$GITHUB_SHA" \
+                --expected-perl-ref "$perl_resolved_ref"
+            }
 
             boundaries="$profile_dir/semantic-boundaries.json"
             reproduction="$profile_dir/reproduction.json"
@@ -181,7 +203,11 @@ jobs:
             bundle_id="perl-5.42.2-${profile}-${GITHUB_SHA}"
             bundle="target/perl-core/bundles/${bundle_id}"
 
-            python3 - "$profile_dir/compile.json" "$boundaries" "$reproduction" \
+            if ! verify_terminal_receipt; then
+              overall_status=1
+              continue
+            fi
+            python3 - "$admitted_compile" "$boundaries" "$reproduction" \
               "$series_id" "$profile" "$compiler_subject_identity" <<'PY'
           import json
           import sys
@@ -206,10 +232,14 @@ jobs:
           Path(reproduction_path).write_text(json.dumps(reproduction, indent=2, sort_keys=True) + "\n")
           PY
 
+            if ! verify_terminal_receipt; then
+              overall_status=1
+              continue
+            fi
             if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness baseline \
               --mode compile \
               --profile "$profile" \
-              --report "$profile_dir/compile.json" \
+              --report "$admitted_compile" \
               --baseline "$candidate" \
               --series "$series" \
               --compiler-subject-identity "$compiler_subject_identity" \
@@ -223,6 +253,10 @@ jobs:
             fi
             cp -- "$candidate" "$accepted"
 
+            if ! verify_terminal_receipt; then
+              overall_status=1
+              continue
+            fi
             if ! cargo +1.97.0 run --locked -p xtask -- perl-core-harness bundle \
               --write \
               --output-dir "$bundle" \
@@ -234,8 +268,8 @@ jobs:
               --preparation "$preparation" \
               --discovery-raw "$profile_dir/discovery.raw.txt" \
               --discovery "$profile_dir/discovery.json" \
-              --parse "$profile_dir/parse.json" \
-              --compile "$profile_dir/compile.json" \
+              --parse "$admitted_parse" \
+              --compile "$admitted_compile" \
               --runner-records "$profile_dir/runner-records.jsonl" \
               --semantic-boundaries "$boundaries" \
               --gap-map "$profile_dir/gap-map.json" \
@@ -273,6 +307,7 @@ jobs:
             echo
             echo "- measurement SHA: `${GITHUB_SHA}`"
             echo "- Perl ref: `${{ steps.upstream.outputs.ref }}`"
+            echo "- Perl resolved ref: `${{ steps.identity.outputs.perl_resolved_ref }}`"
             echo "- Rust toolchain: `1.97.0`"
             echo "- modes: `${{ steps.upstream.outputs.modes }}`"
             echo "- accepted claim: selected parse/compile evidence only; execution and general semantic support are not implied"
@@ -304,6 +339,7 @@ jobs:
               if terminal_path.exists():
                   terminal = json.loads(terminal_path.read_text())
                   print(f"- terminal admission: `{terminal['verdict']}`")
+                  print(f"- admitted reports: `{len(terminal.get('reports', []))}`")
               else:
                   print("- terminal admission: not written")
               print(f"- bundle index: `{bundle_indexes[0] if bundle_indexes else 'not written'}`")
