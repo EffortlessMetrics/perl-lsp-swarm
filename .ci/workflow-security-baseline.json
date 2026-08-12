@@ -1390,22 +1390,6 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "d56e6b1ea22531a9762a7c751318c0cecb82b905c36c745ba8d987758db8b228",
-      "line": 73,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/workflow-security-ratchet-selftest.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "contents: write",
-      "fingerprint": "72045a09d61abe70e86e29f3eb4990aa0ac1cca57698c9c9c7e96cc7e122e8a5",
-      "line": 70,
-      "message": "PR-triggered workflow grants write authority",
-      "path": ".github/workflows/workflow-security-ratchet-selftest.yml",
-      "rule": "pr_write_permission"
-    },
-    {
       "evidence": "if [ \"${{ steps.lint.outputs.exit_code }}\" = \"0\" ]; then",
       "fingerprint": "a0f5e344c95574d20c6ca7f12f378810a58bf437b9be8dd42826e6c8083bd19a",
       "line": 70,
