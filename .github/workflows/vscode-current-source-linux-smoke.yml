@@ -125,7 +125,9 @@ jobs:
           started_epoch = as_int('PERL_LSP_SMOKE_RUNNER_STARTED_EPOCH')
           completed_epoch = int(time.time())
           existing_receipts = sorted(
-              path.name for path in receipts.glob('*.json') if path.is_file()
+              path.relative_to(receipts).as_posix()
+              for path in receipts.rglob('*.json')
+              if path.is_file()
           )
 
           payload = {
