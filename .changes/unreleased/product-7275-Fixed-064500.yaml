@@ -1,0 +1,9 @@
+project: product
+component: DAP
+kind: Fixed
+body: Stop fabricating package/global variables when debugger inspection is unavailable and refuse to treat unrelated unframed output as an evaluate result.
+time: 2026-08-12T06:45:00Z
+custom:
+  PR: ""
+  Slug: dap-honest-inspection-fallbacks
+  Breaking: "no"
