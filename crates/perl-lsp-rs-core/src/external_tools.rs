@@ -1,15 +1,15 @@
 //! Canonical roles and native replacements for external Perl tooling.
 //!
-//! This registry answers policy questions only. It does not discover, install,
-//! execute, or parse tool-specific configuration. Domain registries remain the
-//! authority for Perl::Tidy options, Perl::Critic policies, and debugger-peer
-//! capabilities.
+//! This registry answers product-policy questions only. It does not discover,
+//! install, execute, or parse tool-specific configuration. Domain registries
+//! remain authoritative for Perl::Tidy options, Perl::Critic policies, and
+//! debugger-peer capabilities.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::BTreeSet;
 
 /// Stable identity for a reviewed external Perl tool or integration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalToolId {
     /// `Perl::LanguageServer`, retained only as an external conformance oracle.
@@ -23,7 +23,7 @@ pub enum ExternalToolId {
 }
 
 /// A bounded role an external tool may hold around the native product.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalToolRole {
     /// Read familiar configuration and explain its native mapping.
@@ -37,7 +37,7 @@ pub enum ExternalToolRole {
 }
 
 /// Support level for reading an external tool's configuration without running it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigReaderSupport {
     /// No configuration reader is authorized.
@@ -51,7 +51,7 @@ pub enum ConfigReaderSupport {
 }
 
 /// Scope in which installation guidance may be shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallHelpScope {
     /// No normal installation guidance is offered.
@@ -62,8 +62,8 @@ pub enum InstallHelpScope {
     DeveloperConformance,
 }
 
-/// Security and trust owner for any interaction with the external implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Security and trust owner for interaction with an external implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalToolTrustClass {
     /// Repository-only test infrastructure with pinned identity and bounded receipts.
@@ -82,7 +82,11 @@ pub struct ExternalToolPolicy {
     pub tool_id: ExternalToolId,
     /// Canonical user-facing name.
     pub canonical_name: &'static str,
-    /// Reviewed aliases used for detection, configuration, or package exclusion.
+    /// Exact aliases used for identity resolution and advisory detection.
+    ///
+    /// Aliases are not package payload patterns. Package inspection must use
+    /// artifact-specific exact paths or basenames rather than substring scans
+    /// over this vocabulary.
     pub aliases: &'static [&'static str],
     /// Product domain in which the tool is relevant.
     pub owned_domain: &'static str,
@@ -100,7 +104,7 @@ pub struct ExternalToolPolicy {
     pub may_auto_select: bool,
     /// Whether ordinary workspace opening may execute the tool.
     pub may_execute_on_workspace_open: bool,
-    /// Whether a user action/configuration decision is required before use.
+    /// Whether a user action or configuration decision is required before use.
     pub explicit_enablement_required: bool,
     /// Familiar configuration files associated with the tool.
     pub config_files: &'static [&'static str],
@@ -260,15 +264,45 @@ pub enum ExternalToolRegistryError {
         /// Canonical tool name.
         tool: &'static str,
     },
+    /// A role requiring user authorization was not marked explicit.
+    #[error("external tool {tool} requires explicit enablement")]
+    MissingExplicitEnablement {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
+    /// External execution support and the explicit-adapter role disagree.
+    #[error("external adapter role/support mismatch for {tool}")]
+    ExternalExecutionRoleMismatch {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
     /// An external execution role lacks the process/trust owner.
     #[error("external adapter {tool} must use the explicit external-process trust class")]
     InvalidExternalExecutionTrust {
         /// Canonical tool name.
         tool: &'static str,
     },
-    /// A conformance-only tool was exposed as an external execution adapter.
-    #[error("conformance-only tool {tool} must not be a product execution adapter")]
-    ConformanceRuntimeLeak {
+    /// Conformance support and the conformance-oracle role disagree.
+    #[error("conformance role/support mismatch for {tool}")]
+    ConformanceRoleMismatch {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
+    /// A configuration reader exists without the compatibility role, or vice versa.
+    #[error("configuration-reader role/support mismatch for {tool}")]
+    ConfigReaderRoleMismatch {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
+    /// An optional debugger peer lacks the peer trust owner.
+    #[error("external debugger peer {tool} must use the explicit debugger-peer trust class")]
+    InvalidPeerTrust {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
+    /// A tool with a permanently bounded role was exposed as product runtime.
+    #[error("external tool {tool} is not authorized as a product runtime")]
+    RuntimeForbidden {
         /// Canonical tool name.
         tool: &'static str,
     },
@@ -278,9 +312,12 @@ pub enum ExternalToolRegistryError {
         /// Conflicting canonical name or alias.
         identity: String,
     },
+    /// A canonical name or alias is empty after trimming.
+    #[error("external-tool identity must not be empty")]
+    EmptyIdentity,
 }
 
-/// Validate a registry against the native-product invariants.
+/// Validate a registry against native-product and role-consistency invariants.
 ///
 /// # Errors
 ///
@@ -289,6 +326,7 @@ pub fn validate_external_tool_registry(
     registry: &[ExternalToolPolicy],
 ) -> Result<(), ExternalToolRegistryError> {
     let mut identities = BTreeSet::new();
+
     for policy in registry {
         if policy.bundled {
             return Err(ExternalToolRegistryError::BundledExternalTool {
@@ -310,23 +348,60 @@ pub fn validate_external_tool_registry(
                 tool: policy.canonical_name,
             });
         }
-        if policy.external_execution_support
+
+        let has_external_adapter =
+            policy.roles.contains(&ExternalToolRole::ExplicitExternalAdapter);
+        let has_conformance = policy.roles.contains(&ExternalToolRole::ConformanceOracle);
+        let has_config_reader =
+            policy.roles.contains(&ExternalToolRole::ConfigurationCompatibility);
+        let has_peer = policy.roles.contains(&ExternalToolRole::ExplicitOptionalPeer);
+
+        if has_external_adapter != policy.external_execution_support {
+            return Err(ExternalToolRegistryError::ExternalExecutionRoleMismatch {
+                tool: policy.canonical_name,
+            });
+        }
+        if has_external_adapter
             && policy.trust_class != ExternalToolTrustClass::ExplicitExternalProcess
         {
             return Err(ExternalToolRegistryError::InvalidExternalExecutionTrust {
                 tool: policy.canonical_name,
             });
         }
+        if has_conformance != policy.conformance_support {
+            return Err(ExternalToolRegistryError::ConformanceRoleMismatch {
+                tool: policy.canonical_name,
+            });
+        }
+        if has_config_reader != (policy.config_reader_support != ConfigReaderSupport::None) {
+            return Err(ExternalToolRegistryError::ConfigReaderRoleMismatch {
+                tool: policy.canonical_name,
+            });
+        }
+        if has_peer && policy.trust_class != ExternalToolTrustClass::ExplicitDebuggerPeer {
+            return Err(ExternalToolRegistryError::InvalidPeerTrust {
+                tool: policy.canonical_name,
+            });
+        }
+        if (has_external_adapter || has_peer) && !policy.explicit_enablement_required {
+            return Err(ExternalToolRegistryError::MissingExplicitEnablement {
+                tool: policy.canonical_name,
+            });
+        }
         if policy.tool_id == ExternalToolId::PerlLanguageServer
-            && policy.external_execution_support
+            && (has_external_adapter || has_peer || policy.external_execution_support)
         {
-            return Err(ExternalToolRegistryError::ConformanceRuntimeLeak {
+            return Err(ExternalToolRegistryError::RuntimeForbidden {
                 tool: policy.canonical_name,
             });
         }
 
         for identity in std::iter::once(policy.canonical_name).chain(policy.aliases.iter().copied()) {
-            let normalized = identity.to_ascii_lowercase();
+            let trimmed = identity.trim();
+            if trimmed.is_empty() {
+                return Err(ExternalToolRegistryError::EmptyIdentity);
+            }
+            let normalized = trimmed.to_ascii_lowercase();
             if !identities.insert(normalized.clone()) {
                 return Err(ExternalToolRegistryError::DuplicateIdentity {
                     identity: normalized,
@@ -334,6 +409,7 @@ pub fn validate_external_tool_registry(
             }
         }
     }
+
     Ok(())
 }
 
@@ -343,6 +419,23 @@ pub fn external_tool_policy(tool_id: ExternalToolId) -> Option<&'static External
     EXTERNAL_TOOL_REGISTRY.iter().find(|policy| policy.tool_id == tool_id)
 }
 
+/// Resolve a policy by an exact canonical name or alias, case-insensitively.
+///
+/// This is exact identity matching. It deliberately does not perform substring
+/// matching, so an alias such as `pls` cannot classify `my-pls-wrapper`.
+#[must_use]
+pub fn external_tool_policy_by_identity(identity: &str) -> Option<&'static ExternalToolPolicy> {
+    let normalized = identity.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    EXTERNAL_TOOL_REGISTRY.iter().find(|policy| {
+        policy.canonical_name.eq_ignore_ascii_case(&normalized)
+            || policy.aliases.iter().any(|alias| alias.eq_ignore_ascii_case(&normalized))
+    })
+}
+
 /// Serialize the reviewed registry in deterministic declaration order.
 ///
 /// # Errors
@@ -350,20 +443,6 @@ pub fn external_tool_policy(tool_id: ExternalToolId) -> Option<&'static External
 /// Returns a serialization error only if the static contract ceases to be JSON serializable.
 pub fn external_tool_registry_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(EXTERNAL_TOOL_REGISTRY)
-}
-
-/// Return reviewed marker strings that must never appear as bundled payloads.
-///
-/// Domain-specific package checks may add concrete filenames, but the common
-/// tool identities come from this registry rather than copied product-name lists.
-#[must_use]
-pub fn prohibited_external_payload_markers() -> Vec<&'static str> {
-    let mut markers = BTreeSet::new();
-    for policy in EXTERNAL_TOOL_REGISTRY {
-        markers.insert(policy.canonical_name);
-        markers.extend(policy.aliases.iter().copied());
-    }
-    markers.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -387,6 +466,16 @@ mod tests {
             assert!(!policy.may_auto_select, "{} must not auto-select", policy.canonical_name);
             assert!(policy.explicit_enablement_required);
         }
+    }
+
+    #[test]
+    fn exact_identity_resolution_does_not_turn_aliases_into_substring_patterns()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pls = external_tool_policy_by_identity("PLS").ok_or("PLS alias should resolve")?;
+        assert_eq!(pls.tool_id, ExternalToolId::PerlLanguageServer);
+        assert!(external_tool_policy_by_identity("my-pls-wrapper").is_none());
+        assert!(external_tool_policy_by_identity("  ").is_none());
+        Ok(())
     }
 
     #[test]
@@ -440,18 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn prohibited_payload_markers_are_deterministic_and_complete() {
-        let markers = prohibited_external_payload_markers();
-        let mut sorted = markers.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(markers, sorted);
-        for expected in ["Perl::LanguageServer", "perltidy", "perlcritic", "Devel::ptkdb"] {
-            assert!(markers.contains(&expected), "missing marker {expected}");
-        }
-    }
-
-    #[test]
     fn validator_rejects_forbidden_policy_combinations() {
         let bundled = [ExternalToolPolicy {
             bundled: true,
@@ -472,13 +549,48 @@ mod tests {
         ));
 
         let runtime_pls = [ExternalToolPolicy {
+            roles: PERLTIDY_ROLES,
             external_execution_support: true,
             trust_class: ExternalToolTrustClass::ExplicitExternalProcess,
             ..EXTERNAL_TOOL_REGISTRY[0]
         }];
         assert!(matches!(
             validate_external_tool_registry(&runtime_pls),
-            Err(ExternalToolRegistryError::ConformanceRuntimeLeak { .. })
+            Err(ExternalToolRegistryError::ConfigReaderRoleMismatch { .. })
+                | Err(ExternalToolRegistryError::RuntimeForbidden { .. })
+        ));
+
+        let missing_execution_role = [ExternalToolPolicy {
+            external_execution_support: false,
+            ..EXTERNAL_TOOL_REGISTRY[1]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&missing_execution_role),
+            Err(ExternalToolRegistryError::ExternalExecutionRoleMismatch { .. })
+        ));
+
+        let implicit_peer = [ExternalToolPolicy {
+            explicit_enablement_required: false,
+            ..EXTERNAL_TOOL_REGISTRY[3]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&implicit_peer),
+            Err(ExternalToolRegistryError::MissingExplicitEnablement { .. })
+        ));
+    }
+
+    #[test]
+    fn validator_rejects_duplicate_identities() {
+        let duplicate_alias = [
+            EXTERNAL_TOOL_REGISTRY[0],
+            ExternalToolPolicy {
+                aliases: &["Perl-LanguageServer"],
+                ..EXTERNAL_TOOL_REGISTRY[1]
+            },
+        ];
+        assert!(matches!(
+            validate_external_tool_registry(&duplicate_alias),
+            Err(ExternalToolRegistryError::DuplicateIdentity { .. })
         ));
     }
 }
