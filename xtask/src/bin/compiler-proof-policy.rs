@@ -177,6 +177,111 @@ impl StableName for MissingEffect {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProofClassContract {
+    authority: Authority,
+    claim_stages: &'static [ClaimStage],
+    circular_output_allowed: bool,
+    missing_effect: MissingEffect,
+}
+
+fn proof_class_contract(class_id: &str) -> Result<ProofClassContract> {
+    let contract = match class_id {
+        "positive_gold" => ProofClassContract {
+            authority: Authority::IndependentGold,
+            claim_stages: &[
+                ClaimStage::BodyHir,
+                ClaimStage::PirA,
+                ClaimStage::EffectsWorld,
+                ClaimStage::Eir,
+                ClaimStage::Provider,
+            ],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaim,
+        },
+        "negative_gold" => ProofClassContract {
+            authority: Authority::IndependentGold,
+            claim_stages: &[
+                ClaimStage::BodyHir,
+                ClaimStage::PirA,
+                ClaimStage::EffectsWorld,
+                ClaimStage::Eir,
+                ClaimStage::Provider,
+            ],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaim,
+        },
+        "boundary_gold" => ProofClassContract {
+            authority: Authority::IndependentGold,
+            claim_stages: &[
+                ClaimStage::BodyHir,
+                ClaimStage::PirA,
+                ClaimStage::EffectsWorld,
+                ClaimStage::Eir,
+                ClaimStage::Provider,
+            ],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaim,
+        },
+        "recovery_gold" => ProofClassContract {
+            authority: Authority::IndependentGold,
+            claim_stages: &[ClaimStage::Parser, ClaimStage::BodyHir, ClaimStage::Provider],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaim,
+        },
+        "hir_snapshot" => ProofClassContract {
+            authority: Authority::CompilerSnapshot,
+            claim_stages: &[ClaimStage::FlatHir, ClaimStage::BodyHir],
+            circular_output_allowed: true,
+            missing_effect: MissingEffect::BlocksStage,
+        },
+        "pir_snapshot" => ProofClassContract {
+            authority: Authority::CompilerSnapshot,
+            claim_stages: &[ClaimStage::PirA],
+            circular_output_allowed: true,
+            missing_effect: MissingEffect::BlocksStage,
+        },
+        "verifier_mutation" => ProofClassContract {
+            authority: Authority::MutationFixture,
+            claim_stages: &[ClaimStage::PirA, ClaimStage::Eir, ClaimStage::Provider],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaim,
+        },
+        "effects_world_fixture" => ProofClassContract {
+            authority: Authority::IndependentFixture,
+            claim_stages: &[ClaimStage::EffectsWorld, ClaimStage::Provider],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaim,
+        },
+        "eir_differential" => ProofClassContract {
+            authority: Authority::EirDifferential,
+            claim_stages: &[ClaimStage::Eir],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksExecutionClaim,
+        },
+        "real_perl_oracle" => ProofClassContract {
+            authority: Authority::RealPerlOracle,
+            claim_stages: &[ClaimStage::EffectsWorld, ClaimStage::Eir, ClaimStage::Provider],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaimWhenObservable,
+        },
+        "composition_coverage" => ProofClassContract {
+            authority: Authority::CompositionHarness,
+            claim_stages: &[
+                ClaimStage::BodyHir,
+                ClaimStage::PirA,
+                ClaimStage::EffectsWorld,
+                ClaimStage::Eir,
+                ClaimStage::Provider,
+            ],
+            circular_output_allowed: false,
+            missing_effect: MissingEffect::BlocksClaim,
+        },
+        _ => bail!("unknown compiler proof class {:?}", class_id),
+    };
+    Ok(contract)
+}
+
 impl ProofPolicy {
     fn from_str(source: &str) -> Result<Self> {
         let policy: Self = toml::from_str(source).context("parse compiler proof policy")?;
@@ -483,6 +588,7 @@ impl ProofPolicy {
 impl ProofClass {
     fn validate(&self) -> Result<()> {
         validate_id("proof class", &self.class_id)?;
+        let contract = proof_class_contract(&self.class_id)?;
         if self.purpose.trim().is_empty() {
             bail!("proof class {} has an empty purpose", self.class_id);
         }
@@ -491,10 +597,38 @@ impl ProofClass {
         if self.claim_stages.is_empty() {
             bail!("proof class {} must name at least one claim stage", self.class_id);
         }
-        if self.circular_output_allowed && !matches!(self.authority, Authority::CompilerSnapshot) {
+        let actual_stages = self.claim_stages.iter().copied().collect::<BTreeSet<_>>();
+        let expected_stages = contract.claim_stages.iter().copied().collect::<BTreeSet<_>>();
+        if self.authority != contract.authority {
             bail!(
-                "proof class {} permits circular output outside compiler_snapshot authority",
-                self.class_id
+                "proof class {} has authority {:?}; expected {:?}",
+                self.class_id,
+                self.authority,
+                contract.authority
+            );
+        }
+        if actual_stages != expected_stages {
+            bail!(
+                "proof class {} has claim stages {:?}; expected {:?}",
+                self.class_id,
+                actual_stages,
+                expected_stages
+            );
+        }
+        if self.circular_output_allowed != contract.circular_output_allowed {
+            bail!(
+                "proof class {} has circular_output_allowed={}; expected {}",
+                self.class_id,
+                self.circular_output_allowed,
+                contract.circular_output_allowed
+            );
+        }
+        if self.missing_effect != contract.missing_effect {
+            bail!(
+                "proof class {} has missing effect {:?}; expected {:?}",
+                self.class_id,
+                self.missing_effect,
+                contract.missing_effect
             );
         }
         Ok(())
@@ -732,6 +866,45 @@ mod tests {
             .find(|proof_class| matches!(proof_class.authority, Authority::IndependentGold))
             .ok_or_else(|| anyhow!("committed policy has no independent gold class"))?;
         proof_class.circular_output_allowed = true;
+        assert!(policy.validate(&concepts()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn positive_gold_authority_mutation_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let proof_class = policy
+            .proof_classes
+            .iter_mut()
+            .find(|proof_class| proof_class.class_id == "positive_gold")
+            .ok_or_else(|| anyhow!("committed policy has no positive gold class"))?;
+        proof_class.authority = Authority::CompilerSnapshot;
+        assert!(policy.validate(&concepts()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn positive_gold_stage_mutation_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let proof_class = policy
+            .proof_classes
+            .iter_mut()
+            .find(|proof_class| proof_class.class_id == "positive_gold")
+            .ok_or_else(|| anyhow!("committed policy has no positive gold class"))?;
+        proof_class.claim_stages = vec![ClaimStage::Provider];
+        assert!(policy.validate(&concepts()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn positive_gold_missing_effect_mutation_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let proof_class = policy
+            .proof_classes
+            .iter_mut()
+            .find(|proof_class| proof_class.class_id == "positive_gold")
+            .ok_or_else(|| anyhow!("committed policy has no positive gold class"))?;
+        proof_class.missing_effect = MissingEffect::BlocksStage;
         assert!(policy.validate(&concepts()?).is_err());
         Ok(())
     }
