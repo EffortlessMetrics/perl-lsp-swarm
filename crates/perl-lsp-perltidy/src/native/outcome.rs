@@ -614,7 +614,55 @@ const fn keyword_spacing_name(value: KeywordSpacing) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::count_changed_lines;
+    use super::*;
+
+    #[test]
+    fn unsupported_unchanged_source_is_refused() {
+        let result = NativeFormatter::new().format_document_typed(
+            "print 1;;;\n",
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(result.outcome.disposition, FormatDisposition::Refused);
+        assert_eq!(result.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    }
+
+    #[test]
+    fn malformed_ranges_are_refused_before_legacy_formatting() {
+        let source = "my $value = 1;\n";
+        for range in [
+            TextRange::new(TextPosition::new(1, 0), TextPosition::new(0, 0)),
+            TextRange::new(TextPosition::new(0, 99), TextPosition::new(0, 99)),
+            TextRange::new(TextPosition::new(9, 0), TextPosition::new(9, 0)),
+        ] {
+            let result = NativeFormatter::new().format_range_typed(
+                source,
+                range,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+            );
+            assert_eq!(result.outcome.disposition, FormatDisposition::Refused);
+            assert_eq!(result.outcome.reason, FormatReasonCode::UnsafeRange);
+            assert!(!result.result.changed);
+        }
+    }
+
+    #[test]
+    fn parser_budget_exhaustion_is_not_a_source_parse_verdict() {
+        let result = FormatResult::unsafe_to_format(
+            "fixture",
+            PARSE_INCOMPLETE_CODE,
+            "parsing terminated early",
+        );
+        let classification = classify(
+            "fixture",
+            &FormatConfig::default(),
+            FormatRequestTarget::Document,
+            &result,
+        );
+        assert_eq!(classification.disposition, FormatDisposition::FailedOrNotProven);
+        assert_eq!(classification.reason, FormatReasonCode::InstrumentFailure);
+    }
 
     #[test]
     fn changed_line_count_normalizes_line_endings_without_allocating() {
