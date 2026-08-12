@@ -535,7 +535,14 @@ impl<'a> Parser<'a> {
                         ));
                     }
 
-                    let operand = self.parse_unary()?;
+                    let operand = if matches!(
+                        op_token.kind,
+                        TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot
+                    ) {
+                        self.parse_power()?
+                    } else {
+                        self.parse_unary()?
+                    };
                     let end = operand.location.end;
 
                     let node = Node::new(

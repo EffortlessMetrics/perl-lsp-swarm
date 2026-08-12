@@ -218,6 +218,68 @@ fn unary_minus_binds_outside_exponentiation() -> Result<(), String> {
 }
 
 #[test]
+fn symbolic_unary_forms_bind_outside_exponentiation() -> Result<(), String> {
+    for op in ["!", "~", "\\", "+", "-"] {
+        let source = format!("my $value = {op}2 ** 2;");
+        let ast = parse_clean(&source)?;
+        let mut shapes = Vec::new();
+
+        walk(&ast, &mut |node| {
+            if let NodeKind::VariableDeclaration { initializer: Some(initializer), .. } = &node.kind
+                && let NodeKind::Unary { op: unary_op, operand } = &initializer.kind
+                && unary_op == op
+                && let NodeKind::Binary { op: power, left, right } = &operand.kind
+                && power == "**"
+            {
+                shapes.push((
+                    source_text(&source, initializer),
+                    source_text(&source, left),
+                    source_text(&source, right),
+                ));
+            }
+        });
+
+        assert_eq!(
+            shapes,
+            vec![(
+                Some(format!("{op}2 ** 2")),
+                Some("2".to_string()),
+                Some("2".to_string()),
+            )],
+            "{op} must wrap the complete exponentiation tree"
+        );
+    }
+
+    let source = "my $value = 2 ** !0;";
+    let ast = parse_clean(source)?;
+    let mut shapes = Vec::new();
+    walk(&ast, &mut |node| {
+        if let NodeKind::VariableDeclaration { initializer: Some(initializer), .. } = &node.kind
+            && let NodeKind::Binary { op, left, right } = &initializer.kind
+            && op == "**"
+            && let NodeKind::Unary { op: unary_op, operand } = &right.kind
+            && unary_op == "!"
+        {
+            shapes.push((
+                source_text(source, initializer),
+                source_text(source, left),
+                source_text(source, operand),
+            ));
+        }
+    });
+    assert_eq!(
+        shapes,
+        vec![(
+            Some("2 ** !0".to_string()),
+            Some("2".to_string()),
+            Some("0".to_string()),
+        )],
+        "the right-hand symbolic unary must remain inside the exponentiation tree"
+    );
+    Ok(())
+}
+
+#[test]
 fn slash_and_brace_ambiguities_keep_owned_distinct_shapes() -> Result<(), String> {
     let source = concat!(
         "$value / 2;\n",
