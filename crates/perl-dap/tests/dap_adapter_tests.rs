@@ -11,7 +11,7 @@ mod dap_phase2_tests {
     use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
     use perl_dap::platform::normalize_path;
     use perl_dap::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
-    use perl_dap::{BridgeAdapter, create_attach_json_snippet, create_launch_json_snippet};
+    use perl_dap::{create_attach_json_snippet, create_launch_json_snippet};
     use serde_json::{Value, json};
     use std::io::Write;
     use std::path::PathBuf;
@@ -91,20 +91,16 @@ mod dap_phase2_tests {
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac6-perl-shim-integration
-    #[tokio::test]
+    /// Tests the native attach configuration surface without activating a legacy bridge.
+    #[test]
     // AC:6
-    async fn test_perl_shim_integration() -> Result<()> {
-        // Bridge adapter remains available for Perl::LanguageServer-based workflows.
-        let _bridge = BridgeAdapter::new();
-
+    fn test_native_attach_configuration_integration() -> Result<()> {
         let attach_snippet = create_attach_json_snippet();
         let attach: Value = serde_json::from_str(&attach_snippet)?;
         assert_eq!(attach["request"], "attach");
         assert_eq!(attach["type"], "perl");
         assert!(attach.get("host").is_some());
         assert!(attach.get("port").is_some());
-
         Ok(())
     }
 
@@ -193,7 +189,6 @@ mod dap_phase2_tests {
             .get("stackFrames")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("stackFrames missing"))?;
-        // No active session: stackTrace returns empty list per DAP spec (no fabricated frame)
         assert!(
             stack_frames.is_empty(),
             "no session: expected empty stack frames, not a fabricated frame"
@@ -211,19 +206,11 @@ mod dap_phase2_tests {
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-lazy-variable-expansion
-    ///
-    /// Uses variablesReference=13 (Globals scope, frame_id=1) which always returns at
-    /// least one variable in fallback mode (`$_`).  Locals scope (ref=11) now returns
-    /// empty in fallback mode when the B module is unavailable (issue #1006 — honest
-    /// empty rather than fake `$self`/`@_` placeholders), so this test uses Globals to
-    /// verify the expansion round-trip shape.
+    /// Tests lazy variable expansion through the globals fallback scope.
     #[tokio::test]
     // AC:8
     async fn test_lazy_variable_expansion() -> Result<()> {
         let mut adapter = DebugAdapter::new();
-        // ref=13: frame_id=1, Globals scope (frame_id*10+3 = 13).
-        // Globals fallback returns `$_` = "undef" with variables_reference=0.
         let root = adapter.handle_request(
             1,
             "variables",
@@ -239,7 +226,6 @@ mod dap_phase2_tests {
             .get("variables")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("variables array missing"))?;
-        // Globals fallback always returns at least `$_`.
         assert!(
             !vars.is_empty(),
             "Globals scope fallback must return at least one variable ($_ = undef)"
@@ -268,7 +254,6 @@ mod dap_phase2_tests {
     }
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac9-execution-control
-    /// Updated for #898: all four handlers return failure without an active session.
     #[tokio::test]
     // AC:9
     async fn test_execution_control_operations() -> Result<()> {
@@ -358,7 +343,6 @@ mod dap_phase2_tests {
             _ => anyhow::bail!("expected evaluate response"),
         }
 
-        // Side effects opt-in bypasses safety validator but still requires an active session.
         let no_session = adapter.handle_request(
             2,
             "evaluate",
