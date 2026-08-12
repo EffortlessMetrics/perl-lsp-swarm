@@ -12,6 +12,7 @@ use walkdir::WalkDir;
 const REQUIRED_HOMEBREW_COMMAND: &str = "brew install effortlessmetrics/tap/perllsp";
 const REQUIRED_TAP_COMMAND: &str = "brew tap effortlessmetrics/tap";
 const UNQUALIFIED_HOMEBREW_COMMAND: &str = "brew install perllsp";
+const CARGO_INSTALL_COMMAND: &str = "cargo install perllsp";
 const RELEASE_CHOOSER_HEADING: &str = "Which file should I download?";
 
 const SCAN_ROOTS: &[&str] = &[
@@ -49,7 +50,6 @@ const REQUIRED_PATTERNS: &[(&str, &str)] = &[
     ("perllsp --version", "canonical version check"),
     ("perllsp --health", "canonical health check"),
     ("perllsp --identity-json", "canonical support identity command"),
-    ("different project", "crates.io perl-lsp conflict warning"),
     ("perl-lsp.linuxLibc", "VS Code Linux libc selector setting"),
 ];
 
@@ -73,6 +73,7 @@ pub fn run() -> Result<()> {
     check_forbidden_patterns(&files, &mut violations);
     check_required_patterns(&files, &mut violations);
     check_unqualified_homebrew(&files, &mut violations);
+    check_cargo_conflict_warning(&files, &mut violations);
     check_release_note_choosers(&files, &mut violations);
 
     if violations.is_empty() {
@@ -206,6 +207,36 @@ fn has_nearby_tap_command(lines: &[&str], install_index: usize) -> bool {
     lines[start..install_index].iter().any(|line| line.contains(REQUIRED_TAP_COMMAND))
 }
 
+fn check_cargo_conflict_warning(files: &[SourceFile], violations: &mut Vec<Violation>) {
+    for file in files {
+        let lines: Vec<&str> = file.text.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains(CARGO_INSTALL_COMMAND) {
+                continue;
+            }
+            if has_nearby_cargo_conflict_warning(&lines, index) {
+                continue;
+            }
+            violations.push(line_violation(
+                file,
+                index + 1,
+                concat!(
+                    "`cargo install perllsp` must have a nearby warning that crates.io `perl-lsp` ",
+                    "is a different project"
+                )
+                .to_string(),
+            ));
+        }
+    }
+}
+
+fn has_nearby_cargo_conflict_warning(lines: &[&str], install_index: usize) -> bool {
+    let start = install_index.saturating_sub(3);
+    let end = (install_index + 4).min(lines.len());
+    let context = lines[start..end].join("\n").to_ascii_lowercase();
+    context.contains("perl-lsp") && context.contains("different project")
+}
+
 fn check_release_note_choosers(files: &[SourceFile], violations: &mut Vec<Violation>) {
     for file in files {
         if !requires_release_chooser(&file.rel_path, &file.text) {
@@ -280,6 +311,42 @@ mod tests {
         assert!(has_nearby_tap_command(&allowed, 1));
         assert!(!has_nearby_tap_command(&rejected, 1));
         Ok(())
+    }
+
+    #[test]
+    fn cargo_install_warning_must_be_in_the_same_local_flow() {
+        let allowed = vec![
+            "The crates.io package `perl-lsp` is a different project.",
+            "cargo install perllsp --locked",
+        ];
+        let rejected = vec![
+            "cargo install perllsp --locked",
+            "ordinary installation prose",
+            "more prose",
+            "more prose",
+            "the crates.io package perl-lsp is a different project",
+        ];
+        assert!(has_nearby_cargo_conflict_warning(&allowed, 1));
+        assert!(!has_nearby_cargo_conflict_warning(&rejected, 0));
+    }
+
+    #[test]
+    fn global_conflict_phrase_does_not_satisfy_a_distant_install_command() {
+        let file = SourceFile {
+            rel_path: PathBuf::from("README.md"),
+            text: [
+                "cargo install perllsp --locked",
+                "line 2",
+                "line 3",
+                "line 4",
+                "line 5",
+                "The crates.io package perl-lsp is a different project.",
+            ]
+            .join("\n"),
+        };
+        let mut violations = Vec::new();
+        check_cargo_conflict_warning(&[file], &mut violations);
+        assert_eq!(violations.len(), 1, "got: {violations:?}");
     }
 
     #[test]
