@@ -149,6 +149,31 @@ fn test_parse_per_crate_test_counts_preserves_a_real_unattributed_package() {
 }
 
 #[test]
+fn test_parse_per_crate_test_counts_strips_cargo_color() {
+    let output = "[1m[32m     Running[0m unittests src/lib.rs \
+        (target/debug/deps/perl_parser_core-abc123)
+\
+        parser_smoke: test
+";
+    let counts = parse_per_crate_test_counts(output);
+
+    assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&1));
+    assert_eq!(counts.unattributed, 0);
+}
+
+#[test]
+fn test_per_crate_test_counts_total_includes_unattributed_tests() {
+    let counts = PerCrateTestCounts {
+        by_crate: BTreeMap::from([
+            (String::from("perl-parser"), 3),
+            (String::from("perl-lsp-rs"), 4),
+        ]),
+        unattributed: 2,
+    };
+    assert_eq!(counts.total(), 9);
+}
+
+#[test]
 fn test_validate_per_crate_test_counts_rejects_zero_discovery() -> Result<()> {
     let counts = PerCrateTestCounts {
         by_crate: BTreeMap::from([(String::from("perl-parser"), 0)]),

@@ -1,6 +1,6 @@
 //! Quality subsystem status generator.
 //!
-//! Owns per-crate mutation and lib-test counts; delegates UX receipt generation
+//! Owns per-crate mutation and quality rendering; consumes the shared lib-test inventory
 //! to `editor_ux` and flaky-test tracking to `flaky`.
 
 // LazyLock<Regex> initializers use .expect() for known-good patterns — permitted by coding standards.
@@ -24,6 +24,9 @@ static DIAGNOSTICS_P50_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("diagnostics-p50 regex is valid")
 });
 
+static ANSI_ESCAPE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI escape regex is valid"));
+
 static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"Running unittests[^\(]*\([^\)]*deps[/\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)")
         .expect("running-test regex is valid")
@@ -33,9 +36,15 @@ static TEST_LIST_LINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r":\s*test\s*$").expect("test-list-line regex is valid"));
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct PerCrateTestCounts {
-    by_crate: BTreeMap<String, usize>,
-    unattributed: usize,
+pub(super) struct PerCrateTestCounts {
+    pub(super) by_crate: BTreeMap<String, usize>,
+    pub(super) unattributed: usize,
+}
+
+impl PerCrateTestCounts {
+    pub(super) fn total(&self) -> usize {
+        self.by_crate.values().sum::<usize>() + self.unattributed
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -68,11 +77,13 @@ pub(super) fn collect_per_crate_mutation(root: &Path) -> BTreeMap<String, usize>
 /// names to stdout.  `run_cmd_merged` (shell `2>&1`) ensures headers appear immediately
 /// before the test names they introduce, so the parser correctly associates each name with
 /// its crate.
-fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
+pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
     let output = run_cmd_merged(
         root,
         &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
-        Duration::from_mins(3),
+        // A cold cache-targets=false runner compiles the workspace before listing.
+        // Keep the command bounded, but give the single shared discovery enough headroom.
+        Duration::from_mins(12),
     );
     if output.is_empty() {
         bail!("quality test discovery failed or returned no output");
@@ -81,7 +92,7 @@ fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
 }
 
 fn validate_per_crate_test_counts(counts: PerCrateTestCounts) -> Result<PerCrateTestCounts> {
-    if counts.by_crate.values().sum::<usize>() + counts.unattributed == 0 {
+    if counts.total() == 0 {
         bail!("quality test discovery returned zero tests; refusing to overwrite quality.md");
     }
     Ok(counts)
@@ -93,11 +104,12 @@ fn parse_per_crate_test_counts(output: &str) -> PerCrateTestCounts {
     let mut discovered = 0usize;
     let mut attributed = 0usize;
     for line in output.lines() {
-        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(line) {
+        let plain_line = ANSI_ESCAPE_RE.replace_all(line, "");
+        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(plain_line.as_ref()) {
             current_crate = Some(caps[1].replace('_', "-"));
             continue;
         }
-        if TEST_LIST_LINE_RE.is_match(line) {
+        if TEST_LIST_LINE_RE.is_match(plain_line.as_ref()) {
             discovered += 1;
             if let Some(ref krate) = current_crate {
                 *by_crate.entry(krate.clone()).or_default() += 1;
@@ -228,9 +240,12 @@ fn format_crate_quality_table(
 // Generators
 // ---------------------------------------------------------------------------
 
-pub(super) fn generate_quality_status(root: &Path, original: &str) -> Result<String> {
+pub(super) fn generate_quality_status(
+    root: &Path,
+    original: &str,
+    tests_by_crate: &PerCrateTestCounts,
+) -> Result<String> {
     let mutation_by_crate = collect_per_crate_mutation(root);
-    let tests_by_crate = collect_per_crate_test_counts(root)?;
     let ux_scenarios = count_ux_scenarios(root);
     let flaky = collect_flaky_test_summary(root);
 
@@ -254,7 +269,7 @@ pub(super) fn generate_quality_status(root: &Path, original: &str) -> Result<Str
          - **Production Status**: LSP server public beta (`just ci-gate` passing)"
     );
 
-    let crate_table = format_crate_quality_table(&mutation_by_crate, &tests_by_crate);
+    let crate_table = format_crate_quality_table(&mutation_by_crate, tests_by_crate);
     let flaky_section = format_flaky_tests_section(&flaky);
 
     let mut text = original.to_string();
