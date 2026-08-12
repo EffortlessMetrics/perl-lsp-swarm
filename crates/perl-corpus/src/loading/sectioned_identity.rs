@@ -66,7 +66,23 @@ fn slugify(value: &str) -> String {
     slug
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        windows,
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )
+))]
 mod tests {
     use super::*;
     use std::fs;
