@@ -9,21 +9,22 @@ on:
       - main
       - master
     paths:
+      - 'CONTRIBUTING.md'
       - 'docs/**'
       - 'book/**'
       - 'scripts/populate-book.sh'
+      - 'scripts/tests/test-populate-book-roadmap-links.sh'
       - '.github/workflows/docs-deploy.yml'
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+# The build is read-only. Deployment authority is confined to this non-PR
+# workflow's deploy job; pull-request proof lives in docs-pr-build.yml.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Allow only one concurrent deployment
+# Serialize production deployments independently of pull-request builds.
 concurrency:
-  group: "pages"
+  group: pages-deploy
   cancel-in-progress: true
 
 jobs:
@@ -57,6 +58,7 @@ jobs:
 
       - name: Populate documentation
         run: |
+          bash scripts/tests/test-populate-book-roadmap-links.sh
           bash scripts/populate-book.sh
 
       - name: Build mdBook
@@ -69,6 +71,10 @@ jobs:
           path: ./book/book
 
   deploy:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
