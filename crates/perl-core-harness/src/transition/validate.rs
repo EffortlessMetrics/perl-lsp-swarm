@@ -10,7 +10,7 @@ use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, ObservedSemanticBoundary,
     RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunnerStatus,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Typed reason a raw observation cannot become validated transition evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,8 +54,8 @@ impl ValidatedCompileBaselineV2 {
 /// Validate a current run report for definitive transition classification.
 ///
 /// Requires a complete successful harness execution (`harness_status == Some(0)`)
-/// plus path uniqueness, per-file assertion bounds, and summary/file-result
-/// reconciliation.
+/// plus path uniqueness, per-file assertion bounds, summary/file-result
+/// reconciliation, and honest semantic-boundary identity.
 pub fn validate_run_report(
     report: &RunReport,
 ) -> Result<ValidatedRunReport, EvidenceValidationError> {
@@ -71,6 +71,11 @@ pub fn validate_run_report(
             report.harness_status
         )));
     }
+    if let Some(path) = first_whitespace_contaminated_path(&report.file_results) {
+        return Err(EvidenceValidationError::new(format!(
+            "current file-result path {path:?} has leading or trailing whitespace"
+        )));
+    }
     if let Some(path) = first_duplicate_path(&report.file_results) {
         return Err(EvidenceValidationError::new(format!(
             "current observation repeats file-result path {path}"
@@ -78,8 +83,17 @@ pub fn validate_run_report(
     }
     validate_file_result_assertions(&report.file_results, "current")?;
     validate_summary_against_file_results(report)?;
-    validate_failure_inventory(&report.failures, &report.file_results, "current")?;
-    validate_semantic_boundary_identities(&report.semantic_boundaries, "current")?;
+    validate_failure_inventory(
+        &report.failures,
+        &report.file_results,
+        report.mode.as_str(),
+        "current",
+    )?;
+    validate_semantic_boundary_identities(
+        &report.semantic_boundaries,
+        &report.file_results,
+        "current",
+    )?;
     Ok(ValidatedRunReport { inner: report.clone() })
 }
 
@@ -98,9 +112,20 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 report schema is not the supported run-report version",
         ));
     }
+    if let Some(path) = first_whitespace_contaminated_str(
+        baseline.file_membership.iter().map(String::as_str),
+        "accepted V2 file_membership",
+    ) {
+        return Err(EvidenceValidationError::new(path));
+    }
     if let Some(path) = first_duplicate_str(baseline.file_membership.iter().map(String::as_str)) {
         return Err(EvidenceValidationError::new(format!(
             "accepted V2 file_membership repeats path {path}"
+        )));
+    }
+    if let Some(path) = first_whitespace_contaminated_path(&baseline.file_results) {
+        return Err(EvidenceValidationError::new(format!(
+            "accepted file-result path {path:?} has leading or trailing whitespace"
         )));
     }
     if let Some(path) = first_duplicate_path(&baseline.file_results) {
@@ -135,8 +160,17 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 aggregate file/TAP totals do not reconcile with detailed file_results",
         ));
     }
-    validate_failure_inventory(&baseline.expected_failures, &baseline.file_results, "accepted")?;
-    validate_semantic_boundary_identities(&baseline.semantic_boundaries, "accepted")?;
+    validate_failure_inventory(
+        &baseline.expected_failures,
+        &baseline.file_results,
+        baseline.mode.as_str(),
+        "accepted",
+    )?;
+    validate_semantic_boundary_identities(
+        &baseline.semantic_boundaries,
+        &baseline.file_results,
+        "accepted",
+    )?;
     Ok(ValidatedCompileBaselineV2 { inner: baseline.clone() })
 }
 
@@ -147,6 +181,11 @@ pub fn validate_accepted_baseline(
     match accepted {
         AcceptedBaseline::V2(value) => validate_compile_baseline_v2(value).map(|_| ()),
         AcceptedBaseline::V1(value) => {
+            if let Some(path) = first_whitespace_contaminated_path(&value.file_results) {
+                return Err(EvidenceValidationError::new(format!(
+                    "accepted file-result path {path:?} has leading or trailing whitespace"
+                )));
+            }
             if let Some(path) = first_duplicate_path(&value.file_results) {
                 return Err(EvidenceValidationError::new(format!(
                     "accepted observation repeats file-result path {path}"
@@ -171,9 +210,14 @@ pub fn validate_accepted_baseline(
                     "accepted V1 aggregate file/TAP totals do not reconcile with detailed file_results",
                 ));
             }
-            validate_failure_inventory(&value.expected_failures, &value.file_results, "accepted")?;
+            validate_failure_inventory(
+                &value.expected_failures,
+                &value.file_results,
+                value.mode.as_str(),
+                "accepted",
+            )?;
             if let Some(boundaries) = &value.semantic_boundaries {
-                validate_semantic_boundary_identities(boundaries, "accepted")?;
+                validate_semantic_boundary_identities(boundaries, &value.file_results, "accepted")?;
             }
             Ok(())
         }
@@ -183,6 +227,7 @@ pub fn validate_accepted_baseline(
 fn validate_failure_inventory(
     failures: &[RunFailure],
     file_results: &[RunFileResult],
+    mode: &str,
     side: &str,
 ) -> Result<(), EvidenceValidationError> {
     let mut failure_paths = BTreeSet::new();
@@ -192,10 +237,28 @@ fn validate_failure_inventory(
                 "{side} failure record has an empty path"
             )));
         }
+        if failure.path != failure.path.trim() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure path {:?} has leading or trailing whitespace",
+                failure.path
+            )));
+        }
         if failure.bucket.trim().is_empty() {
             return Err(EvidenceValidationError::new(format!(
                 "{side} failure path {} has an empty bucket",
                 failure.path
+            )));
+        }
+        if failure.phase.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure path {} has an empty phase",
+                failure.path
+            )));
+        }
+        if failure.phase != mode {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure path {} has phase {:?} that does not match harness mode {:?}",
+                failure.path, failure.phase, mode
             )));
         }
         if !failure_paths.insert(failure.path.as_str()) {
@@ -233,13 +296,36 @@ fn validate_failure_inventory(
 
 fn validate_semantic_boundary_identities(
     boundaries: &[ObservedSemanticBoundary],
+    file_results: &[RunFileResult],
     side: &str,
 ) -> Result<(), EvidenceValidationError> {
+    let known_paths: BTreeSet<&str> = file_results.iter().map(|r| r.path.as_str()).collect();
+    // Track (path, id) pairs to catch duplicate boundary identities within a run.
+    let mut seen_boundary_keys: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for boundary in boundaries {
         if boundary.id.trim().is_empty() {
             return Err(EvidenceValidationError::new(format!(
                 "{side} semantic boundary path {} has an empty stable id",
                 boundary.path
+            )));
+        }
+        if boundary.path.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary has an empty path for id {}",
+                boundary.id
+            )));
+        }
+        if !known_paths.contains(boundary.path.as_str()) {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary id {} references path {} which is not in file_results",
+                boundary.id, boundary.path
+            )));
+        }
+        let ids_for_path = seen_boundary_keys.entry(boundary.path.as_str()).or_default();
+        if !ids_for_path.insert(boundary.id.as_str()) {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary path {} repeats boundary id {}",
+                boundary.path, boundary.id
             )));
         }
     }
@@ -328,6 +414,28 @@ fn first_duplicate_str<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<&
     paths.into_iter().find(|path| !seen.insert(*path))
 }
 
+/// Returns the first file-result path that has leading or trailing whitespace,
+/// preventing silent path identity mismatches caused by extraneous whitespace.
+fn first_whitespace_contaminated_path(results: &[RunFileResult]) -> Option<&str> {
+    results.iter().find_map(|result| {
+        if result.path != result.path.trim() { Some(result.path.as_str()) } else { None }
+    })
+}
+
+/// Returns an error message if any path in `paths` has leading or trailing whitespace.
+/// The `label` is used to identify the context in the error message.
+fn first_whitespace_contaminated_str<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+    label: &str,
+) -> Option<String> {
+    for path in paths {
+        if path != path.trim() {
+            return Some(format!("{label} path {path:?} has leading or trailing whitespace"));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod ripr_inventory_call_observers {
     use super::*;
@@ -386,6 +494,157 @@ mod ripr_inventory_call_observers {
     }
 
     #[test]
+    fn validate_run_report_rejects_orphan_boundary_path() {
+        let mut report = clean_report();
+        let mut boundary = boundary();
+        boundary.path = "orphan/missing.t".into(); // not in file_results
+        report.semantic_boundaries.push(boundary);
+        let result = validate_run_report(&report);
+        assert!(result.is_err(), "expected Err for orphan boundary path but got Ok");
+        if let Err(err) = result {
+            assert!(
+                err.reason.contains("not in file_results"),
+                "unexpected reason: {}",
+                err.reason
+            );
+            assert!(
+                err.reason.contains("orphan/missing.t"),
+                "path missing from reason: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_run_report_rejects_duplicate_boundary_id_for_same_path() {
+        let mut report = clean_report();
+        report.semantic_boundaries.push(boundary());
+        report.semantic_boundaries.push(boundary()); // same path + id
+        let result = validate_run_report(&report);
+        assert!(result.is_err(), "expected Err for duplicate boundary id but got Ok");
+        if let Err(err) = result {
+            assert!(
+                err.reason.contains("repeats boundary id"),
+                "unexpected reason: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_run_report_allows_same_id_on_different_paths() {
+        let mut report = RunReport {
+            summary: RunSummary {
+                files_total: 2,
+                files_passed: 2,
+                files_failed: 0,
+                tap_assertions_total: 2,
+                tap_assertions_passed: 2,
+            },
+            file_results: vec![
+                RunFileResult {
+                    path: "base/0.t".into(),
+                    status: RunnerStatus::Pass,
+                    assertions_passed: 1,
+                    assertions_total: 1,
+                },
+                RunFileResult {
+                    path: "base/1.t".into(),
+                    status: RunnerStatus::Pass,
+                    assertions_passed: 1,
+                    assertions_total: 1,
+                },
+            ],
+            ..clean_report()
+        };
+        let mut b1 = boundary();
+        b1.path = "base/0.t".into();
+        let mut b2 = boundary();
+        b2.path = "base/1.t".into(); // same id, different path → allowed
+        report.semantic_boundaries.push(b1);
+        report.semantic_boundaries.push(b2);
+        assert!(validate_run_report(&report).is_ok());
+    }
+
+    #[test]
+    fn validate_run_report_rejects_whitespace_contaminated_file_result_path() {
+        let mut report = clean_report();
+        report.file_results[0].path = " base/0.t".into(); // leading space
+        let result = validate_run_report(&report);
+        assert!(result.is_err(), "expected Err for whitespace-contaminated path but got Ok");
+        if let Err(err) = result {
+            assert!(
+                err.reason.contains("leading or trailing whitespace"),
+                "unexpected reason: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_run_report_rejects_whitespace_contaminated_failure_path() {
+        let mut report = clean_report();
+        report.file_results[0].status = RunnerStatus::Fail;
+        report.file_results[0].assertions_passed = 0;
+        report.summary.files_passed = 0;
+        report.summary.files_failed = 1;
+        report.summary.tap_assertions_passed = 0;
+        // Whitespace-contaminated path in the failure record, but clean in file_results.
+        let mut f = failure("base/0.t", "parse_recovery");
+        f.path = "base/0.t ".into(); // trailing space
+        report.failures = vec![f];
+        let result = validate_run_report(&report);
+        assert!(result.is_err(), "expected Err for whitespace in failure path but got Ok");
+        if let Err(err) = result {
+            assert!(
+                err.reason.contains("leading or trailing whitespace"),
+                "unexpected reason: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_run_report_rejects_phase_mismatch() {
+        let mut report = clean_report();
+        report.file_results[0].status = RunnerStatus::Fail;
+        report.file_results[0].assertions_passed = 0;
+        report.summary.files_passed = 0;
+        report.summary.files_failed = 1;
+        report.summary.tap_assertions_passed = 0;
+        let mut f = failure("base/0.t", "parse_recovery");
+        f.phase = "parse".into(); // mode is compile, phase must match
+        report.failures = vec![f];
+        let result = validate_run_report(&report);
+        assert!(result.is_err(), "expected Err for phase/mode mismatch but got Ok");
+        if let Err(err) = result {
+            assert!(
+                err.reason.contains("does not match harness mode"),
+                "unexpected reason: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_run_report_rejects_empty_failure_phase() {
+        let mut report = clean_report();
+        report.file_results[0].status = RunnerStatus::Fail;
+        report.file_results[0].assertions_passed = 0;
+        report.summary.files_passed = 0;
+        report.summary.files_failed = 1;
+        report.summary.tap_assertions_passed = 0;
+        let mut f = failure("base/0.t", "parse_recovery");
+        f.phase = "".into();
+        report.failures = vec![f];
+        let result = validate_run_report(&report);
+        assert!(result.is_err(), "expected Err for empty phase but got Ok");
+        if let Err(err) = result {
+            assert!(err.reason.contains("empty phase"), "unexpected reason: {}", err.reason);
+        }
+    }
+
+    #[test]
     fn validate_run_report_accepts_reconciled_failure_inventory() {
         let mut report = clean_report();
         report.file_results[0].status = RunnerStatus::Fail;
@@ -394,6 +653,13 @@ mod ripr_inventory_call_observers {
         report.summary.files_failed = 1;
         report.summary.tap_assertions_passed = 0;
         report.failures = vec![failure("base/0.t", "parse_recovery")];
+        assert!(validate_run_report(&report).is_ok());
+    }
+
+    #[test]
+    fn validate_run_report_accepts_valid_semantic_boundary() {
+        let mut report = clean_report();
+        report.semantic_boundaries.push(boundary());
         assert!(validate_run_report(&report).is_ok());
     }
 
