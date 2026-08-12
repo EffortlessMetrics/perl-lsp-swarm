@@ -16,8 +16,8 @@ fn safe_pattern_returns_complete_clean_analysis() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn one_batch_preserves_dynamic_advisory_and_policy_findings(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn one_batch_preserves_dynamic_advisory_and_policy_findings()
+-> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,
         max_unicode_properties: 1,
@@ -87,8 +87,8 @@ fn diagnostics_are_deterministic_and_source_ordered() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn compatibility_validate_keeps_embedded_code_category_priority(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn compatibility_validate_keeps_embedded_code_category_priority()
+-> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::new();
     let pattern = r"(a+)+literal(?{ run })";
     let analysis = validator.analyze(pattern);
@@ -108,8 +108,8 @@ fn compatibility_validate_keeps_embedded_code_category_priority(
 }
 
 #[test]
-fn compatibility_finders_project_relative_batch_ranges_to_absolute_offsets(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn compatibility_finders_project_relative_batch_ranges_to_absolute_offsets()
+-> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::new();
 
     let code_analysis = validator.analyze("xx(?{ run })");
@@ -154,9 +154,11 @@ fn dynamic_and_policy_completeness_remain_distinct() -> Result<(), Box<dyn std::
     assert_eq!(limited.completeness, RegexAnalysisCompleteness::PolicyLimited);
     assert!(!limited.completeness.has_dynamic_boundary());
     assert!(limited.completeness.is_policy_limited());
-    assert!(limited
-        .diagnostics
-        .iter()
-        .all(|diagnostic| diagnostic.class != RegexDiagnosticClass::Syntax));
+    assert!(
+        limited
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.class != RegexDiagnosticClass::Syntax)
+    );
     Ok(())
 }

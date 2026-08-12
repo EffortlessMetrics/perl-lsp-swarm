@@ -1,11 +1,11 @@
+use perl_regex::RegexValidator;
 use perl_regex::validator::{
     RegexAnalysisCompleteness, RegexDiagnosticCode, RegexDynamicRegionKind, RegexValidationConfig,
 };
-use perl_regex::RegexValidator;
 
 #[test]
-fn immediate_code_uses_the_full_balanced_span_and_masks_inner_findings(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn immediate_code_uses_the_full_balanced_span_and_masks_inner_findings()
+-> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,
         max_unicode_properties: 1,
@@ -29,10 +29,12 @@ fn immediate_code_uses_the_full_balanced_span_and_masks_inner_findings(
 
     assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
     assert!(analysis.facts.nested_quantifiers[0].start >= live_start);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .all(|diagnostic| diagnostic.code != RegexDiagnosticCode::UnicodePropertyLimit));
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != RegexDiagnosticCode::UnicodePropertyLimit)
+    );
     assert_eq!(
         analysis.diagnostics.iter().map(|diagnostic| diagnostic.code).collect::<Vec<_>>(),
         vec![RegexDiagnosticCode::EmbeddedCodeImmediate, RegexDiagnosticCode::NestedQuantifierRisk,]
@@ -42,8 +44,8 @@ fn immediate_code_uses_the_full_balanced_span_and_masks_inner_findings(
 }
 
 #[test]
-fn deferred_code_uses_one_full_region_and_does_not_double_count_nested_text(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn deferred_code_uses_one_full_region_and_does_not_double_count_nested_text()
+-> Result<(), Box<dyn std::error::Error>> {
     let pattern = r#"prefix(??{ build({ key => "}" }); "(?{ nested })" })suffix"#;
     let analysis = RegexValidator::new().analyze(pattern);
 
@@ -72,17 +74,19 @@ fn deferred_code_uses_one_full_region_and_does_not_double_count_nested_text(
 }
 
 #[test]
-fn interpolation_is_a_typed_dynamic_boundary_without_becoming_a_syntax_error(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn interpolation_is_a_typed_dynamic_boundary_without_becoming_a_syntax_error()
+-> Result<(), Box<dyn std::error::Error>> {
     let pattern = r"before$runtime${expr{nested}}@valuesafter";
     let analysis = RegexValidator::new().analyze(pattern);
 
     assert_eq!(analysis.facts.dynamic_regions.len(), 3);
-    assert!(analysis
-        .facts
-        .dynamic_regions
-        .iter()
-        .all(|fact| fact.kind == RegexDynamicRegionKind::Interpolation));
+    assert!(
+        analysis
+            .facts
+            .dynamic_regions
+            .iter()
+            .all(|fact| fact.kind == RegexDynamicRegionKind::Interpolation)
+    );
     assert_eq!(
         pattern.get(
             analysis.facts.dynamic_regions[0].range.start
@@ -110,8 +114,8 @@ fn interpolation_is_a_typed_dynamic_boundary_without_becoming_a_syntax_error(
 }
 
 #[test]
-fn interpolation_masks_nested_quantifiers_but_preserves_outer_findings(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn interpolation_masks_nested_quantifiers_but_preserves_outer_findings()
+-> Result<(), Box<dyn std::error::Error>> {
     let pattern = r"${(a+)+}(b+)+";
     let analysis = RegexValidator::new().analyze(pattern);
 
@@ -136,8 +140,8 @@ fn interpolation_masks_nested_quantifiers_but_preserves_outer_findings(
 }
 
 #[test]
-fn interpolation_masks_complexity_like_escapes_but_preserves_outer_limits(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn interpolation_masks_complexity_like_escapes_but_preserves_outer_limits()
+-> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,
         max_unicode_properties: 1,
@@ -165,8 +169,8 @@ fn interpolation_masks_complexity_like_escapes_but_preserves_outer_limits(
 }
 
 #[test]
-fn interpolation_looking_text_in_excluded_regions_is_not_dynamic(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn interpolation_looking_text_in_excluded_regions_is_not_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
     let pattern = r"\Q$quoted @quoted\E[$class](?# $comment @comment )\$escaped\@escaped";
     let analysis = RegexValidator::new().analyze(pattern);
 
@@ -177,8 +181,8 @@ fn interpolation_looking_text_in_excluded_regions_is_not_dynamic(
 }
 
 #[test]
-fn embedded_code_after_the_first_comment_parenthesis_is_not_hidden(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn embedded_code_after_the_first_comment_parenthesis_is_not_hidden()
+-> Result<(), Box<dyn std::error::Error>> {
     let analysis = RegexValidator::new().analyze(r"(?#comment\)(?{ $x = 1 })");
 
     assert_eq!(analysis.facts.embedded_code.len(), 1);
@@ -187,8 +191,8 @@ fn embedded_code_after_the_first_comment_parenthesis_is_not_hidden(
 }
 
 #[test]
-fn compatibility_finder_projects_the_start_of_the_full_dynamic_region(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn compatibility_finder_projects_the_start_of_the_full_dynamic_region()
+-> Result<(), Box<dyn std::error::Error>> {
     let pattern = r#"xx(?{ { nested => 1 } })yy"#;
     let validator = RegexValidator::new();
     let analysis = validator.analyze(pattern);
@@ -202,8 +206,8 @@ fn compatibility_finder_projects_the_start_of_the_full_dynamic_region(
 }
 
 #[test]
-fn complexity_offsets_anchor_following_groups_after_dynamic_regions(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn complexity_offsets_anchor_following_groups_after_dynamic_regions()
+-> Result<(), Box<dyn std::error::Error>> {
     let pattern = r"(?{ code })(?<=a)(?|b|c)";
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 0,
