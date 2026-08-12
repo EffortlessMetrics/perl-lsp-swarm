@@ -25,7 +25,11 @@ jobs:
           fetch-depth: 0
 
       - name: Apply mechanical namespace migration
-        run: python3 scripts/agent_move_release_readiness_7166.py
+        run: |
+          # This workspace uses exact workspace versions without a leading '='.
+          # Keep the migration assertion exact while matching the live contract.
+          sed -i 's/version = "=0.17.0"/version = "0.17.0"/g' scripts/agent_move_release_readiness_7166.py
+          python3 scripts/agent_move_release_readiness_7166.py
 
       - name: Format Rust
         run: cargo fmt --all
