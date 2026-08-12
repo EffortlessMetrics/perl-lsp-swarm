@@ -8,7 +8,7 @@ This file provides crate-local guidance for work in `crates/perl-dap`.
 - **Purpose**: native Debug Adapter Protocol server for Perl
 - **Shipped product path**: `perl-dap` drives the local Perl interpreter through the native Rust adapter
 - **Optional integration**: external debugger peers such as `Devel::ptkdb` may cooperate through the Perl Debugger Peer Protocol; they are not bundled or required
-- **Legacy reference**: the `Perl::LanguageServer` bridge is deprecated library-only compatibility/conformance code and is not exposed by the shipped CLI
+- **Legacy reference**: the `Perl::LanguageServer` bridge is deprecated, default-off library compatibility/conformance code behind `legacy-pls-bridge`; it is not exposed by the shipped CLI
 - **Version**: workspace version from the root `Cargo.toml`
 
 ## Commands
@@ -21,13 +21,21 @@ cargo test -p perl-dap --features test-helpers --all-targets --locked
 cargo clippy -p perl-dap --locked -- -D warnings -A missing_docs
 cargo doc -p perl-dap --no-deps
 
+# Prove the native package without default convenience features.
+cargo test -p perl-dap --no-default-features --features dap-phase2,dap-phase3
+
+# Explicit legacy/conformance lane only.
+cargo test -p perl-dap --features legacy-pls-bridge
+
 ./target/release/perl-dap --stdio
 ./target/release/perl-dap --socket --port 13603
 RUST_LOG=debug ./target/release/perl-dap --stdio
 ```
 
 The shipped CLI must reject `--bridge`. Do not restore that flag or describe
-`Perl::LanguageServer` as a normal runtime dependency.
+`Perl::LanguageServer` as a normal runtime dependency. Do not add
+`legacy-pls-bridge` or its compatibility alias `dap-phase1` back to the default
+feature set.
 
 ## Product Boundary
 
@@ -37,8 +45,8 @@ Preserve these invariants:
 2. A local Perl interpreter is the only external runtime requirement for native sessions.
 3. Workspace parser, lexer, protocol, and adapter support crates are compiled into the binary.
 4. External debugger peers are explicit optional integrations; `perl-dap` remains the DAP server.
-5. Legacy PLS bridge code may be used only for compatibility, migration, or conformance comparisons.
-6. Public guides, crate landing pages, CLI help, and editor defaults must not teach the legacy bridge as product setup.
+5. Legacy PLS bridge code may be used only for compatibility, migration, or conformance comparisons, under an explicit default-off feature.
+6. Public guides, crate landing pages, CLI help, editor defaults, and docs.rs defaults must not teach or expose the legacy bridge as product setup.
 
 Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 
@@ -49,7 +57,7 @@ Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 | Module | Key types | Purpose |
 |---|---|---|
 | `main.rs` | `Args` | shipped CLI, native stdio/TCP and explicit external-peer options |
-| `server/` | `DapServer`, `DapConfig`, `DapMode` | native server lifecycle; deprecated bridge branch retained for library compatibility |
+| `server/` | `DapServer`, `DapConfig`, `DapMode` | native server lifecycle; legacy bridge selection fails closed unless the explicit feature is enabled |
 | `debug_adapter/` | `DebugAdapter`, `DapMessage` | native request routing, process lifecycle, stepping, frames, variables, evaluate |
 | `protocol.rs` | DAP request/response/event types | DAP wire contracts |
 | `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord` | breakpoint replacement, hit counting, and logpoints |
@@ -73,8 +81,10 @@ control.
 
 ### Legacy compatibility
 
-`bridge_adapter.rs` and `DapMode::Bridge` exist only to preserve older library
-integrations and comparison tests. Keep all setup instructions in
+`bridge_adapter.rs` and the executable `DapMode::Bridge` branch compile only
+with `legacy-pls-bridge`. The `dap-phase1` feature is a compatibility alias for
+older conformance commands; it is not a product phase and must not become a
+default. Keep all setup instructions in
 `docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md`. New production code must not select
 this path.
 
@@ -105,12 +115,20 @@ Do not advertise a capability merely because a request type exists.
 For native-runtime or public-surface work, start narrow and expand only as needed:
 
 ```bash
-cargo fmt --check -p perl-dap
-cargo clippy -p perl-dap --locked -- -D warnings -A missing_docs
+cargo fmt --check -p perl-dap -p perl-lsp-rs
+cargo clippy -p perl-dap -p perl-lsp-rs --locked -- -D warnings -A missing_docs
 cargo test -p perl-dap --bin perl-dap
 cargo test -p perl-dap --test dap_dependency_tests --features dap-phase3
-cargo test -p perl-dap
+cargo test -p perl-dap --no-default-features --features dap-phase2,dap-phase3
+cargo doc -p perl-dap --no-deps
 cargo run -p xtask -- check-native-product-surface --strict
+```
+
+For legacy compatibility/conformance work:
+
+```bash
+cargo test -p perl-dap --features legacy-pls-bridge
+cargo test -p perl-lsp-rs --features dap-phase1 --test dap_bridge_tests
 ```
 
 For external-peer changes, add the relevant peer protocol, fake-peer conformance,
