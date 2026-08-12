@@ -26,11 +26,6 @@ fn source_text(source: &str, node: &Node) -> Option<String> {
     source.get(node.location.start..node.location.end).map(str::to_owned)
 }
 
-fn subtree_contains(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> bool {
-    predicate(&node.kind)
-        || node.children().into_iter().any(|child| subtree_contains(child, predicate))
-}
-
 #[test]
 fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
     let source = concat!(
@@ -75,6 +70,11 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                 NodeKind::VariableDeclaration { declarator, variable, attributes, initializer }
                     if declarator == "field" =>
                 {
+                    assert_eq!(
+                        source_text(source, member).as_deref(),
+                        Some("field $value :param :reader = 1")
+                    );
+                    assert_eq!(source.as_bytes().get(member.location.end), Some(&b';'));
                     members.push((
                         "field".to_string(),
                         source_text(source, member),
@@ -99,22 +99,74 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         let NodeKind::Signature { parameters } = &signature.kind else {
                             return (source_text(source, signature), 0, false, false);
                         };
-                        (
-                            source_text(source, signature),
-                            parameters.len(),
-                            parameters.len() == 1
-                                && matches!(
-                                    &parameters[0].kind,
-                                    NodeKind::OptionalParameter { .. }
-                                )
-                                && source_text(source, &parameters[0]).as_deref()
-                                    == Some("$fallback = 0"),
-                            parameters.len() == 1
-                                && subtree_contains(&parameters[0], &|kind| {
-                                    matches!(kind, NodeKind::Number { value } if value == "0")
-                                }),
-                        )
+                        if parameters.len() != 1 {
+                            return (
+                                source_text(source, signature),
+                                parameters.len(),
+                                false,
+                                false,
+                            );
+                        }
+                        let Some(parameter) = parameters.first() else {
+                            return (source_text(source, signature), 0, false, false);
+                        };
+                        let NodeKind::OptionalParameter { variable, default_value } =
+                            &parameter.kind
+                        else {
+                            return (
+                                source_text(source, signature),
+                                parameters.len(),
+                                false,
+                                false,
+                            );
+                        };
+
+                        assert_eq!(
+                            source_text(source, parameter).as_deref(),
+                            Some("$fallback = 0")
+                        );
+                        assert_eq!(source_text(source, variable).as_deref(), Some("$fallback"));
+                        assert_eq!(source_text(source, default_value).as_deref(), Some("0"));
+                        assert!(matches!(
+                            &variable.kind,
+                            NodeKind::Variable { sigil, name }
+                                if sigil == "$" && name == "fallback"
+                        ));
+                        assert!(matches!(
+                            &default_value.kind,
+                            NodeKind::Number { value } if value == "0"
+                        ));
+
+                        (source_text(source, signature), parameters.len(), true, true)
                     });
+                    let method_body_shape = if let NodeKind::Block { statements } = &body.kind {
+                        assert_eq!(
+                            statements.len(),
+                            1,
+                            "method body must own one direct statement"
+                        );
+                        match statements.first() {
+                            Some(statement) => {
+                                assert_eq!(
+                                    source_text(source, statement).as_deref(),
+                                    Some("return $value // $fallback")
+                                );
+                                match &statement.kind {
+                                    NodeKind::Return { value: Some(value) } => {
+                                        assert_eq!(
+                                            source_text(source, value).as_deref(),
+                                            Some("$value // $fallback")
+                                        );
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            None => false,
+                        }
+                    } else {
+                        false
+                    };
                     members.push((
                         "method".to_string(),
                         source_text(source, member),
@@ -126,7 +178,8 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         signature_shape
                             == Some((Some("($fallback = 0)".to_string()), 1, true, true))
                             && source_text(source, body).as_deref()
-                                == Some("{ return $value // $fallback; }"),
+                                == Some("{ return $value // $fallback; }")
+                            && method_body_shape,
                     ));
                 }
                 NodeKind::Method { name, name_span, signature, attributes, body }
@@ -143,7 +196,44 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         name_span.is_none()
                             && signature.is_none()
                             && attributes.is_empty()
-                            && source_text(source, body).as_deref() == Some("{ $value = 2; }"),
+                            && if let NodeKind::Block { statements } = &body.kind {
+                                assert_eq!(
+                                    statements.len(),
+                                    1,
+                                    "ADJUST body must own one direct statement"
+                                );
+                                match statements.first() {
+                                    Some(statement) => {
+                                        assert_eq!(
+                                            source_text(source, statement).as_deref(),
+                                            Some("$value = 2")
+                                        );
+                                        match &statement.kind {
+                                            NodeKind::ExpressionStatement { expression } => {
+                                                match &expression.kind {
+                                                    NodeKind::Assignment { lhs, rhs, op } => {
+                                                        assert_eq!(op, "=");
+                                                        assert_eq!(
+                                                            source_text(source, lhs).as_deref(),
+                                                            Some("$value")
+                                                        );
+                                                        assert_eq!(
+                                                            source_text(source, rhs).as_deref(),
+                                                            Some("2")
+                                                        );
+                                                        true
+                                                    }
+                                                    _ => false,
+                                                }
+                                            }
+                                            _ => false,
+                                        }
+                                    }
+                                    None => false,
+                                }
+                            } else {
+                                false
+                            },
                     ));
                 }
                 _ => members.push((
@@ -197,10 +287,7 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
     assert_eq!(members.len(), 3, "class body must own exactly three direct members");
 
     assert_eq!(members[0].0, "field");
-    assert_eq!(
-        members[0].1.as_deref().map(|text| text.trim_end_matches(';')),
-        Some("field $value :param :reader = 1")
-    );
+    assert_eq!(members[0].1.as_deref(), Some("field $value :param :reader = 1"));
     assert_eq!(members[0].2.as_deref(), Some("$value"));
     assert_eq!(members[0].3, vec!["param".to_string(), "reader".to_string()]);
     assert_eq!(members[0].4.as_deref(), Some("1"));
@@ -228,25 +315,40 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
 fn class_keywords_remain_exact_ordinary_calls_outside_class_context() -> Result<(), String> {
     let source = "field($outside); method($outside); ADJUST($outside);";
     let ast = parse_clean(source)?;
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err(format!("expected Program root, got {}", ast.kind.kind_name()));
+    };
+    assert_eq!(statements.len(), 3, "negative fixture must contain only three top-level calls");
     let mut calls = Vec::new();
-
-    walk(&ast, &mut |node| {
-        if let NodeKind::FunctionCall { name, args } = &node.kind
-            && matches!(name.as_str(), "field" | "method" | "ADJUST")
-        {
-            calls.push((
-                name.clone(),
-                source_text(source, node),
-                args.iter().filter_map(|arg| source_text(source, arg)).collect::<Vec<_>>(),
-                args.len() == 1
-                    && matches!(
-                        &args[0].kind,
-                        NodeKind::Variable { sigil, name }
-                            if sigil == "$" && name == "outside"
-                    ),
+    for statement in statements {
+        let NodeKind::ExpressionStatement { expression } = &statement.kind else {
+            return Err(format!(
+                "expected top-level ExpressionStatement, got {}",
+                statement.kind.kind_name()
             ));
-        }
-    });
+        };
+        let NodeKind::FunctionCall { name, args } = &expression.kind else {
+            return Err(format!(
+                "expected ordinary top-level FunctionCall, got {}",
+                expression.kind.kind_name()
+            ));
+        };
+        assert!(
+            matches!(name.as_str(), "field" | "method" | "ADJUST"),
+            "unexpected top-level call name: {name}"
+        );
+        calls.push((
+            name.clone(),
+            source_text(source, expression),
+            args.iter().filter_map(|arg| source_text(source, arg)).collect::<Vec<_>>(),
+            args.len() == 1
+                && matches!(
+                    &args[0].kind,
+                    NodeKind::Variable { sigil, name }
+                        if sigil == "$" && name == "outside"
+                ),
+        ));
+    }
 
     assert_eq!(
         calls,
