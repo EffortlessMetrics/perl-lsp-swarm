@@ -119,6 +119,7 @@ fn inline_completion_initialize_shape_selects_static_or_dynamic_mode() -> Result
     // #6724 owns whether success activates durable registration state and how
     // failure, timeout, retry, or unregistration changes that state.
     let cases = [
+        (json!({}), true, false, "absent inline-completion declaration"),
         (
             json!({
                 "textDocument": {
