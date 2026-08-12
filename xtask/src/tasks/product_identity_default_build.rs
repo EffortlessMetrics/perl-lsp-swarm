@@ -129,11 +129,7 @@ fn validate_default_implementation_dependency(
 /// by the retirement of the `perl-lsp` executable in #7497: if the [[bin]]
 /// entry is ever restored, this check fails before it can reach a build or
 /// release gate.
-fn validate_library_only(
-    repo_root: &Path,
-    label: &str,
-    manifest_path: &Path,
-) -> Result<()> {
+fn validate_library_only(repo_root: &Path, label: &str, manifest_path: &Path) -> Result<()> {
     let manifest = read_toml(repo_root, manifest_path)?;
 
     // Reject explicit [[bin]] declarations.
@@ -163,15 +159,11 @@ fn validate_library_only(
     let autobins = package.get("autobins").and_then(toml::Value::as_bool).unwrap_or(true);
     if autobins {
         let manifest_dir = repo_root.join(
-            manifest_path
-                .parent()
-                .ok_or_else(|| eyre!("{label} manifest path has no parent"))?,
+            manifest_path.parent().ok_or_else(|| eyre!("{label} manifest path has no parent"))?,
         );
         if manifest_dir.join("src/main.rs").is_file() {
-            let package_name = package
-                .get("name")
-                .and_then(toml::Value::as_str)
-                .unwrap_or("<unknown>");
+            let package_name =
+                package.get("name").and_then(toml::Value::as_str).unwrap_or("<unknown>");
             bail!(
                 "{label} manifest {} is library-only but src/main.rs exists, \
                  contributing an implicit binary {:?}; restoring an implicit \
