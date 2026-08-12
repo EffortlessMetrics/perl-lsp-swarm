@@ -438,21 +438,28 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     let use_default = !has_local_selection || include_default_tag || include_all_tag;
     let requested_base_set = if include_all_tag { all_set } else { default_set };
 
-    let mut symbols: BTreeSet<String> = BTreeSet::new();
-    if use_default && let Some(defaults) = requested_base_set {
-        for &sym in defaults {
-            symbols.insert(sym.to_string());
-        }
-    }
+    let base_symbols: BTreeSet<String> = if use_default {
+        requested_base_set
+            .into_iter()
+            .flat_map(|symbols| symbols.iter().copied())
+            .map(str::to_string)
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let mut symbols = base_symbols.clone();
     for name in &positives {
         symbols.insert(name.clone());
     }
     for alias in &rename_aliases {
         symbols.insert(alias.clone());
     }
-    // Renamed originals are not imported under their original name.
+    // A rename replaces the original only when that original was not also
+    // requested independently by a tag or a positive import entry. Importer
+    // expands `:DEFAULT`/`:ALL` into their own entries before applying the
+    // renamed entry, so both local names remain installed in that composition.
     for (orig, _) in &renames {
-        if !positives.iter().any(|p| p == orig) {
+        if !positives.iter().any(|positive| positive == orig) && !base_symbols.contains(orig) {
             symbols.remove(orig);
         }
     }
