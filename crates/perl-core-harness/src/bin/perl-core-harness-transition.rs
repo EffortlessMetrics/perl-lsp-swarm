@@ -63,10 +63,10 @@ struct ParsedClassifyArgs {
 mod classify_config_observer {
     use super::*;
 
-    /// RIPR-named observer for ClassifyConfig unrecognized-option rejection.
+    /// RIPR-named observer for Options::parse unrecognized-option rejection.
     #[test]
-    fn unrecognized_option_from_options_bail_is_observed() {
-        let options = Options::parse(
+    fn unrecognized_option_parse_bail_is_observed() {
+        let err = Options::parse(
             [
                 "--accepted-baseline".to_string(),
                 "accepted.json".to_string(),
@@ -79,10 +79,8 @@ mod classify_config_observer {
             ]
             .into_iter(),
         )
-        .expect("parse options");
-        let err = ClassifyConfig::from_options(options)
-            .expect_err("unrecognized options must fail")
-            .to_string();
+        .expect_err("unrecognized options must fail")
+        .to_string();
         assert_eq!(err, "unrecognized option(s): --series");
     }
 

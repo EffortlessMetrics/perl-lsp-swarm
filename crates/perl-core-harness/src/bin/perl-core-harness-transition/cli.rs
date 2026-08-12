@@ -11,6 +11,10 @@ impl Options {
             if !flag.starts_with("--") {
                 bail!("expected an option beginning with --, found {flag}");
             }
+            match flag.as_str() {
+                "--accepted-baseline" | "--compile" | "--output" => {}
+                _ => bail!("unrecognized option(s): {flag}"),
+            }
             let value = args
                 .next()
                 .ok_or_else(|| color_eyre::eyre::eyre!("missing value for {flag}"))?;
@@ -49,22 +53,10 @@ struct ClassifyConfig {
 
 impl ClassifyConfig {
     fn from_options(mut options: Options) -> Result<Self> {
-        let config = Self {
+        Ok(Self {
             accepted_baseline: PathBuf::from(options.required("--accepted-baseline")?),
             compile: PathBuf::from(options.required("--compile")?),
             output: PathBuf::from(options.required("--output")?),
-        };
-        if !options.values.is_empty() {
-            bail!(
-                "unrecognized option(s): {}",
-                options
-                    .values
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        Ok(config)
+        })
     }
 }
