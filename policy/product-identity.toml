@@ -1,0 +1,32 @@
+schema_version = 1
+
+[product]
+name = "perl-lsp"
+public_repository = "EffortlessMetrics/perl-lsp"
+development_repository = "EffortlessMetrics/perl-lsp-swarm"
+
+[server]
+primary_executable = "perllsp"
+cargo_package = "perllsp"
+package_manifest = "crates/perllsp/Cargo.toml"
+implementation_crate = "perl-lsp-rs"
+implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
+compatibility_executable = "perl-lsp"
+
+[extension]
+publisher = "EffortlessMetrics"
+package_name = "perl-lsp-rs"
+id = "EffortlessMetrics.perl-lsp-rs"
+display_name = "Perl Language Server (perl-lsp)"
+package_manifest = "vscode-extension/package.json"
+
+[debug_adapter]
+executable = "perl-dap"
+cargo_package = "perl-dap"
+package_manifest = "crates/perl-dap/Cargo.toml"
+maturity = "preview"
+
+[[conflicts]]
+identity = "crates.io/perl-lsp"
+relation = "different_project"
+remediation = "Install the `perllsp` package for this product."
