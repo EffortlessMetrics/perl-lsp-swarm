@@ -1,0 +1,426 @@
+erFallbackState,
++) -> Result<ProviderAdapterSnapshot, ProviderAdapterError> {
++    ProviderAdapterSnapshot::try_new(
++        SourceGeneration::known("document-7"),
++        SourceGeneration::known("workspace-3"),
++        freshness,
++        lifecycle,
++        fallback_state,
++        Some(1),
++    )
++}
++
++fn context() -> ProviderQueryContext {
++    context_with(
++        "document-7",
++        "workspace-3",
++        ProviderReadinessRequirement::ActiveDocument,
++        ProviderReadinessState::Ready,
++    )
++}
++
++fn context_with(
++    document_generation: &str,
++    workspace_generation: &str,
++    readiness_requirement: ProviderReadinessRequirement,
++    readiness_state: ProviderReadinessState,
++) -> ProviderQueryContext {
++    ProviderQueryContext::new(
++        ProviderIdentity::known("project"),
++        ProviderIdentity::known("root"),
++        SourceGeneration::known(document_generation),
++        SourceGeneration::known(workspace_generation),
++        readiness_requirement,
++        readiness_state,
++        ProviderQueryDeadline::RemainingMillis(100),
++        ProviderCancellationState::Active,
++    )
++}
++
++fn request(kind: ProviderQueryKind, subject: ProviderQuerySubject) -> ProviderQueryRequest {
++    request_with(kind, subject, context())
++}
++
++fn request_with(
++    kind: ProviderQueryKind,
++    subject: ProviderQuerySubject,
++    context: ProviderQueryContext,
++) -> ProviderQueryRequest {
++    ProviderQueryRequest::new(
++        ProviderSurface::Definition,
++        "test/provider-adapter",
++        kind,
++        subject,
++        context,
++    )
++}
++
++fn complete_shard(file_id: FileId, source_uri: &str) -> FileFactShard {
++    let scope_id = Some(ScopeId(1));
++    FileFactShard {
++        source_uri: source_uri.to_string(),
++        file_id,
++        content_hash: 77 + file_id.0,
++        producer_schema_version: 1,
++        anchors_hash: Some(101),
++        entities_hash: Some(102),
++        occurrences_hash: Some(103),
++        edges_hash: Some(104),
++        anchors: vec![
++            AnchorFact {
++                id: AnchorId(20),
++                file_id,
++                span_start_byte: 4,
++                span_end_byte: 12,
++                scope_id,
++                provenance: Provenance::ExactAst,
++                confidence: Confidence::High,
++            },
++            AnchorFact {
++                id: AnchorId(21),
++                file_id,
++                span_start_byte: 20,
++                span_end_byte: 24,
++                scope_id,
++                provenance: Provenance::ExactAst,
++                confidence: Confidence::High,
++            },
++            AnchorFact {
++                id: AnchorId(22),
++                file_id,
++                span_start_byte: 30,
++                span_end_byte: 34,
++                scope_id,
++                provenance: Provenance::ExactAst,
++                confidence: Confidence::High,
++            },
++        ],
++        entities: vec![EntityFact {
++            id: EntityId(30),
++            kind: EntityKind::Subroutine,
++            canonical_name: "Example::work".to_string(),
++            anchor_id: Some(AnchorId(20)),
++            scope_id,
++            provenance: Provenance::ExactAst,
++            confidence: Confidence::High,
++        }],
++        occurrences: vec![
++            OccurrenceFact {
++                id: OccurrenceId(40),
++                kind: OccurrenceKind::Call,
++                entity_id: Some(EntityId(30)),
++                anchor_id: AnchorId(21),
++                scope_id,
++                provenance: Provenance::ExactAst,
++                confidence: Confidence::High,
++            },
++            OccurrenceFact {
++                id: OccurrenceId(41),
++                kind: OccurrenceKind::Call,
++                entity_id: Some(EntityId(30)),
++                anchor_id: AnchorId(22),
++                scope_id,
++                provenance: Provenance::ExactAst,
++                confidence: Confidence::High,
++            },
++        ],
++        edges: Vec::new(),
++    }
++}
++
++fn empty_complete_shard(file_id: FileId, source_uri: &str) -> FileFactShard {
++    FileFactShard {
++        source_uri: source_uri.to_string(),
++        file_id,
++        content_hash: 88,
++        producer_schema_version: 1,
++        anchors_hash: Some(201),
++        entities_hash: Some(202),
++        occurrences_hash: Some(203),
++        edges_hash: Some(204),
++        anchors: Vec::new(),
++        entities: Vec::new(),
++        occurrences: Vec::new(),
++        edges: Vec::new(),
++    }
++}
++
++fn canonical_envelope(
++    fact_id: FactId,
++    entity_id: EntityId,
++    file_id: FileId,
++    freshness: SemanticFreshness,
++) -> SemanticFactEnvelope {
++    SemanticFactEnvelope::new(
++        fact_id,
++        Some(entity_id),
++        SemanticFactKind::Declaration,
++        SourceAnchor::new(Some(AnchorId(20)), file_id, 4, 12),
++        SourceGeneration::known("document-7"),
++        Some(ScopeId(1)),
++        Some("Example".to_string()),
++        LifecyclePhase::Runtime,
++        SemanticProducer::PirA,
++        SemanticProvenance::Known(Provenance::ExactAst),
++        SemanticConfidence::Known(Confidence::High),
++        freshness,
++        None,
++        Vec::new(),
++        if freshness == SemanticFreshness::Stale {
++            SemanticReasonCode::StaleDependency
++        } else {
++            SemanticReasonCode::ExactSource
++        },
++    )
++}
++
++#[test]
++fn shard_values_are_checked_against_the_current_contract() -> Result<(), Box<dyn Error>> {
++    let port = FileFactShardPort::try_new(
++        &[complete_shard(FileId(10), "file:///one.pl")],
++        FileFactShardSource::WorkspaceIndex,
++        snapshot()?,
++    )?;
++    let declaration = execute_provider_query(
++        &port,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Symbol("work".to_string()),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(declaration.outcome(), ProviderQueryOutcome::Exact);
++    assert_eq!(declaration.value_facts().count(), 1);
++    assert_eq!(
++        declaration.evidence().producers(),
++        &[SemanticProducer::WorkspaceIndex]
++    );
++
++    let references = execute_provider_query(
++        &port,
++        &request(
++            ProviderQueryKind::References {
++                include_declaration: false,
++            },
++            ProviderQuerySubject::Symbol("work".to_string()),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
++    assert_eq!(references.value_facts().count(), 2);
++    Ok(())
++}
++
++#[test]
++fn position_queries_resolve_remote_declarations_and_references() -> Result<(), Box<dyn Error>> {
++    let port = FileFactShardPort::try_new(
++        &[complete_shard(FileId(10), "file:///one.pl")],
++        FileFactShardSource::ParserAst,
++        snapshot()?,
++    )?;
++    let subject = ProviderQuerySubject::Position {
++        file_id: FileId(10),
++        byte_offset: 21,
++    };
++    let declaration = execute_provider_query(
++        &port,
++        &request(ProviderQueryKind::Declaration, subject.clone()),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(declaration.outcome(), ProviderQueryOutcome::Exact);
++    assert!(declaration
++        .value_facts()
++        .any(|fact| fact.anchor.start_byte == 4 && fact.anchor.end_byte == 12));
++
++    let references = execute_provider_query(
++        &port,
++        &request(
++            ProviderQueryKind::References {
++                include_declaration: false,
++            },
++            subject,
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
++    assert_eq!(references.value_facts().count(), 2);
++    assert!(references
++        .value_facts()
++        .any(|fact| fact.anchor.start_byte == 30 && fact.anchor.end_byte == 34));
++    Ok(())
++}
++
++#[test]
++fn file_denominator_distinguishes_exact_empty_from_incomplete() -> Result<(), Box<dyn Error>> {
++    let complete = FileFactShardPort::try_new(
++        &[empty_complete_shard(FileId(10), "file:///empty.pl")],
++        FileFactShardSource::WorkspaceIndex,
++        snapshot()?,
++    )?;
++    let query = request(
++        ProviderQueryKind::Declaration,
++        ProviderQuerySubject::File(FileId(10)),
++    );
++    let exact_empty = execute_provider_query(&complete, &query, &NoopProviderQueryControl)?;
++    assert!(exact_empty.is_exact_empty());
++    assert!(exact_empty.evidence().completeness_authority().is_some());
++    assert!(exact_empty.evidence().producers().is_empty());
++
++    let mut partial_shard = empty_complete_shard(FileId(11), "file:///partial.pl");
++    partial_shard.entities_hash = None;
++    let partial = FileFactShardPort::try_new(
++        &[partial_shard],
++        FileFactShardSource::WorkspaceIndex,
++        snapshot()?,
++    )?;
++    let unavailable = execute_provider_query(
++        &partial,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::File(FileId(11)),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(unavailable.outcome(), ProviderQueryOutcome::Unavailable);
++    Ok(())
++}
++
++#[test]
++fn project_model_and_canonical_collections_cannot_self_issue_empty_authority(
++) -> Result<(), Box<dyn Error>> {
++    let project_model = FileFactShardPort::try_new(
++        &[empty_complete_shard(FileId(10), "file:///project-model.pl")],
++        FileFactShardSource::ProjectModel,
++        snapshot()?,
++    )?;
++    let project_result = execute_provider_query(
++        &project_model,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::File(FileId(10)),
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(project_result.outcome(), ProviderQueryOutcome::Unavailable);
++
++    assert_eq!(
++        CanonicalEnvelopePort::try_new(Vec::<CanonicalEnvelopeInput>::new(), snapshot()?).err(),
++        Some(ProviderAdapterError::MissingCanonicalEvidence)
++    );
++    assert!(project_result
++        .evidence()
++        .traces()
++        .iter()
++        .any(|trace| trace.fallback_state == ProviderFallbackState::Unavailable));
++    Ok(())
++}
++
++#[test]
++fn shard_fact_and_entity_identities_include_file_identity() -> Result<(), Box<dyn Error>> {
++    let port = FileFactShardPort::try_new(
++        &[
++            complete_shard(FileId(10), "file:///one.pl"),
++            complete_shard(FileId(11), "file:///two.pl"),
++        ],
++        FileFactShardSource::WorkspaceIndex,
++        snapshot()?,
++    )?;
++    let workspace = execute_provider_query(
++        &port,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Workspace,
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(workspace.outcome(), ProviderQueryOutcome::Exact);
++    let fact_ids: BTreeSet<_> = workspace.value_facts().map(|fact| fact.fact_id).collect();
++    let entity_ids: BTreeSet<_> = workspace
++        .value_facts()
++        .filter_map(|fact| fact.entity_id)
++        .collect();
++    assert_eq!(fact_ids.len(), 2);
++    assert_eq!(entity_ids.len(), 2);
++    let first_entity = port.canonical_entity_id(FileId(10), EntityId(30));
++    let second_entity = port.canonical_entity_id(FileId(11), EntityId(30));
++    assert!(first_entity.is_some());
++    assert!(second_entity.is_some());
++    assert_ne!(first_entity, second_entity);
++
++    let from_first_file = execute_provider_query(
++        &port,
++        &request(
++            ProviderQueryKind::Declaration,
++            ProviderQuerySubject::Position {
++                file_id: FileId(10),
++                byte_offset: 21,
++            },
++        ),
++        &NoopProviderQueryControl,
++    )?;
++    assert_eq!(from_first_file.value_facts().count(), 1);
++    assert!(from_first_file
++        .value_facts()
++        .all(|fact| fact.anchor.file_id == FileId(10)));
++    Ok(())
++}
++
++#[test]
++fn malformed_shard_identity_maps_fail_closed() -> Result<(), Box<dyn Error>> {
++    let mut duplicate_anchor = complete_shard(FileId(10), "file:///anchor.pl");
++    duplicate_anchor.anchors.push(AnchorFact {
++        id: AnchorId(20),
++        file_id: FileId(10),
++        span_start_byte: 50,
++        span_end_byte: 55,
++        scope_id: Some(ScopeId(2)),
++        provenance: Provenance::ExactAst,
++        confidence: Confidence::High,
++    });
++    assert_eq!(
++        FileFactShardPort::try_new(
++            &[duplicate_anchor],
++            FileFactShardSource::ParserAst,
++            snapshot()?,
++        )
++        .err(),
++        Some(ProviderAdapterError::DuplicateAnchor {
++            file_id: FileId(10),
++            anchor_id: AnchorId(20),
++        })
++    );
++
++    let mut duplicate_entity = complete_shard(FileId(11), "file:///entity.pl");
++    duplicate_entity.entities.push(EntityFact {
++        id: EntityId(30),
++        kind: EntityKind::Variable,
++        canonical_name: "Example::other".to_string(),
++        anchor_id: Some(AnchorId(20)),
++        scope_id: Some(ScopeId(1)),
++        provenance: Provenance::ExactAst,
++        confidence: Confidence::High,
++    });
++    assert_eq!(
++        FileFactShardPort::try_new(
++            &[duplicate_entity],
++            FileFactShardSource::ParserAst,
++            snapshot()?,
++        )
++        .err(),
++        Some(ProviderAdapterError::DuplicateEntity {
++            file_id: FileId(11),
++            entity_id: EntityId(30),
++        })
++    );
++
++    let mut duplicate_occurrence = complete_shard(FileId(12), "file:///occurrence.pl");
++    duplicate_occurrence.occurrences.push(OccurrenceFact {
++        id: OccurrenceId(40),
++        kind: OccurrenceKind::Call,
++        entity_id: Some(EntityId(30)),
++        anchor_id: AnchorId(22),
++        scope_id: Some(ScopeId(1)),
++        provenance: Provenance::ExactAst,
++        confidence: Confidence::High,
++    });
++
