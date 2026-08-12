@@ -32,7 +32,10 @@ jobs:
           text = engine.read_text(encoding="utf-8")
           replacements = [
               ("pub struct AdvancedReuseAnalyzer {", "pub(super) struct AdvancedReuseAnalyzer {"),
-              ("    pub analysis_stats: ReuseAnalysisStats,", "    pub(super) analysis_stats: ReuseAnalysisStats,"),
+              (
+                  "    /// Statistics for reuse analysis\n    pub analysis_stats: ReuseAnalysisStats,",
+                  "    /// Statistics for reuse analysis\n    pub(super) analysis_stats: ReuseAnalysisStats,",
+              ),
               ("    pub fn new() -> Self {", "    pub(super) fn new() -> Self {"),
               ("    pub fn with_config(_config: ReuseConfig) -> Self {", "    pub(super) fn with_config(_config: ReuseConfig) -> Self {"),
               ("    pub fn analyze_reuse_opportunities(", "    pub(super) fn analyze_reuse_opportunities("),
