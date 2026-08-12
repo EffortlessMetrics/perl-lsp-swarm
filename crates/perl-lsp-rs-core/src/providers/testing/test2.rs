@@ -414,13 +414,18 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
 
     let rename_aliases: Vec<String> = renames.iter().map(|(_, alias)| alias.clone()).collect();
 
-    // Decide the base set. An explicit selection (positive names, renames, or
-    // `:ALL`) replaces the default unless `:DEFAULT` is also present.
-    let has_explicit = !positives.is_empty() || !renames.is_empty() || include_all_tag;
-    let use_default = !has_explicit || include_default_tag;
+    // Decide the base set. Explicit local-name selections replace the default
+    // unless a tag requests a reviewed set as well. Importer supplies automatic
+    // `:DEFAULT` and `:ALL` tags; asking for `:ALL` must not suppress every
+    // known import merely because the tag itself is explicit.
+    let has_local_selection = !positives.is_empty() || !renames.is_empty();
+    let use_default = !has_local_selection || include_default_tag || include_all_tag;
 
-    // `:ALL` is handled via `use_default` above: we do not enumerate EXPORT_OK,
-    // so the default set is our best-effort superset for known bundles.
+    // The provider-local migration oracle does not enumerate every EXPORT_OK
+    // symbol for every possible Test2 module. For modules with a reviewed table,
+    // `:ALL` therefore starts from that known set instead of inventing names or
+    // incorrectly returning an empty import. Exact module-specific `:ALL`
+    // expansion belongs to the registered adapters tracked by #6946/#6948.
     let mut symbols: BTreeSet<String> = BTreeSet::new();
     if use_default && let Some(defaults) = default_set {
         for &sym in defaults {
