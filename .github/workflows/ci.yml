@@ -470,6 +470,24 @@ jobs:
             printf '::endgroup::\n'
           done
 
+      - name: Verify parser integration receipt subject
+        if: always() && matrix.name == 'parser_stack'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/ci")
+          import run_parser_integration
+
+          run_parser_integration.validate_receipt_subject(
+              Path.cwd(),
+              Path("target/receipts/parser-integration.json"),
+              Path(".ci/parser-integration-targets.json"),
+              Path(".ci/parser-integration-targets.lock.json"),
+          )
+
       - name: Upload gate receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
@@ -480,6 +498,15 @@ jobs:
             target/receipts/logs/*.log
             target/receipts/artifacts/*
           if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload parser integration receipt
+        if: always() && matrix.name == 'parser_stack'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: parser-integration-receipt-${{ github.sha }}
+          path: target/receipts/parser-integration.json
+          if-no-files-found: error
           retention-days: 7
 
       - name: Convert gate shard receipts to JUnit
