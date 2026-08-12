@@ -176,12 +176,10 @@ pub mod var_ref {
 // Re-export codec types at crate root for ergonomic use in tests and consumer crates.
 pub use debug_adapter::var_ref::{ScopeKind, VariableReference, VariableReferenceError};
 
-/// Deprecated compatibility re-exports for historical PLS bridge consumers.
+/// Explicit compatibility re-exports for legacy PLS bridge consumers.
 #[cfg(feature = "legacy-pls-bridge")]
 #[allow(deprecated)]
-#[deprecated(
-    note = "legacy Perl::LanguageServer compatibility; use the native DapServer/DebugAdapter path"
-)]
+#[doc(hidden)]
 pub use bridge_adapter::{BridgeAdapter, DapBridgeEnvConfig};
 pub use configuration::{
     AttachConfiguration, LaunchConfiguration, create_attach_json_snippet,
