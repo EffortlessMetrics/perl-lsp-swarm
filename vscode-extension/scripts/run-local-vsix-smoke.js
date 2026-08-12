@@ -21,6 +21,15 @@ function runNpm(args, env) {
   });
 }
 
+function runNode(args, env) {
+  return spawnSync(process.execPath, args, {
+    cwd: root,
+    env,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+}
+
 function gitRevision() {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
   if (result.status !== 0) {
@@ -137,10 +146,14 @@ function main() {
   let restoreStagedServer = () => {};
   try {
     restoreStagedServer = stageServerForPackage(serverPath);
-    const packageResult = runNpm(['run', 'package'], {
+    const packageEnv = {
       ...process.env,
       PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
-    });
+    };
+    const packageResult = runNpm(
+      ['exec', '--offline', '--no', '--', '@vscode/vsce', 'package'],
+      packageEnv,
+    );
     if (packageResult.status !== 0) {
       smokeStatus = packageResult.status ?? 1;
     } else {
@@ -148,26 +161,34 @@ function main() {
         throw new Error(`vsce did not produce the expected VSIX: ${vsixPath}`);
       }
 
-      const smokeEnv = {
-        ...process.env,
-        PERL_LSP_CURRENT_SOURCE_SHA: revision,
-        PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
-        PERL_LSP_FIRST_HOUR_ONLY: '1',
-        PERL_LSP_FIRST_HOUR_RECEIPT: '1',
-        PERL_LSP_FIRST_HOUR_SERVER_PATH: path.resolve(serverPath),
-        PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
-        PERL_LSP_PUBLISHED_VSIX_PATH: vsixPath,
-        PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
-        PERL_LSP_SMOKE_SOURCE_LABEL:
-          process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'local-current-source',
-        PERL_LSP_VSIX_SHA256: crypto
-          .createHash('sha256')
-          .update(fs.readFileSync(vsixPath))
-          .digest('hex'),
-      };
+      const transitionResult = runNode(
+        ['scripts/check-vsix-inventory-transition.js'],
+        packageEnv,
+      );
+      if (transitionResult.status !== 0) {
+        smokeStatus = transitionResult.status ?? 1;
+      } else {
+        const smokeEnv = {
+          ...process.env,
+          PERL_LSP_CURRENT_SOURCE_SHA: revision,
+          PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+          PERL_LSP_FIRST_HOUR_ONLY: '1',
+          PERL_LSP_FIRST_HOUR_RECEIPT: '1',
+          PERL_LSP_FIRST_HOUR_SERVER_PATH: path.resolve(serverPath),
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+          PERL_LSP_PUBLISHED_VSIX_PATH: vsixPath,
+          PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
+          PERL_LSP_SMOKE_SOURCE_LABEL:
+            process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'local-current-source',
+          PERL_LSP_VSIX_SHA256: crypto
+            .createHash('sha256')
+            .update(fs.readFileSync(vsixPath))
+            .digest('hex'),
+        };
 
-      const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
-      smokeStatus = smokeResult.status ?? 1;
+        const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
+        smokeStatus = smokeResult.status ?? 1;
+      }
     }
   } finally {
     fs.rmSync(vsixPath, { force: true });
