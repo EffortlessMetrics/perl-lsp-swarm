@@ -7,9 +7,9 @@
 #[path = "support/real_process.rs"]
 mod real_process;
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 use real_process::RealProcessClient;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
 fn timeout() -> Duration {
@@ -82,11 +82,8 @@ fn exact_candidate_completes_legal_lifecycle() -> Result<()> {
 
 #[test]
 fn outbound_method_messages_omit_null_params_and_reject_scalars() -> Result<()> {
-    let shutdown = RealProcessClient::method_message_for_test(
-        Some(json!(1)),
-        "shutdown",
-        Value::Null,
-    )?;
+    let shutdown =
+        RealProcessClient::method_message_for_test(Some(json!(1)), "shutdown", Value::Null)?;
     ensure!(
         shutdown
             == json!({
@@ -99,11 +96,10 @@ fn outbound_method_messages_omit_null_params_and_reject_scalars() -> Result<()> 
 
     let exit = RealProcessClient::method_message_for_test(None, "exit", Value::Null)?;
     ensure!(
-        exit
-            == json!({
-                "jsonrpc": "2.0",
-                "method": "exit"
-            }),
+        exit == json!({
+            "jsonrpc": "2.0",
+            "method": "exit"
+        }),
         "exit wire shape included forbidden fields: {exit}"
     );
 

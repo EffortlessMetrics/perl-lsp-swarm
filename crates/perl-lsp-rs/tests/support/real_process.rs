@@ -7,8 +7,8 @@
 //! bounded, strict Content-Length stream; stderr is retained separately as a
 //! bounded byte tail.
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use serde_json::{Value, json};
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -490,9 +490,7 @@ fn is_response(message: &Value) -> bool {
     is_jsonrpc_2(message)
         && is_response_like(message)
         && message.get("params").is_none()
-        && message
-            .get("id")
-            .is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
+        && message.get("id").is_some_and(|id| id.is_number() || id.is_string() || id.is_null())
         && (has_result ^ has_error)
         && (!has_error || message.get("error").is_some_and(is_valid_error))
 }
@@ -504,9 +502,7 @@ fn is_response_for(message: &Value, id: &Value) -> bool {
 fn is_server_request_for(message: &Value, method: &str) -> bool {
     is_jsonrpc_2(message)
         && message.get("method").and_then(Value::as_str) == Some(method)
-        && message
-            .get("id")
-            .is_some_and(|id| id.is_number() || id.is_string())
+        && message.get("id").is_some_and(|id| id.is_number() || id.is_string())
         && has_no_response_members(message)
         && has_valid_params(message)
 }
