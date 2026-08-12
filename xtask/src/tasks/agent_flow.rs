@@ -16,6 +16,16 @@ const PROVIDER_SKILL_ROOTS: &[(&str, &str)] =
 
 const FORBIDDEN_SHARED_REVIEW_AUTHORITY: &str = "PR_REVIEW_STANDARD.md";
 const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
+const ROUTE_BEARING_LABELS: &[&str] = &[
+    "entry flow",
+    "entry route",
+    "next flow",
+    "next route",
+    "return flow",
+    "return route",
+    "fallback flow",
+    "fallback route",
+];
 
 const REVIEW_SKILL_MARKERS: &[(&str, &[&str])] = &[
     (
@@ -153,6 +163,7 @@ enum RouteSyntax {
     ListTarget,
     BareTarget,
     ImperativeInvocation,
+    LabeledTarget,
     ProseMention,
     CodeIdentifier,
     InlineCode,
@@ -168,6 +179,7 @@ impl RouteSyntax {
                 | Self::ListTarget
                 | Self::BareTarget
                 | Self::ImperativeInvocation
+                | Self::LabeledTarget
         )
     }
 }
@@ -804,10 +816,35 @@ fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
             return RouteSyntax::ListTarget;
         }
     }
+    if is_markdown_list_item(trimmed) && has_route_label_prefix(candidate, code_span) {
+        return RouteSyntax::LabeledTarget;
+    }
     if is_markdown_list_item(trimmed) && has_imperative_route_prefix(candidate, code_span) {
         return RouteSyntax::ImperativeInvocation;
     }
     RouteSyntax::InlineCode
+}
+
+fn has_route_label_prefix(candidate: &str, code_span: &str) -> bool {
+    let Some(index) = candidate.find(code_span) else {
+        return false;
+    };
+    let prefix = candidate[..index].trim();
+    let label = if let Some(without_colon) = prefix.strip_suffix(':') {
+        strip_strong_emphasis(without_colon).trim()
+    } else {
+        let without_emphasis = strip_strong_emphasis(prefix);
+        let Some(without_colon) = without_emphasis.strip_suffix(':') else {
+            return false;
+        };
+        without_colon.trim()
+    };
+    let normalized = label.to_ascii_lowercase();
+    ROUTE_BEARING_LABELS.contains(&normalized.as_str())
+}
+
+fn strip_strong_emphasis(text: &str) -> &str {
+    text.strip_prefix("**").and_then(|inner| inner.strip_suffix("**")).unwrap_or(text)
 }
 
 fn has_imperative_route_prefix(candidate: &str, code_span: &str) -> bool {
@@ -853,10 +890,7 @@ fn strip_markdown_list_marker(line: &str) -> &str {
 }
 
 fn is_route_name(token: &str) -> bool {
-    token
-        .bytes()
-        .next()
-        .is_some_and(|byte| byte.is_ascii_lowercase())
+    token.bytes().next().is_some_and(|byte| byte.is_ascii_lowercase())
         && token.bytes().all(is_route_name_byte)
 }
 
@@ -953,18 +987,43 @@ mod tests {
     }
 
     #[test]
+    fn preserves_labeled_route_fields_as_edges() {
+        let text = "## Routes\n- Entry flow: `deliver-pr`\n- **Next route:** `finish-pr`\n";
+        let observations = route_observations(text);
+        assert_eq!(edge_targets(&observations), vec!["deliver-pr", "finish-pr"]);
+        assert!(
+            observations.iter().all(|observation| observation.syntax == RouteSyntax::LabeledTarget)
+        );
+    }
+
+    #[test]
+    fn labeled_route_typos_remain_load_bearing() {
+        let observations = route_line_observations("- Entry flow: `delver-pr`", 1, true);
+        assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::new()),
+            RouteSyntax::LabeledTarget
+        );
+    }
+
+    #[test]
+    fn unrelated_labeled_code_remains_non_executable() {
+        let observations = route_line_observations("- Cache key: `deliver-pr`", 1, true);
+        assert!(edge_targets(&observations).is_empty());
+        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+    }
+
+    #[test]
     fn existing_skill_name_in_prose_is_a_prose_mention() {
-        let text = "## Procedure\nTake issue #123 through `deliver-pr` after the candidate is coherent.\n";
+        let text =
+            "## Procedure\nTake issue #123 through `deliver-pr` after the candidate is coherent.\n";
         assert!(route_targets(text).is_empty());
         let observations = route_observations(text);
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].target, "deliver-pr");
         assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
         assert_eq!(
-            resolve_route_syntax(
-                &observations[0],
-                &BTreeSet::from(["deliver-pr".to_string()])
-            ),
+            resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
             RouteSyntax::ProseMention
         );
     }
@@ -977,10 +1036,7 @@ mod tests {
         assert_eq!(observations[0].target, "candidate_sha");
         assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
         assert_eq!(
-            resolve_route_syntax(
-                &observations[0],
-                &BTreeSet::from(["deliver-pr".to_string()])
-            ),
+            resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
             RouteSyntax::CodeIdentifier
         );
         assert!(!resolve_route_syntax(&observations[0], &BTreeSet::new()).is_edge());
@@ -996,10 +1052,7 @@ mod tests {
 
     #[test]
     fn explicit_sigil_remains_a_route_inside_prose() {
-        assert_eq!(
-            route_tokens("Invoke `$deliver-pr` after review.", true),
-            vec!["deliver-pr"]
-        );
+        assert_eq!(route_tokens("Invoke `$deliver-pr` after review.", true), vec!["deliver-pr"]);
     }
 
     #[test]
