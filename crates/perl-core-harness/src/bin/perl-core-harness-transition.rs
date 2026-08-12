@@ -8,10 +8,9 @@
 //! `check` reloads the same evidence (and optional series), recomputes
 //! classification + digests, and verifies an existing receipt matches exactly.
 //!
-//! Discovery-report binding, series file-membership binding, series
-//! subject-field binding, and Windows hard-link identity remain follow-up
-//! slices. Full #6880 validated-wrapper centralization is intentionally out of
-//! scope.
+//! Discovery-report binding, series subject-field binding (profile/runner/perl),
+//! and Windows hard-link identity remain follow-up slices. Full #6880
+//! validated-wrapper centralization is intentionally out of scope.
 
 #![warn(missing_docs)]
 #![cfg_attr(clippy, allow(missing_docs))]
@@ -159,10 +158,10 @@ fn load_series_manifest(path: &Path) -> Result<SeriesManifest> {
 
 /// Lean series identity binding for classify/check.
 ///
-/// Binds accepted V2 to an explicit `--series` manifest via `series_id` and
-/// `manifest_hash` only. File-membership and subject profile/runner/perl checks
-/// remain follow-up slices. Does not rehash the series, bind discovery reports,
-/// or centralize #6880 validated wrappers.
+/// Binds accepted V2 to an explicit `--series` manifest via `series_id`,
+/// `manifest_hash`, and exact `file_membership`/`normalized_manifest` equality.
+/// Subject profile/runner/perl checks remain follow-up slices. Does not rehash
+/// the series, bind discovery reports, or centralize #6880 validated wrappers.
 fn bind_series_identity(series: &SeriesManifest, accepted: &CompileBaselineV2) -> Result<()> {
     if accepted.series_id != series.series_id {
         bail!("accepted baseline is not bound to series {}: series_id mismatch", series.series_id);
@@ -170,6 +169,12 @@ fn bind_series_identity(series: &SeriesManifest, accepted: &CompileBaselineV2) -
     if accepted.manifest_hash != series.manifest_hash {
         bail!(
             "accepted baseline is not bound to series {}: manifest_hash mismatch",
+            series.series_id
+        );
+    }
+    if accepted.file_membership != series.normalized_manifest {
+        bail!(
+            "accepted baseline is not bound to series {}: file_membership mismatch",
             series.series_id
         );
     }
@@ -270,7 +275,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 const CLASSIFY_RECEIPT_SCHEMA_VERSION: &str = "perl_core_harness.transition_classify_result.v1";
-const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets, bind discovery reports, bind series membership/subject fields, or claim hard-link identity";
+const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets, bind discovery reports, bind series subject fields (profile/runner/perl), or claim hard-link identity";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct ClassifyReceipt {
@@ -530,13 +535,32 @@ mod classify_io_observer {
         assert_eq!(err, "accepted baseline is not bound to series series: manifest_hash mismatch");
     }
 
-    /// Claim-boundary proof: membership mismatch alone is deferred (not bound).
+    /// RIPR boundary discriminator for accepted.file_membership != series.normalized_manifest.
     #[test]
-    fn bind_series_defers_membership_mismatch() {
+    fn bind_series_file_membership_boundary_discriminator() {
         let (series, mut accepted) = series_bind_fixture();
         accepted.file_membership = vec!["base/9.t".into()];
         assert_eq!(accepted.file_membership != series.normalized_manifest, true);
-        bind_series_identity(&series, &accepted).expect("membership is deferred this slice");
+        let err = bind_series_identity(&series, &accepted)
+            .expect_err("file_membership mismatch must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            "accepted baseline is not bound to series series: file_membership mismatch"
+        );
+    }
+
+    /// Claim-boundary proof: subject-field mismatch alone remains deferred.
+    #[test]
+    fn bind_series_defers_subject_field_mismatch() {
+        let (series, mut accepted) = series_bind_fixture();
+        accepted.profile = perl_core_harness_types::HarnessProfile::Full;
+        accepted.runner = perl_core_harness_types::HarnessRunner::Harness;
+        accepted.perl_resolved_ref = "other-perl".into();
+        assert_eq!(accepted.profile != series.profile, true);
+        assert_eq!(accepted.runner != series.runner, true);
+        assert_eq!(accepted.perl_resolved_ref != series.perl_resolved_ref, true);
+        bind_series_identity(&series, &accepted).expect("subject fields are deferred this slice");
     }
 
     fn series_bind_fixture() -> (SeriesManifest, CompileBaselineV2) {
