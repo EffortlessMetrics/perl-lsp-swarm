@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.github.io/perl-lsp/schemas/binary_identity_protocol.v1.schema.json",
+  "title": "perl-lsp binary identity protocol v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_version",
+    "server",
+    "expected_extension",
+    "server_instance_id",
+    "environment_snapshot_id",
+    "compatibility",
+    "reasons",
+    "redacted"
+  ],
+  "properties": {
+    "feature_version": { "const": 1 },
+    "server": { "$ref": "#/$defs/binaryIdentity" },
+    "dap": { "$ref": "#/$defs/binaryIdentity" },
+    "expected_extension": { "$ref": "#/$defs/extensionIdentity" },
+    "server_instance_id": { "$ref": "#/$defs/boundedIdentity" },
+    "environment_snapshot_id": { "$ref": "#/$defs/boundedIdentity" },
+    "compatibility": {
+      "enum": [
+        "exact_match",
+        "compatible_partial",
+        "mismatch",
+        "unsupported",
+        "stale",
+        "not_proven"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "server_product_mismatch",
+          "extension_identity_mismatch",
+          "version_mismatch",
+          "target_mismatch",
+          "source_revision_mismatch",
+          "candidate_mismatch",
+          "dap_role_mismatch",
+          "dap_identity_absent",
+          "build_identity_partial",
+          "server_instance_stale",
+          "environment_snapshot_stale",
+          "feature_version_unsupported",
+          "exact_identity_match"
+        ]
+      }
+    },
+    "redacted": { "const": true },
+    "limitations": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/boundedString" }
+    }
+  },
+  "$defs": {
+    "boundedString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "boundedIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:@/+\\-]+$"
+    },
+    "extensionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "const": "EffortlessMetrics.perl-lsp-rs" },
+        "version": { "$ref": "#/$defs/boundedIdentity" },
+        "candidate_identity": { "$ref": "#/$defs/boundedIdentity" },
+        "target": { "$ref": "#/$defs/boundedIdentity" }
+      }
+    },
+    "binaryIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "product",
+        "binary",
+        "build",
+        "artifact",
+        "compatibility"
+      ],
+      "properties": {
+        "schema_version": { "const": "perl_lsp.binary_identity.v1" },
+        "product": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "public_repository", "development_repository"],
+          "properties": {
+            "name": { "const": "perl-lsp" },
+            "public_repository": { "const": "EffortlessMetrics/perl-lsp" },
+            "development_repository": { "const": "EffortlessMetrics/perl-lsp-swarm" }
+          }
+        },
+        "binary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable", "cargo_package", "role", "version"],
+          "properties": {
+            "executable": { "enum": ["perllsp", "perl-dap"] },
+            "cargo_package": { "enum": ["perllsp", "perl-dap"] },
+            "role": { "enum": ["server", "dap"] },
+            "version": { "$ref": "#/$defs/boundedIdentity" }
+          }
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity_state"],
+          "properties": {
+            "source_revision": { "$ref": "#/$defs/boundedIdentity" },
+            "source_tree_digest": { "$ref": "#/$defs/boundedIdentity" },
+            "target": { "$ref": "#/$defs/boundedIdentity" },
+            "profile": { "$ref": "#/$defs/boundedIdentity" },
+            "identity_state": { "enum": ["exact", "partial", "not_proven"] }
+          }
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role"],
+          "properties": {
+            "role": {
+              "enum": ["managed", "user_supplied", "package_install", "archive", "unknown"]
+            },
+            "digest": { "$ref": "#/$defs/boundedIdentity" },
+            "candidate_identity": { "$ref": "#/$defs/boundedIdentity" }
+          }
+        },
+        "compatibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expected_product_identity_version", "dap_posture"],
+          "properties": {
+            "expected_product_identity_version": { "const": 1 },
+            "dap_posture": { "const": "preview" }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/boundedString" }
+        }
+      }
+    }
+  }
+}
