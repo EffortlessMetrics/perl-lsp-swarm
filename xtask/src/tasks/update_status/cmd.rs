@@ -132,10 +132,12 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
     };
 
     let started_at = Instant::now();
+    let mut observation_failed = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if started_at.elapsed() >= timeout => {
+                observation_failed = true;
                 eprintln!(
                     "[update-status] command timed out after {timeout:?}: {}",
                     args.join(" ")
@@ -145,13 +147,17 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
             Err(err) => {
+                observation_failed = true;
                 eprintln!("[update-status] failed to poll `{}`: {err}", args.join(" "));
                 let _ = child.kill();
                 break child.wait().ok();
             }
         }
     };
-    if status.is_none_or(|status| !status.success()) {
+    if !merged_output_is_acceptable(
+        observation_failed,
+        status.as_ref().map(|status| status.success()),
+    ) {
         return String::new();
     }
     if merged.seek(SeekFrom::Start(0)).is_err() {
@@ -162,6 +168,10 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
         return String::new();
     }
     output
+}
+
+fn merged_output_is_acceptable(observation_failed: bool, status_success: Option<bool>) -> bool {
+    !observation_failed && status_success == Some(true)
 }
 
 #[cfg(test)]
@@ -180,6 +190,14 @@ mod tests {
             "failed merged command output must not be treated as valid discovery data"
         );
         Ok(())
+    }
+
+    #[test]
+    fn run_cmd_merged_rejects_successful_reap_after_terminal_observation_failure() {
+        assert!(
+            !merged_output_is_acceptable(true, Some(true)),
+            "timeout or poll failure must remain terminal when kill races or fails and reap succeeds"
+        );
     }
 
     #[cfg(unix)]
