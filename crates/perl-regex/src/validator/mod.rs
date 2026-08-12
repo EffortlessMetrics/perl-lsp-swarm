@@ -1,12 +1,12 @@
+mod batch;
 mod code_execution;
 mod complexity;
 mod config;
-mod group;
 mod nested_quantifier;
 
 pub use config::RegexValidationConfig;
 
-use crate::error::RegexError;
+use crate::{analysis::RegexAnalysis, error::RegexError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexFinding {
@@ -37,14 +37,27 @@ impl RegexValidator {
         &self.config
     }
 
+    /// Analyze one regex body and return all typed diagnostics and reusable facts.
+    ///
+    /// Diagnostic and fact ranges are byte offsets relative to `pattern`.
+    #[must_use]
+    pub fn analyze(&self, pattern: &str) -> RegexAnalysis {
+        batch::analyze(pattern, &self.config)
+    }
+
+    /// Validate through the historical fail-fast compatibility contract.
+    ///
+    /// This lossy adapter preserves the old category priority while mapping the
+    /// selected typed diagnostic to [`RegexError::Syntax`].
     pub fn validate(&self, pattern: &str, start_pos: usize) -> Result<(), RegexError> {
-        if let Some(finding) = self.find_code_execution(pattern, start_pos) {
-            return Err(RegexError::syntax(finding.message, finding.offset));
+        let analysis = self.analyze(pattern);
+        if let Some(diagnostic) = batch::first_compatibility_diagnostic(&analysis) {
+            return Err(RegexError::syntax(
+                diagnostic.message(),
+                start_pos.saturating_add(diagnostic.range.start),
+            ));
         }
-        if let Some(finding) = self.find_nested_quantifier(pattern, start_pos) {
-            return Err(RegexError::syntax(finding.message, finding.offset));
-        }
-        complexity::check_complexity(pattern, start_pos, &self.config)
+        Ok(())
     }
 
     pub fn detects_code_execution(&self, pattern: &str) -> bool {
