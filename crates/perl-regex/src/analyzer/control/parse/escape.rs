@@ -33,7 +33,7 @@ pub(super) fn parse_escape_control(pattern: &str, start: usize) -> Option<RawCon
                 operand_range: Some(operand_range),
                 request: ResolutionRequest::Number {
                     number,
-                    ambiguous_plain_escape: true,
+                    ambiguous_plain_escape: operand_range.len() > 1,
                 },
                 effect: PatternControlEffect::CaptureRead,
                 boundary: None,
