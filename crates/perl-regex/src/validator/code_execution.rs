@@ -1,4 +1,4 @@
-use crate::syntax::cursor::RegexCursor;
+use crate::syntax::event::{RegexEmbeddedCodeKind, RegexEventKind, RegexEventStream};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmbeddedCodeKind {
@@ -12,33 +12,19 @@ pub(crate) struct EmbeddedCodeFinding {
     pub(crate) kind: EmbeddedCodeKind,
 }
 
-pub(crate) fn find_code_executions(pattern: &str) -> Vec<EmbeddedCodeFinding> {
-    let mut cursor = RegexCursor::new(pattern);
-    let mut findings = Vec::new();
-
-    while let Some(ch) = cursor.current() {
-        if cursor.skip_quoted_literal()
-            || cursor.skip_escape()
-            || cursor.skip_char_class()
-            || cursor.skip_comment()
-        {
-            continue;
-        }
-        if ch == b'(' && cursor.peek(1) == Some(b'?') {
-            if cursor.peek(2) == Some(b'{') {
-                findings.push(EmbeddedCodeFinding {
-                    offset: cursor.position(),
-                    kind: EmbeddedCodeKind::Immediate,
-                });
-            } else if cursor.peek(2) == Some(b'?') && cursor.peek(3) == Some(b'{') {
-                findings.push(EmbeddedCodeFinding {
-                    offset: cursor.position(),
-                    kind: EmbeddedCodeKind::Deferred,
-                });
+pub(crate) fn find_code_executions(stream: &RegexEventStream) -> Vec<EmbeddedCodeFinding> {
+    stream
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            RegexEventKind::EmbeddedCode { kind, opener_range, .. } => {
+                let kind = match kind {
+                    RegexEmbeddedCodeKind::Immediate => EmbeddedCodeKind::Immediate,
+                    RegexEmbeddedCodeKind::Deferred => EmbeddedCodeKind::Deferred,
+                };
+                Some(EmbeddedCodeFinding { offset: opener_range.start, kind })
             }
-        }
-        cursor.bump();
-    }
-
-    findings
+            _ => None,
+        })
+        .collect()
 }
