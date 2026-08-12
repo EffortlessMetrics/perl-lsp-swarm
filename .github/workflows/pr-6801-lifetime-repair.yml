@@ -1,0 +1,159 @@
+name: PR 6801 lifetime repair
+
+on:
+  push:
+    branches:
+      - codex/6713-slash-ambiguity-edit-current
+    paths:
+      - .github/workflows/pr-6801-lifetime-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr-6801-lifetime-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Repair and verify node lookup lifetime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the PR branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: codex/6713-slash-ambiguity-edit-current
+          fetch-depth: 0
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Replace closure traversal with lifetime-preserving recursion
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("crates/perl-parser/src/incremental/incremental_v2.rs")
+          text = path.read_text(encoding="utf-8")
+          marker = "    fn find_analyzed_node_at_start"
+          if text.count(marker) != 1:
+              raise SystemExit(f"expected exactly one {marker!r}, found {text.count(marker)}")
+
+          start = text.index(marker)
+          end = text.index("\n    fn materialize_advanced_reuse_tree(", start)
+          replacement = '''    fn find_analyzed_node_at_start<'a>(
+              node: &'a Node,
+              start: usize,
+          ) -> Option<&'a Node> {
+              match &node.kind {
+                  NodeKind::Program { statements } | NodeKind::Block { statements } => {
+                      for statement in statements.iter().rev() {
+                          if let Some(candidate) =
+                              Self::find_analyzed_node_at_start(statement, start)
+                          {
+                              return Some(candidate);
+                          }
+                      }
+                  }
+                  NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                      if let Some(initializer) = initializer
+                          && let Some(candidate) =
+                              Self::find_analyzed_node_at_start(initializer, start)
+                      {
+                          return Some(candidate);
+                      }
+                      if let Some(candidate) = Self::find_analyzed_node_at_start(variable, start) {
+                          return Some(candidate);
+                      }
+                  }
+                  NodeKind::Binary { left, right, .. } => {
+                      if let Some(candidate) = Self::find_analyzed_node_at_start(right, start) {
+                          return Some(candidate);
+                      }
+                      if let Some(candidate) = Self::find_analyzed_node_at_start(left, start) {
+                          return Some(candidate);
+                      }
+                  }
+                  NodeKind::Unary { operand, .. } => {
+                      if let Some(candidate) = Self::find_analyzed_node_at_start(operand, start) {
+                          return Some(candidate);
+                      }
+                  }
+                  NodeKind::FunctionCall { args, .. } => {
+                      for argument in args.iter().rev() {
+                          if let Some(candidate) =
+                              Self::find_analyzed_node_at_start(argument, start)
+                          {
+                              return Some(candidate);
+                          }
+                      }
+                  }
+                  NodeKind::If {
+                      condition, then_branch, elsif_branches, else_branch, ..
+                  } => {
+                      if let Some(branch) = else_branch
+                          && let Some(candidate) = Self::find_analyzed_node_at_start(branch, start)
+                      {
+                          return Some(candidate);
+                      }
+                      for (condition, branch) in elsif_branches.iter().rev() {
+                          if let Some(candidate) =
+                              Self::find_analyzed_node_at_start(branch, start)
+                          {
+                              return Some(candidate);
+                          }
+                          if let Some(candidate) =
+                              Self::find_analyzed_node_at_start(condition, start)
+                          {
+                              return Some(candidate);
+                          }
+                      }
+                      if let Some(candidate) =
+                          Self::find_analyzed_node_at_start(then_branch, start)
+                      {
+                          return Some(candidate);
+                      }
+                      if let Some(candidate) =
+                          Self::find_analyzed_node_at_start(condition, start)
+                      {
+                          return Some(candidate);
+                      }
+                  }
+                  _ => {}
+              }
+
+              (node.location.start == start).then_some(node)
+          }
+          '''
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+
+      - name: Format and verify the parser repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo check --locked -p perl-parser
+          cargo test --locked -p perl-parser advanced_reuse_materializes_only_exact_old_subtrees -- --nocapture
+          git diff --check
+
+      - name: Commit the repair and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/pr-6801-lifetime-repair.yml
+          git add -A
+          actual="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' \
+            .github/workflows/pr-6801-lifetime-repair.yml \
+            crates/perl-parser/src/incremental/incremental_v2.rs | sort)"
+          test "$actual" = "$expected"
+          git diff --cached --check
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git commit -m "fix(parser): preserve node lookup lifetimes"
+          git push origin HEAD:codex/6713-slash-ambiguity-edit-current
