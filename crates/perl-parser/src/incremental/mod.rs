@@ -94,11 +94,11 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
 fn unchanged_result(state: &IncrementalState) -> ReparseResult {
     ReparseResult {
         changed_ranges: Vec::new(),
-        parse_output: state.parse_output.clone(),
+        parse_output: state.parse_output().clone(),
         diagnostics: Vec::new(),
         reparsed_bytes: 0,
-        reused_tokens: state.tokens.len(),
-        token_count: state.tokens.len(),
+        reused_tokens: state.tokens().len(),
+        token_count: state.tokens().len(),
     }
 }
 
@@ -122,7 +122,7 @@ fn full_reparse_after_edits(
 
 /// Apply edits incrementally.
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
-    let total_changed = validate_edits(&state.source, edits)?;
+    let total_changed = validate_edits(state.source(), edits)?;
     if edits.is_empty() {
         return Ok(unchanged_result(state));
     }
@@ -156,10 +156,10 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         // Refresh from the same recovery-aware parser entry point used by a
         // fresh parse, then report the complete parser work truthfully.
         candidate.refresh_parse_output();
-        let reparsed_bytes = candidate.source.len();
+        let reparsed_bytes = candidate.source().len();
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
-            parse_output: candidate.parse_output.clone(),
+            parse_output: candidate.parse_output().clone(),
             diagnostics: vec![],
             reparsed_bytes,
             reused_tokens: reparse.reused_tokens,

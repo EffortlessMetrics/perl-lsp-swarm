@@ -1,7 +1,6 @@
 use crate::incremental::{IncrementalState, diagnostics::ReparseResult, edit::Edit};
 use anyhow::Result;
 use perl_lexer::{PerlLexer, TokenType};
-use ropey::Rope;
 use std::ops::Range;
 
 pub(crate) struct SingleEditReparse {
@@ -108,8 +107,7 @@ pub(crate) fn apply_single_edit(
             new_tokens.push(adjusted);
         }
     }
-    state.tokens.splice(start_idx.., new_tokens);
-    state.refresh_lex_checkpoints();
+    state.splice_tokens(start_idx, new_tokens);
     Ok(SingleEditReparse { range: cp.byte..last, reused_tokens, token_count: state.tokens.len() })
 }
 
@@ -124,10 +122,7 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
         }
         tokens.push(token);
     }
-    state.tokens = tokens;
-    state.rope = Rope::from_str(&source);
-    state.line_index = perl_line_index::LineIndex::new(&source);
-    state.refresh_lex_checkpoints();
+    state.replace_tokens(tokens);
     Ok(ReparseResult {
         changed_ranges: vec![0..source.len()],
         parse_output: state.parse_output.clone(),

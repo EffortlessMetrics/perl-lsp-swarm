@@ -1,7 +1,6 @@
 use super::*;
 use crate::Parser;
 use anyhow::Result;
-use perl_ast::NodeKind;
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -10,6 +9,7 @@ struct FuzzEdit {
     delete_len: usize,
     insert_text: String,
 }
+
 fn apply_edit_to_ground_truth(source: &mut String, edit: &FuzzEdit) {
     let start = edit.start.min(source.len());
     let old_end = (start + edit.delete_len).min(source.len());
@@ -17,9 +17,9 @@ fn apply_edit_to_ground_truth(source: &mut String, edit: &FuzzEdit) {
 }
 
 #[test]
-fn test_incremental_state_small_edit_uses_checkpoint() -> Result<()> {
-    let source = (0..30usize).map(|i| format!("my $var_{i} = {i};")).collect::<Vec<_>>().join("\n");
-    let doc_len = source.len();
+fn test_incremental_state_small_edit_reuses_tokens_before_full_parse() -> Result<()> {
+    let source =
+        (0..30usize).map(|i| format!("my $var_{i} = {i};")).collect::<Vec<_>>().join("\n");
     let mut state = IncrementalState::new(source.clone());
     assert!(state.lex_checkpoints.len() > 1);
     let edit_start =
@@ -30,8 +30,10 @@ fn test_incremental_state_small_edit_uses_checkpoint() -> Result<()> {
         new_end_byte: edit_start + 3,
         new_text: "999".to_string(),
     };
+
     let result = apply_edits(&mut state, &[edit])?;
-    assert!(result.reparsed_bytes < doc_len);
+
+    assert_eq!(result.reparsed_bytes, state.source().len());
     assert!(result.token_count > 0);
     assert!(result.reused_tokens > 0);
     assert!(result.reused_tokens <= result.token_count);
@@ -47,12 +49,12 @@ proptest! {
         )
     ) {
         let mut state = IncrementalState::new("my $seed = 0;\n".repeat(80));
-        let mut expected = state.source.clone();
+        let mut expected = state.source().to_owned();
 
         for (start, delete_len, insert_text) in edits {
             let fuzz = FuzzEdit { start, delete_len, insert_text };
-            let start_byte = fuzz.start.min(state.source.len());
-            let old_end = (start_byte + fuzz.delete_len).min(state.source.len());
+            let start_byte = fuzz.start.min(state.source().len());
+            let old_end = (start_byte + fuzz.delete_len).min(state.source().len());
             apply_edit_to_ground_truth(&mut expected, &fuzz);
             let edit = Edit {
                 start_byte,
@@ -61,14 +63,14 @@ proptest! {
                 new_text: fuzz.insert_text,
             };
             prop_assert!(apply_edits(&mut state, &[edit]).is_ok());
-            prop_assert_eq!(&state.source, &expected);
+            prop_assert_eq!(state.source(), &expected);
 
             let mut cold_parser = Parser::new(&expected);
             let cold_ast = cold_parser.parse().map_err(|err| {
                 TestCaseError::fail(format!("cold parse failed after edit: {err}"))
             })?;
             prop_assert_eq!(
-                state.ast.to_sexp(),
+                state.parse_output().ast.to_sexp(),
                 cold_ast.to_sexp(),
                 "incremental AST diverged from a fresh cold parse"
             );
@@ -126,16 +128,24 @@ fn expression_only_trees_have_no_parse_restart_checkpoint() -> Result<()> {
     Ok(())
 }
 
-#[expect(
-    deprecated,
-    reason = "the test verifies the legacy AST error fallback used by IncrementalState::new"
-)]
 #[test]
-fn incremental_state_retains_error_ast_when_initial_parse_fails() -> Result<()> {
-    let state = IncrementalState::new("(".repeat(256));
+fn incremental_state_retains_recovery_output_when_initial_parse_fails() -> Result<()> {
+    let source = "(".repeat(256);
+    let state = IncrementalState::new(source.clone());
+    let mut parser = Parser::new(&source);
+    let fresh = parser.parse_with_recovery();
+
     anyhow::ensure!(
-        matches!(state.ast.kind, NodeKind::Error { .. }),
-        "initial parse failure must retain an error AST"
+        !fresh.diagnostics.is_empty(),
+        "the malformed source must exercise recovery diagnostics"
+    );
+    anyhow::ensure!(
+        state.parse_output().ast == fresh.ast,
+        "initial state must retain the recovery-aware AST"
+    );
+    anyhow::ensure!(
+        state.parse_output().diagnostics == fresh.diagnostics,
+        "initial state must retain the recovery diagnostics"
     );
     Ok(())
 }
