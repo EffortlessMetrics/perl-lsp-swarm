@@ -83,26 +83,26 @@ pub trait TriviaCollector {
 /// A lexer wrapper that preserves trivia.
 ///
 /// Wraps the Perl lexer to collect comments and whitespace as trivia tokens.
-pub struct TriviaLexer {
+/// The wrapper borrows its source, so constructing and dropping a lexer never
+/// clones or permanently retains the caller's complete source buffer.
+pub struct TriviaLexer<'a> {
     /// The underlying Perl lexer
-    lexer: perl_lexer::PerlLexer<'static>,
-    /// Source code (owned)
-    source: String,
+    lexer: perl_lexer::PerlLexer<'a>,
+    /// Borrowed source code
+    source: &'a str,
     /// Current position for trivia tracking
     position: usize,
     /// Buffered trivia tokens
     _trivia_buffer: Vec<TriviaToken>,
 }
 
-impl TriviaLexer {
-    /// Create a new trivia-preserving lexer
-    pub fn new(source: String) -> Self {
-        // We need to leak the string to get a 'static reference
-        // In a real implementation, we'd use a better lifetime strategy
-        let source_ref: &'static str = Box::leak(source.clone().into_boxed_str());
-
+impl<'a> TriviaLexer<'a> {
+    /// Create a new trivia-preserving lexer over a borrowed source buffer.
+    ///
+    /// The caller must keep `source` alive for the lifetime of the lexer.
+    pub fn new(source: &'a str) -> Self {
         TriviaLexer {
-            lexer: perl_lexer::PerlLexer::new(source_ref),
+            lexer: perl_lexer::PerlLexer::new(source),
             source,
             position: 0,
             _trivia_buffer: Vec::new(),
@@ -190,7 +190,7 @@ impl TriviaLexer {
             }
 
             // Check for POD
-            if remaining.starts_with("=")
+            if remaining.starts_with('=')
                 && (self.position == 0 || self.source.as_bytes()[self.position - 1] == b'\n')
             {
                 if let Some(pod_end) = self.find_pod_end(remaining) {
@@ -265,18 +265,18 @@ impl TriviaLexer {
 /// Parser that preserves trivia.
 ///
 /// A parser that attaches comments and whitespace to AST nodes for formatting.
-pub struct TriviaPreservingParser {
+pub struct TriviaPreservingParser<'a> {
     /// Trivia-aware lexer
-    lexer: TriviaLexer,
+    lexer: TriviaLexer<'a>,
     /// Current lookahead token
     current: Option<(perl_lexer::Token, Vec<TriviaToken>)>,
     /// Node ID generator
     id_generator: perl_ast_v2::NodeIdGenerator,
 }
 
-impl TriviaPreservingParser {
-    /// Create a new trivia-preserving parser
-    pub fn new(source: String) -> Self {
+impl<'a> TriviaPreservingParser<'a> {
+    /// Create a new trivia-preserving parser over a borrowed source buffer.
+    pub fn new(source: &'a str) -> Self {
         let mut parser = TriviaPreservingParser {
             lexer: TriviaLexer::new(source),
             current: None,
@@ -295,7 +295,7 @@ impl TriviaPreservingParser {
     /// Parse and return AST with trivia preserved.
     ///
     /// Returns a node with leading and trailing trivia attached.
-    pub fn parse(mut self) -> NodeWithTrivia {
+    pub fn parse(self) -> NodeWithTrivia {
         let leading_trivia =
             if let Some((_, trivia)) = &self.current { trivia.clone() } else { Vec::new() };
 
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn test_trivia_collection() {
         let source = "  # comment\n  my $x = 42;".to_string();
-        let mut lexer = TriviaLexer::new(source);
+        let mut lexer = TriviaLexer::new(&source);
 
         let (_token, trivia) = must_some(lexer.next_token_with_trivia());
 
@@ -338,11 +338,24 @@ mod tests {
     #[test]
     fn test_pod_preservation() {
         let source = "=head1 NAME\n\nTest\n\n=cut\n\nmy $x;".to_string();
-        let mut lexer = TriviaLexer::new(source);
+        let mut lexer = TriviaLexer::new(&source);
 
         let (_, trivia) = must_some(lexer.next_token_with_trivia());
 
         // Should have POD as trivia
         assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
+    }
+
+    #[test]
+    fn trivia_lexer_borrows_the_callers_source_buffer() {
+        let source = "# borrowed\nmy $x = 1;".to_string();
+        let source_ptr = source.as_ptr();
+
+        {
+            let lexer = TriviaLexer::new(&source);
+            assert_eq!(lexer.source.as_ptr(), source_ptr);
+        }
+
+        assert_eq!(source, "# borrowed\nmy $x = 1;");
     }
 }
