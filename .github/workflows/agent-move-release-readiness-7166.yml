@@ -60,6 +60,14 @@ jobs:
               )
           ''',
           )
+          text = text.replace(
+              '        "[profile.release.package.perl-release-readiness]",\n',
+              '',
+          )
+          text = text.replace(
+              '        "[profile.release-opt.package.perl-release-readiness]",\n',
+              '',
+          )
           path.write_text(text, encoding="utf-8")
           PY
           python3 scripts/agent_move_release_readiness_7166.py
