@@ -55,16 +55,8 @@ jobs:
           6e396e1894db9728b4c4294df87ea3f3bd11c88e11d8a264274fbae5ac7aeee8  xtask/src/tasks/product_identity_workspace.rs
           SUMS
 
-          expected=$(cat <<'PATHS'
-          xtask/src/tasks/product_identity.rs
-          xtask/src/tasks/product_identity_default_build.rs
-          xtask/src/tasks/product_identity_path_authority.rs
-          xtask/src/tasks/product_identity_tests.rs
-          xtask/src/tasks/product_identity_workspace.rs
-          PATHS
-          )
-          actual=$(git diff --name-only | sort)
-          test "$actual" = "$expected"
+          actual=$(git diff --name-only)
+          test "$actual" = "xtask/src/tasks/product_identity.rs"
 
       - name: Remove temporary control surface and publish final tree
         env:
