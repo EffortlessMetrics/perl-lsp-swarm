@@ -9,13 +9,15 @@ use perl_core_harness_types::{
     SemanticBoundaryLockScope, SemanticBoundaryRecord,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DISCOVERY_RAW_SCHEMA_VERSION: &str = "perl_core_harness.discovery_raw.v1";
+const DISCOVERY_RAW_SCHEMA_VERSION: &str = "perl_core_harness.discovery_raw.v2";
+const RAW_STREAM_ENCODING: &str = "hex";
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -175,6 +177,59 @@ impl CheckRunnerRecordsConfig {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+struct RawByteStream {
+    encoding: String,
+    byte_length: usize,
+    sha256: String,
+    payload_hex: String,
+    utf8_text: Option<String>,
+}
+
+impl RawByteStream {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            encoding: RAW_STREAM_ENCODING.to_string(),
+            byte_length: bytes.len(),
+            sha256: sha256_digest(bytes),
+            payload_hex: encode_hex(bytes),
+            utf8_text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+        }
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>> {
+        if self.encoding != RAW_STREAM_ENCODING {
+            bail!("unsupported raw stream encoding: {}", self.encoding);
+        }
+        decode_hex(&self.payload_hex)
+    }
+
+    fn validate(&self) -> Result<()> {
+        let bytes = self.bytes()?;
+        if bytes.len() != self.byte_length {
+            bail!(
+                "raw stream byte length mismatch: declared {}, decoded {}",
+                self.byte_length,
+                bytes.len()
+            );
+        }
+        let digest = sha256_digest(&bytes);
+        if digest != self.sha256 {
+            bail!("raw stream digest mismatch");
+        }
+        let utf8_text = std::str::from_utf8(&bytes).ok().map(str::to_owned);
+        if utf8_text != self.utf8_text {
+            bail!("raw stream UTF-8 projection does not match its exact bytes");
+        }
+        Ok(())
+    }
+
+    fn utf8(&self) -> Option<&str> {
+        self.utf8_text.as_deref()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct DiscoveryRawEnvelope {
     schema_version: String,
     runner: HarnessRunner,
@@ -184,9 +239,23 @@ struct DiscoveryRawEnvelope {
     argv: Vec<String>,
     status: Option<i32>,
     success: bool,
-    stdout: String,
-    stderr: String,
+    stdout: RawByteStream,
+    stderr: RawByteStream,
     spawn_error: Option<String>,
+}
+
+impl DiscoveryRawEnvelope {
+    fn validate(&self) -> Result<()> {
+        if self.schema_version != DISCOVERY_RAW_SCHEMA_VERSION {
+            bail!("unsupported raw discovery schema: {}", self.schema_version);
+        }
+        self.stdout.validate().context("validating raw discovery stdout")?;
+        self.stderr.validate().context("validating raw discovery stderr")?;
+        if self.spawn_error.is_some() && self.status.is_some() {
+            bail!("spawn-failed discovery cannot also carry an exit status");
+        }
+        Ok(())
+    }
 }
 
 fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
@@ -220,11 +289,17 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
         Ok(output) => (
             output.status.code(),
             output.status.success(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
+            RawByteStream::from_bytes(&output.stdout),
+            RawByteStream::from_bytes(&output.stderr),
             None,
         ),
-        Err(error) => (None, false, String::new(), String::new(), Some(error.to_string())),
+        Err(error) => (
+            None,
+            false,
+            RawByteStream::from_bytes(&[]),
+            RawByteStream::from_bytes(&[]),
+            Some(error.to_string()),
+        ),
     };
     let envelope = DiscoveryRawEnvelope {
         schema_version: DISCOVERY_RAW_SCHEMA_VERSION.to_string(),
@@ -239,15 +314,26 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
         stderr,
         spawn_error,
     };
+    envelope.validate()?;
     write_json(&config.output, &envelope)?;
     if !envelope.success {
-        let detail = envelope.spawn_error.as_deref().unwrap_or_else(|| envelope.stderr.trim());
+        let detail = envelope
+            .spawn_error
+            .as_deref()
+            .or_else(|| envelope.stderr.utf8().map(str::trim).filter(|text| !text.is_empty()))
+            .unwrap_or("stderr is empty or not valid UTF-8; inspect the raw stream");
         bail!(
             "upstream discovery failed; raw evidence was written to {}: {detail}",
             config.output.display()
         );
     }
-    if !envelope.stdout.lines().any(|line| line.trim().ends_with(".t")) {
+    let stdout = envelope.stdout.utf8().ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "upstream discovery stdout is not valid UTF-8; byte-exact raw evidence is {}",
+            config.output.display()
+        )
+    })?;
+    if !stdout.lines().any(|line| line.trim().ends_with(".t")) {
         bail!(
             "upstream discovery succeeded but emitted no .t paths; raw evidence is {}",
             config.output.display()
@@ -762,6 +848,43 @@ fn sanitize_perl_env(command: &mut Command) {
     }
 }
 
+fn sha256_digest(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        bail!("raw stream hex payload has odd length");
+    }
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let high = hex_nibble(pair[0])?;
+        let low = hex_nibble(pair[1])?;
+        decoded.push((high << 4) | low);
+    }
+    Ok(decoded)
+}
+
+fn hex_nibble(value: u8) -> Result<u8> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => bail!("raw stream hex payload contains a non-hex byte"),
+    }
+}
+
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     create_parent(path)?;
     let json = serde_json::to_string_pretty(value).context("serializing JSON evidence")?;
@@ -945,14 +1068,64 @@ mod tests {
             argv: vec!["TEST".into(), "--dumptests".into()],
             status: Some(7),
             success: false,
-            stdout: "partial output".into(),
-            stderr: "broken prepared tree".into(),
+            stdout: RawByteStream::from_bytes(b"partial output"),
+            stderr: RawByteStream::from_bytes(b"broken prepared tree"),
             spawn_error: None,
         };
+        envelope.validate()?;
         let encoded = serde_json::to_string(&envelope)?;
         let decoded: DiscoveryRawEnvelope = serde_json::from_str(&encoded)?;
-        if decoded != envelope || !decoded.stderr.contains("broken") {
+        if decoded != envelope || decoded.stderr.utf8() != Some("broken prepared tree") {
             bail!("failed discovery evidence did not survive round-trip");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn raw_stream_round_trips_invalid_utf8_nul_and_large_payloads() -> TestResult {
+        let mut bytes = vec![0, 0x80, 0xff, b'a', b'\n'];
+        bytes.extend(std::iter::repeat_n(0x81, 65_536));
+        let stream = RawByteStream::from_bytes(&bytes);
+        stream.validate()?;
+        if stream.bytes()? != bytes {
+            bail!("raw stream did not round-trip byte-for-byte");
+        }
+        if stream.utf8().is_some() {
+            bail!("invalid UTF-8 stream must not acquire a text projection");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_lossy_sequences_remain_distinct() -> TestResult {
+        let first = RawByteStream::from_bytes(&[0x80]);
+        let second = RawByteStream::from_bytes(&[0x81]);
+        if String::from_utf8_lossy(&[0x80]) != String::from_utf8_lossy(&[0x81]) {
+            bail!("fixture must demonstrate a lossy-decoding collision");
+        }
+        if first.payload_hex == second.payload_hex || first.sha256 == second.sha256 {
+            bail!("byte-exact streams collapsed distinct invalid UTF-8 sequences");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_text_only_envelope_is_not_silently_v2() -> TestResult {
+        let legacy = r#"{
+            "schema_version":"perl_core_harness.discovery_raw.v1",
+            "runner":"test",
+            "profile":"base",
+            "host_perl":"perl",
+            "working_directory":"t",
+            "argv":["TEST","--dumptests"],
+            "status":0,
+            "success":true,
+            "stdout":"base/ok.t\n",
+            "stderr":"",
+            "spawn_error":null
+        }"#;
+        if serde_json::from_str::<DiscoveryRawEnvelope>(legacy).is_ok() {
+            bail!("text-only v1 evidence must not be reinterpreted as byte-exact v2");
         }
         Ok(())
     }
