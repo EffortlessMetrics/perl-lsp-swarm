@@ -1,12 +1,19 @@
+/// Typed diagnostics, facts, ranges, and completeness for batch analysis.
+pub mod analysis;
+
 mod batch;
 mod code_execution;
 mod complexity;
 mod config;
 mod nested_quantifier;
 
+pub use analysis::{
+    EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness, RegexDiagnostic,
+    RegexDiagnosticClass, RegexDiagnosticCode, RegexFacts, RegexRange,
+};
 pub use config::RegexValidationConfig;
 
-use crate::{analysis::RegexAnalysis, error::RegexError};
+use crate::error::RegexError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexFinding {
