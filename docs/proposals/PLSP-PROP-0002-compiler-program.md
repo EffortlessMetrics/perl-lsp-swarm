@@ -1,6 +1,6 @@
 # PLSP-PROP-0002: Repo-native compiler-program contracts
 
-Status: accepted; orientation foundation complete
+Status: proposed; orientation foundation complete
 Owner: perl-lsp maintainers
 Created: 2026-06-21
 Target milestone: Compiler-program gate (tracker #2559)
@@ -12,7 +12,7 @@ Policy impact: HIR-body/PIR-A/EIR terminology becomes canonical; no generated st
 
 ## Problem
 
-When this proposal was accepted, `perl-lsp` had a fixture-backed compiler substrate:
+When this proposal landed, `perl-lsp` had a fixture-backed compiler substrate:
 HIR items, scope/pad,
 package/stash, compile environment, import/export, compile-time effects,
 framework adapters, and PIR v0. The layers are contracted in
