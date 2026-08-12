@@ -1,8 +1,8 @@
 //! Discriminating proof for lean transition classify CLI load+classify I/O.
 
 use perl_core_harness_types::{
-    CompileBaselineV2, HarnessMode, HarnessProfile, HarnessRunner, RunFileResult, RunReport,
-    RunSummary, RunnerStatus, COMPILE_BASELINE_V2_SCHEMA_VERSION, RUN_REPORT_SCHEMA_VERSION,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, HarnessMode, HarnessProfile,
+    HarnessRunner, RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunSummary, RunnerStatus,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -114,10 +114,7 @@ fn classify_cli_rejects_output_aliasing_accepted_baseline() {
         .expect("spawn classify CLI");
     assert!(!result.status.success());
     let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        stderr.contains("output path must not alias"),
-        "unexpected stderr: {stderr}"
-    );
+    assert!(stderr.contains("output path must not alias"), "unexpected stderr: {stderr}");
     let retained = fs::read_to_string(&accepted).expect("accepted retained");
     assert!(retained.contains(COMPILE_BASELINE_V2_SCHEMA_VERSION));
 }
@@ -154,10 +151,9 @@ fn classify_cli_writes_no_change_receipt_for_exact_v2_match() {
     assert_eq!(value["transition"], "no_change");
     assert_eq!(value["requires_candidate"], false);
     assert_eq!(value["semantic_boundary_change"], false);
-    assert!(value["claim_boundary"]
-        .as_str()
-        .expect("claim boundary")
-        .contains("classify_transition"));
+    assert!(
+        value["claim_boundary"].as_str().expect("claim boundary").contains("classify_transition")
+    );
 }
 
 #[test]
