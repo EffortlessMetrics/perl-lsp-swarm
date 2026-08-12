@@ -37,6 +37,7 @@ pub mod ci_route;
 pub mod ci_scope;
 pub mod clean;
 pub mod command_evidence;
+#[path = "commit_checks_facade.rs"]
 pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
