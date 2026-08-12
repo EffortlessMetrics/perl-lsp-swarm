@@ -141,9 +141,11 @@ fn tcp_attach_config_validate_max_port_is_valid() {
 
 #[test]
 fn tcp_attach_config_validate_boundary_timeout() {
+    // At 300_000 (5 min) should be valid.
     let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
     assert!(config.validate().is_ok());
 
+    // At 300_001 should fail.
     let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_001);
     assert!(config.validate().is_err());
 }
@@ -186,6 +188,7 @@ fn tcp_attach_session_start_reader_without_connection_fails() {
 #[test]
 fn tcp_attach_session_connect_to_invalid_host_fails() {
     let mut session = TcpAttachSession::new();
+    // Use a very short timeout to fail fast.
     let mut config = TcpAttachConfig::new("192.0.2.1".to_string(), 59999).with_timeout(100);
     let result = session.connect(&mut config);
     assert!(result.is_err(), "Connecting to unreachable host should fail");
@@ -256,6 +259,7 @@ fn dap_event_clone() {
 #[test]
 fn bridge_adapter_creation() {
     let adapter = BridgeAdapter::new();
+    // BridgeAdapter::new() should succeed without panicking.
     let debug = format!("{:?}", "BridgeAdapter created");
     assert!(!debug.is_empty());
     drop(adapter);
@@ -265,5 +269,6 @@ fn bridge_adapter_creation() {
 #[test]
 fn bridge_adapter_default_creation() {
     let adapter = BridgeAdapter::default();
+    // Default should be equivalent to new().
     drop(adapter);
 }
