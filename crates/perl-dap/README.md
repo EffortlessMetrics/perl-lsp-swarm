@@ -3,24 +3,21 @@
 Use this crate when you need the native Debug Adapter Protocol server for Perl.
 
 `perl-dap` is the runtime layer of the debugger stack. It speaks DAP over stdio
-or TCP, dispatches requests, validates breakpoints, and renders values for
-DAP-capable editors and tools.
+or TCP, dispatches requests, validates breakpoints, and renders observed runtime
+state for DAP-capable editors and tools.
 
 ## Boundaries
 
-- `perl-dap-platform` finds the Perl executable, normalizes paths, and builds
-  launch environment maps.
-- `perl-dap-shell` formats shell-safe launch arguments and environment values.
-- `perl-dap-types` carries shared frame, source, and variable models.
-- `perl-dap-value` models debugger values for rendering.
-- `perl-dap-breakpoint` validates whether a source line can accept a breakpoint.
+- The native parser and source-fact stack validates breakpoints and source identities.
+- Platform and shell helpers resolve the Perl executable, normalize paths, and build launch environments.
+- Stack, variable, value, and evaluation modules project current debugger state into DAP types.
+- The backend-neutral model supports the native runtime and explicit optional debugger peers.
 
 ## Key pieces
 
-- `DapServer`, `DapConfig`, and `DapMode` wire the server and its launch mode.
+- `DapServer`, `DapConfig`, and `DapMode` wire the native server runtime.
 - `DebugAdapter` handles request routing and protocol state.
-- `TcpAttachConfig` and `BreakpointStore` support socket attach and breakpoint
-  tracking.
+- `TcpAttachConfig` and `BreakpointStore` support socket attach and breakpoint tracking.
 
 ## Run modes
 
@@ -38,16 +35,18 @@ perl-dap --socket --port 13603
 
 ## External dependencies
 
-Native launch and TCP attach use the built-in Rust runtime plus a local Perl
-installation. The Rust parser-backed runtime and the `perl-dap-*` support crates
-are compiled into the shipped `perl-dap` binary; users do not install workspace
+Native launch and TCP attach use the built-in Rust adapter plus a local Perl
+installation. The Rust parser-backed runtime and workspace support crates are
+compiled into the shipped `perl-dap` binary; users do not install internal
 crates separately.
 
-## Legacy compatibility
+`Perl::LanguageServer` is not a runtime backend, package feature, or user
+prerequisite. External tools may be used in repository-only conformance lanes,
+but the published crate contains no PLS process launcher or DAP proxy.
 
-Historical bridge compatibility is documented separately and is not required for
-native `perl-dap`. It is excluded from default builds and docs.rs; the explicit
-`legacy-pls-bridge` feature exists only for migration and conformance work.
+Optional debugger peers such as ptkdb are explicit, unbundled integrations where
+`perl-dap` remains the DAP server. They are not selected automatically and are
+bounded by their own capability and proof status.
 
 ## Benchmarks
 
