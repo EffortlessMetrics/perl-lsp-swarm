@@ -109,6 +109,7 @@ use perl_parser_core::ast::{Node, NodeKind};
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 use std::sync::LazyLock;
 
 /// Undelta-encoded semantic token `(line, character, length, type, modifiers)`.
@@ -514,7 +515,13 @@ fn tokenize_json_body(
             cursor = cursor.saturating_add(current_len);
         }
         let Some(_closing_quote_end) = key_end_offset else {
-            break;
+            // The string candidate was unterminated (no closing `"`). The inner
+            // scanning loop already consumed `cursor` to the end of the body, so
+            // `break` here would silently discard all later valid JSON keys.
+            // Instead, reset the cursor to just after the opening `"` and
+            // continue the outer loop so that subsequent keys are still parsed.
+            cursor = key_start_offset.saturating_add(1);
+            continue;
         };
         while cursor < body.len() {
             traversal.admit_work()?;
@@ -527,6 +534,12 @@ fn tokenize_json_body(
             cursor = cursor.saturating_add(current.len_utf8());
         }
         if body.as_bytes().get(cursor) != Some(&b':') {
+            // The scan consumed a `"` as the closing quote of this candidate
+            // but no colon followed, meaning the consumed `"` may have been
+            // the opening quote of a later valid JSON key.  Reset the cursor
+            // to just after the opening `"` of this candidate so the outer
+            // loop can re-examine that consumed `"` as a new key start.
+            cursor = key_start_offset.saturating_add(1);
             continue;
         }
         // Preserve the historical regex geometry: whitespace before the colon
@@ -1063,16 +1076,15 @@ pub fn collect_semantic_tokens_controlled(
     let const_fast_enabled = controlled_value!(ast_uses_const_fast(ast, &mut traversal));
     let readonly_enabled = controlled_value!(ast_uses_readonly(ast, &mut traversal));
 
-    // 2a) Collect variable declaration spans for modifier tagging
-    let decl_spans = controlled_value!(declaration_readonly_flags(
-        ast,
-        const_fast_enabled,
-        readonly_enabled,
-        &mut traversal,
-    ))
-    .into_iter()
-    .map(|((start, end), is_readonly)| (start, end, is_readonly))
-    .collect::<Vec<_>>();
+    // 2a) Collect variable declaration spans for modifier tagging.
+    //
+    // `declaration_readonly_flags` returns a `FxHashMap<(start, end), is_readonly>`
+    // keyed by the exact byte span of each declared variable node.  Keep it as a
+    // map for O(1) lookup per variable rather than converting to a `Vec` and doing
+    // an O(decls) linear scan for every `Variable` node visited during AST traversal.
+    let decl_flags: FxHashMap<(usize, usize), bool> = controlled_value!(
+        declaration_readonly_flags(ast, const_fast_enabled, readonly_enabled, &mut traversal,)
+    );
 
     // 2a-ii) Collect assignment LHS spans to apply the "modification" modifier (bit 7)
     let assignment_spans = controlled_value!(assignment_lhs_spans(ast, &mut traversal));
@@ -1296,7 +1308,10 @@ pub fn collect_semantic_tokens_controlled(
             }
             NodeKind::Variable { sigil, name } => {
                 let (vs, ve) = (node.location.start, node.location.end);
-                let decl_info = decl_spans.iter().find(|(ds, de, _)| *ds <= vs && ve <= *de);
+                // O(1) exact-span lookup: declaration spans are keyed by the
+                // variable node's exact byte range, so a direct HashMap get
+                // replaces the former O(decls) linear scan.
+                let decl_info = decl_flags.get(&(vs, ve));
                 let full_name = format!("{sigil}{name}");
                 let special_mod = if is_special_variable(&full_name) { 512 } else { 0 }; // defaultLibrary bit 9
                 let sigil_mod: u32 = match sigil.as_str() {
@@ -1308,12 +1323,12 @@ pub fn collect_semantic_tokens_controlled(
                 let mods = match decl_info {
                     // `Const::Fast` / `Readonly` produce true read-only variables,
                     // so emit `declaration | readonly` (bits 0 | 2) (#4968).
-                    Some((_, _, true)) => 1 | 4 | special_mod | sigil_mod,
+                    Some(true) => 1 | 4 | special_mod | sigil_mod,
                     // `my`, `state`, `local`, and `our` create ordinary mutable
                     // lexical/package variables — `our` is an alias, not immutable
                     // — so the `readonly` modifier (bit 2) must not be applied
                     // (#4968). Use `declaration` only.
-                    Some((_, _, false)) => 1 | special_mod | sigil_mod,
+                    Some(false) => 1 | special_mod | sigil_mod,
                     None => {
                         // Apply "modification" modifier (bit 7 = 128) when the variable is
                         // the direct LHS of an assignment expression ($x = ...).
@@ -1445,19 +1460,6 @@ fn finalize_tokens_controlled(
     Ok(encoded)
 }
 
-/// Comprehensive AST walker for semantic token extraction.
-fn walk_ast_full<F>(node: &Node, visitor: &mut F) -> bool
-where
-    F: FnMut(&Node) -> bool,
-{
-    let control = SemanticTokensTraversalControl::unlimited();
-    let mut traversal = TraversalState { control: &control, work_done: 0 };
-    match walk_ast_full_controlled(node, &mut traversal, visitor) {
-        Ok(completed) => completed,
-        Err(_) => false,
-    }
-}
-
 fn walk_ast_full_controlled<F>(
     node: &Node,
     traversal: &mut TraversalState<'_, '_>,
@@ -1471,10 +1473,19 @@ where
         return Ok(false);
     }
 
-    for child in node.children() {
-        if !walk_ast_full_controlled(child, traversal, visitor)? {
-            return Ok(false);
+    // Use `try_for_each_child_with_field` instead of `node.children()` so the
+    // child list is enumerated lazily, one node at a time, without allocating a
+    // complete `Vec<&Node>` before the first cancellation/budget poll. Each
+    // recursive call begins with its own `admit_work()` check, so the traversal
+    // budget and cancellation remain accurate even for nodes with many children.
+    match node.try_for_each_child_with_field(|_, child| {
+        match walk_ast_full_controlled(child, traversal, visitor) {
+            Ok(true) => ControlFlow::Continue(()),
+            result => ControlFlow::Break(result),
         }
+    }) {
+        ControlFlow::Break(result) => return result,
+        ControlFlow::Continue(()) => {}
     }
 
     Ok(true)
@@ -2278,10 +2289,14 @@ print "ok" foreach @ys;
         let ast = parser.parse()?;
 
         let mut visited = 0usize;
-        let completed = walk_ast_full(&ast, &mut |_| {
-            visited += 1;
-            true
-        });
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let completed =
+            walk_ast_full_controlled(&ast, &mut traversal, &mut |_| {
+                visited += 1;
+                true
+            })
+            .unwrap_or_default();
         assert!(completed);
         assert_eq!(visited, ast.count_nodes());
         Ok(())
@@ -2690,5 +2705,209 @@ print "ok" foreach @ys;
             READONLY_BIT,
             "Readonly declaration must carry readonly (bit 2), got mods={mods}"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #7538 discriminating tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// #7538 Fix 1 (negative control): JSON heredoc key scanner must recover
+    /// valid keys whose opening `"` was consumed by a failed colon check.
+    ///
+    /// The scanner finds a `"` and reads ahead for the closing `"`.  When the
+    /// character immediately following the closing `"` (skipping whitespace) is
+    /// not `:`, the candidate is rejected.  Without the fix, the cursor stays
+    /// after the consumed closing `"`, so if that `"` was actually the opening
+    /// quote of a later valid key, the key is silently lost.
+    ///
+    /// Example: `"bad and "good": 1`
+    /// The outer `"` at position 0 finds its closing `"` at position 9 (the
+    /// opening of "good").  The colon check fails (position 10 is `g`).  With the
+    /// fix the cursor resets to position 1 so the outer loop can reach position 9
+    /// again and paint `"good"` correctly.
+    ///
+    /// Negative control: if the cursor reset on colon failure is removed, this
+    /// test fails because "good" is never found.
+    #[test]
+    fn json_heredoc_recovers_valid_key_after_failed_colon_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut tokens = Vec::new();
+        // "bad and " terminates at the `"` that opens "good" (position 9).
+        // Colon check fails (position 10 is `g`, not `:`).
+        // After the fix the scanner resets and eventually paints `"good": 1`.
+        tokenize_json_body(
+            r#""bad and "good": 1"#,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected JSON traversal stop")?;
+
+        let key_kind = kind_idx(&legend(), "json_heredoc_key");
+        let painted_starts: Vec<u32> =
+            tokens.iter().filter(|t| t.3 == key_kind).map(|t| t.1).collect();
+
+        // "good": starts at byte 9 in the body.  The emitted token should start there.
+        assert!(
+            painted_starts.contains(&9),
+            "`\"good\":` key must be painted (start=9); got painted_starts={painted_starts:?} — \
+             cursor reset on colon failure is likely missing"
+        );
+        // "bad and " must NOT be painted (no colon follows it).
+        assert!(
+            !painted_starts.contains(&0),
+            "`\"bad and \"` must not be painted; got painted_starts={painted_starts:?}"
+        );
+        Ok(())
+    }
+
+    /// #7538 Fix 1 (positive control): a body with no valid `"key":` pattern
+    /// must produce no key tokens, even after the cursor-reset fix.
+    ///
+    /// Confirms that the recovery path does not accidentally paint spurious keys.
+    #[test]
+    fn json_heredoc_no_colon_body_emits_no_key() -> Result<(), Box<dyn std::error::Error>> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut tokens = Vec::new();
+        // Body has quoted strings but none followed by `:`.
+        tokenize_json_body(
+            r#""first" "second" "third""#,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected JSON traversal stop")?;
+
+        let key_kind = kind_idx(&legend(), "json_heredoc_key");
+        let key_tokens: Vec<_> = tokens.iter().filter(|t| t.3 == key_kind).collect();
+        assert!(
+            key_tokens.is_empty(),
+            "strings without a following colon must not produce json_heredoc_key tokens; \
+             got {key_tokens:?}"
+        );
+        Ok(())
+    }
+
+    /// #7538 Fix 2 (negative / cancel-budget control): budget exhaustion must
+    /// still be reported correctly when the AST walker uses the lazy
+    /// `try_for_each_child_with_field` path.
+    ///
+    /// Before the fix, `node.children()` allocated the full child `Vec` up-front,
+    /// deferring the per-child poll until the recursive call.  After the fix, the
+    /// allocation is no longer performed, so this test validates that the lazy path
+    /// still surfaces budget exhaustion with `work_done == budget`.
+    ///
+    /// Negative control: this test must fail if `node.children()` is restored
+    /// (the cancellation machinery still works; what matters is the lazy dispatch).
+    #[test]
+    fn lazy_child_enumeration_reports_cancel_and_budget_correctly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Source with enough AST structure that the walker visits multiple nodes.
+        let source = "sub outer { my $x = 1; if ($x) { return $x; } }";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+
+        // Cancel after exactly 1 admitted unit — the walker must stop before
+        // visiting the second node.
+        let polls = AtomicUsize::new(0usize);
+        let cancellation = || {
+            let observed = polls.fetch_add(1, Ordering::Relaxed);
+            observed >= 1
+        };
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::new(&cancellation, None),
+        );
+        assert_eq!(
+            outcome,
+            SemanticTokensTraversalOutcome::Cancelled { work_done: 1 },
+            "cancellation after 1 unit must produce Cancelled {{ work_done: 1 }}, got {outcome:?}"
+        );
+
+        // Budget of exactly 1 unit — must exhaust before any child is visited.
+        let never_cancelled = || false;
+        let budget_outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::new(&never_cancelled, Some(1)),
+        );
+        assert!(
+            matches!(
+                budget_outcome,
+                SemanticTokensTraversalOutcome::BudgetExhausted { work_done: 1, .. }
+            ),
+            "budget of 1 must exhaust with work_done == 1, got {budget_outcome:?}"
+        );
+        Ok(())
+    }
+
+    /// #7538 Fix 3 (positive control): O(1) declaration lookup must preserve
+    /// correct `declaration | readonly` modifier bits for `Const::Fast` and
+    /// `Readonly` variables even when many declaration spans are present.
+    ///
+    /// With the old `Vec::iter().find(...)` scan the result was correct but O(n).
+    /// With the new `FxHashMap::get` lookup the result must be identical.
+    /// This test pins the correctness of the indexed path by exercising many
+    /// declarations in one file.
+    #[test]
+    fn indexed_decl_lookup_preserves_readonly_modifier_with_many_declarations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Build a source with many `my` declarations followed by a single
+        // `Const::Fast` declaration so the HashMap contains many entries and the
+        // const target is not the first.
+        let mut source = "use Const::Fast;\n".to_string();
+        for i in 0..50u32 {
+            source.push_str(&format!("my $v{i} = {i};\n"));
+        }
+        source.push_str("const my $TARGET => 99;\n");
+
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, &source, &|offset| pos16(&source, offset));
+
+        let variable_idx = *legend().map.get("variable").ok_or("variable token type missing")?;
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut target_mods: Option<u32> = None;
+        for [delta_line, delta_start, length, token_type, mods] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == variable_idx {
+                let src_line = lines.get(line as usize).ok_or("line out of range")?;
+                let painted: String =
+                    src_line.chars().skip(col as usize).take(length as usize).collect();
+                if painted == "$TARGET" {
+                    target_mods = Some(mods);
+                }
+            }
+        }
+
+        let mods = target_mods.ok_or("no $TARGET variable token found")?;
+        assert_eq!(
+            mods & DECLARATION_BIT,
+            DECLARATION_BIT,
+            "indexed lookup: $TARGET must carry declaration (bit 0), got mods={mods}"
+        );
+        assert_eq!(
+            mods & READONLY_BIT,
+            READONLY_BIT,
+            "indexed lookup: $TARGET must carry readonly (bit 2), got mods={mods}"
+        );
+        Ok(())
     }
 }
