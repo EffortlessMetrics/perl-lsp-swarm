@@ -77,6 +77,8 @@ CARGO_PLAN_OVERRIDE_PREFIXES = (
     "--target=",
     "--profile=",
 )
+SAFE_TEST_ARGS = frozenset({"--nocapture"})
+TEST_THREADS_PREFIX = "--test-threads="
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,31 @@ def cargo_arg_overrides_plan(argument: str) -> bool:
     )
 
 
+def test_arg_is_non_filtering(argument: str) -> bool:
+    """Return whether a libtest argument cannot select zero tests."""
+
+    if argument in SAFE_TEST_ARGS:
+        return True
+    if not argument.startswith(TEST_THREADS_PREFIX):
+        return False
+    thread_count = argument[len(TEST_THREADS_PREFIX) :]
+    return thread_count.isdigit() and int(thread_count) > 0
+
+
+def validate_test_args(test_args: Sequence[str], proof_id: str) -> None:
+    """Reject libtest filters that could make a proof pass without tests."""
+
+    invalid = [
+        argument for argument in test_args if not test_arg_is_non_filtering(argument)
+    ]
+    if invalid:
+        raise ValueError(
+            f"test_args for {proof_id} must use non-filtering harness options; "
+            "filters can run zero tests: "
+            + ", ".join(invalid)
+        )
+
+
 def decode_targets(content: bytes) -> list[TargetPlan]:
     """Decode and validate the exact manifest-owned execution plan bytes."""
 
@@ -178,6 +205,7 @@ def decode_targets(content: bytes) -> list[TargetPlan]:
         features = _string_list(raw_item, "features")
         cargo_args = _string_list(raw_item, "cargo_args")
         test_args = _string_list(raw_item, "test_args")
+        validate_test_args(test_args, proof_id)
         owner = _non_empty_string(raw_item, "owner")
         reason = _non_empty_string(raw_item, "reason")
         disposition = _non_empty_string(raw_item, "disposition")
@@ -503,6 +531,7 @@ def available_targets(root: Path = ROOT) -> set[tuple[str, str]]:
 
 
 def cargo_command(plan: TargetPlan) -> list[str]:
+    validate_test_args(plan.test_args, plan.proof_id)
     command = [
         "cargo",
         "test",

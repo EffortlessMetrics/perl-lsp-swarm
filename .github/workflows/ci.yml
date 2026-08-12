@@ -477,6 +477,7 @@ jobs:
           name: gate-receipt-${{ matrix.name }}-${{ github.sha }}
           path: |
             target/receipts/shards/*.json
+            target/receipts/parser-integration.json
             target/receipts/logs/*.log
             target/receipts/artifacts/*
           if-no-files-found: warn

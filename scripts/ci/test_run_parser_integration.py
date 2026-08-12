@@ -275,6 +275,56 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed=parser.incremental"):
             runner.validate_lock(changed, lock)
 
+    def test_lock_rejects_test_argument_only_change(self) -> None:
+        original = runner.load_targets(
+            self.manifest(
+                [self.target("parser.threads", test_args=["--test-threads=4"])]
+            )
+        )
+        lock = {
+            plan.proof_id: runner.invocation_digest(plan) for plan in original
+        }
+        changed = runner.load_targets(
+            self.manifest(
+                [self.target("parser.threads", test_args=["--test-threads=8"])]
+            )
+        )
+
+        self.assertNotEqual(
+            runner.invocation_digest(original[0]),
+            runner.invocation_digest(changed[0]),
+        )
+        with self.assertRaisesRegex(ValueError, "changed=parser.threads"):
+            runner.validate_lock(changed, lock)
+
+    def test_manifest_rejects_test_filter_that_can_run_zero_tests(self) -> None:
+        with self.assertRaisesRegex(ValueError, "filters can run zero tests"):
+            runner.load_targets(
+                self.manifest(
+                    [self.target("parser.filtered", test_args=["no_such_test"])]
+                )
+            )
+
+    @mock.patch.object(runner.subprocess, "run")
+    def test_zero_test_filter_cannot_reach_execution(self, run: mock.Mock) -> None:
+        plan = runner.TargetPlan(
+            proof_id="parser.filtered",
+            package="perl-parser",
+            target="semantic_smoke_tests",
+            features=(),
+            no_default_features=False,
+            cargo_args=(),
+            test_args=("no_such_test",),
+            owner="#6107",
+            reason="Must never execute a filtering proof.",
+            disposition="execute",
+            boundedness="focused",
+        )
+
+        with self.assertRaisesRegex(ValueError, "filters can run zero tests"):
+            runner.execute_plans([plan])
+        run.assert_not_called()
+
     def test_lock_payload_is_deterministic_by_proof_id(self) -> None:
         plans = runner.load_targets(
             self.manifest(
