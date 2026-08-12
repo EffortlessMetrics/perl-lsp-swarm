@@ -41,7 +41,13 @@ pub(super) fn complete(
         is_cancelled,
     ) {
         CompletionFlow::SortAndReturn => {
-            test_frameworks::reconcile(&mut completions, provider, &context, source);
+            test_frameworks::reconcile(
+                &mut completions,
+                provider,
+                &context,
+                source,
+                filepath,
+            );
             sort::deduplicate_and_sort(completions)
         }
         CompletionFlow::Return(items) => items,
