@@ -724,14 +724,14 @@ jobs:
           shared-key: ci-ux-tests-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Build perl-lsp binary
-        run: cargo build -p perl-lsp-rs
+      - name: Build perllsp binary
+        run: cargo build -p perllsp --bin perllsp
 
       - name: Run UX regression tests
         id: ux_tests
         continue-on-error: true
         env:
-          PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perl-lsp
+          PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
           RUST_TEST_THREADS: "1"
         run: |
           mkdir -p target/receipts
@@ -882,8 +882,8 @@ jobs:
           shared-key: ci-lsp-memory-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Build perl-lsp release binary
-        run: cargo build --release -p perl-lsp-rs --bin perl-lsp --locked
+      - name: Build perllsp release binary
+        run: cargo build --release -p perllsp --bin perllsp --locked
 
       - name: Run document-churn memory smoke
         run: |
@@ -892,7 +892,7 @@ jobs:
           N_CHANGES=5 \
           DO_WORKSPACE_SYMBOL=0 \
           DELETE_AFTER_CLOSE=1 \
-          BINARY=./target/release/perl-lsp \
+          BINARY=./target/release/perllsp \
           python3 scripts/repro_lsp_storm.py \
             --json-out target/memory/pr-smoke-doc-churn.json \
             --csv-out target/memory/pr-smoke-doc-churn.csv \

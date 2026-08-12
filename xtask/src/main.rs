@@ -2306,8 +2306,8 @@ enum Commands {
         #[arg(long)]
         reason: Option<String>,
 
-        /// Also check binary freshness: verify that target/debug/perl-lsp and
-        /// target/release/perl-lsp are newer than the HEAD commit timestamp.
+        /// Also check binary freshness: verify that target/debug/perllsp and
+        /// target/release/perllsp are newer than the HEAD commit timestamp.
         /// Exits non-zero when a binary exists and is stale. Missing binaries
         /// are reported but do not cause a non-zero exit.
         #[arg(long)]
