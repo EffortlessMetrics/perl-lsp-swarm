@@ -1,7 +1,9 @@
 name: Semantic port adapter rebuild runner 6846
 
 on:
-  workflow_dispatch: {}
+  push:
+    branches:
+      - agent/semantic-port-adapters-runner-6846
 
 permissions:
   contents: write
@@ -9,9 +11,9 @@ permissions:
 jobs:
   rebuild-adapters:
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 55
     env:
-      BASE_HEAD: __BASE_HEAD__
+      BASE_HEAD: d19c114a7de42488612121fd91264700be0da477
       OLD_CHILD_HEAD: 0e8eb95f3338a9861d3c71034063783a90da87f1
       PATCH_SHA256: 1babe12619f9063477726a28c4b120cfff15fda9e5f620580621152093fae00b
     steps:
@@ -38,12 +40,31 @@ jobs:
           cat patch-source/.github/semantic-port-adapters-patch/part-* > "$RUNNER_TEMP/semantic-port-adapters.patch"
           printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/semantic-port-adapters.patch" | sha256sum --check --strict
 
-      - name: Apply adapter rebuild
+      - name: Apply adapter rebuild to final contract
         shell: bash
         working-directory: work
         run: |
           set -euo pipefail
-          git apply --index "$RUNNER_TEMP/semantic-port-adapters.patch"
+          git apply --3way --index "$RUNNER_TEMP/semantic-port-adapters.patch"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''        authority: ProviderCompletenessAuthorityReceipt {
+              capability,
+              project_identity: request.context.project_identity.clone(),
+          '''
+          new = '''        authority: ProviderCompletenessAuthorityReceipt {
+              capability,
+              query_kind: request.kind.clone(),
+              subject: request.subject.clone(),
+              project_identity: request.context.project_identity.clone(),
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'completeness authority literal changed: {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git add -A
           git diff --cached --check
 
       - name: Install Rust 1.95
