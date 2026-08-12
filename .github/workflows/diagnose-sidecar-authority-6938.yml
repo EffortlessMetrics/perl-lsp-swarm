@@ -1,4 +1,4 @@
-name: Format and verify content-bound sidecar authority
+name: Format, lock, and verify content-bound sidecar authority
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  format-verify-publish:
+  format-lock-verify-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -28,15 +28,17 @@ jobs:
           git merge-base --is-ancestor 8a50e945ced6c4d2a046527014365e9b14bdecbf HEAD
           test "$(git diff --name-only 8a50e945ced6c4d2a046527014365e9b14bdecbf HEAD | sort)" = $'.github/workflows/diagnose-sidecar-authority-6938.yml\n.github/workflows/verify-sidecar-authority-6938.yml'
 
-      - name: Format candidate-owned Rust files
+      - name: Format and refresh the lockfile
         shell: bash
         run: |
           set -euo pipefail
           cargo fmt -p perl-corpus
+          cargo check -p perl-corpus --all-targets
           python3 - <<'PY'
           import subprocess
 
           allowed = {
+              'Cargo.lock',
               'crates/perl-corpus/src/fixture_expectations.rs',
               'crates/perl-corpus/src/sidecar.rs',
               'crates/perl-corpus/src/sidecar/context.rs',
@@ -49,13 +51,13 @@ jobs:
           changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
           outside = changed - allowed
           if outside:
-              raise SystemExit(f'cargo fmt touched files outside the reviewed sidecar slice: {sorted(outside)}')
-          if not changed:
-              raise SystemExit('expected candidate-owned formatting changes, found none')
-          print('formatted:', *sorted(changed), sep='\n  ')
+              raise SystemExit(f'format/lock refresh touched files outside the reviewed slice: {sorted(outside)}')
+          if 'Cargo.lock' not in changed:
+              raise SystemExit('expected Cargo.lock refresh for the sidecar hashing dependency')
+          print('candidate-generated changes:', *sorted(changed), sep='\n  ')
           PY
 
-      - name: Verify candidate
+      - name: Verify candidate with the refreshed lockfile
         shell: bash
         env:
           RUST_BACKTRACE: "1"
@@ -87,18 +89,18 @@ jobs:
 
           rustup show
           run_checked "corpus fmt check" cargo fmt -p perl-corpus -- --check
-          run_checked "corpus all-target check" cargo check -p perl-corpus --all-targets --locked
-          run_checked "corpus all-target tests" cargo test -p perl-corpus --all-targets --locked
-          run_checked "corpus all-target clippy" cargo clippy -p perl-corpus --all-targets --locked -- -D warnings
+          run_checked "corpus locked all-target check" cargo check -p perl-corpus --all-targets --locked
+          run_checked "corpus locked all-target tests" cargo test -p perl-corpus --all-targets --locked
+          run_checked "corpus locked all-target clippy" cargo clippy -p perl-corpus --all-targets --locked -- -D warnings
           run_checked "diff check" git diff --check
 
-      - name: Publish formatting and remove temporary verification surface
+      - name: Publish candidate-generated files and remove temporary verification surface
         shell: bash
         run: |
           set -euo pipefail
           rm .github/workflows/verify-sidecar-authority-6938.yml
           rm .github/workflows/diagnose-sidecar-authority-6938.yml
-          git add crates/perl-corpus \
+          git add Cargo.lock crates/perl-corpus \
             .github/workflows/verify-sidecar-authority-6938.yml \
             .github/workflows/diagnose-sidecar-authority-6938.yml
           python3 - <<'PY'
@@ -107,6 +109,7 @@ jobs:
           allowed = {
               '.github/workflows/diagnose-sidecar-authority-6938.yml',
               '.github/workflows/verify-sidecar-authority-6938.yml',
+              'Cargo.lock',
               'crates/perl-corpus/src/fixture_expectations.rs',
               'crates/perl-corpus/src/sidecar.rs',
               'crates/perl-corpus/src/sidecar/context.rs',
@@ -123,11 +126,12 @@ jobs:
           required = {
               '.github/workflows/diagnose-sidecar-authority-6938.yml',
               '.github/workflows/verify-sidecar-authority-6938.yml',
+              'Cargo.lock',
           }
           if not required <= staged:
-              raise SystemExit(f'missing temporary workflow deletions: {sorted(required - staged)}')
+              raise SystemExit(f'missing required staged files: {sorted(required - staged)}')
           PY
           git config user.name "EffortlessSteven"
           git config user.email "git@effortlesssteven.com"
-          git commit -m "style(corpus): format sidecar authority candidate"
+          git commit -m "fix(corpus): lock and format sidecar authority"
           git push origin HEAD:agent/corpus-sidecar-path-authority-6885
