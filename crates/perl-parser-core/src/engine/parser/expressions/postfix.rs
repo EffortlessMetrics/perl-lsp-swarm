@@ -129,7 +129,7 @@ impl<'a> Parser<'a> {
                 }
 
                 Some(TokenKind::Arrow) => {
-                    self.tokens.next()?; // consume ->
+                    self.consume_token()?; // consume ->
 
                     // Check for postfix dereference operators
                     match self.peek_kind() {
