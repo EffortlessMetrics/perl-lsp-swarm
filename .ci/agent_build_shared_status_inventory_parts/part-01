@@ -1,0 +1,100 @@
+        root,
+        &[
+            "cargo",
+            "test",
+            "--workspace",
+            "--lib",
+            "--exclude",
+            "tree-sitter-perl",
+            "--",
+            "--list",
+        ],
+        // A cold cache-targets=false runner compiles the workspace before listing.
+        // Keep the sole discovery bounded while allowing enough headroom for that compile.
+        Duration::from_mins(12),
+    );
+    if output.is_empty() {
+        bail!("workspace lib-test discovery failed or returned no output");
+    }
+    validate_workspace_lib_test_inventory(parse_workspace_lib_test_inventory(&output))
+}
+
+fn validate_workspace_lib_test_inventory(
+    inventory: WorkspaceLibTestInventory,
+) -> Result<WorkspaceLibTestInventory> {
+    if inventory.total() == 0 {
+        bail!("workspace lib-test discovery returned zero tests");
+    }
+    Ok(inventory)
+}
+
+fn parse_workspace_lib_test_inventory(output: &str) -> WorkspaceLibTestInventory {
+    let mut by_crate: BTreeMap<String, usize> = BTreeMap::new();
+    let mut current_crate: Option<String> = None;
+    let mut discovered = 0usize;
+    let mut attributed = 0usize;
+
+    for line in output.lines() {
+        let plain_line = ANSI_ESCAPE_RE.replace_all(line, "");
+        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(plain_line.as_ref()) {
+            current_crate = Some(caps[1].replace('_', "-"));
+            continue;
+        }
+        if TEST_LIST_LINE_RE.is_match(plain_line.as_ref()) {
+            discovered += 1;
+            if let Some(ref krate) = current_crate {
+                *by_crate.entry(krate.clone()).or_default() += 1;
+                attributed += 1;
+            }
+        }
+    }
+
+    WorkspaceLibTestInventory {
+        by_crate,
+        unattributed: discovered.saturating_sub(attributed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn total_reconciles_attributed_and_unattributed_tests() {
+        let inventory = WorkspaceLibTestInventory::from_parts(
+            BTreeMap::from([
+                (String::from("perl-parser"), 3),
+                (String::from("perl-lsp-rs"), 4),
+            ]),
+            2,
+        );
+
+        assert_eq!(inventory.total(), 9);
+    }
+
+    #[test]
+    fn parser_strips_cargo_color_from_test_binary_headers() {
+        let output = "\x1b[1m\x1b[32m     Running\x1b[0m unittests src/lib.rs \
+            (target/debug/deps/perl_parser_core-abc123)\n\
+            parser_smoke: test\n";
+
+        let inventory = parse_workspace_lib_test_inventory(output);
+
+        assert_eq!(inventory.by_crate().get("perl-parser-core"), Some(&1));
+        assert_eq!(inventory.unattributed(), 0);
+    }
+
+    #[test]
+    fn parser_handles_unix_windows_and_external_target_paths() {
+        let output = "Running unittests src/lib.rs \
+            (target/debug/deps/perl_parser_core-abc123)\n\
+            parser_smoke: test\n\
+            Running unittests src/lib.rs \
+            (C:\\Users\\steven\\Temp\\debug\\deps\\perl_workspace-123def.exe)\n\
+            workspace_indexes: test\n\
+            Running unittests src/lib.rs \
+            (/tmp/cargo-out/debug/deps/perl_lsp_rs-cafe456)\n\
+            lsp_smoke: test\n";
+
+        let inventory = parse_workspace_lib_test_inventory(output);
+
