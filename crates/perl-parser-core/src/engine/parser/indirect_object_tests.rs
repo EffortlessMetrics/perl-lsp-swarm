@@ -72,6 +72,46 @@ mod tests {
     }
 
     #[test]
+    fn test_parenthesized_expression_statement_span_keeps_closer() {
+        let source = "(42);";
+        let stmt = first_statement(source);
+        assert_eq!(
+            stmt.location.end,
+            source.len() - 1,
+            "ExpressionStatement span must include the closing parenthesis"
+        );
+        match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => {
+                assert_eq!(expression.location.start, 1);
+                assert_eq!(expression.location.end, 3);
+            }
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_builtin_call_span_keeps_closer() {
+        let source = "print(1);";
+        let stmt = first_statement(source);
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "print");
+                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    expression.location.end,
+                    source.len() - 1,
+                    "parenthesized builtin FunctionCall span must include ')'"
+                );
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_unparenthesized_builtin_call_span_covers_argument() {
         let source = "print qq/value=$café/;";
         let stmt = first_statement(source);

@@ -974,7 +974,7 @@ impl<'a> Parser<'a> {
                                 };
                                 let call_end = args
                                     .last()
-                                    .map(|arg| arg.location.end)
+                                    .map(|arg| arg.location.end.max(self.previous_position()))
                                     .unwrap_or_else(|| self.previous_position());
                                 let call = Node::new(
                                     NodeKind::FunctionCall { name, args },
