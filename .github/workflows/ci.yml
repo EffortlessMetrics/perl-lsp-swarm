@@ -308,6 +308,9 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --locked
 
+      - name: Run committed compiler builtin catalog proof
+        run: cargo test -p xtask --test compiler_builtin_catalog_cli --locked
+
       - name: Run PR-fast via shared xtask gate runner
         run: |
           set +e
