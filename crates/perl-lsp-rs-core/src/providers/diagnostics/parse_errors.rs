@@ -8,10 +8,46 @@
 //! |------|----------|-------------|
 //! | `syntax-error` | Error | Generic syntax error from the parser |
 
-use perl_diagnostics::codes::DiagnosticCode;
-use perl_parser_core::error::ParseError;
+use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
+use perl_parser_core::{ParseError, ResolvedParseDiagnosticAnchor};
 
-use perl_diagnostics::codes::DiagnosticSeverity;
+/// Downstream publication disposition for a parser-owned diagnostic anchor.
+///
+/// LSP consumers publish only [`Self::Publish`]. Every other parser disposition
+/// is retained as a typed suppression reason instead of being converted to byte
+/// zero or clamped into a plausible source range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseDiagnosticLocationDisposition {
+    /// Publish the diagnostic at this validated UTF-8 byte offset.
+    Publish(usize),
+    /// Suppress publication because the parser could not establish a valid
+    /// anchor for the same concrete source subject.
+    Suppress(ResolvedParseDiagnosticAnchor),
+}
+
+/// Resolve one parser diagnostic for the exact source snapshot being published.
+///
+/// `parsed_source` is the immutable source snapshot that produced `error`;
+/// `current_source` is the document text the consumer is about to expose to the
+/// client. The parser-owned contract validates bounds, UTF-8 boundaries, and
+/// source identity. Consumers must not invent a fallback offset for a
+/// [`ParseDiagnosticLocationDisposition::Suppress`] result.
+#[must_use]
+pub fn parse_diagnostic_location(
+    error: &ParseError,
+    parsed_source: &str,
+    current_source: &str,
+) -> ParseDiagnosticLocationDisposition {
+    let resolved = error.resolved_diagnostic_anchor_for_current(parsed_source, current_source);
+    match resolved {
+        ResolvedParseDiagnosticAnchor::Exact(offset)
+        | ResolvedParseDiagnosticAnchor::EndOfInput(offset) => {
+            ParseDiagnosticLocationDisposition::Publish(offset)
+        }
+        _ => ParseDiagnosticLocationDisposition::Suppress(resolved),
+    }
+}
 
 /// Derive the canonical diagnostic code for a parser error.
 pub fn parse_error_code(error: &ParseError) -> DiagnosticCode {
@@ -31,10 +67,9 @@ pub fn parse_error_code(error: &ParseError) -> DiagnosticCode {
 // `ParseError` → `Diagnostic` mapping with its own location match, its own
 // suggestion table, and the same `_ => 0` catch-all that pinned `Recovered`
 // errors to line 1 column 1. It was removed rather than wired up — it carried
-// the defect it looked like a fix for, and the live mapping in `diagnostics.rs`
-// (positions from `ParseError::location`, hints from `build_parse_error_hint`)
-// is the single authority. Recover it from git history if a second entry point
-// is ever genuinely needed.
+// the defect it looked like a fix for. The live runtime now consumes
+// `parse_diagnostic_location`, while hints remain owned by
+// `build_parse_error_hint`.
 
 /// Derive the user-facing severity for a parser error.
 pub fn parse_error_severity(error: &ParseError) -> DiagnosticSeverity {
@@ -63,9 +98,12 @@ fn is_unknown_subroutine_attribute_warning(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
-    use perl_parser_core::error::ParseError;
+    use perl_parser_core::{ParseError, ResolvedParseDiagnosticAnchor};
 
-    use super::{parse_error_code, parse_error_severity};
+    use super::{
+        ParseDiagnosticLocationDisposition, parse_diagnostic_location, parse_error_code,
+        parse_error_severity,
+    };
 
     #[test]
     fn advisory_uses_a_non_syntax_error_code() {
@@ -93,6 +131,54 @@ mod tests {
             parse_error_severity(&syntax_error),
             DiagnosticSeverity::Error,
             "malformed syntax must remain parse-blocking"
+        );
+    }
+
+    #[test]
+    fn valid_exact_and_eof_anchors_publish() {
+        assert_eq!(
+            parse_diagnostic_location(&ParseError::syntax("bad", 1), "abc", "abc"),
+            ParseDiagnosticLocationDisposition::Publish(1)
+        );
+        assert_eq!(
+            parse_diagnostic_location(&ParseError::UnexpectedEof, "abc", "abc"),
+            ParseDiagnosticLocationDisposition::Publish(3)
+        );
+    }
+
+    #[test]
+    fn no_source_and_invalid_utf8_are_typed_suppressions() {
+        assert_eq!(
+            parse_diagnostic_location(
+                &ParseError::LexerError { message: "bad byte".into() },
+                "aéz",
+                "aéz",
+            ),
+            ParseDiagnosticLocationDisposition::Suppress(
+                ResolvedParseDiagnosticAnchor::NoSource
+            )
+        );
+        assert_eq!(
+            parse_diagnostic_location(&ParseError::syntax("inside code point", 2), "aéz", "aéz"),
+            ParseDiagnosticLocationDisposition::Suppress(
+                ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary {
+                    reported: 2,
+                    source_len: 4,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn changed_same_length_source_is_not_publishable() {
+        assert_eq!(
+            parse_diagnostic_location(&ParseError::syntax("bad", 1), "abc", "axc"),
+            ParseDiagnosticLocationDisposition::Suppress(
+                ResolvedParseDiagnosticAnchor::StaleSource {
+                    parsed_len: 3,
+                    current_len: 3,
+                }
+            )
         );
     }
 }
