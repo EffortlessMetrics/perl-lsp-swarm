@@ -46,7 +46,8 @@ crates separately.
 ## Legacy compatibility
 
 Historical bridge compatibility is documented separately and is not required for
-native `perl-dap`.
+native `perl-dap`. It is excluded from default builds and docs.rs; the explicit
+`legacy-pls-bridge` feature exists only for migration and conformance work.
 
 ## Benchmarks
 
