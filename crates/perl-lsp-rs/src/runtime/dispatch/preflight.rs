@@ -3,6 +3,12 @@
 //! Keeps cancellation registration and compatibility initialization separate from
 //! method routing and response construction.
 
+// #7098 lands the bounded lifecycle owner at the request-admission boundary.
+// #7100 consumes it for cancellation and supersession policy.
+#[allow(dead_code)]
+#[path = "../request_lifecycle.rs"]
+pub(super) mod request_lifecycle;
+
 use super::super::{
     JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, LspServer, Ordering, Value,
 };
