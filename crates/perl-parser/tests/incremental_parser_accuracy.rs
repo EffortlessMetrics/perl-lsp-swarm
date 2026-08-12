@@ -2,6 +2,7 @@
 //! Manifest-backed and ambiguity-boundary incremental parser equivalence checks.
 
 use perl_parser::edit::Edit;
+use perl_parser::incremental_advanced_reuse::ReuseConfig;
 use perl_parser::incremental_v2::IncrementalParserV2;
 use perl_parser::position::Position;
 use perl_parser::{
@@ -440,6 +441,35 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
         if !contains_variable_declaration(&fresh_ast, name) {
             return Err(format!("edited parse lost variable declaration {name}").into());
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn rejected_advanced_analysis_is_not_exposed_as_last_parse() -> TestResult {
+    let config = ReuseConfig { min_confidence: 1.1, ..ReuseConfig::default() };
+    let mut incremental = IncrementalParserV2::with_reuse_config(config);
+    let source = "my $x = 1;";
+    incremental.parse(source)?;
+
+    let edited =
+        apply_incremental_edit(&mut incremental, source, "1", "2", "rejected-analysis")?;
+    incremental.parse(&edited)?;
+
+    if !incremental.used_incremental_path() {
+        return Err("the simple fallback must accept the queued value edit".into());
+    }
+    if incremental.used_advanced_reuse() {
+        return Err("the over-threshold advanced analysis must be rejected".into());
+    }
+    if incremental.get_last_reuse_analysis().is_some() {
+        return Err("a rejected advanced analysis must not remain public".into());
+    }
+    if !incremental
+        .get_reuse_efficiency_report()
+        .starts_with("Basic Incremental Analysis:")
+    {
+        return Err("the efficiency report must describe the accepted simple path".into());
     }
     Ok(())
 }

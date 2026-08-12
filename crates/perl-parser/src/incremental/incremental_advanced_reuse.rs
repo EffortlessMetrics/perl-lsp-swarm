@@ -445,6 +445,11 @@ impl AdvancedReuseAnalyzer {
         reuse_map: &mut HashMap<usize, ReuseStrategy>,
         config: &ReuseConfig,
     ) {
+        let mut used_target_positions: HashSet<usize> = reuse_map
+            .values()
+            .map(|strategy| strategy.target_position)
+            .collect();
+
         for (old_pos, old_info) in &old_analysis.node_info {
             if reuse_map.contains_key(old_pos) {
                 continue;
@@ -453,20 +458,27 @@ impl AdvancedReuseAnalyzer {
             // For leaf nodes, check if structure matches but content differs
             if old_info.children_count == 0 {
                 for (new_pos, new_info) in &new_analysis.node_info {
+                    if used_target_positions.contains(new_pos) {
+                        continue;
+                    }
+
                     if old_info.structural_hash == new_info.structural_hash
                         && old_info.content_hash != new_info.content_hash
                         && self.are_compatible_for_content_update(&old_info.node, &new_info.node)
                     {
                         let confidence = 0.8; // Content updates get medium confidence
-                        if confidence >= config.min_confidence
-                            && self.try_register_match(
-                                reuse_map,
+                        if confidence >= config.min_confidence {
+                            reuse_map.insert(
                                 *old_pos,
-                                *new_pos,
-                                ReuseType::ContentUpdate,
-                                confidence,
-                            )
-                        {
+                                ReuseStrategy {
+                                    target_position: *new_pos,
+                                    reuse_type: ReuseType::ContentUpdate,
+                                    confidence_score: confidence,
+                                    position_adjustment: (*new_pos as isize)
+                                        - (*old_pos as isize),
+                                },
+                            );
+                            used_target_positions.insert(*new_pos);
                             self.analysis_stats.content_matches += 1;
                             break;
                         }
@@ -484,6 +496,11 @@ impl AdvancedReuseAnalyzer {
         reuse_map: &mut HashMap<usize, ReuseStrategy>,
         config: &ReuseConfig,
     ) {
+        let mut used_target_positions: HashSet<usize> = reuse_map
+            .values()
+            .map(|strategy| strategy.target_position)
+            .collect();
+
         // This is the most sophisticated matching - look for structural patterns
         // even when exact hashes don't match
         for (old_pos, old_info) in &old_analysis.node_info {
@@ -494,10 +511,7 @@ impl AdvancedReuseAnalyzer {
             let mut best_match: Option<(usize, f64)> = None;
 
             for (new_pos, new_info) in &new_analysis.node_info {
-                if reuse_map
-                    .values()
-                    .any(|strategy| strategy.target_position == *new_pos)
-                {
+                if used_target_positions.contains(new_pos) {
                     continue;
                 }
 
@@ -520,16 +534,19 @@ impl AdvancedReuseAnalyzer {
             }
 
             if let Some((best_pos, confidence)) = best_match {
-                if confidence >= config.min_confidence * 0.7
-                    && self.try_register_match(
-                        reuse_map,
-                        *old_pos,
-                        best_pos,
-                        ReuseType::StructuralEquivalent,
-                        confidence,
-                    )
-                {
+                if confidence >= config.min_confidence * 0.7 {
                     // Final threshold check
+                    reuse_map.insert(
+                        *old_pos,
+                        ReuseStrategy {
+                            target_position: best_pos,
+                            reuse_type: ReuseType::StructuralEquivalent,
+                            confidence_score: confidence,
+                            position_adjustment: (best_pos as isize)
+                                - (*old_pos as isize),
+                        },
+                    );
+                    used_target_positions.insert(best_pos);
                     self.analysis_stats.reuse_candidates_found += 1;
                 }
             }

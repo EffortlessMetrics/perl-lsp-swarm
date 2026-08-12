@@ -383,22 +383,17 @@ impl IncrementalParserV2 {
             &self.reuse_config,
         );
 
-        // Store analysis results for inspection
-        self.last_reuse_analysis = Some(analysis_result);
-
-        // Check if reuse analysis meets our efficiency targets
-        if let Some(ref analysis) = self.last_reuse_analysis {
-            if analysis.reused_nodes <= analysis.total_new_nodes
-                && analysis.meets_efficiency_target(self.reuse_config.min_confidence * 100.0)
-            {
-                // Update statistics based on analysis
-                self.reused_nodes = analysis.reused_nodes;
-                self.reparsed_nodes = analysis.total_new_nodes - analysis.reused_nodes;
-                self.advanced_reuse_selected = true;
-
-                // Return the new tree with reuse benefits counted
-                return Some(new_tree);
-            }
+        // Expose only the analysis selected for the produced tree.
+        if analysis_result.reused_nodes <= analysis_result.total_new_nodes
+            && analysis_result
+                .meets_efficiency_target(self.reuse_config.min_confidence * 100.0)
+        {
+            self.reused_nodes = analysis_result.reused_nodes;
+            self.reparsed_nodes =
+                analysis_result.total_new_nodes - analysis_result.reused_nodes;
+            self.advanced_reuse_selected = true;
+            self.last_reuse_analysis = Some(analysis_result);
+            return Some(new_tree);
         }
 
         None
