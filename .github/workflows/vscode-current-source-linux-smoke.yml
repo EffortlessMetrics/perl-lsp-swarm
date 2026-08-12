@@ -80,5 +80,5 @@ jobs:
         with:
           name: vscode-current-source-linux-smoke-${{ matrix.vscode_version }}-${{ github.sha }}
           path: target/receipts/vscode-smoke/**
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
