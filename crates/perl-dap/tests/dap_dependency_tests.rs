@@ -191,9 +191,7 @@ mod dap_dependencies {
         assert!(mode_module.contains("#[doc(hidden)]"));
 
         let lifecycle = read(repo_root().join("crates/perl-dap/src/server/lifecycle.rs"))?;
-        assert!(lifecycle.contains(
-            "#![cfg_attr(feature = \"legacy-pls-bridge\", allow(deprecated))]"
-        ));
+        assert!(lifecycle.contains("#![allow(deprecated)]"));
         assert!(lifecycle.contains("legacy Perl::LanguageServer bridge support is not enabled"));
         Ok(())
     }
