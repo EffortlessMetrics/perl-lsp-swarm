@@ -475,6 +475,15 @@ impl<'a> EventParser<'a> {
         }
         let start = self.pos;
 
+        if self.bytes.get(start + 1) == Some(&b'*') {
+            return self.open_group(
+                start,
+                start + 2,
+                RegexGroupKind::NonCapturing,
+                self.mode,
+            );
+        }
+
         if self.bytes.get(start + 1) != Some(&b'?') {
             let kind = if self.mode.captures_by_default {
                 RegexGroupKind::Capturing

@@ -242,6 +242,37 @@ fn invalid_names_diagnose_without_inventing_capture_declarations()
 }
 
 #[test]
+fn malformed_projection_does_not_invent_later_capture_numbers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let captures = RegexAnalyzer::extract_named_captures("(?<>a)(?<later>b)");
+
+    assert!(captures.is_empty());
+    Ok(())
+}
+
+#[test]
+fn control_verbs_are_non_capturing_for_following_numbering()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(*MARK:m)(?<after>b)";
+    let analysis = RegexAnalyzer::analyze_captures(
+        pattern,
+        EffectiveModifiers::default(),
+        profile(44, FeatureState::Enabled),
+    );
+
+    assert_eq!(analysis.declarations.len(), 1);
+    assert_eq!(analysis.declarations[0].name.as_deref(), Some("after"));
+    assert_eq!(analysis.declarations[0].number, Some(1));
+    assert!(analysis.status.is_complete());
+
+    let legacy = RegexAnalyzer::extract_named_captures(pattern);
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0].name, "after");
+    assert_eq!(legacy[0].index, 1);
+    Ok(())
+}
+
+#[test]
 fn old_perl_profiles_retain_the_fact_but_mark_it_incompatible()
 -> Result<(), Box<dyn std::error::Error>> {
     let analysis = RegexAnalyzer::analyze_captures(
