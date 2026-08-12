@@ -1095,15 +1095,32 @@ impl PullDiagnosticsProvider {
         error: &ParseError,
         context: &PullDiagnosticsContext,
     ) -> LspDiagnostic {
+        // Explicit arm for every ParseError variant — no wildcard. Adding a new variant
+        // will cause a compile error here rather than silently placing the diagnostic at
+        // byte zero. See ParseDiagnosticAnchor for the source-anchor policy.
         let (offset, base_message) = match error {
             ParseError::UnexpectedToken { location, expected, found } => {
                 (*location, format!("Expected {expected}, found {found}"))
             }
             ParseError::SyntaxError { location, message } => (*location, message.clone()),
             ParseError::Advisory { location, message } => (*location, message.clone()),
+            ParseError::Recovered { location, .. } => (*location, error.to_string()),
             ParseError::UnexpectedEof => (text.len(), "Unexpected end of input".to_string()),
-            ParseError::LexerError { message } => (0, message.clone()),
-            _ => (0, error.to_string()),
+            ParseError::LexerError { message } => {
+                // NoSource: no defensible position; display at file start.
+                (0, message.clone())
+            }
+            ParseError::RecursionLimit
+            | ParseError::InvalidNumber { .. }
+            | ParseError::InvalidString
+            | ParseError::UnclosedDelimiter { .. }
+            | ParseError::InvalidRegex { .. }
+            | ParseError::NestingTooDeep { .. }
+            | ParseError::Cancelled => {
+                // NoSource variants: no defensible source position; display at
+                // file start per ParseDiagnosticAnchor::NoSource policy.
+                (0, error.to_string())
+            }
         };
 
         // Append the suggestion inline so users see actionable hints in the fallback path,

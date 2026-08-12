@@ -684,7 +684,10 @@ impl LspServer {
             parse_errors
                 .iter()
                 .map(|e| {
-                    // Extract location and base message from error enum
+                    // Extract location and base message from error enum.
+                    // Use diagnostic_anchor() for variants without an explicit location so
+                    // that future ParseError variants are handled explicitly rather than
+                    // silently falling to byte zero.
                     let (location, base_message) = match e {
                         crate::error::ParseError::UnexpectedToken { location, expected, found } => {
                             (*location, format!("Expected {}, found {}", expected, found))
@@ -695,11 +698,27 @@ impl LspServer {
                         crate::error::ParseError::Advisory { location, message } => {
                             (*location, message.clone())
                         }
+                        crate::error::ParseError::Recovered { location, .. } => {
+                            (*location, e.to_string())
+                        }
                         crate::error::ParseError::UnexpectedEof => {
                             (text.len(), "Unexpected end of input".to_string())
                         }
-                        crate::error::ParseError::LexerError { message } => (0, message.clone()),
-                        _ => (0, e.to_string()),
+                        crate::error::ParseError::LexerError { message } => {
+                            // NoSource: no defensible position; display at file start.
+                            (0, message.clone())
+                        }
+                        crate::error::ParseError::RecursionLimit
+                        | crate::error::ParseError::InvalidNumber { .. }
+                        | crate::error::ParseError::InvalidString
+                        | crate::error::ParseError::UnclosedDelimiter { .. }
+                        | crate::error::ParseError::InvalidRegex { .. }
+                        | crate::error::ParseError::NestingTooDeep { .. }
+                        | crate::error::ParseError::Cancelled => {
+                            // NoSource variants: no defensible source position; display at
+                            // file start per ParseDiagnosticAnchor::NoSource policy.
+                            (0, e.to_string())
+                        }
                     };
 
                     // Append hint so users see actionable guidance in push fallback path too
@@ -959,6 +978,9 @@ impl LspServer {
             parse_errors
                 .iter()
                 .map(|e| {
+                    // Use explicit arms for every ParseError variant so that future
+                    // variants are handled deliberately rather than silently mapped to
+                    // byte zero. See ParseDiagnosticAnchor for the source-anchor policy.
                     let (location, base_message) = match e {
                         crate::error::ParseError::UnexpectedToken { location, expected, found } => {
                             (*location, format!("Expected {}, found {}", expected, found))
@@ -969,11 +991,27 @@ impl LspServer {
                         crate::error::ParseError::Advisory { location, message } => {
                             (*location, message.clone())
                         }
+                        crate::error::ParseError::Recovered { location, .. } => {
+                            (*location, e.to_string())
+                        }
                         crate::error::ParseError::UnexpectedEof => {
                             (text.len(), "Unexpected end of input".to_string())
                         }
-                        crate::error::ParseError::LexerError { message } => (0, message.clone()),
-                        _ => (0, e.to_string()),
+                        crate::error::ParseError::LexerError { message } => {
+                            // NoSource: no defensible position; display at file start.
+                            (0, message.clone())
+                        }
+                        crate::error::ParseError::RecursionLimit
+                        | crate::error::ParseError::InvalidNumber { .. }
+                        | crate::error::ParseError::InvalidString
+                        | crate::error::ParseError::UnclosedDelimiter { .. }
+                        | crate::error::ParseError::InvalidRegex { .. }
+                        | crate::error::ParseError::NestingTooDeep { .. }
+                        | crate::error::ParseError::Cancelled => {
+                            // NoSource variants: no defensible source position; display at
+                            // file start per ParseDiagnosticAnchor::NoSource policy.
+                            (0, e.to_string())
+                        }
                     };
                     let message =
                         match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
