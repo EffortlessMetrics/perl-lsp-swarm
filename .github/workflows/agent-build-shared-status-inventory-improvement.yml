@@ -1,0 +1,176 @@
+name: Agent Build Shared Status Inventory Improvement
+
+on:
+  push:
+    branches:
+      - agent/6940-neutral-test-inventory
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-build-shared-status-inventory-improvement
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Cache Cargo dependencies only
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-targets: false
+          shared-key: agent-status-inventory-improvement-${{ hashFiles('Cargo.lock') }}
+
+      - name: Apply bounded source transformation
+        run: |
+          set -euo pipefail
+          cat .ci/agent_build_shared_status_inventory_parts/part-* > /tmp/agent_build_shared_status_inventory.py
+          python3 /tmp/agent_build_shared_status_inventory.py
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Prove cold full regeneration discovers workspace lib tests once
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- update-status --write \
+            2>&1 | tee target/agent-status-full.log
+          STATUS_LOG=target/agent-status-full.log python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          lines = Path(os.environ["STATUS_LOG"]).read_text(encoding="utf-8").splitlines()
+          matches = [
+              line
+              for line in lines
+              if "[update-status] running:" in line
+              and "cargo" in line
+              and "test" in line
+              and "--workspace" in line
+              and "--lib" in line
+              and "--exclude" in line
+              and "tree-sitter-perl" in line
+              and "--list" in line
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one workspace lib-test discovery, found {len(matches)}: {matches!r}"
+              )
+
+          quality = Path("docs/project/status/quality.md").read_text(encoding="utf-8")
+          block = quality.split("<!-- BEGIN: QUALITY_CRATE_TABLE -->", 1)[1].split(
+              "<!-- END: QUALITY_CRATE_TABLE -->", 1
+          )[0]
+          rows: dict[str, int] = {}
+          for line in block.splitlines():
+              if not line.startswith("|"):
+                  continue
+              cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+              if len(cells) == 3 and cells[2].isdigit():
+                  rows[cells[0]] = int(cells[2])
+          if len(rows) < 10 or rows.get("perl-parser", 0) == 0:
+              raise SystemExit(
+                  "shared inventory lost per-crate attribution: "
+                  f"rows={len(rows)}, perl-parser={rows.get('perl-parser')}"
+              )
+          PY
+          git diff --name-only -z -- docs | xargs -0 -r git checkout --
+
+      - name: Run focused update-status unit tests
+        run: cargo test -p xtask --locked update_status
+
+      - name: Run focused xtask clippy
+        run: cargo clippy -p xtask --all-targets --locked -- -D warnings
+
+      - name: Prove tests-only retains one best-effort authority
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- update-status --write --only tests \
+            2>&1 | tee target/agent-status-tests.log
+          STATUS_LOG=target/agent-status-tests.log python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          lines = Path(os.environ["STATUS_LOG"]).read_text(encoding="utf-8").splitlines()
+          matches = [
+              line
+              for line in lines
+              if "[update-status] running:" in line
+              and "cargo" in line
+              and "test" in line
+              and "--workspace" in line
+              and "--lib" in line
+              and "--exclude" in line
+              and "tree-sitter-perl" in line
+              and "--list" in line
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one workspace lib-test discovery, found {len(matches)}: {matches!r}"
+              )
+          PY
+          git checkout -- docs/project/status/tests.md
+
+      - name: Package exact source candidate
+        run: |
+          set -euo pipefail
+          rm -rf target/agent-status-inventory-candidate
+          mkdir -p target/agent-status-inventory-candidate/files
+          for path in \
+            xtask/src/tasks/update_status/mod.rs \
+            xtask/src/tasks/update_status/mod_tests.rs \
+            xtask/src/tasks/update_status/quality.rs \
+            xtask/src/tasks/update_status/quality/tests.rs \
+            xtask/src/tasks/update_status/test_inventory.rs \
+            xtask/src/tasks/update_status/tests.rs
+          do
+            mkdir -p "target/agent-status-inventory-candidate/files/$(dirname "$path")"
+            cp "$path" "target/agent-status-inventory-candidate/files/$path"
+          done
+          cp target/agent-status-full.log target/agent-status-inventory-candidate/
+          cp target/agent-status-tests.log target/agent-status-inventory-candidate/
+          git diff --binary -- \
+            xtask/src/tasks/update_status/mod.rs \
+            xtask/src/tasks/update_status/mod_tests.rs \
+            xtask/src/tasks/update_status/quality.rs \
+            xtask/src/tasks/update_status/quality/tests.rs \
+            xtask/src/tasks/update_status/test_inventory.rs \
+            xtask/src/tasks/update_status/tests.rs \
+            > target/agent-status-inventory-candidate/candidate.patch
+          sha256sum \
+            target/agent-status-inventory-candidate/files/xtask/src/tasks/update_status/mod.rs \
+            target/agent-status-inventory-candidate/files/xtask/src/tasks/update_status/mod_tests.rs \
+            target/agent-status-inventory-candidate/files/xtask/src/tasks/update_status/quality.rs \
+            target/agent-status-inventory-candidate/files/xtask/src/tasks/update_status/quality/tests.rs \
+            target/agent-status-inventory-candidate/files/xtask/src/tasks/update_status/test_inventory.rs \
+            target/agent-status-inventory-candidate/files/xtask/src/tasks/update_status/tests.rs \
+            > target/agent-status-inventory-candidate/SHA256SUMS
+          printf '%s\n' '${{ github.sha }}' > target/agent-status-inventory-candidate/source-sha.txt
+
+      - name: Upload exact source candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-status-inventory-improvement-${{ github.sha }}
+          path: target/agent-status-inventory-candidate
+          if-no-files-found: error
+          retention-days: 3
