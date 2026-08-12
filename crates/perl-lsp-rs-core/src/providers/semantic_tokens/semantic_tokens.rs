@@ -1735,6 +1735,50 @@ mod tests {
     }
 
     #[test]
+    fn complete_heredoc_vectors_preserve_injected_language_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let painted = |source: &str,
+                       kind: &str|
+         -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            let mut parser = Parser::new(source);
+            let ast = parser.parse()?;
+            let kind = *legend().map.get(kind).ok_or("semantic-token kind missing")?;
+            let lines: Vec<&str> = source.split('\n').collect();
+            let mut line = 0u32;
+            let mut column = 0u32;
+            let mut result = Vec::new();
+            for [delta_line, delta_column, length, token_type, _modifiers] in
+                collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+            {
+                if delta_line == 0 {
+                    column = column.saturating_add(delta_column);
+                } else {
+                    line = line.saturating_add(delta_line);
+                    column = delta_column;
+                }
+                if token_type == kind {
+                    let source_line = lines.get(line as usize).ok_or("token line missing")?;
+                    result.push(
+                        source_line.chars().skip(column as usize).take(length as usize).collect(),
+                    );
+                }
+            }
+            Ok(result)
+        };
+
+        let sql = "my $sql = <<SQL;\nSELECT id FROM users WHERE id = 1;\nSQL\n";
+        assert_eq!(painted(sql, "sql_heredoc_keyword")?, vec!["SELECT", "FROM", "WHERE"]);
+
+        let json = "my $json = <<JSON;\n{\"name\": \"Ada\", \"nested-key\": 1, \"not a key\": true}\nJSON\n";
+        assert_eq!(
+            painted(json, "json_heredoc_key")?,
+            vec!["\"name\"", "\"nested-key\"", "\"not a key\""]
+        );
+        assert!(!painted(json, "json_heredoc_key")?.iter().any(|token| token == "value"));
+        Ok(())
+    }
+
+    #[test]
     fn large_traversal_budget_covers_finalization() -> Result<(), Box<dyn std::error::Error>> {
         let source =
             (0..512).map(|index| format!("my $value_{index} = {index};\n")).collect::<String>();
