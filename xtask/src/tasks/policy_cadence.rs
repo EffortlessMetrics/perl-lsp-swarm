@@ -94,7 +94,7 @@ pub struct CadenceArgs {
     pub markdown: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RawObligation {
     record_id: String,
     source_kind: String,
