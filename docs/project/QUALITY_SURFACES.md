@@ -129,25 +129,16 @@ Measures whether a third party can verify the work.
 
 ## Cover Sheet Integration
 
-Every PR cover sheet includes a **Quality Deltas** section:
+Ordinary PR cover sheets use the repository's evidence contract: **Claim**, **Proof**,
+**Test hardening**, **Claim Boundary**, and **Quality-gate effect**. They do not require
+numeric scoring or a Quality Deltas table.
 
-```markdown
-### Quality Deltas
-
-| Surface | Delta | Notes |
-|---------|-------|-------|
-| Maintainability | +1 | Split `large_module.rs` into 3 focused modules |
-| Correctness | +2 | Added 15 behavior tests, killed 4 mutants |
-| Governance | 0 | No schema changes; existing gates pass |
-| Reproducibility | +1 | Added `known_limits` section |
-```
-
-Delta scale:
-- **+2**: Significant improvement
-- **+1**: Minor improvement
-- **0**: No change
-- **-1**: Minor regression (justified)
-- **-2**: Significant regression (requires justification)
+Numeric **Quality Deltas** remain part of forensic dossier and casebook exhibit
+synthesis. Those artifacts score each surface from **+2** (significant improvement) to
+**-2** (significant regression requiring justification). See
+[`FORENSICS_SCHEMA.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FORENSICS_SCHEMA.md)
+and
+[`CASEBOOK.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CASEBOOK.md).
 
 ## Analyzer Integration
 
