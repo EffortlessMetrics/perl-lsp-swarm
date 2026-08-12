@@ -1,0 +1,60 @@
+name: Repair corpus topology authority
+
+on:
+  push:
+    branches:
+      - agent/corpus-topology-6699-current
+    paths:
+      - .github/workflows/repair-corpus-topology-6745.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: agent/corpus-topology-6699-current
+          fetch-depth: 0
+
+      - name: Verify repair base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "a4de2d7f35746d2e63d38fe9ac793650b1d054ac"
+
+      - name: Apply bounded review repairs
+        shell: bash
+        env:
+          PATCH_GZ_B64: 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
+        run: |
+          set -euo pipefail
+          printf '%s' "$PATCH_GZ_B64" | base64 -d | gzip -d > /tmp/patch.py
+          python3 /tmp/patch.py
+
+      - name: Format and verify focused authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup show
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test -p perl-corpus --lib topology --locked
+          cargo clippy -p perl-corpus --lib --locked -- -D warnings -A missing_docs
+          git diff --check
+
+      - name: Publish repaired candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/repair-corpus-topology-6745.yml
+          git add crates/perl-corpus/src/api/topology.rs .github/workflows/repair-corpus-topology-6745.yml
+          test "$(git diff --cached --name-only | sort)" = $'.github/workflows/repair-corpus-topology-6745.yml\ncrates/perl-corpus/src/api/topology.rs'
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "fix(corpus): close topology root and layer authority"
+          git push origin HEAD:agent/corpus-topology-6699-current
