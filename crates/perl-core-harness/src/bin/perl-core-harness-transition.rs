@@ -201,11 +201,7 @@ fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
 
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     let result = unsafe { GetFileInformationByHandle(handle, &mut information) };
-    let get_info_error = if result == 0 {
-        Some(std::io::Error::last_os_error())
-    } else {
-        None
-    };
+    let get_info_error = if result == 0 { Some(std::io::Error::last_os_error()) } else { None };
     let close_result = unsafe { CloseHandle(handle) };
     if let Some(error) = get_info_error {
         return Err(error).with_context(|| format!("reading file identity {display_path}"));
