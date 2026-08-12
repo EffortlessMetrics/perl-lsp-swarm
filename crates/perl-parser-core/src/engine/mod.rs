@@ -17,7 +17,10 @@ pub mod parser_context;
 /// Position tracking types and UTF-16 mapping utilities.
 pub mod position;
 /// Parser for Perl quote and quote-like operators (internal module, previously `perl-quote`).
-pub use crate::syntax::quote as quote_parser;
+pub mod quote_parser {
+    pub use crate::syntax::quote::*;
+    pub use crate::syntax::quote_geometry::*;
+}
 /// Pragma tracking for `use` and related directives.
 pub use perl_pragma as pragma_tracker;
 /// Parser utilities and helpers.
