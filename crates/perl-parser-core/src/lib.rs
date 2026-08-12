@@ -146,8 +146,10 @@ pub mod incremental;
 pub use error::classifier as error_classifier;
 /// Error recovery helpers and strategies.
 pub use error::recovery as error_recovery;
-/// Result of an error recovery attempt.
-pub use error_recovery::RecoveryResult;
+/// Parser-owned diagnostic anchors and error-recovery results.
+pub use error_recovery::{
+    ParseDiagnosticAnchor, RecoveryResult, ResolvedParseDiagnosticAnchor,
+};
 
 /// Line indexing and position mapping utilities.
 pub mod line_index {
