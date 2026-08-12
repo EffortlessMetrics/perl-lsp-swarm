@@ -42,7 +42,8 @@ fn trivia_token_construction() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trivia_preserving_parser_returns_node_with_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("  # comment\nmy $x;".to_string());
+    let source = "  # comment\nmy $x;";
+    let parser = TriviaPreservingParser::new(source);
     let result: NodeWithTrivia = parser.parse();
 
     // The parser should produce a Program node
