@@ -2,7 +2,9 @@
 //! `policy/lsp-client-support.toml`.
 
 use anyhow::{Context, Result, bail, ensure};
+use chrono::DateTime;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -13,12 +15,14 @@ const ACTUAL_CLIENT_RECEIPT_ROOT: &str = "docs/receipts/lsp-clients/actual";
 const PACKAGED_PRODUCT_RECEIPT_ROOT: &str = "docs/receipts/lsp-clients/packaged";
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Registry {
     meta: Meta,
     client: Vec<Client>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Meta {
     schema: String,
     source_document: String,
@@ -28,6 +32,7 @@ struct Meta {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Client {
     id: String,
     display_name: String,
@@ -43,9 +48,19 @@ struct Client {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Evidence {
     path: String,
     kind: String,
+    #[serde(default)]
+    profile: Option<ProfileEvidence>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileEvidence {
+    client_id: String,
+    scenario: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +74,8 @@ struct ExecutionReceipt {
     client_executable: String,
     client_version: String,
     server_command: Vec<String>,
+    transcript_path: String,
+    transcript_sha256: String,
     transport: String,
     exit_code: i32,
     stdout_sha256: String,
@@ -75,13 +92,17 @@ struct ReceiptAssertion {
     evidence: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct ReceiptArtifact {
     path: String,
     sha256: String,
     size_bytes: u64,
 }
+
+const REQUIRED_EXECUTION_ASSERTIONS: &[&str] =
+    &["initialize", "request_response", "clean_shutdown"];
+const TRANSCRIPT_ROOT: &str = "docs/receipts/lsp-clients";
 
 fn workspace_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -197,7 +218,16 @@ fn validate_protocol_profile_evidence(
     root: &Path,
     raw: &str,
     tracked_files: &BTreeSet<String>,
+    client_id: &str,
+    profile: &ProfileEvidence,
 ) -> Result<()> {
+    ensure!(
+        profile.client_id == client_id,
+        "protocol-profile evidence names client {}, expected {}",
+        profile.client_id,
+        client_id
+    );
+    ensure!(!profile.scenario.trim().is_empty(), "protocol-profile scenario must not be empty");
     let relative = validate_relative_path(raw)?;
     ensure!(
         relative.extension().and_then(|extension| extension.to_str()) == Some("rs"),
@@ -210,6 +240,26 @@ fn validate_protocol_profile_evidence(
     let path = validate_repository_file(root, raw, tracked_files)?;
     let source = fs::read_to_string(&path)
         .with_context(|| format!("read protocol-profile evidence {}", path.display()))?;
+    let source_lower = source.to_ascii_lowercase();
+    let client_marker = match client_id {
+        "intellij_lsp4ij" => "lsp4ij",
+        other => other,
+    };
+    ensure!(
+        source_lower.contains(client_marker),
+        "protocol-profile evidence {} is not bound to client {}",
+        raw,
+        client_id
+    );
+    for scenario_marker in profile.scenario.split('_').filter(|marker| !marker.is_empty()) {
+        let scenario_marker = scenario_marker.to_ascii_lowercase();
+        ensure!(
+            source_lower.contains(&scenario_marker),
+            "protocol-profile evidence {} does not identify scenario {}",
+            raw,
+            profile.scenario
+        );
+    }
     ensure!(
         source.contains("#[test]"),
         "protocol-profile evidence must define at least one Rust test: {raw}"
@@ -245,7 +295,11 @@ fn is_lower_hex(value: &str, expected_len: usize) -> bool {
         && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn validate_artifact(artifact: &ReceiptArtifact) -> Result<()> {
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn validate_artifact_metadata(artifact: &ReceiptArtifact) -> Result<()> {
     let _ = validate_relative_path(&artifact.path)
         .context("packaged-product artifact path must be a bounded relative locator")?;
     ensure!(
@@ -256,11 +310,124 @@ fn validate_artifact(artifact: &ReceiptArtifact) -> Result<()> {
     Ok(())
 }
 
+fn validate_artifact(
+    root: &Path,
+    tracked_files: &BTreeSet<String>,
+    artifact: &ReceiptArtifact,
+) -> Result<()> {
+    validate_artifact_metadata(artifact)?;
+    let artifact_path = validate_repository_file(root, &artifact.path, tracked_files)?;
+    let bytes = fs::read(&artifact_path)
+        .with_context(|| format!("read packaged-product artifact {}", artifact.path))?;
+    ensure!(
+        bytes.len() as u64 == artifact.size_bytes,
+        "packaged-product artifact size mismatch for {}: receipt={}, actual={}",
+        artifact.path,
+        artifact.size_bytes,
+        bytes.len()
+    );
+    ensure!(
+        sha256_hex(&bytes) == artifact.sha256,
+        "packaged-product artifact digest mismatch for {}",
+        artifact.path
+    );
+    Ok(())
+}
+
+fn validate_source_revision(root: &Path, source_revision: &str) -> Result<()> {
+    ensure!(
+        is_lower_hex(source_revision, 40),
+        "receipt source_revision must be a 40-character lowercase Git SHA"
+    );
+    let revision = format!("{source_revision}^{{commit}}");
+    let resolved = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(&revision)
+        .output()
+        .context("resolve receipt source revision")?;
+    ensure!(
+        resolved.status.success(),
+        "receipt source_revision is not a reachable commit: {source_revision}"
+    );
+    ensure!(
+        String::from_utf8_lossy(&resolved.stdout).trim() == source_revision,
+        "receipt source_revision did not resolve to its canonical commit: {source_revision}"
+    );
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .context("resolve current candidate revision")?;
+    ensure!(head.status.success(), "current candidate revision could not be resolved");
+    ensure!(
+        String::from_utf8_lossy(&head.stdout).trim() == source_revision,
+        "receipt source_revision must identify the exact current candidate: {source_revision}"
+    );
+    Ok(())
+}
+
+fn validate_transcript(
+    root: &Path,
+    tracked_files: &BTreeSet<String>,
+    receipt: &ExecutionReceipt,
+) -> Result<()> {
+    let transcript_relative = validate_relative_path(&receipt.transcript_path)?;
+    ensure!(
+        transcript_relative.starts_with(Path::new(TRANSCRIPT_ROOT)),
+        "transcript must live under {TRANSCRIPT_ROOT}: {}",
+        receipt.transcript_path
+    );
+    ensure!(
+        transcript_relative.extension().and_then(|extension| extension.to_str()) == Some("jsonl"),
+        "transcript must be a JSONL file: {}",
+        receipt.transcript_path
+    );
+    let transcript_path = validate_repository_file(root, &receipt.transcript_path, tracked_files)?;
+    let bytes = fs::read(&transcript_path)
+        .with_context(|| format!("read execution transcript {}", receipt.transcript_path))?;
+    ensure!(
+        sha256_hex(&bytes) == receipt.transcript_sha256,
+        "execution transcript digest mismatch for {}",
+        receipt.transcript_path
+    );
+    let transcript = String::from_utf8(bytes).context("execution transcript must be UTF-8")?;
+    let mut event_names = BTreeSet::new();
+    for line in transcript.lines().filter(|line| !line.trim().is_empty()) {
+        let event: serde_json::Value =
+            serde_json::from_str(line).context("execution transcript must be JSONL")?;
+        let name = event
+            .get("event")
+            .and_then(serde_json::Value::as_str)
+            .context("execution transcript events must name an event")?;
+        ensure!(
+            REQUIRED_EXECUTION_ASSERTIONS.contains(&name),
+            "execution transcript contains an undeclared event {name}"
+        );
+        ensure!(event_names.insert(name), "execution transcript repeats event {name}");
+    }
+    let required_events = REQUIRED_EXECUTION_ASSERTIONS.iter().copied().collect::<BTreeSet<_>>();
+    ensure!(
+        event_names == required_events,
+        "execution transcript events must be exactly {REQUIRED_EXECUTION_ASSERTIONS:?}, got {event_names:?}"
+    );
+    for assertion in &receipt.assertions {
+        ensure!(
+            event_names.contains(assertion.name.as_str()),
+            "execution transcript does not contain assertion {}",
+            assertion.name
+        );
+    }
+    Ok(())
+}
+
 fn validate_execution_receipt(
     path: &Path,
     expected_client_id: &str,
     expected_kind: &str,
-) -> Result<()> {
+) -> Result<ExecutionReceipt> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("read executable client receipt {}", path.display()))?;
     let receipt: ExecutionReceipt = serde_json::from_str(&source)
@@ -284,9 +451,12 @@ fn validate_execution_receipt(
         path.display(),
         receipt.evidence_kind
     );
+    let timestamp = DateTime::parse_from_rfc3339(&receipt.recorded_at_utc).with_context(|| {
+        format!("receipt recorded_at_utc is not RFC3339: {}", receipt.recorded_at_utc)
+    })?;
     ensure!(
-        receipt.recorded_at_utc.contains('T') && receipt.recorded_at_utc.ends_with('Z'),
-        "receipt recorded_at_utc must be a UTC timestamp ending in Z"
+        receipt.recorded_at_utc.ends_with('Z') && timestamp.offset().local_minus_utc() == 0,
+        "receipt recorded_at_utc must be an RFC3339 UTC timestamp ending in Z"
     );
     ensure!(
         is_lower_hex(&receipt.source_revision, 40),
@@ -302,6 +472,20 @@ fn validate_execution_receipt(
             && receipt.server_command.iter().all(|argument| !argument.trim().is_empty()),
         "receipt server_command must contain non-empty arguments"
     );
+    let executable = receipt.server_command[0].replace('\\', "/");
+    let executable = executable.rsplit('/').next().unwrap_or(executable.as_str());
+    let executable = executable.strip_suffix(".exe").unwrap_or(executable);
+    ensure!(
+        executable.eq_ignore_ascii_case("perllsp")
+            && receipt.server_command.iter().skip(1).any(|argument| argument == "--stdio"),
+        "receipt server_command must launch perllsp with --stdio"
+    );
+    ensure!(
+        is_lower_hex(&receipt.transcript_sha256, 64),
+        "transcript_sha256 must be 64 lowercase hexadecimal characters"
+    );
+    let _ = validate_relative_path(&receipt.transcript_path)
+        .context("transcript_path must be a bounded relative locator")?;
     ensure!(
         receipt.transport == "stdio",
         "receipt transport must be stdio, got {}",
@@ -336,17 +520,43 @@ fn validate_execution_receipt(
             "receipt assertion {} has no evidence locator",
             assertion.name
         );
+        ensure!(
+            assertion.evidence == format!("{}#{}", receipt.transcript_path, assertion.name),
+            "receipt assertion {} must point to its named transcript event",
+            assertion.name
+        );
     }
+    let required_assertions =
+        REQUIRED_EXECUTION_ASSERTIONS.iter().copied().collect::<BTreeSet<_>>();
+    ensure!(
+        assertion_names == required_assertions,
+        "receipt assertions must be exactly {REQUIRED_EXECUTION_ASSERTIONS:?}, got {assertion_names:?}"
+    );
 
     if let Some(artifact) = &receipt.artifact {
-        validate_artifact(artifact)?;
+        validate_artifact_metadata(artifact)?;
     }
     if expected_kind == "packaged_product" {
-        let artifact = receipt
-            .artifact
-            .as_ref()
-            .context("packaged-product receipt must include an artifact")?;
-        validate_artifact(artifact)?;
+        ensure!(receipt.artifact.is_some(), "packaged-product receipt must include an artifact");
+    }
+    Ok(receipt)
+}
+
+fn validate_executable_receipt(
+    root: &Path,
+    tracked_files: &BTreeSet<String>,
+    path: &Path,
+    expected_client_id: &str,
+    expected_kind: &str,
+) -> Result<()> {
+    let receipt = validate_execution_receipt(path, expected_client_id, expected_kind)?;
+    validate_source_revision(root, &receipt.source_revision)?;
+    validate_transcript(root, tracked_files, &receipt)?;
+    if let Some(artifact) = &receipt.artifact {
+        validate_artifact(root, tracked_files, artifact)?;
+    }
+    if expected_kind == "packaged_product" {
+        ensure!(receipt.artifact.is_some(), "packaged-product receipt must include an artifact");
     }
     Ok(())
 }
@@ -510,11 +720,32 @@ fn client_registry_rejects_claim_inflation_and_missing_evidence() -> Result<()> 
                         == repository_path_string(&validate_relative_path(&evidence.path)?),
                     "executable receipt path normalization drifted"
                 );
-                validate_execution_receipt(&receipt_path, &client.id, &evidence.kind)?;
+                validate_executable_receipt(
+                    &root,
+                    &tracked_files,
+                    &receipt_path,
+                    &client.id,
+                    &evidence.kind,
+                )?;
                 validated_execution_kinds.insert(evidence.kind.as_str());
             } else if evidence.kind == "protocol_profile" {
-                validate_protocol_profile_evidence(&root, &evidence.path, &tracked_files)?;
+                let profile = evidence.profile.as_ref().context(format!(
+                    "{} protocol-profile evidence must name its client/profile binding",
+                    client.id
+                ))?;
+                validate_protocol_profile_evidence(
+                    &root,
+                    &evidence.path,
+                    &tracked_files,
+                    &client.id,
+                    profile,
+                )?;
             } else {
+                ensure!(
+                    evidence.profile.is_none(),
+                    "{} non-profile evidence must not carry a profile binding",
+                    client.id
+                );
                 let _ = validate_repository_file(&root, &evidence.path, &tracked_files)?;
             }
         }
@@ -603,6 +834,55 @@ fn client_registry_rejects_claim_inflation_and_missing_evidence() -> Result<()> 
 }
 
 #[test]
+fn protocol_profiles_are_bound_to_the_named_client_and_scenario() -> Result<()> {
+    let root = workspace_root()?;
+    let tracked_files = load_tracked_files(&root)?;
+    let intellij_profile = ProfileEvidence {
+        client_id: "intellij_lsp4ij".to_string(),
+        scenario: "lsp4ij_inline_completion".to_string(),
+    };
+    validate_protocol_profile_evidence(
+        &root,
+        "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+        &tracked_files,
+        "intellij_lsp4ij",
+        &intellij_profile,
+    )?;
+    ensure!(
+        validate_protocol_profile_evidence(
+            &root,
+            "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+            &tracked_files,
+            "neovim",
+            &ProfileEvidence {
+                client_id: "neovim".to_string(),
+                scenario: "neovim_lean_startup".to_string(),
+            },
+        )
+        .is_err(),
+        "a profile source must not be relabeled for another client"
+    );
+    Ok(())
+}
+
+#[test]
+fn registry_schema_rejects_unknown_persisted_fields() -> Result<()> {
+    let source = r#"
+schema = "lsp-client-support.v1"
+source_document = "docs/how-to/EDITOR_SETUP.md"
+owner_issue = 6739
+allowed_tiers = []
+allowed_evidence_kinds = []
+unexpected_future_claim = true
+"#;
+    ensure!(
+        toml::from_str::<Meta>(source).is_err(),
+        "registry metadata accepted an undeclared field"
+    );
+    Ok(())
+}
+
+#[test]
 fn bridge_boundaries_do_not_misrepresent_lsp_as_mcp_or_native_zed_registration() -> Result<()> {
     let registry = load_registry(&workspace_root()?)?;
     let codex = registry
@@ -673,7 +953,17 @@ fn repository_paths_reject_absolute_traversal_and_untracked_files() -> Result<()
         "untracked regular file was accepted as evidence"
     );
     ensure!(
-        validate_protocol_profile_evidence(&root, "Cargo.toml", &tracked_files).is_err(),
+        validate_protocol_profile_evidence(
+            &root,
+            "Cargo.toml",
+            &tracked_files,
+            "neovim",
+            &ProfileEvidence {
+                client_id: "neovim".to_string(),
+                scenario: "lean_startup".to_string(),
+            },
+        )
+        .is_err(),
         "an arbitrary tracked manifest was accepted as protocol-profile evidence"
     );
     Ok(())
@@ -716,16 +1006,16 @@ fn valid_receipt_value(
         "client_executable": "client-under-test",
         "client_version": "1.0.0",
         "server_command": ["perllsp", "--stdio"],
+        "transcript_path": "docs/receipts/lsp-clients/actual/transcript.jsonl",
+        "transcript_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "transport": "stdio",
         "exit_code": 0,
         "stdout_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "stderr_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "assertions": [
-            {
-                "name": "initialize_shutdown_exit",
-                "passed": true,
-                "evidence": "transcript.jsonl#lifecycle"
-            }
+            {"name": "initialize", "passed": true, "evidence": "docs/receipts/lsp-clients/actual/transcript.jsonl#initialize"},
+            {"name": "request_response", "passed": true, "evidence": "docs/receipts/lsp-clients/actual/transcript.jsonl#request_response"},
+            {"name": "clean_shutdown", "passed": true, "evidence": "docs/receipts/lsp-clients/actual/transcript.jsonl#clean_shutdown"}
         ],
         "artifact": artifact
     })
@@ -750,6 +1040,21 @@ fn executable_receipt_schema_accepts_actual_client_and_rejects_relabeling() -> R
     ensure!(
         validate_execution_receipt_path("Cargo.toml", "actual_client",).is_err(),
         "arbitrary repository file was accepted as executable evidence"
+    );
+    let mut malformed_timestamp = value.clone();
+    malformed_timestamp["recorded_at_utc"] = serde_json::json!("2026-99-99TZ");
+    write_receipt(&path, &malformed_timestamp)?;
+    ensure!(
+        validate_execution_receipt(&path, "neovim", "actual_client").is_err(),
+        "malformed UTC timestamp was accepted"
+    );
+
+    let mut arbitrary_command = value.clone();
+    arbitrary_command["server_command"] = serde_json::json!(["echo", "--stdio"]);
+    write_receipt(&path, &arbitrary_command)?;
+    ensure!(
+        validate_execution_receipt(&path, "neovim", "actual_client").is_err(),
+        "arbitrary server command was accepted"
     );
     Ok(())
 }
@@ -791,5 +1096,103 @@ fn executable_receipt_schema_rejects_failed_assertions_and_missing_product_artif
     );
     write_receipt(&packaged_path, &valid_packaged)?;
     validate_execution_receipt(&packaged_path, "vscode", "packaged_product")?;
+
+    let mut invented_assertion = valid_receipt_value("neovim", "actual_client", None);
+    invented_assertion["assertions"] = serde_json::json!([{
+        "name": "process_started",
+        "passed": true,
+        "evidence": "docs/receipts/lsp-clients/actual/transcript.jsonl#process_started"
+    }]);
+    write_receipt(&failed_path, &invented_assertion)?;
+    ensure!(
+        validate_execution_receipt(&failed_path, "neovim", "actual_client").is_err(),
+        "invented assertion set was accepted"
+    );
+
+    let mut unknown_receipt_field = valid_receipt_value("neovim", "actual_client", None);
+    unknown_receipt_field["unreviewed_claim"] = serde_json::json!(true);
+    write_receipt(&failed_path, &unknown_receipt_field)?;
+    ensure!(
+        validate_execution_receipt(&failed_path, "neovim", "actual_client").is_err(),
+        "receipt accepted an undeclared field"
+    );
+    Ok(())
+}
+
+#[test]
+fn executable_subjects_require_reachable_source_and_bound_bytes() -> Result<()> {
+    let root = workspace_root()?;
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("resolve current test candidate")?;
+    ensure!(head.status.success(), "failed to resolve current test candidate");
+    let head = String::from_utf8(head.stdout).context("candidate revision was not UTF-8")?;
+    validate_source_revision(&root, head.trim())?;
+    ensure!(
+        validate_source_revision(&root, &"a".repeat(40)).is_err(),
+        "unreachable source revision was accepted"
+    );
+
+    let fixture_root = tempfile::tempdir().context("create executable subject fixture")?;
+    let artifact_path = fixture_root.path().join("dist/perllsp.vsix");
+    fs::create_dir_all(artifact_path.parent().context("artifact fixture has no parent")?)?;
+    let artifact_bytes = b"packaged-candidate";
+    fs::write(&artifact_path, artifact_bytes)?;
+    let tracked_files = ["dist/perllsp.vsix".to_string()].into_iter().collect();
+    let artifact = ReceiptArtifact {
+        path: "dist/perllsp.vsix".to_string(),
+        sha256: sha256_hex(artifact_bytes),
+        size_bytes: artifact_bytes.len() as u64,
+    };
+    validate_artifact(fixture_root.path(), &tracked_files, &artifact)?;
+    let mut wrong_size = artifact.clone();
+    wrong_size.size_bytes += 1;
+    ensure!(
+        validate_artifact(fixture_root.path(), &tracked_files, &wrong_size).is_err(),
+        "artifact with an incorrect size was accepted"
+    );
+    let mut wrong_digest = artifact.clone();
+    wrong_digest.sha256 = "a".repeat(64);
+    ensure!(
+        validate_artifact(fixture_root.path(), &tracked_files, &wrong_digest).is_err(),
+        "artifact with an incorrect digest was accepted"
+    );
+    let missing = ReceiptArtifact { path: "dist/missing.vsix".to_string(), ..artifact };
+    ensure!(
+        validate_artifact(fixture_root.path(), &tracked_files, &missing).is_err(),
+        "missing artifact was accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn executable_transcripts_require_existing_matching_bytes() -> Result<()> {
+    let root = tempfile::tempdir().context("create transcript fixture")?;
+    let transcript_path = root.path().join("docs/receipts/lsp-clients/actual/transcript.jsonl");
+    fs::create_dir_all(transcript_path.parent().context("transcript fixture has no parent")?)?;
+    let transcript = concat!(
+        "{\"event\":\"initialize\"}\n",
+        "{\"event\":\"request_response\"}\n",
+        "{\"event\":\"clean_shutdown\"}\n"
+    );
+    fs::write(&transcript_path, transcript)?;
+    let tracked_files =
+        ["docs/receipts/lsp-clients/actual/transcript.jsonl".to_string()].into_iter().collect();
+    let mut value = valid_receipt_value("neovim", "actual_client", None);
+    value["transcript_sha256"] = serde_json::json!(sha256_hex(transcript.as_bytes()));
+    let receipt_path = root.path().join("receipt.json");
+    write_receipt(&receipt_path, &value)?;
+    let receipt = validate_execution_receipt(&receipt_path, "neovim", "actual_client")?;
+    validate_transcript(root.path(), &tracked_files, &receipt)?;
+    value["transcript_sha256"] = serde_json::json!("a".repeat(64));
+    write_receipt(&receipt_path, &value)?;
+    let receipt = validate_execution_receipt(&receipt_path, "neovim", "actual_client")?;
+    ensure!(
+        validate_transcript(root.path(), &tracked_files, &receipt).is_err(),
+        "transcript with an incorrect digest was accepted"
+    );
     Ok(())
 }

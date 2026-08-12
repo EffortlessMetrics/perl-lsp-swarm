@@ -79,7 +79,7 @@ requires_actual_client_receipt = true
 synthetic_profile = true
 evidence = [
   { path = "docs/EDITORS/INTELLIJ_IDEA_SETUP.md", kind = "documentation" },
-  { path = "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs", kind = "protocol_profile" },
+  { path = "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs", kind = "protocol_profile", profile = { client_id = "intellij_lsp4ij", scenario = "lsp4ij_inline_completion" } },
 ]
 known_overrides = ["dynamic file-watcher registration suppressed for LSP4IJ-shaped clients"]
 external_dependency = "LSP4IJ"
@@ -95,7 +95,7 @@ requires_actual_client_receipt = true
 synthetic_profile = true
 evidence = [
   { path = "docs/EDITORS/NEOVIM_SETUP.md", kind = "documentation" },
-  { path = "crates/perl-lsp-ux-tests/tests/ux_neovim_lean_startup_trace.rs", kind = "protocol_profile" },
+  { path = "crates/perl-lsp-ux-tests/tests/ux_neovim_lean_startup_trace.rs", kind = "protocol_profile", profile = { client_id = "neovim", scenario = "neovim_lean_startup" } },
 ]
 known_overrides = ["lean profile disables eager indexing and file watchers"]
 external_dependency = ""
