@@ -1,5 +1,10 @@
 //! Native critic rule registry and profile orchestration.
 
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use super::super::{CriticConfig, Severity, Violation};
 use super::native_contract::{CriticContext, CriticFinding, CriticRule, PragmaEntries};
 use super::native_suppressions::CriticSuppressionMap;
@@ -14,27 +19,30 @@ use super::{
     UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
-/// Native critic rule bundle used by receipt and readiness tooling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Native critic rule bundle used by configuration, diagnostics, and readiness tooling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NativeCriticProfile {
-    /// Lower-noise candidate for eventual default/native recommended use.
+    /// Lower-noise default for normal editor diagnostics.
+    #[default]
     Recommended,
     /// Every registered native rule, useful for strict audits and rule coverage.
     Strict,
 }
 
 impl NativeCriticProfile {
+    /// Canonical tokens accepted at external configuration boundaries.
+    pub const VALID_OPTIONS: &'static str = "recommended, strict";
+
     /// Parse a native critic profile token.
+    ///
+    /// Leading/trailing whitespace and ASCII case are normalized at the
+    /// boundary. Callers can carry this enum while removing profile reparsing.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "recommended" => Some(Self::Recommended),
-            "strict" => Some(Self::Strict),
-            _ => None,
-        }
+        raw.parse().ok()
     }
 
-    /// Stable profile label for receipts.
+    /// Stable canonical profile label for configuration, receipts, and display.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -43,6 +51,70 @@ impl NativeCriticProfile {
         }
     }
 }
+
+impl fmt::Display for NativeCriticProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for NativeCriticProfile {
+    type Err = NativeCriticProfileParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "recommended" => Ok(Self::Recommended),
+            "strict" => Ok(Self::Strict),
+            _ => Err(NativeCriticProfileParseError { value: raw.to_string() }),
+        }
+    }
+}
+
+impl Serialize for NativeCriticProfile {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeCriticProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Error returned when an external profile token is not recognized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCriticProfileParseError {
+    value: String,
+}
+
+impl NativeCriticProfileParseError {
+    /// Unrecognized token exactly as supplied by the caller.
+    #[must_use]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+impl fmt::Display for NativeCriticProfileParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unrecognized native critic profile '{}'; expected {}",
+            self.value,
+            NativeCriticProfile::VALID_OPTIONS
+        )
+    }
+}
+
+impl std::error::Error for NativeCriticProfileParseError {}
 
 /// Registry for Rust-native critic rules.
 ///
@@ -291,4 +363,55 @@ fn rule_enabled(rule: &dyn CriticRule, config: &CriticConfig) -> bool {
 
 fn severity_enabled(severity: Severity, config: &CriticConfig) -> bool {
     severity as u8 >= config.severity
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use std::str::FromStr;
+
+    use super::{NativeCriticProfile, NativeCriticProfileParseError};
+
+    #[test]
+    fn recommended_is_the_internal_default() {
+        assert_eq!(NativeCriticProfile::default(), NativeCriticProfile::Recommended);
+    }
+
+    #[test]
+    fn parsing_normalizes_only_case_and_surrounding_whitespace() {
+        assert_eq!(
+            NativeCriticProfile::from_str(" Recommended "),
+            Ok(NativeCriticProfile::Recommended)
+        );
+        assert_eq!(
+            NativeCriticProfile::from_str("STRICT"),
+            Ok(NativeCriticProfile::Strict)
+        );
+        assert!(NativeCriticProfile::from_str("recomended").is_err());
+    }
+
+    #[test]
+    fn invalid_tokens_preserve_the_original_value_in_the_error() {
+        let error = NativeCriticProfile::from_str(" recomended ");
+        assert_eq!(
+            error,
+            Err(NativeCriticProfileParseError { value: " recomended ".to_string() })
+        );
+    }
+
+    #[test]
+    fn serde_round_trips_canonical_tokens() -> Result<(), serde_json::Error> {
+        for profile in [NativeCriticProfile::Recommended, NativeCriticProfile::Strict] {
+            let encoded = serde_json::to_string(&profile)?;
+            assert_eq!(encoded, format!("\"{}\"", profile.as_str()));
+            let decoded: NativeCriticProfile = serde_json::from_str(&encoded)?;
+            assert_eq!(decoded, profile);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn serde_rejects_unknown_tokens_without_widening() {
+        let decoded = serde_json::from_str::<NativeCriticProfile>("\"unknown\"");
+        assert!(decoded.is_err());
+    }
 }
