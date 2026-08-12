@@ -313,9 +313,9 @@ fn classify(raw: RawObligation, as_of: NaiveDate) -> CadenceObligation {
         CadenceState::Expired
     } else if days_until_expiry.is_some_and(|days| days <= EXPIRY_WINDOW_DAYS) {
         CadenceState::Expiring
-    } else if days_until_review.is_some_and(|days| {
-        days < 0 || (days == 0 && raw.source_kind == "quality_gate_exception")
-    }) {
+    } else if days_until_review
+        .is_some_and(|days| days < 0 || (days == 0 && raw.source_kind == "quality_gate_exception"))
+    {
         CadenceState::ReviewOverdue
     } else if days_until_review.is_some_and(|days| days <= REVIEW_WINDOW_DAYS) {
         CadenceState::ReviewDueSoon

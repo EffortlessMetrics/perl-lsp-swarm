@@ -127,12 +127,14 @@ pub fn validate_compile_baseline_v2(
     let files_passed =
         baseline.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
     let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total = checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-        result.assertions_total
-    })?;
-    let tap_assertions_passed = checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-        result.assertions_passed
-    })?;
+    let tap_assertions_total =
+        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
+            result.assertions_total
+        })?;
+    let tap_assertions_passed =
+        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
+            result.assertions_passed
+        })?;
     if baseline.files_total != files_total
         || baseline.files_passed != files_passed
         || baseline.files_failed != files_failed
@@ -177,12 +179,14 @@ pub fn validate_accepted_baseline(
                 .filter(|result| result.status == RunnerStatus::Pass)
                 .count();
             let files_failed = files_total.saturating_sub(files_passed);
-            let tap_assertions_total = checked_assertion_sum(&value.file_results, "accepted", |result| {
-                result.assertions_total
-            })?;
-            let tap_assertions_passed = checked_assertion_sum(&value.file_results, "accepted", |result| {
-                result.assertions_passed
-            })?;
+            let tap_assertions_total =
+                checked_assertion_sum(&value.file_results, "accepted", |result| {
+                    result.assertions_total
+                })?;
+            let tap_assertions_passed =
+                checked_assertion_sum(&value.file_results, "accepted", |result| {
+                    result.assertions_passed
+                })?;
             if value.files_total != files_total
                 || value.files_passed != files_passed
                 || value.files_failed != files_failed
@@ -299,12 +303,10 @@ fn validate_summary_against_file_results(
     let files_passed =
         report.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
     let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total = checked_assertion_sum(&report.file_results, "current", |result| {
-        result.assertions_total
-    })?;
-    let tap_assertions_passed = checked_assertion_sum(&report.file_results, "current", |result| {
-        result.assertions_passed
-    })?;
+    let tap_assertions_total =
+        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_total)?;
+    let tap_assertions_passed =
+        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_passed)?;
     if report.summary.files_total != files_total
         || report.summary.files_passed != files_passed
         || report.summary.files_failed != files_failed
