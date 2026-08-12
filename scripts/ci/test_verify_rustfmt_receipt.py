@@ -200,6 +200,25 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
                 self.payload = self._valid_payload()
                 self.assert_rejected(mutation)
 
+    def test_incoherent_target_and_duplicate_package_are_rejected(self) -> None:
+        self.assert_rejected(
+            lambda value: value["workspace"]["targets"][0].update(
+                package="absent", manifest="absent/Cargo.toml"
+            )
+        )
+
+        def duplicate_package(value) -> None:
+            value["workspace"]["manifests"].append(
+                {"manifest": "other/Cargo.toml", "package": "pkg"}
+            )
+            value["workspace"]["manifest_count"] = 2
+            value["runs"].append(
+                {"manifest": "other/Cargo.toml", "package": "pkg", "status": "pass"}
+            )
+
+        self.payload = self._valid_payload()
+        self.assert_rejected(duplicate_package)
+
     def test_incoherent_counts_findings_and_truncation_are_rejected(self) -> None:
         self.assert_rejected(lambda value: value["workspace"].update(manifest_count=2))
         self.payload = self._valid_payload()

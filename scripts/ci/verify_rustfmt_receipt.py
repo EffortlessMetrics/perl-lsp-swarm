@@ -165,16 +165,19 @@ def verify(args: argparse.Namespace) -> None:
         require_nonempty_string(row, "package", "formatter run package")
         for row in runs
     ]
-    if len(set(manifest_names)) != len(manifests):
+    manifest_identities = set(zip(manifest_packages, manifest_names, strict=True))
+    if len(set(manifest_names)) != len(manifests) or len(set(manifest_packages)) != len(manifests):
         raise VerificationError("workspace manifests must be unique and coherent")
     target_sources = [
         require_nonempty_string(row, "source", "workspace target source")
         for row in targets
     ]
+    target_identities = []
     for row in targets:
-        require_nonempty_string(row, "package", "workspace target package")
+        target_package = require_nonempty_string(row, "package", "workspace target package")
         require_nonempty_string(row, "name", "workspace target name")
-        require_nonempty_string(row, "manifest", "workspace target manifest")
+        target_manifest = require_nonempty_string(row, "manifest", "workspace target manifest")
+        target_identities.append((target_package, target_manifest))
         kinds = row.get("kind")
         if not isinstance(kinds, list) or not kinds or any(
             not isinstance(kind, str) or not kind for kind in kinds
@@ -182,6 +185,8 @@ def verify(args: argparse.Namespace) -> None:
             raise VerificationError("workspace target kind must contain nonempty strings")
     if len(set(target_sources)) != len(targets):
         raise VerificationError("workspace targets must be unique and coherent")
+    if any(identity not in manifest_identities for identity in target_identities):
+        raise VerificationError("workspace target package and manifest must match a workspace manifest")
     if (
         run_names != manifest_names
         or run_packages != manifest_packages
