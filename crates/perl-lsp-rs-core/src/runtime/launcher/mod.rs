@@ -209,7 +209,7 @@ pub fn log_server_startup(
 #[derive(Args, Debug, Clone)]
 pub struct TransportArgs {
     /// Use stdio for communication (default)
-    #[arg(long, visible_alias = "mcp", default_value_t = false, conflicts_with = "socket")]
+    #[arg(long, default_value_t = false, conflicts_with = "socket")]
     pub stdio: bool,
 
     /// Use TCP socket for communication
@@ -513,6 +513,8 @@ pub enum LaunchParseError {
         /// Closest known option, when the parser can name one.
         suggestion: Option<String>,
     },
+    /// The retired `--mcp` spelling was used for the LSP stdio transport.
+    McpAliasRejected,
     /// A parse failure other than an unknown option — an argument conflict, an
     /// invalid value, or a missing value.
     ///
@@ -567,6 +569,10 @@ impl fmt::Display for LaunchParseError {
                 }
                 None => write!(f, "Unknown option: {option}"),
             },
+            Self::McpAliasRejected => write!(
+                f,
+                "`--mcp` is not an LSP transport alias.\nUse `perllsp --stdio` for LSP.\nUse `perllsp mcp --stdio` only when the native MCP adapter is available."
+            ),
             Self::ParserDiagnostic { rendered } => write!(f, "{rendered}"),
             Self::MissingValue { option } => {
                 write!(f, "Missing value for {option}")
@@ -603,6 +609,7 @@ impl perl_parser_core::ErrorClass for LaunchParseError {
         // infrastructure, protocol, or transient failures.
         match self {
             Self::UnknownOption { .. }
+            | Self::McpAliasRejected
             | Self::ParserDiagnostic { .. }
             | Self::MissingValue { .. }
             | Self::InvalidFeatureProfile { .. }
@@ -760,6 +767,10 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
 
     while index < args.len() {
         let token = args[index].to_string_lossy();
+
+        if token == "--mcp" || token.starts_with("--mcp=") {
+            return Err(LaunchParseError::McpAliasRejected);
+        }
 
         if token == "--port" {
             let next = args.get(index + 1).map(|value| value.to_string_lossy().to_string());
