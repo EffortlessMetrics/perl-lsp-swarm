@@ -1,0 +1,100 @@
+}
+
+fn parse_per_crate_test_counts(output: &str) -> PerCrateTestCounts {
+    let mut by_crate: BTreeMap<String, usize> = BTreeMap::new();
+    let mut current_crate: Option<String> = None;
+    let mut discovered = 0usize;
+    let mut attributed = 0usize;
+    for line in output.lines() {
+        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(line) {
+            current_crate = Some(caps[1].replace('_', "-"));
+            continue;
+        }
+        if TEST_LIST_LINE_RE.is_match(line) {
+            discovered += 1;
+            if let Some(ref krate) = current_crate {
+                *by_crate.entry(krate.clone()).or_default() += 1;
+                attributed += 1;
+            }
+        }
+    }
+    PerCrateTestCounts { by_crate, unattributed: discovered.saturating_sub(attributed) }
+}
+
+''',
+        "",
+    )
+    replace_once(
+        quality,
+        "    tests: &PerCrateTestCounts,\n",
+        "    tests: &WorkspaceLibTestInventory,\n",
+    )
+    replace_once(quality, "    for k in tests.by_crate.keys() {\n", "    for k in tests.by_crate().keys() {\n")
+    replace_exact(
+        quality,
+        "        if tests.unattributed > 0 {\n",
+        "        if tests.unattributed() > 0 {\n",
+        1,
+    )
+    replace_exact(
+        quality,
+        "                tests.unattributed\n",
+        "                tests.unattributed()\n",
+        1,
+    )
+    replace_once(
+        quality,
+        "        let t = tests.by_crate.get(c).map_or_else(|| \"—\".to_string(), |n| n.to_string());\n",
+        "        let t = tests.by_crate().get(c).map_or_else(|| \"—\".to_string(), |n| n.to_string());\n",
+    )
+    replace_exact(
+        quality,
+        "    if tests.unattributed > 0 {\n",
+        "    if tests.unattributed() > 0 {\n",
+        1,
+    )
+    replace_exact(
+        quality,
+        "            tests.unattributed\n",
+        "            tests.unattributed()\n",
+        1,
+    )
+    replace_once(
+        quality,
+        "pub(super) fn generate_quality_status(root: &Path, original: &str) -> Result<String> {\n    let mutation_by_crate = collect_per_crate_mutation(root);\n    let tests_by_crate = collect_per_crate_test_counts(root)?;\n",
+        "pub(super) fn generate_quality_status(\n    root: &Path,\n    original: &str,\n    test_inventory: &WorkspaceLibTestInventory,\n) -> Result<String> {\n    let mutation_by_crate = collect_per_crate_mutation(root);\n",
+    )
+    replace_once(
+        quality,
+        "    let crate_table = format_crate_quality_table(&mutation_by_crate, &tests_by_crate);\n",
+        "    let crate_table = format_crate_quality_table(&mutation_by_crate, test_inventory);\n",
+    )
+
+    quality_tests = Path("xtask/src/tasks/update_status/quality/tests.rs")
+    replace_once(
+        quality_tests,
+        '''    let tests = PerCrateTestCounts {
+        by_crate: BTreeMap::from([(String::from("perl-quote"), 42)]),
+        unattributed: 0,
+    };
+''',
+        '''    let tests = WorkspaceLibTestInventory::from_parts(
+        BTreeMap::from([(String::from("perl-quote"), 42)]),
+        0,
+    );
+''',
+    )
+    replace_once(
+        quality_tests,
+        "    let table = format_crate_quality_table(&BTreeMap::new(), &PerCrateTestCounts::default());\n",
+        "    let table =\n        format_crate_quality_table(&BTreeMap::new(), &WorkspaceLibTestInventory::default());\n",
+    )
+    replace_once(
+        quality_tests,
+        '''    let tests = PerCrateTestCounts { by_crate: BTreeMap::new(), unattributed: 2 };
+''',
+        '''    let tests = WorkspaceLibTestInventory::from_parts(BTreeMap::new(), 2);
+''',
+    )
+    start = quality_tests.read_text(encoding="utf-8").find(
+        "#[test]\nfn test_parse_per_crate_test_counts_parses_unix_and_windows_paths()"
