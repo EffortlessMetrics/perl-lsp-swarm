@@ -75,6 +75,23 @@ jobs:
               raise SystemExit(
                   f"expected exactly one workspace lib-test discovery, found {len(matches)}: {matches!r}"
               )
+
+          quality = Path("docs/project/status/quality.md").read_text(encoding="utf-8")
+          block = quality.split("<!-- BEGIN: QUALITY_CRATE_TABLE -->", 1)[1].split(
+              "<!-- END: QUALITY_CRATE_TABLE -->", 1
+          )[0]
+          rows: dict[str, int] = {}
+          for line in block.splitlines():
+              if not line.startswith("|"):
+                  continue
+              cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+              if len(cells) == 3 and cells[2].isdigit():
+                  rows[cells[0]] = int(cells[2])
+          if len(rows) < 10 or rows.get("perl-parser", 0) == 0:
+              raise SystemExit(
+                  "shared inventory lost per-crate attribution: "
+                  f"rows={len(rows)}, perl-parser={rows.get('perl-parser')}"
+              )
           PY
           git diff --name-only -z -- docs | xargs -0 -r git checkout --
 
