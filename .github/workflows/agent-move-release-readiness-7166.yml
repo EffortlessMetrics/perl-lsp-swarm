@@ -33,8 +33,14 @@ jobs:
       - name: Validate locked workspace metadata
         run: cargo metadata --locked --no-deps --format-version 1 >/dev/null
 
-      - name: Clippy moved crate and xtask surfaces
-        run: cargo clippy -p perl-release-readiness -p xtask --tests -- -D warnings
+      - name: Clippy moved crate
+        run: cargo clippy -p perl-release-readiness --tests -- -D warnings
+
+      - name: Compile canonical release-readiness CLI test
+        run: cargo test -p xtask --test release_readiness_cli --locked --no-run
+
+      - name: Compile deprecated perl-kwalitee alias test
+        run: cargo test -p xtask --test perl_kwalitee_alias_cli --locked --no-run
 
       - name: Test moved crate
         run: cargo test -p perl-release-readiness --locked
