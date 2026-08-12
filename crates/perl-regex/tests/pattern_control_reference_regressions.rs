@@ -61,8 +61,8 @@ fn positive_relative_g_reference_is_rejected() {
 }
 
 #[test]
-fn missing_plain_numeric_escape_remains_ambiguous_with_octal() {
-    let analysis = analyze(r"\1");
+fn multi_digit_plain_escape_only_uses_captures_already_opened() {
+    let analysis = analyze(r"\10(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)");
 
     assert_eq!(analysis.facts.len(), 1);
     assert!(matches!(
@@ -72,4 +72,16 @@ fn missing_plain_numeric_escape_remains_ambiguous_with_octal() {
         )
     ));
     assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn single_digit_plain_escape_remains_a_backreference() {
+    let analysis = analyze(r"(a)\1");
+
+    assert_eq!(analysis.facts.len(), 1);
+    assert!(matches!(
+        &analysis.facts[0].resolution,
+        PatternControlResolution::Resolved { targets }
+            if targets.len() == 1 && targets[0].index() == 0
+    ));
 }
