@@ -1,13 +1,15 @@
 //! Thin CLI for the transition classify + check command surface.
 //!
-//! `classify` loads V2 accepted baseline + current run-report JSON, applies the
-//! in-lib `classify_transition` core, and writes a non-authorizing classification
-//! receipt (with input digests) to `--output`.
+//! `classify` loads V2 accepted baseline + current run-report JSON, optionally
+//! binds `--series` identity, applies the in-lib `classify_transition` core, and
+//! writes a non-authorizing classification receipt (with input digests) to
+//! `--output`.
 //!
-//! `check` reloads the same evidence, recomputes classification + digests, and
-//! verifies an existing receipt matches exactly.
+//! `check` reloads the same evidence (and optional series), recomputes
+//! classification + digests, and verifies an existing receipt matches exactly.
 //!
-//! Discovery/series binding and Windows hard-link identity remain follow-up
+//! Discovery-report binding, series file-membership binding, series
+//! subject-field binding, and Windows hard-link identity remain follow-up
 //! slices. Full #6880 validated-wrapper centralization is intentionally out of
 //! scope.
 
@@ -18,7 +20,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness::transition::{AcceptedBaseline, Classification, classify_transition};
 use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2,
-    RUN_REPORT_SCHEMA_VERSION, RunReport,
+    RUN_REPORT_SCHEMA_VERSION, RunReport, SERIES_MANIFEST_SCHEMA_VERSION, SeriesManifest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -56,6 +58,10 @@ fn run_classify(config: &ClassifyConfig) -> Result<()> {
     let compile_bytes = read_bytes(&config.compile, "compile observation")?;
     let accepted = decode_accepted_v2(&accepted_bytes, &config.accepted_baseline)?;
     let current = decode_run_report(&compile_bytes, &config.compile)?;
+    if let Some(series_path) = &config.series {
+        let series = load_series_manifest(series_path)?;
+        bind_series_identity(&series, &accepted)?;
+    }
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     write_classification_receipt(
         &config.output,
@@ -70,6 +76,10 @@ fn run_check(config: &CheckConfig) -> Result<()> {
     let compile_bytes = read_bytes(&config.compile, "compile observation")?;
     let accepted = decode_accepted_v2(&accepted_bytes, &config.accepted_baseline)?;
     let current = decode_run_report(&compile_bytes, &config.compile)?;
+    if let Some(series_path) = &config.series {
+        let series = load_series_manifest(series_path)?;
+        bind_series_identity(&series, &accepted)?;
+    }
     let expected = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     let expected_accepted_digest = sha256_digest_bytes(&accepted_bytes);
     let expected_compile_digest = sha256_digest_bytes(&compile_bytes);
@@ -86,9 +96,10 @@ fn reject_output_input_path_collision(config: &ClassifyConfig) -> Result<()> {
     // Lean path-string identity only. Symlink/hard-link identity remains deferred.
     if paths_equal(&config.output, &config.accepted_baseline)
         || paths_equal(&config.output, &config.compile)
+        || config.series.as_ref().is_some_and(|series| paths_equal(&config.output, series))
     {
         bail!(
-            "output path must not alias --accepted-baseline or --compile; refusing to overwrite evidence"
+            "output path must not alias --accepted-baseline, --compile, or --series; refusing to overwrite evidence"
         );
     }
     Ok(())
@@ -128,6 +139,41 @@ fn decode_run_report(bytes: &[u8], path: &Path) -> Result<RunReport> {
         );
     }
     Ok(report)
+}
+
+fn load_series_manifest(path: &Path) -> Result<SeriesManifest> {
+    let bytes = read_bytes(path, "series manifest")?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding series manifest JSON {}", path.display()))?;
+    let schema =
+        value.get("schema_version").and_then(serde_json::Value::as_str).unwrap_or("missing");
+    if schema != SERIES_MANIFEST_SCHEMA_VERSION {
+        bail!(
+            "unsupported series manifest schema: {schema}; classify I/O accepts {} only",
+            SERIES_MANIFEST_SCHEMA_VERSION
+        );
+    }
+    serde_json::from_value(value)
+        .with_context(|| format!("decoding series manifest {}", path.display()))
+}
+
+/// Lean series identity binding for classify/check.
+///
+/// Binds accepted V2 to an explicit `--series` manifest via `series_id` and
+/// `manifest_hash` only. File-membership and subject profile/runner/perl checks
+/// remain follow-up slices. Does not rehash the series, bind discovery reports,
+/// or centralize #6880 validated wrappers.
+fn bind_series_identity(series: &SeriesManifest, accepted: &CompileBaselineV2) -> Result<()> {
+    if accepted.series_id != series.series_id {
+        bail!("accepted baseline is not bound to series {}: series_id mismatch", series.series_id);
+    }
+    if accepted.manifest_hash != series.manifest_hash {
+        bail!(
+            "accepted baseline is not bound to series {}: manifest_hash mismatch",
+            series.series_id
+        );
+    }
+    Ok(())
 }
 
 fn write_classification_receipt(
@@ -224,7 +270,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 const CLASSIFY_RECEIPT_SCHEMA_VERSION: &str = "perl_core_harness.transition_classify_result.v1";
-const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets, bind discovery/series, or claim hard-link identity";
+const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets, bind discovery reports, bind series membership/subject fields, or claim hard-link identity";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct ClassifyReceipt {
@@ -254,14 +300,58 @@ mod classify_config_observer {
                 "compile.json".to_string(),
                 "--output".to_string(),
                 "out.json".to_string(),
-                "--series".to_string(),
-                "series.json".to_string(),
+                "--discovery".to_string(),
+                "discovery.json".to_string(),
             ]
             .into_iter(),
         )
         .expect_err("unrecognized options must fail")
         .to_string();
-        assert_eq!(err, "unrecognized option(s): --series");
+        assert_eq!(err, "unrecognized option(s): --discovery");
+    }
+
+    #[test]
+    fn series_option_is_accepted_by_parse() {
+        let options = Options::parse(
+            [
+                "--accepted-baseline".to_string(),
+                "accepted.json".to_string(),
+                "--compile".to_string(),
+                "compile.json".to_string(),
+                "--output".to_string(),
+                "out.json".to_string(),
+                "--series".to_string(),
+                "series.json".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("series option must parse");
+        let config = ClassifyConfig::from_options(options).expect("classify config");
+        assert_eq!(config.series, Some(PathBuf::from("series.json")));
+    }
+
+    /// RIPR observer for `Options::optional` empty-recorded queue → absent.
+    #[test]
+    fn optional_empty_recorded_value_is_treated_as_absent() {
+        let mut values = BTreeMap::new();
+        values.insert("--series".to_string(), VecDeque::new());
+        let mut options = Options { values };
+        let value = options.optional("--series").expect("empty recorded optional is absent");
+        assert_eq!(value, None);
+    }
+
+    /// RIPR observer for `Options::optional` duplicate-value rejection.
+    #[test]
+    fn optional_duplicate_value_error_is_observed() {
+        let mut values = BTreeMap::new();
+        let mut recorded = VecDeque::new();
+        recorded.push_back("a.json".to_string());
+        recorded.push_back("b.json".to_string());
+        values.insert("--series".to_string(), recorded);
+        let mut options = Options { values };
+        let err =
+            options.optional("--series").expect_err("duplicate optional must fail").to_string();
+        assert_eq!(err, "option --series may be supplied only once");
     }
 
     #[test]
@@ -375,10 +465,140 @@ mod classify_io_observer {
             accepted_baseline: PathBuf::from("accepted.json"),
             compile: PathBuf::from("compile.json"),
             output: PathBuf::from("accepted.json"),
+            series: None,
         })
         .expect_err("alias must fail")
         .to_string();
         assert_eq!(err.contains("output path must not alias"), true);
+    }
+
+    /// RIPR-named observer for output/--series path-string collision rejection.
+    #[test]
+    fn output_series_path_collision_bail_is_observed() {
+        let err = reject_output_input_path_collision(&ClassifyConfig {
+            accepted_baseline: PathBuf::from("accepted.json"),
+            compile: PathBuf::from("compile.json"),
+            output: PathBuf::from("series.json"),
+            series: Some(PathBuf::from("series.json")),
+        })
+        .expect_err("series alias must fail")
+        .to_string();
+        assert_eq!(err.contains("--series"), true);
+    }
+
+    /// RIPR boundary discriminator for unsupported series schema rejection.
+    #[test]
+    fn load_series_manifest_schema_boundary_discriminator() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("series.json");
+        let schema = "perl_core_harness.comparison_series.not_v1";
+        assert_eq!(schema != SERIES_MANIFEST_SCHEMA_VERSION, true);
+        fs::write(&path, format!(r#"{{"schema_version":"{schema}"}}"#)).expect("write");
+        let err = load_series_manifest(&path)
+            .expect_err("unsupported series schema must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "unsupported series manifest schema: {schema}; classify I/O accepts {} only",
+                SERIES_MANIFEST_SCHEMA_VERSION
+            )
+        );
+    }
+
+    /// RIPR boundary discriminator for accepted.series_id != series.series_id.
+    #[test]
+    fn bind_series_series_id_boundary_discriminator() {
+        let (series, mut accepted) = series_bind_fixture();
+        accepted.series_id = "other".into();
+        assert_eq!(accepted.series_id != series.series_id, true);
+        let err = bind_series_identity(&series, &accepted)
+            .expect_err("series_id mismatch must fail")
+            .to_string();
+        assert_eq!(err, "accepted baseline is not bound to series series: series_id mismatch");
+    }
+
+    /// RIPR boundary discriminator for accepted.manifest_hash != series.manifest_hash.
+    #[test]
+    fn bind_series_manifest_hash_boundary_discriminator() {
+        let (series, mut accepted) = series_bind_fixture();
+        accepted.manifest_hash = "other-hash".into();
+        assert_eq!(accepted.manifest_hash != series.manifest_hash, true);
+        let err = bind_series_identity(&series, &accepted)
+            .expect_err("manifest_hash mismatch must fail")
+            .to_string();
+        assert_eq!(err, "accepted baseline is not bound to series series: manifest_hash mismatch");
+    }
+
+    /// Claim-boundary proof: membership mismatch alone is deferred (not bound).
+    #[test]
+    fn bind_series_defers_membership_mismatch() {
+        let (series, mut accepted) = series_bind_fixture();
+        accepted.file_membership = vec!["base/9.t".into()];
+        assert_eq!(accepted.file_membership != series.normalized_manifest, true);
+        bind_series_identity(&series, &accepted).expect("membership is deferred this slice");
+    }
+
+    fn series_bind_fixture() -> (SeriesManifest, CompileBaselineV2) {
+        let series = SeriesManifest {
+            schema_version: SERIES_MANIFEST_SCHEMA_VERSION.to_string(),
+            series_id: "series".into(),
+            profile: perl_core_harness_types::HarnessProfile::Base,
+            profile_roots: vec!["base".into()],
+            repository_commit: "a".repeat(40),
+            perl_requested_ref: "perl".into(),
+            perl_resolved_ref: "perl".into(),
+            runner: perl_core_harness_types::HarnessRunner::Test,
+            normalized_manifest: vec!["base/0.t".into()],
+            manifest_hash: "manifest".into(),
+            preparation_receipt_id: "prepare".into(),
+            preparation_receipt_digest: "sha256:prep".into(),
+            harness_schema_version: "perl_core_harness.discovery.v1".into(),
+            compiler_subject_identity: "compiler".into(),
+            invocation_identity: "invocation".into(),
+            capability_identity: "capability".into(),
+            environment_identity: "environment".into(),
+            normalization_version: "path-normalization.v1".into(),
+            created_at: "2026-08-11T00:00:00Z".into(),
+            replaces_series_id: None,
+            change_reason: None,
+        };
+        let accepted = CompileBaselineV2 {
+            schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.into(),
+            report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            series_id: "series".into(),
+            manifest_hash: "manifest".into(),
+            repository_commit: "a".repeat(40),
+            perl_resolved_ref: "perl".into(),
+            preparation_receipt_id: "prepare".into(),
+            compiler_subject_identity: "compiler".into(),
+            invocation_identity: "invocation".into(),
+            capability_identity: "capability".into(),
+            environment_identity: "environment".into(),
+            source_report_digest: "digest".into(),
+            accepted_transition_id: None,
+            evidence_bundle: None,
+            mode: perl_core_harness_types::HarnessMode::Compile,
+            profile: perl_core_harness_types::HarnessProfile::Base,
+            runner: perl_core_harness_types::HarnessRunner::Test,
+            file_membership: vec!["base/0.t".into()],
+            files_total: 1,
+            files_passed: 1,
+            files_failed: 0,
+            tap_assertions_total: 1,
+            tap_assertions_passed: 1,
+            buckets: BTreeMap::new(),
+            expected_failures: Vec::new(),
+            file_results: vec![perl_core_harness_types::RunFileResult {
+                path: "base/0.t".into(),
+                status: perl_core_harness_types::RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+            }],
+            semantic_boundaries: Vec::new(),
+            boundary_retirements: Vec::new(),
+        };
+        (series, accepted)
     }
 
     /// RIPR boundary discriminator for digest mismatch rejection.

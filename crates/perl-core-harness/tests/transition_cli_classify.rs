@@ -50,17 +50,17 @@ fn classify_cli_rejects_unrecognized_option() {
             "compile.json",
             "--output",
             "out.json",
-            "--series",
-            "series.json",
+            "--discovery",
+            "discovery.json",
         ])
         .output()
         .expect("spawn classify CLI");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let marker = "unrecognized option(s): --series";
+    let marker = "unrecognized option(s): --discovery";
     let observed = stderr.contains(marker);
     assert_eq!(observed, true);
-    assert_eq!(marker, "unrecognized option(s): --series");
+    assert_eq!(marker, "unrecognized option(s): --discovery");
 }
 
 #[test]
@@ -117,6 +117,40 @@ fn classify_cli_rejects_output_aliasing_accepted_baseline() {
     assert!(stderr.contains("output path must not alias"), "unexpected stderr: {stderr}");
     let retained = fs::read_to_string(&accepted).expect("accepted retained");
     assert!(retained.contains(COMPILE_BASELINE_V2_SCHEMA_VERSION));
+}
+
+#[test]
+fn classify_cli_rejects_output_aliasing_series() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    write_baseline(&accepted, 1, 1);
+    write_report(&compile, 1, 1);
+    write_series(&series, "series", "manifest", &["base/0.t"]);
+    let series_path = series.to_str().expect("utf8");
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series_path,
+            "--output",
+            series_path,
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("output path must not alias") && stderr.contains("--series"),
+        "unexpected stderr: {stderr}"
+    );
+    let retained = fs::read_to_string(&series).expect("series retained");
+    assert!(retained.contains("perl_core_harness.comparison_series.v1"));
 }
 
 #[test]
@@ -338,6 +372,102 @@ fn check_cli_rejects_missing_receipt_option() {
     );
 }
 
+#[test]
+fn classify_cli_binds_matching_series_identity() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series(&series, "series", "manifest", &["base/0.t", "base/1.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        result.status.success(),
+        "classify failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: Value =
+        serde_json::from_str(&fs::read_to_string(&output).expect("read receipt")).expect("decode");
+    assert_eq!(value["transition"], "no_change");
+}
+
+#[test]
+fn classify_cli_rejects_series_id_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    write_series(&series, "other-series", "manifest", &["base/0.t", "base/1.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("accepted baseline is not bound to series"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(!output.exists(), "mismatched series must not write a classify receipt");
+}
+
+#[test]
+fn classify_cli_defers_series_membership_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    write_report(&compile, 2, 2);
+    // Same series_id/hash labels; membership differs — deferred this slice.
+    write_series(&series, "series", "manifest", &["base/0.t", "base/9.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(result.status.success(), "stderr={}", String::from_utf8_lossy(&result.stderr));
+    assert!(output.exists(), "matching series_id/hash must still write a classify receipt");
+}
+
 fn write_baseline(path: &Path, total: usize, passed: usize) {
     let baseline = sample_v2_baseline(total, passed);
     fs::write(path, serde_json::to_string_pretty(&baseline).expect("encode")).expect("write");
@@ -346,6 +476,37 @@ fn write_baseline(path: &Path, total: usize, passed: usize) {
 fn write_report(path: &Path, total: usize, passed: usize) {
     let report = sample_report(total, passed);
     fs::write(path, serde_json::to_string_pretty(&report).expect("encode")).expect("write");
+}
+
+fn write_series(path: &Path, series_id: &str, manifest_hash: &str, files: &[&str]) {
+    let body = format!(
+        r#"{{
+  "schema_version": "perl_core_harness.comparison_series.v1",
+  "series_id": "{series_id}",
+  "profile": "base",
+  "profile_roots": ["base"],
+  "repository_commit": "{commit}",
+  "perl_requested_ref": "perl",
+  "perl_resolved_ref": "perl",
+  "runner": "test",
+  "normalized_manifest": {files},
+  "manifest_hash": "{manifest_hash}",
+  "preparation_receipt_id": "prepare",
+  "preparation_receipt_digest": "sha256:prep",
+  "harness_schema_version": "perl_core_harness.discovery.v1",
+  "compiler_subject_identity": "compiler",
+  "invocation_identity": "invocation",
+  "capability_identity": "capability",
+  "environment_identity": "environment",
+  "normalization_version": "path-normalization.v1",
+  "created_at": "2026-08-11T00:00:00Z",
+  "replaces_series_id": null,
+  "change_reason": null
+}}"#,
+        commit = "a".repeat(40),
+        files = serde_json::to_string(files).expect("encode files"),
+    );
+    fs::write(path, body).expect("write series");
 }
 
 fn sample_report(total: usize, passed: usize) -> RunReport {

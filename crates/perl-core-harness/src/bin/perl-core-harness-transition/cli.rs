@@ -12,7 +12,7 @@ impl Options {
                 bail!("expected an option beginning with --, found {flag}");
             }
             match flag.as_str() {
-                "--accepted-baseline" | "--compile" | "--output" | "--receipt" => {}
+                "--accepted-baseline" | "--compile" | "--output" | "--receipt" | "--series" => {}
                 _ => bail!("unrecognized option(s): {flag}"),
             }
             let value = args
@@ -43,6 +43,23 @@ impl Options {
         Ok(value)
     }
 
+    fn optional(&mut self, flag: &str) -> Result<Option<String>> {
+        let Some(values) = self.values.get_mut(flag) else {
+            return Ok(None);
+        };
+        // `Options::parse` only records a flag after reading its value, so an
+        // empty queue here is a defensive no-op (absent), not a distinct error.
+        let Some(value) = values.pop_front() else {
+            self.values.remove(flag);
+            return Ok(None);
+        };
+        if !values.is_empty() {
+            bail!("option {flag} may be supplied only once");
+        }
+        self.values.remove(flag);
+        Ok(Some(value))
+    }
+
     fn reject_unused(self) -> Result<()> {
         if self.values.is_empty() {
             return Ok(());
@@ -57,6 +74,7 @@ struct ClassifyConfig {
     accepted_baseline: PathBuf,
     compile: PathBuf,
     output: PathBuf,
+    series: Option<PathBuf>,
 }
 
 impl ClassifyConfig {
@@ -65,6 +83,7 @@ impl ClassifyConfig {
             accepted_baseline: PathBuf::from(options.required("--accepted-baseline")?),
             compile: PathBuf::from(options.required("--compile")?),
             output: PathBuf::from(options.required("--output")?),
+            series: options.optional("--series")?.map(PathBuf::from),
         };
         options.reject_unused()?;
         Ok(config)
@@ -76,6 +95,7 @@ struct CheckConfig {
     accepted_baseline: PathBuf,
     compile: PathBuf,
     receipt: PathBuf,
+    series: Option<PathBuf>,
 }
 
 impl CheckConfig {
@@ -84,6 +104,7 @@ impl CheckConfig {
             accepted_baseline: PathBuf::from(options.required("--accepted-baseline")?),
             compile: PathBuf::from(options.required("--compile")?),
             receipt: PathBuf::from(options.required("--receipt")?),
+            series: options.optional("--series")?.map(PathBuf::from),
         };
         options.reject_unused()?;
         Ok(config)
