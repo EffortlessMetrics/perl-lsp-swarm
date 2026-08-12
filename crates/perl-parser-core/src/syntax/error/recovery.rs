@@ -38,11 +38,11 @@ pub enum ParseDiagnosticAnchor {
     NoSource,
 }
 
-/// A [`ParseDiagnosticAnchor`] resolved against one concrete source length.
+/// A [`ParseDiagnosticAnchor`] resolved against concrete source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResolvedParseDiagnosticAnchor {
-    /// Exact in-bounds byte offset.
+    /// Exact in-bounds UTF-8 byte boundary.
     Exact(usize),
     /// End-of-input anchor, resolved to the supplied source length.
     EndOfInput(usize),
@@ -55,26 +55,73 @@ pub enum ResolvedParseDiagnosticAnchor {
         /// Concrete source length used for validation.
         source_len: usize,
     },
+    /// The parser reported an in-bounds offset inside a UTF-8 code point.
+    InvalidUtf8Boundary {
+        /// Parser-reported offset.
+        reported: usize,
+        /// Concrete source length used for validation.
+        source_len: usize,
+    },
+    /// The parsed source snapshot and current source are not the same subject.
+    StaleSource {
+        /// Byte length of the source snapshot that produced the error.
+        parsed_len: usize,
+        /// Byte length of the current source supplied by the consumer.
+        current_len: usize,
+    },
 }
 
 impl ParseDiagnosticAnchor {
-    /// Resolve this semantic anchor against a concrete source length.
+    /// Resolve this semantic anchor against concrete source text.
     ///
-    /// Exact offsets are never silently clamped. An out-of-range offset remains
-    /// a typed [`ResolvedParseDiagnosticAnchor::InvalidOffset`] so a consumer
-    /// cannot convert parser corruption into a plausible source location.
+    /// Exact offsets are never silently clamped. Out-of-range offsets and
+    /// offsets inside a multibyte UTF-8 code point remain distinct typed states
+    /// so a consumer cannot convert parser corruption into a plausible range.
     #[must_use]
-    pub const fn resolve(self, source_len: usize) -> ResolvedParseDiagnosticAnchor {
+    pub fn resolve(self, source: &str) -> ResolvedParseDiagnosticAnchor {
         match self {
-            Self::Exact(offset) if offset <= source_len => {
-                ResolvedParseDiagnosticAnchor::Exact(offset)
+            Self::Exact(reported) if reported > source.len() => {
+                ResolvedParseDiagnosticAnchor::InvalidOffset {
+                    reported,
+                    source_len: source.len(),
+                }
             }
-            Self::Exact(reported) => {
-                ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len }
+            Self::Exact(reported) if !source.is_char_boundary(reported) => {
+                ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary {
+                    reported,
+                    source_len: source.len(),
+                }
             }
-            Self::EndOfInput => ResolvedParseDiagnosticAnchor::EndOfInput(source_len),
+            Self::Exact(offset) => ResolvedParseDiagnosticAnchor::Exact(offset),
+            Self::EndOfInput => ResolvedParseDiagnosticAnchor::EndOfInput(source.len()),
             Self::NoSource => ResolvedParseDiagnosticAnchor::NoSource,
         }
+    }
+
+    /// Resolve an anchor for a current source only when it is the same source
+    /// snapshot that produced the parse error.
+    ///
+    /// This exact comparison is the source-subject guard. It deliberately does
+    /// not infer sameness from equal lengths or a caller-supplied generation
+    /// number. Consumers that already hold generation identity should still use
+    /// it to avoid unnecessary comparisons, then call this method at the final
+    /// authority boundary.
+    #[must_use]
+    pub fn resolve_for_current(
+        self,
+        parsed_source: &str,
+        current_source: &str,
+    ) -> ResolvedParseDiagnosticAnchor {
+        if matches!(self, Self::NoSource) {
+            return ResolvedParseDiagnosticAnchor::NoSource;
+        }
+        if parsed_source != current_source {
+            return ResolvedParseDiagnosticAnchor::StaleSource {
+                parsed_len: parsed_source.len(),
+                current_len: current_source.len(),
+            };
+        }
+        self.resolve(parsed_source)
     }
 }
 
@@ -104,13 +151,21 @@ impl super::ParseError {
         }
     }
 
-    /// Resolve the parser-owned diagnostic anchor for one concrete source.
+    /// Resolve the parser-owned diagnostic anchor against concrete source text.
     #[must_use]
-    pub const fn resolved_diagnostic_anchor(
+    pub fn resolved_diagnostic_anchor(&self, source: &str) -> ResolvedParseDiagnosticAnchor {
+        self.diagnostic_anchor().resolve(source)
+    }
+
+    /// Resolve the anchor for a current source after proving it is the same
+    /// source snapshot that produced this parse error.
+    #[must_use]
+    pub fn resolved_diagnostic_anchor_for_current(
         &self,
-        source_len: usize,
+        parsed_source: &str,
+        current_source: &str,
     ) -> ResolvedParseDiagnosticAnchor {
-        self.diagnostic_anchor().resolve(source_len)
+        self.diagnostic_anchor().resolve_for_current(parsed_source, current_source)
     }
 }
 
@@ -121,15 +176,15 @@ impl super::ParseError {
 /// detailed diagnostic information for IDE integration.
 #[derive(Debug, Clone)]
 pub struct ParseError {
-    /// Human-readable error message describing the parsing issue
+    /// Human-readable error message describing the syntax issue
     pub message: String,
-    /// Source code range where the error occurred
+    /// Source range where the error occurred
     pub range: Range,
-    /// List of token types that were expected at this position
+    /// Expected token kinds
     pub expected: Vec<String>,
-    /// The token that was actually found instead of expected
+    /// Actual token text
     pub found: String,
-    /// Optional hint for error recovery or fixing the issue
+    /// Optional recovery guidance
     pub recovery_hint: Option<String>,
 }
 
@@ -310,24 +365,55 @@ mod diagnostic_anchor_tests {
         ];
         for error in no_source {
             assert_eq!(error.diagnostic_anchor(), ParseDiagnosticAnchor::NoSource);
-            assert_ne!(error.resolved_diagnostic_anchor(100), ResolvedParseDiagnosticAnchor::Exact(0));
+            assert_ne!(
+                error.resolved_diagnostic_anchor("source"),
+                ResolvedParseDiagnosticAnchor::Exact(0)
+            );
         }
     }
 
     #[test]
-    fn resolution_preserves_eof_and_rejects_out_of_bounds_offsets() {
+    fn resolution_preserves_eof_and_rejects_invalid_offsets() {
+        let source = "aéz";
         assert_eq!(
-            ParseError::UnexpectedEof.resolved_diagnostic_anchor(42),
-            ResolvedParseDiagnosticAnchor::EndOfInput(42)
+            ParseError::UnexpectedEof.resolved_diagnostic_anchor(source),
+            ResolvedParseDiagnosticAnchor::EndOfInput(source.len())
         );
-        let error = ParseError::syntax("outside", 43);
+        let outside = ParseError::syntax("outside", source.len() + 1);
         assert_eq!(
-            error.resolved_diagnostic_anchor(42),
-            ResolvedParseDiagnosticAnchor::InvalidOffset { reported: 43, source_len: 42 }
+            outside.resolved_diagnostic_anchor(source),
+            ResolvedParseDiagnosticAnchor::InvalidOffset {
+                reported: source.len() + 1,
+                source_len: source.len(),
+            }
+        );
+        let middle_of_e_acute = ParseError::syntax("inside code point", 2);
+        assert_eq!(
+            middle_of_e_acute.resolved_diagnostic_anchor(source),
+            ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary {
+                reported: 2,
+                source_len: source.len(),
+            }
         );
         assert_eq!(
-            ParseError::syntax("inside", 42).resolved_diagnostic_anchor(42),
-            ResolvedParseDiagnosticAnchor::Exact(42)
+            ParseError::syntax("at eof", source.len()).resolved_diagnostic_anchor(source),
+            ResolvedParseDiagnosticAnchor::Exact(source.len())
+        );
+    }
+
+    #[test]
+    fn current_source_resolution_rejects_stale_same_length_text() {
+        let error = ParseError::syntax("anchored", 1);
+        assert_eq!(
+            error.resolved_diagnostic_anchor_for_current("abc", "axc"),
+            ResolvedParseDiagnosticAnchor::StaleSource {
+                parsed_len: 3,
+                current_len: 3,
+            }
+        );
+        assert_eq!(
+            error.resolved_diagnostic_anchor_for_current("abc", "abc"),
+            ResolvedParseDiagnosticAnchor::Exact(1)
         );
     }
 }
