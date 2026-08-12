@@ -22,6 +22,7 @@ pub mod capability_map;
 /// Runtime configuration loading, validation, and compatibility adapters.
 pub mod config;
 /// Checked scope/precedence/validation authority consumed by configuration generations.
+#[path = "configuration_authority/checked.rs"]
 pub(crate) mod configuration_authority;
 /// Parser for Perl::Critic output emitted by external lint runs.
 pub mod critic_parser;
