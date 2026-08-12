@@ -1,0 +1,544 @@
+name: Semantic highlighting repair bootstrap v2
+
+on:
+  push:
+    branches:
+      - fix/semantic-highlighting-contracts
+
+permissions:
+  contents: write
+
+concurrency:
+  group: semantic-highlighting-repair-bootstrap-v2
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: fix/semantic-highlighting-contracts
+          fetch-depth: 0
+
+      - name: Apply semantic highlighting repairs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          ROOT = Path.cwd()
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement target, found {count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          # 1. Replace the inert hard-coded color block with registered custom
+          # semantic-token types that inherit the active theme's standard styles.
+          package_path = ROOT / "vscode-extension/package.json"
+          package = json.loads(package_path.read_text(encoding="utf-8"))
+          contributes = package["contributes"]
+          removed = contributes.pop("semanticTokenColors", None)
+          if removed is None:
+              raise SystemExit("vscode-extension/package.json: semanticTokenColors block missing")
+          semantic_token_types = [
+              {
+                  "id": "sql_string",
+                  "superType": "string",
+                  "description": "SQL text recognized inside Perl strings and heredocs.",
+              },
+              {
+                  "id": "sql_heredoc_keyword",
+                  "superType": "keyword",
+                  "description": "SQL keyword recognized inside a Perl heredoc.",
+              },
+              {
+                  "id": "json_heredoc_key",
+                  "superType": "property",
+                  "description": "JSON object key recognized inside a Perl heredoc.",
+              },
+          ]
+          package["contributes"] = {"semanticTokenTypes": semantic_token_types, **contributes}
+          package_path.write_text(
+              json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+
+          # 2. Give TextMate fallback highlighting a declaration-specific rule
+          # without reformatting the entire grammar file.
+          grammar_path = ROOT / "vscode-extension/syntaxes/perl.tmLanguage.json"
+          lines = grammar_path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+          keyword_line = next(
+              (i for i, line in enumerate(lines) if '"include": "#keywords"' in line),
+              None,
+          )
+          if keyword_line is None or keyword_line == 0:
+              raise SystemExit("perl.tmLanguage.json: top-level #keywords include missing")
+          keyword_entry_start = keyword_line - 1
+          entry_indent = lines[keyword_entry_start][: len(lines[keyword_entry_start]) - len(lines[keyword_entry_start].lstrip())]
+          lines[keyword_entry_start:keyword_entry_start] = [
+              f'{entry_indent}{{\n',
+              f'{entry_indent}    "include": "#function-declarations"\n',
+              f'{entry_indent}}},\n',
+          ]
+
+          declaration_name_line = next(
+              (
+                  i
+                  for i, line in enumerate(lines)
+                  if '"name": "entity.name.function.perl"' in line
+                  and i + 1 < len(lines)
+                  and '"match": "\\\\bsub\\\\s+(\\\\w+)"' in lines[i + 1]
+              ),
+              None,
+          )
+          if declaration_name_line is None:
+              raise SystemExit("perl.tmLanguage.json: legacy function declaration rule missing")
+          declaration_start = declaration_name_line
+          while declaration_start >= 0 and lines[declaration_start].strip() != "{":
+              declaration_start -= 1
+          if declaration_start < 0:
+              raise SystemExit("perl.tmLanguage.json: declaration object start missing")
+          depth = 0
+          declaration_end = None
+          for i in range(declaration_start, len(lines)):
+              depth += lines[i].count("{") - lines[i].count("}")
+              if depth == 0:
+                  declaration_end = i
+                  break
+          if declaration_end is None:
+              raise SystemExit("perl.tmLanguage.json: declaration object end missing")
+          previous = declaration_start - 1
+          while previous >= 0 and not lines[previous].strip():
+              previous -= 1
+          if previous < 0 or not lines[previous].rstrip().endswith(","):
+              raise SystemExit("perl.tmLanguage.json: previous function rule comma missing")
+          newline = "\n" if lines[previous].endswith("\n") else ""
+          lines[previous] = lines[previous].rstrip("\r\n")[:-1] + newline
+          del lines[declaration_start : declaration_end + 1]
+
+          functions_line = next(
+              (i for i, line in enumerate(lines) if line.strip() == '"functions": {'),
+              None,
+          )
+          if functions_line is None:
+              raise SystemExit("perl.tmLanguage.json: functions repository entry missing")
+          repo_indent = lines[functions_line][: len(lines[functions_line]) - len(lines[functions_line].lstrip())]
+          declaration_block = [
+              f'{repo_indent}"function-declarations": {{\n',
+              f'{repo_indent}    "patterns": [\n',
+              f'{repo_indent}        {{\n',
+              f'{repo_indent}            "match": "\\\\b(sub)\\\\b\\\\s+([A-Za-z_][A-Za-z0-9_]*(?:(?:::|\u0027)[A-Za-z_][A-Za-z0-9_]*)*)",\n',
+              f'{repo_indent}            "captures": {{\n',
+              f'{repo_indent}                "1": {{\n',
+              f'{repo_indent}                    "name": "keyword.declaration.function.perl"\n',
+              f'{repo_indent}                }},\n',
+              f'{repo_indent}                "2": {{\n',
+              f'{repo_indent}                    "name": "entity.name.function.perl"\n',
+              f'{repo_indent}                }}\n',
+              f'{repo_indent}            }}\n',
+              f'{repo_indent}        }}\n',
+              f'{repo_indent}    ]\n',
+              f'{repo_indent}}},\n',
+          ]
+          lines[functions_line:functions_line] = declaration_block
+          grammar_path.write_text("".join(lines), encoding="utf-8")
+
+          fixture_path = ROOT / "vscode-extension/test/grammar/fixtures/function_declarations.pl"
+          fixture_path.write_text(
+              """sub greet {\n}\n\nmy sub lexical {\n}\n\nsub Foo::qualified :method {\n}\n\nsub Foo'legacy {\n}\n\nsub with_proto($$) {\n}\n\nsub with_signature ($x, $y) {\n}\n\nmy $anonymous = sub { 1 };\n\nsub\n""",
+              encoding="utf-8",
+          )
+
+          # 3. Make the packaged-binary smoke exercise both valid LSP routes and
+          # fail closed during release packaging when the binary is absent.
+          smoke_path = ROOT / "vscode-extension/src/test/packagedSemanticTokensSmoke.test.ts"
+          smoke = smoke_path.read_text(encoding="utf-8")
+          marker = "const serverPath = findBundledServerPath();\n"
+          if marker not in smoke:
+              raise SystemExit("packagedSemanticTokensSmoke: serverPath marker missing")
+          smoke = smoke.replace(
+              marker,
+              marker
+              + "const requirePackagedSmoke =\n"
+              + "  process.env.PERL_LSP_REQUIRE_PACKAGED_SEMANTIC_SMOKE === 'true';\n",
+              1,
+          )
+          test_start = smoke.find("const describeOrSkip = serverPath ? describe : describe.skip;")
+          if test_start < 0:
+              raise SystemExit("packagedSemanticTokensSmoke: test section marker missing")
+          smoke = smoke[:test_start] + r'''if (!serverPath && requirePackagedSmoke) {
+            throw new Error(
+              '[packagedSemanticTokensSmoke] REQUIRED: no packaged perllsp binary found at ' +
+                `vscode-extension/bin/${process.platform}-${process.arch}/ and ` +
+                'PERL_LSP_SMOKE_SERVER_PATH is unset. Release packaging must bundle the exact binary before this gate runs.',
+            );
+          }
+
+          const describeOrSkip = serverPath ? describe : describe.skip;
+
+          if (!serverPath && !requirePackagedSmoke) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[packagedSemanticTokensSmoke] SKIPPED: no packaged perllsp binary found at ' +
+                `vscode-extension/bin/${process.platform}-${process.arch}/ and PERL_LSP_SMOKE_SERVER_PATH is unset. ` +
+                'Run `npm run bundle-lsp` (or set PERL_LSP_SMOKE_SERVER_PATH) to exercise the shipped-binary contract locally.',
+            );
+          }
+
+          describeOrSkip(
+            'packaged perllsp binary: full/range semantic-token parity through the advertised legend',
+            () => {
+              let client: MinimalLspClient;
+
+              afterEach(() => {
+                client?.dispose();
+              });
+
+              test('full and range agree without painting the sub keyword as a function', async () => {
+                const binary = serverPath as string;
+                client = new MinimalLspClient(binary);
+
+                const initializeResult = (await client.request(
+                  'initialize',
+                  {
+                    processId: process.pid,
+                    rootUri: null,
+                    capabilities: {
+                      textDocument: {
+                        synchronization: { dynamicRegistration: false },
+                        semanticTokens: { dynamicRegistration: false },
+                      },
+                    },
+                  },
+                  30_000,
+                )) as {
+                  capabilities?: {
+                    semanticTokensProvider?: {
+                      legend?: { tokenTypes: string[]; tokenModifiers: string[] };
+                      range?: boolean;
+                    };
+                  };
+                };
+
+                const provider = initializeResult.capabilities?.semanticTokensProvider;
+                const legend = provider?.legend;
+                expect(legend).toBeDefined();
+                expect(Array.isArray(legend?.tokenTypes)).toBe(true);
+                expect(legend?.tokenTypes.length ?? 0).toBeGreaterThan(0);
+                expect(provider?.range).toBe(true);
+
+                client.notify('initialized', {});
+
+                const uri = 'file:///semantic-contract-smoke.pl';
+                // JS indexes and string lengths are UTF-16 code units, which is
+                // exactly the coordinate system the LSP uses for this session.
+                const text = 'my $value = "😀"; sub foo { return 1; }';
+                const subStart = text.indexOf('sub');
+                const fooStart = text.indexOf('foo');
+                expect(subStart).toBeGreaterThan(0);
+                expect(fooStart).toBeGreaterThan(subStart);
+
+                client.notify('textDocument/didOpen', {
+                  textDocument: { uri, languageId: 'perl', version: 1, text },
+                });
+
+                const fullResult = (await client.request(
+                  'textDocument/semanticTokens/full',
+                  { textDocument: { uri } },
+                  30_000,
+                )) as { data?: number[] } | null;
+                const fullData = fullResult?.data ?? [];
+                expect(fullData.length).toBeGreaterThan(0);
+                const fullTokens = decodeSemanticTokens(
+                  fullData,
+                  legend as { tokenTypes: string[] },
+                );
+
+                const requestedRange = {
+                  start: { line: 0, character: subStart },
+                  end: { line: 0, character: text.length },
+                };
+                const rangeResult = (await client.request(
+                  'textDocument/semanticTokens/range',
+                  { textDocument: { uri }, range: requestedRange },
+                  30_000,
+                )) as { data?: number[] } | null;
+                const rangeData = rangeResult?.data ?? [];
+                expect(rangeData.length).toBeGreaterThan(0);
+                const rangeTokens = decodeSemanticTokens(
+                  rangeData,
+                  legend as { tokenTypes: string[] },
+                );
+
+                const expectedRangeTokens = fullTokens.filter(
+                  (token) =>
+                    token.line === requestedRange.start.line &&
+                    token.startChar >= requestedRange.start.character &&
+                    token.startChar < requestedRange.end.character,
+                );
+                expect(rangeTokens).toEqual(expectedRangeTokens);
+
+                for (const tokens of [fullTokens, rangeTokens]) {
+                  const subToken = tokens.find(
+                    (token) => token.line === 0 && token.startChar === subStart,
+                  );
+                  expect(subToken).toBeDefined();
+                  expect(subToken?.type).toBe('keyword');
+                  expect(subToken?.length).toBe(3);
+
+                  const fooToken = tokens.find(
+                    (token) => token.line === 0 && token.startChar === fooStart,
+                  );
+                  expect(fooToken).toBeDefined();
+                  expect(fooToken?.type).toBe('function');
+                  expect(fooToken?.length).toBe(3);
+
+                  const functionTokenAtSubKeyword = tokens.find(
+                    (token) => token.startChar === subStart && token.type === 'function',
+                  );
+                  expect(functionTokenAtSubKeyword).toBeUndefined();
+                }
+
+                await client.request('shutdown', null, 10_000).catch(() => {
+                  /* best-effort */
+                });
+                client.notify('exit', null);
+              }, 45_000);
+            },
+          );
+          '''
+          smoke_path.write_text(smoke, encoding="utf-8")
+
+          # 4. Make release packaging run the required shipped-binary contract.
+          publish_path = ROOT / ".github/workflows/publish-extension.yml"
+          publish_lines = publish_path.read_text(encoding="utf-8").splitlines(keepends=True)
+          verify_line = next(
+              (i for i, line in enumerate(publish_lines) if line.strip() == "npm run verify:marketplace"),
+              None,
+          )
+          if verify_line is None:
+              raise SystemExit("publish-extension.yml: verify:marketplace step missing")
+          indent = publish_lines[verify_line][: len(publish_lines[verify_line]) - len(publish_lines[verify_line].lstrip())]
+          publish_lines[verify_line + 1 : verify_line + 1] = [
+              "\n",
+              f"{indent}npm run compile:test\n",
+              f"{indent}PERL_LSP_REQUIRE_PACKAGED_SEMANTIC_SMOKE=true \\\n",
+              f"{indent}  node scripts/run-jest.js --runTestsByPath src/test/packagedSemanticTokensSmoke.test.ts\n",
+          ]
+          publish_path.write_text("".join(publish_lines), encoding="utf-8")
+
+          # 5. Replace the lossy keyword whitelist with an explicit semantic
+          # disposition table. Unknown future lexer keywords remain visible as
+          # keywords, while the inventory test makes the missing review fail CI.
+          semantic_path = (
+              ROOT
+              / "crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs"
+          )
+          semantic = semantic_path.read_text(encoding="utf-8")
+          insertion_marker = "/// Collect semantic tokens for LSP highlighting in the Complete stage.\n///"
+          if insertion_marker not in semantic:
+              raise SystemExit("semantic_tokens.rs: collector marker missing")
+          disposition = r'''#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+          enum KeywordSemanticDisposition {
+              Keyword,
+              Operator,
+              DefaultLibraryFunction,
+              String,
+              Regexp,
+              Unreviewed,
+          }
+
+          impl KeywordSemanticDisposition {
+              fn token_type(self) -> &'static str {
+                  match self {
+                      Self::Keyword | Self::Unreviewed => "keyword",
+                      Self::Operator => "operator",
+                      Self::DefaultLibraryFunction => "function",
+                      Self::String => "string",
+                      Self::Regexp => "regexp",
+                  }
+              }
+
+              fn modifiers(self) -> u32 {
+                  match self {
+                      // `defaultLibrary` is bit 9 in the advertised modifier legend.
+                      Self::DefaultLibraryFunction => 1 << 9,
+                      _ => 0,
+                  }
+              }
+          }
+
+          fn keyword_semantic_disposition(keyword: &str) -> KeywordSemanticDisposition {
+              use KeywordSemanticDisposition::{
+                  DefaultLibraryFunction, Keyword, Operator, Regexp, String, Unreviewed,
+              };
+
+              match keyword {
+                  "and" | "cmp" | "isa" | "not" | "or" | "xor" => Operator,
+                  "die" | "grep" | "map" | "print" | "say" | "sort" | "split" | "warn" => {
+                      DefaultLibraryFunction
+                  }
+                  "m" | "qr" | "s" | "tr" | "y" => Regexp,
+                  "q" | "qq" | "qw" | "qx" => String,
+                  "ADJUST" | "BEGIN" | "CHECK" | "END" | "INIT" | "UNITCHECK" | "await"
+                  | "break" | "catch" | "class" | "continue" | "default" | "defer" | "do"
+                  | "else" | "elsif" | "eval" | "field" | "finally" | "for" | "foreach"
+                  | "format" | "given" | "goto" | "if" | "last" | "local" | "method" | "my"
+                  | "next" | "no" | "our" | "package" | "redo" | "require" | "return"
+                  | "state" | "sub" | "try" | "undef" | "unless" | "until" | "use" | "when"
+                  | "while" => Keyword,
+                  _ => Unreviewed,
+              }
+          }
+
+          '''
+          semantic = semantic.replace(insertion_marker, disposition + insertion_marker, 1)
+
+          keyword_start = semantic.find("            TokenType::Keyword(kw) => {")
+          if keyword_start < 0:
+              raise SystemExit("semantic_tokens.rs: keyword match arm missing")
+          interpolated_start = semantic.find(
+              "\n            TokenType::InterpolatedString(parts) => {", keyword_start
+          )
+          if interpolated_start < 0:
+              raise SystemExit("semantic_tokens.rs: keyword arm boundary missing")
+          replacement = '''            TokenType::Keyword(kw) => {
+                  let disposition = keyword_semantic_disposition(kw.as_ref());
+                  token_modifiers = disposition.modifiers();
+                  disposition.token_type()
+              }
+          '''
+          semantic = semantic[:keyword_start] + replacement + semantic[interpolated_start:]
+
+          match_marker = "        let kind = match &tok.token_type {\n"
+          if semantic.count(match_marker) != 1:
+              raise SystemExit("semantic_tokens.rs: token kind match marker is not unique")
+          semantic = semantic.replace(
+              match_marker,
+              "        let mut token_modifiers = 0u32;\n" + match_marker,
+              1,
+          )
+          push_marker = "            lexer_tokens.push((sl, sc, len, kind_idx(&leg, kind), 0));\n"
+          if semantic.count(push_marker) != 1:
+              raise SystemExit("semantic_tokens.rs: final lexer token push marker is not unique")
+          semantic = semantic.replace(
+              push_marker,
+              "            lexer_tokens.push((sl, sc, len, kind_idx(&leg, kind), token_modifiers));\n",
+              1,
+          )
+
+          tests = r'''
+
+              #[test]
+              fn semantic_keyword_disposition_covers_lexer_inventory() {
+                  for &keyword in perl_lexer::keywords::LEXER_KEYWORDS {
+                      assert_ne!(
+                          keyword_semantic_disposition(keyword),
+                          KeywordSemanticDisposition::Unreviewed,
+                          "lexer keyword `{keyword}` needs an explicit semantic-token disposition"
+                      );
+                  }
+              }
+
+              #[test]
+              fn semantic_keyword_disposition_preserves_language_roles() {
+                  assert_eq!(keyword_semantic_disposition("and").token_type(), "operator");
+                  assert_eq!(keyword_semantic_disposition("isa").token_type(), "operator");
+                  assert_eq!(keyword_semantic_disposition("print").token_type(), "function");
+                  assert_eq!(keyword_semantic_disposition("print").modifiers(), 1 << 9);
+                  assert_eq!(keyword_semantic_disposition("qr").token_type(), "regexp");
+                  assert_eq!(keyword_semantic_disposition("qw").token_type(), "string");
+                  assert_eq!(keyword_semantic_disposition("field").token_type(), "keyword");
+                  assert_eq!(
+                      keyword_semantic_disposition("future_keyword").token_type(),
+                      "keyword",
+                      "unreviewed lexer output must remain visible rather than being dropped"
+                  );
+              }
+          '''
+          final_close = semantic.rfind("\n}")
+          if final_close < 0:
+              raise SystemExit("semantic_tokens.rs: test module close missing")
+          semantic = semantic[:final_close] + tests + semantic[final_close:]
+          semantic_path.write_text(semantic, encoding="utf-8")
+          PY
+
+      - name: Setup VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Format changed TypeScript and manifest
+        working-directory: vscode-extension
+        run: npm exec --offline --no -- oxfmt --write package.json src/test/packagedSemanticTokensSmoke.test.ts
+
+      - name: Regenerate and verify TextMate snapshots
+        working-directory: vscode-extension
+        run: |
+          npm run test:grammar:update
+          npm run test:grammar
+
+      - name: Update bounded VSIX inventory sizes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          extension = root / "vscode-extension"
+          baseline_path = extension / "scripts/vsix-inventory-baseline.json"
+          baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+          for packaged, source in {
+              "package.json": extension / "package.json",
+              "syntaxes/perl.tmLanguage.json": extension / "syntaxes/perl.tmLanguage.json",
+          }.items():
+              baseline["files"][packaged] = source.stat().st_size
+          baseline["total_bytes"] = sum(baseline["files"].values())
+          baseline_path.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Format and test Rust semantic disposition
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test -p perl-lsp-rs-core semantic_keyword_disposition --lib --locked
+
+      - name: Build exact server and prove packaged full/range parity
+        working-directory: vscode-extension
+        run: |
+          npm run compile:test
+          npm run bundle-lsp
+          PERL_LSP_REQUIRE_PACKAGED_SEMANTIC_SMOKE=true \
+            node scripts/run-jest.js --runTestsByPath src/test/packagedSemanticTokensSmoke.test.ts
+          npm run package
+
+      - name: Commit reviewed repair and remove bootstrap workflows
+        shell: bash
+        run: |
+          rm .github/workflows/semantic-highlighting-repair.yml
+          rm .github/workflows/semantic-highlighting-repair-v2.yml
+          git diff --check
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            .github/workflows/semantic-highlighting-repair.yml \
+            .github/workflows/semantic-highlighting-repair-v2.yml \
+            .github/workflows/publish-extension.yml \
+            crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs \
+            vscode-extension/package.json \
+            vscode-extension/scripts/vsix-inventory-baseline.json \
+            vscode-extension/src/test/packagedSemanticTokensSmoke.test.ts \
+            vscode-extension/syntaxes/perl.tmLanguage.json \
+            vscode-extension/test/grammar/fixtures/function_declarations.pl \
+            vscode-extension/test/grammar/fixtures/function_declarations.pl.snap
+          git commit -m "fix(editor): close semantic highlighting contract gaps"
+          git push origin HEAD:fix/semantic-highlighting-contracts
