@@ -2034,7 +2034,7 @@ impl LspServer {
         };
         let critic_context =
             crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
-        let profile = crate::perl_critic::NativeCriticProfile::parse(&native_profile)
+        let profile = crate::perl_critic::NativeCriticProfile::parse_legacy(&native_profile)
             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
         let registry = crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
             profile,
@@ -2947,6 +2947,34 @@ mod tests {
         assert!(
             !text.contains("native.variables.unused_lexical"),
             "recommended native critic profile should omit broader variable-noise findings; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict() {
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
+        let uri = "file:///native_critic_legacy_profile_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "=pod\n=head1 NAME\n=cut\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let text = String::from_utf8(buf.lock().clone()).unwrap_or_default();
+        assert!(
+            text.contains("native.documentation.require_pod_sections"),
+            "legacy invalid profile fallback must remain strict; got: {text:?}"
         );
     }
 
