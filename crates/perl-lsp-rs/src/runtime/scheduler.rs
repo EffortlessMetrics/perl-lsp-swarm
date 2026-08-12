@@ -1988,7 +1988,12 @@ mod tests {
         let (server, output) = server_with_captured_output();
         let uri = "file:///completion-refresh-race.pl";
         server.test_apply_did_open(uri, "my $value;\n", 1)?;
-        let ingress = make_freshness(uri, Some(0), Some(1));
+        let ingress = must_some(extract_freshness(
+            &server,
+            "textDocument/completion",
+            Some(&position_params(uri)),
+            RequestPriority::Completion,
+        ));
 
         server.test_apply_did_change(uri, "my $value = 1;\n", 2)?;
         let refreshed = must_some(Scheduler::refresh_read_freshness(&server, Some(&ingress)));
