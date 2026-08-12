@@ -12,7 +12,7 @@ impl Options {
                 bail!("expected an option beginning with --, found {flag}");
             }
             match flag.as_str() {
-                "--accepted-baseline" | "--compile" | "--output" => {}
+                "--accepted-baseline" | "--compile" | "--output" | "--receipt" => {}
                 _ => bail!("unrecognized option(s): {flag}"),
             }
             let value = args
@@ -42,6 +42,14 @@ impl Options {
         self.values.remove(flag);
         Ok(value)
     }
+
+    fn reject_unused(self) -> Result<()> {
+        if self.values.is_empty() {
+            return Ok(());
+        }
+        let unused = self.values.keys().cloned().collect::<Vec<_>>().join(", ");
+        bail!("unrecognized option(s) for command: {unused}");
+    }
 }
 
 #[derive(Debug)]
@@ -53,10 +61,31 @@ struct ClassifyConfig {
 
 impl ClassifyConfig {
     fn from_options(mut options: Options) -> Result<Self> {
-        Ok(Self {
+        let config = Self {
             accepted_baseline: PathBuf::from(options.required("--accepted-baseline")?),
             compile: PathBuf::from(options.required("--compile")?),
             output: PathBuf::from(options.required("--output")?),
-        })
+        };
+        options.reject_unused()?;
+        Ok(config)
+    }
+}
+
+#[derive(Debug)]
+struct CheckConfig {
+    accepted_baseline: PathBuf,
+    compile: PathBuf,
+    receipt: PathBuf,
+}
+
+impl CheckConfig {
+    fn from_options(mut options: Options) -> Result<Self> {
+        let config = Self {
+            accepted_baseline: PathBuf::from(options.required("--accepted-baseline")?),
+            compile: PathBuf::from(options.required("--compile")?),
+            receipt: PathBuf::from(options.required("--receipt")?),
+        };
+        options.reject_unused()?;
+        Ok(config)
     }
 }

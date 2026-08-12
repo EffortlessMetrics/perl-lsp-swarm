@@ -35,7 +35,9 @@ pub struct Classification {
 
 /// Classify `current` against `accepted` for the minimal core outcomes above.
 pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> Classification {
-    if current.harness_status.is_some_and(|status| status != 0) {
+    // Only a terminal successful harness status is a complete observation.
+    // `None` (e.g. signal-killed runs) must not manufacture Regression/NoChange.
+    if current.harness_status != Some(0) {
         return not_proven(format!(
             "accepted and current observations are not comparable: current harness_status {:?} is not a complete successful run",
             current.harness_status
