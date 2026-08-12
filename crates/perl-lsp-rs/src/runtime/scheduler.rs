@@ -2000,6 +2000,11 @@ mod tests {
         assert_eq!(Scheduler::stale_read_reason(&server, Some(&refreshed)), None);
 
         server.test_apply_did_change(uri, "my $value = 12;\n", 3)?;
+        // didOpen/didChange may publish diagnostics through the same captured
+        // writer. Establish the delivery observation barrier only after the
+        // later mutation has completed, so the bytes below can come solely
+        // from the stale response path under test.
+        output.lock().clear();
         assert_eq!(
             Scheduler::send_response_if_fresh(
                 &server,
