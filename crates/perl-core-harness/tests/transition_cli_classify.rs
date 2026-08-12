@@ -174,6 +174,36 @@ fn classify_cli_rejects_output_aliasing_series() {
     assert!(retained.contains("perl_core_harness.comparison_series.v1"));
 }
 
+#[cfg(any(unix, windows))]
+#[test]
+fn classify_cli_rejects_hard_link_output_aliasing_accepted_baseline() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 1, 1);
+    write_report(&compile, 1, 1);
+    fs::hard_link(&accepted, &output).expect("hard_link");
+    let before = fs::read(&accepted).expect("read accepted before");
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("hard-link alias"), "unexpected stderr: {stderr}");
+    let after = fs::read(&accepted).expect("read accepted after");
+    assert_eq!(before, after);
+}
+
 #[test]
 fn classify_cli_writes_no_change_receipt_for_exact_v2_match() {
     let dir = tempdir().expect("tempdir");
