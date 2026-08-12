@@ -61,6 +61,7 @@ fn run_classify(config: &ClassifyConfig) -> Result<()> {
     if let Some(series_path) = &config.series {
         let series = load_series_manifest(series_path)?;
         bind_series_identity(&series, &accepted)?;
+        bind_report_to_series(&current, &series)?;
         if let Some(discovery_path) = &config.discovery {
             let discovery = load_discovery_report(discovery_path)?;
             bind_discovery_to_series(&discovery, &series)?;
@@ -83,6 +84,7 @@ fn run_check(config: &CheckConfig) -> Result<()> {
     if let Some(series_path) = &config.series {
         let series = load_series_manifest(series_path)?;
         bind_series_identity(&series, &accepted)?;
+        bind_report_to_series(&current, &series)?;
         if let Some(discovery_path) = &config.discovery {
             let discovery = load_discovery_report(discovery_path)?;
             bind_discovery_to_series(&discovery, &series)?;
@@ -263,6 +265,35 @@ fn bind_discovery_to_series(discovery: &DiscoveryReport, series: &SeriesManifest
     Ok(())
 }
 
+/// Lean compile-observation→series binding for classify/check.
+///
+/// When `--series` is supplied, binds the measured run report's
+/// `commit`/`perl_ref`/`runner`/`profile` to the series identity so discovery
+/// and series cannot classify an observation from a different subject.
+/// Mirrors the production `validate_report_against_series` identity checks
+/// without centralizing #6880 validated wrappers.
+fn bind_report_to_series(report: &RunReport, series: &SeriesManifest) -> Result<()> {
+    if report.commit != series.repository_commit {
+        bail!(
+            "compile observation is not bound to series {}: repository_commit mismatch",
+            series.series_id
+        );
+    }
+    if report.perl_ref != series.perl_resolved_ref {
+        bail!(
+            "compile observation is not bound to series {}: perl_resolved_ref mismatch",
+            series.series_id
+        );
+    }
+    if report.runner != series.runner {
+        bail!("compile observation is not bound to series {}: runner mismatch", series.series_id);
+    }
+    if report.profile != series.profile {
+        bail!("compile observation is not bound to series {}: profile mismatch", series.series_id);
+    }
+    Ok(())
+}
+
 fn write_classification_receipt(
     path: &Path,
     classification: &Classification,
@@ -357,7 +388,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 const CLASSIFY_RECEIPT_SCHEMA_VERSION: &str = "perl_core_harness.transition_classify_result.v1";
-const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref and --discovery via harness_schema_version/profile/runner/perl_resolved_ref/repository_commit/normalized_manifest, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets or claim hard-link identity";
+const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref plus compile observation commit/perl_ref/runner/profile, and --discovery via harness_schema_version/profile/runner/perl_resolved_ref/repository_commit/normalized_manifest, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets or claim hard-link identity";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct ClassifyReceipt {
@@ -756,6 +787,94 @@ mod classify_io_observer {
                 DISCOVERY_SCHEMA_VERSION
             )
         );
+    }
+
+    /// RIPR boundary discriminator for report.commit != series.repository_commit.
+    #[test]
+    fn bind_report_commit_boundary_discriminator() {
+        let (series, mut report) = report_bind_fixture();
+        report.commit = "b".repeat(40);
+        assert_eq!(report.commit != series.repository_commit, true);
+        let err = bind_report_to_series(&report, &series)
+            .expect_err("commit mismatch must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            "compile observation is not bound to series series: repository_commit mismatch"
+        );
+    }
+
+    /// RIPR boundary discriminator for report.perl_ref != series.perl_resolved_ref.
+    #[test]
+    fn bind_report_perl_ref_boundary_discriminator() {
+        let (series, mut report) = report_bind_fixture();
+        report.perl_ref = "other-perl".into();
+        assert_eq!(report.perl_ref != series.perl_resolved_ref, true);
+        let err = bind_report_to_series(&report, &series)
+            .expect_err("perl_ref mismatch must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            "compile observation is not bound to series series: perl_resolved_ref mismatch"
+        );
+    }
+
+    /// RIPR boundary discriminator for report.runner != series.runner.
+    #[test]
+    fn bind_report_runner_boundary_discriminator() {
+        let (series, mut report) = report_bind_fixture();
+        report.runner = perl_core_harness_types::HarnessRunner::Harness;
+        assert_eq!(report.runner != series.runner, true);
+        let err = bind_report_to_series(&report, &series)
+            .expect_err("runner mismatch must fail")
+            .to_string();
+        assert_eq!(err, "compile observation is not bound to series series: runner mismatch");
+    }
+
+    /// RIPR boundary discriminator for report.profile != series.profile.
+    #[test]
+    fn bind_report_profile_boundary_discriminator() {
+        let (series, mut report) = report_bind_fixture();
+        report.profile = perl_core_harness_types::HarnessProfile::Full;
+        assert_eq!(report.profile != series.profile, true);
+        let err = bind_report_to_series(&report, &series)
+            .expect_err("profile mismatch must fail")
+            .to_string();
+        assert_eq!(err, "compile observation is not bound to series series: profile mismatch");
+    }
+
+    fn report_bind_fixture() -> (SeriesManifest, RunReport) {
+        let (series, _) = series_bind_fixture();
+        let report = RunReport {
+            schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            commit: series.repository_commit.clone(),
+            timestamp: "2026-08-11T00:00:00Z".into(),
+            perl_ref: series.perl_resolved_ref.clone(),
+            prepared_tree: "<prepared>".into(),
+            run_tree: "<run>".into(),
+            host_perl: "perl".into(),
+            runner: series.runner,
+            mode: perl_core_harness_types::HarnessMode::Compile,
+            profile: series.profile,
+            harness_status: Some(0),
+            summary: perl_core_harness_types::RunSummary {
+                files_total: 1,
+                files_passed: 1,
+                files_failed: 0,
+                tap_assertions_total: 1,
+                tap_assertions_passed: 1,
+            },
+            buckets: BTreeMap::new(),
+            file_results: vec![perl_core_harness_types::RunFileResult {
+                path: "base/0.t".into(),
+                status: perl_core_harness_types::RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+            }],
+            failures: Vec::new(),
+            semantic_boundaries: Vec::new(),
+        };
+        (series, report)
     }
 
     /// RIPR boundary discriminator for discovery.schema_version != series.harness_schema_version.

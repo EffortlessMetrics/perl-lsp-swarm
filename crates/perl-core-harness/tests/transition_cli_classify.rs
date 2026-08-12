@@ -735,6 +735,50 @@ fn classify_cli_rejects_discovery_perl_ref_mismatch() {
     assert!(!output.exists(), "discovery perl_ref mismatch must not write a classify receipt");
 }
 
+#[test]
+fn classify_cli_rejects_compile_commit_mismatch_with_series() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    let series = dir.path().join("series.json");
+    let discovery = dir.path().join("discovery.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 2, 2);
+    let mut report = sample_report(2, 2);
+    report.commit = "b".repeat(40);
+    fs::write(&compile, serde_json::to_string_pretty(&report).expect("encode")).expect("write");
+    write_series(&series, "series", "manifest", &["base/0.t", "base/1.t"]);
+    write_discovery(&discovery, "perl", &["base/0.t", "base/1.t"]);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--series",
+            series.to_str().expect("utf8"),
+            "--discovery",
+            discovery.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("compile observation is not bound to series"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(stderr.contains("repository_commit mismatch"), "unexpected stderr: {stderr}");
+    assert!(!output.exists(), "compile commit mismatch must not write a classify receipt");
+}
+
 fn write_baseline(path: &Path, total: usize, passed: usize) {
     let baseline = sample_v2_baseline(total, passed);
     fs::write(path, serde_json::to_string_pretty(&baseline).expect("encode")).expect("write");
