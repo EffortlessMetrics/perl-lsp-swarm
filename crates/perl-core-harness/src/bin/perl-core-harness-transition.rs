@@ -9,8 +9,10 @@
 //! recomputes classification + digests, and verifies an existing receipt
 //! matches exactly.
 //!
-//! Windows hard-link identity remains a follow-up slice. Full #6880
-//! validated-wrapper centralization is intentionally out of scope.
+//! Hard-link (and Unix inode) output/evidence identity is enforced when the
+//! output path already exists. Full #6880 validated-wrapper centralization
+//! and closed RunReport `deny_unknown_fields` remain intentionally out of
+//! scope.
 
 #![warn(missing_docs)]
 #![cfg_attr(clippy, allow(missing_docs))]
@@ -103,21 +105,124 @@ fn run_check(config: &CheckConfig) -> Result<()> {
 }
 
 fn reject_output_input_path_collision(config: &ClassifyConfig) -> Result<()> {
-    // Lean path-string identity only. Symlink/hard-link identity remains deferred.
-    if paths_equal(&config.output, &config.accepted_baseline)
-        || paths_equal(&config.output, &config.compile)
-        || config.series.as_ref().is_some_and(|series| paths_equal(&config.output, series))
-        || config.discovery.as_ref().is_some_and(|discovery| paths_equal(&config.output, discovery))
-    {
-        bail!(
-            "output path must not alias --accepted-baseline, --compile, --series, or --discovery; refusing to overwrite evidence"
-        );
+    let protected: Vec<&Path> = [
+        Some(config.accepted_baseline.as_path()),
+        Some(config.compile.as_path()),
+        config.series.as_deref(),
+        config.discovery.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for source in &protected {
+        if paths_equal(&config.output, source) {
+            bail!(
+                "output path must not alias --accepted-baseline, --compile, --series, or --discovery; refusing to overwrite evidence"
+            );
+        }
+    }
+
+    // When --output already exists, reject hard-link (and Unix inode) aliases of
+    // protected evidence. Path-string equality above cannot see those aliases.
+    if config.output.exists() {
+        for source in protected {
+            if same_file_identity(&config.output, source)? {
+                bail!(
+                    "output path is a hard-link alias of --accepted-baseline, --compile, --series, or --discovery; refusing to overwrite evidence"
+                );
+            }
+        }
     }
     Ok(())
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
     left == right
+}
+
+#[cfg(unix)]
+fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let output = fs::metadata(output)
+        .with_context(|| format!("reading classify output metadata {}", output.display()))?;
+    let source = match fs::metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("reading protected evidence metadata {}", source.display())
+            });
+        }
+    };
+    Ok(output.dev() == source.dev() && output.ino() == source.ino())
+}
+
+#[cfg(windows)]
+fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
+    let output_identity = windows_file_identity(output)?;
+    let source_identity = windows_file_identity(source)?;
+    Ok(output_identity.is_some() && output_identity == source_identity)
+}
+
+#[cfg(windows)]
+fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
+    use winapi::um::fileapi::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
+    };
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::winnt::{
+        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let display_path = path.display().to_string();
+    let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null_mut(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error).with_context(|| format!("reading file identity {display_path}"));
+    }
+
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let result = unsafe { GetFileInformationByHandle(handle, &mut information) };
+    let close_result = unsafe { CloseHandle(handle) };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("reading file identity {display_path}"));
+    }
+    if close_result == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("closing file identity handle {display_path}"));
+    }
+
+    Ok(Some((
+        information.dwVolumeSerialNumber,
+        information.nFileIndexHigh,
+        information.nFileIndexLow,
+    )))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_identity(_output: &Path, _source: &Path) -> Result<bool> {
+    // Path-string equality covers direct aliases. Stable hard-link identities are
+    // not exposed by the standard library on this platform.
+    Ok(false)
 }
 
 fn read_bytes(path: &Path, label: &str) -> Result<Vec<u8>> {
@@ -388,7 +493,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 const CLASSIFY_RECEIPT_SCHEMA_VERSION: &str = "perl_core_harness.transition_classify_result.v1";
-const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref plus compile observation commit/perl_ref/runner/profile, and --discovery via harness_schema_version/profile/runner/perl_resolved_ref/repository_commit/normalized_manifest, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; does not accept ratchets or claim hard-link identity";
+const CLASSIFY_CLAIM_BOUNDARY: &str = "loads V2 accepted baseline + run-report JSON, optionally binds --series via series_id/manifest_hash/file_membership/profile/runner/perl_resolved_ref plus compile observation commit/perl_ref/runner/profile, and --discovery via harness_schema_version/profile/runner/perl_resolved_ref/repository_commit/normalized_manifest, classifies via in-lib classify_transition, writes non-authorizing receipt with input digests; check recomputes digests+classification; refuses path-string and existing hard-link output aliases of evidence; does not accept ratchets or centralize #6880 validated wrappers";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct ClassifyReceipt {
@@ -669,6 +774,55 @@ mod classify_io_observer {
         .expect_err("discovery alias must fail")
         .to_string();
         assert_eq!(err.contains("--discovery"), true);
+    }
+
+    /// Discriminator: distinct path strings that hard-link the same file are rejected.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn output_hard_link_alias_of_accepted_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let accepted = dir.path().join("accepted.json");
+        let compile = dir.path().join("compile.json");
+        let output = dir.path().join("out.json");
+        fs::write(&accepted, b"accepted-bytes").expect("write accepted");
+        fs::write(&compile, b"compile-bytes").expect("write compile");
+        fs::hard_link(&accepted, &output).expect("hard_link");
+        assert_eq!(paths_equal(&output, &accepted), false);
+        assert_eq!(same_file_identity(&output, &accepted).expect("identity"), true);
+        let err = reject_output_input_path_collision(&ClassifyConfig {
+            accepted_baseline: accepted.clone(),
+            compile,
+            output: output.clone(),
+            series: None,
+            discovery: None,
+        })
+        .expect_err("hard-link alias must fail")
+        .to_string();
+        assert_eq!(err.contains("hard-link alias"), true);
+        let retained = fs::read(&accepted).expect("accepted retained");
+        assert_eq!(retained, b"accepted-bytes");
+    }
+
+    /// Negative control: distinct regular files are not treated as hard-link aliases.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn distinct_output_file_is_not_hard_link_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let accepted = dir.path().join("accepted.json");
+        let compile = dir.path().join("compile.json");
+        let output = dir.path().join("out.json");
+        fs::write(&accepted, b"accepted-bytes").expect("write accepted");
+        fs::write(&compile, b"compile-bytes").expect("write compile");
+        fs::write(&output, b"prior-out").expect("write output");
+        assert_eq!(same_file_identity(&output, &accepted).expect("identity"), false);
+        reject_output_input_path_collision(&ClassifyConfig {
+            accepted_baseline: accepted,
+            compile,
+            output,
+            series: None,
+            discovery: None,
+        })
+        .expect("distinct files must be allowed");
     }
 
     /// RIPR boundary discriminator for unsupported series schema rejection.

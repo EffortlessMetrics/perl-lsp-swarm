@@ -1499,6 +1499,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tracing",
+ "winapi",
 ]
 
 [[package]]
