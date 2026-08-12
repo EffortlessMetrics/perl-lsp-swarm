@@ -16,7 +16,7 @@ This is documentation without a closing =cut
     let output = TriviaPreservingParser::new(source.clone()).parse();
 
     assert_eq!(output.source(), source);
-    assert!(output.trivia.iter().any(|token| matches!(token.trivia, Trivia::PodComment(_))));
+    assert!(output.trivia.iter().any(|token| matches!(&token.trivia, Trivia::PodComment(_))));
 }
 
 #[test]
@@ -33,7 +33,7 @@ package MyModule;
 
     let output = TriviaPreservingParser::new(source).parse();
 
-    assert!(output.trivia.iter().any(|token| matches!(token.trivia, Trivia::PodComment(_))));
+    assert!(output.trivia.iter().any(|token| matches!(&token.trivia, Trivia::PodComment(_))));
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn shebang_variations_are_comments_without_ast_fabrication() {
         assert!(output.trivia.iter().any(|token| {
             matches!(&token.trivia, Trivia::LineComment(text) if text.starts_with("#!"))
         }));
-        assert!(matches!(output.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
+        assert!(matches!(&output.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     }
 }
 
@@ -133,7 +133,7 @@ my $x = 1;
     .to_string();
     let output = TriviaPreservingParser::new(source).parse();
 
-    assert!(output.trivia.iter().any(|token| matches!(token.trivia, Trivia::PodComment(_))));
+    assert!(output.trivia.iter().any(|token| matches!(&token.trivia, Trivia::PodComment(_))));
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn hash_in_string_is_not_comment_trivia() {
     assert!(output
         .trivia
         .iter()
-        .all(|token| !matches!(token.trivia, Trivia::LineComment(_))));
+        .all(|token| !matches!(&token.trivia, Trivia::LineComment(_))));
 }
 
 #[test]
@@ -159,7 +159,7 @@ my $x = 1;
     let output = TriviaPreservingParser::new(source.clone()).parse();
 
     assert_eq!(output.source(), source);
-    assert!(matches!(output.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
+    assert!(matches!(&output.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn equals_expression_is_not_pod() {
     assert!(output
         .trivia
         .iter()
-        .all(|token| !matches!(token.trivia, Trivia::PodComment(_))));
+        .all(|token| !matches!(&token.trivia, Trivia::PodComment(_))));
 }
 
 #[test]
@@ -188,7 +188,7 @@ Hidden documentation
     .to_string();
     let output = TriviaPreservingParser::new(source).parse();
 
-    assert!(output.trivia.iter().any(|token| matches!(token.trivia, Trivia::PodComment(_))));
+    assert!(output.trivia.iter().any(|token| matches!(&token.trivia, Trivia::PodComment(_))));
     assert!(output.parse.ast.to_sexp().contains("subroutine"));
 }
 
@@ -198,7 +198,7 @@ fn unicode_whitespace_does_not_replace_canonical_parser() {
     let output = TriviaPreservingParser::new(source.clone()).parse();
 
     assert_eq!(output.source(), source);
-    assert!(matches!(output.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
+    assert!(matches!(&output.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
 }
 
 #[test]
@@ -226,7 +226,7 @@ my $x = 1;
     .to_string();
     let output = TriviaPreservingParser::new(source).parse();
 
-    assert!(output.trivia.iter().any(|token| matches!(token.trivia, Trivia::PodComment(_))));
+    assert!(output.trivia.iter().any(|token| matches!(&token.trivia, Trivia::PodComment(_))));
 }
 
 #[test]
@@ -235,5 +235,5 @@ fn low_level_legacy_lexer_still_collects_trivia_during_migration() {
     let mut lexer = TriviaLexer::new(source);
     let (_, trivia) = lexer.next_token_with_trivia().expect("first token");
 
-    assert!(trivia.iter().any(|token| matches!(token.trivia, Trivia::LineComment(_))));
+    assert!(trivia.iter().any(|token| matches!(&token.trivia, Trivia::LineComment(_))));
 }
