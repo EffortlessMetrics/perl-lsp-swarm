@@ -105,7 +105,7 @@ fn canonical_node_count(node: &Node) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_parser_core::{SourceLocation, ast::NodeKind};
+    use perl_parser_core::{ast::NodeKind, SourceLocation};
 
     #[test]
     fn public_totals_include_children_of_every_node_kind() {
