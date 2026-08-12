@@ -10,6 +10,7 @@ use clap::Parser;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,17 @@ struct Candidate {
     #[serde(default)]
     open_findings: Vec<String>,
     disposition: String,
+    observation: CandidateObservation,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CandidateObservation {
+    head_sha: String,
+    state: String,
+    observed_at: String,
+    #[serde(default)]
+    acceptance_evidence: Vec<String>,
+    review_state: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -108,7 +120,7 @@ struct LiveClaimState {
     declared_open_prs: Vec<u64>,
     discovered_open_prs: Vec<u64>,
     missing_from_policy: Vec<u64>,
-    stale_in_policy: Vec<u64>,
+    observed_open_heads: BTreeMap<u64, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +128,9 @@ struct Receipt {
     schema_version: &'static str,
     receipt_kind: &'static str,
     repository: String,
+    policy_sha256: String,
+    queried_issues: Vec<u64>,
+    observed_at: String,
     live_checked: bool,
     passed: bool,
     claim_count: usize,
@@ -132,51 +147,44 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let content = fs::read_to_string(&args.policy)
         .with_context(|| format!("reading {}", args.policy.display()))?;
-    let mut policy: Policy = toml::from_str(&content)
-        .with_context(|| format!("parsing {}", args.policy.display()))?;
+    let mut policy: Policy =
+        toml::from_str(&content).with_context(|| format!("parsing {}", args.policy.display()))?;
     if let Some(repository) = args.repository {
         policy.repository = repository;
     }
 
+    let policy_sha256 =
+        Sha256::digest(content.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+    let observed_at = chrono::Utc::now().to_rfc3339();
     let mut findings = validate_policy(&policy);
-    let live = if args.live {
-        check_live_state(&policy, &mut findings)?
-    } else {
-        Vec::new()
-    };
+    let live = if args.live { check_live_state(&policy, &mut findings) } else { Vec::new() };
     findings.sort_by(|left, right| {
-        (
-            left.level,
-            &left.claim_id,
-            left.issue,
-            left.pr,
-            left.code,
-            &left.message,
-        )
-            .cmp(&(
-                right.level,
-                &right.claim_id,
-                right.issue,
-                right.pr,
-                right.code,
-                &right.message,
-            ))
+        (left.level, &left.claim_id, left.issue, left.pr, left.code, &left.message).cmp(&(
+            right.level,
+            &right.claim_id,
+            right.issue,
+            right.pr,
+            right.code,
+            &right.message,
+        ))
     });
 
     let error_count = findings.iter().filter(|finding| finding.level == "error").count();
-    let warning_count = findings
-        .iter()
-        .filter(|finding| finding.level == "warning")
-        .count();
-    let candidate_count = policy
-        .claim
-        .iter()
-        .map(|claim| claim.candidates.len())
-        .sum();
+    let warning_count = findings.iter().filter(|finding| finding.level == "warning").count();
+    let candidate_count = policy.claim.iter().map(|claim| claim.candidates.len()).sum();
     let receipt = Receipt {
-        schema_version: "pr_candidate_set.v1",
+        schema_version: "pr_candidate_set.v2",
         receipt_kind: "pr_candidate_set",
         repository: policy.repository.clone(),
+        policy_sha256,
+        queried_issues: policy
+            .claim
+            .iter()
+            .map(|claim| claim.issue)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        observed_at,
         live_checked: args.live,
         passed: error_count == 0,
         claim_count: policy.claim.len(),
@@ -189,11 +197,7 @@ fn main() -> Result<()> {
     };
 
     for finding in &receipt.findings {
-        let command = if finding.level == "error" {
-            "error"
-        } else {
-            "warning"
-        };
+        let command = if finding.level == "error" { "error" } else { "warning" };
         let subject = match (finding.issue, finding.pr) {
             (Some(issue), Some(pr)) => format!("issue #{issue}, PR #{pr}"),
             (Some(issue), None) => format!("issue #{issue}"),
@@ -225,10 +229,10 @@ fn main() -> Result<()> {
 
 fn validate_policy(policy: &Policy) -> Vec<Finding> {
     let mut findings = Vec::new();
-    if policy.schema_version != 1 {
+    if policy.schema_version != 2 {
         findings.push(global_error(
             "UNSUPPORTED_SCHEMA",
-            format!("schema_version must be 1, got {}", policy.schema_version),
+            format!("schema_version must be 2, got {}", policy.schema_version),
         ));
     }
     if policy.repository.split('/').count() != 2 {
@@ -244,17 +248,9 @@ fn validate_policy(policy: &Policy) -> Vec<Finding> {
         ));
     }
 
-    let mut issue_ids = BTreeSet::new();
     let mut claim_ids = BTreeSet::new();
     let mut global_prs = BTreeSet::new();
     for claim in &policy.claim {
-        if !issue_ids.insert(claim.issue) {
-            findings.push(claim_error(
-                claim,
-                "DUPLICATE_ISSUE",
-                format!("issue #{} appears in more than one claim", claim.issue),
-            ));
-        }
         if claim.claim_id.trim().is_empty() || !claim_ids.insert(claim.claim_id.clone()) {
             findings.push(claim_error(
                 claim,
@@ -267,11 +263,7 @@ fn validate_policy(policy: &Policy) -> Vec<Finding> {
     findings
 }
 
-fn validate_claim(
-    claim: &Claim,
-    global_prs: &mut BTreeSet<u64>,
-    findings: &mut Vec<Finding>,
-) {
+fn validate_claim(claim: &Claim, global_prs: &mut BTreeSet<u64>, findings: &mut Vec<Finding>) {
     if claim.decision.trim().is_empty() {
         findings.push(claim_error(
             claim,
@@ -311,7 +303,9 @@ fn validate_claim(
         ClaimState::Reconciled if current_count != 1 => findings.push(claim_error(
             claim,
             "RECONCILED_WITHOUT_ONE_CURRENT",
-            format!("reconciled claims require exactly one current candidate, found {current_count}"),
+            format!(
+                "reconciled claims require exactly one current candidate, found {current_count}"
+            ),
         )),
         ClaimState::Blocked | ClaimState::NotProven if current_count != 0 => {
             findings.push(claim_error(
@@ -357,6 +351,27 @@ fn validate_claim(
                 candidate,
                 "MISSING_CANDIDATE_DISPOSITION",
                 "disposition must state what happens to this candidate".to_string(),
+            ));
+        }
+        if candidate.observation.head_sha.len() != 40
+            || !candidate.observation.head_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            findings.push(candidate_error(
+                claim,
+                candidate,
+                "INVALID_OBSERVED_HEAD",
+                "observation.head_sha must be a full 40-character Git SHA".to_string(),
+            ));
+        }
+        if candidate.observation.observed_at.trim().is_empty()
+            || candidate.observation.acceptance_evidence.is_empty()
+            || candidate.observation.review_state.trim().is_empty()
+        {
+            findings.push(candidate_error(
+                claim,
+                candidate,
+                "INCOMPLETE_OBSERVATION",
+                "observation must record time, acceptance evidence, and review state".to_string(),
             ));
         }
         validate_relationship(claim, candidate, &local_prs, findings);
@@ -412,37 +427,84 @@ fn validate_relationship(
     }
 }
 
-fn check_live_state(policy: &Policy, findings: &mut Vec<Finding>) -> Result<Vec<LiveClaimState>> {
-    ensure_gh_available()?;
+fn check_live_state(policy: &Policy, findings: &mut Vec<Finding>) -> Vec<LiveClaimState> {
+    if let Err(error) = ensure_gh_available() {
+        findings.push(global_error("LIVE_SOURCE_UNAVAILABLE", error.to_string()));
+        return Vec::new();
+    }
     let mut live = Vec::new();
-    for claim in &policy.claim {
-        let discovered = discover_open_cross_references(&policy.repository, claim.issue)?;
-        let declared: BTreeSet<u64> = claim.candidates.iter().map(|candidate| candidate.pr).collect();
-        let missing_from_policy: Vec<u64> = discovered.difference(&declared).copied().collect();
-        let stale_in_policy: Vec<u64> = declared.difference(&discovered).copied().collect();
+    let issues: BTreeSet<u64> = policy.claim.iter().map(|claim| claim.issue).collect();
+    for issue in issues {
+        let discovered = match discover_open_cross_references(&policy.repository, issue) {
+            Ok(discovered) => discovered,
+            Err(error) => {
+                findings.push(Finding {
+                    level: "error",
+                    code: "LIVE_SOURCE_UNAVAILABLE",
+                    claim_id: None,
+                    issue: Some(issue),
+                    pr: None,
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let candidates: Vec<&Candidate> = policy
+            .claim
+            .iter()
+            .filter(|claim| claim.issue == issue)
+            .flat_map(|claim| &claim.candidates)
+            .collect();
+        let declared: BTreeSet<u64> = candidates
+            .iter()
+            .filter(|candidate| candidate.observation.state == "open")
+            .map(|candidate| candidate.pr)
+            .collect();
+        let discovered_prs: BTreeSet<u64> = discovered.keys().copied().collect();
+        let missing_from_policy: Vec<u64> = discovered_prs.difference(&declared).copied().collect();
         if !missing_from_policy.is_empty() {
-            findings.push(claim_error(
-                claim,
-                "UNDECLARED_OPEN_CANDIDATE",
-                format!("live GitHub has undeclared open PRs: {missing_from_policy:?}"),
-            ));
+            findings.push(Finding { level: "error", code: "UNASSIGNED_OPEN_CROSS_REFERENCE", claim_id: None, issue: Some(issue), pr: None, message: format!("open cross-references require an explicit policy-owned claim assignment: {missing_from_policy:?}") });
         }
-        if !stale_in_policy.is_empty() {
-            findings.push(claim_error(
-                claim,
-                "DECLARED_CANDIDATE_NOT_OPEN",
-                format!("declared PRs are not open cross-references: {stale_in_policy:?}"),
-            ));
+        for candidate in candidates {
+            if let Some(head) = discovered.get(&candidate.pr) {
+                if observation_head_is_stale(candidate, head) {
+                    findings.push(Finding {
+                        level: "error",
+                        code: "STALE_HEAD_OBSERVATION",
+                        claim_id: None,
+                        issue: Some(issue),
+                        pr: Some(candidate.pr),
+                        message: format!(
+                            "recorded head {} differs from live head {head}",
+                            candidate.observation.head_sha
+                        ),
+                    });
+                }
+            } else if candidate.observation.state == "open" {
+                findings.push(Finding {
+                    level: "error",
+                    code: "STALE_STATE_OBSERVATION",
+                    claim_id: None,
+                    issue: Some(issue),
+                    pr: Some(candidate.pr),
+                    message: "candidate is recorded open but is not an open cross-reference"
+                        .to_string(),
+                });
+            }
         }
         live.push(LiveClaimState {
-            issue: claim.issue,
+            issue,
             declared_open_prs: declared.into_iter().collect(),
-            discovered_open_prs: discovered.into_iter().collect(),
+            discovered_open_prs: discovered.keys().copied().collect(),
             missing_from_policy,
-            stale_in_policy,
+            observed_open_heads: discovered,
         });
     }
-    Ok(live)
+    live
+}
+
+fn observation_head_is_stale(candidate: &Candidate, live_head: &str) -> bool {
+    candidate.observation.head_sha != live_head
 }
 
 fn ensure_gh_available() -> Result<()> {
@@ -459,7 +521,7 @@ fn ensure_gh_available() -> Result<()> {
     Ok(())
 }
 
-fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeSet<u64>> {
+fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeMap<u64, String>> {
     let endpoint = format!("repos/{repository}/issues/{issue}/timeline?per_page=100");
     let output = Command::new("gh")
         .args([
@@ -480,7 +542,7 @@ fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeS
     }
     let pages: Value = serde_json::from_slice(&output.stdout)
         .with_context(|| format!("decoding live timeline for issue #{issue}"))?;
-    let mut prs = BTreeSet::new();
+    let mut prs = BTreeMap::new();
     let Some(page_list) = pages.as_array() else {
         return Err(eyre!("timeline response for issue #{issue} was not an array"));
     };
@@ -506,7 +568,22 @@ fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeS
                 continue;
             }
             if let Some(number) = source_issue.get("number").and_then(Value::as_u64) {
-                prs.insert(number);
+                let endpoint = format!("repos/{repository}/pulls/{number}");
+                let detail = Command::new("gh")
+                    .args(["api", "-H", "Accept: application/vnd.github+json", &endpoint])
+                    .output()
+                    .with_context(|| format!("reading live PR #{number}"))?;
+                if !detail.status.success() {
+                    return Err(eyre!(
+                        "gh api failed for PR #{number}: {}",
+                        String::from_utf8_lossy(&detail.stderr).trim()
+                    ));
+                }
+                let detail: Value = serde_json::from_slice(&detail.stdout)
+                    .with_context(|| format!("decoding live PR #{number}"))?;
+                if let Some(sha) = detail.pointer("/head/sha").and_then(Value::as_str) {
+                    prs.insert(number, sha.to_string());
+                }
             }
         }
     }
@@ -514,14 +591,7 @@ fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeS
 }
 
 fn global_error(code: &'static str, message: String) -> Finding {
-    Finding {
-        level: "error",
-        code,
-        claim_id: None,
-        issue: None,
-        pr: None,
-        message,
-    }
+    Finding { level: "error", code, claim_id: None, issue: None, pr: None, message }
 }
 
 fn claim_error(claim: &Claim, code: &'static str, message: String) -> Finding {
@@ -553,15 +623,13 @@ fn candidate_error(
 
 fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let serialized = serde_json::to_string_pretty(receipt).context("serializing receipt")?;
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, format!("{serialized}\n"))
         .with_context(|| format!("writing {}", temporary.display()))?;
-    fs::rename(&temporary, path)
-        .with_context(|| format!("replacing {}", path.display()))?;
+    fs::rename(&temporary, path).with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
 }
 
@@ -577,6 +645,13 @@ mod tests {
             unique_delta: vec!["reviewed delta".to_string()],
             open_findings: Vec::new(),
             disposition: "reviewed disposition".to_string(),
+            observation: CandidateObservation {
+                head_sha: format!("{pr:040x}"),
+                state: "open".to_string(),
+                observed_at: "2026-01-01T00:00:00Z".to_string(),
+                acceptance_evidence: vec!["reviewed proof".to_string()],
+                review_state: "reviewed".to_string(),
+            },
         }
     }
 
@@ -593,11 +668,7 @@ mod tests {
     }
 
     fn policy(claim: Claim) -> Policy {
-        Policy {
-            schema_version: 1,
-            repository: "owner/repo".to_string(),
-            claim: vec![claim],
-        }
+        Policy { schema_version: 2, repository: "owner/repo".to_string(), claim: vec![claim] }
     }
 
     #[test]
@@ -606,11 +677,7 @@ mod tests {
             ClaimState::Reconciled,
             vec![candidate(10, Relationship::SalvageSource, None)],
         )));
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.code == "RECONCILED_WITHOUT_ONE_CURRENT")
-        );
+        assert!(findings.iter().any(|finding| finding.code == "RECONCILED_WITHOUT_ONE_CURRENT"));
     }
 
     #[test]
@@ -641,5 +708,62 @@ mod tests {
             ],
         )));
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn one_issue_can_contain_two_distinct_semantic_claims() {
+        let mut second = claim(
+            ClaimState::Reconciled,
+            vec![candidate(20, Relationship::CurrentCandidate, None)],
+        );
+        second.claim_id = "test.second_slice".to_string();
+        let policy = Policy {
+            schema_version: 2,
+            repository: "owner/repo".to_string(),
+            claim: vec![
+                claim(
+                    ClaimState::Reconciled,
+                    vec![candidate(10, Relationship::CurrentCandidate, None)],
+                ),
+                second,
+            ],
+        };
+        assert!(validate_policy(&policy).is_empty());
+    }
+
+    #[test]
+    fn one_pr_cannot_be_assigned_to_two_claims() {
+        let mut second = claim(
+            ClaimState::Reconciled,
+            vec![candidate(10, Relationship::CurrentCandidate, None)],
+        );
+        second.claim_id = "test.second_slice".to_string();
+        let mut policy = policy(claim(
+            ClaimState::Reconciled,
+            vec![candidate(10, Relationship::CurrentCandidate, None)],
+        ));
+        policy.claim.push(second);
+        assert!(
+            validate_policy(&policy).iter().any(|finding| finding.code == "PR_IN_MULTIPLE_CLAIMS")
+        );
+    }
+
+    #[test]
+    fn closed_superseded_candidate_is_valid_history() {
+        let mut historical = candidate(11, Relationship::Superseded, Some(10));
+        historical.observation.state = "closed".to_string();
+        assert!(
+            validate_policy(&policy(claim(
+                ClaimState::Reconciled,
+                vec![candidate(10, Relationship::CurrentCandidate, None), historical],
+            )))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn changed_live_head_makes_the_observation_stale() {
+        let candidate = candidate(10, Relationship::CurrentCandidate, None);
+        assert!(observation_head_is_stale(&candidate, "ffffffffffffffffffffffffffffffffffffffff"));
     }
 }

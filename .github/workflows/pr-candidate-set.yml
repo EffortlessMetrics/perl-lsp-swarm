@@ -3,10 +3,9 @@ name: PR Candidate-Set Reconciliation
 on:
   pull_request:
     branches: [main, master]
-    paths:
-      - 'policy/pr-candidate-sets.toml'
-      - 'xtask/src/bin/pr-candidate-set.rs'
-      - '.github/workflows/pr-candidate-set.yml'
+    types: [opened, closed, reopened, synchronize, edited, ready_for_review, converted_to_draft]
+  schedule:
+    - cron: '17 */6 * * *'
   workflow_dispatch: {}
 
 concurrency:

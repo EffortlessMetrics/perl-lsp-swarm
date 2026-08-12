@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 repository = "EffortlessMetrics/perl-lsp-swarm"
 
 [[claim]]
@@ -29,6 +29,14 @@ open_findings = [
 ]
 disposition = "Harvest the wrapper-handling mechanics into a new #6908-owned candidate; do not merge the current behavior definitions."
 
+
+[claim.candidates.observation]
+head_sha = "dc07c9dc13497d58d2832fcef7922d7f25d18a60"
+state = "closed"
+observed_at = "2026-08-12T03:00:00Z"
+acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+review_state = "blocking_findings_recorded"
+
 [[claim.candidates]]
 pr = 6605
 relationship = "duplicate"
@@ -40,6 +48,14 @@ open_findings = [
   "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
 ]
 disposition = "Harvest the Result-returning assertion shape if useful, then close as duplicate of the replacement work sourced from #6585."
+
+
+[claim.candidates.observation]
+head_sha = "e8049336db240fd5523b7e4c8392ba3c978497ae"
+state = "closed"
+observed_at = "2026-08-12T03:00:00Z"
+acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+review_state = "blocking_findings_recorded"
 
 [[claim.candidates]]
 pr = 6609
@@ -53,6 +69,14 @@ open_findings = [
 ]
 disposition = "Compare the helper placement during salvage, then close as duplicate."
 
+
+[claim.candidates.observation]
+head_sha = "163ebd8e5f5ff691bb0d45466825bbbf2a9596b9"
+state = "open"
+observed_at = "2026-08-12T03:00:00Z"
+acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+review_state = "blocking_findings_recorded"
+
 [[claim.candidates]]
 pr = 6610
 relationship = "duplicate"
@@ -64,6 +88,14 @@ open_findings = [
   "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
 ]
 disposition = "No independent semantic claim; close after wrapper-handling salvage is complete."
+
+
+[claim.candidates.observation]
+head_sha = "5d0d62a3a3a232e9550e2cf923b0fa6a2e8b1ed3"
+state = "closed"
+observed_at = "2026-08-12T03:00:00Z"
+acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+review_state = "blocking_findings_recorded"
 
 [[claim]]
 issue = 6534
@@ -94,6 +126,14 @@ open_findings = [
 ]
 disposition = "Keep as current owner, remove unrelated gold, rerun generated parser status, and refresh focused review."
 
+
+[claim.candidates.observation]
+head_sha = "cb3ec7044dab5d81417ca0f967329c9b3912fcef"
+state = "open"
+observed_at = "2026-08-12T03:00:00Z"
+acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+review_state = "blocking_findings_recorded"
+
 [[claim.candidates]]
 pr = 6620
 relationship = "superseded"
@@ -107,6 +147,14 @@ open_findings = [
 ]
 disposition = "Do not merge as #6534 implementation; inspect only for any missing four-fixture expectation, then close."
 
+
+[claim.candidates.observation]
+head_sha = "f2caad80d057f968af64d0aa2c92f5ca3f482aad"
+state = "open"
+observed_at = "2026-08-12T03:00:00Z"
+acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+review_state = "blocking_findings_recorded"
+
 [[claim.candidates]]
 pr = 6623
 relationship = "superseded"
@@ -119,3 +167,10 @@ open_findings = [
   "Does not provide the line-scoped forbidden-node proof owned by #6612."
 ]
 disposition = "Transfer any genuinely unique four-fixture expectation to #6612 after review; otherwise close as superseded."
+
+[claim.candidates.observation]
+head_sha = "896368e1aa0dc89f5a3c08bbd6d2e0bbd16a0574"
+state = "open"
+observed_at = "2026-08-12T03:00:00Z"
+acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+review_state = "blocking_findings_recorded"
