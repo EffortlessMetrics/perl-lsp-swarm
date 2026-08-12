@@ -28,6 +28,7 @@ REQUIRED_RECEIPT_FIELDS = {"v", "kind", "head", "reviewer", "status"}
 ALLOWED_RECEIPT_FIELDS = REQUIRED_RECEIPT_FIELDS | {"claim_digest", "comment_id"}
 REVIEW_KINDS = {"deep", "standard"}
 REVIEW_STATUSES = {"running", "done"}
+HISTORICAL_FIXTURE_EXIT = 3
 
 RETIREMENT_MESSAGE = """RETIRED: live exact-head and claim-digest review verdicts are disabled.
 
@@ -259,7 +260,7 @@ def _evaluate_fixture(args: argparse.Namespace) -> int:
     records, invalid_trusted_receipts, invalid_untrusted_receipts = _markers(comments)
     if not records and invalid_trusted_receipts == 0:
         result = {
-            "result": "not_applicable",
+            "result": "historical_not_applicable",
             "authority": "historical_fixture_only",
             "head": head,
             "claim_digest": None,
@@ -279,7 +280,7 @@ def _evaluate_fixture(args: argparse.Namespace) -> int:
                 "historical claim review not applicable: "
                 f"no review-run receipt exists at head={head}"
             )
-        return 0
+        return HISTORICAL_FIXTURE_EXIT
 
     digest = str(claim_digest(body)["digest"])
     trusted = [record for record in records if record["trusted"]]
@@ -294,7 +295,11 @@ def _evaluate_fixture(args: argparse.Namespace) -> int:
     ]
 
     result = {
-        "result": "current" if matching and invalid_trusted_receipts == 0 else "not_proven",
+        "result": (
+            "historical_match"
+            if matching and invalid_trusted_receipts == 0
+            else "not_proven"
+        ),
         "authority": "historical_fixture_only",
         "head": head,
         "claim_digest": digest,
@@ -332,7 +337,7 @@ def _evaluate_fixture(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    return 0 if matched else 1
+    return HISTORICAL_FIXTURE_EXIT if matched else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -340,6 +345,13 @@ def main(argv: list[str] | None = None) -> int:
     fixture_mode = (
         args.body_file is not None or args.comments_file is not None or args.head is not None
     )
+
+    if fixture_mode and (args.pr is not None or args.repo is not None):
+        print(
+            "NOT_PROVEN: live PR arguments cannot be combined with historical fixture arguments",
+            file=sys.stderr,
+        )
+        return 2
 
     if not fixture_mode:
         print(RETIREMENT_MESSAGE, file=sys.stderr)
