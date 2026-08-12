@@ -103,12 +103,18 @@ def test_orchestration_briefs_are_semantic_not_claim_hashed() -> None:
         assert "Do not include a claim digest" in text
 
 
-def test_pre_merge_preserves_disposition_validation() -> None:
+def test_pre_merge_preserves_native_disposition_validation() -> None:
     text = (ROOT / "scripts/pre-merge-check.sh").read_text(encoding="utf-8")
-    assert "resolved_without_disposition" in text
-    assert "unresolved_total" in text
-    assert "current_change_requests" in text
-    assert "pending_reviewers" in text
+    assert "check-pr-review-convergence" in text
+    assert "native_review_facts_converged" in text
+    assert "semantic_currentness_required" in text
+
+
+def test_pre_merge_requires_subject_bound_semantic_review() -> None:
+    text = (ROOT / "scripts/pre-merge-check.sh").read_text(encoding="utf-8")
+    assert "check-pr-semantic-review-currentness.py" in text
+    assert 'SEMANTIC_CLASS" != "REVIEW_CURRENT"' in text
+    assert "substantive review is" in text
 
 
 def test_legacy_review_writer_is_inert() -> None:
@@ -121,18 +127,46 @@ def test_legacy_review_writer_is_inert() -> None:
     assert "review-run:v1" not in text
 
 
-def test_active_convergence_does_not_require_claim_or_head_receipts() -> None:
+def test_native_convergence_is_fact_only() -> None:
     text = (ROOT / "scripts/ci/check-pr-review-convergence").read_text(
         encoding="utf-8"
     )
     assert "check-pr-claim-currentness" not in text
     assert "material_claim_receipt_required: false" in text
     assert "exact_head_review_required: false" in text
-    assert 'review_currentness: "semantic_changed_seam"' in text
+    assert 'review_currentness: "NOT_PROVEN"' in text
+    assert "semantic_currentness_required: true" in text
+    assert "semantic_changed_seam" not in text
     assert "pending_reviewers" in text
     assert "current_change_requests" in text
     assert "unresolved_total" in text
     assert "resolved_without_disposition" in text
+    assert "SUBMITTED_REVIEW_PRESENT" in text
+    assert "present_unclassified" in text
+
+
+def test_subject_bound_checker_requires_durable_review_record() -> None:
+    text = (
+        ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"
+    ).read_text(encoding="utf-8")
+    assert "semantic-review:v1" in text
+    assert "REVIEW_CURRENT" in text
+    assert "## Review scope" in text
+    assert "## Evidence and falsifiers" in text
+    assert "## What this establishes" in text
+    assert "## Residual risk / not proved" in text
+    assert "subject_sha256" in text
+    assert "git" in text and "diff" in text and "--binary" in text
+
+
+def test_semantic_carry_forward_is_narrow_and_not_code_whitespace() -> None:
+    text = (
+        ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"
+    ).read_text(encoding="utf-8")
+    assert '{".md", ".txt"}' in text
+    assert "whitespace-insensitive prose file" in text
+    assert "--ignore-all-space" in text
+    assert "--ignore-blank-lines" in text
 
 
 def test_convergence_sanitizes_numeric_collector_facts() -> None:
@@ -141,7 +175,7 @@ def test_convergence_sanitizes_numeric_collector_facts() -> None:
     )
     assert '[[ "$value" =~ ^[0-9]+$ ]]' in text
     assert 'not_proven "invalid_numeric_review_fact"' in text
-    assert "USABLE_HUMAN_REVIEW_COUNT=$(" in text
+    assert "SUBMITTED_HUMAN_REVIEW_COUNT=$(" in text
 
 
 def test_state_projection_has_no_exact_head_lifecycle() -> None:
