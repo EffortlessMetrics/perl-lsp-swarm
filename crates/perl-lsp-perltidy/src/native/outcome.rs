@@ -2,7 +2,7 @@ use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     format_simple_line, range_includes_line,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma,
+    TextPosition, TextRange, TrailingComma,
 };
 use serde::{Deserialize, Serialize};
 
