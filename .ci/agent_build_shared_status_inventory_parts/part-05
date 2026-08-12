@@ -1,0 +1,100 @@
+            eprintln!(
+                "[update-status] workspace lib-test inventory unavailable; \
+                 tests will render Tier A as UNVERIFIED: {err:#}"
+            );
+            Ok(None)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+''',
+    )
+    replace_once(
+        module,
+        "    // --- Tests subsystem ---\n    if need_tests {\n",
+        '''    let workspace_test_inventory =
+        collect_shared_test_inventory(need_tests, need_quality, || {
+            run_subsystem(
+                "test-inventory",
+                "cargo test --workspace --lib --exclude tree-sitter-perl -- --list",
+                || test_inventory::collect_workspace_lib_test_inventory(&root),
+            )
+        })?;
+
+    // --- Tests subsystem ---
+    if need_tests {
+''',
+    )
+    replace_once(
+        module,
+        "            let test_counts = tests::count_tests(&root);\n",
+        "            let test_counts = tests::count_tests(&root, workspace_test_inventory.as_ref());\n",
+    )
+    replace_once(
+        module,
+        "            let updated_quality = quality::generate_quality_status(&root, &original_quality)?;\n",
+        '''            let test_inventory = workspace_test_inventory
+                .as_ref()
+                .ok_or_else(|| eyre!("quality requires the shared workspace lib-test inventory"))?;
+            let updated_quality =
+                quality::generate_quality_status(&root, &original_quality, test_inventory)?;
+''',
+    )
+
+    mod_tests = Path("xtask/src/tasks/update_status/mod_tests.rs")
+    replace_once(
+        mod_tests,
+        "        \"quality.rs\",\n        \"tests.rs\",\n",
+        "        \"quality.rs\",\n        \"test_inventory.rs\",\n        \"tests.rs\",\n",
+    )
+    replace_once(
+        mod_tests,
+        "#[test]\nfn test_parser_status_refreshes_accuracy_artifact_before_rendering() -> Result<()> {\n",
+        '''#[test]
+fn test_shared_inventory_is_collected_once_for_tests_and_quality() -> Result<()> {
+    let calls = std::cell::Cell::new(0usize);
+
+    let inventory = collect_shared_test_inventory(true, true, || {
+        calls.set(calls.get() + 1);
+        Ok(test_inventory::WorkspaceLibTestInventory::default())
+    })?;
+
+    assert!(inventory.is_some());
+    assert_eq!(calls.get(), 1);
+    Ok(())
+}
+
+#[test]
+fn test_tests_only_degrades_when_shared_inventory_is_unavailable() -> Result<()> {
+    let inventory = collect_shared_test_inventory(true, false, || {
+        Err(eyre!("simulated discovery failure"))
+    })?;
+
+    assert!(inventory.is_none());
+    Ok(())
+}
+
+#[test]
+fn test_quality_fails_closed_when_shared_inventory_is_unavailable() {
+    let result = collect_shared_test_inventory(false, true, || {
+        Err(eyre!("simulated discovery failure"))
+    });
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unneeded_inventory_does_not_run_discovery() -> Result<()> {
+    let calls = std::cell::Cell::new(0usize);
+
+    let inventory = collect_shared_test_inventory(false, false, || {
+        calls.set(calls.get() + 1);
+        Ok(test_inventory::WorkspaceLibTestInventory::default())
+    })?;
+
+    assert!(inventory.is_none());
+    assert_eq!(calls.get(), 0);
+    Ok(())
