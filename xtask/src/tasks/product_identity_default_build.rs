@@ -499,6 +499,17 @@ package_manifest = "crates/perl-dap/Cargo.toml"
     }
 
     #[test]
+    fn implementation_crate_with_nested_implicit_binary_via_src_bin_is_rejected() -> Result<()> {
+        let repo = fixture_repo()?;
+        write(
+            repo.path(),
+            "crates/perl-lsp-rs/src/bin/restored/main.rs",
+            "fn main() {}\n",
+        )?;
+        expect_failure(repo.path(), "src/bin/restored/main.rs contributes an implicit binary")
+    }
+
+    #[test]
     fn dap_binary_hidden_by_required_feature_fails() -> Result<()> {
         let repo = fixture_repo()?;
         write_binary_manifest(
