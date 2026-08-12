@@ -87,7 +87,6 @@ which = "8.0.2"
 [build-dependencies]
 
 [package.metadata.docs.rs]
-all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
@@ -117,8 +116,10 @@ lsp-advanced = []  # Advanced LSP features (profiling, git integration, etc.)
 expose_lsp_test_api = ["perl-parser/expose_lsp_test_api"]  # Expose test helpers for integration tests
 lsp-extras = []  # Quarantined tests for unimplemented/aspirational LSP features
 strict-jsonrpc = []  # Strict JSON-RPC 2.0 protocol validation tests
-dap-phase1 = []  # DAP Phase 1: Bridge to Perl::LanguageServer (AC1-AC4)
-dap-phase3 = ["dap-phase1"]  # DAP Phase 3: Non-regression tests (AC17), requires DAP bridge
+# Compatibility alias for explicit legacy PLS bridge conformance only.
+dap-phase1 = ["perl-dap/legacy-pls-bridge"]
+# DAP Phase 3 non-regression tests no longer imply the legacy bridge.
+dap-phase3 = []
 utf16-complete = ["perl-parser/utf16-complete"]  # Complete UTF-16 round-trip support
 
 [dev-dependencies]
