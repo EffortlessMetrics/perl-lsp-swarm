@@ -19,6 +19,8 @@ use super::{
     UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
+const MAX_REJECTED_PROFILE_CHARS: usize = 80;
+
 /// Native critic rule bundle used by configuration, diagnostics, and readiness tooling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NativeCriticProfile {
@@ -108,13 +110,26 @@ impl fmt::Display for NativeCriticProfileParseError {
         write!(
             formatter,
             "unrecognized native critic profile '{}'; expected {}",
-            self.value,
+            render_rejected_profile(&self.value),
             NativeCriticProfile::VALID_OPTIONS
         )
     }
 }
 
 impl std::error::Error for NativeCriticProfileParseError {}
+
+fn render_rejected_profile(value: &str) -> String {
+    let mut chars = value.chars();
+    let mut rendered = chars
+        .by_ref()
+        .take(MAX_REJECTED_PROFILE_CHARS)
+        .flat_map(char::escape_default)
+        .collect::<String>();
+    if chars.next().is_some() {
+        rendered.push('…');
+    }
+    rendered
+}
 
 /// Registry for Rust-native critic rules.
 ///
@@ -369,7 +384,9 @@ fn severity_enabled(severity: Severity, config: &CriticConfig) -> bool {
 mod profile_tests {
     use std::str::FromStr;
 
-    use super::{NativeCriticProfile, NativeCriticProfileParseError};
+    use super::{
+        MAX_REJECTED_PROFILE_CHARS, NativeCriticProfile, NativeCriticProfileParseError,
+    };
 
     #[test]
     fn recommended_is_the_internal_default() {
@@ -396,6 +413,33 @@ mod profile_tests {
             error,
             Err(NativeCriticProfileParseError { value: " recomended ".to_string() })
         );
+    }
+
+    #[test]
+    fn invalid_token_display_escapes_control_characters_without_changing_evidence() {
+        let raw = "strict\n\t\u{0007}'";
+        let error = NativeCriticProfile::from_str(raw).expect_err("control-bearing token must fail");
+        let rendered = error.to_string();
+
+        assert_eq!(error.value(), raw);
+        assert!(!rendered.contains('\n'));
+        assert!(!rendered.contains('\t'));
+        assert!(!rendered.contains('\u{0007}'));
+        assert!(rendered.contains("\\n"));
+        assert!(rendered.contains("\\t"));
+        assert!(rendered.contains("\\u{7}"));
+        assert!(rendered.contains("\\'"));
+    }
+
+    #[test]
+    fn invalid_token_display_is_bounded_while_the_error_retains_the_full_value() {
+        let raw = "x".repeat(MAX_REJECTED_PROFILE_CHARS + 32);
+        let error = NativeCriticProfile::from_str(&raw).expect_err("oversized token must fail");
+        let rendered = error.to_string();
+
+        assert_eq!(error.value(), raw);
+        assert!(rendered.contains(&format!("{}…", "x".repeat(MAX_REJECTED_PROFILE_CHARS))));
+        assert!(!rendered.contains(&"x".repeat(MAX_REJECTED_PROFILE_CHARS + 1)));
     }
 
     #[test]
