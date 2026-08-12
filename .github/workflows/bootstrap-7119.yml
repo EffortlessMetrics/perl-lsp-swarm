@@ -44,7 +44,7 @@ jobs:
 
       - name: Focused extension tests
         working-directory: vscode-extension
-        run: npm test -- featureActivationMetrics.test.ts --runInBand
+        run: npm test -- featureActivationMetrics.test.js --runInBand
 
       - name: Format and lint checks
         working-directory: vscode-extension
