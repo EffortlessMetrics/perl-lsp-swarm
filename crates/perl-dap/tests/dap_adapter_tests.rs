@@ -189,6 +189,7 @@ mod dap_phase2_tests {
             .get("stackFrames")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("stackFrames missing"))?;
+        // No active session: stackTrace returns empty list per DAP spec (no fabricated frame)
         assert!(
             stack_frames.is_empty(),
             "no session: expected empty stack frames, not a fabricated frame"
@@ -206,11 +207,19 @@ mod dap_phase2_tests {
         Ok(())
     }
 
-    /// Tests lazy variable expansion through the globals fallback scope.
+    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-lazy-variable-expansion
+    ///
+    /// Uses variablesReference=13 (Globals scope, frame_id=1) which always returns at
+    /// least one variable in fallback mode (`$_`). Locals scope (ref=11) now returns
+    /// empty in fallback mode when the B module is unavailable (issue #1006 — honest
+    /// empty rather than fake `$self`/`@_` placeholders), so this test uses Globals to
+    /// verify the expansion round-trip shape.
     #[tokio::test]
     // AC:8
     async fn test_lazy_variable_expansion() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        // ref=13: frame_id=1, Globals scope (frame_id*10+3 = 13).
+        // Globals fallback returns `$_` = "undef" with variables_reference=0.
         let root = adapter.handle_request(
             1,
             "variables",
@@ -226,6 +235,7 @@ mod dap_phase2_tests {
             .get("variables")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("variables array missing"))?;
+        // Globals fallback always returns at least `$_`.
         assert!(
             !vars.is_empty(),
             "Globals scope fallback must return at least one variable ($_ = undef)"
@@ -254,6 +264,7 @@ mod dap_phase2_tests {
     }
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac9-execution-control
+    /// Updated for #898: all four handlers return failure without an active session.
     #[tokio::test]
     // AC:9
     async fn test_execution_control_operations() -> Result<()> {
@@ -343,6 +354,7 @@ mod dap_phase2_tests {
             _ => anyhow::bail!("expected evaluate response"),
         }
 
+        // Side effects opt-in bypasses safety validator but still requires an active session.
         let no_session = adapter.handle_request(
             2,
             "evaluate",
