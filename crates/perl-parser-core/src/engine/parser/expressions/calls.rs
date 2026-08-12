@@ -490,10 +490,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = args
-            .last()
-            .map(|arg| arg.location.end)
-            .unwrap_or_else(|| self.previous_position());
+        let end = self.previous_position();
 
         self.exit_recursion();
 

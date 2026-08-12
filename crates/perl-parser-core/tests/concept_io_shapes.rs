@@ -23,17 +23,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source
-        .get(node.location.start..node.location.end)
-        .map(str::to_owned)
-}
-
-fn subtree_contains(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> bool {
-    predicate(&node.kind)
-        || node
-            .children()
-            .into_iter()
-            .any(|child| subtree_contains(child, predicate))
+    source.get(node.location.start..node.location.end).map(str::to_owned)
 }
 
 #[test]
@@ -92,10 +82,7 @@ fn angle_forms_keep_exact_readline_diamond_glob_and_shift_shapes() -> Result<(),
         vec![Some("<>".to_string()), Some("<<>>".to_string())],
         "ordinary and safe diamond forms share NodeKind but retain exact source geometry"
     );
-    assert_eq!(
-        globs,
-        vec![("*.pl".to_string(), Some("<*.pl>".to_string()))]
-    );
+    assert_eq!(globs, vec![("*.pl".to_string(), Some("<*.pl>".to_string()))]);
     assert_eq!(
         shifts,
         vec![
@@ -129,20 +116,9 @@ fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<
     let mut diamonds = 0usize;
 
     walk(&ast, &mut |node| match &node.kind {
-        NodeKind::Heredoc {
-            delimiter,
-            content,
-            interpolated,
-            indented,
-            command,
-            body_span,
-        } => {
+        NodeKind::Heredoc { delimiter, content, interpolated, indented, command, body_span } => {
             let body_geometry = body_span.as_ref().map(|span| {
-                (
-                    span.start,
-                    span.end,
-                    source.get(span.start..span.end).map(str::to_owned),
-                )
+                (span.start, span.end, source.get(span.start..span.end).map(str::to_owned))
             });
             heredocs.push((
                 delimiter.clone(),
@@ -165,10 +141,7 @@ fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<
     assert!(*interpolated, "bare heredoc delimiters permit interpolation");
     assert!(!*indented, "plain <<EOF must not be marked as an indented heredoc");
     assert!(!*command, "plain <<EOF must not be marked as command execution");
-    assert!(
-        opener.as_deref().is_some_and(|text| text.starts_with("<<EOF")),
-        "heredoc declaration span must begin at its opener"
-    );
+    assert_eq!(opener.as_deref(), Some("<<EOF"));
     assert_eq!(
         body,
         &Some((22, 27, Some("hello".to_string()))),
@@ -191,12 +164,7 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
     let mut scalar_handle_printf = Vec::new();
 
     walk(&ast, &mut |node| {
-        if let NodeKind::IndirectCall {
-            method,
-            object,
-            args,
-        } = &node.kind
-        {
+        if let NodeKind::IndirectCall { method, object, args } = &node.kind {
             match method.as_str() {
                 "print"
                     if matches!(
@@ -211,33 +179,34 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
                         "print scalar handle must retain one output argument"
                     );
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
-                    assert_eq!(
-                        source_text(source, &args[0]).as_deref(),
-                        Some("\"hello\"")
-                    );
+                    assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
                     if let Some(text) = source_text(source, node) {
                         scalar_handle_print.push(text);
                     }
                 }
                 "print" if matches!(&object.kind, NodeKind::Block { .. }) => {
                     assert_eq!(source_text(source, object).as_deref(), Some("{ $fh }"));
-                    assert!(
-                        subtree_contains(object, &|kind| matches!(
-                            kind,
-                            NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh"
-                        )),
-                        "braced print handle lost the $fh expression"
-                    );
+                    let NodeKind::Block { statements } = &object.kind else {
+                        return;
+                    };
+                    let [statement] = statements.as_slice() else {
+                        return;
+                    };
+                    let NodeKind::ExpressionStatement { expression } = &statement.kind else {
+                        return;
+                    };
+                    assert!(matches!(
+                        &expression.kind,
+                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh"
+                    ));
+                    assert_eq!(source_text(source, expression).as_deref(), Some("$fh"));
                     assert_eq!(
                         args.len(),
                         1,
                         "print braced handle must retain one output argument"
                     );
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
-                    assert_eq!(
-                        source_text(source, &args[0]).as_deref(),
-                        Some("\"hello\"")
-                    );
+                    assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
                     if let Some(text) = source_text(source, node) {
                         braced_handle_print.push(text);
                     }
@@ -249,11 +218,7 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
                     ) =>
                 {
                     assert_eq!(source_text(source, object).as_deref(), Some("$fh"));
-                    assert_eq!(
-                        args.len(),
-                        2,
-                        "printf must retain format and value arguments"
-                    );
+                    assert_eq!(args.len(), 2, "printf must retain format and value arguments");
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
                     assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"%s\""));
                     assert!(matches!(
