@@ -49,6 +49,13 @@ impl HostPathKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicStringClass {
+    Ordinary,
+    SourceText,
+    Regex,
+}
+
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct Finding {
     logical_file: String,
@@ -68,8 +75,7 @@ fn validate_public_bundle(bundle_dir: &Path) -> Result<()> {
     if index.is_file() {
         files.push(index);
     }
-    let normalized = bundle_dir.join("normalized");
-    collect_json_files(&normalized, &mut files)?;
+    collect_json_files(&bundle_dir.join("normalized"), &mut files)?;
     files.sort();
     files.dedup();
     if files.is_empty() {
@@ -157,6 +163,7 @@ fn validate_public_file(bundle_dir: &Path, path: &Path, findings: &mut Vec<Findi
                 &value,
                 &logical_file,
                 &format!("/line/{}", line_index + 1),
+                PublicStringClass::Ordinary,
                 findings,
             );
         }
@@ -166,38 +173,97 @@ fn validate_public_file(bundle_dir: &Path, path: &Path, findings: &mut Vec<Findi
     } else {
         let value: Value = serde_json::from_str(&raw)
             .with_context(|| format!("decoding public JSON evidence {}", path.display()))?;
-        scan_json_value(&value, &logical_file, "", findings);
+        scan_json_value(
+            &value,
+            &logical_file,
+            "",
+            PublicStringClass::Ordinary,
+            findings,
+        );
     }
     Ok(())
 }
 
-fn scan_json_value(value: &Value, logical_file: &str, pointer: &str, findings: &mut Vec<Finding>) {
+fn scan_json_value(
+    value: &Value,
+    logical_file: &str,
+    pointer: &str,
+    string_class: PublicStringClass,
+    findings: &mut Vec<Finding>,
+) {
     match value {
         Value::String(text) => {
-            if let Some(kind) = host_path_kind(text) {
+            if let Some(kind) = host_path_kind(text, string_class) {
                 findings.push(Finding {
                     logical_file: logical_file.to_string(),
-                    pointer: if pointer.is_empty() { "/".to_string() } else { pointer.to_string() },
+                    pointer: pointer_or_root(pointer),
                     kind,
                 });
             }
         }
         Value::Array(values) => {
             for (index, value) in values.iter().enumerate() {
-                scan_json_value(value, logical_file, &format!("{pointer}/{index}"), findings);
+                scan_json_value(
+                    value,
+                    logical_file,
+                    &format!("{pointer}/{index}"),
+                    string_class,
+                    findings,
+                );
             }
         }
         Value::Object(values) => {
             for (key, value) in values {
-                let escaped = key.replace('~', "~0").replace('/', "~1");
-                scan_json_value(value, logical_file, &format!("{pointer}/{escaped}"), findings);
+                let key_finding = host_path_kind(key, PublicStringClass::Ordinary);
+                if let Some(kind) = key_finding {
+                    findings.push(Finding {
+                        logical_file: logical_file.to_string(),
+                        pointer: pointer_or_root(pointer),
+                        kind,
+                    });
+                }
+
+                let segment = if key_finding.is_some() {
+                    "<redacted-key>".to_string()
+                } else {
+                    escape_json_pointer(key)
+                };
+                let child_class = classify_field(key).unwrap_or(string_class);
+                scan_json_value(
+                    value,
+                    logical_file,
+                    &format!("{pointer}/{segment}"),
+                    child_class,
+                    findings,
+                );
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
-fn host_path_kind(text: &str) -> Option<HostPathKind> {
+fn pointer_or_root(pointer: &str) -> String {
+    if pointer.is_empty() { "/".to_string() } else { pointer.to_string() }
+}
+
+fn escape_json_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
+fn classify_field(key: &str) -> Option<PublicStringClass> {
+    match key.to_ascii_lowercase().as_str() {
+        "source_text" | "source_code" | "source_snippet" | "perl_source" | "fixture_source"
+        | "snippet" => Some(PublicStringClass::SourceText),
+        "regex" | "pattern" | "regular_expression" => Some(PublicStringClass::Regex),
+        _ => None,
+    }
+}
+
+fn host_path_kind(text: &str, string_class: PublicStringClass) -> Option<HostPathKind> {
+    if matches!(string_class, PublicStringClass::SourceText | PublicStringClass::Regex) {
+        return None;
+    }
+
     let decoded = decode_path_escapes(text);
     let lower = decoded.to_ascii_lowercase();
     if lower.contains("file:/") {
@@ -208,6 +274,9 @@ fn host_path_kind(text: &str) -> Option<HostPathKind> {
     }
     if contains_unc_path(&decoded) {
         return Some(HostPathKind::WindowsUnc);
+    }
+    if looks_like_perl_regex_literal(decoded.trim()) {
+        return None;
     }
     contains_unix_absolute_path(&decoded).then_some(HostPathKind::UnixAbsolute)
 }
@@ -270,63 +339,31 @@ fn contains_unc_path(text: &str) -> bool {
 }
 
 fn contains_unix_absolute_path(text: &str) -> bool {
-    const HOST_ROOTS: &[&str] = &[
-        "/home/",
-        "/tmp/",
-        "/private/",
-        "/users/",
-        "/var/folders/",
-        "/mnt/",
-        "/workspace/",
-        "/github/",
-        "/__w/",
-        "/opt/hostedtoolcache/",
-        "/runner/",
-    ];
-
-    let lower = text.to_ascii_lowercase();
-    if HOST_ROOTS.iter().any(|prefix| contains_at_path_boundary(&lower, prefix)) {
-        return true;
-    }
-
     let bytes = text.as_bytes();
     for index in 0..bytes.len() {
         if bytes[index] != b'/' || (index > 0 && !is_path_boundary(bytes[index - 1])) {
             continue;
         }
-        if index + 1 < bytes.len() && bytes[index + 1] == b'/' {
-            continue;
-        }
-        if is_regex_brace_prefix(bytes, index) {
+        if index + 1 >= bytes.len() || bytes[index + 1] == b'/' {
             continue;
         }
         let end = bytes[index..]
             .iter()
             .position(|byte| is_path_terminator(*byte))
             .map_or(bytes.len(), |offset| index + offset);
-        let candidate = &text[index..end];
-        if candidate.ends_with('/') {
-            continue;
-        }
-        let slash_count = candidate.bytes().filter(|byte| *byte == b'/').count();
-        let has_path_signal = candidate.contains('.') || candidate.contains('_') || candidate.contains('-');
-        if slash_count >= 3 || (slash_count >= 2 && has_path_signal) {
+        if end > index + 1 {
             return true;
         }
     }
     false
 }
 
-fn contains_at_path_boundary(text: &str, needle: &str) -> bool {
-    let mut search_from = 0usize;
-    while let Some(relative) = text[search_from..].find(needle) {
-        let index = search_from + relative;
-        if index == 0 || text.as_bytes().get(index.wrapping_sub(1)).is_some_and(|byte| is_path_boundary(*byte)) {
-            return true;
-        }
-        search_from = index.saturating_add(1);
+fn looks_like_perl_regex_literal(value: &str) -> bool {
+    if value.len() > 2 && value.starts_with('/') && value.ends_with('/') {
+        return true;
     }
-    false
+    ["m{", "qr{", "s{", "tr{"].iter().any(|prefix| value.starts_with(prefix))
+        && value.ends_with('}')
 }
 
 const fn is_path_boundary(byte: u8) -> bool {
@@ -343,14 +380,6 @@ const fn is_path_terminator(byte: u8) -> bool {
     )
 }
 
-fn is_regex_brace_prefix(bytes: &[u8], slash_index: usize) -> bool {
-    if slash_index == 0 || bytes[slash_index - 1] != b'{' {
-        return false;
-    }
-    let prefix = &bytes[..slash_index - 1];
-    prefix.ends_with(b"m") || prefix.ends_with(b"qr") || prefix.ends_with(b"s") || prefix.ends_with(b"tr")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,30 +388,65 @@ mod tests {
 
     #[test]
     fn detects_attached_unix_windows_unc_and_uri_paths() {
-        assert_eq!(host_path_kind("--manifest-path=/home/runner/work/repo/Cargo.toml"), Some(HostPathKind::UnixAbsolute));
-        assert_eq!(host_path_kind(r"cwd:C:\Users\runner\repo"), Some(HostPathKind::WindowsDrive));
-        assert_eq!(host_path_kind(r"source=\\server\share\repo\file.rs"), Some(HostPathKind::WindowsUnc));
-        assert_eq!(host_path_kind("file:///tmp/repo/report.json"), Some(HostPathKind::FileUri));
+        assert_eq!(
+            host_path_kind(
+                "--manifest-path=/home/runner/work/repo/Cargo.toml",
+                PublicStringClass::Ordinary
+            ),
+            Some(HostPathKind::UnixAbsolute)
+        );
+        assert_eq!(
+            host_path_kind(r"cwd:C:\Users\runner\repo", PublicStringClass::Ordinary),
+            Some(HostPathKind::WindowsDrive)
+        );
+        assert_eq!(
+            host_path_kind(
+                r"source=\\server\share\repo\file.rs",
+                PublicStringClass::Ordinary
+            ),
+            Some(HostPathKind::WindowsUnc)
+        );
+        assert_eq!(
+            host_path_kind("file:///tmp/repo/report.json", PublicStringClass::Ordinary),
+            Some(HostPathKind::FileUri)
+        );
+    }
+
+    #[test]
+    fn rejects_shallow_unknown_unix_roots() {
+        for value in ["/etc/passwd", "/root/build", "/srv/cache", "arg=/opt/tool"] {
+            assert_eq!(
+                host_path_kind(value, PublicStringClass::Ordinary),
+                Some(HostPathKind::UnixAbsolute),
+                "absolute path escaped detection: {value}"
+            );
+        }
     }
 
     #[test]
     fn detects_nested_escaped_and_percent_encoded_paths() {
         assert_eq!(
-            host_path_kind(r#"{"argument":"--root=/private/var/folders/build"}"#),
+            host_path_kind(
+                r#"{"argument":"--root=/private/var/folders/build"}"#,
+                PublicStringClass::Ordinary
+            ),
             Some(HostPathKind::UnixAbsolute)
         );
         assert_eq!(
-            host_path_kind("--root=%2Fhome%2Frunner%2Frepo"),
+            host_path_kind("--root=%2Fhome%2Frunner%2Frepo", PublicStringClass::Ordinary),
             Some(HostPathKind::UnixAbsolute)
         );
         assert_eq!(
-            host_path_kind(r#"{"cwd":"C:\\Users\\runner\\repo"}"#),
+            host_path_kind(
+                r#"{"cwd":"C:\\Users\\runner\\repo"}"#,
+                PublicStringClass::Ordinary
+            ),
             Some(HostPathKind::WindowsDrive)
         );
     }
 
     #[test]
-    fn accepts_urls_logical_paths_regexes_and_ordinary_text() {
+    fn accepts_urls_logical_paths_and_reviewed_source_classes() {
         for value in [
             "https://example.com/a/b/c",
             "crates/perl-parser/src/lib.rs",
@@ -392,8 +456,58 @@ mod tests {
             "key=value:ordinary",
             "perl_core_harness.report.v1",
         ] {
-            assert_eq!(host_path_kind(value), None, "unexpected host-path finding for {value}");
+            assert_eq!(
+                host_path_kind(value, PublicStringClass::Ordinary),
+                None,
+                "unexpected host-path finding for {value}"
+            );
         }
+        assert_eq!(
+            host_path_kind("open '/etc/passwd';", PublicStringClass::SourceText),
+            None
+        );
+        assert_eq!(host_path_kind("/foo/bar", PublicStringClass::Regex), None);
+    }
+
+    #[test]
+    fn scans_object_keys_without_echoing_them() -> TestResult {
+        let value = serde_json::json!({
+            "/home/runner/private.pl": {"status": "fail"},
+            "C:\\Users\\runner\\private.pl": {"status": "fail"}
+        });
+        let mut findings = Vec::new();
+        scan_json_value(
+            &value,
+            "normalized/report.json",
+            "",
+            PublicStringClass::Ordinary,
+            &mut findings,
+        );
+        findings.sort();
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|finding| finding.pointer == "/"));
+        let rendered = format!("{findings:?}");
+        assert!(!rendered.contains("private.pl"));
+        Ok(())
+    }
+
+    #[test]
+    fn field_classes_do_not_exempt_failure_messages() {
+        let value = serde_json::json!({
+            "source_text": "open '/etc/passwd';",
+            "regex": "/foo/bar/",
+            "message": "failed while reading /etc/passwd"
+        });
+        let mut findings = Vec::new();
+        scan_json_value(
+            &value,
+            "normalized/report.json",
+            "",
+            PublicStringClass::Ordinary,
+            &mut findings,
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].pointer, "/message");
     }
 
     #[test]
@@ -403,7 +517,13 @@ mod tests {
             "safe": "crates/perl-parser/src/lib.rs"
         });
         let mut findings = Vec::new();
-        scan_json_value(&value, "normalized/reproduction.json", "", &mut findings);
+        scan_json_value(
+            &value,
+            "normalized/reproduction.json",
+            "",
+            PublicStringClass::Ordinary,
+            &mut findings,
+        );
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].pointer, "/command/1");
         let rendered = format!(
@@ -425,8 +545,14 @@ mod tests {
         let normalized = bundle.join("normalized");
         fs::create_dir_all(&normalized)?;
         fs::write(bundle.join("index.json"), "{\"logical_path\":\"normalized/report.json\"}\n")?;
-        fs::write(normalized.join("report.json"), "{\"path\":\"crates/perl-parser/src/lib.rs\"}\n")?;
-        fs::write(normalized.join("records.jsonl"), "{\"argument\":\"--root=/tmp/private/build\"}\n")?;
+        fs::write(
+            normalized.join("report.json"),
+            "{\"path\":\"crates/perl-parser/src/lib.rs\"}\n",
+        )?;
+        fs::write(
+            normalized.join("records.jsonl"),
+            "{\"argument\":\"--root=/tmp/private/build\"}\n",
+        )?;
 
         let Err(error) = validate_public_bundle(&bundle) else {
             bail!("embedded JSONL host path must fail validation");
