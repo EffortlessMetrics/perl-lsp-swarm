@@ -1,8 +1,8 @@
 use std::error::Error;
 
-use perl_parser_core::{Node, NodeKind, Token, TokenKind, TokenStream};
-use perl_parser_core::engine::regex_retention::{
-    parse_source_with_regex_analysis, parse_tokens_with_regex_analysis,
+use perl_parser_core::{
+    Node, NodeKind, Token, TokenKind, TokenStream, parse_source_with_regex_analysis,
+    parse_tokens_with_regex_analysis,
 };
 use perl_parser_core::syntax::{
     error::ParseDiagnosticSeverity,
@@ -165,7 +165,7 @@ fn nested_quantifier_advisory_selects_the_outer_quantifier()
 -> Result<(), Box<dyn Error>> {
     let source = "my $ok = /^(a+)+$/;";
     let output = parse_source_with_regex_analysis(source);
-    let expected = source.find(")+" ).ok_or("outer quantifier not found")? + 1;
+    let expected = source.find(")+").ok_or("outer quantifier not found")? + 1;
 
     assert!(output.diagnostics.iter().any(|diagnostic| {
         diagnostic.location() == Some(expected)
