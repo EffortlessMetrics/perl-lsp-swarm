@@ -1145,7 +1145,7 @@ impl<'a> Parser<'a> {
 
         // Statement modifiers are handled at the statement level in parse_statement()
 
-        let end = self.previous_position();
+        let end = expr.location.end;
 
         // Wrap the expression in an ExpressionStatement node
         Ok(Node::new(
@@ -1608,7 +1608,10 @@ impl<'a> Parser<'a> {
                                 }
                             }
 
-                            let end = self.previous_position();
+                            let end = args
+                                .last()
+                                .map(|arg| arg.location.end)
+                                .unwrap_or_else(|| self.previous_position());
                             let call = Node::new(
                                 NodeKind::FunctionCall { name: func_name.to_string(), args },
                                 SourceLocation { start, end },

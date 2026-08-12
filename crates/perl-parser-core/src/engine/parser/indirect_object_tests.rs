@@ -72,6 +72,34 @@ mod tests {
     }
 
     #[test]
+    fn test_unparenthesized_builtin_call_span_covers_argument() {
+        let source = "print qq/value=$café/;";
+        let stmt = first_statement(source);
+        let statement_end = stmt.location.end;
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        assert_eq!(
+            statement_end,
+            source.len() - 1,
+            "ExpressionStatement span must cover its expression"
+        );
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "print");
+                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    expression.location.end,
+                    source.len() - 1,
+                    "builtin FunctionCall span must cover its argument"
+                );
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
         let source = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
         let stmt = first_statement(source);
