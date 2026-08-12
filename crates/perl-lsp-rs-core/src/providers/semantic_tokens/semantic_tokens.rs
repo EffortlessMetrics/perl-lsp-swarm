@@ -634,7 +634,7 @@ fn find_bytes_at_controlled(
 ///
 /// Cancellation is polled before every lexer step and every AST node. A work
 /// unit is also charged for every interpolation part and substring candidate,
-/// heredoc character, declaration-index insertion or lookup, raw-token copy,
+/// heredoc character, declaration-target node, declaration-index insertion or lookup, raw-token copy,
 /// heapsort comparison or swap, overlap candidate, and encoded token.
 /// Cancellation is checked before the budget, so
 /// simultaneous cancellation and exhaustion reports `Cancelled`. A zero budget
@@ -772,6 +772,7 @@ struct TraversalState<'control, 'callback> {
 #[cfg(test)]
 thread_local! {
     static CONTROLLED_CHILD_EDGES_ENUMERATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DECLARATION_INDEX_INSERTIONS_ATTEMPTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DECLARATION_LOOKUPS_ATTEMPTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -1499,26 +1500,7 @@ fn walk_ast_full_controlled<F>(
 where
     F: FnMut(&Node) -> bool,
 {
-    traversal.admit_work()?;
-    if !visitor(node) {
-        return Ok(false);
-    }
-
-    match node.try_for_each_child_with_field_observed(
-        |_, _| {
-            #[cfg(test)]
-            CONTROLLED_CHILD_EDGES_ENUMERATED
-                .with(|count| count.set(count.get().saturating_add(1)));
-        },
-        |_, child| match walk_ast_full_controlled(child, traversal, visitor) {
-            Ok(true) => ControlFlow::Continue(()),
-            Ok(false) => ControlFlow::Break(Ok(false)),
-            Err(stop) => ControlFlow::Break(Err(stop)),
-        },
-    ) {
-        ControlFlow::Continue(()) => Ok(true),
-        ControlFlow::Break(result) => result,
-    }
+    walk_ast_full_controlled_with_state(node, traversal, &mut |node, _| Ok(visitor(node)))
 }
 
 fn walk_ast_full_controlled_with_state<F>(
@@ -1566,28 +1548,20 @@ fn declaration_readonly_flags(
                 // `Readonly` produce true readonly semantics (#4968).
                 let is_readonly = false;
                 let _ = declarator;
-                traversal.admit_work()?;
-                flags
-                    .entry((variable.location.start, variable.location.end))
-                    .and_modify(|flag| *flag |= is_readonly)
-                    .or_insert(is_readonly);
+                mark_declaration_target_flags(variable, is_readonly, &mut flags, traversal)?;
             }
             NodeKind::VariableListDeclaration { declarator, variables, .. } => {
                 let is_readonly = false;
                 let _ = declarator;
                 for variable in variables {
-                    traversal.admit_work()?;
-                    flags
-                        .entry((variable.location.start, variable.location.end))
-                        .and_modify(|flag| *flag |= is_readonly)
-                        .or_insert(is_readonly);
+                    mark_declaration_target_flags(variable, is_readonly, &mut flags, traversal)?;
                 }
             }
             NodeKind::FunctionCall { name, args } if const_fast_enabled && name == "const" => {
-                mark_const_fast_decl_flags(args, &mut flags, traversal)?;
+                mark_readonly_declaration_flags(args, &mut flags, traversal)?;
             }
             NodeKind::FunctionCall { name, args } if readonly_enabled && name == "Readonly" => {
-                mark_readonly_decl_flags(args, &mut flags, traversal)?;
+                mark_readonly_declaration_flags(args, &mut flags, traversal)?;
             }
             _ => {}
         }
@@ -1595,6 +1569,28 @@ fn declaration_readonly_flags(
     })?;
 
     Ok(flags)
+}
+
+fn mark_declaration_target_flags(
+    target: &Node,
+    is_readonly: bool,
+    flags: &mut FxHashMap<(usize, usize), bool>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    walk_ast_full_controlled_with_state(target, traversal, &mut |node, traversal| {
+        if matches!(&node.kind, NodeKind::Variable { .. }) {
+            #[cfg(test)]
+            DECLARATION_INDEX_INSERTIONS_ATTEMPTED
+                .with(|count| count.set(count.get().saturating_add(1)));
+            traversal.admit_work()?;
+            flags
+                .entry((node.location.start, node.location.end))
+                .and_modify(|flag| *flag |= is_readonly)
+                .or_insert(is_readonly);
+        }
+        Ok(true)
+    })?;
+    Ok(())
 }
 
 fn declaration_flag(
@@ -1652,7 +1648,7 @@ fn ast_uses_readonly(
     Ok(enabled)
 }
 
-fn mark_const_fast_decl_flags(
+fn mark_readonly_declaration_flags(
     args: &[Node],
     flags: &mut FxHashMap<(usize, usize), bool>,
     traversal: &mut TraversalState<'_, '_>,
@@ -1661,35 +1657,11 @@ fn mark_const_fast_decl_flags(
         traversal.admit_work()?;
         match &arg.kind {
             NodeKind::VariableDeclaration { variable, .. } => {
-                flags.insert((variable.location.start, variable.location.end), true);
+                mark_declaration_target_flags(variable, true, flags, traversal)?;
             }
             NodeKind::VariableListDeclaration { variables, .. } => {
                 for variable in variables {
-                    traversal.admit_work()?;
-                    flags.insert((variable.location.start, variable.location.end), true);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn mark_readonly_decl_flags(
-    args: &[Node],
-    flags: &mut FxHashMap<(usize, usize), bool>,
-    traversal: &mut TraversalState<'_, '_>,
-) -> Result<(), TraversalStop> {
-    for arg in args {
-        traversal.admit_work()?;
-        match &arg.kind {
-            NodeKind::VariableDeclaration { variable, .. } => {
-                flags.insert((variable.location.start, variable.location.end), true);
-            }
-            NodeKind::VariableListDeclaration { variables, .. } => {
-                for variable in variables {
-                    traversal.admit_work()?;
-                    flags.insert((variable.location.start, variable.location.end), true);
+                    mark_declaration_target_flags(variable, true, flags, traversal)?;
                 }
             }
             _ => {}
@@ -2120,6 +2092,57 @@ mod tests {
             DECLARATION_LOOKUPS_ATTEMPTED.with(std::cell::Cell::get),
             2,
             "budget exhaustion must occur on the second indexed lookup"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_collector_stops_inside_wrapped_declaration_indexing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my ($first, ($nested_a, $nested_b), $tagged :shared);\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+
+        DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(|count| count.set(0));
+        let cancel_during_second_insert =
+            || DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(std::cell::Cell::get) >= 2;
+        let cancelled = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::new(&cancel_during_second_insert, None),
+        );
+        let SemanticTokensTraversalOutcome::Cancelled { work_done } = cancelled else {
+            return Err("collector did not cancel during wrapped declaration indexing".into());
+        };
+        assert_eq!(
+            DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "production indexing must reach the second wrapped variable insertion"
+        );
+
+        DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(|count| count.set(0));
+        let never_cancelled = || false;
+        let exhausted = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::new(&never_cancelled, Some(work_done)),
+        );
+        assert!(
+            matches!(
+                exhausted,
+                SemanticTokensTraversalOutcome::BudgetExhausted {
+                    work_done: exhausted_work,
+                    ..
+                } if exhausted_work == work_done
+            ),
+            "the cancellation prefix must exhaust the exact budget at wrapped indexing"
+        );
+        assert_eq!(
+            DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "budget exhaustion must occur on the second wrapped variable insertion"
         );
         Ok(())
     }
@@ -2977,7 +3000,7 @@ print "ok" foreach @ys;
 
     /// #4968 Slice 1: `Readonly` declarations carry both `declaration` and
     /// `readonly` modifiers. Uses the `Readonly my $x => ...` form that
-    /// `mark_readonly_decl_flags` detects (FunctionCall name == "Readonly").
+    /// `mark_readonly_declaration_flags` detects (FunctionCall name == "Readonly").
     #[test]
     fn readonly_declaration_carries_readonly_modifier() {
         let source = "use Readonly;\nReadonly my $x => 42;\n";
@@ -2992,5 +3015,29 @@ print "ok" foreach @ys;
             READONLY_BIT,
             "Readonly declaration must carry readonly (bit 2), got mods={mods}"
         );
+    }
+
+    #[test]
+    fn wrapped_declarations_preserve_frozen_modifier_bits() {
+        for (source, name, expected_modifiers) in [
+            ("my ($a, ($nested, $deep));\n", "nested", 1025),
+            ("my ($tagged :shared, $plain);\n", "tagged", 1025),
+            (
+                "use Const::Fast;\nconst my ($fast, ($nested_fast)) => (1, 2);\n",
+                "nested_fast",
+                1029,
+            ),
+            (
+                "use Readonly;\nReadonly my ($tagged_ro :shared, $plain_ro) => (1, 2);\n",
+                "tagged_ro",
+                1029,
+            ),
+        ] {
+            assert_eq!(
+                first_var_mods(source, name),
+                expected_modifiers,
+                "wrapped declaration `${name}` must preserve its frozen modifiers"
+            );
+        }
     }
 }
