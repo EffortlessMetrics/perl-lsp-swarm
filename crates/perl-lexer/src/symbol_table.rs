@@ -391,11 +391,14 @@ fn paired_delimiter(opener: char) -> Option<char> {
 
 fn quote_like_operator_at(line: &str, offset: usize) -> Option<(&'static str, u8)> {
     let prefix = line[..offset].trim_end_matches([' ', '\t']);
+    let separated_from_prefix =
+        line[..offset].chars().next_back().is_some_and(|ch| matches!(ch, ' ' | '\t'));
     if prefix.ends_with("->")
-        || prefix.chars().next_back().is_some_and(|ch| {
-            is_perl_identifier_continue(ch)
-                || matches!(ch, ':' | '\'' | '$' | '@' | '%' | '&' | '*' | '-')
-        })
+        || (!separated_from_prefix
+            && prefix.chars().next_back().is_some_and(|ch| {
+                is_perl_identifier_continue(ch)
+                    || matches!(ch, ':' | '\'' | '$' | '@' | '%' | '&' | '*' | '-')
+            }))
     {
         return None;
     }
@@ -1010,6 +1013,46 @@ mod tests {
             "y_fake",
         ] {
             assert!(!table.is_known_sub(fake), "quote-like body leaked {fake:?}");
+        }
+    }
+
+    #[test]
+    fn quote_like_operators_after_print_return_and_callable_barewords_are_opaque() {
+        let cases = [
+            (
+                "print",
+                "print q{sub fake_print { }};\nsub real_print { }\nfake_print /x/;\n",
+                "fake_print",
+                "real_print",
+            ),
+            (
+                "return",
+                "sub caller_return { return q{sub fake_return { }}; }\nsub real_return { }\nfake_return /x/;\n",
+                "fake_return",
+                "real_return",
+            ),
+            (
+                "callable bareword",
+                "sub sink { }\nsink q{sub fake_callable { }};\nsub real_callable { }\nfake_callable /x/;\n",
+                "fake_callable",
+                "real_callable",
+            ),
+        ];
+
+        for (context, source, fake, real) in cases {
+            let table = LocalSymbolTable::scan_subs(source);
+            assert!(!table.is_known_sub(fake), "{context} quote-like body leaked {fake:?}");
+            assert!(table.is_known_sub(real), "{context} lost real declaration {real:?}");
+
+            let tokens = tokens_with_table(source, table);
+            assert!(
+                tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)),
+                "{context} fake call did not retain division path"
+            );
+            assert!(
+                !tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
+                "{context} fake call unexpectedly took regex path"
+            );
         }
     }
 
