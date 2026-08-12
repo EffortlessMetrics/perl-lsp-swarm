@@ -1,9 +1,9 @@
 import * as assert from 'assert';
-import { spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { runBoundedProcess } from '../../testAdapter';
 
 type ReceiptValue = Record<string, unknown>;
 
@@ -47,62 +47,56 @@ function sha256(filePath: string): string {
 }
 
 type BundledServerVersion =
-  | { status: 'ok'; version: string; output: string }
-  | { status: 'error'; version?: never; output?: string; message: string };
+  | {
+      status: 'ok';
+      version: string;
+      stdout: string;
+      stderr: string;
+      outcome: 'completed';
+      output_truncated: boolean;
+      termination_confirmed: boolean;
+    }
+  | {
+      status: 'error';
+      version?: never;
+      stdout: string;
+      stderr: string;
+      outcome: string;
+      output_truncated: boolean;
+      termination_confirmed: boolean;
+      message: string;
+    };
+
+const VERSION_PROBE_TIMEOUT_MS = 15_000;
+const VERSION_PROBE_OUTPUT_MAX_BYTES = 64 * 1024;
 
 async function bundledServerVersion(binaryPath: string): Promise<BundledServerVersion> {
-  const output = await new Promise<{ output: string; error?: string }>((resolve) => {
-    const child = spawn(binaryPath, ['--version'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    let forceKillTimer: NodeJS.Timeout | undefined;
-    const finish = (error?: string) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
-      resolve({
-        output: `${stdout}${stderr}`.trim(),
-        ...(error === undefined ? {} : { error }),
-      });
-    };
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    const deadline = setTimeout(() => {
-      child.kill('SIGTERM');
-      forceKillTimer = setTimeout(() => {
-        child.kill('SIGKILL');
-        finish('bundled server --version exceeded the 15 second deadline');
-      }, 500);
-    }, 15_000);
-    child.once('error', (error: Error) => {
-      clearTimeout(deadline);
-      finish(error.message);
-    });
-    child.once('close', (code, signal) => {
-      clearTimeout(deadline);
-      finish(
-        code === 0 && signal === null
-          ? undefined
-          : `bundled server --version exited with ${signal ?? `code ${code}`}`,
-      );
-    });
+  const result = await runBoundedProcess(binaryPath, ['--version'], {
+    shell: false,
+    timeoutMs: VERSION_PROBE_TIMEOUT_MS,
+    maxOutputBytes: VERSION_PROBE_OUTPUT_MAX_BYTES,
+    terminationGraceMs: 500,
+    windowsHide: true,
   });
+  const base = {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    outcome: result.outcome,
+    output_truncated: result.outcome === 'output_limit',
+    termination_confirmed: result.outcome !== 'spawn_error',
+  };
+  if (result.outcome !== 'completed') {
+    return {
+      status: 'error',
+      ...base,
+      message:
+        result.diagnostic ??
+        `bundled server --version ended with ${result.outcome} before a clean completion`,
+    };
+  }
+  const completedBase = { ...base, outcome: 'completed' as const };
   try {
-    const firstLine = output.output.split(/\r?\n/, 1)[0]?.trim() ?? '';
+    const firstLine = result.stdout.split(/\r?\n/, 1)[0]?.trim() ?? '';
     const match =
       /^(?:perllsp|perl-lsp)\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/.exec(
         firstLine,
@@ -110,7 +104,7 @@ async function bundledServerVersion(binaryPath: string): Promise<BundledServerVe
     if (!match) {
       return {
         status: 'error',
-        output: output.output,
+        ...completedBase,
         message: 'bundled server --version did not contain a semantic version',
       };
     }
@@ -118,18 +112,19 @@ async function bundledServerVersion(binaryPath: string): Promise<BundledServerVe
     if (!version) {
       return {
         status: 'error',
-        output: output.output,
+        ...completedBase,
         message: 'bundled server --version contained an empty semantic version capture',
       };
     }
-    if (output.error) {
-      return { status: 'error', output: output.output, message: output.error };
-    }
-    return { status: 'ok', version, output: output.output };
+    return {
+      status: 'ok',
+      version,
+      ...completedBase,
+    };
   } catch (error: unknown) {
     return {
       status: 'error',
-      output: output.output,
+      ...completedBase,
       message: error instanceof Error ? error.message : String(error),
     };
   }
@@ -236,6 +231,18 @@ function bundledBinaryPath(extensionPath: string): string {
     .find((candidate) => fs.existsSync(candidate));
   assert.ok(binary, `packaged VSIX must contain a bundled server in ${directory}`);
   return binary;
+}
+
+function pathsEquivalent(left: unknown, right: string): boolean {
+  if (typeof left !== 'string' || left.length === 0) {
+    return false;
+  }
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+  }
+  return normalizedLeft === normalizedRight;
 }
 
 async function providerResult(
@@ -470,7 +477,10 @@ suite('Packaged VSIX bundled-server journey', function () {
           source: 'packaged_vsix_bundle',
           version: bundledVersion.version ?? null,
           expected_version: expectedVersion,
-          version_output: bundledVersion.output ?? null,
+          version_stdout: bundledVersion.stdout,
+          version_stderr: bundledVersion.stderr,
+          version_output_truncated: bundledVersion.output_truncated,
+          version_probe_termination_confirmed: bundledVersion.termination_confirmed,
           version_match:
             bundledVersion.status === 'ok' && expectedVersion !== null
               ? bundledVersion.version === expectedVersion
@@ -481,6 +491,8 @@ suite('Packaged VSIX bundled-server journey', function () {
             expectedVersion !== null &&
             metrics.server_version === bundledVersion.version &&
             metrics.server_version === expectedVersion,
+          activated_path: metrics.binary_resolution_path ?? null,
+          activated_path_match: pathsEquivalent(metrics.binary_resolution_path, bundledServerPath),
           startup_source: metrics.binary_resolution_source ?? null,
         },
         startup: metrics,
@@ -569,7 +581,10 @@ suite('Packaged VSIX bundled-server journey', function () {
                 expected: expectedVersion,
                 actual: null,
                 message: bundledVersion.message,
-                output: bundledVersion.output ?? null,
+                stdout: bundledVersion.stdout,
+                stderr: bundledVersion.stderr,
+                output_truncated: bundledVersion.output_truncated,
+                termination_confirmed: bundledVersion.termination_confirmed,
               },
             }
           : expectedVersion === null || bundledVersion.version !== expectedVersion
@@ -578,10 +593,25 @@ suite('Packaged VSIX bundled-server journey', function () {
                 result: {
                   expected: expectedVersion,
                   actual: bundledVersion.version,
-                  output: bundledVersion.output,
+                  stdout: bundledVersion.stdout,
+                  stderr: bundledVersion.stderr,
+                  output_truncated: bundledVersion.output_truncated,
+                  termination_confirmed: bundledVersion.termination_confirmed,
                 },
               }
             : null;
+      const activatedPath = metrics.binary_resolution_path;
+      const activatedPathBlocker = pathsEquivalent(activatedPath, bundledServerPath)
+        ? null
+        : {
+            label: 'activated_server_path',
+            result: {
+              expected: bundledServerPath,
+              actual: activatedPath ?? null,
+              source: metrics.binary_resolution_source ?? null,
+              message: 'initialized server path did not resolve to the packaged bundled binary',
+            },
+          };
       const activatedVersion = metrics.server_version;
       const activatedVersionBlocker =
         bundledVersion.status !== 'ok' || expectedVersion === null || !activatedVersion
@@ -605,6 +635,7 @@ suite('Packaged VSIX bundled-server journey', function () {
             : null;
       const productBlockers = [
         ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
+        ...(activatedPathBlocker ? [activatedPathBlocker] : []),
         ...(activatedVersionBlocker ? [activatedVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
