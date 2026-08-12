@@ -1,23 +1,32 @@
 use crate::syntax::cursor::RegexCursor;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmbeddedCodeKind {
     Immediate,
     Deferred,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EmbeddedCodeFinding {
     pub(crate) offset: usize,
     pub(crate) kind: EmbeddedCodeKind,
 }
 
 pub(crate) fn detects_code_execution(pattern: &str) -> bool {
-    find_code_execution(pattern, 0).is_some()
+    !find_code_executions(pattern).is_empty()
 }
 
 pub(crate) fn find_code_execution(pattern: &str, start_pos: usize) -> Option<EmbeddedCodeFinding> {
+    find_code_executions(pattern).into_iter().next().map(|finding| EmbeddedCodeFinding {
+        offset: start_pos.saturating_add(finding.offset),
+        kind: finding.kind,
+    })
+}
+
+pub(crate) fn find_code_executions(pattern: &str) -> Vec<EmbeddedCodeFinding> {
     let mut cursor = RegexCursor::new(pattern);
+    let mut findings = Vec::new();
+
     while let Some(ch) = cursor.current() {
         if cursor.skip_quoted_literal()
             || cursor.skip_escape()
@@ -28,19 +37,19 @@ pub(crate) fn find_code_execution(pattern: &str, start_pos: usize) -> Option<Emb
         }
         if ch == b'(' && cursor.peek(1) == Some(b'?') {
             if cursor.peek(2) == Some(b'{') {
-                return Some(EmbeddedCodeFinding {
-                    offset: start_pos + cursor.position(),
+                findings.push(EmbeddedCodeFinding {
+                    offset: cursor.position(),
                     kind: EmbeddedCodeKind::Immediate,
                 });
-            }
-            if cursor.peek(2) == Some(b'?') && cursor.peek(3) == Some(b'{') {
-                return Some(EmbeddedCodeFinding {
-                    offset: start_pos + cursor.position(),
+            } else if cursor.peek(2) == Some(b'?') && cursor.peek(3) == Some(b'{') {
+                findings.push(EmbeddedCodeFinding {
+                    offset: cursor.position(),
                     kind: EmbeddedCodeKind::Deferred,
                 });
             }
         }
         cursor.bump();
     }
-    None
+
+    findings
 }
