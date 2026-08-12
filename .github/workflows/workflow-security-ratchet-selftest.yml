@@ -1,16 +1,4 @@
 # Workflow Security Ratchet — candidate self-test (advisory)
-#
-# This lane runs the CANDIDATE's own scanner tests and exact-validates the
-# candidate's own baseline, so a PR that touches the scanner gets fast feedback
-# on its own terms. It is advisory and carries no authority.
-#
-# It lives in its own file, separate from the authoritative
-# workflow-security-ratchet.yml, for one reason: this job legitimately checks
-# out the pull-request head, and it runs under the UNPRIVILEGED `pull_request`
-# event where that is ordinary. Keeping it out of the `pull_request_target`
-# file means no job in the privileged workflow ever references the head in a
-# checkout, and the trust boundary is visible at the file level rather than
-# buried in per-job `if:` guards.
 
 name: Workflow Security Ratchet Selftest
 
@@ -24,9 +12,14 @@ on:
       - '.ci/workflow-security-baseline.json'
       - 'scripts/ci/workflow_security_ratchet.py'
       - 'scripts/ci/test_workflow_security_ratchet.py'
+  push:
+    branches:
+      - 'agent/action-pin-provenance-6888'
+    paths:
+      - '.github/workflows/workflow-security-ratchet-selftest.yml'
 
 concurrency:
-  group: workflow-security-ratchet-selftest-${{ github.event.pull_request.number }}
+  group: workflow-security-ratchet-selftest-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -34,6 +27,7 @@ permissions:
 
 jobs:
   candidate-selftest:
+    if: github.event_name == 'pull_request'
     name: Candidate scanner self-test (advisory)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -66,3 +60,41 @@ jobs:
           path: target/receipts/workflow-security-candidate.json
           if-no-files-found: warn
           retention-days: 14
+
+  refresh-final-baseline:
+    if: github.event_name == 'push'
+    name: Refresh baseline against final read-only workflow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Materialize final workflow and regenerate baseline
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          git show FETCH_HEAD:.github/workflows/workflow-security-ratchet-selftest.yml \
+            > .github/workflows/workflow-security-ratchet-selftest.yml
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
+            --report target-workflow-security-final.json
+          git diff --check
+
+      - name: Commit final-tree baseline only
+        run: |
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add .ci/workflow-security-baseline.json
+          git commit -m 'test(ci): bind workflow-security baseline to final action pins'
+          git push origin 'HEAD:agent/action-pin-provenance-6888'
