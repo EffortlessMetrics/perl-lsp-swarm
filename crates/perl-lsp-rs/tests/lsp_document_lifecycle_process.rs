@@ -375,8 +375,13 @@ fn increasing_change_publishes_current_parse_and_stale_change_is_ignored() -> Re
         !after_stale_names.iter().any(|name| name.contains("stale_symbol")),
         "stale version 1 change became authoritative: {after_stale_names:?}"
     );
-    let after_stale_fingerprints =
-        diagnostic_fingerprints(&diagnostic_items(&mut client, "diagnostics-after-stale")?)?;
+    let after_stale_diagnostics = diagnostic_items(&mut client, "diagnostics-after-stale")?;
+    let after_stale_parser_fingerprints = parser_diagnostic_fingerprints(&after_stale_diagnostics)?;
+    ensure!(
+        after_stale_parser_fingerprints == current_parser_fingerprints,
+        "stale change altered current-generation parser diagnostics: before={current_parser_fingerprints:?} after={after_stale_parser_fingerprints:?}"
+    );
+    let after_stale_fingerprints = diagnostic_fingerprints(&after_stale_diagnostics)?;
     ensure!(
         after_stale_fingerprints == current_fingerprints,
         "stale clean text changed current diagnostics: before={current_fingerprints:?} after={after_stale_fingerprints:?}"
@@ -459,11 +464,5 @@ fn close_after_settled_parse_removes_authority_and_reopen_starts_fresh() -> Resu
             "reopened document retained a closed-generation parser diagnostic: {stale_fingerprint}"
         );
     }
-    let reopened_parser_fingerprints = parser_diagnostic_fingerprints(&reopened_diagnostics)?;
-    ensure!(
-        reopened_parser_fingerprints.is_empty(),
-        "clean reopened document produced parser diagnostics: {reopened_parser_fingerprints:?}"
-    );
-
     finish(&mut client)
 }
