@@ -1,3 +1,18 @@
+#![cfg(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+
 use perl_corpus::load_sectioned_corpus_document;
 
 const GENERATED_CASE: &str = concat!(
