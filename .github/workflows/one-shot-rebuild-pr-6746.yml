@@ -1,0 +1,201 @@
+name: One-shot rebuild PR 6746
+
+on:
+  push:
+    branches:
+      - ops/rebuild-pr-6746-config-contract
+
+concurrency:
+  group: one-shot-rebuild-pr-6746
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: 9389b144e3d47405d00fe49a9830f64345efa794
+  EXPECTED_PR_HEAD_SHA: 95578cd3f215501d0241df6cb7cfd0860ea70fcd
+  TARGET_BRANCH: agent/lexer-config-contract-6715
+  ARTIFACT_NAME: pr-6746-config-contract-patch
+
+jobs:
+  prepare:
+    name: Prepare and verify configuration contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact base without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ env.BASE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: one-shot-pr-6746-${{ env.BASE_SHA }}
+          cache-on-failure: true
+
+      - name: Verify exact base and reviewed PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          actual_head="$({
+            curl --fail-with-body --silent --show-error --location \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/6746"
+          } | jq -r '.head.sha')"
+          test "$actual_head" = "$EXPECTED_PR_HEAD_SHA"
+
+      - name: Apply reviewed net diff to current main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error --location \
+            -H "Accept: application/vnd.github.diff" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/6746" \
+            --output pr-6746.diff
+          grep -q '^diff --git ' pr-6746.diff
+          git apply --3way --index pr-6746.diff
+
+      - name: Format and seal exact four-file candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt -p perl-lexer
+
+          allowlist="$(mktemp)"
+          actual="$(mktemp)"
+          printf '%s\n' \
+            crates/perl-lexer/Cargo.toml \
+            crates/perl-lexer/README.md \
+            crates/perl-lexer/src/config.rs \
+            crates/perl-lexer/tests/lexer_config_behavior_contract.rs \
+            | sort > "$allowlist"
+
+          git add -- \
+            crates/perl-lexer/Cargo.toml \
+            crates/perl-lexer/README.md \
+            crates/perl-lexer/src/config.rs \
+            crates/perl-lexer/tests/lexer_config_behavior_contract.rs
+
+          git diff HEAD --name-only | sort > "$actual"
+          diff -u "$allowlist" "$actual"
+          git diff --exit-code
+          git diff --cached --check
+          git diff --cached --binary "$BASE_SHA" -- > candidate.patch
+          sha256sum candidate.patch > candidate.patch.sha256
+          test -s candidate.patch
+
+      - name: Verify sealed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt -p perl-lexer -- --check
+          cargo test -p perl-lexer --test lexer_config_behavior_contract --locked
+          cargo test -p perl-lexer --lib config --locked
+          cargo test -p perl-lexer --all-features --test lexer_config_behavior_contract --locked
+          cargo clippy -p perl-lexer --all-targets --all-features --locked -- -D warnings
+          cargo test -p perl-parser-core --tests --locked
+          cargo test -p perl-parser --tests --locked
+          cargo test -p perl-lexer --doc --locked
+
+          git diff --exit-code
+          git diff --cached --binary "$BASE_SHA" -- > candidate.after.patch
+          cmp candidate.patch candidate.after.patch
+          sha256sum --check candidate.patch.sha256
+
+      - name: Upload sealed candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: |
+            candidate.patch
+            candidate.patch.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish sealed candidate only
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact base without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ env.BASE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download sealed candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: candidate
+
+      - name: Verify, commit, and publish with lease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          (cd candidate && sha256sum --check candidate.patch.sha256)
+          git apply --index candidate/candidate.patch
+
+          allowlist="$(mktemp)"
+          actual="$(mktemp)"
+          printf '%s\n' \
+            crates/perl-lexer/Cargo.toml \
+            crates/perl-lexer/README.md \
+            crates/perl-lexer/src/config.rs \
+            crates/perl-lexer/tests/lexer_config_behavior_contract.rs \
+            | sort > "$allowlist"
+          git diff --cached --name-only | sort > "$actual"
+          diff -u "$allowlist" "$actual"
+          git diff --exit-code
+          git diff --cached --check
+
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "feat(lexer): expose configuration behavior contract"
+          new_sha="$(git rev-parse HEAD)"
+
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          actual_head="$(git ls-remote "$remote" "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$actual_head" = "$EXPECTED_PR_HEAD_SHA"
+          git push "$remote" \
+            "${new_sha}:refs/heads/${TARGET_BRANCH}" \
+            --force-with-lease="refs/heads/${TARGET_BRANCH}:${EXPECTED_PR_HEAD_SHA}"
+
+          {
+            echo "## Published PR 6746 candidate"
+            echo
+            echo "- Base: $BASE_SHA"
+            echo "- Replaced head: $EXPECTED_PR_HEAD_SHA"
+            echo "- New head: $new_sha"
+            echo "- Changed files: exact four-file configuration-contract allowlist"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          git push "$remote" ":refs/heads/${GITHUB_REF_NAME}" || \
+            echo "::warning::Published candidate but could not delete helper branch"
