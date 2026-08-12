@@ -21,6 +21,7 @@ pub use result::{
 use result::utf16_len;
 
 const PARSE_ERROR_CODE: &str = "native.format.parse_error";
+const PARSE_INCOMPLETE_CODE: &str = "native.format.parse_incomplete";
 const PARSE_PRESERVATION_CODE: &str = "native.format.parse_preservation";
 const LITERAL_PRESERVE_CODE: &str = "native.format.literal_preserve_region";
 
@@ -74,10 +75,10 @@ impl NativeFormatter {
         // input; not reachable with the small sources used in formatter tests.
         if output.terminated_early {
             return Err(FormatDiagnostic::new(
-                PARSE_ERROR_CODE,
+                PARSE_INCOMPLETE_CODE,
                 FormatDiagnosticSeverity::Warning,
                 None,
-                "native formatting skipped because parsing terminated early",
+                "native formatting not proven because parsing terminated early",
             ));
         }
         // LCOV_EXCL_STOP
@@ -262,12 +263,12 @@ fn split_line_ending(line: &str) -> (&str, &str) {
     }
 }
 
-fn range_includes_line(range: TextRange, line: u32) -> bool {
+pub(super) fn range_includes_line(range: TextRange, line: u32) -> bool {
     line >= range.start.line
         && (line < range.end.line || line == range.end.line && range.end.character > 0)
 }
 
-fn format_simple_line(line: &str, config: &FormatConfig) -> Option<String> {
+pub(super) fn format_simple_line(line: &str, config: &FormatConfig) -> Option<String> {
     format_simple_control_block_line(line, config)
         .or_else(|| format_simple_subroutine_line(line, config))
         .or_else(|| format_simple_module_line(line, config))
