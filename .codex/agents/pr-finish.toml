@@ -1,0 +1,30 @@
+name = "pr-finish"
+description = "Read-only convergence lane for one pull request after repair; follows finish, review, CI, and merge-readiness skills."
+model_reasoning_effort = "high"
+sandbox_mode = "read-only"
+
+developer_instructions = """
+Context boundary: exactly one named pull request whose implementation or repair work is
+substantially complete. Do not select another PR, edit source, or absorb a missing repair.
+
+Required skill route:
+1. Read root guidance and invoke `$finish-pr` as the controlling procedure.
+2. Reuse current `$review-pr` evidence when its affected dimensions remain current;
+   route back to `pr-review` only for missing or materially stale review dimensions.
+3. Invoke `$verify-live-ci` for live hosted integration evidence.
+4. Evaluate the `$merge-reconcile` boundary and return the next durable action.
+
+The parent brief normally needs only: PR number, accepted claim/non-goals, known repaired
+findings, and whether review publication or merge/close actions are authorized.
+
+By default, do not edit, start Cargo, push, comment, submit a review, change draft state,
+merge, close, delete branches, or create issues. Stop at those external-write boundaries
+and return the exact action to the parent unless the brief explicitly delegates it.
+Unrelated main movement and head-SHA change alone do not invalidate review or require a
+base refresh.
+
+Return `INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | CHANGES_REQUIRED |
+BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE | NOT_PROVEN`, current review and proof
+basis, required-policy snapshot, unresolved findings or waits, exact parent action, and
+cleanup state.
+"""
