@@ -1,0 +1,136 @@
+name: One-shot PR 6801 unique reuse targets
+
+on:
+  push:
+    branches:
+      - codex/6713-slash-ambiguity-edit-current
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    name: Enforce one-to-one reuse targets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out the PR branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: codex/6713-slash-ambiguity-edit-current
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Apply the bounded target-uniqueness repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          engine = Path("crates/perl-parser/src/incremental/incremental_advanced_reuse.rs")
+          text = engine.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  """                        if confidence >= config.min_confidence {
+                            reuse_map.insert(
+                                *old_pos,
+                                ReuseStrategy {
+                                    target_position: *new_pos,
+                                    reuse_type: ReuseType::ContentUpdate,
+                                    confidence_score: confidence,
+                                    position_adjustment: (*new_pos as isize) - (*old_pos as isize),
+                                },
+                            );
+                            self.analysis_stats.content_matches += 1;
+                            break;
+                        }
+""",
+                  """                        if confidence >= config.min_confidence
+                            && self.try_register_match(
+                                reuse_map,
+                                *old_pos,
+                                *new_pos,
+                                ReuseType::ContentUpdate,
+                                confidence,
+                            )
+                        {
+                            self.analysis_stats.content_matches += 1;
+                            break;
+                        }
+""",
+              ),
+              (
+                  """            let mut best_match: Option<(usize, f64)> = None;
+
+            for (new_pos, new_info) in &new_analysis.node_info {
+                if old_info.children_count > 0
+""",
+                  """            let mut best_match: Option<(usize, f64)> = None;
+
+            for (new_pos, new_info) in &new_analysis.node_info {
+                if reuse_map
+                    .values()
+                    .any(|strategy| strategy.target_position == *new_pos)
+                {
+                    continue;
+                }
+
+                if old_info.children_count > 0
+""",
+              ),
+              (
+                  """                if confidence >= config.min_confidence * 0.7 {
+                    // Final threshold check
+                    reuse_map.insert(
+                        *old_pos,
+                        ReuseStrategy {
+                            target_position: best_pos,
+                            reuse_type: ReuseType::StructuralEquivalent,
+                            confidence_score: confidence,
+                            position_adjustment: (best_pos as isize) - (*old_pos as isize),
+                        },
+                    );
+                    self.analysis_stats.reuse_candidates_found += 1;
+                }
+""",
+                  """                if confidence >= config.min_confidence * 0.7
+                    && self.try_register_match(
+                        reuse_map,
+                        *old_pos,
+                        best_pos,
+                        ReuseType::StructuralEquivalent,
+                        confidence,
+                    )
+                {
+                    // Final threshold check
+                    self.analysis_stats.reuse_candidates_found += 1;
+                }
+""",
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one occurrence of bounded patch, found {count}")
+              text = text.replace(old, new, 1)
+
+          engine.write_text(text, encoding="utf-8")
+          Path(".github/workflows/one-shot-6801-unique-reuse-targets.yml").unlink()
+          PY
+
+          git diff --check
+          test ! -e .github/workflows/one-shot-6801-unique-reuse-targets.yml
+          test "$(git diff --numstat -- crates/perl-parser/src/incremental/incremental_advanced_reuse.rs | awk '{print $1 + $2}')" -gt 0
+
+      - name: Commit the repair and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add crates/perl-parser/src/incremental/incremental_advanced_reuse.rs .github/workflows/one-shot-6801-unique-reuse-targets.yml
+          git commit -m "fix(parser): keep reuse targets one-to-one"
+          git push origin HEAD:codex/6713-slash-ambiguity-edit-current
