@@ -1,5 +1,6 @@
 //! Discriminating proof for lean transition classify CLI load+classify I/O.
 
+use color_eyre::eyre::{Result, ensure};
 use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, HarnessMode, HarnessProfile,
     HarnessRunner, RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunSummary, RunnerStatus,
@@ -176,32 +177,29 @@ fn classify_cli_rejects_output_aliasing_series() {
 
 #[cfg(any(unix, windows))]
 #[test]
-fn classify_cli_rejects_hard_link_output_aliasing_accepted_baseline() {
-    let dir = tempdir().expect("tempdir");
+fn classify_cli_rejects_hard_link_output_aliasing_accepted_baseline() -> Result<()> {
+    let dir = tempdir()?;
     let accepted = dir.path().join("accepted.json");
     let compile = dir.path().join("compile.json");
     let output = dir.path().join("out.json");
     write_baseline(&accepted, 1, 1);
     write_report(&compile, 1, 1);
-    fs::hard_link(&accepted, &output).expect("hard_link");
-    let before = fs::read(&accepted).expect("read accepted before");
+    fs::hard_link(&accepted, &output)?;
+    let before = fs::read(&accepted)?;
     let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8"),
-            "--compile",
-            compile.to_str().expect("utf8"),
-            "--output",
-            output.to_str().expect("utf8"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(!result.status.success());
+        .arg("classify")
+        .arg("--accepted-baseline")
+        .arg(&accepted)
+        .arg("--compile")
+        .arg(&compile)
+        .arg("--output")
+        .arg(&output)
+        .output()?;
+    ensure!(!result.status.success(), "hard-link alias unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(stderr.contains("hard-link alias"), "unexpected stderr: {stderr}");
-    let after = fs::read(&accepted).expect("read accepted after");
-    assert_eq!(before, after);
+    ensure!(stderr.contains("hard-link alias"), "unexpected stderr: {stderr}");
+    ensure!(before == fs::read(&accepted)?, "accepted baseline changed");
+    Ok(())
 }
 
 #[test]
