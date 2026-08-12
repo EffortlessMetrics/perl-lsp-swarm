@@ -34,6 +34,13 @@ impl Direction {
             Self::ServerToClient => "server_to_client",
         }
     }
+
+    const fn opposite(self) -> Self {
+        match self {
+            Self::ClientToServer => Self::ServerToClient,
+            Self::ServerToClient => Self::ClientToServer,
+        }
+    }
 }
 
 /// Protocol version authority for one method schema.
@@ -79,12 +86,16 @@ impl MessageKind {
             Self::ErrorResponse => "error_response",
         }
     }
+
+    const fn is_response(self) -> bool {
+        matches!(self, Self::SuccessResponse | Self::ErrorResponse)
+    }
 }
 
 /// Validation context supplied by a capture harness.
 #[derive(Debug, Clone, Copy)]
 pub struct ValidationContext<'a> {
-    /// Message direction.
+    /// Actual direction of this captured message.
     pub direction: Direction,
     /// Method identity. Required for responses because JSON-RPC responses do not carry it.
     pub method: Option<&'a str>,
@@ -105,7 +116,11 @@ pub struct ValidationLimits {
 
 impl Default for ValidationLimits {
     fn default() -> Self {
-        Self { max_depth: 64, max_nodes: 200_000, max_string_bytes: 1 << 20 }
+        Self {
+            max_depth: 64,
+            max_nodes: 200_000,
+            max_string_bytes: 1 << 20,
+        }
     }
 }
 
@@ -114,7 +129,7 @@ impl Default for ValidationLimits {
 pub struct ValidatedMessage {
     /// Method associated with the message.
     pub method: String,
-    /// Message direction.
+    /// Actual message direction.
     pub direction: Direction,
     /// JSON-RPC envelope class.
     pub kind: MessageKind,
@@ -207,9 +222,8 @@ impl ProtocolSchemaValidator {
         let envelope_method = object.get("method").and_then(Value::as_str);
         let method = match kind {
             MessageKind::Request | MessageKind::Notification => {
-                let method = envelope_method.ok_or_else(|| {
-                    SchemaError::new(None, "$.method", "string", "missing")
-                })?;
+                let method = envelope_method
+                    .ok_or_else(|| SchemaError::new(None, "$.method", "string", "missing"))?;
                 if let Some(expected) = context.method
                     && expected != method
                 {
@@ -222,15 +236,31 @@ impl ProtocolSchemaValidator {
                 }
                 method
             }
-            MessageKind::SuccessResponse | MessageKind::ErrorResponse => context.method.ok_or_else(|| {
-                SchemaError::new(None, "$.method", "capture-supplied response method", "missing")
-            })?,
+            MessageKind::SuccessResponse | MessageKind::ErrorResponse => {
+                context.method.ok_or_else(|| {
+                    SchemaError::new(
+                        None,
+                        "$.method",
+                        "capture-supplied response method",
+                        "missing",
+                    )
+                })?
+            }
         };
 
         validate_id(method, kind, object.get("id"))?;
         validate_envelope_members(method, kind, object)?;
 
-        let Some(schema) = methods::schema_for(method, context.direction, kind) else {
+        // Method schemas are registered in the originating request/notification
+        // direction. A response frame travels in the opposite direction, so
+        // lookup must invert only for responses while preserving the actual
+        // captured direction in the validated result.
+        let schema_direction = if kind.is_response() {
+            context.direction.opposite()
+        } else {
+            context.direction
+        };
+        let Some(schema) = methods::schema_for(method, schema_direction, kind) else {
             if is_project_extension(method) {
                 validate_extension_payload(method, kind, object)?;
                 return Ok(ValidatedMessage {
@@ -266,7 +296,12 @@ impl ProtocolSchemaValidator {
             }
             MessageKind::SuccessResponse => {
                 let result = object.get("result").ok_or_else(|| {
-                    SchemaError::new(Some(method), "$.result", "required success result", "missing")
+                    SchemaError::new(
+                        Some(method),
+                        "$.result",
+                        "required success result",
+                        "missing",
+                    )
                 })?;
                 let validator = schema.result.ok_or_else(|| {
                     SchemaError::new(
@@ -328,7 +363,12 @@ fn validate_id(method: &str, kind: MessageKind, id: Option<&Value>) -> Result<()
                 "integer or string request ID",
                 value,
             )),
-            None => Err(SchemaError::new(Some(method), "$.id", "request ID", "missing")),
+            None => Err(SchemaError::new(
+                Some(method),
+                "$.id",
+                "request ID",
+                "missing",
+            )),
         },
         MessageKind::Notification => {
             if id.is_none() {
@@ -351,7 +391,12 @@ fn validate_id(method: &str, kind: MessageKind, id: Option<&Value>) -> Result<()
                 "integer, string, or null response ID",
                 value,
             )),
-            None => Err(SchemaError::new(Some(method), "$.id", "response ID", "missing")),
+            None => Err(SchemaError::new(
+                Some(method),
+                "$.id",
+                "response ID",
+                "missing",
+            )),
         },
     }
 }
@@ -475,7 +520,9 @@ pub(super) fn expect_object<'a>(
     path: &str,
     value: &'a Value,
 ) -> Result<&'a Map<String, Value>, SchemaError> {
-    value.as_object().ok_or_else(|| SchemaError::at_value(method, path, "object", value))
+    value
+        .as_object()
+        .ok_or_else(|| SchemaError::at_value(method, path, "object", value))
 }
 
 pub(super) fn expect_array<'a>(
@@ -483,7 +530,9 @@ pub(super) fn expect_array<'a>(
     path: &str,
     value: &'a Value,
 ) -> Result<&'a Vec<Value>, SchemaError> {
-    value.as_array().ok_or_else(|| SchemaError::at_value(method, path, "array", value))
+    value
+        .as_array()
+        .ok_or_else(|| SchemaError::at_value(method, path, "array", value))
 }
 
 pub(super) fn expect_string<'a>(
@@ -492,7 +541,9 @@ pub(super) fn expect_string<'a>(
     value: Option<&'a Value>,
 ) -> Result<&'a str, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "string", "missing"))?;
-    value.as_str().ok_or_else(|| SchemaError::at_value(method, path, "string", value))
+    value
+        .as_str()
+        .ok_or_else(|| SchemaError::at_value(method, path, "string", value))
 }
 
 pub(super) fn expect_exact_string(
@@ -515,7 +566,9 @@ pub(super) fn expect_boolean(
     value: Option<&Value>,
 ) -> Result<bool, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "boolean", "missing"))?;
-    value.as_bool().ok_or_else(|| SchemaError::at_value(method, path, "boolean", value))
+    value
+        .as_bool()
+        .ok_or_else(|| SchemaError::at_value(method, path, "boolean", value))
 }
 
 pub(super) fn expect_integer(
@@ -524,7 +577,9 @@ pub(super) fn expect_integer(
     value: Option<&Value>,
 ) -> Result<i64, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "integer", "missing"))?;
-    value.as_i64().ok_or_else(|| SchemaError::at_value(method, path, "integer", value))
+    value
+        .as_i64()
+        .ok_or_else(|| SchemaError::at_value(method, path, "integer", value))
 }
 
 pub(super) fn expect_uinteger(
@@ -533,7 +588,9 @@ pub(super) fn expect_uinteger(
     value: Option<&Value>,
 ) -> Result<u64, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "uinteger", "missing"))?;
-    value.as_u64().ok_or_else(|| SchemaError::at_value(method, path, "uinteger", value))
+    value
+        .as_u64()
+        .ok_or_else(|| SchemaError::at_value(method, path, "uinteger", value))
 }
 
 pub(super) fn expect_null(
