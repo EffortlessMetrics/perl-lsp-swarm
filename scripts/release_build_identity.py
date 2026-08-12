@@ -19,7 +19,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -37,6 +36,17 @@ ALLOWED_REPOSITORIES = {
 }
 ALLOWED_ARTIFACT_ROLES = {"archive", "managed", "package_install"}
 ALLOWED_RUNNERS = {"cargo", "cross"}
+# Closed compile-time identity inputs. Cross withholds host env unless these
+# names are enrolled in scripts/release/Cross.toml build.env.passthrough.
+IDENTITY_ENV_KEYS = (
+    "PERL_LSP_BUILD_REVISION",
+    "PERL_LSP_SOURCE_TREE_DIGEST",
+    "PERL_LSP_TARGET_TRIPLE",
+    "PERL_LSP_BUILD_PROFILE",
+    "PERL_LSP_CANDIDATE_ID",
+    "PERL_LSP_ARTIFACT_ROLE",
+)
+CROSS_CONFIG_RELATIVE = Path("scripts") / "release" / "Cross.toml"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 VERSION = re.compile(
@@ -265,12 +275,68 @@ def canonical_tree_digest(root: Path, revision: str) -> str:
     return sha256_bytes(result.stdout)
 
 
+def cross_config_path(root: Path) -> Path:
+    return require_within(
+        root, root / CROSS_CONFIG_RELATIVE, "release Cross config"
+    )
+
+
+def load_cross_passthrough(path: Path) -> list[str]:
+    try:
+        value = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise BuildIdentityError(
+            f"release Cross config is invalid: {path}"
+        ) from error
+    build = value.get("build")
+    if not isinstance(build, dict):
+        raise BuildIdentityError(
+            "release Cross config requires a [build] table"
+        )
+    env = build.get("env")
+    if not isinstance(env, dict):
+        raise BuildIdentityError(
+            "release Cross config requires a [build.env] table"
+        )
+    passthrough = env.get("passthrough")
+    if not isinstance(passthrough, list) or not all(
+        isinstance(item, str) for item in passthrough
+    ):
+        raise BuildIdentityError(
+            "release Cross config build.env.passthrough must be a string list"
+        )
+    return list(passthrough)
+
+
+def validate_cross_config(path: Path) -> None:
+    """Prove the closed identity env enrollment is present and exact."""
+    passthrough = load_cross_passthrough(path)
+    expected = list(IDENTITY_ENV_KEYS)
+    if passthrough != expected:
+        missing = [key for key in expected if key not in passthrough]
+        extra = [key for key in passthrough if key not in expected]
+        details: list[str] = []
+        if missing:
+            details.append(f"missing={missing}")
+        if extra:
+            details.append(f"extra={extra}")
+        if not details and passthrough != expected:
+            details.append("order differs from IDENTITY_ENV_KEYS")
+        raise BuildIdentityError(
+            "release Cross config must enroll exact identity passthrough: "
+            + "; ".join(details)
+        )
+
+
 def toolchain_digest(root: Path, runner: str) -> str:
     rustc = run(["rustc", "--version", "--verbose"], cwd=root).stdout
     runner_version = run([runner, "--version"], cwd=root).stdout
-    return sha256_bytes(
-        b"rustc\0" + rustc + b"\0runner\0" + runner_version
-    )
+    payload = b"rustc\0" + rustc + b"\0runner\0" + runner_version
+    if runner == "cross":
+        config = cross_config_path(root)
+        validate_cross_config(config)
+        payload += b"\0cross_config\0" + config.read_bytes()
+    return sha256_bytes(payload)
 
 
 def load_json_object(path: Path, label: str) -> dict[str, Any]:
@@ -409,7 +475,9 @@ def prepare_identity(args: argparse.Namespace) -> ReleaseBuildIdentity:
     identity.validate()
     write_atomic(args.output, canonical_json_bytes(identity.as_dict()))
     if args.github_env is not None:
-        append_github_env(args.github_env, identity, runner=runner)
+        append_github_env(
+            args.github_env, identity, runner=runner, root=root
+        )
     return identity
 
 
@@ -435,7 +503,7 @@ def verify_checkout(root: Path, identity: ReleaseBuildIdentity) -> None:
 
 
 def identity_environment(identity: ReleaseBuildIdentity) -> dict[str, str]:
-    return {
+    values = {
         "PERL_LSP_BUILD_REVISION": identity.source_revision,
         "PERL_LSP_SOURCE_TREE_DIGEST": identity.source_tree_digest,
         "PERL_LSP_TARGET_TRIPLE": identity.target,
@@ -443,19 +511,29 @@ def identity_environment(identity: ReleaseBuildIdentity) -> dict[str, str]:
         "PERL_LSP_CANDIDATE_ID": identity.candidate_identity,
         "PERL_LSP_ARTIFACT_ROLE": identity.artifact_role,
     }
+    if tuple(values) != IDENTITY_ENV_KEYS:
+        raise BuildIdentityError(
+            "identity environment keys drifted from IDENTITY_ENV_KEYS"
+        )
+    return values
 
 
-def cross_container_opts(identity: ReleaseBuildIdentity) -> str:
-    """Return the closed Cross container environment passthrough contract."""
-    arguments: list[str] = []
-    for key, value in identity_environment(identity).items():
-        arguments.extend(("-e", f"{key}={value}"))
-    return shlex.join(arguments)
-
-
-def build_environment(identity: ReleaseBuildIdentity) -> dict[str, str]:
+def build_environment(
+    identity: ReleaseBuildIdentity,
+    *,
+    root: Path | None = None,
+    runner: str | None = None,
+) -> dict[str, str]:
     env = dict(os.environ)
     env.update(identity_environment(identity))
+    if runner == "cross":
+        if root is None:
+            raise BuildIdentityError(
+                "cross builds require workspace root for CROSS_CONFIG"
+            )
+        config = cross_config_path(root)
+        validate_cross_config(config)
+        env["CROSS_CONFIG"] = str(config)
     return env
 
 
@@ -464,6 +542,7 @@ def append_github_env(
     identity: ReleaseBuildIdentity,
     *,
     runner: str | None = None,
+    root: Path | None = None,
 ) -> None:
     """Append validated single-line build inputs for later workflow steps."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -471,7 +550,13 @@ def append_github_env(
         for key, value in identity_environment(identity).items():
             handle.write(f"{key}={value}\n")
         if runner == "cross":
-            handle.write(f"CROSS_CONTAINER_OPTS={cross_container_opts(identity)}\n")
+            if root is None:
+                raise BuildIdentityError(
+                    "cross builds require workspace root for CROSS_CONFIG"
+                )
+            config = cross_config_path(root)
+            validate_cross_config(config)
+            handle.write(f"CROSS_CONFIG={config}\n")
 
 
 def binary_path(root: Path, identity: ReleaseBuildIdentity, executable: str) -> Path:
@@ -708,7 +793,7 @@ def verify_binaries(
             "toolchain identity changed after build input generation"
         )
 
-    env = build_environment(identity)
+    env = build_environment(identity, root=root, runner=args.runner)
     commands = [
         build_command(args.runner, identity, "perllsp", "perllsp"),
         build_command(args.runner, identity, "perl-dap", "perl-dap"),
@@ -767,7 +852,7 @@ def build_and_verify(args: argparse.Namespace) -> dict[str, Any]:
         raise BuildIdentityError(
             "toolchain identity changed after build input generation"
         )
-    env = build_environment(identity)
+    env = build_environment(identity, root=root, runner=args.runner)
     for package, binary in (
         ("perllsp", "perllsp"),
         ("perl-dap", "perl-dap"),

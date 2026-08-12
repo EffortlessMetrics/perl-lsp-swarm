@@ -297,21 +297,92 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         self.assertEqual(first.splitlines(), expected_lines)
         self.assertEqual(second.splitlines(), expected_lines + expected_lines)
 
-    def test_cross_container_passthrough_is_closed_and_validated(self) -> None:
+    def test_cross_config_enrolls_all_six_identity_vars(self) -> None:
+        config = REPO_ROOT / subject.CROSS_CONFIG_RELATIVE
+        subject.validate_cross_config(config)
+        passthrough = subject.load_cross_passthrough(config)
+        self.assertEqual(passthrough, list(subject.IDENTITY_ENV_KEYS))
+        self.assertEqual(len(passthrough), 6)
+
+    def test_cross_config_rejects_missing_identity_var(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / subject.CROSS_CONFIG_RELATIVE
+            path.parent.mkdir(parents=True)
+            incomplete = list(subject.IDENTITY_ENV_KEYS)[:-1]
+            rendered = "\n".join(f'  "{key}",' for key in incomplete)
+            path.write_text(
+                f"[build.env]\npassthrough = [\n{rendered}\n]\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                subject.BuildIdentityError, "missing="
+            ):
+                subject.validate_cross_config(path)
+
+    def test_cross_runner_exports_cross_config_for_build_and_verify(
+        self,
+    ) -> None:
         identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
-        options = subject.cross_container_opts(identity)
-        expected = []
-        for key, value in subject.identity_environment(identity).items():
-            expected.extend(("-e", f"{key}={value}"))
-        self.assertEqual(options, subject.shlex.join(expected))
+        env = subject.build_environment(
+            identity, root=REPO_ROOT, runner="cross"
+        )
+        expected = str(
+            (REPO_ROOT / subject.CROSS_CONFIG_RELATIVE).resolve(strict=True)
+        )
+        self.assertEqual(env["CROSS_CONFIG"], expected)
+        for key in subject.IDENTITY_ENV_KEYS:
+            self.assertIn(key, env)
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "github.env"
-            subject.append_github_env(path, identity, runner="cross")
-            self.assertEqual(
-                path.read_text(encoding="utf-8").splitlines()[-1],
-                f"CROSS_CONTAINER_OPTS={options}",
+            subject.append_github_env(
+                path, identity, runner="cross", root=REPO_ROOT
             )
+            lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[-1], f"CROSS_CONFIG={expected}")
+        self.assertTrue(
+            all(
+                any(line.startswith(f"{key}=") for line in lines)
+                for key in subject.IDENTITY_ENV_KEYS
+            )
+        )
+
+    def test_cross_toolchain_digest_binds_reviewed_config_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / subject.CROSS_CONFIG_RELATIVE
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "[build.env]\n"
+                "passthrough = [\n"
+                + "".join(
+                    f'  "{key}",\n' for key in subject.IDENTITY_ENV_KEYS
+                )
+                + "]\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    subject,
+                    "run",
+                    side_effect=[
+                        mock.Mock(stdout=b"rustc 1\n"),
+                        mock.Mock(stdout=b"cross 1\n"),
+                        mock.Mock(stdout=b"rustc 1\n"),
+                        mock.Mock(stdout=b"cross 1\n"),
+                    ],
+                ),
+            ):
+                first = subject.toolchain_digest(root, "cross")
+                config.write_text(
+                    config.read_text(encoding="utf-8") + "# touch\n",
+                    encoding="utf-8",
+                )
+                # Config no longer exact after comment? Order still exact;
+                # bytes changed so digest must move. Re-validate still passes.
+                second = subject.toolchain_digest(root, "cross")
+            self.assertNotEqual(first, second)
 
     def test_release_workflow_declares_all_three_cross_rows(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
@@ -320,6 +391,9 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         self.assertEqual(workflow.count("use_cross: true"), 3)
         self.assertIn('--runner "$BUILD_CMD"', workflow)
         self.assertIn('--github-env "$GITHUB_ENV"', workflow)
+        self.assertTrue(
+            (REPO_ROOT / subject.CROSS_CONFIG_RELATIVE).is_file()
+        )
 
     def test_partial_packet_is_not_proven_and_never_accepted(self) -> None:
         identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
