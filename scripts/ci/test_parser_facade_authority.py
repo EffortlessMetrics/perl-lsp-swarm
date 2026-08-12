@@ -120,11 +120,46 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
             check(self.root, self.ledger_path)
 
+    def test_inline_public_module_fails(self) -> None:
+        path = self.root / "crates/perl-parser/src/lib.rs"
+        path.write_text(path.read_text() + "pub mod surprise { pub fn hidden() {} }\n")
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
     def test_reexport_replacement_fails(self) -> None:
         path = self.root / "crates/perl-parser/src/lib.rs"
         path.write_text(path.read_text().replace("pub use core::Parser;", "pub use core::ParserConfig;"))
         with self.assertRaisesRegex(ValueError, "public re-exports differs"):
             check(self.root, self.ledger_path)
+
+    def test_reexport_alias_fails(self) -> None:
+        path = self.root / "crates/perl-parser/src/lib.rs"
+        path.write_text(path.read_text().replace(
+            "pub use core::Parser;", "pub use core::Parser as parser_alias;"
+        ))
+        with self.assertRaisesRegex(ValueError, "public re-exports differs"):
+            check(self.root, self.ledger_path)
+
+    def test_aliased_consumer_dependency_is_normalized(self) -> None:
+        path = self.root / self.ledger["consumer_groups"][0]["members"][0]
+        path.write_text(path.read_text().replace(
+            '[dependencies]\nperl-parser="1"',
+            '[dev-dependencies]\nparser_alias = { package = "perl-parser", version = "1" }',
+        ))
+        check(self.root, self.ledger_path)
+
+    def test_ruling_cannot_repoint_governed_source(self) -> None:
+        self.ledger["sources"]["manifest"] = "fixtures/alternate/Cargo.toml"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "governed source paths differ"):
+            check(self.root, self.ledger_path)
+
+    def test_digest_covers_full_ledger(self) -> None:
+        _, baseline = check(self.root, self.ledger_path)
+        self.ledger["ruling"]["next_implementation"] = "#9999"
+        self.write_ledger(self.ledger)
+        _, changed = check(self.root, self.ledger_path)
+        self.assertNotEqual(baseline["authority_digest"], changed["authority_digest"])
 
     def test_default_experimental_feature_fails(self) -> None:
         self.ledger["default_features"].append("experimental-features")

@@ -67,9 +67,15 @@ def expand_use_tree(value: str) -> list[str]:
     return result
 
 
+def public_module_names(source: str) -> set[str]:
+    return set(re.findall(
+        r"(?m)^pub\s+mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?=;|\{)", source
+    ))
+
+
 def rust_public_surface(path: Path) -> tuple[set[str], set[str]]:
     source = path.read_text(encoding="utf-8").split("\n#[cfg(test)]\nmod tests", 1)[0]
-    modules = set(re.findall(r"(?m)^pub mod ([A-Za-z_][A-Za-z0-9_]*);", source))
+    modules = public_module_names(source)
     exports: set[str] = set()
     for match in re.finditer(r"(?ms)^pub use\s+(.+?);", source):
         exports.update(expand_use_tree(match.group(1)))
@@ -78,7 +84,7 @@ def rust_public_surface(path: Path) -> tuple[set[str], set[str]]:
 
 def incremental_surface(path: Path) -> tuple[set[str], set[str], set[str]]:
     source = path.read_text(encoding="utf-8")
-    modules = set(re.findall(r"(?m)^pub mod ([A-Za-z_][A-Za-z0-9_]*);", source))
+    modules = public_module_names(source)
     exports: set[str] = set()
     for match in re.finditer(r"(?ms)^pub use\s+(.+?);", source):
         exports.update(expand_use_tree(match.group(1)))
@@ -100,14 +106,30 @@ def default_features(manifest: dict[str, Any]) -> tuple[str, ...]:
     return tuple(value)
 
 
+def normalized_dependency_rows(table: dict[str, Any], context: str) -> dict[str, bool]:
+    result: dict[str, bool] = {}
+    for alias, value in table.items():
+        if isinstance(value, str):
+            package = alias
+            optional = False
+        elif isinstance(value, dict):
+            package = value.get("package", alias)
+            optional = value.get("optional") is True
+        else:
+            raise ValueError(f"{context}.{alias} dependency entry is invalid")
+        if not isinstance(package, str) or not package.strip():
+            raise ValueError(f"{context}.{alias}.package must be a non-empty string")
+        if package in result:
+            raise ValueError(f"{context} contains duplicate package identity: {package}")
+        result[package] = optional
+    return result
+
+
 def dependency_rows(manifest: dict[str, Any]) -> dict[str, bool]:
     dependencies = manifest.get("dependencies")
     if not isinstance(dependencies, dict):
         raise ValueError("manifest has no [dependencies] table")
-    return {
-        name: isinstance(value, dict) and value.get("optional") is True
-        for name, value in dependencies.items()
-    }
+    return normalized_dependency_rows(dependencies, "dependencies")
 
 
 def cargo_targets(manifest: dict[str, Any]) -> set[CargoTarget]:
@@ -151,6 +173,9 @@ def discover_consumers(root: Path, facade_manifest: Path) -> set[str]:
             manifest = load_toml(manifest_path)
         except ValueError:
             continue
-        if any("perl-parser" in table for table in dependency_tables(manifest)):
+        if any(
+            "perl-parser" in normalized_dependency_rows(table, str(manifest_path))
+            for table in dependency_tables(manifest)
+        ):
             result.add(manifest_path.relative_to(root).as_posix())
     return result

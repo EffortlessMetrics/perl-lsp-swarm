@@ -30,6 +30,13 @@ LEDGER_FILES = (
     "ruling.json", "features.json", "dependencies.json", "public-surface.json",
     "incremental.json", "consumers.json",
 )
+CANONICAL_SOURCE_PATHS = {
+    "manifest": "crates/perl-parser/Cargo.toml",
+    "lib": "crates/perl-parser/src/lib.rs",
+    "incremental": "crates/perl-parser/src/incremental/mod.rs",
+    "parser_core_manifest": "crates/perl-parser-core/Cargo.toml",
+    "generated_doc": "docs/project/PARSER_FACADE_AUTHORITY.md",
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -131,6 +138,10 @@ def validate_exact(label: str, observed: set[str], expected: set[str]) -> None:
         raise ValueError(f"{label} differs from authority ledger: {'; '.join(details)}")
 
 
+def normalized_json(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+
+
 def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     ledger = load_ledger(ledger_path)
     ruling = ledger.get("ruling")
@@ -139,7 +150,10 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     if ruling.get("controller") != "#2477" or ruling.get("implementation_issue") != "#7058":
         raise ValueError("parser facade ruling issue identities are invalid")
 
-    manifest_path = root / ledger["sources"]["manifest"]
+    if ledger.get("sources") != CANONICAL_SOURCE_PATHS:
+        raise ValueError("parser facade governed source paths differ from canonical paths")
+
+    manifest_path = root / CANONICAL_SOURCE_PATHS["manifest"]
     manifest = load_toml(manifest_path)
     features = table_by_name(ledger.get("features"), "features")
     validate_exact("Cargo features", feature_names(manifest), set(features))
@@ -159,7 +173,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         if dependencies[name].get("optional") is not optional:
             raise ValueError(f"dependency {name} optionality differs from authority ledger")
 
-    modules, exports = rust_public_surface(root / ledger["sources"]["lib"])
+    modules, exports = rust_public_surface(root / CANONICAL_SOURCE_PATHS["lib"])
     public_modules = table_by_name(ledger.get("public_modules"), "public_modules")
     public_exports = member_table(ledger.get("public_reexport_groups"), "public_reexport_groups")
     validate_exact("public modules", modules, set(public_modules))
@@ -177,7 +191,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     if cargo_targets(manifest) != expected_targets:
         raise ValueError("Cargo bin/bench/example targets differ from authority ledger")
 
-    inc_modules, inc_exports, inc_functions = incremental_surface(root / ledger["sources"]["incremental"])
+    inc_modules, inc_exports, inc_functions = incremental_surface(root / CANONICAL_SOURCE_PATHS["incremental"])
     module_rows = table_by_name(ledger.get("incremental_public_modules"), "incremental_public_modules")
     export_rows = table_by_name(ledger.get("incremental_public_exports"), "incremental_public_exports")
     validate_exact("incremental public modules", inc_modules, set(module_rows))
@@ -196,7 +210,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     observed_consumers = discover_consumers(root, manifest_path)
     validate_exact("workspace consumers", observed_consumers, set(consumers))
 
-    parser_core = load_toml(root / ledger["sources"]["parser_core_manifest"])
+    parser_core = load_toml(root / CANONICAL_SOURCE_PATHS["parser_core_manifest"])
     forbidden = sorted(name for name in dependency_rows(parser_core) if any(token in name for token in FORBIDDEN_KERNEL_DEPENDENCY_TOKENS))
     if forbidden:
         raise ValueError("parser-core has forbidden product/transport dependencies: " + ",".join(forbidden))
@@ -212,9 +226,9 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         "incremental_public_modules": len(module_rows),
         "incremental_public_exports": len(export_rows),
         "consumers": len(consumers),
+        "digest_scope": "full_normalized_ledger",
     }
-    encoded = json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()
-    summary["authority_digest"] = hashlib.sha256(encoded).hexdigest()
+    summary["authority_digest"] = hashlib.sha256(normalized_json(ledger)).hexdigest()
     return ledger, summary
 
 
@@ -226,6 +240,7 @@ def render_markdown(ledger: dict[str, Any], summary: dict[str, Any]) -> str:
         "The native parser contract remains directly available while compatibility and product-composition surfaces receive explicit owners and exits.", "",
         "## Current boundary", "",
         f"- Authority digest: `{summary['authority_digest']}`",
+        f"- Digest input: `{summary['digest_scope']}`",
         f"- Public modules: {summary['public_modules']}",
         f"- Public re-exports: {summary['public_reexports']}",
         f"- Cargo features: {summary['features']}",
