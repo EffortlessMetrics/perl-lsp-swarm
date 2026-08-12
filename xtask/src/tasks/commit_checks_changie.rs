@@ -98,7 +98,6 @@ where
 
     let mut findings = Vec::new();
     let mut affected = BTreeSet::new();
-    let mut present_fragment_count = 0usize;
     for path in relevant_changed.iter().filter(|path| surface.is_fragment(path)) {
         match staged::read_staged_path_text(root, path, Some(&tree_oid))? {
             StagedPathText::Absent => {}
@@ -106,21 +105,18 @@ where
                 affected.insert(path.clone());
                 findings.push(format!("{path}: fragment is not valid UTF-8"));
             }
-            StagedPathText::Present(text) => {
-                present_fragment_count += 1;
-                match serde_yaml_ng::from_str::<Fragment>(&text) {
-                    Ok(fragment) => {
-                        for finding in changelog::validate_fragment(&fragment, &validation_config) {
-                            affected.insert(path.clone());
-                            findings.push(format!("{path}: {finding}"));
-                        }
-                    }
-                    Err(err) => {
+            StagedPathText::Present(text) => match serde_yaml_ng::from_str::<Fragment>(&text) {
+                Ok(fragment) => {
+                    for finding in changelog::validate_fragment(&fragment, &validation_config) {
                         affected.insert(path.clone());
-                        findings.push(format!("{path}: malformed YAML: {err}"));
+                        findings.push(format!("{path}: {finding}"));
                     }
                 }
-            }
+                Err(err) => {
+                    affected.insert(path.clone());
+                    findings.push(format!("{path}: malformed YAML: {err}"));
+                }
+            },
         }
     }
 
@@ -194,8 +190,9 @@ where
     let project_keys = surface.project_keys();
     match renderer(temp.path(), &project_keys)? {
         RenderOutcome::Passed => Ok(CommitCheckOutcome::Pass(format!(
-            "{present_fragment_count} staged Changie fragment(s) satisfy policy and dry-render across {} project(s)",
-            project_keys.len()
+            "Changie dry-render passed for {} configured project(s); staged inputs: {}",
+            project_keys.len(),
+            relevant_changed.join(", ")
         ))),
         RenderOutcome::Rejected(errors) => Ok(blocked(
             format!("Changie rejected the staged ledger: {}", errors.join("; ")),

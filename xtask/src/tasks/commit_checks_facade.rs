@@ -1,9 +1,8 @@
 //! Public dispatch facade for the commit-tier staged checks.
 //!
 //! The established checks remain in `commit_checks.rs`. Changie is routed
-//! through a focused implementation that can materialize the frozen staged
-//! tree and run Changie's own dry-render validation without widening the
-//! established module or creating a second pre-commit authority.
+//! through this focused implementation, which is the sole authority for the
+//! frozen staged-tree dry-render validation.
 
 #[path = "commit_checks_changie.rs"]
 mod changie;
@@ -17,9 +16,9 @@ use color_eyre::eyre::Result;
 
 /// Run one named commit-tier check against the captured staged tree.
 ///
-/// All established checks retain their existing implementation. The Changie
-/// check is intercepted here so its authoritative dry-render can remain a
-/// focused module while preserving the public dispatch and receipt contract.
+/// All established checks retain their existing implementation. Changie is
+/// handled here so the public dispatch and receipt contract have one
+/// authoritative implementation for that gate.
 pub fn run_named_check(name: &str, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
     if name != "changie_fragment_staged" {
         return established::run_named_check(name, tree_oid);

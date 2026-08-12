@@ -202,6 +202,49 @@ fn configured_changes_and_unreleased_directories_drive_materialization() -> Resu
 }
 
 #[test]
+fn changie_only_staged_input_reports_its_path_in_the_summary() -> Result<()> {
+    let repo = TempRepo::init()?;
+    repo.stage_baseline(CONFIG)?;
+    repo.write("CHANGELOG.md", "# Changelog\n\n## Pending\n")?;
+    repo.add("CHANGELOG.md")?;
+
+    let outcome = run_with_renderer(repo.root(), None, |workspace, projects| {
+        assert_eq!(
+            projects,
+            &["product".to_string()],
+            "Changie-only input must still render every configured project"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("CHANGELOG.md"))?,
+            "# Changelog\n\n## Pending\n",
+            "the renderer sandbox must contain the staged changelog"
+        );
+        Ok(RenderOutcome::Passed)
+    })?;
+
+    match outcome {
+        CommitCheckOutcome::Pass(summary) => {
+            assert!(
+                summary.contains("Changie dry-render passed"),
+                "pass summary must identify the successful dry-render: {summary}"
+            );
+            assert!(
+                summary.contains("staged inputs: CHANGELOG.md"),
+                "pass summary must name the staged Changie input: {summary}"
+            );
+            assert!(
+                !summary.contains("fragment"),
+                "a changelog-only summary must not claim a fragment count: {summary}"
+            );
+        }
+        CommitCheckOutcome::Flagged(report) => {
+            bail!("expected a changelog-only Changie input to pass: {report:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn unsafe_config_paths_block_before_rendering() -> Result<()> {
     let repo = TempRepo::init()?;
     repo.stage_baseline(CONFIG)?;
