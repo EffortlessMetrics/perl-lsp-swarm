@@ -3991,6 +3991,7 @@ dependencies = [
  "tree-sitter-perl-c",
  "tree-sitter-perl-rs",
  "walkdir",
+ "winapi",
 ]
 
 [[package]]
