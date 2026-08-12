@@ -7,6 +7,7 @@
     {"package": "perl-parser-core", "target": "pir_a_branch_body_test"},
     {"package": "perl-parser-core", "target": "pir_a_loop_body_test"},
     {"package": "perl-parser", "target": "incremental_integration_test"},
+    {"package": "perl-parser", "target": "incremental_parsing_tests"},
     {"package": "perl-parser", "target": "incremental_parser_accuracy"},
     {"package": "perl-parser", "target": "semantic_smoke_tests"}
   ]

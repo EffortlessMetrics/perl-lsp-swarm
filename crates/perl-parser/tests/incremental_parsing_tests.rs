@@ -211,8 +211,10 @@ fn test_edit_at_statement_boundary() -> TestResult {
 
     assert!(state.source.contains("# Comment"));
     assert!(state.source.contains("my $w = 0"));
-    // Should have used checkpoint at semicolon
-    assert!(result.reparsed_bytes < state.source.len());
+    // Parser output is refreshed over the complete source even when the lexer
+    // fast path reuses tokens after the edit.
+    assert_eq!(result.reparsed_bytes, state.source.len());
+    assert!(result.reused_tokens > 0, "single-edit checkpoint path should reuse trailing tokens");
     Ok(())
 }
 
