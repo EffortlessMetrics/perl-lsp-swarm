@@ -1,4 +1,4 @@
-name: DAP scorecard repair commit (one shot)
+name: DAP scorecard product commit (one shot)
 
 on:
   pull_request:
@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  commit-proven-repair:
-    name: Commit the already-proven pagination repair
+  commit-proven-product:
+    name: Push the already-proven non-workflow repair
     if: github.event.pull_request.head.ref == 'agent/dap-scorecard-same-sha-6680'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -29,7 +29,7 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt
 
-      - name: Reapply the proven diff and bypass the broken hosted hook
+      - name: Reapply and push the proven product/test diff
         shell: bash
         run: |
           set -euo pipefail
@@ -41,7 +41,11 @@ jobs:
 
           workflow = ".github/workflows/dap-scorecard.yml"
           previous = subprocess.run(
-              ["git", "show", f"HEAD^:{workflow}"],
+              [
+                  "git",
+                  "show",
+                  "7d01b28fda2adfacab6bed1e77507445c1154eae:" + workflow,
+              ],
               check=True,
               capture_output=True,
               text=True,
@@ -58,12 +62,13 @@ jobs:
           python3 -m py_compile \
             scripts/ci/dap_scorecard_probes.py \
             scripts/tests/test_dap_scorecard_runtime.py
-          git show cce2bcb38a3dd7c0d23ea8df8f76fbc7a1f3f664:.github/workflows/dap-scorecard.yml \
-            > .github/workflows/dap-scorecard.yml
           git diff --check
           git config user.name 'EffortlessSteven'
           git config user.email 'git@effortlesssteven.com'
-          git add -A
+          git add \
+            crates/perl-dap/src/debug_adapter/parsing/scope_variables.rs \
+            scripts/ci/dap_scorecard_probes.py \
+            scripts/tests/test_dap_scorecard_runtime.py
           git diff --cached --check
           git -c core.hooksPath=/dev/null commit -m 'test(dap): bind pagination proof to lexical fixture'
           git push origin HEAD:agent/dap-scorecard-same-sha-6680
