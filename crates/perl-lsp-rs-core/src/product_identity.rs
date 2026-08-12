@@ -65,6 +65,7 @@ pub enum ArtifactRole {
 
 /// Product-level identity shared by every shipped executable.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProductIdentity {
     /// Canonical product name.
     pub name: String,
@@ -76,6 +77,7 @@ pub struct ProductIdentity {
 
 /// Identity of the process emitting the packet.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutableIdentity {
     /// Executable name.
     pub executable: String,
@@ -89,6 +91,7 @@ pub struct ExecutableIdentity {
 
 /// Build-time identity embedded into the executable.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BuildIdentity {
     /// Source revision, when injected by the reviewed build path.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,6 +111,7 @@ pub struct BuildIdentity {
 
 /// Artifact and installation identity supplied by a trusted external observer.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactIdentity {
     /// Installation role.
     pub role: ArtifactRole,
@@ -121,6 +125,7 @@ pub struct ArtifactIdentity {
 
 /// Compatibility facts needed by protocol and installed-product consumers.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompatibilityIdentity {
     /// Product-identity contract version expected by this packet.
     pub expected_product_identity_version: u32,
@@ -130,6 +135,7 @@ pub struct CompatibilityIdentity {
 
 /// Complete canonical runtime identity packet.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BinaryIdentityPacketV1 {
     /// Packet schema identifier.
     pub schema_version: String,
@@ -412,9 +418,13 @@ fn normalize_input(input: BinaryIdentityInput) -> NormalizedIdentityInput {
         "candidate_identity_invalid",
         &mut limitations,
     );
-    if input.artifact_role.is_none() {
-        limitations.push("artifact_role_not_proven".to_owned());
-    }
+    let artifact_role = match input.artifact_role {
+        Some(ArtifactRole::Unknown) | None => {
+            limitations.push("artifact_role_not_proven".to_owned());
+            None
+        }
+        Some(role) => Some(role),
+    };
 
     NormalizedIdentityInput {
         input: BinaryIdentityInput {
@@ -422,7 +432,7 @@ fn normalize_input(input: BinaryIdentityInput) -> NormalizedIdentityInput {
             source_tree_digest,
             target,
             profile,
-            artifact_role: input.artifact_role,
+            artifact_role,
             artifact_digest,
             candidate_identity,
         },
