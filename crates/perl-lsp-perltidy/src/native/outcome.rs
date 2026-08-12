@@ -1,5 +1,6 @@
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
+    format_simple_line, range_includes_line,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma,
 };
@@ -8,6 +9,8 @@ use serde::{Deserialize, Serialize};
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 const PARSE_ERROR_CODE: &str = "native.format.parse_error";
+const PARSE_INCOMPLETE_CODE: &str = "native.format.parse_incomplete";
+const UNSAFE_RANGE_CODE: &str = "native.format.unsafe_range";
 const PARSE_PRESERVATION_CODE: &str = "native.format.parse_preservation";
 const LITERAL_PRESERVE_CODE: &str = "native.format.literal_preserve_region";
 
@@ -228,7 +231,15 @@ impl NativeFormatter {
         config: &FormatConfig,
         context: &FormatContext,
     ) -> TypedFormatResult {
-        let result = <Self as PerlFormatter>::format_range(self, source, range, config);
+        let result = if valid_range(source, range) {
+            <Self as PerlFormatter>::format_range(self, source, range, config)
+        } else {
+            FormatResult::unsafe_to_format(
+                source,
+                UNSAFE_RANGE_CODE,
+                "native range formatting refused because the requested UTF-16 range is invalid",
+            )
+        };
         classify_native_result(
             source,
             config,
@@ -246,7 +257,7 @@ fn classify_native_result(
     target: FormatRequestTarget,
     result: FormatResult,
 ) -> TypedFormatResult {
-    let classification = classify(config, &result);
+    let classification = classify(source, config, target, &result);
     let actual_engine = if matches!(config.mode, FormatterMode::Off) {
         FormatEngine::Disabled
     } else {
@@ -279,7 +290,12 @@ struct Classification {
     reason: FormatReasonCode,
 }
 
-fn classify(config: &FormatConfig, result: &FormatResult) -> Classification {
+fn classify(
+    source: &str,
+    config: &FormatConfig,
+    target: FormatRequestTarget,
+    result: &FormatResult,
+) -> Classification {
     if matches!(config.mode, FormatterMode::Off) {
         return Classification {
             disposition: FormatDisposition::Refused,
@@ -295,9 +311,16 @@ fn classify(config: &FormatConfig, result: &FormatResult) -> Classification {
     }
 
     let Some(diagnostic) = result.diagnostics.first() else {
-        return Classification {
-            disposition: FormatDisposition::NoChange,
-            reason: FormatReasonCode::AlreadyFormatted,
+        return if target_has_only_supported_lines(source, config, target) {
+            Classification {
+                disposition: FormatDisposition::NoChange,
+                reason: FormatReasonCode::AlreadyFormatted,
+            }
+        } else {
+            Classification {
+                disposition: FormatDisposition::Refused,
+                reason: FormatReasonCode::UnsupportedSyntax,
+            }
         };
     };
 
@@ -305,6 +328,14 @@ fn classify(config: &FormatConfig, result: &FormatResult) -> Classification {
         LITERAL_PRESERVE_CODE => Classification {
             disposition: FormatDisposition::Refused,
             reason: FormatReasonCode::LiteralPreservationUnsupported,
+        },
+        PARSE_INCOMPLETE_CODE => Classification {
+            disposition: FormatDisposition::FailedOrNotProven,
+            reason: FormatReasonCode::InstrumentFailure,
+        },
+        UNSAFE_RANGE_CODE => Classification {
+            disposition: FormatDisposition::Refused,
+            reason: FormatReasonCode::UnsafeRange,
         },
         PARSE_ERROR_CODE => Classification {
             disposition: FormatDisposition::Refused,
@@ -323,6 +354,41 @@ fn classify(config: &FormatConfig, result: &FormatResult) -> Classification {
             reason: FormatReasonCode::UnsupportedSyntax,
         },
     }
+}
+
+
+fn valid_range(source: &str, range: TextRange) -> bool {
+    if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
+        return false;
+    }
+    let lines: Vec<&str> = source.split('\n').collect();
+    let position_is_valid = |position: super::implementation::TextPosition| {
+        lines
+            .get(position.line as usize)
+            .is_some_and(|line| utf16_len(line) >= position.character)
+    };
+    position_is_valid(range.start) && position_is_valid(range.end)
+}
+
+fn utf16_len(source: &str) -> u32 {
+    source.encode_utf16().count() as u32
+}
+
+fn target_has_only_supported_lines(
+    source: &str,
+    config: &FormatConfig,
+    target: FormatRequestTarget,
+) -> bool {
+    source.split('\n').enumerate().all(|(line, text)| {
+        let included = match target {
+            FormatRequestTarget::Document => true,
+            FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
+        };
+        !included
+            || text.trim().is_empty()
+            || text.trim_start().starts_with('#')
+            || format_simple_line(text, config).is_some()
+    })
 }
 
 fn safety_evidence(
