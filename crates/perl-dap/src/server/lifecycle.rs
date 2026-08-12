@@ -1,6 +1,7 @@
 // The lifecycle dispatcher retains the deprecated bridge mode solely for
-// existing library consumers and conformance comparisons.
-#![cfg_attr(feature = "legacy-pls-bridge", allow(deprecated))]
+// existing library consumers and conformance comparisons. It must still match
+// the hidden variant in default builds so unsupported selection fails closed.
+#![allow(deprecated)]
 
 #[cfg(feature = "legacy-pls-bridge")]
 use crate::bridge_adapter::BridgeAdapter;
