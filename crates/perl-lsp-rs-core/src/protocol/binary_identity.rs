@@ -49,15 +49,21 @@ pub enum BinaryCompatibilityReason {
     VersionMismatch,
     /// Target triples differ.
     TargetMismatch,
+    /// One side cannot prove its target triple.
+    TargetNotProven,
     /// Proven source revisions differ.
     SourceRevisionMismatch,
+    /// One side cannot prove its source revision.
+    SourceRevisionNotProven,
     /// Proven candidate identities differ.
     CandidateMismatch,
+    /// One side cannot prove its candidate identity.
+    CandidateNotProven,
     /// DAP packet has the wrong product role.
     DapRoleMismatch,
     /// No DAP packet is available for the preview surface.
     DapIdentityAbsent,
-    /// One or more exact build fields are unavailable.
+    /// One or more other exact build fields are unavailable.
     BuildIdentityPartial,
     /// The request names another server process.
     ServerInstanceStale,
@@ -193,16 +199,15 @@ fn evaluate_compatibility(
         return (
             BinaryCompatibilityState::Unsupported,
             vec![BinaryCompatibilityReason::FeatureVersionUnsupported],
-            vec![format!(
-                "requested_feature_version_{}",
-                request.feature_version
-            )],
+            vec![format!("requested_feature_version_{}", request.feature_version)],
         );
     }
 
-    if request.expected_server_instance_id.as_deref().is_some_and(|value| {
-        value != state.server_instance_id
-    }) {
+    if request
+        .expected_server_instance_id
+        .as_deref()
+        .is_some_and(|value| value != state.server_instance_id)
+    {
         return (
             BinaryCompatibilityState::Stale,
             vec![BinaryCompatibilityReason::ServerInstanceStale],
@@ -245,6 +250,7 @@ fn evaluate_compatibility(
         state.server.build.target.as_deref(),
         request.expected_extension.target.as_deref(),
         BinaryCompatibilityReason::TargetMismatch,
+        BinaryCompatibilityReason::TargetNotProven,
         &mut mismatch,
         &mut partial,
     );
@@ -252,6 +258,7 @@ fn evaluate_compatibility(
         state.server.artifact.candidate_identity.as_deref(),
         request.expected_extension.candidate_identity.as_deref(),
         BinaryCompatibilityReason::CandidateMismatch,
+        BinaryCompatibilityReason::CandidateNotProven,
         &mut mismatch,
         &mut partial,
     );
@@ -275,6 +282,7 @@ fn evaluate_compatibility(
                 dap.build.target.as_deref(),
                 state.server.build.target.as_deref(),
                 BinaryCompatibilityReason::TargetMismatch,
+                BinaryCompatibilityReason::TargetNotProven,
                 &mut mismatch,
                 &mut partial,
             );
@@ -282,6 +290,7 @@ fn evaluate_compatibility(
                 dap.build.source_revision.as_deref(),
                 state.server.build.source_revision.as_deref(),
                 BinaryCompatibilityReason::SourceRevisionMismatch,
+                BinaryCompatibilityReason::SourceRevisionNotProven,
                 &mut mismatch,
                 &mut partial,
             );
@@ -289,6 +298,7 @@ fn evaluate_compatibility(
                 dap.artifact.candidate_identity.as_deref(),
                 state.server.artifact.candidate_identity.as_deref(),
                 BinaryCompatibilityReason::CandidateMismatch,
+                BinaryCompatibilityReason::CandidateNotProven,
                 &mut mismatch,
                 &mut partial,
             );
@@ -328,13 +338,14 @@ fn compare_optional(
     actual: Option<&str>,
     expected: Option<&str>,
     mismatch_reason: BinaryCompatibilityReason,
+    partial_reason: BinaryCompatibilityReason,
     mismatch: &mut Vec<BinaryCompatibilityReason>,
     partial: &mut Vec<BinaryCompatibilityReason>,
 ) {
     match (actual, expected) {
         (Some(actual), Some(expected)) if actual != expected => mismatch.push(mismatch_reason),
         (Some(_), Some(_)) => {}
-        _ => partial.push(BinaryCompatibilityReason::BuildIdentityPartial),
+        _ => partial.push(partial_reason),
     }
 }
 
@@ -350,9 +361,7 @@ mod tests {
         BinaryIdentityRequestV1, BinaryIdentityTransportStateV1, CANONICAL_EXTENSION_ID,
         ExpectedExtensionIdentityV1,
     };
-    use crate::product_identity::{
-        ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1,
-    };
+    use crate::product_identity::{ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1};
 
     fn exact_input(candidate: &str) -> BinaryIdentityInput {
         BinaryIdentityInput {
@@ -417,6 +426,45 @@ mod tests {
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
         assert!(response.reasons.contains(&BinaryCompatibilityReason::CandidateMismatch));
+    }
+
+    #[test]
+    fn missing_extension_target_has_a_discriminating_partial_reason() {
+        let mut request = request();
+        request.expected_extension.target = None;
+        let response = state().respond(request);
+        assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::TargetNotProven));
+        assert!(!response.reasons.contains(&BinaryCompatibilityReason::CandidateNotProven));
+    }
+
+    #[test]
+    fn missing_candidate_has_a_discriminating_partial_reason() {
+        let mut request = request();
+        request.expected_extension.candidate_identity = None;
+        let response = state().respond(request);
+        assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::CandidateNotProven));
+        assert!(!response.reasons.contains(&BinaryCompatibilityReason::TargetNotProven));
+    }
+
+    #[test]
+    fn missing_dap_source_has_a_discriminating_partial_reason() {
+        let mut state = state();
+        state.dap = Some(BinaryIdentityPacketV1::dap(
+            "0.18.0",
+            BinaryIdentityInput {
+                source_revision: None,
+                ..exact_input("rc1")
+            },
+        ));
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
+        assert!(
+            response
+                .reasons
+                .contains(&BinaryCompatibilityReason::SourceRevisionNotProven)
+        );
     }
 
     #[test]
