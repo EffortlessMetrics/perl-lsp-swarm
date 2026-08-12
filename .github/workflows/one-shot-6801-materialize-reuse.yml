@@ -1,0 +1,55 @@
+name: One-shot PR 6801 materialize advanced reuse
+
+on:
+  push:
+    branches:
+      - codex/6713-slash-ambiguity-edit-current
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-6801-materialize-reuse-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Materialize accepted advanced reuse
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out the PR branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: codex/6713-slash-ambiguity-edit-current
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Apply bounded materialization patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/one_shot_6801_materialize_reuse.py
+          git diff --check
+
+          expected=$(printf '%s\n' \
+            .github/scripts/one_shot_6801_materialize_reuse.py \
+            crates/perl-parser/src/incremental/incremental_advanced_reuse.rs \
+            crates/perl-parser/src/incremental/incremental_v2.rs \
+            crates/perl-parser/tests/incremental_parser_accuracy.rs | sort)
+          actual=$(git diff --name-only | sort)
+          test "$actual" = "$expected"
+
+      - name: Commit materialization repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            .github/scripts/one_shot_6801_materialize_reuse.py \
+            crates/perl-parser/src/incremental/incremental_advanced_reuse.rs \
+            crates/perl-parser/src/incremental/incremental_v2.rs \
+            crates/perl-parser/tests/incremental_parser_accuracy.rs
+          git commit -m "fix(parser): materialize accepted advanced reuse"
+          git push origin HEAD:codex/6713-slash-ambiguity-edit-current
