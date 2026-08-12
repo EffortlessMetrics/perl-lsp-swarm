@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,7 +18,8 @@ RuntimeIdentityError = runtime_identity.RuntimeIdentityError
 compose = runtime_identity.compose
 
 PUBLIC_SHA = "a" * 40
-DIGEST = "b" * 64
+SERVER_DIGEST = "b" * 64
+DAP_DIGEST = "c" * 64
 
 
 def packet(
@@ -52,11 +51,11 @@ def packet(
     }
 
 
-def subject(role: str, **packet_args: object) -> dict[str, object]:
+def subject(role: str, *, digest: str | None = None, **packet_args: object) -> dict[str, object]:
     return {
         "filename": "perllsp" if role == "server" else "perl-dap",
         "path_role": "staged_archive",
-        "executable_sha256": DIGEST,
+        "executable_sha256": digest or (SERVER_DIGEST if role == "server" else DAP_DIGEST),
         "packet": packet(role, **packet_args),
     }
 
@@ -77,14 +76,14 @@ def observation() -> dict[str, object]:
         "schema_version": 1,
         "swarm": {
             "repository": "EffortlessMetrics/perl-lsp-swarm",
-            "sha": "c" * 40,
-            "tree_digest": "d" * 64,
+            "sha": "d" * 40,
+            "tree_digest": "e" * 64,
             "version": "0.18.0",
         },
         "public": {
             "repository": "EffortlessMetrics/perl-lsp",
             "sha": PUBLIC_SHA,
-            "tree_digest": "e" * 64,
+            "tree_digest": "f" * 64,
             "version": "0.18.0",
         },
         "manifest": None,
@@ -104,6 +103,8 @@ def bundle() -> dict[str, object]:
             "version": "0.18.0",
             "target": "x86_64-unknown-linux-gnu",
             "candidate_identity": "rc1",
+            "server_sha256": SERVER_DIGEST,
+            "dap_sha256": DAP_DIGEST,
         },
         "server": subject("server"),
         "dap": subject("dap"),
@@ -111,10 +112,10 @@ def bundle() -> dict[str, object]:
             "id": "EffortlessMetrics.perl-lsp-rs",
             "version": "0.18.0",
             "candidate_identity": "rc1",
-            "package_sha256": "f" * 64,
+            "package_sha256": "1" * 64,
         },
         "topology": {
-            "digest": "1" * 64,
+            "digest": "2" * 64,
             "selected_target": "x86_64-unknown-linux-gnu",
         },
     }
@@ -128,6 +129,30 @@ class PublicationRuntimeIdentityTests(unittest.TestCase):
         self.assertEqual(statuses["server_dap_pairing"], "pass")
         self.assertEqual(statuses["extension_claims_match_vsix"], "pass")
         self.assertEqual(statuses["artifact_traceable_to_public_sha"], "pass")
+
+    def test_wrong_server_bytes_with_same_packet_are_product_drift(self) -> None:
+        value = bundle()
+        value["server"] = subject("server", digest="9" * 64)
+        result = compose(observation(), value)
+        rows = {item["path"]: item for item in result["differences"]}
+        self.assertEqual(rows["runtime/server_identity"]["classification"], "product_drift")
+        self.assertIn("executable_digest_mismatch", rows["runtime/server_identity"]["evidence"])
+        statuses = {item["id"]: item["status"] for item in result["invariants"]}
+        self.assertEqual(statuses["artifact_traceable_to_public_sha"], "fail")
+
+    def test_missing_expected_dap_digest_is_not_proven(self) -> None:
+        value = bundle()
+        value["expected"]["dap_sha256"] = None
+        result = compose(observation(), value)
+        rows = {item["path"]: item for item in result["differences"]}
+        self.assertEqual(
+            rows["runtime/dap_identity_evidence"]["classification"],
+            "unknown_or_not_proven",
+        )
+        self.assertIn(
+            "expected_artifact_digest_not_proven",
+            rows["runtime/dap_identity_evidence"]["evidence"],
+        )
 
     def test_same_version_different_source_is_product_drift(self) -> None:
         value = bundle()
