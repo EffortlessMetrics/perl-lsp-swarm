@@ -18,13 +18,17 @@ use std::collections::{BTreeMap, HashSet};
 
 impl LspServer {
     /// Calculate module/file rename edits without mutating retained server state.
-    pub(in crate::runtime::dispatch::workspace) fn handle_will_rename_files_pure(
+    pub(super) fn handle_will_rename_files_pure(
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         #[cfg(feature = "workspace")]
         {
-            let Some(files) = params.as_ref().and_then(|value| value.get("files")).and_then(Value::as_array) else {
+            let Some(files) = params
+                .as_ref()
+                .and_then(|value| value.get("files"))
+                .and_then(Value::as_array)
+            else {
                 return Ok(Some(empty_workspace_edit()));
             };
 
@@ -135,10 +139,9 @@ fn read_workspace_text(server: &LspServer, uri: &str) -> Option<String> {
 
     if let Some(coordinator) = server.coordinator() {
         let index = coordinator.index();
-        if let Some(document) = index
-            .document_store()
-            .get(uri)
-            .or_else(|| index.document_store().get(&normalized_uri))
+        let document_store = index.document_store();
+        if let Some(document) =
+            document_store.get(uri).or_else(|| document_store.get(&normalized_uri))
         {
             return Some(document.text().to_string());
         }
@@ -198,15 +201,16 @@ fn build_module_rename_workspace_edits(original: &str, updated: &str) -> Vec<Val
         .zip(updated_lines.iter())
         .enumerate()
         .filter_map(|(line, (old_line, new_line))| {
-            (old_line != new_line).then(|| {
-                json!({
-                    "range": {
-                        "start": { "line": line, "character": 0 },
-                        "end": { "line": line, "character": old_line.len() }
-                    },
-                    "newText": new_line
-                })
-            })
+            if old_line == new_line {
+                return None;
+            }
+            Some(json!({
+                "range": {
+                    "start": { "line": line, "character": 0 },
+                    "end": { "line": line, "character": old_line.len() }
+                },
+                "newText": new_line
+            }))
         })
         .collect()
 }
@@ -233,7 +237,11 @@ mod tests {
         indexing_invocations: usize,
     }
 
-    fn fingerprint(server: &LspServer, old_uri: &str, new_uri: &str) -> TestResult<RetainedStateFingerprint> {
+    fn fingerprint(
+        server: &LspServer,
+        old_uri: &str,
+        new_uri: &str,
+    ) -> TestResult<RetainedStateFingerprint> {
         let coordinator = server.coordinator().ok_or("workspace coordinator unavailable")?;
         let index = coordinator.index();
         Ok(RetainedStateFingerprint {
@@ -273,7 +281,7 @@ mod tests {
         let before = fingerprint(&server, &old_uri, &new_uri)?;
 
         let result = server.handle_will_rename_files_dispatch(Some(json!({
-            "files": [{ "oldUri": old_uri, "newUri": new_uri }]
+            "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
         })))?;
 
         let after = fingerprint(&server, &old_uri, &new_uri)?;
@@ -297,7 +305,7 @@ mod tests {
         let new_path = directory.path().join("NewModule.pm");
 
         let _ = server.handle_will_rename_files_dispatch(Some(json!({
-            "files": [{ "oldUri": old_uri, "newUri": new_uri }]
+            "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
         })))?;
         assert!(!server
             .coordinator()
@@ -309,7 +317,7 @@ mod tests {
         std::fs::rename(&old_path, &new_path)?;
         std::fs::write(&new_path, source)?;
         server.handle_did_rename_files(Some(json!({
-            "files": [{ "oldUri": old_uri, "newUri": new_uri }]
+            "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
         })))?;
 
         let committed = fingerprint(&server, &old_uri, &new_uri)?;
@@ -334,7 +342,7 @@ mod tests {
 
         let before_delete = fingerprint(&server, &old_uri, &new_uri)?;
         let _ = server.handle_will_delete_files(Some(json!({
-            "files": [{ "uri": old_uri }]
+            "files": [{ "uri": old_uri.clone() }]
         })))?;
         assert_eq!(fingerprint(&server, &old_uri, &new_uri)?, before_delete);
         Ok(())
