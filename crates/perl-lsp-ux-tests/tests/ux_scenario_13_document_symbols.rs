@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 use perl_lsp_ux_tests::binary_available;
-use perl_lsp_ux_tests::{ScenarioConfig, UxHarness, document_symbol_names};
+use perl_lsp_ux_tests::{document_symbol_names, ScenarioConfig, UxHarness};
 use serde_json::Value;
 use std::time::Duration;
 
