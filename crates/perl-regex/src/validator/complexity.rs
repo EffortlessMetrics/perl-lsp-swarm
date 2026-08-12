@@ -1,30 +1,15 @@
-use crate::{
-    analysis::{RegexDiagnostic, RegexDiagnosticCode, RegexRange},
-    error::RegexError,
-    syntax::cursor::quoted_literal_end,
-};
+use crate::syntax::cursor::quoted_literal_end;
 
-use super::config::RegexValidationConfig;
+use super::{
+    analysis::{RegexDiagnostic, RegexDiagnosticCode, RegexRange},
+    config::RegexValidationConfig,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GroupType {
     Normal,
     Lookbehind,
     BranchReset { branch_count: usize },
-}
-
-pub(crate) fn check_complexity(
-    pattern: &str,
-    start_pos: usize,
-    config: &RegexValidationConfig,
-) -> Result<(), RegexError> {
-    if let Some(diagnostic) = find_complexity_diagnostics(pattern, config).into_iter().next() {
-        return Err(RegexError::syntax(
-            diagnostic.message(),
-            start_pos.saturating_add(diagnostic.range.start),
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn find_complexity_diagnostics(
