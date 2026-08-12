@@ -5,14 +5,14 @@
 //! internal implementation details owned under `runtime::dispatch` and reached
 //! through [`crate::LspServer::handle_request`].
 //!
-//! The module remains public for one narrow compatibility purpose: downstream
-//! code that historically imported JSON-RPC envelope types from
-//! `perl_lsp::dispatch` can keep that import path while moving to the canonical
-//! [`crate::protocol`] namespace. Both paths name the same types; no adapter or
-//! alternate dispatch implementation is created here.
+//! The module remains public as a narrow, stable migration boundary. It gives
+//! downstream code an intentional envelope-only import surface while the
+//! canonical definitions remain in [`crate::protocol`]. Both paths name the
+//! same types; no adapter, behavior, or alternate dispatch implementation is
+//! created here.
 //!
-//! New code should import these types from [`crate::protocol`] or from the
-//! crate-root re-exports.
+//! New code should normally import these types from [`crate::protocol`] or from
+//! the crate-root re-exports.
 
 #[doc(inline)]
 pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse};
@@ -49,20 +49,23 @@ mod tests {
     }
 
     #[test]
-    fn public_docs_do_not_point_to_stale_dispatch_paths() {
+    fn public_docs_define_only_the_envelope_migration_boundary() {
         let source = include_str!("dispatch.rs");
-        for stale in [
+        for stale_or_overclaim in [
             "server_impl/dispatch.rs",
             "crate::lsp::server_impl::dispatch",
             "Intentionally empty",
             "Request dispatch placeholder",
+            "historically imported",
         ] {
             assert!(
-                !source.contains(stale),
-                "public dispatch documentation must not retain stale marker `{stale}`"
+                !source.contains(stale_or_overclaim),
+                "public dispatch documentation must not retain stale or unproved marker \
+                 `{stale_or_overclaim}`"
             );
         }
         assert!(source.contains("runtime::dispatch"));
         assert!(source.contains("crate::protocol"));
+        assert!(source.contains("no adapter, behavior, or alternate dispatch implementation"));
     }
 }
