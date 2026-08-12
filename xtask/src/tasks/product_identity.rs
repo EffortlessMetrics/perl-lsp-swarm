@@ -655,7 +655,7 @@ fn valid_repository_segment(value: &str) -> bool {
         && value != ".."
         && value
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "-_.”.contains(character))
+            .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
 }
 
 fn read_toml(repo_root: &Path, relative_path: &Path) -> Result<toml::Value> {
