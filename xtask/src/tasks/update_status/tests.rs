@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use super::quality::PerCrateTestCounts;
+use super::test_inventory::PerCrateTestCounts;
 use super::{replace_block, run_cmd};
 use color_eyre::eyre::{Result, bail};
 

@@ -35,6 +35,7 @@ mod lsp;
 mod mod_tests;
 mod parser;
 mod quality;
+mod test_inventory;
 mod tests;
 mod token;
 mod workspace;
@@ -163,17 +164,11 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
     // One compiled workspace-lib inventory owns both the Tier-A total and the
     // per-crate quality table. Full/quality runs fail closed; tests-only keeps
     // its existing UNVERIFIED rendering when the bounded discovery is unavailable.
-    let test_inventory = if need_quality {
-        Some(run_subsystem(
-            "test-inventory",
-            "cargo xtask update-status --write --only quality",
-            || quality::collect_per_crate_test_counts(&root),
-        )?)
-    } else if need_tests {
-        quality::collect_per_crate_test_counts(&root).ok()
-    } else {
-        None
-    };
+    let test_inventory = test_inventory::collect_for_selection(need_tests, need_quality, || {
+        run_subsystem("test-inventory", "cargo xtask update-status --write --only quality", || {
+            test_inventory::collect_per_crate_test_counts(&root)
+        })
+    })?;
 
     // --- Tests subsystem ---
     if need_tests {

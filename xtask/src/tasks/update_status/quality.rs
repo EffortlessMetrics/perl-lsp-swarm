@@ -10,42 +10,19 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
-use std::time::Duration;
 
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::Result;
 use regex::Regex;
 
 use super::editor_ux::count_ux_scenarios;
 use super::flaky::{collect_flaky_test_summary, format_flaky_tests_section};
-use super::{replace_block, run_cmd_merged};
+use super::replace_block;
+use super::test_inventory::PerCrateTestCounts;
 
 static DIAGNOSTICS_P50_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\|\s*diagnostics\s*\|\s*([0-9]+(?:\.[0-9]+)?)\s*\|")
         .expect("diagnostics-p50 regex is valid")
 });
-
-static ANSI_ESCAPE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI escape regex is valid"));
-
-static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"Running unittests[^\(]*\([^\)]*deps[/\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)")
-        .expect("running-test regex is valid")
-});
-
-static TEST_LIST_LINE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r":\s*test\s*$").expect("test-list-line regex is valid"));
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct PerCrateTestCounts {
-    pub(super) by_crate: BTreeMap<String, usize>,
-    pub(super) unattributed: usize,
-}
-
-impl PerCrateTestCounts {
-    pub(super) fn total(&self) -> usize {
-        self.by_crate.values().sum::<usize>() + self.unattributed
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Metric collectors
@@ -69,55 +46,6 @@ pub(super) fn collect_per_crate_mutation(root: &Path) -> BTreeMap<String, usize>
         }
     }
     by_crate
-}
-
-/// Run `cargo test --workspace --lib -- --list` and return per-crate counts plus unowned tests.
-///
-/// `cargo test -- --list` writes crate headers ("Running unittests …") to stderr and test
-/// names to stdout.  `run_cmd_merged` (shell `2>&1`) ensures headers appear immediately
-/// before the test names they introduce, so the parser correctly associates each name with
-/// its crate.
-pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
-    let output = run_cmd_merged(
-        root,
-        &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
-        // A cold cache-targets=false runner compiles the workspace before listing.
-        // Keep the command bounded, but give the single shared discovery enough headroom.
-        Duration::from_mins(12),
-    );
-    if output.is_empty() {
-        bail!("quality test discovery failed or returned no output");
-    }
-    validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
-}
-
-fn validate_per_crate_test_counts(counts: PerCrateTestCounts) -> Result<PerCrateTestCounts> {
-    if counts.total() == 0 {
-        bail!("quality test discovery returned zero tests; refusing to overwrite quality.md");
-    }
-    Ok(counts)
-}
-
-fn parse_per_crate_test_counts(output: &str) -> PerCrateTestCounts {
-    let mut by_crate: BTreeMap<String, usize> = BTreeMap::new();
-    let mut current_crate: Option<String> = None;
-    let mut discovered = 0usize;
-    let mut attributed = 0usize;
-    for line in output.lines() {
-        let plain_line = ANSI_ESCAPE_RE.replace_all(line, "");
-        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(plain_line.as_ref()) {
-            current_crate = Some(caps[1].replace('_', "-"));
-            continue;
-        }
-        if TEST_LIST_LINE_RE.is_match(plain_line.as_ref()) {
-            discovered += 1;
-            if let Some(ref krate) = current_crate {
-                *by_crate.entry(krate.clone()).or_default() += 1;
-                attributed += 1;
-            }
-        }
-    }
-    PerCrateTestCounts { by_crate, unattributed: discovered.saturating_sub(attributed) }
 }
 
 /// Read `docs/project/status/editor_ux.md` and return the diagnostics p50 latency in ms,
