@@ -1,7 +1,8 @@
 use crate::{
     analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode},
     syntax::event::{
-        RegexEventBudget, RegexExtendedMode, RegexModeState, parse_regex_events,
+        RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexModeState,
+        parse_regex_events,
     },
 };
 
@@ -55,7 +56,12 @@ pub(crate) fn analyze(
 
     let policy_diagnostics = complexity::find_complexity_diagnostics(&stream, config);
     let exhausted = stream.exhausted.map(map_budget);
-    let dynamic = !facts.embedded_code.is_empty();
+    let dynamic = stream.events.iter().any(|event| {
+        matches!(
+            event.kind,
+            RegexEventKind::Interpolation | RegexEventKind::EmbeddedCode { .. }
+        )
+    });
     let policy_limited = !policy_diagnostics.is_empty() || exhausted.is_some();
     diagnostics.extend(policy_diagnostics);
     diagnostics.sort_by_key(|diagnostic| {
