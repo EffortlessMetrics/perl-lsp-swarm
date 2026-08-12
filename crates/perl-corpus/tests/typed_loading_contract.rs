@@ -1,5 +1,20 @@
+#![cfg(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+
 use perl_corpus::{
-    NewlineStyle, load_plain_perl_source, load_sectioned_corpus_document,
+    load_plain_perl_source, load_sectioned_corpus_document, NewlineStyle,
 };
 use std::path::Path;
 
@@ -18,7 +33,10 @@ fn checked_in_plain_and_sectioned_assets_use_distinct_loaders()
     let sectioned =
         load_sectioned_corpus_document("fixtures/loading/sectioned.txt", &sectioned_path)?;
     assert_eq!(sectioned.cases.len(), 2);
-    assert_eq!(sectioned.cases[0].id.asset_id, "fixtures/loading/sectioned.txt");
+    assert_eq!(
+        sectioned.cases[0].id.asset_id,
+        "fixtures/loading/sectioned.txt"
+    );
     assert_eq!(sectioned.cases[0].id.section_id, "checked.first");
     assert_eq!(sectioned.cases[1].id.section_id, "checked.second");
     assert_eq!(sectioned.cases[0].section.body, "my $first = 1;");
