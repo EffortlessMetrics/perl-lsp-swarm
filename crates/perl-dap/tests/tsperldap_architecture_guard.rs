@@ -53,7 +53,7 @@ fn current_architecture_and_archive_state_the_transition_explicitly()
     let current = read("docs/reference/CRATE_ARCHITECTURE_DAP.md")?;
     assert!(current.contains("replaces the 0.9-era greenfield design"));
     assert!(current.contains("does **not** ship or require"));
-    assert!(current.contains("docs/archive/DAP_0_9_SHIM_DESIGN.md"));
+    assert!(current.contains("../archive/DAP_0_9_SHIM_DESIGN.md"));
 
     let archive = read("docs/archive/DAP_0_9_SHIM_DESIGN.md")?;
     assert!(archive.contains("Historical record; not product architecture"));
