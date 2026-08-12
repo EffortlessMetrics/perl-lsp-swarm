@@ -152,6 +152,7 @@ enum RouteSyntax {
     ArrowTarget,
     ListTarget,
     BareTarget,
+    ImperativeInvocation,
     ProseMention,
     Placeholder,
 }
@@ -160,7 +161,11 @@ impl RouteSyntax {
     const fn is_edge(self) -> bool {
         matches!(
             self,
-            Self::ExplicitSigil | Self::ArrowTarget | Self::ListTarget | Self::BareTarget
+            Self::ExplicitSigil
+                | Self::ArrowTarget
+                | Self::ListTarget
+                | Self::BareTarget
+                | Self::ImperativeInvocation
         )
     }
 }
@@ -666,7 +671,7 @@ fn route_observations(text: &str) -> Vec<RouteObservation> {
             in_route_section = is_route_heading(trimmed);
             continue;
         }
-        observations.extend(route_line_observations(trimmed, line_index + 1, in_route_section));
+        observations.extend(route_line_observations(line, line_index + 1, in_route_section));
     }
     observations.into_iter().collect()
 }
@@ -713,48 +718,8 @@ fn route_line_observations(
     }
 
     let mut observations = BTreeSet::new();
-    scan_explicit_sigils(line, line_number, &mut observations);
     scan_backticked_tokens(line, line_number, &mut observations);
     observations.into_iter().collect()
-}
-
-fn scan_explicit_sigils(
-    line: &str,
-    line_number: usize,
-    observations: &mut BTreeSet<RouteObservation>,
-) {
-    let bytes = line.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'$' {
-            index += 1;
-            continue;
-        }
-        let start = index + 1;
-        let mut end = start;
-        while end < bytes.len() && is_route_name_byte(bytes[end]) {
-            end += 1;
-        }
-        if end == start {
-            index += 1;
-            continue;
-        }
-        let token = &line[start..end];
-        if is_route_name(token) {
-            observations.insert(RouteObservation {
-                target: token.to_string(),
-                line: line_number,
-                column_start: index,
-                column_end: end,
-                syntax: if METASYNTACTIC_PLACEHOLDERS.contains(&token) {
-                    RouteSyntax::Placeholder
-                } else {
-                    RouteSyntax::ExplicitSigil
-                },
-            });
-        }
-        index = end;
-    }
 }
 
 fn scan_backticked_tokens(
@@ -771,10 +736,25 @@ fn scan_backticked_tokens(
         };
         let closing = content_start + relative_end;
         let token = &line[content_start..closing];
-        if token.starts_with('$') {
+
+        if let Some(target) = token.strip_prefix('$') {
+            if is_route_name(target) {
+                observations.insert(RouteObservation {
+                    target: target.to_string(),
+                    line: line_number,
+                    column_start: content_start + 1,
+                    column_end: closing,
+                    syntax: if METASYNTACTIC_PLACEHOLDERS.contains(&target) {
+                        RouteSyntax::Placeholder
+                    } else {
+                        RouteSyntax::ExplicitSigil
+                    },
+                });
+            }
             cursor = closing + 1;
             continue;
         }
+
         if is_route_name(token) {
             let code_span = &line[opening..=closing];
             let syntax = if METASYNTACTIC_PLACEHOLDERS.contains(&token) {
@@ -797,7 +777,8 @@ fn scan_backticked_tokens(
 }
 
 fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
-    let candidate = strip_markdown_list_marker(line.trim());
+    let trimmed = line.trim();
+    let candidate = strip_markdown_list_marker(trimmed);
     if candidate == code_span {
         return RouteSyntax::BareTarget;
     }
@@ -807,7 +788,37 @@ fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
             return RouteSyntax::ListTarget;
         }
     }
+    if is_markdown_list_item(trimmed) && has_imperative_route_prefix(candidate, code_span) {
+        return RouteSyntax::ImperativeInvocation;
+    }
     RouteSyntax::ProseMention
+}
+
+fn has_imperative_route_prefix(candidate: &str, code_span: &str) -> bool {
+    let Some(index) = candidate.find(code_span) else {
+        return false;
+    };
+    let prefix = candidate[..index].trim().to_ascii_lowercase();
+    matches!(
+        prefix.as_str(),
+        "invoke"
+            | "route to"
+            | "continue with"
+            | "proceed through"
+            | "enter through"
+            | "call"
+            | "hand off to"
+            | "return to"
+    )
+}
+
+fn is_markdown_list_item(line: &str) -> bool {
+    if ["- ", "* ", "+ "].iter().any(|marker| line.starts_with(marker)) {
+        return true;
+    }
+    line.split_once(". ").is_some_and(|(prefix, _)| {
+        !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 fn strip_markdown_list_marker(line: &str) -> &str {
@@ -868,7 +879,8 @@ mod tests {
     use super::{
         RouteObservation, RouteSyntax, SCENARIO_FIXTURES, check_scenarios,
         frontmatter_metadata_chars, frontmatter_value, missing_markers,
-        missing_route_target_message, route_observations, route_targets, route_tokens,
+        missing_route_target_message, route_line_observations, route_observations, route_targets,
+        route_tokens,
     };
 
     #[test]
@@ -902,11 +914,11 @@ mod tests {
     }
 
     #[test]
-    fn preserves_arrow_list_and_bare_routes() {
-        let text = "## Routes\n- ready -> `deliver-pr`\n- `review-pr`: submit review\n`verify-live-ci`\n";
+    fn preserves_arrow_list_bare_and_imperative_routes() {
+        let text = "## Routes\n- ready -> `deliver-pr`\n- `review-pr`: submit review\n`verify-live-ci`\n2. Invoke `build-from-proof` where implementation is missing.\n";
         assert_eq!(
             route_targets(text),
-            vec!["deliver-pr", "review-pr", "verify-live-ci"]
+            vec!["build-from-proof", "deliver-pr", "review-pr", "verify-live-ci"]
         );
         let syntaxes = route_observations(text)
             .into_iter()
@@ -919,13 +931,14 @@ mod tests {
                 RouteSyntax::ArrowTarget,
                 RouteSyntax::ListTarget,
                 RouteSyntax::BareTarget,
+                RouteSyntax::ImperativeInvocation,
             ])
         );
     }
 
     #[test]
     fn existing_skill_name_in_prose_is_not_an_edge() {
-        let text = "## Procedure\nInvoke `deliver-pr` after the candidate is coherent.\n";
+        let text = "## Procedure\nTake issue #123 through `deliver-pr` after the candidate is coherent.\n";
         assert!(route_targets(text).is_empty());
         let observations = route_observations(text);
         assert_eq!(observations.len(), 1);
@@ -936,8 +949,8 @@ mod tests {
 
     #[test]
     fn backtick_formatting_cannot_mutate_prose_into_a_route() {
-        let plain = "## Procedure\nInvoke deliver-pr after review.\n";
-        let formatted = "## Procedure\nInvoke `deliver-pr` after review.\n";
+        let plain = "## Procedure\nTake issue #123 through deliver-pr after review.\n";
+        let formatted = "## Procedure\nTake issue #123 through `deliver-pr` after review.\n";
         assert_eq!(route_targets(plain), route_targets(formatted));
         assert!(route_targets(formatted).is_empty());
     }
@@ -951,6 +964,12 @@ mod tests {
     }
 
     #[test]
+    fn unquoted_shell_or_prose_variables_are_not_routes() {
+        assert!(route_tokens("Export $path before continuing.", true).is_empty());
+        assert!(route_tokens("Read $status and report it.", true).is_empty());
+    }
+
+    #[test]
     fn near_miss_explicit_route_remains_load_bearing() {
         assert_eq!(
             route_tokens("- ready -> `delver-pr`", true),
@@ -959,13 +978,14 @@ mod tests {
     }
 
     #[test]
-    fn route_observations_retain_line_and_range() {
-        let observations = route_observations("## Routes\n- ready -> `deliver-pr`\n");
+    fn route_observations_retain_source_line_and_indentation_range() {
+        let line = "    - ready -> `deliver-pr`";
+        let observations = route_line_observations(line, 9, true);
         assert_eq!(observations.len(), 1);
         let observation = &observations[0];
-        assert_eq!(observation.line, 2);
+        assert_eq!(observation.line, 9);
         assert_eq!(observation.syntax, RouteSyntax::ArrowTarget);
-        assert_eq!(&"- ready -> `deliver-pr`"[observation.column_start..observation.column_end], "deliver-pr");
+        assert_eq!(&line[observation.column_start..observation.column_end], "deliver-pr");
     }
 
     #[test]
