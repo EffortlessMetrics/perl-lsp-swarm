@@ -14,8 +14,11 @@
 mod common;
 
 // The required `lsp_smoke` merge gate executes this integration-test target.
-// Include the exact-process contract here so shipped-binary lifecycle and
-// framing regressions are merge-blocking rather than advisory-only.
+// Include the exact-process contracts here so shipped-binary lifecycle,
+// framing, and capability-negotiation regressions are merge-blocking rather
+// than advisory-only.
+#[path = "lsp_capability_negotiation_process.rs"]
+mod capability_negotiation_process;
 #[path = "lsp_stdio_process_contract.rs"]
 mod exact_process_contract;
 

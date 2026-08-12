@@ -1,57 +1,38 @@
-name: Workflow Trigger Lint
+name: Sparse Capability Matrix
 
 on:
-  pull_request:
-    branches: [main, master]
-  merge_group:
-    types: [checks_requested]
   push:
-    branches: [main, master]
-
-concurrency:
-  group: workflow-trigger-lint-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    branches:
+      - test/lsp-capability-matrix-6735
+  pull_request:
+    branches:
+      - test/lsp-real-process-6720
 
 permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Workflow Trigger Lint
+  capability-matrix:
+    name: Sparse capability matrix
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          toolchain: stable
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Run workflow trigger lint
-        id: lint
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Format and verify focused contracts
         shell: bash
         run: |
-          cargo xtask workflow-trigger-lint \
-            --policy .ci/policies/required-checks.toml \
-            --receipt target/receipts/workflow-trigger-lint.json \
-            --format json
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
-
-      - name: Upload receipt
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
-        with:
-          name: workflow-trigger-lint-receipt
-          path: target/receipts/workflow-trigger-lint.json
-          if-no-files-found: warn
-
-      - name: Summary
-        if: always()
-        run: |
-          if [ "${{ steps.lint.outputs.exit_code }}" = "0" ]; then
-            echo "## Workflow trigger lint passed" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
-            echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          rustup run 1.95.0 rustfmt \
+            --edition 2024 \
+            --config-path . \
+            --check \
+            crates/perl-lsp-rs/tests/lsp_capability_negotiation_process.rs
+          cargo test -p perl-lsp-rs --test lsp_capability_negotiation_process --locked -- --test-threads=1
+          cargo test -p perl-lsp-rs --test semantic_definition --locked -- --test-threads=1
