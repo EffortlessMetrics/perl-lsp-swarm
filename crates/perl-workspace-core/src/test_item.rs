@@ -1018,6 +1018,30 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_noncanonical_item_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut snapshot = snapshot(7)?;
+        snapshot.items.swap(0, 1);
+        assert!(matches!(snapshot.validate(), Err(TestItemValidationError::NonCanonicalItemOrder)));
+        Ok(())
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_sibling_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut snapshot = snapshot(7)?;
+        let target = snapshot
+            .items
+            .iter_mut()
+            .find(|item| item.structural_key == "subtest:2")
+            .ok_or_else(|| io::Error::other("missing second subtest"))?;
+        target.order_in_parent = 0;
+        assert!(matches!(
+            snapshot.validate(),
+            Err(TestItemValidationError::DuplicateSiblingOrder { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn validation_rejects_stale_item_generation() -> Result<(), Box<dyn std::error::Error>> {
         let mut snapshot = snapshot(7)?;
         snapshot.items[0].generation = 6;
