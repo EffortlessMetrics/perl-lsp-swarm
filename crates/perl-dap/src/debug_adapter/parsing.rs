@@ -179,9 +179,9 @@ impl DebugAdapter {
     /// Parse evaluate output from debugger lines into a DAP result payload.
     ///
     /// `allow_correlated_literal` may be true only when `lines` came from the
-    /// begin/end markers for this exact evaluate request. An unframed snapshot
-    /// can contain debuggee output and prior debugger responses, so it may return
-    /// only an assignment that identifies the requested expression directly.
+    /// begin/end markers for this exact evaluate request. The request frame is
+    /// also what makes a matching assignment current rather than merely similar
+    /// to an older debugger response.
     pub(super) fn parse_evaluate_result_from_lines(
         lines: &[String],
         expression: &str,
@@ -204,7 +204,7 @@ impl DebugAdapter {
             if let Ok((name, value)) = parser.parse_assignment(text) {
                 let rendered = renderer.render(&name, &value);
                 let type_name = rendered.type_name.unwrap_or_else(|| "string".to_string());
-                if name == expression || text.starts_with(expression) || text.contains(expression) {
+                if name == expression {
                     return Some((rendered.value, type_name));
                 }
                 continue;
@@ -238,16 +238,16 @@ impl DebugAdapter {
         None
     }
 
-    /// Parse evaluate output from recent unframed debugger history.
+    /// Refuse to derive an evaluate result from unframed debugger history.
     ///
-    /// The snapshot may contain unrelated debuggee output, so literal-line
-    /// fallback is deliberately disabled.
+    /// Recent output can contain an earlier response for the same expression,
+    /// so even a matching assignment is not evidence for the current request.
+    /// Only begin/end-framed output is accepted as an evaluate result.
     pub(super) fn parse_evaluate_result_from_output(
         &self,
-        expression: &str,
+        _expression: &str,
     ) -> Option<(String, String)> {
-        let lines = self.snapshot_recent_output_lines();
-        Self::parse_evaluate_result_from_lines(&lines, expression, false)
+        None
     }
 
     /// Return an honest empty scope when debugger inspection is unavailable.
@@ -544,16 +544,10 @@ mod tests {
     }
 
     #[test]
-    pub(super) fn test_parse_evaluate_result_from_recent_output()
-    -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn unframed_evaluate_does_not_reuse_matching_assignment() {
         let adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test("$result = 123");
-
-        let parsed = adapter.parse_evaluate_result_from_output("$result");
-        let (value, ty) = parsed.ok_or("expected parsed evaluate result")?;
-        assert_eq!(value, "123");
-        assert_eq!(ty, "SCALAR");
-        Ok(())
+        assert!(adapter.parse_evaluate_result_from_output("$result").is_none());
     }
 
     #[test]
@@ -572,6 +566,14 @@ mod tests {
         assert_eq!(value, "42");
         assert_eq!(ty, "integer");
         Ok(())
+    }
+
+    #[test]
+    pub(super) fn framed_evaluate_requires_exact_assignment_name() {
+        let lines = vec!["$result_extra = 123".to_string()];
+        assert!(
+            DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none()
+        );
     }
 
     #[test]
