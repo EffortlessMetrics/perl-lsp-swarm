@@ -6,22 +6,6 @@
   },
   "findings": [
     {
-      "evidence": "taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60",
-      "fingerprint": "06e08638be6fd1b0c2642cd826831ef80a6a598dca766e131ddae0802acbc263",
-      "line": 83,
-      "message": "external action ref is not a full commit SHA",
-      "path": ".github/actions/setup-rust/action.yml",
-      "rule": "mutable_action_ref"
-    },
-    {
-      "evidence": "taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60",
-      "fingerprint": "36d3983dc6aefb46310d3c3bbf68f589773cd2eddb7f96905fbe1618065720a8",
-      "line": 89,
-      "message": "external action ref is not a full commit SHA",
-      "path": ".github/actions/setup-rust/action.yml",
-      "rule": "mutable_action_ref"
-    },
-    {
       "evidence": "GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}",
       "fingerprint": "e638e468a5d7fcd90b3bcddf0058dbee37a8f45f6796b78f68b6175616ed6905",
       "line": 64,
@@ -816,7 +800,7 @@
     {
       "evidence": "echo \"::warning::Primary runner (${{ needs.route-rust-small.outputs.target }}) failed preflight \u2014 falling back to GitHub-hosted. Check runner disk and em-ci-rust image before next run.\"",
       "fingerprint": "01d4dd93e7c75e33b2cb7d4d39d013fc5cc63559bbe4a76b2ab90f1214378a05",
-      "line": 582,
+      "line": 585,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/em-ci-routed-rust.yml",
       "rule": "expression_in_run_source"
@@ -824,7 +808,7 @@
     {
       "evidence": "echo \"Primary runner \\`${{ needs.route-rust-small.outputs.target }}\\` failed\"",
       "fingerprint": "0e0645be7ca72df8cbf978618176558ddf46af6dd600ac2ebb8675c63d5ef066",
-      "line": 586,
+      "line": 589,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/em-ci-routed-rust.yml",
       "rule": "expression_in_run_source"
@@ -904,7 +888,7 @@
     {
       "evidence": "--perl-tree \"target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5\" \\",
       "fingerprint": "fea413cd04f81dff7f79fd662a0f55b5fc5ada0ac3c2f2a2ba03a434eb7d9b55",
-      "line": 68,
+      "line": 69,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -912,7 +896,7 @@
     {
       "evidence": "--modes \"${{ steps.upstream.outputs.modes }}\" \\",
       "fingerprint": "4120d7313a2133eb5c7f351720c77b9ed6e4c3c1c4d338616ac3c38ae5a4b060",
-      "line": 71,
+      "line": 72,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -920,7 +904,7 @@
     {
       "evidence": "--perl-ref \"${{ steps.upstream.outputs.ref }}\" \\",
       "fingerprint": "a0a6bb7cc9b407afda8fbc3a5a153de2bcb56983e0c3b546aa358bd6307f51d2",
-      "line": 72,
+      "line": 73,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -928,7 +912,7 @@
     {
       "evidence": "--perl-tree \"target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5\" \\",
       "fingerprint": "e0749cbb66b5156fc9aac9ef4afeedcaabec83f5c953102eea1b1d2742c45115",
-      "line": 78,
+      "line": 80,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -936,7 +920,7 @@
     {
       "evidence": "--modes \"${{ steps.upstream.outputs.modes }}\" \\",
       "fingerprint": "35b19bb3c2db5b7e92a0dc78bad89bacaf63a856ee4fc9b5d2d37d53d48d30c8",
-      "line": 81,
+      "line": 83,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -944,7 +928,7 @@
     {
       "evidence": "--perl-ref \"${{ steps.upstream.outputs.ref }}\" \\",
       "fingerprint": "32402233adf3808035f0db39e8e09399169f4ffbec1485faf01e958e701b7818",
-      "line": 82,
+      "line": 84,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -952,7 +936,7 @@
     {
       "evidence": "echo \"- ref: \\`${{ steps.upstream.outputs.ref }}\\`\"",
       "fingerprint": "7e410416c6e175aa4bc9617de27341ccfdafc4324175161cf1e3f0b9a2014460",
-      "line": 103,
+      "line": 122,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -960,7 +944,7 @@
     {
       "evidence": "echo \"- modes: \\`${{ steps.upstream.outputs.modes }}\\`\"",
       "fingerprint": "ebf01cc45b46811bf0a1a1e106eb90134ded87db5372efd776889bc4958685e0",
-      "line": 104,
+      "line": 123,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/perl-core-harness.yml",
       "rule": "expression_in_run_source"
@@ -1360,7 +1344,7 @@
     {
       "evidence": "echo \"::warning::Primary runner (${{ needs.route-ripr.outputs.target }}) failed \u2014 falling back to GitHub-hosted for ripr. Reclaim runner disk before next run.\"",
       "fingerprint": "446e1c1a0d5437b8aef182ef818da5a221952ca2cc7d94336e3678bd6837b30a",
-      "line": 837,
+      "line": 846,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ripr.yml",
       "rule": "expression_in_run_source"
@@ -1368,7 +1352,7 @@
     {
       "evidence": "echo \"Primary runner \\`${{ needs.route-ripr.outputs.target }}\\` failed its disk\"",
       "fingerprint": "8bd4415c724715188434a77c7957fb0f733548eb4c3c8d54fa3ad632f30aa24c",
-      "line": 841,
+      "line": 850,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ripr.yml",
       "rule": "expression_in_run_source"
@@ -1376,7 +1360,7 @@
     {
       "evidence": "GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}",
       "fingerprint": "b038d9c45b12b3fced20a0d9a773c71c6fc81fa8e0eaf1dca1204efdbc406ded",
-      "line": 59,
+      "line": 62,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ripr.yml",
       "rule": "pr_secret_reference"
@@ -1406,9 +1390,25 @@
       "rule": "expression_in_run_source"
     },
     {
+      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "fingerprint": "d56e6b1ea22531a9762a7c751318c0cecb82b905c36c745ba8d987758db8b228",
+      "line": 73,
+      "message": "write-capable workflow checkout must set persist-credentials: false",
+      "path": ".github/workflows/workflow-security-ratchet-selftest.yml",
+      "rule": "checkout_persists_credentials_on_write_surface"
+    },
+    {
+      "evidence": "contents: write",
+      "fingerprint": "72045a09d61abe70e86e29f3eb4990aa0ac1cca57698c9c9c7e96cc7e122e8a5",
+      "line": 70,
+      "message": "PR-triggered workflow grants write authority",
+      "path": ".github/workflows/workflow-security-ratchet-selftest.yml",
+      "rule": "pr_write_permission"
+    },
+    {
       "evidence": "if [ \"${{ steps.lint.outputs.exit_code }}\" = \"0\" ]; then",
       "fingerprint": "a0f5e344c95574d20c6ca7f12f378810a58bf437b9be8dd42826e6c8083bd19a",
-      "line": 52,
+      "line": 70,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/workflow-trigger-lint.yml",
       "rule": "expression_in_run_source"
