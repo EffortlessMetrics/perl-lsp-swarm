@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Apply the bounded shared status-inventory candidate transformation."""
+
+from pathlib import Path
+
+
+def replace_once(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(
+            f"{path}: expected one replacement, found {count}: {old[:100]!r}"
+        )
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def write_new(path: Path, content: str) -> None:
+    if path.exists():
+        raise SystemExit(f"{path}: refusing to replace existing file")
+    path.write_text(content, encoding="utf-8")
+
+
+def replace_exact(path: Path, old: str, new: str, expected: int) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != expected:
+        raise SystemExit(
+            f"{path}: expected {expected} replacements, found {count}: {old[:100]!r}"
+        )
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def main() -> None:
+    inventory = Path("xtask/src/tasks/update_status/test_inventory.rs")
+    write_new(
+        inventory,
+        r'''//! Shared workspace library-test inventory for status regeneration.
+//!
+//! One bounded `cargo test -- --list` invocation owns both the aggregate Tier-A
+//! total and the per-crate quality table. Keeping parsing and validation here
+//! prevents the tests and quality renderers from drifting onto separate evidence.
+
+// LazyLock<Regex> initializers use .expect() for known-good patterns — permitted by coding standards.
+#![allow(clippy::expect_used)]
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::LazyLock;
+use std::time::Duration;
+
+use color_eyre::eyre::{Result, bail};
+use regex::Regex;
+
+use super::run_cmd_merged;
+
+static ANSI_ESCAPE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI escape regex is valid")
+});
+
+static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Running unittests[^\(]*\([^\)]*deps[/\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)")
+        .expect("running-test regex is valid")
+});
+
+static TEST_LIST_LINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r":\s*test\s*$").expect("test-list-line regex is valid"));
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct WorkspaceLibTestInventory {
+    by_crate: BTreeMap<String, usize>,
+    unattributed: usize,
+}
+
+impl WorkspaceLibTestInventory {
+    pub(super) fn total(&self) -> usize {
+        self.by_crate.values().sum::<usize>() + self.unattributed
+    }
+
+    pub(super) fn by_crate(&self) -> &BTreeMap<String, usize> {
+        &self.by_crate
+    }
+
+    pub(super) fn unattributed(&self) -> usize {
+        self.unattributed
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_parts(by_crate: BTreeMap<String, usize>, unattributed: usize) -> Self {
+        Self { by_crate, unattributed }
+    }
+}
+
+/// Discover the workspace library tests once and preserve aggregate and per-crate views.
+///
+/// Cargo writes test-binary headers to stderr and test names to stdout. The merged command
+/// keeps those streams ordered closely enough for each listed test to inherit its active crate.
+pub(super) fn collect_workspace_lib_test_inventory(
+    root: &Path,
+) -> Result<WorkspaceLibTestInventory> {
+    let output = run_cmd_merged(
