@@ -4,8 +4,8 @@
 The `observe` subcommand is the only process-executing boundary. It hashes an
 explicitly supplied executable before and after `--identity-json`, records a
 bounded path role, and emits an inert bundle. The `compose` subcommand is pure:
-it validates that bundle against exact expected subjects and projects runtime
-contradictions into the existing publication-drift differences/invariants.
+it compares those measured bytes and packets with exact package/topology
+subjects and projects contradictions into existing publication-drift evidence.
 """
 
 from __future__ import annotations
@@ -60,6 +60,12 @@ def _bounded(value: Any, field: str, *, pattern: re.Pattern[str] | None = IDENTI
     return value
 
 
+def _optional_bounded(
+    value: Any, field: str, *, pattern: re.Pattern[str] | None = IDENTITY
+) -> str | None:
+    return None if value is None else _bounded(value, field, pattern=pattern)
+
+
 def _query_packet(path: Path, timeout: float) -> tuple[str, dict[str, Any]]:
     if not path.is_file() or not os.access(path, os.X_OK):
         raise RuntimeIdentityError(f"executable is missing or not executable: {path.name}")
@@ -107,31 +113,37 @@ def _subject(path: Path, path_role: str, timeout: float) -> dict[str, Any]:
 
 
 def observe(args: argparse.Namespace) -> dict[str, Any]:
+    expected_dap_sha = _optional_bounded(
+        args.expected_dap_sha256, "expected-dap-sha256", pattern=SHA64
+    )
+    if args.dap is not None and expected_dap_sha is None:
+        raise RuntimeIdentityError("--dap requires --expected-dap-sha256")
+    if args.dap is None and expected_dap_sha is not None:
+        raise RuntimeIdentityError("--expected-dap-sha256 requires --dap")
+
     bundle: dict[str, Any] = {
         "schema_version": BUNDLE_SCHEMA,
         "expected": {
             "tree_sha": _bounded(args.expected_tree_sha, "expected-tree-sha", pattern=SHA40),
             "version": _bounded(args.expected_version, "expected-version"),
             "target": _bounded(args.expected_target, "expected-target"),
-            "candidate_identity": (
-                _bounded(args.expected_candidate, "expected-candidate")
-                if args.expected_candidate
-                else None
+            "candidate_identity": _optional_bounded(
+                args.expected_candidate, "expected-candidate"
             ),
+            "server_sha256": _bounded(
+                args.expected_server_sha256, "expected-server-sha256", pattern=SHA64
+            ),
+            "dap_sha256": expected_dap_sha,
         },
         "server": _subject(args.server, args.server_path_role, args.timeout_seconds),
         "extension": {
             "id": _bounded(args.extension_id, "extension-id"),
             "version": _bounded(args.extension_version, "extension-version"),
-            "candidate_identity": (
-                _bounded(args.extension_candidate, "extension-candidate")
-                if args.extension_candidate
-                else None
+            "candidate_identity": _optional_bounded(
+                args.extension_candidate, "extension-candidate"
             ),
-            "package_sha256": (
-                _bounded(args.extension_sha256, "extension-sha256", pattern=SHA64)
-                if args.extension_sha256
-                else None
+            "package_sha256": _optional_bounded(
+                args.extension_sha256, "extension-sha256", pattern=SHA64
             ),
         },
         "topology": {
@@ -169,6 +181,7 @@ def _evaluate_subject(
     expected_role: str,
     expected_executable: str,
     expected_package: str,
+    expected_digest: str | None,
     expected: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
     drift: list[str] = []
@@ -220,9 +233,14 @@ def _evaluate_subject(
                 unknown.append("candidate_not_proven")
             elif candidate != expected_candidate:
                 drift.append("candidate_mismatch")
-    digest = subject.get("executable_sha256")
-    if not isinstance(digest, str) or not SHA64.fullmatch(digest):
+
+    measured_digest = subject.get("executable_sha256")
+    if not isinstance(measured_digest, str) or not SHA64.fullmatch(measured_digest):
         unknown.append("external_executable_digest_invalid")
+    elif expected_digest is None:
+        unknown.append("expected_artifact_digest_not_proven")
+    elif measured_digest != expected_digest:
+        drift.append("executable_digest_mismatch")
     if subject.get("path_role") not in PATH_ROLES:
         unknown.append("path_role_invalid")
     return sorted(set(drift)), sorted(set(unknown))
@@ -242,14 +260,32 @@ def _replace_invariant(
     matches[0]["evidence"] = sorted(set(evidence))
 
 
-def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
-    if bundle.get("schema_version") != BUNDLE_SCHEMA:
-        raise RuntimeIdentityError("unsupported runtime identity bundle schema")
+def _validated_expected(bundle: dict[str, Any]) -> dict[str, Any]:
     expected = bundle.get("expected")
     if not isinstance(expected, dict):
         raise RuntimeIdentityError("runtime bundle expected identity is missing")
+    return {
+        "tree_sha": _bounded(expected.get("tree_sha"), "expected.tree_sha", pattern=SHA40),
+        "version": _bounded(expected.get("version"), "expected.version"),
+        "target": _bounded(expected.get("target"), "expected.target"),
+        "candidate_identity": _optional_bounded(
+            expected.get("candidate_identity"), "expected.candidate_identity"
+        ),
+        "server_sha256": _bounded(
+            expected.get("server_sha256"), "expected.server_sha256", pattern=SHA64
+        ),
+        "dap_sha256": _optional_bounded(
+            expected.get("dap_sha256"), "expected.dap_sha256", pattern=SHA64
+        ),
+    }
+
+
+def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
+    if bundle.get("schema_version") != BUNDLE_SCHEMA:
+        raise RuntimeIdentityError("unsupported runtime identity bundle schema")
+    expected = _validated_expected(bundle)
     public = observation.get("public")
-    if not isinstance(public, dict) or public.get("sha") != expected.get("tree_sha"):
+    if not isinstance(public, dict) or public.get("sha") != expected["tree_sha"]:
         raise RuntimeIdentityError("runtime bundle tree SHA does not match public observation")
 
     result = copy.deepcopy(observation)
@@ -265,6 +301,7 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
         expected_role="server",
         expected_executable="perllsp",
         expected_package="perllsp",
+        expected_digest=expected["server_sha256"],
         expected=expected,
     )
     if server_drift:
@@ -275,6 +312,8 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
         )
 
     dap = bundle.get("dap")
+    dap_drift: list[str] = []
+    dap_unknown: list[str] = []
     pair_drift: list[str] = []
     pair_unknown: list[str] = []
     if isinstance(dap, dict):
@@ -283,6 +322,7 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
             expected_role="dap",
             expected_executable="perl-dap",
             expected_package="perl-dap",
+            expected_digest=expected["dap_sha256"],
             expected=expected,
         )
         if dap_drift:
@@ -306,7 +346,10 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
             elif left != right:
                 pair_drift.append(code)
     else:
-        pair_unknown.append("dap_identity_absent")
+        if expected["dap_sha256"] is not None:
+            pair_drift.append("expected_dap_artifact_missing")
+        else:
+            pair_unknown.append("dap_identity_absent")
 
     if pair_drift:
         differences.append(_difference("runtime/server_dap_pair", "product_drift", pair_drift))
@@ -323,14 +366,13 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
     else:
         if extension.get("id") != "EffortlessMetrics.perl-lsp-rs":
             extension_drift.append("extension_id_mismatch")
-        if extension.get("version") != expected.get("version"):
+        if extension.get("version") != expected["version"]:
             extension_drift.append("extension_version_mismatch")
-        expected_candidate = expected.get("candidate_identity")
-        if expected_candidate is not None:
+        if expected["candidate_identity"] is not None:
             candidate = extension.get("candidate_identity")
             if candidate is None:
                 extension_unknown.append("extension_candidate_not_proven")
-            elif candidate != expected_candidate:
+            elif candidate != expected["candidate_identity"]:
                 extension_drift.append("extension_candidate_mismatch")
         package_sha = extension.get("package_sha256")
         if package_sha is None:
@@ -350,7 +392,7 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
     if not isinstance(topology, dict):
         topology_unknown.append("topology_identity_missing")
     else:
-        if topology.get("selected_target") != expected.get("target"):
+        if topology.get("selected_target") != expected["target"]:
             topology_drift.append("topology_target_mismatch")
         if not isinstance(topology.get("digest"), str) or not SHA64.fullmatch(topology["digest"]):
             topology_unknown.append("topology_digest_invalid")
@@ -373,13 +415,13 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
         "fail" if extension_drift else ("not_proven" if extension_unknown else "pass"),
         extension_drift or extension_unknown or ["extension identity agrees with runtime expectation"],
     )
-    trace_unknown = server_unknown + extension_unknown + topology_unknown
-    trace_drift = server_drift + extension_drift + topology_drift
+    trace_unknown = server_unknown + dap_unknown + extension_unknown + topology_unknown
+    trace_drift = server_drift + dap_drift + extension_drift + topology_drift
     _replace_invariant(
         result,
         "artifact_traceable_to_public_sha",
         "fail" if trace_drift else ("not_proven" if trace_unknown else "pass"),
-        trace_drift or trace_unknown or ["runtime subjects trace to exact public SHA"],
+        trace_drift or trace_unknown or ["runtime subjects trace to exact expected artifact bytes"],
     )
 
     differences.sort(key=lambda item: (str(item.get("path")), str(item.get("classification"))))
@@ -401,8 +443,10 @@ def _parser() -> argparse.ArgumentParser:
     observe_parser = subparsers.add_parser("observe")
     observe_parser.add_argument("--server", type=Path, required=True)
     observe_parser.add_argument("--server-path-role", choices=sorted(PATH_ROLES), required=True)
+    observe_parser.add_argument("--expected-server-sha256", required=True)
     observe_parser.add_argument("--dap", type=Path)
     observe_parser.add_argument("--dap-path-role", choices=sorted(PATH_ROLES), default="staged_archive")
+    observe_parser.add_argument("--expected-dap-sha256")
     observe_parser.add_argument("--expected-tree-sha", required=True)
     observe_parser.add_argument("--expected-version", required=True)
     observe_parser.add_argument("--expected-target", required=True)
