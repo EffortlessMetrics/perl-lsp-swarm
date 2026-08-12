@@ -17,6 +17,7 @@ include = [
     "build.rs",
     "build_catalog.rs",
     "features_sot.toml",
+    "protocol_schema_source.json",
     "Cargo.toml",
     "README.md",
 ]
