@@ -11,9 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "docs" / "agents" / "authority_status.toml"
 WORKFLOW = ROOT / ".github" / "workflows" / "agent-authority-status.yml"
 ALLOWED_STATUSES = {"current", "transitional", "historical", "superseded"}
+TOP_LEVEL_PATH_FIELDS = ("current_method", "review_currentness", "github_surfaces")
 REQUIRED_CURRENT = {
     "AGENTS.md",
     "CLAUDE.md",
+    "docs/agents/AUTHORITY_STATUS.md",
+    "docs/agents/authority_status.toml",
+    "docs/agents/README.md",
     "docs/agents/DEVELOPMENT_METHOD.md",
     "docs/agents/REVIEW_CURRENTNESS.md",
     "docs/agents/GITHUB_SURFACES.md",
@@ -106,6 +110,9 @@ def validate_registry(document: dict[str, Any]) -> list[str]:
         errors.append("schema_version must be 1")
     if document.get("tracking_issue") != 4555:
         errors.append("tracking_issue must remain #4555")
+    owner = document.get("owner")
+    if not isinstance(owner, str) or not owner.strip():
+        errors.append("owner must be a non-empty string")
 
     rows = document.get("documents")
     if not isinstance(rows, list):
@@ -138,6 +145,16 @@ def validate_registry(document: dict[str, Any]) -> list[str]:
             errors.append(f"{path}: notes must be non-empty")
         if not (ROOT / path).exists():
             errors.append(f"{path}: registry path does not exist")
+
+    for field in TOP_LEVEL_PATH_FIELDS:
+        path = document.get(field)
+        if not isinstance(path, str) or not path:
+            errors.append(f"{field} must be a non-empty path")
+            continue
+        if not (ROOT / path).exists():
+            errors.append(f"{field}: path does not exist: {path}")
+        if by_path.get(path, {}).get("status") != "current":
+            errors.append(f"{field}: referenced document is not current: {path}")
 
     paths = set(by_path)
     missing_current = REQUIRED_CURRENT - paths
@@ -198,6 +215,19 @@ class AgentAuthorityStatusTests(unittest.TestCase):
                 WORKFLOW_PATHS,
                 f"on.{event}.paths must exactly cover the authority contract",
             )
+
+    def test_registry_cannot_remove_its_own_current_status(self) -> None:
+        document = copy.deepcopy(load_registry())
+        row = next(
+            item
+            for item in document["documents"]
+            if item["path"] == "docs/agents/authority_status.toml"
+        )
+        row["status"] = "historical"
+        row["successor"] = "docs/agents/DEVELOPMENT_METHOD.md"
+
+        errors = validate_registry(document)
+        self.assertTrue(any("required current authority" in error for error in errors), errors)
 
     def test_legacy_document_cannot_silently_become_current(self) -> None:
         document = copy.deepcopy(load_registry())
