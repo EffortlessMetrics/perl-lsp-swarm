@@ -13,23 +13,32 @@ struct TempRepo {
 }
 
 impl TempRepo {
+    fn git(&self) -> Command {
+        let mut command = Command::new("git");
+        command
+            .current_dir(self.root())
+            .env("GIT_CONFIG_GLOBAL", self.root().join("missing-global-config"))
+            .env("GIT_CONFIG_SYSTEM", self.root().join("missing-system-config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        command
+    }
+
     fn init() -> Result<Self> {
         let dir = tempfile::tempdir().context("failed to create temp repo")?;
+        let repo = Self { dir };
         for args in [
             vec!["init", "--quiet"],
             vec!["config", "user.email", "test@example.com"],
             vec!["config", "user.name", "Test"],
         ] {
-            let status = Command::new("git")
-                .current_dir(dir.path())
-                .args(&args)
+            let status = repo.git().args(&args)
                 .status()
                 .context("failed to configure temp git repo")?;
             if !status.success() {
                 bail!("git command {args:?} failed");
             }
         }
-        Ok(Self { dir })
+        Ok(repo)
     }
 
     fn root(&self) -> &Path {
@@ -46,9 +55,7 @@ impl TempRepo {
     }
 
     fn add(&self, path: &str) -> Result<()> {
-        let status = Command::new("git")
-            .current_dir(self.root())
-            .args(["add", path])
+        let status = self.git().args(["add", path])
             .status()
             .context("failed to stage fixture")?;
         if !status.success() {
@@ -58,9 +65,7 @@ impl TempRepo {
     }
 
     fn commit(&self) -> Result<()> {
-        let status = Command::new("git")
-            .current_dir(self.root())
-            .args(["commit", "--quiet", "-m", "baseline"])
+        let status = self.git().args(["commit", "--quiet", "--no-verify", "-m", "baseline"])
             .status()
             .context("failed to commit fixture")?;
         if !status.success() {
@@ -112,13 +117,22 @@ fn dry_render_materializes_the_captured_tree_not_unstaged_edits() -> Result<()> 
         let staged_aqua = fs::read_to_string(workspace.join(AQUA_CONFIG_PATH))?;
         assert_eq!(staged_aqua, AQUA_CONFIG);
         let staged_fragment = fs::read_to_string(workspace.join(fragment_path))?;
-        assert!(staged_fragment.contains("staged release note body"));
-        assert!(!staged_fragment.contains("unstaged replacement body"));
+        assert!(
+            staged_fragment.contains("staged release note body"),
+            "sandbox fragment must carry staged content: {staged_fragment}"
+        );
+        assert!(
+            !staged_fragment.contains("unstaged replacement body"),
+            "sandbox fragment must exclude unstaged content: {staged_fragment}"
+        );
         Ok(RenderOutcome::Passed)
     })?;
 
     match outcome {
-        CommitCheckOutcome::Pass(summary) => assert!(summary.contains("dry-render")),
+        CommitCheckOutcome::Pass(summary) => assert!(
+            summary.contains("dry-render"),
+            "pass summary must identify the dry-render: {summary}"
+        ),
         CommitCheckOutcome::Flagged(report) => {
             bail!("expected captured staged inputs to pass: {report:?}");
         }
@@ -142,12 +156,18 @@ fn changie_rejection_is_a_blocking_staged_input_finding() -> Result<()> {
     match outcome {
         CommitCheckOutcome::Flagged(report) => {
             assert_eq!(report.posture, Posture::Blocked);
-            assert!(report.result.contains("template execution failed"));
+            assert!(
+                report.result.contains("template execution failed"),
+                "blocking report must preserve renderer failure: {}",
+                report.result
+            );
             assert!(
                 report
                     .fix
                     .as_deref()
-                    .is_some_and(|fix| fix.contains("cargo change"))
+                    .is_some_and(|fix| fix.contains("cargo change")),
+                "blocking report must provide the cargo change repair: {:?}",
+                report.fix
             );
         }
         CommitCheckOutcome::Pass(summary) => {
@@ -182,7 +202,10 @@ fn configured_changes_and_unreleased_directories_drive_materialization() -> Resu
     repo.add(fragment_path)?;
 
     let outcome = run_with_renderer(repo.root(), None, |workspace, _projects| {
-        assert!(workspace.join(fragment_path).is_file());
+        assert!(
+            workspace.join(fragment_path).is_file(),
+            "configured fragment must be materialized at {fragment_path}"
+        );
         Ok(RenderOutcome::Passed)
     })?;
     match outcome {
@@ -210,7 +233,11 @@ fn unsafe_config_paths_block_before_rendering() -> Result<()> {
     match outcome {
         CommitCheckOutcome::Flagged(report) => {
             assert_eq!(report.posture, Posture::Blocked);
-            assert!(report.result.contains("must not escape"));
+            assert!(
+                report.result.contains("must not escape"),
+                "unsafe path report must explain containment failure: {}",
+                report.result
+            );
         }
         CommitCheckOutcome::Pass(summary) => {
             bail!("expected unsafe Changie path to block: {summary}");

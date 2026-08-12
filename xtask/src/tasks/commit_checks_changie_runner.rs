@@ -38,6 +38,12 @@ pub(super) fn render_with_changie(
             .output()
             .with_context(|| format!("failed to run Changie for project `{project}`"))?;
         if !output.status.success() {
+            if output.status.code().is_none() {
+                return Err(color_eyre::eyre::eyre!(
+                    "Changie for project `{project}` terminated without an exit code: {}",
+                    command_diagnostic(&output)
+                ));
+            }
             rejected.push(format!(
                 "project `{project}` exited {:?}: {}",
                 output.status.code(),
