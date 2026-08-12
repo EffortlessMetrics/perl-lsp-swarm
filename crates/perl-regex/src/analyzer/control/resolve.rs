@@ -19,11 +19,24 @@ pub(super) fn resolve_request(
 ) -> PatternControlResolution {
     let (targets, missing_reason, ambiguous_plain) = match request {
         ResolutionRequest::None => return PatternControlResolution::NotApplicable,
-        ResolutionRequest::Number { number, ambiguous_plain_escape } => (
-            capture_targets_by_number(pattern, captures, *number),
-            PatternControlUnresolvedReason::MissingCaptureNumber,
-            *ambiguous_plain_escape,
-        ),
+        ResolutionRequest::Number { number, ambiguous_plain_escape } => {
+            let mut targets = capture_targets_by_number(pattern, captures, *number);
+            if *ambiguous_plain_escape {
+                targets.retain(|id| {
+                    captures
+                        .declarations
+                        .get(id.index())
+                        .is_some_and(|declaration| {
+                            declaration.group_range.start < fact_range.start
+                        })
+                });
+            }
+            (
+                targets,
+                PatternControlUnresolvedReason::MissingCaptureNumber,
+                *ambiguous_plain_escape,
+            )
+        }
         ResolutionRequest::Name(name) => (
             capture_targets_by_name(pattern, captures, name),
             PatternControlUnresolvedReason::MissingCaptureName,
