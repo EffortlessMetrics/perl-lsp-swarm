@@ -116,6 +116,8 @@ def main() -> int:
             "incremental_parse_output",
             "--test",
             "incremental_parse_snapshot",
+            "--test",
+            "incremental_recovery_transitions",
             "--",
             "--test-threads=4",
         ]
