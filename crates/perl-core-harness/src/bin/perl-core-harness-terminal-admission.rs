@@ -24,9 +24,10 @@ fn main() -> Result<()> {
     let mut options = Options::parse(std::env::args().skip(1))?;
 
     if let Some(receipt_path) = options.optional("--check-receipt")? {
+        let expected = ExpectedIdentity::from_options(&mut options)?;
         options.finish()?;
         let receipt = read_receipt(Path::new(&receipt_path))?;
-        verify_admitted_receipt(&receipt)?;
+        verify_admitted_receipt(&receipt, &expected)?;
         println!("terminal admission receipt remains bound to its admitted report bytes");
         return Ok(());
     }
@@ -38,13 +39,15 @@ fn main() -> Result<()> {
         .collect::<Vec<_>>();
     let output = PathBuf::from(options.required("--output")?);
     let admitted_dir = PathBuf::from(options.required("--admitted-dir")?);
-    let expected = ExpectedIdentity {
-        runner: options.required("--expected-runner")?,
-        profile: options.required("--expected-profile")?,
-        commit: options.required("--expected-commit")?,
-        perl_ref: options.required("--expected-perl-ref")?,
-    };
+    let expected = ExpectedIdentity::from_options(&mut options)?;
     options.finish()?;
+
+    if admitted_dir.exists() {
+        bail!(
+            "admitted report directory must be a fresh path and will not be replaced: {}",
+            admitted_dir.display()
+        );
+    }
 
     let receipt = build_receipt(&reports, &expected, &admitted_dir)?;
     write_receipt(&output, &receipt)?;
@@ -54,7 +57,7 @@ fn main() -> Result<()> {
             output.display()
         );
     }
-    verify_admitted_receipt(&receipt)?;
+    verify_admitted_receipt(&receipt, &expected)?;
     Ok(())
 }
 
@@ -124,6 +127,17 @@ struct ExpectedIdentity {
     perl_ref: String,
 }
 
+impl ExpectedIdentity {
+    fn from_options(options: &mut Options) -> Result<Self> {
+        Ok(Self {
+            runner: options.required("--expected-runner")?,
+            profile: options.required("--expected-profile")?,
+            commit: options.required("--expected-commit")?,
+            perl_ref: options.required("--expected-perl-ref")?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum AdmissionVerdict {
@@ -141,7 +155,7 @@ struct AdmissionReceipt {
     reports: Vec<ReportAdmission>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReportAdmission {
     source_label: String,
     admitted_path: Option<String>,
@@ -323,13 +337,19 @@ fn validate_report_identity(
 }
 
 fn write_admitted_copies(evidence: &mut [ReportEvidence], admitted_dir: &Path) -> Result<()> {
-    if admitted_dir.exists() {
-        fs::remove_dir_all(admitted_dir).with_context(|| {
-            format!("removing stale admitted report directory {}", admitted_dir.display())
-        })?;
-    }
-    fs::create_dir_all(admitted_dir).with_context(|| {
-        format!("creating admitted report directory {}", admitted_dir.display())
+    let parent = admitted_dir.parent().ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "admitted report directory has no parent: {}",
+            admitted_dir.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating admitted report parent {}", parent.display()))?;
+    fs::create_dir(admitted_dir).with_context(|| {
+        format!(
+            "creating fresh admitted report directory {}",
+            admitted_dir.display()
+        )
     })?;
 
     for report in evidence {
@@ -347,54 +367,87 @@ fn write_admitted_copies(evidence: &mut [ReportEvidence], admitted_dir: &Path) -
     Ok(())
 }
 
-fn verify_admitted_receipt(receipt: &AdmissionReceipt) -> Result<()> {
+fn verify_admitted_receipt(
+    receipt: &AdmissionReceipt,
+    expected: &ExpectedIdentity,
+) -> Result<()> {
     if receipt.schema_version != SCHEMA_VERSION {
         bail!("unsupported terminal-admission schema {}", receipt.schema_version);
     }
-    if receipt.verdict != AdmissionVerdict::AdmittedLegacyZero || !receipt.identity_valid {
-        bail!("terminal-admission receipt is not admitted");
-    }
-    if !receipt.identity_errors.is_empty() {
-        bail!("admitted terminal receipt contains identity errors");
+    if &receipt.expected != expected {
+        bail!("terminal-admission receipt expected identity does not match the verifier input");
     }
 
-    let mut modes = BTreeSet::new();
-    for report in &receipt.reports {
-        let path = report
+    let mut recomputed = Vec::with_capacity(receipt.reports.len());
+    let mut recorded_by_mode = BTreeMap::new();
+    let mut admitted_paths = BTreeSet::new();
+    for recorded in &receipt.reports {
+        if recorded_by_mode.insert(recorded.mode.clone(), recorded).is_some() {
+            bail!("terminal-admission receipt contains duplicate mode {}", recorded.mode);
+        }
+        let path = recorded
             .admitted_path
             .as_deref()
             .ok_or_else(|| color_eyre::eyre::eyre!("admitted report has no admitted path"))?;
-        let bytes = fs::read(path).with_context(|| format!("reading admitted report {path}"))?;
-        if sha256(&bytes) != report.sha256 {
-            bail!("admitted report digest changed for mode {}", report.mode);
+        if !admitted_paths.insert(path.to_string()) {
+            bail!("terminal-admission receipt reuses admitted path {path}");
         }
         let metadata = fs::metadata(path)
             .with_context(|| format!("reading admitted report metadata {path}"))?;
+        if !metadata.is_file() {
+            bail!("admitted report is not a regular file: {path}");
+        }
         if !metadata.permissions().readonly() {
             bail!("admitted report is writable: {path}");
         }
-        let parsed: RunReport = serde_json::from_slice(&bytes)
-            .with_context(|| format!("decoding admitted report {path}"))?;
-        if parsed.schema_version != report.run_report_schema
-            || parsed.commit != report.commit
-            || parsed.perl_ref != report.perl_ref
-            || parsed.prepared_tree != report.prepared_tree
-            || parsed.host_perl != report.host_perl
-            || parsed.runner.to_string() != report.runner
-            || parsed.mode.to_string() != report.mode
-            || parsed.profile.to_string() != report.profile
-            || parsed.harness_status != report.observed_legacy_status
-        {
-            bail!("admitted report identity changed for mode {}", report.mode);
-        }
-        modes.insert(report.mode.clone());
+        let mut evidence = read_report_evidence(Path::new(path))?;
+        evidence.admission.admitted_path = Some(path.to_string());
+        recomputed.push(evidence);
+    }
+    recomputed.sort_by(|left, right| left.admission.mode.cmp(&right.admission.mode));
+
+    let identity_errors = validate_report_identity(&recomputed, expected);
+    if !identity_errors.is_empty() {
+        bail!(
+            "admitted terminal receipt identity is invalid:\n{}",
+            identity_errors.join("\n")
+        );
+    }
+    if recomputed.iter().any(|report| !report.admission.terminal_admitted) {
+        bail!("admitted terminal receipt contains a non-admitted terminal outcome");
     }
 
-    let expected_modes = [HarnessMode::Parse.to_string(), HarnessMode::Compile.to_string()]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    if modes != expected_modes {
-        bail!("admitted receipt does not contain exactly parse and compile reports");
+    for evidence in &recomputed {
+        let recorded = recorded_by_mode.get(&evidence.admission.mode).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "receipt has no recorded admission for mode {}",
+                evidence.admission.mode
+            )
+        })?;
+        if evidence.admission.sha256 != recorded.sha256
+            || evidence.admission.run_report_schema != recorded.run_report_schema
+            || evidence.admission.commit != recorded.commit
+            || evidence.admission.perl_ref != recorded.perl_ref
+            || evidence.admission.prepared_tree != recorded.prepared_tree
+            || evidence.admission.host_perl != recorded.host_perl
+            || evidence.admission.runner != recorded.runner
+            || evidence.admission.mode != recorded.mode
+            || evidence.admission.profile != recorded.profile
+            || evidence.admission.observed_legacy_status != recorded.observed_legacy_status
+            || evidence.admission.terminal_admitted != recorded.terminal_admitted
+        {
+            bail!(
+                "admitted report differs from the recorded receipt for mode {}",
+                evidence.admission.mode
+            );
+        }
+    }
+
+    if receipt.verdict != AdmissionVerdict::AdmittedLegacyZero
+        || !receipt.identity_valid
+        || !receipt.identity_errors.is_empty()
+    {
+        bail!("terminal-admission receipt metadata does not describe the recomputed admitted state");
     }
     Ok(())
 }
@@ -423,9 +476,7 @@ fn write_receipt(path: &Path, receipt: &AdmissionReceipt) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_core_harness_types::{
-        HarnessProfile, HarnessRunner, RunSummary,
-    };
+    use perl_core_harness_types::{HarnessProfile, HarnessRunner, RunSummary};
 
     type TestResult = Result<()>;
 
@@ -439,7 +490,7 @@ mod tests {
         let receipt = build_receipt(&[parse, compile], &expected, &temp.path().join("admitted"))?;
         assert_eq!(receipt.verdict, AdmissionVerdict::AdmittedLegacyZero);
         assert!(receipt.identity_valid);
-        verify_admitted_receipt(&receipt)?;
+        verify_admitted_receipt(&receipt, &expected)?;
         Ok(())
     }
 
@@ -449,12 +500,14 @@ mod tests {
         let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), true)?;
         let compile =
             write_report(temp.path(), "compile.json", HarnessMode::Compile, Some(0), true)?;
+        let expected = expected_identity();
         let receipt = build_receipt(
             &[parse, compile],
-            &expected_identity(),
+            &expected,
             &temp.path().join("admitted"),
         )?;
         assert_eq!(receipt.verdict, AdmissionVerdict::AdmittedLegacyZero);
+        verify_admitted_receipt(&receipt, &expected)?;
         Ok(())
     }
 
@@ -473,6 +526,7 @@ mod tests {
         assert!(receipt.reports.iter().any(|report| {
             !report.terminal_admitted && report.reason.contains("counts cannot override")
         }));
+        assert!(!temp.path().join("admitted").exists());
         Ok(())
     }
 
@@ -509,14 +563,30 @@ mod tests {
     }
 
     #[test]
+    fn existing_admitted_directory_is_never_replaced() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let admitted = temp.path().join("admitted");
+        fs::create_dir(&admitted)?;
+        fs::write(admitted.join("sentinel"), "keep")?;
+        let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), false)?;
+        let compile =
+            write_report(temp.path(), "compile.json", HarnessMode::Compile, Some(0), false)?;
+        let mut evidence = vec![read_report_evidence(&parse)?, read_report_evidence(&compile)?];
+        assert!(write_admitted_copies(&mut evidence, &admitted).is_err());
+        assert_eq!(fs::read_to_string(admitted.join("sentinel"))?, "keep");
+        Ok(())
+    }
+
+    #[test]
     fn replacing_an_admitted_copy_breaks_verification() -> TestResult {
         let temp = tempfile::tempdir()?;
         let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), false)?;
         let compile =
             write_report(temp.path(), "compile.json", HarnessMode::Compile, Some(0), false)?;
+        let expected = expected_identity();
         let receipt = build_receipt(
             &[parse, compile],
-            &expected_identity(),
+            &expected,
             &temp.path().join("admitted"),
         )?;
         let compile_path = receipt
@@ -525,11 +595,46 @@ mod tests {
             .find(|report| report.mode == HarnessMode::Compile.to_string())
             .and_then(|report| report.admitted_path.as_deref())
             .ok_or_else(|| color_eyre::eyre::eyre!("compile admitted path missing"))?;
-        let mut permissions = fs::metadata(compile_path)?.permissions();
-        permissions.set_readonly(false);
-        fs::set_permissions(compile_path, permissions)?;
+        make_writable(Path::new(compile_path))?;
         fs::write(compile_path, b"{}\n")?;
-        assert!(verify_admitted_receipt(&receipt).is_err());
+        assert!(verify_admitted_receipt(&receipt, &expected).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn serialized_identity_flags_cannot_override_recomputed_identity() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), false)?;
+        let compile =
+            write_report(temp.path(), "compile.json", HarnessMode::Compile, Some(0), false)?;
+        let expected = expected_identity();
+        let mut receipt = build_receipt(
+            &[parse, compile],
+            &expected,
+            &temp.path().join("admitted"),
+        )?;
+        receipt.expected.profile = "comp".to_string();
+        receipt.identity_valid = true;
+        receipt.identity_errors.clear();
+        assert!(verify_admitted_receipt(&receipt, &expected).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn make_writable(path: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(path, permissions)?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn make_writable(path: &Path) -> Result<()> {
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions)?;
         Ok(())
     }
 
