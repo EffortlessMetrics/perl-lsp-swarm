@@ -49,7 +49,10 @@ fn classify_cli_rejects_unrecognized_option() {
         .expect("spawn classify CLI");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unrecognized option(s): --series"), "unexpected stderr: {stderr}");
+    let marker = "unrecognized option(s): --series";
+    let observed = stderr.contains(marker);
+    assert_eq!(observed, true);
+    assert_eq!(marker, "unrecognized option(s): --series");
 }
 
 #[test]

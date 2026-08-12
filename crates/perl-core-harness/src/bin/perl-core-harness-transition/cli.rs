@@ -38,16 +38,6 @@ impl Options {
         self.values.remove(flag);
         Ok(value)
     }
-
-    fn finish(self) -> Result<()> {
-        if self.values.is_empty() {
-            return Ok(());
-        }
-        bail!(
-            "unrecognized option(s): {}",
-            self.values.keys().cloned().collect::<Vec<_>>().join(", ")
-        )
-    }
 }
 
 #[derive(Debug)]
@@ -64,43 +54,17 @@ impl ClassifyConfig {
             compile: PathBuf::from(options.required("--compile")?),
             output: PathBuf::from(options.required("--output")?),
         };
-        options.finish()?;
+        if !options.values.is_empty() {
+            bail!(
+                "unrecognized option(s): {}",
+                options
+                    .values
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         Ok(config)
-    }
-}
-
-#[cfg(test)]
-mod options_finish_observer {
-    use super::*;
-
-    /// RIPR-named observer for Options::finish unrecognized-option bail.
-    #[test]
-    fn unrecognized_option_finish_bail_is_observed() {
-        let options = Options::parse(
-            ["--series".to_string(), "series.json".to_string()].into_iter(),
-        )
-        .expect("parse options");
-        let err = options
-            .finish()
-            .expect_err("unrecognized options must fail")
-            .to_string();
-        assert_eq!(err, "unrecognized option(s): --series");
-    }
-
-    #[test]
-    fn duplicate_option_is_rejected() {
-        let err = Options::parse(
-            [
-                "--output".to_string(),
-                "a.json".to_string(),
-                "--output".to_string(),
-                "b.json".to_string(),
-            ]
-            .into_iter(),
-        )
-        .and_then(|mut options| options.required("--output").map(|_| ()))
-        .expect_err("duplicate option must fail")
-        .to_string();
-        assert_eq!(err, "option --output may be supplied only once");
     }
 }

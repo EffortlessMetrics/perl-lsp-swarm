@@ -58,3 +58,48 @@ struct ParsedClassifyArgs {
     output: String,
     claim_boundary: &'static str,
 }
+
+#[cfg(test)]
+mod classify_config_observer {
+    use super::*;
+
+    /// RIPR-named observer for ClassifyConfig unrecognized-option rejection.
+    #[test]
+    fn unrecognized_option_from_options_bail_is_observed() {
+        let options = Options::parse(
+            [
+                "--accepted-baseline".to_string(),
+                "accepted.json".to_string(),
+                "--compile".to_string(),
+                "compile.json".to_string(),
+                "--output".to_string(),
+                "out.json".to_string(),
+                "--series".to_string(),
+                "series.json".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse options");
+        let err = ClassifyConfig::from_options(options)
+            .expect_err("unrecognized options must fail")
+            .to_string();
+        assert_eq!(err, "unrecognized option(s): --series");
+    }
+
+    #[test]
+    fn duplicate_option_is_rejected() {
+        let err = Options::parse(
+            [
+                "--output".to_string(),
+                "a.json".to_string(),
+                "--output".to_string(),
+                "b.json".to_string(),
+            ]
+            .into_iter(),
+        )
+        .and_then(|mut options| options.required("--output").map(|_| ()))
+        .expect_err("duplicate option must fail")
+        .to_string();
+        assert_eq!(err, "option --output may be supplied only once");
+    }
+}
