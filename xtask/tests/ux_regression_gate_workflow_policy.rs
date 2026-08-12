@@ -118,6 +118,38 @@ fn receipt_path(root: &Path, extension: &str) -> PathBuf {
     root.join(format!("target/receipts/ux-regression.{extension}"))
 }
 
+fn emit_receipt(root: &Path) -> Result<JsonValue> {
+    let receipt = receipt_path(root, "json");
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args([
+            "ux-regression-receipt",
+            "--input",
+            receipt_path(root, "log").to_str().ok_or_else(|| anyhow!("log path"))?,
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("receipt path"))?,
+            "--exit-status-file",
+            receipt_path(root, "exit").to_str().ok_or_else(|| anyhow!("exit path"))?,
+            "--sha",
+            FIXED_SHA,
+        ])
+        .output()?;
+    assert_exit(&output, 0, "ux-regression-receipt")?;
+    Ok(serde_json::from_str(&fs::read_to_string(receipt)?)?)
+}
+
+fn execute_verifier(run: &str, root: &Path) -> Result<Output> {
+    #[cfg(windows)]
+    let run = format!("python3() {{ command python \"$@\"; }}\n{run}");
+    #[cfg(not(windows))]
+    let run = run.to_owned();
+    Ok(Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &run])
+        .env("TESTED_SHA", FIXED_SHA)
+        .current_dir(root)
+        .output()
+        .context("executing exact-subject verifier with Actions bash semantics")?)
+}
+
 #[test]
 fn failing_command_is_captured_and_emits_exact_subject_receipt_in_both_workflows() -> Result<()> {
     for (file, job) in WORKFLOWS {
@@ -130,22 +162,7 @@ fn failing_command_is_captured_and_emits_exact_subject_receipt_in_both_workflows
         assert!(log.contains("ux_scenario_01_startup::starts ... FAILED"), "{file}");
         assert_eq!(fs::read_to_string(receipt_path(temp.path(), "exit"))?, "23\n", "{file}");
 
-        let receipt = receipt_path(temp.path(), "json");
-        let receipt_output = Command::new(env!("CARGO_BIN_EXE_xtask"))
-            .args([
-                "ux-regression-receipt",
-                "--input",
-                receipt_path(temp.path(), "log").to_str().ok_or_else(|| anyhow!("log path"))?,
-                "--receipt",
-                receipt.to_str().ok_or_else(|| anyhow!("receipt path"))?,
-                "--exit-status-file",
-                receipt_path(temp.path(), "exit").to_str().ok_or_else(|| anyhow!("exit path"))?,
-                "--sha",
-                FIXED_SHA,
-            ])
-            .output()?;
-        assert_exit(&receipt_output, 0, "ux-regression-receipt")?;
-        let payload: JsonValue = serde_json::from_str(&fs::read_to_string(receipt)?)?;
+        let payload = emit_receipt(temp.path())?;
         assert_eq!(payload["schema_version"], 1, "{file}");
         assert_eq!(payload["sha"], FIXED_SHA, "{file}");
         assert_eq!(payload["result"], "fail", "{file}");
@@ -162,6 +179,10 @@ fn passing_command_preserves_zero_status_in_both_workflows() -> Result<()> {
         let (temp, output) = execute_run_block(run, 0, 0)?;
         assert_exit(&output, 0, file)?;
         assert_eq!(fs::read_to_string(receipt_path(temp.path(), "exit"))?, "0\n", "{file}");
+        let payload = emit_receipt(temp.path())?;
+        assert_eq!(payload["sha"], FIXED_SHA, "{file}");
+        assert_eq!(payload["result"], "pass", "{file}");
+        assert_eq!(payload["blocking"], false, "{file}");
     }
     Ok(())
 }
@@ -171,12 +192,28 @@ fn tee_failure_is_instrumentation_failure_without_losing_command_status() -> Res
     for (file, job) in WORKFLOWS {
         let wf = workflow(file)?;
         let run = run_step(steps(&wf, job)?, "Run UX regression tests")?;
-        let (temp, output) = execute_run_block(run, 0, 74)?;
+        let (temp, output) = execute_run_block(run, 23, 74)?;
         assert_exit(&output, 74, file)?;
-        assert_eq!(fs::read_to_string(receipt_path(temp.path(), "exit"))?, "0\n", "{file}");
+        assert_eq!(fs::read_to_string(receipt_path(temp.path(), "exit"))?, "23\n", "{file}");
+        assert_eq!(
+            fs::read_to_string(receipt_path(temp.path(), "instrumentation.exit"))?,
+            "74\n",
+            "{file}"
+        );
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("tee failed"),
             "{file} must identify tee failure separately from the UX command"
+        );
+        let payload = emit_receipt(temp.path())?;
+        assert_eq!(payload["sha"], FIXED_SHA, "{file}");
+
+        let verifier = run_step(steps(&wf, job)?, "Verify receipt subject identity")?;
+        let verifier_output = execute_verifier(verifier, temp.path())?;
+        assert!(!verifier_output.status.success(), "{file} must refuse exact evidence");
+        assert!(
+            String::from_utf8_lossy(&verifier_output.stderr)
+                .contains("UX receipt instrumentation failed"),
+            "{file} must report instrumentation failure"
         );
     }
     Ok(())
@@ -234,6 +271,17 @@ fn tested_sha_cannot_be_rebound_by_candidate_code() -> Result<()> {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("{file} job {selected_job} checkout must declare ref"))?;
         assert_eq!(checkout_ref, format!("${{{{ {IMMUTABLE_SUBJECT} }}}}"), "{file}");
+
+        let identity = named_step(steps(&wf, selected_job)?, "Verify tested candidate identity")?;
+        let identity_subject = identity
+            .get("env")
+            .and_then(|env| env.get("TESTED_SHA"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("{file} exact identity check must bind TESTED_SHA"))?;
+        assert_eq!(identity_subject, format!("${{{{ {IMMUTABLE_SUBJECT} }}}}"), "{file}");
+        let identity_run = identity.get("run").and_then(Value::as_str).unwrap_or_default();
+        assert!(identity_run.contains("git rev-parse 'HEAD^{commit}'"), "{file}");
+        assert!(identity_run.contains("$actual_sha\" != \"$TESTED_SHA"), "{file}");
     }
     Ok(())
 }
